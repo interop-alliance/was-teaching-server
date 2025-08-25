@@ -1,0 +1,38 @@
+{
+  "name": "was-teaching-server",
+  "description": "A basic Wallet Attached Storage server used to demonstrate the WAS specification.",
+  "version": "0.0.1",
+  "author": {
+    "name": "Dmitri Zagidulin",
+    "url": "https://github.com/dmitrizagidulin/"
+  },
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/interop-alliance/was-teaching-server"
+  },
+  "homepage": "https://github.com/interop-alliance/was-teaching-server",
+  "bugs": "https://github.com/interop-alliance/was-teaching-server/issues",
+  "dependencies": {
+  },
+  "devDependencies": {
+  },
+  "main": "src/index.js",
+  "scripts": {
+  },
+  "standard": {
+    "globals": [
+      "after",
+      "afterEach",
+      "before",
+      "beforeEach",
+      "describe",
+      "it"
+    ]
+  },
+  "bin": {
+  },
+  "engines": {
+    "node": ">=20.0"
+  }
+}
