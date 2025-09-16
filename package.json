@@ -15,7 +15,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js | pino-pretty",
-    "test": "node --test-only test/*"
+    "test": "node test/*"
   },
   "standard": {
     "globals": [
