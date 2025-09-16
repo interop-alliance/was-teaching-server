@@ -3,7 +3,7 @@ import path from 'node:path'
 import { mkdir } from 'node:fs/promises'
 import { v4 as uuidv4 } from 'uuid'
 
-export class CreateSpaceRequest {
+export class SpacesRepositoryRequest {
   static async post (request, reply) {
     const { body } = request
     const spacesRepository = path.join(import.meta.dirname, '..', '..', 'data', 'spaces')
