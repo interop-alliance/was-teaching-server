@@ -27,10 +27,27 @@ describe('API', () => {
   })
 
   describe('Spaces API', () => {
-    it('should create space via POST', async () => {
-      const response = await fetch(new URL('/spaces/', serverUrl), { method: 'POST' })
-      console.log(response)
+    it.only('should create space via POST', async () => {
+      const body = {
+        "id": "426e7db8-26b5-4fdc-8068-9dcb948fd291",
+        "name": "Example space #1",
+        "controller": "did:key:z6MkpBMbMaRSv5nsgifRAwEKvHHoiKDMhiAHShTFNmkJNdVW"
+      }
+
+      const response = await fetch(new URL('/spaces/', serverUrl),
+        { method: 'POST', headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        })
       assert.equal(response.status, 201)
+      const created = await response.json()
+      assert.partialDeepStrictEqual(created, {
+        "id": "426e7db8-26b5-4fdc-8068-9dcb948fd291",
+        "name": "Example space #1",
+        "type": ["Space"],
+        "controller": "did:key:z6MkpBMbMaRSv5nsgifRAwEKvHHoiKDMhiAHShTFNmkJNdVW"
+      })
+      assert.match(response.headers.get('content-type'), /application\/json/)
+      assert.equal(response.headers.get('location'), `/spaces/${body.id}`)
     })
   })
 })
