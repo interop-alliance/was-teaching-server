@@ -29,6 +29,8 @@ export class SpacesRepositoryRequest {
     }
     await storage.put('.space', spaceDescription)
 
+    console.log('CREATED:', spaceDescription)
+
     // TODO: Make Location an absolute url
     reply.header('Location', `/spaces/${spaceId}`)
     return reply.status(201).send(spaceDescription)
