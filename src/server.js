@@ -5,7 +5,8 @@ import fastifyStatic from '@fastify/static'
 import handlebars from 'handlebars'
 import path from 'node:path'
 
-import { initRoutes } from './routes.js';
+import { initSpaceRoutes } from './routes.js'
+import { SPEC_URL } from '../config.default.js'
 
 // TODO: https://github.com/fastify/fastify-helmet
 // TODO: https://github.com/fastify/fastify-env
@@ -31,7 +32,12 @@ export function createApp (options) {
     viewExt: 'hbs'
   })
 
-  fastify.register(initRoutes)
+  // Add a human-readable 'Welcome' page
+  fastify.get('/', async (request, reply) => {
+    return reply.view('home', { title: 'Welcome', SPEC_URL })
+  })
+
+  fastify.register(initSpaceRoutes)
 
   return fastify
 }
