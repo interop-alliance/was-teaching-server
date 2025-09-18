@@ -61,7 +61,7 @@ describe('Spaces', () => {
         "controller": "did:key:z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD"
       })
       assert.match(response.headers.get('content-type'), /application\/json/)
-      assert.equal(response.headers.get('location'), `/spaces/${body.id}`)
+      assert.equal(response.headers.get('location'), `${serverUrl}/spaces/${body.id}`)
     })
 
     it('Get /space/:spaceId should 401 error when no authorization headers', async () => {
