@@ -4,20 +4,29 @@ import { SpacesRepositoryRequest } from './requests/SpacesRepositoryRequest.js'
 import { SpaceRequest } from './requests/SpaceRequest.js'
 import { SPEC_URL } from '../config.default.js'
 
-export async function initSpaceRoutes (app, options) {
-  // All SpacesRepository and Space related routes require auth-related headers
+export async function initSpacesRepositoryRoutes (app, options) {
+  // All SpacesRepository routes require auth-related headers
   // Check headers are present (throw 401 otherwise)
   app.addHook('onRequest', requireAuthHeaders)
+  // Parse the relevant request headers, set the request.zcap parameter
   app.addHook('onRequest', parseAuthHeaders)
+
+  // Create a Space
+  app.post('/spaces', async (request, reply) => reply.redirect('/spaces/'))
+  app.post('/spaces/', SpacesRepositoryRequest.post)
 
   // List Spaces
   app.get('/spaces', async (request, reply) => reply.redirect('/spaces/'))
   // app.get('/spaces/', SpacesRepositoryRequest.get)
   app.get('/spaces/', async (request, reply) => {})
+}
 
-  // Create a Space
-  app.post('/spaces', async (request, reply) => reply.redirect('/spaces/'))
-  app.post('/spaces/', SpacesRepositoryRequest.post)
+export async function initSpaceRoutes (app, options) {
+  // All Space routes require auth-related headers
+  // Check headers are present (throw 401 otherwise)
+  app.addHook('onRequest', requireAuthHeaders)
+  // Parse the relevant request headers, set the request.zcap parameter
+  app.addHook('onRequest', parseAuthHeaders)
 
   // Get Space info
   app.get('/space/:spaceId', SpaceRequest.get)
@@ -62,9 +71,10 @@ export async function initSpaceRoutes (app, options) {
 export async function parseAuthHeaders (request, reply) {
   const { headers } = request
 
+  let params
   try {
     // { keyId, headers, signature, created, expires }
-    const { params } = parseSignatureHeader(headers.authorization)
+    ({ params } = parseSignatureHeader(headers.authorization))
     request.zcap = { ...params }
     request.zcap.invocation = headers['capability-invocation']
     request.zcap.digest = headers['digest']
@@ -72,9 +82,7 @@ export async function parseAuthHeaders (request, reply) {
     console.log('PARAMS:', request.zcap)
   } catch(err) {
     console.error(err)
-    return reply
-      .status(400)
-      .type('application/problem+json')
+    return reply.status(400).type('application/problem+json')
       .send({
         type: `${SPEC_URL}#authorization`,
         title: 'Invalid headers.',
@@ -83,14 +91,23 @@ export async function parseAuthHeaders (request, reply) {
         }]
       })
   }
+  // Ensure keyId was parsed from the Authorization header
+  if (!params?.keyId) {
+    return reply.status(400).type('application/problem+json')
+      .send({
+        type: `${SPEC_URL}#authorization`,
+        title: 'Invalid Authorization header.',
+        errors: [{
+          detail: 'Authorization header is missing a keyId parameter.',
+        }]
+      })
+  }
 }
 
 export async function requireAuthHeaders (request, reply) {
   const { headers } = request
   if (!(headers['authorization'] && headers['capability-invocation'])) {
-    return reply
-      .status(401)
-      .type('application/problem+json')
+    return reply.status(401).type('application/problem+json')
       .send({
         type: `${SPEC_URL}#authorization`,
         title: 'Invalid request.',
