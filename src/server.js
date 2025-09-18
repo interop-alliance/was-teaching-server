@@ -5,15 +5,17 @@ import fastifyStatic from '@fastify/static'
 import handlebars from 'handlebars'
 import path from 'node:path'
 
-import { initSpaceRoutes } from './routes.js'
+import { initSpaceRoutes, initSpacesRepositoryRoutes } from './routes.js'
 import { SPEC_URL } from '../config.default.js'
 
 // TODO: https://github.com/fastify/fastify-helmet
 // TODO: https://github.com/fastify/fastify-env
 
-export function createApp (options) {
+export function createApp ({ serverUrl } = {}) {
   // By default uses 'pino' logger
   const fastify = Fastify({ logger: true })
+
+  fastify.decorate('serverUrl', serverUrl)
 
   // Disable CORS
   fastify.register(cors, { origin: '*' })
@@ -37,6 +39,7 @@ export function createApp (options) {
     return reply.view('home', { title: 'Welcome', SPEC_URL })
   })
 
+  fastify.register(initSpacesRepositoryRoutes)
   fastify.register(initSpaceRoutes)
 
   return fastify
