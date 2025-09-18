@@ -36,6 +36,6 @@ export class CollectionRequest {
     const allowedAction = 'POST'
     await handleZcapVerify({ url, allowedTarget, allowedAction, method, headers,
       serverUrl, spaceController, requestName: 'Create Collection',
-      specErrorSection: 'create-collection-errors' })
+      specErrorSection: 'create-collection-errors', reply })
   }
 }

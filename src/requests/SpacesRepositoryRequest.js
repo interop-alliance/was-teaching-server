@@ -40,7 +40,7 @@ export class SpacesRepositoryRequest {
     const allowedAction = 'POST'
     await handleZcapVerify({ url, allowedTarget, allowedAction, method, headers,
       serverUrl, spaceController: body.controller, requestName: 'Create Space',
-      specErrorSection: 'create-space-errors' })
+      specErrorSection: 'create-space-errors', reply })
 
     // zCap checks out, continue
     const storage = await ensureSpaceStorage({ spaceId })

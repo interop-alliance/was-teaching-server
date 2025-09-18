@@ -35,7 +35,7 @@ export class SpaceRequest {
     const allowedAction = 'GET'
     await handleZcapVerify({ url, allowedTarget, allowedAction, method, headers,
       serverUrl, spaceController, requestName: 'Get Space',
-      specErrorSection: 'read-space-errors' })
+      specErrorSection: 'read-space-errors', reply })
 
     // zCap checks out, continue
     return reply.status(200).send(spaceDescription)
