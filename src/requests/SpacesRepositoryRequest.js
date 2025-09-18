@@ -7,6 +7,7 @@ import { SPEC_URL } from '../../config.default.js'
 export class SpacesRepositoryRequest {
   static async post (request, reply) {
     const { body, url, method, headers, zcap: { keyId } } = request
+    const { serverUrl } = this
 
     // Check to make sure the DID that signed the zcap matches controller
     const [ zcapSigningDid ] = keyId.split('#')
@@ -17,7 +18,7 @@ export class SpacesRepositoryRequest {
           title: 'Invalid Create Space request.',
           errors: [{
             detail: 'Authorization capability signing DID' +
-              `("${zcapSigningDid}") does not match the controller in the body ("${body.controller}").`
+              ` ("${zcapSigningDid}") does not match the controller in the body ("${body.controller}").`
           }]
         })
 
@@ -30,8 +31,8 @@ export class SpacesRepositoryRequest {
 
     console.log('CREATED:', spaceDescription)
 
-    // TODO: Make Location an absolute url
-    reply.header('Location', `/spaces/${spaceId}`)
+    const createdSpaceUrl = (new URL(`/spaces/${spaceId}`, serverUrl)).toString()
+    reply.header('Location', createdSpaceUrl)
     return reply.status(201).send(spaceDescription)
   }
 }
