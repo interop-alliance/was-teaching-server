@@ -40,6 +40,13 @@ export const fixtures = {
 //   multibaseMultikeyHeader: 'z6Mk',
 //   fromMultibase: Ed25519VerificationKey2020.from
 // });
+export function client ({ signer }) {
+  return new ZcapClient({
+    SuiteClass: Ed25519Signature2020,
+    invocationSigner: signer,
+    delegationSigner: signer
+  })
+}
 
 export async function zcapClients () {
   // Set up Alice's root / admin key pair and client
@@ -49,9 +56,7 @@ export async function zcapClients () {
   const aliceRootDid = `did:key:${aliceAdminKeyPair.fingerprint()}`
   aliceAdminKeyPair.id = `${aliceRootDid}#${aliceAdminKeyPair.fingerprint()}`
   const aliceRootSigner = aliceAdminKeyPair.signer()
-  const aliceRootClient = new ZcapClient({
-    SuiteClass: Ed25519Signature2020, invocationSigner: aliceRootSigner
-  })
+  const aliceRootClient = client({ signer: aliceRootSigner })
 
   // Set up a key pair for Alice's delegated app
   const aliceDelegatedAppKeyPair = await Ed25519VerificationKey2020.generate({
@@ -68,9 +73,7 @@ export async function zcapClients () {
   const bobRootDid = `did:key:${bobAdminKeyPair.fingerprint()}`
   bobAdminKeyPair.id = `${bobRootDid}#${bobAdminKeyPair.fingerprint()}`
   const bobRootSigner = bobAdminKeyPair.signer()
-  const bobRootClient = new ZcapClient({
-    SuiteClass: Ed25519Signature2020, invocationSigner: bobRootSigner
-  })
+  const bobRootClient = client({ signer: bobRootSigner })
 
   // Set up a key pair and signer for Bob's delegated app
   const bobDelegatedAppKeyPair = await Ed25519VerificationKey2020.generate({
@@ -82,6 +85,7 @@ export async function zcapClients () {
 
   return {
     alice: {
+      // did:key:z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD
       did: aliceRootDid,
       rootSigner: aliceRootSigner,
       rootClient: aliceRootClient,
@@ -90,10 +94,12 @@ export async function zcapClients () {
       }
     },
     aliceDelegatedApp: {
+      // did:key:z6MksgunmKuHjE2GvC3DYLBC3p7i1QkMRyhWxT4rNNnKxZar
       did: aliceDelegatedAppDid,
       signer: aliceDelegatedAppSigner
     },
     bob: {
+      // did:key:z6MkgpJp9jpAsqFCKqKMvHsAL5VEnkcd8FhhZdwnX33BFDgs
       did: bobRootDid,
       rootSigner: bobRootSigner,
       rootClient: bobRootClient,

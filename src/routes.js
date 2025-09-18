@@ -140,7 +140,7 @@ export async function requireAuthHeaders (request, reply) {
 
 export async function handleZcapVerify ({
   url, allowedTarget, allowedAction, method, headers, serverUrl, spaceController,
-  requestName, specErrorSection
+  requestName, specErrorSection, reply
 }) {
   let zcapVerifyResult
   try {
