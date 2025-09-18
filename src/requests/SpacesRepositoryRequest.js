@@ -3,8 +3,17 @@ import path from 'node:path'
 import { mkdir } from 'node:fs/promises'
 import { v4 as uuidv4 } from 'uuid'
 import { SPEC_URL } from '../../config.default.js'
+import { handleZcapVerify } from '../routes.js'
 
 export class SpacesRepositoryRequest {
+  /**
+   * POST /spaces/
+   * Request handler for "Create Space" request
+   * Before this, `parseAuthHeaders()` hook executed, resulting in:
+   * request.zcap: {
+   *   keyId, headers, signature, created, expires, invocation, digest
+   * }
+   */
   static async post (request, reply) {
     const { body, url, method, headers, zcap: { keyId } } = request
     const { serverUrl } = this
@@ -26,6 +35,14 @@ export class SpacesRepositoryRequest {
     const spaceId = body.id || uuidv4()
     const spaceDescription = { id: spaceId, type: ['Space'], ...body }
 
+    // Perform zCap signature verification (throws appropriate errors)
+    const allowedTarget = (new URL(`/spaces/`, serverUrl)).toString()
+    const allowedAction = 'POST'
+    await handleZcapVerify({ url, allowedTarget, allowedAction, method, headers,
+      serverUrl, spaceController: body.controller, requestName: 'Create Space',
+      specErrorSection: 'create-space-errors' })
+
+    // zCap checks out, continue
     const storage = await ensureSpaceStorage({ spaceId })
     await storage.put('.space', spaceDescription)
 
