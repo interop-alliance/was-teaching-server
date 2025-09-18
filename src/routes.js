@@ -3,6 +3,7 @@ import { parseSignatureHeader } from '@digitalbazaar/http-signature-header'
 import { SpacesRepositoryRequest } from './requests/SpacesRepositoryRequest.js'
 import { SpaceRequest } from './requests/SpaceRequest.js'
 import { SPEC_URL } from '../config.default.js'
+import { verifyZcap } from './zcap.js'
 
 export async function initSpacesRepositoryRoutes (app, options) {
   // All SpacesRepository routes require auth-related headers
@@ -17,7 +18,7 @@ export async function initSpacesRepositoryRoutes (app, options) {
 
   // List Spaces
   app.get('/spaces', async (request, reply) => reply.redirect('/spaces/'))
-  // app.get('/spaces/', SpacesRepositoryRequest.get)
+  // TODO
   app.get('/spaces/', async (request, reply) => {})
 }
 
@@ -31,9 +32,15 @@ export async function initSpaceRoutes (app, options) {
   // Get Space info
   app.get('/space/:spaceId', SpaceRequest.get)
 
+  // Update or Create Space
+  // TODO
   app.put('/space/:spaceId', async (request, reply) => {})
+  // Delete Space
+  // TODO
   app.delete('/space/:spaceId', async (request, reply) => {})
 
+  // List default '/' collection for a space
+  // TODO
   app.get('/space/:spaceId/', async (request, reply) => {})
 }
 
@@ -98,7 +105,7 @@ export async function parseAuthHeaders (request, reply) {
         type: `${SPEC_URL}#authorization`,
         title: 'Invalid Authorization header.',
         errors: [{
-          detail: 'Authorization header is missing a keyId parameter.',
+          detail: 'Authorization header is missing the keyId parameter.',
         }]
       })
   }
@@ -113,6 +120,39 @@ export async function requireAuthHeaders (request, reply) {
         title: 'Invalid request.',
         errors: [{
           detail: 'Authorization and Capability-Invocation headers are required.',
+        }]
+      })
+  }
+}
+
+export async function handleZcapVerify ({
+  url, allowedTarget, allowedAction, method, headers, serverUrl, spaceController,
+  requestName, specErrorSection
+}) {
+  let zcapVerifyResult
+  try {
+    zcapVerifyResult = await verifyZcap({ url, allowedTarget, allowedAction,
+      method, headers, serverUrl, spaceController })
+  } catch (err) {
+    console.warn('Error verifying zcap:', err)
+    return reply.status(400).type('application/problem+json')
+      .send({
+        type: `${SPEC_URL}#${specErrorSection}`,
+        title: `Invalid ${requestName} request.`,
+        errors: [{
+          detail: `Error verifying authorization: "${err.toString()}"`
+        }]
+      })
+  }
+  console.log('VERIFY RESULT:', zcapVerifyResult)
+
+  if (!zcapVerifyResult.verified) {
+    return reply.status(404).type('application/problem+json')
+      .send({
+        type: `${SPEC_URL}#{specErrorSection}`,
+        title: `Invalid ${requestName} request.`,
+        errors: [{
+          detail: 'URL not found or invalid authorization.',
         }]
       })
   }
