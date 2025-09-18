@@ -2,6 +2,7 @@ import { parseSignatureHeader } from '@digitalbazaar/http-signature-header'
 
 import { SpacesRepositoryRequest } from './requests/SpacesRepositoryRequest.js'
 import { SpaceRequest } from './requests/SpaceRequest.js'
+import { CollectionRequest } from './requests/CollectionRequest.js'
 import { SPEC_URL } from '../config.default.js'
 import { verifyZcap } from './zcap.js'
 
@@ -42,6 +43,18 @@ export async function initSpaceRoutes (app, options) {
   // List default '/' collection for a space
   // TODO
   app.get('/space/:spaceId/', async (request, reply) => {})
+}
+
+export async function initCollectionRoutes (app, options) {
+  // All Collection routes require auth-related headers
+  // Check headers are present (throw 401 otherwise)
+  app.addHook('onRequest', requireAuthHeaders)
+  // Parse the relevant request headers, set the request.zcap parameter
+  app.addHook('onRequest', parseAuthHeaders)
+
+  // Create Collection
+  app.post('/space/:spaceId', async (request, reply) => reply.redirect('/space/:spaceId/'))
+  app.post('/space/:spaceId/', CollectionRequest.post)
 }
 
 /**

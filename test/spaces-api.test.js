@@ -1,4 +1,5 @@
 /**
+ * Spaces Repository and Space API unit tests
  * Using Node.js test runner
  * @see https://nodejs.org/api/test.html
  */
@@ -6,21 +7,17 @@ import { it, describe, before, after } from 'node:test'
 import assert from 'node:assert'
 
 import { createApp } from '../src/server.js'
-import { zcapClient } from './helpers.js'
+import { zcapClients } from './helpers.js'
 
 describe('Spaces', () => {
-  let fastify, serverUrl, rootZcapClient
+  let fastify, serverUrl, alice, bob
   const PORT = 7766
 
   before(async () => {
-    ({ rootZcapClient } = await zcapClient())
+    ({ alice, bob } = await zcapClients())
     serverUrl = `http://localhost:${PORT}` // fastify.server.address().port
-
-    console.log('TEST SERVER URL:', serverUrl)
-
     fastify = createApp({ serverUrl })
     await fastify.listen({ port: PORT })
-
   })
   after(async () => {
     return fastify.close()
@@ -39,15 +36,17 @@ describe('Spaces', () => {
       assert.equal(response.status, 401)
       assert.match(response.headers.get('content-type'), /application\/problem\+json/)
     })
+  })
 
+  describe('Space API', () => {
     it('should create space via POST', async () => {
       const body = {
-        "id": "426e7db8-26b5-4fdc-8068-9dcb948fd291",
-        "name": "Example space #1",
-        "controller": "did:key:z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD"
+        id: alice.space1.id,
+        name: "Alice's Space #1 (Home)",
+        controller: alice.did
       }
 
-      const response = await rootZcapClient.request({
+      const response = await alice.rootClient.request({
         url: (new URL('/spaces/', serverUrl)).toString(),
         method: 'POST', action: 'POST', json: body
       })
@@ -55,27 +54,42 @@ describe('Spaces', () => {
 
       const created = response.data
       assert.deepStrictEqual(created, {
-        "id": "426e7db8-26b5-4fdc-8068-9dcb948fd291",
-        "name": "Example space #1",
-        "type": ["Space"],
-        "controller": "did:key:z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD"
+        id: alice.space1.id,
+        name: "Alice's Space #1 (Home)",
+        type: ['Space'],
+        controller: alice.did
       })
       assert.match(response.headers.get('content-type'), /application\/json/)
       assert.equal(response.headers.get('location'), `${serverUrl}/spaces/${body.id}`)
     })
 
     it('Get /space/:spaceId should 401 error when no authorization headers', async () => {
-      const spaceUrl = (new URL('/space/426e7db8-26b5-4fdc-8068-9dcb948fd291', serverUrl))
+      const spaceUrl = (new URL(`/space/${alice.space1.id}`, serverUrl))
         .toString()
       const response = await fetch(spaceUrl, { method: 'GET' })
       assert.equal(response.status, 401)
       assert.match(response.headers.get('content-type'), /application\/problem\+json/)
     })
 
-    it('should read space via GET with proper authorization', async () => {
-      const spaceUrl = (new URL('/space/426e7db8-26b5-4fdc-8068-9dcb948fd291', serverUrl))
+    it('GET /space/:spaceId should 404 error on not found space id', async () => {
+      const spaceUrl = (new URL('/space/space-id-that-does-not-exist', serverUrl))
         .toString()
-      const response = await rootZcapClient.request({
+      let expectedError
+      try {
+        await alice.rootClient.request({
+          url: spaceUrl, method: 'GET', action: 'GET'
+        })
+      } catch (error) {
+        expectedError = error
+      }
+      assert.equal(expectedError.response.status, 404)
+      assert.match(expectedError.response.headers.get('content-type'), /application\/problem\+json/)
+    })
+
+    it('should read space via GET with proper authorization', async () => {
+      const spaceUrl = (new URL(`/space/${alice.space1.id}`, serverUrl))
+        .toString()
+      const response = await alice.rootClient.request({
         url: spaceUrl, method: 'GET', action: 'GET'
       })
 
@@ -85,10 +99,10 @@ describe('Spaces', () => {
       assert.match(response.headers.get('content-type'), /application\/json/)
       const spaceDescription = response.data
       assert.deepStrictEqual(spaceDescription, {
-        id: '426e7db8-26b5-4fdc-8068-9dcb948fd291',
-        type: [ 'Space' ],
-        name: 'Example space #1',
-        controller: 'did:key:z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD'
+        id: alice.space1.id,
+        name: "Alice's Space #1 (Home)",
+        type: ['Space'],
+        controller: alice.did
       })
     })
   })

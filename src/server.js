@@ -5,7 +5,7 @@ import fastifyStatic from '@fastify/static'
 import handlebars from 'handlebars'
 import path from 'node:path'
 
-import { initSpaceRoutes, initSpacesRepositoryRoutes } from './routes.js'
+import { initCollectionRoutes, initSpaceRoutes, initSpacesRepositoryRoutes } from './routes.js'
 import { SPEC_URL } from '../config.default.js'
 
 // TODO: https://github.com/fastify/fastify-helmet
@@ -41,6 +41,7 @@ export function createApp ({ serverUrl } = {}) {
 
   fastify.register(initSpacesRepositoryRoutes)
   fastify.register(initSpaceRoutes)
+  fastify.register(initCollectionRoutes)
 
   return fastify
 }
