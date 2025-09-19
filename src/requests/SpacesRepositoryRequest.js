@@ -4,6 +4,7 @@ import { mkdir } from 'node:fs/promises'
 import { v4 as uuidv4 } from 'uuid'
 import { SPEC_URL } from '../../config.default.js'
 import { handleZcapVerify } from '../routes.js'
+import { SpaceControllerMismatchError } from '../errors.js'
 
 export class SpacesRepositoryRequest {
   /**
@@ -20,16 +21,11 @@ export class SpacesRepositoryRequest {
 
     // Check to make sure the DID that signed the zcap matches controller
     const [ zcapSigningDid ] = keyId.split('#')
-    if (zcapSigningDid !== body.controller)
-      return reply.status(400).type('application/problem+json')
-        .send({
-          type: `${SPEC_URL}#create-space-errors`,
-          title: 'Invalid Create Space request.',
-          errors: [{
-            detail: 'Authorization capability signing DID' +
-              ` ("${zcapSigningDid}") does not match the controller in the body ("${body.controller}").`
-          }]
-        })
+    if (zcapSigningDid !== body.controller) {
+      throw new SpaceControllerMismatchError({
+        zcapSigningDid, controller: body.controller
+      })
+    }
 
     // TODO: use a uuid v5 or another hash based id here instead
     const spaceId = body.id || uuidv4()
