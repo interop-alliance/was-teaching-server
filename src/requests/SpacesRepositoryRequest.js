@@ -2,7 +2,6 @@ import { FlexDocStore } from 'flex-docstore'
 import path from 'node:path'
 import { mkdir } from 'node:fs/promises'
 import { v4 as uuidv4 } from 'uuid'
-import { SPEC_URL } from '../../config.default.js'
 import { handleZcapVerify } from '../routes.js'
 import { SpaceControllerMismatchError } from '../errors.js'
 
@@ -39,10 +38,8 @@ export class SpacesRepositoryRequest {
       specErrorSection: 'create-space-errors', reply })
 
     // zCap checks out, continue
-    const storage = await ensureSpaceStorage({ spaceId })
-    await storage.put('.space', spaceDescription)
-
-    console.log('CREATED:', spaceDescription)
+    const spaceStorage = await ensureSpaceStorage({ spaceId })
+    await spaceStorage.put('.space', spaceDescription)
 
     const createdSpaceUrl = (new URL(`/spaces/${spaceId}`, serverUrl)).toString()
     reply.header('Location', createdSpaceUrl)

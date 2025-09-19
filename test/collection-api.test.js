@@ -45,4 +45,27 @@ describe('Collections API', () => {
     assert.equal(expectedError.response.status, 404)
     assert.match(expectedError.response.headers.get('content-type'), /application\/problem\+json/)
   })
+
+  it('[root] create collection via POST', async () => {
+    const body = {
+      id: 'credentials', name: 'Verifiable Credentials'
+    }
+    const response = await alice.rootClient.request({
+      url: (new URL(`/space/${alice.space1.id}/`, serverUrl)).toString(),
+      method: 'POST', action: 'POST', json: body
+    })
+
+    console.log(response.data)
+
+    assert.equal(response.status, 201)
+
+    const created = response.data
+    assert.deepStrictEqual(created, {
+      id: 'credentials',
+      name: 'Verifiable Credentials',
+      type: ['Collection']
+    })
+    assert.match(response.headers.get('content-type'), /application\/json/)
+    assert.equal(response.headers.get('location'), `${serverUrl}/space/${alice.space1.id}/${body.id}`)
+  })
 })
