@@ -70,6 +70,24 @@ export async function initCollectionRoutes (app, options) {
   app.post('/space/:spaceId/', SpaceRequest.post)
 }
 
+export async function initResourceRoutes (app, options) {
+  app.setErrorHandler(handleError)
+
+  // All Resource routes require auth-related headers
+  // Check headers are present (throw 401 otherwise)
+  app.addHook('onRequest', requireAuthHeaders)
+  // Parse the relevant request headers, set the request.zcap parameter
+  app.addHook('onRequest', parseAuthHeaders)
+
+  // Create Resource
+  app.post('/space/:spaceId/:collectionId',
+    async (request, reply) => reply.redirect('/space/:spaceId/:collectionId/'))
+  app.post('/space/:spaceId/:collectionId/', SpaceRequest.post)
+
+  // Get Resource
+  app.get('/space/:spaceId/:collectionId/:resourceId', async (request, reply) => {})
+}
+
 /**
  * Adds a request.zcap property, which contains the three parsed auth-related
  * request headers.
@@ -131,7 +149,7 @@ export async function requireAuthHeaders (request, reply) {
 
 export async function handleZcapVerify ({
   url, allowedTarget, allowedAction, method, headers, serverUrl, spaceController,
-  requestName, specErrorSection, reply
+  requestName
 }) {
   let zcapVerifyResult
   try {
@@ -140,7 +158,7 @@ export async function handleZcapVerify ({
   } catch (err) {
     throw new AuthVerificationError({ requestName, cause: err })
   }
-  console.log('VERIFY RESULT:', zcapVerifyResult)
+  // console.log('VERIFY RESULT:', zcapVerifyResult)
 
   if (!zcapVerifyResult.verified) {
     throw new UnauthorizedError({ requestName })

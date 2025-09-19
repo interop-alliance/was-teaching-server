@@ -9,6 +9,15 @@ export class SpaceNotFoundError extends Error {
   }
 }
 
+export class CollectionNotFoundError extends Error {
+  constructor ({ requestName } = {}, ...params) {
+    super(params)
+    this.title = `Invalid ${requestName || 'Collection'} request`
+    this.detail = 'Collection not found or invalid authorization.'
+    this.statusCode = 404
+  }
+}
+
 export class UnauthorizedError extends Error {
   constructor ({ requestName }, ...params) {
     super(params)

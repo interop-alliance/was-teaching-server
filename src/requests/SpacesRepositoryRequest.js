@@ -34,8 +34,7 @@ export class SpacesRepositoryRequest {
     const allowedTarget = (new URL(`/spaces/`, serverUrl)).toString()
     const allowedAction = 'POST'
     await handleZcapVerify({ url, allowedTarget, allowedAction, method, headers,
-      serverUrl, spaceController: body.controller, requestName: 'Create Space',
-      specErrorSection: 'create-space-errors', reply })
+      serverUrl, spaceController: body.controller, requestName: 'Create Space' })
 
     // zCap checks out, continue
     const spaceStorage = await ensureSpaceStorage({ spaceId })
