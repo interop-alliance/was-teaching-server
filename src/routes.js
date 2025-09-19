@@ -67,7 +67,7 @@ export async function initCollectionRoutes (app, options) {
 
   // Create Collection
   app.post('/space/:spaceId', async (request, reply) => reply.redirect('/space/:spaceId/'))
-  app.post('/space/:spaceId/', CollectionRequest.post)
+  app.post('/space/:spaceId/', SpaceRequest.post)
 }
 
 /**
