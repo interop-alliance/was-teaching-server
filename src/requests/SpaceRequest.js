@@ -59,11 +59,11 @@ export class SpaceRequest {
     const allowedTarget = (new URL(`/space/${spaceId}/`, serverUrl)).toString()
     const allowedAction = 'POST'
     await handleZcapVerify({ url, allowedTarget, allowedAction, method, headers,
-      serverUrl, spaceController, requestName: 'Create Collection',
-      specErrorSection: 'create-collection-errors', reply })
+      serverUrl, spaceController })
 
     // zCap checks out, continue
     // TODO: use a uuid v5 or another hash based id here instead
+    // TODO: Protect against .space resource id collision
     const collectionId = body.id || uuidv4()
     const { name } = body
     const collectionDescription = { id: collectionId, type: ['Collection'], name }
