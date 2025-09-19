@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { FlexDocStore } from 'flex-docstore'
-import { SPEC_URL } from '../../config.default.js'
 import { handleZcapVerify } from '../routes.js'
+import { SpaceNotFoundError } from '../errors.js'
 
 export class SpaceRequest {
   /**
@@ -19,14 +19,7 @@ export class SpaceRequest {
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await getSpace({ spaceId })
     if (!spaceDescription) {
-      return reply.status(404).type('application/problem+json')
-        .send({
-          type: `${SPEC_URL}#read-space-errors`,
-          title: 'Invalid Get Space request.',
-          errors: [{
-            detail: 'Space not found or invalid authorization.',
-          }]
-        })
+      throw new SpaceNotFoundError({ requestName: 'Get Space' })
     }
     const spaceController = spaceDescription.controller
 

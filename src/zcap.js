@@ -13,7 +13,7 @@ didKeyDriver.use({
 export async function verifyZcap ({
   url, allowedTarget, allowedAction, method, headers, serverUrl, spaceController
 }) {
-  console.log('HEADERS:', headers)
+  // console.log('HEADERS:', headers)
   const fullRequestUrl = (new URL(url, serverUrl)).toString()
   const expected = {
     expectedAction: allowedAction,

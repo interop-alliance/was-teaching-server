@@ -3,6 +3,7 @@ import { FlexDocStore } from 'flex-docstore'
 import { SPEC_URL } from '../../config.default.js'
 import { handleZcapVerify } from '../routes.js'
 import { getSpace } from './SpaceRequest.js'
+import { SpaceNotFoundError } from '../errors.js'
 
 export class CollectionRequest {
   /**
@@ -20,14 +21,7 @@ export class CollectionRequest {
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await getSpace({ spaceId })
     if (!spaceDescription) {
-      return reply.status(404).type('application/problem+json')
-        .send({
-          type: `${SPEC_URL}#create-collection-errors`,
-          title: 'Invalid Create Collection request.',
-          errors: [{
-            detail: 'Space not found or invalid authorization.',
-          }]
-        })
+      throw new SpaceNotFoundError({ requestName: 'Create Collection' })
     }
     const spaceController = spaceDescription.controller
 

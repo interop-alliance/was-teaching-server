@@ -5,8 +5,17 @@ import { SpaceRequest } from './requests/SpaceRequest.js'
 import { CollectionRequest } from './requests/CollectionRequest.js'
 import { SPEC_URL } from '../config.default.js'
 import { verifyZcap } from './zcap.js'
+import {
+  AuthHeaderParseError,
+  AuthVerificationError,
+  handleError,
+  MissingAuthError, MissingKeyIdError,
+  UnauthorizedError
+} from './errors.js'
 
 export async function initSpacesRepositoryRoutes (app, options) {
+  app.setErrorHandler(handleError)
+
   // All SpacesRepository routes require auth-related headers
   // Check headers are present (throw 401 otherwise)
   app.addHook('onRequest', requireAuthHeaders)
@@ -24,6 +33,8 @@ export async function initSpacesRepositoryRoutes (app, options) {
 }
 
 export async function initSpaceRoutes (app, options) {
+  app.setErrorHandler(handleError)
+
   // All Space routes require auth-related headers
   // Check headers are present (throw 401 otherwise)
   app.addHook('onRequest', requireAuthHeaders)
@@ -46,6 +57,8 @@ export async function initSpaceRoutes (app, options) {
 }
 
 export async function initCollectionRoutes (app, options) {
+  app.setErrorHandler(handleError)
+
   // All Collection routes require auth-related headers
   // Check headers are present (throw 401 otherwise)
   app.addHook('onRequest', requireAuthHeaders)
@@ -99,42 +112,20 @@ export async function parseAuthHeaders (request, reply) {
     request.zcap.invocation = headers['capability-invocation']
     request.zcap.digest = headers['digest']
 
-    console.log('PARAMS:', request.zcap)
+    // console.log('PARAMS:', request.zcap)
   } catch(err) {
-    console.error(err)
-    return reply.status(400).type('application/problem+json')
-      .send({
-        type: `${SPEC_URL}#authorization`,
-        title: 'Invalid headers.',
-        errors: [{
-          detail: 'Error parsing Authorization, Capability-Invocation, Digest headers.',
-        }]
-      })
+    throw new AuthHeaderParseError({ cause: err })
   }
   // Ensure keyId was parsed from the Authorization header
   if (!params?.keyId) {
-    return reply.status(400).type('application/problem+json')
-      .send({
-        type: `${SPEC_URL}#authorization`,
-        title: 'Invalid Authorization header.',
-        errors: [{
-          detail: 'Authorization header is missing the keyId parameter.',
-        }]
-      })
+    throw new MissingKeyIdError()
   }
 }
 
 export async function requireAuthHeaders (request, reply) {
   const { headers } = request
   if (!(headers['authorization'] && headers['capability-invocation'])) {
-    return reply.status(401).type('application/problem+json')
-      .send({
-        type: `${SPEC_URL}#authorization`,
-        title: 'Invalid request.',
-        errors: [{
-          detail: 'Authorization and Capability-Invocation headers are required.',
-        }]
-      })
+    throw new MissingAuthError()
   }
 }
 
@@ -147,26 +138,11 @@ export async function handleZcapVerify ({
     zcapVerifyResult = await verifyZcap({ url, allowedTarget, allowedAction,
       method, headers, serverUrl, spaceController })
   } catch (err) {
-    console.warn('Error verifying zcap:', err)
-    return reply.status(400).type('application/problem+json')
-      .send({
-        type: `${SPEC_URL}#${specErrorSection}`,
-        title: `Invalid ${requestName} request.`,
-        errors: [{
-          detail: `Error verifying authorization: "${err.toString()}"`
-        }]
-      })
+    throw new AuthVerificationError({ requestName, cause: err })
   }
   console.log('VERIFY RESULT:', zcapVerifyResult)
 
   if (!zcapVerifyResult.verified) {
-    return reply.status(404).type('application/problem+json')
-      .send({
-        type: `${SPEC_URL}#{specErrorSection}`,
-        title: `Invalid ${requestName} request.`,
-        errors: [{
-          detail: 'URL not found or invalid authorization.',
-        }]
-      })
+    throw new UnauthorizedError({ requestName })
   }
 }

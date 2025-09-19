@@ -8,8 +8,6 @@ import assert from 'node:assert'
 
 import { createApp } from '../src/server.js'
 import { client, zcapClients } from './helpers.js'
-import { ZcapClient } from '@digitalcredentials/ezcap'
-import { Ed25519Signature2020 } from '@digitalcredentials/ed25519-signature-2020'
 
 describe('Spaces', () => {
   let fastify, serverUrl, alice, bob, aliceDelegatedApp
@@ -81,8 +79,11 @@ describe('Spaces', () => {
       } catch (error) {
         expectedError = error
       }
+
       assert.equal(expectedError.response.status, 404)
-      assert.match(expectedError.response.headers.get('content-type'), /application\/problem\+json/)
+      assert.equal(expectedError.data.title, 'Invalid Get Space request')
+      assert.match(expectedError.response.headers.get('content-type'),
+        /application\/problem\+json/)
     })
 
     it('[root] read space via GET with proper authorization', async () => {
