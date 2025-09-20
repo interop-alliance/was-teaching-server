@@ -2,8 +2,6 @@ import { parseSignatureHeader } from '@digitalbazaar/http-signature-header'
 
 import { SpacesRepositoryRequest } from './requests/SpacesRepositoryRequest.js'
 import { SpaceRequest } from './requests/SpaceRequest.js'
-import { CollectionRequest } from './requests/CollectionRequest.js'
-import { SPEC_URL } from '../config.default.js'
 import { verifyZcap } from './zcap.js'
 import {
   AuthHeaderParseError,
@@ -12,6 +10,8 @@ import {
   MissingAuthError, MissingKeyIdError,
   UnauthorizedError
 } from './errors.js'
+import { ResourceRequest } from './requests/ResourceRequest.js'
+import { CollectionRequest } from './requests/CollectionRequest.js'
 
 export async function initSpacesRepositoryRoutes (app, options) {
   app.setErrorHandler(handleError)
@@ -82,10 +82,10 @@ export async function initResourceRoutes (app, options) {
   // Create Resource
   app.post('/space/:spaceId/:collectionId',
     async (request, reply) => reply.redirect('/space/:spaceId/:collectionId/'))
-  app.post('/space/:spaceId/:collectionId/', SpaceRequest.post)
+  app.post('/space/:spaceId/:collectionId/', CollectionRequest.post)
 
   // Get Resource
-  app.get('/space/:spaceId/:collectionId/:resourceId', async (request, reply) => {})
+  app.get('/space/:spaceId/:collectionId/:resourceId', ResourceRequest.get)
 }
 
 /**

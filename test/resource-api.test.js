@@ -31,7 +31,8 @@ describe('Resource API', () => {
     assert.match(response.headers.get('content-type'), /application\/problem\+json/)
   })
 
-  it.skip('GET /space/:spaceId/:collectionId/:resourceId should 404 error on not found space id', async () => {
+  // TODO: make sure all iterations return ResourceNotFound error
+  it('GET /space/:spaceId/:collectionId/:resourceId should 404 error on not found space id', async () => {
     const url = (new URL('/space/space-id-that-does-not-exist/unknown-collection/unknown-resource', serverUrl))
       .toString()
     let expectedError
@@ -44,26 +45,39 @@ describe('Resource API', () => {
       expectedError = error
     }
     assert.equal(expectedError.response.status, 404)
-    // assert.match(expectedError.response.headers.get('content-type'), /application\/problem\+json/)
+    assert.match(expectedError.response.headers.get('content-type'),
+      /application\/problem\+json/)
   })
 
-  it.skip('[root] create collection via POST', async () => {
+  it('[root] POST and GET Resource with proper authorization', async () => {
+    // First, create the Resource
     const body = {
-      id: 'credentials', name: 'Verifiable Credentials'
+      id: 'sample-resource', name: 'Sample Verifiable Credential'
     }
     const response = await alice.rootClient.request({
-      url: (new URL(`/space/${alice.space1.id}/`, serverUrl)).toString(),
+      url: (new URL(`/space/${alice.space1.id}/credentials/`, serverUrl)).toString(),
       method: 'POST', action: 'POST', json: body
     })
     assert.equal(response.status, 201)
 
     const created = response.data
     assert.deepStrictEqual(created, {
-      id: 'credentials',
-      name: 'Verifiable Credentials',
-      type: ['Collection']
+      id: 'sample-resource', name: 'Sample Verifiable Credential'
     })
+    const resourceUrl = (new URL(`/space/${alice.space1.id}/credentials/sample-resource`,
+      serverUrl)).toString()
     assert.match(response.headers.get('content-type'), /application\/json/)
-    assert.equal(response.headers.get('location'), `${serverUrl}/space/${alice.space1.id}/${body.id}`)
+    assert.equal(response.headers.get('location'), resourceUrl)
+
+    // Next, GET the created resource
+    const fetchResourceResponse = await alice.rootClient.request({
+      url: resourceUrl, method: 'GET', action: 'GET'
+    })
+    assert.equal(fetchResourceResponse.status, 200)
+    assert.match(fetchResourceResponse.headers.get('content-type'),
+      /application\/json/)
+    assert.deepStrictEqual(fetchResourceResponse.data, {
+      id: 'sample-resource', name: 'Sample Verifiable Credential'
+    })
   })
 })
