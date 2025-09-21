@@ -3,12 +3,31 @@ import { verifyCapabilityInvocation } from '@interop-alliance/http-signature-zca
 import { Ed25519VerificationKey2020 } from '@digitalcredentials/ed25519-verification-key-2020'
 import { Ed25519Signature2020 } from '@digitalcredentials/ed25519-signature-2020'
 import * as didKey from '@digitalcredentials/did-method-key'
+import { AuthVerificationError, UnauthorizedError } from './errors.js'
 
 const didKeyDriver = didKey.driver()
 didKeyDriver.use({
   multibaseMultikeyHeader: 'z6Mk',
   fromMultibase: Ed25519VerificationKey2020.from
 });
+
+export async function handleZcapVerify ({
+  url, allowedTarget, allowedAction, method, headers, serverUrl, spaceController,
+  requestName
+}) {
+  let zcapVerifyResult
+  try {
+    zcapVerifyResult = await verifyZcap({ url, allowedTarget, allowedAction,
+      method, headers, serverUrl, spaceController })
+  } catch (err) {
+    throw new AuthVerificationError({ requestName, cause: err })
+  }
+  // console.log('VERIFY RESULT:', zcapVerifyResult)
+
+  if (!zcapVerifyResult.verified) {
+    throw new UnauthorizedError({ requestName })
+  }
+}
 
 export async function verifyZcap ({
   url, allowedTarget, allowedAction, method, headers, serverUrl, spaceController

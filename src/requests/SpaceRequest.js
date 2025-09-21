@@ -1,9 +1,7 @@
-import path from 'node:path'
-import { mkdir } from 'node:fs/promises'
-import { FlexDocStore } from 'flex-docstore'
-import { handleZcapVerify } from '../routes.js'
-import { SpaceNotFoundError } from '../errors.js'
 import { v4 as uuidv4 } from 'uuid'
+import { handleZcapVerify } from '../zcap.js'
+import { SpaceNotFoundError } from '../errors.js'
+import { ensureCollectionStorage, getSpace } from '../storage.js'
 
 export class SpaceRequest {
   /**
@@ -27,10 +25,8 @@ export class SpaceRequest {
 
     // Perform zCap signature verification (throws appropriate errors)
     const allowedTarget = (new URL(`/space/${spaceId}`, serverUrl)).toString()
-    const allowedAction = 'GET'
-    await handleZcapVerify({ url, allowedTarget, allowedAction, method, headers,
-      serverUrl, spaceController, requestName: 'Get Space',
-      specErrorSection: 'read-space-errors', reply })
+    await handleZcapVerify({ url, allowedTarget, allowedAction: 'GET', method,
+      headers, serverUrl, spaceController, requestName: 'Get Space' })
 
     // zCap checks out, continue
     return reply.status(200).send(spaceDescription)
@@ -57,9 +53,8 @@ export class SpaceRequest {
 
     // Perform zCap signature verification (throws appropriate errors)
     const allowedTarget = (new URL(`/space/${spaceId}/`, serverUrl)).toString()
-    const allowedAction = 'POST'
-    await handleZcapVerify({ url, allowedTarget, allowedAction, method, headers,
-      serverUrl, spaceController })
+    await handleZcapVerify({ url, allowedTarget, allowedAction: 'POST', method,
+      headers, serverUrl, spaceController })
 
     // zCap checks out, continue
     // TODO: use a uuid v5 or another hash based id here instead
@@ -75,32 +70,6 @@ export class SpaceRequest {
     reply.header('Location', createdUrl)
     return reply.status(201).send(collectionDescription)
   }
-}
-
-export async function getSpace ({ spaceId }) {
-  const spacesRepository = path.join(import.meta.dirname, '..', '..', 'data', 'spaces')
-  const spaceDir = path.join(spacesRepository, spaceId)
-  const storage = FlexDocStore.using('files', { dir: spaceDir, extension: '.json' })
-
-  return storage.get('.space')
-}
-
-export async function ensureCollectionStorage ({ spaceId, collectionId }) {
-  // Create a directory for the incoming collection
-  const spacesRepository = path.join(import.meta.dirname, '..', '..', 'data', 'spaces')
-  const collectionDir = path.join(spacesRepository, spaceId, collectionId)
-
-  try {
-    await mkdir(collectionDir)
-  } catch (err) {
-    if (err.code === 'EEXIST') {
-      console.log(`Collection "${collectionId}" already exists, overwriting."`)
-    } else {
-      console.log('Error creating directory', err)
-      throw err // http 500
-    }
-  }
-  return FlexDocStore.using('files', { dir: collectionDir, collection: collectionId, extension: '.json' })
 }
 
 /**

@@ -84,6 +84,17 @@ export class SpaceControllerMismatchError extends Error {
   }
 }
 
+export class StorageError extends Error {
+  constructor ({ cause }, ...params) {
+    super(params)
+    this.cause = cause
+    this.title = `Storage Error: ${cause.message}`
+    console.warn('Storage Error', cause)
+    this.detail = cause.message
+    this.statusCode = 500
+  }
+}
+
 export async function handleError (error, request, reply) {
   return reply
     .status(error.statusCode || 500)

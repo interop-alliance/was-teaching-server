@@ -1,8 +1,6 @@
-import path from 'node:path'
-import { FlexDocStore } from 'flex-docstore'
-import { handleZcapVerify } from '../routes.js'
-import { getSpace } from './SpaceRequest.js'
-import { CollectionNotFoundError, SpaceNotFoundError } from '../errors.js'
+import { handleZcapVerify } from '../zcap.js'
+import { getCollectionStorage, getSpace } from '../storage.js'
+import { CollectionNotFoundError, ResourceNotFoundError, SpaceNotFoundError } from '../errors.js'
 
 export class ResourceRequest {
   /**
@@ -15,7 +13,7 @@ export class ResourceRequest {
    */
   static async get (request, reply) {
     const { params: { spaceId, collectionId, resourceId },
-      url, method, headers, body } = request
+      url, method, headers } = request
     const { serverUrl } = this
 
     // Fetch the space by id, from storage. Needed for signature verification.
@@ -28,7 +26,6 @@ export class ResourceRequest {
     // Fetch collection by id
     const collectionStorage = getCollectionStorage({ spaceId, collectionId })
     const collectionDescription = await collectionStorage.get('.collection')
-
     if (!collectionDescription) {
       throw new CollectionNotFoundError({ requestName: 'Get Resource' })
     }
@@ -36,9 +33,8 @@ export class ResourceRequest {
     // Perform zCap signature verification (throws appropriate errors)
     const allowedTarget = (new URL(`/space/${spaceId}/${collectionId}/${resourceId}`,
       serverUrl)).toString()
-    const allowedAction = 'GET'
-    await handleZcapVerify({ url, allowedTarget, allowedAction, method, headers,
-      serverUrl, spaceController })
+    await handleZcapVerify({ url, allowedTarget, allowedAction: 'GET', method,
+      headers, serverUrl, spaceController })
 
     // zCap checks out, continue
     const resource = await collectionStorage.get(resourceId)
@@ -49,14 +45,4 @@ export class ResourceRequest {
 
     return reply.status(200).send(resource)
   }
-}
-
-export function getCollectionStorage ({ spaceId, collectionId }) {
-  const spacesRepository = path.join(import.meta.dirname, '..', '..', 'data', 'spaces')
-  const collectionDir = path.join(spacesRepository, spaceId, collectionId)
-  return FlexDocStore.using('files', { dir: collectionDir, collection: collectionId, extension: '.json' })
-}
-
-export async function resourceStorage ({ spaceId, collectionId }) {
-
 }

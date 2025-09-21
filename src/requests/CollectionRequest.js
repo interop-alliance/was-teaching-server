@@ -1,9 +1,8 @@
-import path from 'node:path'
-import { FlexDocStore } from 'flex-docstore'
-import { handleZcapVerify } from '../routes.js'
+import { handleZcapVerify } from '../zcap.js'
 import { getSpaceController } from './SpaceRequest.js'
-import { CollectionNotFoundError, SpaceNotFoundError } from '../errors.js'
+import { CollectionNotFoundError } from '../errors.js'
 import { v4 as uuidv4 } from 'uuid'
+import { getCollectionStorage } from '../storage.js'
 
 export class CollectionRequest {
   /**
@@ -17,22 +16,22 @@ export class CollectionRequest {
   static async post (request, reply) {
     const { params: { spaceId, collectionId }, url, method, headers, body } = request
     const { serverUrl } = this
+    const requestName = 'Create Resource'
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceController = await getSpaceController({ spaceId, requestName: 'Create Resource' })
+    const spaceController = await getSpaceController({ spaceId, requestName })
 
     // Fetch collection by id
     const collectionStorage = getCollectionStorage({ spaceId, collectionId })
     const collectionDescription = await collectionStorage.get('.collection')
     if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName: 'Create Resource' })
+      throw new CollectionNotFoundError({ requestName })
     }
 
     // Perform zCap signature verification (throws appropriate errors)
     const allowedTarget = (new URL(`/space/${spaceId}/${collectionId}/`, serverUrl)).toString()
-    const allowedAction = 'POST'
-    await handleZcapVerify({ url, allowedTarget, allowedAction, method, headers,
-      serverUrl, spaceController })
+    await handleZcapVerify({ url, allowedTarget, allowedAction: 'POST', method,
+      headers, serverUrl, spaceController })
 
     // zCap checks out, continue
     // TODO: use a uuid v5 or another hash based id here instead
@@ -53,21 +52,21 @@ export class CollectionRequest {
   static async get (request, reply) {
     const { params: { spaceId, collectionId }, url, method, headers } = request
     const { serverUrl } = this
+    const requestName = 'Get Collection'
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceController = await getSpaceController({ spaceId, requestName: 'Get Collection' })
+    const spaceController = await getSpaceController({ spaceId, requestName })
 
     // Perform zCap signature verification (throws appropriate errors)
     const allowedTarget = (new URL(`/space/${spaceId}/${collectionId}`, serverUrl)).toString()
-    const allowedAction = 'GET'
-    await handleZcapVerify({ url, allowedTarget, allowedAction, method, headers,
-      serverUrl, spaceController })
+    await handleZcapVerify({ url, allowedTarget, allowedAction: 'GET', method,
+      headers, serverUrl, spaceController })
 
     // Fetch collection by id
     const collectionStorage = getCollectionStorage({ spaceId, collectionId })
     const collectionDescription = await collectionStorage.get('.collection')
     if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName: 'Get Collection' })
+      throw new CollectionNotFoundError({ requestName })
     }
 
     return reply.status(200).type('application/json')
@@ -81,21 +80,21 @@ export class CollectionRequest {
   static async list (request, reply) {
     const { params: { spaceId, collectionId }, url, method, headers } = request
     const { serverUrl } = this
+    const requestName = 'List Collection'
 
-    const spaceController = await getSpaceController({ spaceId, requestName: 'List Collection' })
+    const spaceController = await getSpaceController({ spaceId, requestName })
 
     // Fetch collection by id
     const collectionStorage = getCollectionStorage({ spaceId, collectionId })
     const collectionDescription = await collectionStorage.get('.collection')
     if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName: 'Create Resource' })
+      throw new CollectionNotFoundError({ requestName })
     }
 
     // Perform zCap signature verification (throws appropriate errors)
     const allowedTarget = (new URL(`/space/${spaceId}/${collectionId}/`, serverUrl)).toString()
-    const allowedAction = 'GET'
-    await handleZcapVerify({ url, allowedTarget, allowedAction, method, headers,
-      serverUrl, spaceController })
+    await handleZcapVerify({ url, allowedTarget, allowedAction: 'GET', method,
+      headers, serverUrl, spaceController })
 
     const collectionItems = await collectionStorage.allDocs()
 
@@ -104,8 +103,4 @@ export class CollectionRequest {
   }
 }
 
-export function getCollectionStorage ({ spaceId, collectionId }) {
-  const spacesRepository = path.join(import.meta.dirname, '..', '..', 'data', 'spaces')
-  const collectionDir = path.join(spacesRepository, spaceId, collectionId)
-  return FlexDocStore.using('files', { dir: collectionDir, collection: collectionId, extension: '.json' })
-}
+
