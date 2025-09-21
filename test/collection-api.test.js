@@ -65,4 +65,26 @@ describe('Collections API', () => {
     assert.match(response.headers.get('content-type'), /application\/json/)
     assert.equal(response.headers.get('location'), `${serverUrl}/space/${alice.space1.id}/${body.id}`)
   })
+
+  it('[root] list collection items via GET :collectionId/', async () => {
+    const response = await alice.rootClient.request({
+      url: (new URL(`/space/${alice.space1.id}/credentials/`, serverUrl)).toString(),
+      method: 'GET', action: 'GET'
+    })
+    assert.equal(response.status, 200)
+    console.log(response.data)
+  })
+
+  it('[root] get collection description via GET :collectionId', async () => {
+    const response = await alice.rootClient.request({
+      url: (new URL(`/space/${alice.space1.id}/credentials`, serverUrl)).toString(),
+      method: 'GET', action: 'GET'
+    })
+    assert.equal(response.status, 200)
+    assert.deepStrictEqual(response.data, {
+      id: 'credentials',
+      name: 'Verifiable Credentials',
+      type: ['Collection']
+    })
+  })
 })
