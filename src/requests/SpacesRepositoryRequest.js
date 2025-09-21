@@ -1,9 +1,7 @@
-import { FlexDocStore } from 'flex-docstore'
-import path from 'node:path'
-import { mkdir } from 'node:fs/promises'
 import { v4 as uuidv4 } from 'uuid'
-import { handleZcapVerify } from '../routes.js'
+import { handleZcapVerify } from '../zcap.js'
 import { SpaceControllerMismatchError } from '../errors.js'
+import { ensureSpaceStorage } from '../storage.js'
 
 export class SpacesRepositoryRequest {
   /**
@@ -32,9 +30,8 @@ export class SpacesRepositoryRequest {
 
     // Perform zCap signature verification (throws appropriate errors)
     const allowedTarget = (new URL(`/spaces/`, serverUrl)).toString()
-    const allowedAction = 'POST'
-    await handleZcapVerify({ url, allowedTarget, allowedAction, method, headers,
-      serverUrl, spaceController: body.controller, requestName: 'Create Space' })
+    await handleZcapVerify({ url, allowedTarget, allowedAction: 'POST', method,
+      headers, serverUrl, spaceController: body.controller, requestName: 'Create Space' })
 
     // zCap checks out, continue
     const spaceStorage = await ensureSpaceStorage({ spaceId })
@@ -46,18 +43,4 @@ export class SpacesRepositoryRequest {
   }
 }
 
-export async function ensureSpaceStorage ({ spaceId }) {
-  // Create a directory for the incoming space
-  const spacesRepository = path.join(import.meta.dirname, '..', '..', 'data', 'spaces')
-  const spaceDir = path.join(spacesRepository, spaceId)
-  try {
-    await mkdir(spaceDir)
-  } catch (err) {
-    if (err.code === 'EEXIST') {
-      console.log(`Space "${spaceId}" already exists, overwriting."`)
-    } else {
-      throw err // http 500
-    }
-  }
-  return FlexDocStore.using('files', { dir: spaceDir, extension: '.json' })
-}
+
