@@ -102,3 +102,17 @@ export async function ensureCollectionStorage ({ spaceId, collectionId }) {
   }
   return FlexDocStore.using('files', { dir: collectionDir, collection: collectionId, extension: '.json' })
 }
+
+/**
+ * Load space description object from storage to get space controller.
+ * TODO: Cache this
+ * @param spaceId {string}
+ * @returns {Promise<string>}
+ */
+export async function getSpaceController ({ spaceId, requestName }) {
+  const spaceDescription = await getSpace({ spaceId })
+  if (!spaceDescription) {
+    throw new SpaceNotFoundError({ requestName })
+  }
+  return spaceDescription.controller
+}
