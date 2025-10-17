@@ -76,7 +76,9 @@ export class SpaceRequest {
  * Load space description object from storage to get space controller.
  * TODO: Cache this
  * @param spaceId {string}
- * @returns {Promise<string>}
+ * @param requestName {string}
+ *
+ * @returns {Promise<string>} Controller DID for a given space.
  */
 export async function getSpaceController ({ spaceId, requestName }) {
   const spaceDescription = await getSpace({ spaceId })
