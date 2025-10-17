@@ -11,9 +11,36 @@ import { SPEC_URL } from '../config.default.js'
 // TODO: https://github.com/fastify/fastify-helmet
 // TODO: https://github.com/fastify/fastify-env
 
+/**
+ * Set up a route constraint that will allow custom routing based on
+ * incoming content type.
+ * Usage:
+ * app.post('/my-route', { constraints: { 'content-type': 'application/xml' } }...
+ */
+const contentTypeStrategy = {
+  name: 'content-type',
+  storage: function () {
+    let contentTypes = {};
+    return {
+      get: (contentType) => contentTypes[contentType] || null,
+      set: (contentType, store) => { contentTypes[contentType] = store },
+      del: (contentType) => { delete contentTypes[contentType] },
+      empty: () => { contentTypes = {} }
+    };
+  },
+  deriveConstraint: (req, ctx) => req.headers['content-type']
+}
+
 export function createApp ({ serverUrl } = {}) {
   // By default uses 'pino' logger
-  const fastify = Fastify({ logger: true })
+  const fastify = Fastify({
+    logger: true,
+    routerOptions: {
+      constraints: {
+        'content-type': contentTypeStrategy
+      }
+    }
+  })
 
   fastify.decorate('serverUrl', serverUrl)
 
