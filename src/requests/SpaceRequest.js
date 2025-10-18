@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { SpaceNotFoundError } from '../errors.js'
-import { ensureCollectionStorage, getSpace } from '../storage.js'
+import { createCollection, getSpaceDescription } from '../storage.js'
 
 export class SpaceRequest {
   /**
@@ -17,7 +17,7 @@ export class SpaceRequest {
     const { serverUrl } = this
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await getSpace({ spaceId })
+    const spaceDescription = await getSpaceDescription({ spaceId })
     if (!spaceDescription) {
       throw new SpaceNotFoundError({ requestName: 'Get Space' })
     }
@@ -45,7 +45,7 @@ export class SpaceRequest {
     const { serverUrl } = this
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await getSpace({ spaceId })
+    const spaceDescription = await getSpaceDescription({ spaceId })
     if (!spaceDescription) {
       throw new SpaceNotFoundError({ requestName: 'Create Collection' })
     }
@@ -63,8 +63,7 @@ export class SpaceRequest {
     const { name } = body
     const collectionDescription = { id: collectionId, type: ['Collection'], name }
 
-    const collectionStorage = await ensureCollectionStorage({ spaceId, collectionId })
-    await collectionStorage.put('.collection', collectionDescription)
+    await createCollection({ spaceId, collectionId, collectionDescription })
 
     const createdUrl = (new URL(`/space/${spaceId}/${collectionId}`, serverUrl)).toString()
     reply.header('Location', createdUrl)
@@ -81,7 +80,7 @@ export class SpaceRequest {
  * @returns {Promise<string>} Controller DID for a given space.
  */
 export async function getSpaceController ({ spaceId, requestName }) {
-  const spaceDescription = await getSpace({ spaceId })
+  const spaceDescription = await getSpaceDescription({ spaceId })
   if (!spaceDescription) {
     throw new SpaceNotFoundError({ requestName })
   }

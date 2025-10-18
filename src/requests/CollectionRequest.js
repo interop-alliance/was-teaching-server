@@ -2,7 +2,7 @@ import { handleZcapVerify } from '../zcap.js'
 import { getSpaceController } from './SpaceRequest.js'
 import { CollectionNotFoundError } from '../errors.js'
 import { v4 as uuidv4 } from 'uuid'
-import { getCollectionStorage } from '../storage.js'
+import { createResource, getCollectionDescription, listCollectionItems } from '../storage.js'
 
 export class CollectionRequest {
   /**
@@ -22,8 +22,7 @@ export class CollectionRequest {
     const spaceController = await getSpaceController({ spaceId, requestName })
 
     // Fetch collection by id
-    const collectionStorage = getCollectionStorage({ spaceId, collectionId })
-    const collectionDescription = await collectionStorage.get('.collection')
+    const collectionDescription = await getCollectionDescription({ spaceId, collectionId })
     if (!collectionDescription) {
       throw new CollectionNotFoundError({ requestName })
     }
@@ -38,7 +37,7 @@ export class CollectionRequest {
     // TODO: Protect against .collection resource id collision
     const resourceId = body.id || uuidv4()
     const resource = { id: resourceId, ...body }
-    await collectionStorage.put(resourceId, resource)
+    await createResource({ spaceId, collectionId, resourceId, resource })
 
     const createdUrl = (new URL(`/space/${spaceId}/${collectionId}/${resourceId}`, serverUrl)).toString()
     reply.header('Location', createdUrl)
@@ -63,8 +62,7 @@ export class CollectionRequest {
       headers, serverUrl, spaceController })
 
     // Fetch collection by id
-    const collectionStorage = getCollectionStorage({ spaceId, collectionId })
-    const collectionDescription = await collectionStorage.get('.collection')
+    const collectionDescription = await getCollectionDescription({ spaceId, collectionId })
     if (!collectionDescription) {
       throw new CollectionNotFoundError({ requestName })
     }
@@ -85,8 +83,7 @@ export class CollectionRequest {
     const spaceController = await getSpaceController({ spaceId, requestName })
 
     // Fetch collection by id
-    const collectionStorage = getCollectionStorage({ spaceId, collectionId })
-    const collectionDescription = await collectionStorage.get('.collection')
+    const collectionDescription = await getCollectionDescription({ spaceId, collectionId })
     if (!collectionDescription) {
       throw new CollectionNotFoundError({ requestName })
     }
@@ -96,7 +93,7 @@ export class CollectionRequest {
     await handleZcapVerify({ url, allowedTarget, allowedAction: 'GET', method,
       headers, serverUrl, spaceController })
 
-    const collectionItems = await collectionStorage.allDocs()
+    const collectionItems = await listCollectionItems({ spaceId, collectionId })
 
     return reply.status(200).type('application/json')
       .send(JSON.stringify(collectionItems))

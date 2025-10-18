@@ -1,5 +1,5 @@
 import { handleZcapVerify } from '../zcap.js'
-import { getCollectionStorage, getSpace } from '../storage.js'
+import { getCollectionDescription, getResource, getSpaceDescription } from '../storage.js'
 import { CollectionNotFoundError, ResourceNotFoundError, SpaceNotFoundError } from '../errors.js'
 
 export class ResourceRequest {
@@ -17,15 +17,14 @@ export class ResourceRequest {
     const { serverUrl } = this
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await getSpace({ spaceId })
+    const spaceDescription = await getSpaceDescription({ spaceId })
     if (!spaceDescription) {
       throw new SpaceNotFoundError({ requestName: 'Get Resource' })
     }
     const spaceController = spaceDescription.controller
 
     // Fetch collection by id
-    const collectionStorage = getCollectionStorage({ spaceId, collectionId })
-    const collectionDescription = await collectionStorage.get('.collection')
+    const collectionDescription = await getCollectionDescription({ spaceId, collectionId })
     if (!collectionDescription) {
       throw new CollectionNotFoundError({ requestName: 'Get Resource' })
     }
@@ -37,7 +36,7 @@ export class ResourceRequest {
       headers, serverUrl, spaceController })
 
     // zCap checks out, continue
-    const resource = await collectionStorage.get(resourceId)
+    const resource = await getResource({ spaceId, collectionId, resourceId })
 
     if (!resource) {
       throw new ResourceNotFoundError({ requestName: 'Get Resource' })

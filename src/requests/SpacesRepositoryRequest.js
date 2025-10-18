@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { SpaceControllerMismatchError } from '../errors.js'
-import { ensureSpaceStorage } from '../storage.js'
+import { createSpace } from '../storage.js'
 
 export class SpacesRepositoryRequest {
   /**
@@ -34,8 +34,7 @@ export class SpacesRepositoryRequest {
       headers, serverUrl, spaceController: body.controller, requestName: 'Create Space' })
 
     // zCap checks out, continue
-    const spaceStorage = await ensureSpaceStorage({ spaceId })
-    await spaceStorage.put('.space', spaceDescription)
+    await createSpace({ spaceId, spaceDescription })
 
     const createdSpaceUrl = (new URL(`/spaces/${spaceId}`, serverUrl)).toString()
     reply.header('Location', createdSpaceUrl)
