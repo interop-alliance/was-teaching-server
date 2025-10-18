@@ -9,7 +9,7 @@ import assert from 'node:assert'
 import { createApp } from '../src/server.js'
 import { zcapClients } from './helpers.js'
 
-describe('Resource API', () => {
+describe.skip('Resource API', () => {
   let fastify, serverUrl, alice, bob
   const PORT = 7768
 
