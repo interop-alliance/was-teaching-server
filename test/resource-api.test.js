@@ -38,7 +38,7 @@ describe('Resource API', () => {
     let expectedError
     try {
       await alice.rootClient.request({
-        url, method: 'GET', action: 'GET'
+        url, method: 'GET'
       })
     } catch (error) {
       console.log('ERROR', error)

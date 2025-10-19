@@ -24,6 +24,6 @@ describe('Server', () => {
     const body = await response.text()
 
     assert.equal(response.status, 200)
-    assert.match(body, /specification/)
+    assert.match(body, /Welcome/)
   })
 })

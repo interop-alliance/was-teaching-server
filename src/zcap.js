@@ -32,7 +32,6 @@ export async function handleZcapVerify ({
 export async function verifyZcap ({
   url, allowedTarget, allowedAction, method, headers, serverUrl, spaceController
 }) {
-  // console.log('HEADERS:', headers)
   const fullRequestUrl = (new URL(url, serverUrl)).toString()
   const expected = {
     expectedAction: allowedAction,
@@ -60,6 +59,7 @@ export async function verifyZcap ({
   })
   const documentLoader = loader.build()
 
+  // Returns the following object:
   // {
   //     capability, capabilityAction, controller,
   //     dereferencedChain,

@@ -59,8 +59,9 @@ for more details.
 ## Install
 
 ```
-yarn install
+pnpm install
 ```
+
 ## Usage
 
 ### Starting the Server
@@ -81,7 +82,7 @@ yarn test
 
 ## Security
 
-Note: This is an experimental research server, not for production use.
+This is an experimental research server.
 
 ## License
 [GNU AFFERO GENERAL PUBLIC LICENSE v3](LICENSE)
