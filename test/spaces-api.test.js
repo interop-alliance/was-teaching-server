@@ -24,7 +24,7 @@ describe('Spaces', () => {
   })
 
   describe('Spaces Repository API', () => {
-    it.skip('GET /spaces/ should 401 error when no authorization headers', async () => {
+    it('GET /spaces/ should 401 error when no authorization headers', async () => {
       const response = await fetch(new URL('/spaces/', serverUrl))
       assert.equal(response.status, 401)
       assert.match(response.headers.get('content-type'), /application\/problem\+json/)

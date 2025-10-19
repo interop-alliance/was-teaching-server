@@ -9,7 +9,7 @@ import assert from 'node:assert'
 import { createApp } from '../src/server.js'
 import { zcapClients } from './helpers.js'
 
-describe.skip('Resource API', () => {
+describe('Resource API', () => {
   let fastify, serverUrl, alice, bob
   const PORT = 7768
 
@@ -60,24 +60,48 @@ describe.skip('Resource API', () => {
     })
     assert.equal(response.status, 201)
 
-    const created = response.data
-    assert.deepStrictEqual(created, {
-      id: 'sample-resource', name: 'Sample Verifiable Credential'
-    })
-    const resourceUrl = (new URL(`/space/${alice.space1.id}/credentials/sample-resource`,
-      serverUrl)).toString()
+    assert.equal(response.data['content-type'], 'application/json')
+
     assert.match(response.headers.get('content-type'), /application\/json/)
-    assert.equal(response.headers.get('location'), resourceUrl)
+    const resourceUrl = response.headers.get('location')
+    assert.ok(resourceUrl.startsWith(`${serverUrl}/space/${alice.space1.id}/credentials/`))
 
     // Next, GET the created resource
     const fetchResourceResponse = await alice.rootClient.request({
-      url: resourceUrl, method: 'GET', action: 'GET'
+      url: resourceUrl, method: 'GET'
     })
     assert.equal(fetchResourceResponse.status, 200)
     assert.match(fetchResourceResponse.headers.get('content-type'),
       /application\/json/)
-    assert.deepStrictEqual(fetchResourceResponse.data, {
-      id: 'sample-resource', name: 'Sample Verifiable Credential'
-    })
+    assert.equal(fetchResourceResponse.data.name, 'Sample Verifiable Credential')
+  })
+
+  it('[root] POST and GET a non-JSON resource', async () => {
+    const body = new Blob(['line 1\nline2\n'], {type: 'text/plain'})
+    let response
+    try {
+      response = await alice.rootClient.request({
+        url: (new URL(`/space/${alice.space1.id}/credentials/`, serverUrl)).toString(),
+        method: 'POST', body
+      })
+    } catch (e) {
+      console.log(e.data)
+    }
+
+    assert.equal(response.status, 201)
+    const createdUrl = response.headers.get('location')
+
+    // Next, GET the created resource
+    let fetchResourceResponse
+    try {
+      fetchResourceResponse = await alice.rootClient.request({
+        url: createdUrl, method: 'GET'
+      })
+    } catch (e) {
+      console.log(e.data)
+    }
+    assert.equal(fetchResourceResponse.status, 200)
+    const responseBody = await fetchResourceResponse.text()
+    assert.equal(responseBody, 'line 1\nline2\n')
   })
 })

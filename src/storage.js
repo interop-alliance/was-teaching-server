@@ -1,10 +1,14 @@
 import path from 'node:path'
-import { mkdir } from 'node:fs/promises'
-import fsjs from 'fs-json-store'
+import { mkdir, stat as fsStat} from 'node:fs/promises'
+import { pipeline } from 'node:stream/promises'
+import fs from 'node:fs'
+import jsonfs from 'fs-json-store'
 import { glob } from 'glob'
 import { StorageError } from './errors.js'
+import mime, { contentType } from 'mime-types'
+import { isJson } from './isJson.js'
 
-const { Store: MetadataJsonStore } = fsjs
+const { Store: MetadataJsonStore } = jsonfs
 
 /**
  * Spaces
@@ -112,27 +116,97 @@ export async function listCollectionItems ({ spaceId, collectionId }) {
  * Resource
  */
 
-/**
- * @param spaceId {string}
- * @param collectionId {string}
- * @param resourceId {string}
- * @param resource {object}
- * @returns {Promise<void>}
- */
-export async function createResource ({ spaceId, collectionId, resourceId, resource }) {
-  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
-  const collectionDir = path.join(spacesRepository, spaceId, collectionId)
-
-  const filename = `${resourceId}.json`
-  const resourceJsonStore = new MetadataJsonStore({ file: path.join(collectionDir, filename) })
-  return await resourceJsonStore.write(resource)
+export function fileNameFor({ resourceId, contentType }) {
+  const encodedType = encodeURIComponent(contentType)
+  const extension = mime.extension(contentType) || 'blob'
+  return `r.${resourceId}.${encodedType}.${extension}`
 }
 
-export async function getResource ({ spaceId, collectionId, resourceId }) {
+/**
+ * Create a non-JSON resource
+ *
+ * @param spaceId
+ * @param collectionId
+ * @param resourceId
+ * @param request
+ * @returns {Promise<void>}
+ */
+export async function writeResource({ spaceId, collectionId, resourceId, request }) {
+  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
+  const collectionDir = path.join(spacesRepository, spaceId, collectionId)
+  const requestContentType = request.headers['content-type']
+
+  let dataContentType, filename, filePath
+  if (isJson({ contentType: requestContentType })) {
+    const filename = fileNameFor({ resourceId, contentType: requestContentType })
+    const resourceJsonStore = new MetadataJsonStore({ file: path.join(collectionDir, filename) })
+    console.log('Creating JSON resource')
+    return await resourceJsonStore.write(request.body)
+  } else if (requestContentType.startsWith('multipart')) {
+    const data = request.file()
+    dataContentType = data.mimetype // multipart encoded files have their own type
+    filename = fileNameFor({ resourceId, contentType: dataContentType })
+    filePath = path.join(collectionDir, filename)
+
+    console.log('Writing multipart file, uploaded filename:', data.filename)
+    await pipeline(data.file, fs.createWriteStream(filePath))
+  } else {
+    filename = fileNameFor({ resourceId, contentType: requestContentType })
+    filePath = path.join(collectionDir, filename)
+
+    console.log('Writing non-multipart blob')
+    await pipeline(request.body, fs.createWriteStream(filePath))
+  }
+}
+
+export async function findFile ({ collectionDir, resourceId }) {
+  const [ filePath ] = await glob(path.join(collectionDir, `r.${resourceId}*`))
+  return filePath
+}
+
+export async function openFileStream ({ filePath }) {
+  try {
+    const resourceStream = fs.createReadStream(filePath)
+    return new Promise((resolve, reject) => {
+      resourceStream
+        .on('error', error => {
+          reject(new Error(`Error creating a read stream: ${error}`))
+        })
+        .on('open', () => {
+          console.info(`GET -- Reading ${filePath}`)
+          resolve(resourceStream)
+        })
+    })
+  } catch (e) {
+    console.warn(`GET -- error reading ${filePath}: ${error.message}`)
+  }
+}
+
+export async function getResource ({ spaceId, collectionId, resourceId, contentType }) {
   const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
   const collectionDir = path.join(spacesRepository, spaceId, collectionId)
 
-  const filename = `${resourceId}.json`
-  const resourceJsonStore = new MetadataJsonStore({ file: path.join(collectionDir, filename) })
-  return await resourceJsonStore.read()
+  let filename, filePath, storedResourceType
+  if (contentType) {
+    filename = fileNameFor({ resourceId, contentType })
+    filePath = path.join(collectionDir, filename)
+    storedResourceType = contentType
+  } else {
+    filePath = await findFile({ collectionDir, resourceId })
+    storedResourceType = mime.lookup(filePath)
+  }
+
+  let resourceStream
+  // First, try to see if resource exists for the requested content type directly
+  try {
+    await fsStat(filePath)
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      throw new ResourceNotFoundError({ requestName: 'Get Resource' })
+    }
+    throw e
+  }
+
+  // File exists, return a stream on it
+  return { resourceStream: await openFileStream({ filePath }), storedResourceType }
 }
