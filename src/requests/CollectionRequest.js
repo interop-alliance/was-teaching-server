@@ -1,8 +1,9 @@
+import { v4 as uuidv4 } from 'uuid'
+
 import { handleZcapVerify } from '../zcap.js'
 import { getSpaceController } from './SpaceRequest.js'
 import { CollectionNotFoundError } from '../errors.js'
-import { v4 as uuidv4 } from 'uuid'
-import { createResource, getCollectionDescription, listCollectionItems } from '../storage.js'
+import { getCollectionDescription, listCollectionItems, writeResource } from '../storage.js'
 
 export class CollectionRequest {
   /**
@@ -14,7 +15,7 @@ export class CollectionRequest {
    * }
    */
   static async post (request, reply) {
-    const { params: { spaceId, collectionId }, url, method, headers, body } = request
+    const { params: { spaceId, collectionId }, url, method, headers } = request
     const { serverUrl } = this
     const requestName = 'Create Resource'
 
@@ -33,16 +34,25 @@ export class CollectionRequest {
       headers, serverUrl, spaceController })
 
     // zCap checks out, continue
+    let resourceId, response
+
     // TODO: use a uuid v5 or another hash based id here instead
-    // TODO: Protect against .collection resource id collision
-    const resourceId = body.id || uuidv4()
-    const resource = { id: resourceId, ...body }
-    await createResource({ spaceId, collectionId, resourceId, resource })
+    resourceId = uuidv4()
+
+    try {
+      await writeResource({ spaceId, collectionId, resourceId, request })
+      response = {
+        id: resourceId, 'content-type': request.headers['content-type']
+      }
+    } catch (e) {
+      throw new Error('Could not create resource: ' + e.message, { cause: e })
+    }
 
     const createdUrl = (new URL(`/space/${spaceId}/${collectionId}/${resourceId}`, serverUrl)).toString()
     reply.header('Location', createdUrl)
-    // TODO probably shouldn't return the full resource, waste of bandwidth
-    return reply.status(201).send(resource)
+    response.url = createdUrl
+
+    return reply.status(201).send(response)
   }
 
   /**

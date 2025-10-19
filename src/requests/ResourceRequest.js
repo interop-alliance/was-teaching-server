@@ -36,12 +36,14 @@ export class ResourceRequest {
       headers, serverUrl, spaceController })
 
     // zCap checks out, continue
-    const resource = await getResource({ spaceId, collectionId, resourceId })
+    const contentType = request.headers['content-type']
+    const { resourceStream, storedResourceType } =
+      await getResource({ spaceId, collectionId, resourceId, contentType })
 
-    if (!resource) {
+    if (!resourceStream) {
       throw new ResourceNotFoundError({ requestName: 'Get Resource' })
     }
 
-    return reply.status(200).send(resource)
+    return reply.status(200).type(storedResourceType).send(resourceStream)
   }
 }
