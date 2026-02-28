@@ -18,7 +18,26 @@ See:
 
 ## Install
 
+```
+yarn install
+```
 ## Usage
+
+### Starting the Server
+
+```
+yarn start
+```
+
+### Running Tests
+
+```
+npm test
+```
+or
+```
+yarn test
+```
 
 ## Security
 
