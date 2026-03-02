@@ -3,7 +3,7 @@
   "description": "A basic Wallet Attached Storage server used to demonstrate the WAS specification.",
   "version": "0.0.1",
   "scripts": {
-    "start": "node src/server.js | pino-pretty",
+    "start": "node src/start.js | pino-pretty",
     "test": "node --test test/*",
     "testonly": "node --test-only test/*"
   },

@@ -86,14 +86,3 @@ export function createApp ({ serverUrl } = {}) {
   return fastify
 }
 
-export async function startServer () {
-  try {
-    await fastify.listen({ port: 3002 })
-  } catch (err) {
-    fastify.log.error(err)
-    process.exit(1)
-  }
-}
-
-const fastify = createApp()
-// startServer(fastify)
