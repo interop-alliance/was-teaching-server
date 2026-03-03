@@ -171,5 +171,39 @@ describe('Spaces', () => {
       assert.match(expectedError.response.headers
         .get('content-type'), /application\/problem\+json/)
     })
+
+    it('[root] Alice should be able to DELETE her provisioned space', async () => {
+      const spaceId = 'a-space-to-delete'
+      // First, create the space
+      const body = {
+        id: spaceId, name: "Alice's Test Space to be deleted", controller: alice.did
+      }
+      const response = await alice.rootClient.request({
+        url: (new URL('/spaces/', serverUrl)).toString(),
+        method: 'POST', json: body
+      })
+      assert.equal(response.status, 201)
+
+      // Now delete the space
+      const spaceUrl = (new URL(`/space/${spaceId}`, serverUrl))
+        .toString()
+      const aliceResponse = await alice.rootClient.request({
+        url: spaceUrl,
+        method: 'DELETE'
+      })
+      assert.equal(aliceResponse.status, 204)
+
+      // Check that the space was deleted
+      let checkResponse
+      try {
+        await alice.rootClient.request({
+          url: spaceUrl, method: 'GET'
+        })
+      } catch (err) {
+        checkResponse = err.response
+      }
+
+      assert.equal(checkResponse.status, 404)
+    })
   })
 })

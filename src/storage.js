@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { mkdir, stat as fsStat} from 'node:fs/promises'
+import { mkdir, rm, stat as fsStat} from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import fs from 'node:fs'
 import jsonfs from 'fs-json-store'
@@ -14,6 +14,10 @@ const { Store: MetadataJsonStore } = jsonfs
  * Spaces
  */
 
+/**
+ * @param spaceId {string}
+ * @returns {Promise<*>} Created space storage directory.
+ */
 export async function ensureSpaceStorageDir ({ spaceId }) {
   // Create a directory for the incoming space
   const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
@@ -30,6 +34,11 @@ export async function ensureSpaceStorageDir ({ spaceId }) {
   return spaceDir
 }
 
+/**
+ * @param spaceId {string}
+ * @param spaceDescription
+ * @returns {Promise<fs.StoreEntity>}
+ */
 export async function createSpace({ spaceId, spaceDescription }) {
   const spaceDir = await ensureSpaceStorageDir({ spaceId })
 
@@ -50,6 +59,17 @@ export async function getSpaceDescription ({ spaceId }) {
   const filename = `.space.${spaceId}.json`
   const metaStore = new MetadataJsonStore({ file: path.join(spaceDir, filename) })
   return await metaStore.read()
+}
+
+/**
+ * @param spaceId {string}
+ * @returns {Promise<*>}
+ */
+export async function deleteSpace ({ spaceId }) {
+  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
+  const spaceDir = path.join(spacesRepository, spaceId)
+
+  return await rm(spaceDir, { recursive: true })
 }
 
 /**
@@ -74,6 +94,13 @@ export async function ensureCollectionDir ({ spaceId, collectionId }) {
   return collectionDir
 }
 
+/**
+ * @param spaceId {string}
+ * @param collectionId {string}
+ * @param collectionDescription
+ *
+ * @returns {Promise<fs.StoreEntity>}
+ */
 export async function createCollection ({ spaceId, collectionId, collectionDescription }) {
   const collectionDir = await ensureCollectionDir({ spaceId, collectionId })
 

@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { SpaceNotFoundError } from '../errors.js'
-import { createCollection, getSpaceDescription } from '../storage.js'
+import { createCollection, deleteSpace, getSpaceDescription } from '../storage.js'
 
 export class SpaceRequest {
   /**
@@ -68,6 +68,36 @@ export class SpaceRequest {
     const createdUrl = (new URL(`/space/${spaceId}/${collectionId}`, serverUrl)).toString()
     reply.header('Location', createdUrl)
     return reply.status(201).send(collectionDescription)
+  }
+
+  /**
+   * DELETE /space/:spaceId
+   * Request handler for "Delete Space" request
+   * Before this, `parseAuthHeaders()` hook executed, resulting in:
+   * request.zcap: {
+   *   keyId, headers, signature, created, expires, invocation, digest
+   * }
+   */
+  static async delete (request, reply) {
+    const { params: { spaceId }, url, method, headers } = request
+    const { serverUrl } = this
+
+    // Fetch the space by id, from storage. Needed for signature verification.
+    const spaceDescription = await getSpaceDescription({ spaceId })
+    if (!spaceDescription) {
+      throw new SpaceNotFoundError({ requestName: 'Delete Space' })
+    }
+    const spaceController = spaceDescription.controller
+
+    // Perform zCap signature verification (throws appropriate errors)
+    const allowedTarget = (new URL(`/space/${spaceId}`, serverUrl)).toString()
+    await handleZcapVerify({ url, allowedTarget, allowedAction: 'DELETE', method,
+      headers, serverUrl, spaceController })
+
+    // zCap checks out, continue
+    await deleteSpace({ spaceId })
+
+    return reply.status(204).send()
   }
 }
 

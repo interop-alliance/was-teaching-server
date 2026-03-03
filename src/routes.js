@@ -41,7 +41,7 @@ export async function initSpaceRoutes (app, options) {
   app.put('/space/:spaceId', async (request, reply) => {})
   // Delete Space
   // TODO
-  app.delete('/space/:spaceId', async (request, reply) => {})
+  app.delete('/space/:spaceId', SpaceRequest.delete)
 
   // List default '/' collection for a space
   // TODO

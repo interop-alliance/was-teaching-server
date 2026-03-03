@@ -24,14 +24,20 @@ for more details.
 
 #### Spaces API
 
-* [Create Space](https://digitalcredentials.github.io/wallet-attached-storage-spec/#http-api-post-spaces) (`POST /spaces/`)
-* [Get Space by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#read-space-operation) (`GET /space/:spaceId`)
+* [Create Space](https://digitalcredentials.github.io/wallet-attached-storage-spec/#http-api-post-spaces)
+  (`POST /spaces/`)
+* [Get Space by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#read-space-operation)
+  (`GET /space/:spaceId`)
+* [Delete Space by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#delete-space-operation)
+  (`DELETE /space/:spaceId`)
 
 #### Collections API
 
 * [Create Collection]() (`POST /space/:spaceId/`)
-* [Get a Collection Description object]() (`GET /space/:spaceId/:collectionId` - no trailing slash)
-* [List Resources in a Collection](https://digitalcredentials.github.io/wallet-attached-storage-spec/#get-collection-operation) (`GET /space/:spaceId/:collectionId/` - with trailing slash)
+* [Get a Collection Description object]()
+  (`GET /space/:spaceId/:collectionId` - no trailing slash)
+* [List Resources in a Collection](https://digitalcredentials.github.io/wallet-attached-storage-spec/#get-collection-operation)
+  (`GET /space/:spaceId/:collectionId/` - with trailing slash)
 
 #### Resources API
 
