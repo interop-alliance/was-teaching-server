@@ -104,4 +104,45 @@ describe('Resource API', () => {
     const responseBody = await fetchResourceResponse.text()
     assert.equal(responseBody, 'line 1\nline2\n')
   })
+
+  it('[root] POST and DELETE Resource with proper authorization', async () => {
+    // First, create the Resource
+    const body = {
+      id: 'sample-resource-to-delete', name: 'Sample Delete'
+    }
+    const response = await alice.rootClient.request({
+      url: (new URL(`/space/${alice.space1.id}/credentials/`, serverUrl)).toString(),
+      method: 'POST', json: body
+    })
+    assert.equal(response.status, 201)
+    assert.equal(response.data['content-type'], 'application/json')
+
+    assert.match(response.headers.get('content-type'), /application\/json/)
+    const resourceUrl = response.headers.get('location')
+    assert.ok(resourceUrl.startsWith(`${serverUrl}/space/${alice.space1.id}/credentials/`))
+
+    // Next, GET the created resource (to check it was created)
+    const fetchResourceResponse = await alice.rootClient.request({
+      url: resourceUrl, method: 'GET'
+    })
+    assert.equal(fetchResourceResponse.status, 200)
+
+    // Delete the resource
+    const deleteResponse = await alice.rootClient.request({
+      url: resourceUrl, method: 'DELETE'
+    })
+    assert.equal(deleteResponse.status, 204)
+
+    // Finally, check that it was deleted
+    let checkResponse
+    try {
+      await alice.rootClient.request({
+        url: resourceUrl, method: 'GET'
+      })
+    } catch (err) {
+      checkResponse = err.response
+    }
+
+    assert.equal(checkResponse.status, 404)
+  })
 })

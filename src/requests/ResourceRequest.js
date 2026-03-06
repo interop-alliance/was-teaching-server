@@ -1,5 +1,5 @@
 import { handleZcapVerify } from '../zcap.js'
-import { getCollectionDescription, getResource, getSpaceDescription } from '../storage.js'
+import { getCollectionDescription, getResource, deleteResource, getSpaceDescription } from '../storage.js'
 import { CollectionNotFoundError, ResourceNotFoundError, SpaceNotFoundError } from '../errors.js'
 
 export class ResourceRequest {
@@ -37,13 +37,63 @@ export class ResourceRequest {
 
     // zCap checks out, continue
     const contentType = request.headers['content-type']
-    const { resourceStream, storedResourceType } =
-      await getResource({ spaceId, collectionId, resourceId, contentType })
+    let resourceStream, storedResourceType
+    try {
+      ({ resourceStream, storedResourceType } =
+        await getResource({ spaceId, collectionId, resourceId, contentType }))
+    } catch (err) {
+      request.log.error(err)
+    }
 
     if (!resourceStream) {
       throw new ResourceNotFoundError({ requestName: 'Get Resource' })
     }
 
     return reply.status(200).type(storedResourceType).send(resourceStream)
+  }
+
+  /**
+   * DELETE /space/:spaceId/:collectionId/:resourceId
+   * Request handler for "Delete Resource" request
+   * Before this, `parseAuthHeaders()` hook executed, resulting in:
+   * request.zcap: {
+   *   keyId, headers, signature, created, expires, invocation, digest
+   * }
+   */
+  static async delete (request, reply) {
+    const {
+      params: { spaceId, collectionId, resourceId }, url, method, headers
+    } = request
+    const { serverUrl } = this
+
+    // Fetch the space by id, from storage. Needed for signature verification.
+    const spaceDescription = await getSpaceDescription({ spaceId })
+    if (!spaceDescription) {
+      throw new SpaceNotFoundError({ requestName: 'Delete Resource' })
+    }
+    const spaceController = spaceDescription.controller
+
+    // Fetch collection by id
+    const collectionDescription = await getCollectionDescription({ spaceId, collectionId })
+    if (!collectionDescription) {
+      throw new CollectionNotFoundError({ requestName: 'Delete Resource' })
+    }
+
+    // Perform zCap signature verification (throws appropriate errors)
+    const allowedTarget = (new URL(`/space/${spaceId}/${collectionId}/${resourceId}`,
+      serverUrl)).toString()
+    await handleZcapVerify({ url, allowedTarget, allowedAction: 'DELETE', method,
+      headers, serverUrl, spaceController })
+
+    // zCap checks out, continue
+    try {
+      await deleteResource({ spaceId, collectionId, resourceId })
+    } catch (err) {
+      console.log(err)
+      throw new StorageError({ requestName: 'Delete Resource' })
+    }
+
+
+    return reply.status(204).send()
   }
 }

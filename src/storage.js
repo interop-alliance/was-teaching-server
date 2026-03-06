@@ -209,6 +209,26 @@ export async function openFileStream ({ filePath }) {
   }
 }
 
+/**
+ * Deletes a given resource from storage.
+ * @param spaceId {string}
+ * @param collectionId {string}
+ * @param resourceId {string}
+ * @returns {Promise<void>}
+ */
+export async function deleteResource ({ spaceId, collectionId, resourceId }) {
+  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
+  const collectionDir = path.join(spacesRepository, spaceId, collectionId)
+
+  // A given resourceId can have several different content type representations
+  // All of them need to be deleted (we're not going to ask the user to
+  //  specify which content type to delete)
+  const filesForResource = await glob(path.join(collectionDir, `r.${resourceId}*`))
+  return Promise.all(
+    filesForResource.map(async (filename) => { return rm(filename)})
+  )
+}
+
 export async function getResource ({ spaceId, collectionId, resourceId, contentType }) {
   const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
   const collectionDir = path.join(spacesRepository, spaceId, collectionId)
@@ -221,6 +241,10 @@ export async function getResource ({ spaceId, collectionId, resourceId, contentT
   } else {
     filePath = await findFile({ collectionDir, resourceId })
     storedResourceType = mime.lookup(filePath)
+  }
+
+  if (!filePath) {
+    throw new ResourceNotFoundError({ requestName: 'Get Resource' })
   }
 
   let resourceStream

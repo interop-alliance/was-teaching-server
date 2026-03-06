@@ -69,7 +69,7 @@ describe('Collections API', () => {
   it('[root] list collection items via GET :collectionId/', async () => {
     const response = await alice.rootClient.request({
       url: (new URL(`/space/${alice.space1.id}/credentials/`, serverUrl)).toString(),
-      method: 'GET', action: 'GET'
+      method: 'GET'
     })
     assert.equal(response.status, 200)
     console.log(response.data)

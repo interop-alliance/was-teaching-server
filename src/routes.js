@@ -83,4 +83,7 @@ export async function initResourceRoutes (app, options) {
 
   // Get Resource
   app.get('/space/:spaceId/:collectionId/:resourceId', ResourceRequest.get)
+
+  // Delete Resource
+  app.delete('/space/:spaceId/:collectionId/:resourceId', ResourceRequest.delete)
 }

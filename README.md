@@ -43,7 +43,10 @@ for more details.
 
 * [Create Resource]() (`POST /space/:spaceId/:collectionId/`)
   * both JSON objects and binary blobs
-* [Get Resource by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#read-resource-operation) (`GET /space/:spaceId/:collectionId/`)
+* [Get Resource by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#read-resource-operation)
+  (`GET /space/:spaceId/:collectionId/:resourceId`)
+* [Delete Resource by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#delete-resource-operation)
+  (`DELETE /space/:spaceId/:collectionId/:resourceId`)
 
 ## Install
 
