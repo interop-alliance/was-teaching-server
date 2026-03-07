@@ -33,15 +33,17 @@ for more details.
 
 #### Collections API
 
-* [Create Collection]() (`POST /space/:spaceId/`)
-* [Get a Collection Description object]()
+* [Create Collection](https://digitalcredentials.github.io/wallet-attached-storage-spec/#create-collection-add-collection-to-a-space-operation)
+  (`POST /space/:spaceId/`)
+* [Get a Collection Description object](https://digitalcredentials.github.io/wallet-attached-storage-spec/#get-collection-description-operation)
   (`GET /space/:spaceId/:collectionId` - no trailing slash)
 * [List Resources in a Collection](https://digitalcredentials.github.io/wallet-attached-storage-spec/#get-collection-operation)
   (`GET /space/:spaceId/:collectionId/` - with trailing slash)
 
 #### Resources API
 
-* [Create Resource]() (`POST /space/:spaceId/:collectionId/`)
+* [Create Resource](https://digitalcredentials.github.io/wallet-attached-storage-spec/#create-resource-add-resource-to-collection-operation)
+  (`POST /space/:spaceId/:collectionId/`)
   * both JSON objects and binary blobs
 * [Get Resource by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#read-resource-operation)
   (`GET /space/:spaceId/:collectionId/:resourceId`)
