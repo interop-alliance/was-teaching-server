@@ -39,7 +39,7 @@ export async function ensureSpaceStorageDir ({ spaceId }) {
  * @param spaceDescription
  * @returns {Promise<fs.StoreEntity>}
  */
-export async function createSpace({ spaceId, spaceDescription }) {
+export async function writeSpace({ spaceId, spaceDescription }) {
   const spaceDir = await ensureSpaceStorageDir({ spaceId })
 
   const filename = `.space.${spaceId}.json`

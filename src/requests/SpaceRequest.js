@@ -1,7 +1,8 @@
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { SpaceNotFoundError } from '../errors.js'
-import { createCollection, deleteSpace, getSpaceDescription } from '../storage.js'
+import { createCollection, deleteSpace, getSpaceDescription, writeSpace }
+  from '../storage.js'
 
 export class SpaceRequest {
   /**
@@ -10,6 +11,14 @@ export class SpaceRequest {
    * Before this, `parseAuthHeaders()` hook executed, resulting in:
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
+   * }
+   *
+   * Example Space Description Object:
+   * {
+   *   "id": "6b5be748-5f39-4936-a895-409e393c399c",
+   *   "type": ["Space"],
+   *   "name": "Alice's space",
+   *   "controller": "did:key:z6MkpBMbMaRSv5nsgifRAwEKvHHoiKDMhiAHShTFNmkJNdVW"
    * }
    */
   static async get (request, reply) {
@@ -30,6 +39,51 @@ export class SpaceRequest {
 
     // zCap checks out, continue
     return reply.status(200).send(spaceDescription)
+  }
+
+  /**
+   * PUT /space/:spaceId
+   * Request handler for "Update or Create Space by Id" request
+   * Before this, `parseAuthHeaders()` hook executed, resulting in:
+   * request.zcap: {
+   *   keyId, headers, signature, created, expires, invocation, digest
+   * }
+   */
+  static async put (request, reply) {
+    const {
+      params: { spaceId }, url, method, headers, body, zcap: { keyId }
+    } = request
+    const { serverUrl } = this
+
+    // Check to see if space already exists (if yes, this will be an Update)
+    const existingSpaceDescription = await getSpaceDescription({ spaceId })
+    const existingController = existingSpaceDescription?.controller
+
+    const [ zcapSigningDid ] = keyId.split('#')
+
+    // Important. For exising space objects, make sure the request carries
+    // authorization matching the old controller
+    const authorizedController = existingController ?? zcapSigningDid
+
+    // Perform zCap signature verification (throws appropriate errors)
+    const spaceUrl = (new URL(`/space/${spaceId}`, serverUrl)).toString()
+    await handleZcapVerify({ url, allowedTarget: spaceUrl, allowedAction: 'PUT', method,
+      headers, serverUrl, spaceController: authorizedController })
+
+    // Compose Space Description object body, new or updated
+    const spaceDescription = existingSpaceDescription
+      // Existing: Update only the allowed fields
+      ? { ...existingSpaceDescription, id: spaceId, name: body.name, controller: body.controller}
+      // New Space
+      : { id: spaceId, type: ['Space'], name: body.name, controller: body.controller }
+
+    // zCap checks out, continue
+    await writeSpace({ spaceId, spaceDescription })
+
+    reply.header('Location', spaceUrl)
+    return existingSpaceDescription
+      ? reply.status(204).send() // update
+      : reply.status(201).send(spaceDescription) // create
   }
 
   /**

@@ -33,12 +33,13 @@ export async function initSpaceRoutes (app, options) {
   // Parse the relevant request headers, set the request.zcap parameter
   app.addHook('onRequest', parseAuthHeaders)
 
-  // Get Space info
+  // Get Space description object
   app.get('/space/:spaceId', SpaceRequest.get)
 
-  // Update or Create Space
-  // TODO
-  app.put('/space/:spaceId', async (request, reply) => {})
+  // Update or Create Space by Id (only "no trailing slash" is valid)
+  app.put('/space/:spaceId/',
+    async (request, reply) => reply.redirect('/space/:spaceId'))
+  app.put('/space/:spaceId', SpaceRequest.put)
 
   // Delete Space
   app.delete('/space/:spaceId', SpaceRequest.delete)

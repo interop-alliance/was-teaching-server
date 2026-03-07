@@ -28,6 +28,8 @@ for more details.
   (`POST /spaces/`)
 * [Get Space by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#read-space-operation)
   (`GET /space/:spaceId`)
+* [Update Space (or Create Space by Id)](https://digitalcredentials.github.io/wallet-attached-storage-spec/#update-space-operation)
+  (`PUT /space/:spaceId`)
 * [Delete Space by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#delete-space-operation)
   (`DELETE /space/:spaceId`)
 

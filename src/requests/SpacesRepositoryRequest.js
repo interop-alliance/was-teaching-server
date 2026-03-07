@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { SpaceControllerMismatchError } from '../errors.js'
-import { createSpace } from '../storage.js'
+import { writeSpace } from '../storage.js'
 
 export class SpacesRepositoryRequest {
   /**
@@ -26,7 +26,7 @@ export class SpacesRepositoryRequest {
 
     // TODO: use a uuid v5 or another hash based id here instead
     const spaceId = body.id || uuidv4()
-    const spaceDescription = { id: spaceId, type: ['Space'], ...body }
+    const spaceDescription = { ...body, id: spaceId, type: ['Space'] }
 
     // Perform zCap signature verification (throws appropriate errors)
     const allowedTarget = (new URL(`/spaces/`, serverUrl)).toString()
@@ -34,7 +34,7 @@ export class SpacesRepositoryRequest {
       headers, serverUrl, spaceController: body.controller, requestName: 'Create Space' })
 
     // zCap checks out, continue
-    await createSpace({ spaceId, spaceDescription })
+    await writeSpace({ spaceId, spaceDescription })
 
     const createdSpaceUrl = (new URL(`/spaces/${spaceId}`, serverUrl)).toString()
     reply.header('Location', createdSpaceUrl)

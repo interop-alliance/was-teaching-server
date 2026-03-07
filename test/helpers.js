@@ -90,6 +90,9 @@ export async function zcapClients () {
       rootClient: aliceRootClient,
       space1: {
         id: '426e7db8-26b5-4fdc-8068-9dcb948fd291'
+      },
+      space2: {
+        id: '6b5be748-5f39-4936-a895-409e393c399c'
       }
     },
     aliceDelegatedApp: {

@@ -20,6 +20,7 @@ describe('Spaces', () => {
     await fastify.listen({ port: PORT })
   })
   after(async () => {
+    // TODO: Delete alice.space2.id for cleanup
     return fastify.close()
   })
 
@@ -45,7 +46,7 @@ describe('Spaces', () => {
       }
       const response = await alice.rootClient.request({
         url: (new URL('/spaces/', serverUrl)).toString(),
-        method: 'POST', action: 'POST', json: body
+        method: 'POST', json: body
       })
       assert.equal(response.status, 201)
 
@@ -58,6 +59,24 @@ describe('Spaces', () => {
       })
       assert.match(response.headers.get('content-type'), /application\/json/)
       assert.equal(response.headers.get('location'), `${serverUrl}/spaces/${body.id}`)
+    })
+
+    it('[root] create space by id via PUT', async () => {
+      const body = {
+        id: alice.space2.id, name: "Alice's Space #2 (School)", controller: alice.did
+      }
+      const spaceUrl = (new URL(`/space/${alice.space2.id}`, serverUrl)).toString()
+      const response = await alice.rootClient.request({
+        url: spaceUrl, method: 'PUT', json: body
+      })
+      // assert.equal(response.status, 201)
+
+      assert.equal(response.headers.get('location'), `${serverUrl}/space/${body.id}`)
+
+      const checkResponse = await alice.rootClient.request({
+        url: spaceUrl, method: 'GET'
+      })
+      assert.equal(checkResponse.status, 200)
     })
 
     it('GET /space/:spaceId should 401 error when no authorization headers', async () => {
@@ -149,7 +168,7 @@ describe('Spaces', () => {
       }
       const aliceResponse = await alice.rootClient.request({
         url: (new URL('/spaces/', serverUrl)).toString(),
-        method: 'POST', action: 'POST', json: body
+        method: 'POST', json: body
       })
       assert.equal(aliceResponse.status, 201)
 
@@ -160,7 +179,7 @@ describe('Spaces', () => {
       let expectedError
       try {
         await bob.rootClient.request({
-          url: spaceUrl, method: 'GET', action: 'GET'
+          url: spaceUrl, action: 'GET'
         })
       } catch (error) {
         expectedError = error
