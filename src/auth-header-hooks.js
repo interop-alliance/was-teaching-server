@@ -3,7 +3,7 @@ import { parseSignatureHeader } from '@digitalbazaar/http-signature-header'
 
 /**
  * Adds a request.zcap property, which contains the three parsed auth-related
- * request headers.
+ * request headers (`Authorization:`, `Capability-Invocation:`, and `Digest:`)
  *
  * Example Authorization header:
  *  Signature keyId="did:key:z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD#z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD",

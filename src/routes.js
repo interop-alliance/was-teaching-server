@@ -14,7 +14,7 @@ export async function initSpacesRepositoryRoutes (app, options) {
   // Parse the relevant request headers, set the request.zcap parameter
   app.addHook('onRequest', parseAuthHeaders)
 
-  // Create a Space
+  // Add a Space to a SpacesRepository (Create Space)
   app.post('/spaces', async (request, reply) => reply.redirect('/spaces/'))
   app.post('/spaces/', SpacesRepositoryRequest.post)
 
@@ -39,13 +39,18 @@ export async function initSpaceRoutes (app, options) {
   // Update or Create Space
   // TODO
   app.put('/space/:spaceId', async (request, reply) => {})
+
   // Delete Space
-  // TODO
   app.delete('/space/:spaceId', SpaceRequest.delete)
 
   // List default '/' collection for a space
   // TODO
   app.get('/space/:spaceId/', async (request, reply) => {})
+
+  // Add Collection to a Space
+  app.post('/space/:spaceId',
+    async (request, reply) => reply.redirect('/space/:spaceId/'))
+  app.post('/space/:spaceId/', SpaceRequest.post)
 }
 
 export async function initCollectionRoutes (app, options) {
@@ -57,14 +62,15 @@ export async function initCollectionRoutes (app, options) {
   // Parse the relevant request headers, set the request.zcap parameter
   app.addHook('onRequest', parseAuthHeaders)
 
-  // Create Collection
-  app.post('/space/:spaceId', async (request, reply) => reply.redirect('/space/:spaceId/'))
-  app.post('/space/:spaceId/', SpaceRequest.post)
-
   // Get Collection description
   app.get('/space/:spaceId/:collectionId', CollectionRequest.get)
   // List Collection items
   app.get('/space/:spaceId/:collectionId/', CollectionRequest.list)
+
+  // Add Resource to a Collection
+  app.post('/space/:spaceId/:collectionId',
+    async (request, reply) => reply.redirect('/space/:spaceId/:collectionId/'))
+  app.post('/space/:spaceId/:collectionId/', CollectionRequest.post)
 }
 
 export async function initResourceRoutes (app, options) {
@@ -75,11 +81,6 @@ export async function initResourceRoutes (app, options) {
   app.addHook('onRequest', requireAuthHeaders)
   // Parse the relevant request headers, set the request.zcap parameter
   app.addHook('onRequest', parseAuthHeaders)
-
-  // Create Resource
-  app.post('/space/:spaceId/:collectionId',
-    async (request, reply) => reply.redirect('/space/:spaceId/:collectionId/'))
-  app.post('/space/:spaceId/:collectionId/', CollectionRequest.post)
 
   // Get Resource
   app.get('/space/:spaceId/:collectionId/:resourceId', ResourceRequest.get)
