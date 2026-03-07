@@ -44,7 +44,7 @@ export async function initSpaceRoutes (app, options) {
   // Delete Space
   app.delete('/space/:spaceId', SpaceRequest.delete)
 
-  // List default '/' collection for a space
+  // List Collections for a space
   // TODO
   app.get('/space/:spaceId/', async (request, reply) => {})
 
@@ -72,6 +72,16 @@ export async function initCollectionRoutes (app, options) {
   app.post('/space/:spaceId/:collectionId',
     async (request, reply) => reply.redirect('/space/:spaceId/:collectionId/'))
   app.post('/space/:spaceId/:collectionId/', CollectionRequest.post)
+
+  // Create a Collection by Id
+  app.put('/space/:spaceId/:collectionId/', // no trailing slash allowed
+    async (request, reply) => reply.redirect('/space/:spaceId/:collectionId'))
+  app.put('/space/:spaceId/:collectionId', CollectionRequest.put)
+
+  // Delete Collection by Id
+  app.delete('/space/:spaceId/:collectionId/', // no trailing slash allowed
+    async (request, reply) => reply.redirect('/space/:spaceId/:collectionId'))
+  app.delete('/space/:spaceId/:collectionId', CollectionRequest.delete)
 }
 
 export async function initResourceRoutes (app, options) {

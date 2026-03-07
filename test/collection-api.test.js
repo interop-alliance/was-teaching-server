@@ -87,4 +87,40 @@ describe('Collections API', () => {
       type: ['Collection']
     })
   })
+
+  it.only('[root] create and delete a collection by id', async () => {
+    // Create new collection
+    const collectionId = 'new-collection'
+    const collectionUrl =
+      (new URL(`/space/${alice.space1.id}/${collectionId}`, serverUrl)).toString()
+    const body = {
+      id: collectionId, name: 'New Collection'
+    }
+    await alice.rootClient.request({
+      url: collectionUrl, method: 'PUT', json: body
+    })
+
+    // Check it was created
+    const existResponse = await alice.rootClient.request({
+      url: collectionUrl, method: 'GET'
+    })
+    assert.equal(existResponse.status, 200)
+
+    // Now delete collection
+    const deleteResponse = await alice.rootClient.request({
+      url: collectionUrl, method: 'DELETE'
+    })
+    assert.equal(deleteResponse.status, 204)
+
+    // Ensure it was deleted
+    let checkResponse
+    try {
+      await alice.rootClient.request({
+        url: collectionUrl, method: 'GET'
+      })
+    } catch (err) {
+      checkResponse = err.response
+    }
+    assert.equal(checkResponse.status, 404)
+  })
 })

@@ -9,6 +9,15 @@ export class SpaceNotFoundError extends Error {
   }
 }
 
+export class InvalidCollectionError extends Error {
+  constructor (...params) {
+    super(params)
+    this.title = 'Invalid Collection Description body'
+    this.detail = 'Collection Description body is missing or invalid.'
+    this.statusCode = 400
+  }
+}
+
 export class CollectionNotFoundError extends Error {
   constructor ({ requestName } = {}, ...params) {
     super(params)

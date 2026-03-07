@@ -23,12 +23,6 @@ export class ResourceRequest {
     }
     const spaceController = spaceDescription.controller
 
-    // Fetch collection by id
-    const collectionDescription = await getCollectionDescription({ spaceId, collectionId })
-    if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName: 'Get Resource' })
-    }
-
     // Perform zCap signature verification (throws appropriate errors)
     const allowedTarget = (new URL(`/space/${spaceId}/${collectionId}/${resourceId}`,
       serverUrl)).toString()
@@ -36,6 +30,13 @@ export class ResourceRequest {
       headers, serverUrl, spaceController })
 
     // zCap checks out, continue
+
+    // Fetch collection by id
+    const collectionDescription = await getCollectionDescription({ spaceId, collectionId })
+    if (!collectionDescription) {
+      throw new CollectionNotFoundError({ requestName: 'Get Resource' })
+    }
+
     const contentType = request.headers['content-type']
     let resourceStream, storedResourceType
     try {

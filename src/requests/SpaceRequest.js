@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { SpaceNotFoundError } from '../errors.js'
-import { createCollection, deleteSpace, getSpaceDescription, writeSpace }
+import { writeCollection, deleteSpace, getSpaceDescription, writeSpace }
   from '../storage.js'
 
 export class SpaceRequest {
@@ -117,7 +117,7 @@ export class SpaceRequest {
     const { name } = body
     const collectionDescription = { id: collectionId, type: ['Collection'], name }
 
-    await createCollection({ spaceId, collectionId, collectionDescription })
+    await writeCollection({ spaceId, collectionId, collectionDescription })
 
     const createdUrl = (new URL(`/space/${spaceId}/${collectionId}`, serverUrl)).toString()
     reply.header('Location', createdUrl)

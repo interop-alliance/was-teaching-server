@@ -37,10 +37,14 @@ for more details.
 
 * [Create Collection](https://digitalcredentials.github.io/wallet-attached-storage-spec/#create-collection-add-collection-to-a-space-operation)
   (`POST /space/:spaceId/`)
+* [Update Collection (or Create Collection by Id)](https://digitalcredentials.github.io/wallet-attached-storage-spec/#update-or-create-by-id-collection-operation)
+  (`PUT /space/:spaceId/:collectionId`)
 * [Get a Collection Description object](https://digitalcredentials.github.io/wallet-attached-storage-spec/#get-collection-description-operation)
   (`GET /space/:spaceId/:collectionId` - no trailing slash)
 * [List Resources in a Collection](https://digitalcredentials.github.io/wallet-attached-storage-spec/#get-collection-operation)
   (`GET /space/:spaceId/:collectionId/` - with trailing slash)
+* [Delete Collection by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#delete-collection-operation)
+  (`DELETE /space/:spaceId/:collectionId`)
 
 #### Resources API
 

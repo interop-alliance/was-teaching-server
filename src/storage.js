@@ -101,12 +101,25 @@ export async function ensureCollectionDir ({ spaceId, collectionId }) {
  *
  * @returns {Promise<fs.StoreEntity>}
  */
-export async function createCollection ({ spaceId, collectionId, collectionDescription }) {
+export async function writeCollection ({ spaceId, collectionId, collectionDescription }) {
   const collectionDir = await ensureCollectionDir({ spaceId, collectionId })
 
   const filename = `.collection.${collectionId}.json`
   const metaStore = new MetadataJsonStore({ file: path.join(collectionDir, filename) })
   return await metaStore.write(collectionDescription)
+}
+
+/**
+ * @param spaceId {string}
+ * @param collectionId {string}
+ *
+ * @returns {Promise<>}
+ */
+export async function deleteCollection ({ spaceId, collectionId }) {
+  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
+  const collectionDir = path.join(spacesRepository, spaceId, collectionId)
+
+  return await rm(collectionDir, { recursive: true })
 }
 
 export async function getCollectionDescription ({ spaceId, collectionId }) {
