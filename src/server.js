@@ -47,7 +47,10 @@ export function createApp ({ serverUrl } = {}) {
   fastify.decorate('serverUrl', serverUrl)
 
   // Disable CORS
-  fastify.register(cors, { origin: '*' })
+  fastify.register(cors, {
+    origin: '*',
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
+  })
 
   // Serve static files from the /common folder
   fastify.register(fastifyStatic, {
