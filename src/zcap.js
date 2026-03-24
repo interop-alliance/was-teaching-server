@@ -13,16 +13,17 @@ didKeyDriver.use({
 
 export async function handleZcapVerify ({
   url, allowedTarget, allowedAction, method, headers, serverUrl, spaceController,
-  requestName
+  requestName = '', logger = console
 }) {
+  // logger.info(`Performing zCap verification for url: ${url}`)
   let zcapVerifyResult
   try {
     zcapVerifyResult = await verifyZcap({ url, allowedTarget, allowedAction,
       method, headers, serverUrl, spaceController })
   } catch (err) {
+    logger.error('ZCAP verification failed:', err)
     throw new AuthVerificationError({ requestName, cause: err })
   }
-  // console.log('VERIFY RESULT:', zcapVerifyResult)
 
   if (!zcapVerifyResult.verified) {
     throw new UnauthorizedError({ requestName })

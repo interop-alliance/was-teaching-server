@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
-import { SpaceNotFoundError } from '../errors.js'
+import { InvalidSpaceIdError, SpaceNotFoundError } from '../errors.js'
 import { writeCollection, deleteSpace, getSpaceDescription, writeSpace }
   from '../storage.js'
 
@@ -61,14 +61,26 @@ export class SpaceRequest {
 
     const [ zcapSigningDid ] = keyId.split('#')
 
+    request.log.info(`Handling PUT request for spaceId: ${spaceId}, zcapSigningDid: ${zcapSigningDid}, existingSpaceDescription: ${existingSpaceDescription ? 'exists' : 'does not exist'}`)
+
     // Important. For exising space objects, make sure the request carries
     // authorization matching the old controller
     const authorizedController = existingController ?? zcapSigningDid
 
     // Perform zCap signature verification (throws appropriate errors)
-    const spaceUrl = (new URL(`/space/${spaceId}`, serverUrl)).toString()
+    let spaceUrl
+    try {
+      spaceUrl = (new URL(`/space/${spaceId}`, serverUrl)).toString()
+    } catch (e) {
+      request.log.error(`Failed to construct spaceUrl for spaceId: ${spaceId}, serverUrl: ${serverUrl}, error: ${e.message}`)
+      throw new InvalidSpaceIdError({ requestName: 'Update Space'})
+    }
+
+    request.log.info(`spaceUrl: ${spaceUrl}, serverUrl: ${serverUrl}`)
     await handleZcapVerify({ url, allowedTarget: spaceUrl, allowedAction: 'PUT', method,
-      headers, serverUrl, spaceController: authorizedController })
+      headers, serverUrl, spaceController: authorizedController, logger: request.log })
+
+    request.log.info('zCap verified')
 
     // Compose Space Description object body, new or updated
     const spaceDescription = existingSpaceDescription

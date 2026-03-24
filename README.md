@@ -67,7 +67,7 @@ pnpm install
 ### Starting the Server
 
 ```
-yarn start
+SERVER_URL='http://localhost:3002' PORT=3002 npm start
 ```
 
 ### Running Tests

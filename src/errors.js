@@ -9,6 +9,15 @@ export class SpaceNotFoundError extends Error {
   }
 }
 
+export class InvalidSpaceIdError extends Error {
+  constructor ({ requestName } = {}, ...params) {
+    super(params)
+    this.title = `Invalid ${requestName || 'Space'} request`
+    this.detail = 'Invalid space id (make sure it is URL-safe).'
+    this.statusCode = 400
+  }
+}
+
 export class InvalidCollectionError extends Error {
   constructor (...params) {
     super(params)
