@@ -93,6 +93,11 @@ export async function initResourceRoutes (app, options) {
   // Parse the relevant request headers, set the request.zcap parameter
   app.addHook('onRequest', parseAuthHeaders)
 
+  // Create a Resource by Id
+  app.put('/space/:spaceId/:collectionId/:resourceId/', // no trailing slash allowed
+    async (request, reply) => reply.redirect('/space/:spaceId/:collectionId/:resourceId'))
+  app.put('/space/:spaceId/:collectionId/:resourceId', ResourceRequest.put)
+
   // Get Resource
   app.get('/space/:spaceId/:collectionId/:resourceId', ResourceRequest.get)
 

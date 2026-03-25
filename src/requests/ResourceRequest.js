@@ -1,8 +1,48 @@
 import { handleZcapVerify } from '../zcap.js'
-import { getCollectionDescription, getResource, deleteResource, getSpaceDescription } from '../storage.js'
+import {
+  getCollectionDescription,
+  getResource,
+  deleteResource,
+  getSpaceDescription,
+  writeResource
+} from '../storage.js'
 import { CollectionNotFoundError, ResourceNotFoundError, SpaceNotFoundError } from '../errors.js'
 
 export class ResourceRequest {
+  static async put (request, reply) {
+    const {
+      params: { spaceId, collectionId, resourceId }, url, method, headers, body
+    } = request
+    const { serverUrl } = this
+
+    // Fetch the space by id, from storage. Needed for signature verification.
+    const spaceDescription = await getSpaceDescription({ spaceId })
+    if (!spaceDescription) {
+      throw new SpaceNotFoundError({ requestName: 'Put Resource' })
+    }
+    const spaceController = spaceDescription.controller
+
+    // Perform zCap signature verification (throws appropriate errors)
+    const allowedTarget = (new URL(`/space/${spaceId}/${collectionId}/${resourceId}`,
+      serverUrl)).toString()
+    await handleZcapVerify({ url, allowedTarget, allowedAction: 'PUT', method,
+      headers, serverUrl, spaceController })
+
+    // zCap checks out, continue
+
+    // Fetch collection by id
+    const collectionDescription = await getCollectionDescription({ spaceId, collectionId })
+    if (!collectionDescription) {
+      throw new CollectionNotFoundError({ requestName: 'Put Resource' })
+    }
+    try {
+      await writeResource({ spaceId, collectionId, resourceId, request })
+    } catch (e) {
+      throw new Error('Could not create resource: ' + e.message, { cause: e })
+    }
+    return reply.status(204).send()
+  }
+
   /**
    * GET /space/:spaceId/:collectionId/:resourceId
    * Request handler for "Get Resource" request
