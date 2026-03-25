@@ -88,7 +88,7 @@ describe('Collections API', () => {
     })
   })
 
-  it.only('[root] create and delete a collection by id', async () => {
+  it('[root] create and delete a collection by id', async () => {
     // Create new collection
     const collectionId = 'new-collection'
     const collectionUrl =

@@ -137,24 +137,28 @@ export async function listCollectionItems ({ spaceId, collectionId }) {
   const dirPath = path.join(collectionDir, '*')
   let keys
   try {
-    keys = (await glob(dirPath))
-      .map(fullFilepath => path.basename(fullFilepath, '.json'))
+    // Array of filename keys (see fileNameFor() for details)
+    keys = await glob(dirPath)
   } catch (e) {
     console.error(e)
   }
-
+  const rows = keys.map(fullFilepath => {
+    const [_, resourceId, encodedMimeType] =
+      path.basename(fullFilepath, '.json').split('.')
+    return {
+      id: resourceId,
+      url: `/space/${spaceId}/${collectionId}/${resourceId}`,
+      contentType: decodeURIComponent(encodedMimeType)
+    }
+  })
+  // Serialize using PouchDB/CouchDB results format
+  // each entry in 'rows' looks like: { id, url, contentType }
   return {
     offset: 0,
     total_rows: keys.length,
-    rows: keys.map(key => {
-      return { id: key }
-    })
+    rows
   }
 }
-
-/**
- * Resource
- */
 
 export function fileNameFor({ resourceId, contentType }) {
   const encodedType = encodeURIComponent(contentType)
