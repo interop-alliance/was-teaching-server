@@ -1,280 +1,100 @@
 import path from 'node:path'
-import { mkdir, rm, stat as fsStat} from 'node:fs/promises'
-import { pipeline } from 'node:stream/promises'
-import fs from 'node:fs'
-import jsonfs from 'fs-json-store'
-import { glob } from 'glob'
-import { StorageError } from './errors.js'
-import mime, { contentType } from 'mime-types'
-import { isJson } from './isJson.js'
+import { FileSystemBackend } from './backends/filesystem.js'
 
-const { Store: MetadataJsonStore } = jsonfs
+const backend = new FileSystemBackend({
+  dataDir: path.join(import.meta.dirname, '..', 'data')
+})
 
 /**
- * Spaces
- */
-
-/**
- * @param spaceId {string}
- * @returns {Promise<*>} Created space storage directory.
- */
-export async function ensureSpaceStorageDir ({ spaceId }) {
-  // Create a directory for the incoming space
-  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
-  const spaceDir = path.join(spacesRepository, spaceId)
-  try {
-    await mkdir(spaceDir)
-  } catch (err) {
-    if (err.code === 'EEXIST') {
-      console.log(`Space "${spaceId}" already exists, overwriting."`)
-    } else {
-      throw new StorageError({ cause: err })
-    }
-  }
-  return spaceDir
-}
-
-/**
- * @param spaceId {string}
- * @param spaceDescription
- * @returns {Promise<fs.StoreEntity>}
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.spaceDescription {object}
  */
 export async function writeSpace({ spaceId, spaceDescription }) {
-  const spaceDir = await ensureSpaceStorageDir({ spaceId })
-
-  const filename = `.space.${spaceId}.json`
-  const metaStore = new MetadataJsonStore({ file: path.join(spaceDir, filename) })
-
-  return await metaStore.write(spaceDescription)
+  return backend.writeSpace({ spaceId, spaceDescription })
 }
 
 /**
- * @param spaceId {string}
- * @returns {Promise<object>} Returns the parsed JSON Space description object
+ * @param options {object}
+ * @param options.spaceId {string}
  */
-export async function getSpaceDescription ({ spaceId }) {
-  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
-  const spaceDir = path.join(spacesRepository, spaceId)
-
-  const filename = `.space.${spaceId}.json`
-  const metaStore = new MetadataJsonStore({ file: path.join(spaceDir, filename) })
-  return await metaStore.read()
+export async function getSpaceDescription({ spaceId }) {
+  return backend.getSpaceDescription({ spaceId })
 }
 
 /**
- * @param spaceId {string}
- * @returns {Promise<*>}
+ * @param options {object}
+ * @param options.spaceId {string}
  */
-export async function deleteSpace ({ spaceId }) {
-  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
-  const spaceDir = path.join(spacesRepository, spaceId)
-
-  return await rm(spaceDir, { recursive: true })
+export async function deleteSpace({ spaceId }) {
+  return backend.deleteSpace({ spaceId })
 }
 
 /**
- * Collections
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.collectionDescription {object}
  */
-
-export async function ensureCollectionDir ({ spaceId, collectionId }) {
-  // Create a directory for the incoming collection
-  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
-  const collectionDir = path.join(spacesRepository, spaceId, collectionId)
-
-  try {
-    await mkdir(collectionDir)
-  } catch (err) {
-    if (err.code === 'EEXIST') {
-      console.log(`Collection "${collectionId}" already exists, overwriting."`)
-    } else {
-      console.log('Error creating directory', err)
-      throw err // http 500
-    }
-  }
-  return collectionDir
+export async function writeCollection({ spaceId, collectionId, collectionDescription }) {
+  return backend.writeCollection({ spaceId, collectionId, collectionDescription })
 }
 
 /**
- * @param spaceId {string}
- * @param collectionId {string}
- * @param collectionDescription
- *
- * @returns {Promise<fs.StoreEntity>}
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
  */
-export async function writeCollection ({ spaceId, collectionId, collectionDescription }) {
-  const collectionDir = await ensureCollectionDir({ spaceId, collectionId })
-
-  const filename = `.collection.${collectionId}.json`
-  const metaStore = new MetadataJsonStore({ file: path.join(collectionDir, filename) })
-  return await metaStore.write(collectionDescription)
+export async function getCollectionDescription({ spaceId, collectionId }) {
+  return backend.getCollectionDescription({ spaceId, collectionId })
 }
 
 /**
- * @param spaceId {string}
- * @param collectionId {string}
- *
- * @returns {Promise<>}
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
  */
-export async function deleteCollection ({ spaceId, collectionId }) {
-  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
-  const collectionDir = path.join(spacesRepository, spaceId, collectionId)
-
-  return await rm(collectionDir, { recursive: true })
-}
-
-export async function getCollectionDescription ({ spaceId, collectionId }) {
-  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
-  const collectionDir = path.join(spacesRepository, spaceId, collectionId)
-
-  const filename = `.collection.${collectionId}.json`
-  const metaStore = new MetadataJsonStore({ file: path.join(collectionDir, filename) })
-  return await metaStore.read()
-}
-
-export async function listCollectionItems ({ spaceId, collectionId }) {
-  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
-  const collectionDir = path.join(spacesRepository, spaceId, collectionId)
-  const dirPath = path.join(collectionDir, '*')
-  let keys
-  try {
-    // Array of filename keys (see fileNameFor() for details)
-    keys = await glob(dirPath)
-  } catch (e) {
-    console.error(e)
-  }
-  const rows = keys.map(fullFilepath => {
-    const [_, resourceId, encodedMimeType] =
-      path.basename(fullFilepath, '.json').split('.')
-    return {
-      id: resourceId,
-      url: `/space/${spaceId}/${collectionId}/${resourceId}`,
-      contentType: decodeURIComponent(encodedMimeType)
-    }
-  })
-  // Serialize using PouchDB/CouchDB results format
-  // each entry in 'rows' looks like: { id, url, contentType }
-  return {
-    offset: 0,
-    total_rows: keys.length,
-    rows
-  }
-}
-
-export function fileNameFor({ resourceId, contentType }) {
-  const encodedType = encodeURIComponent(contentType)
-  const extension = mime.extension(contentType) || 'blob'
-  return `r.${resourceId}.${encodedType}.${extension}`
+export async function deleteCollection({ spaceId, collectionId }) {
+  return backend.deleteCollection({ spaceId, collectionId })
 }
 
 /**
- * Create a non-JSON resource
- *
- * @param spaceId
- * @param collectionId
- * @param resourceId
- * @param request
- * @returns {Promise<void>}
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ */
+export async function listCollectionItems({ spaceId, collectionId }) {
+  return backend.listCollectionItems({ spaceId, collectionId })
+}
+
+/**
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.resourceId {string}
+ * @param options.request {object}
  */
 export async function writeResource({ spaceId, collectionId, resourceId, request }) {
-  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
-  const collectionDir = path.join(spacesRepository, spaceId, collectionId)
-  const requestContentType = request.headers['content-type']
-
-  let dataContentType, filename, filePath
-  if (isJson({ contentType: requestContentType })) {
-    const filename = fileNameFor({ resourceId, contentType: requestContentType })
-    const resourceJsonStore = new MetadataJsonStore({ file: path.join(collectionDir, filename) })
-    console.log('Creating JSON resource')
-    return await resourceJsonStore.write(request.body)
-  } else if (requestContentType.startsWith('multipart')) {
-    const data = request.file()
-    dataContentType = data.mimetype // multipart encoded files have their own type
-    filename = fileNameFor({ resourceId, contentType: dataContentType })
-    filePath = path.join(collectionDir, filename)
-
-    console.log('Writing multipart file, uploaded filename:', data.filename)
-    await pipeline(data.file, fs.createWriteStream(filePath))
-  } else {
-    filename = fileNameFor({ resourceId, contentType: requestContentType })
-    filePath = path.join(collectionDir, filename)
-
-    console.log('Writing non-multipart blob')
-    await pipeline(request.body, fs.createWriteStream(filePath))
-  }
-}
-
-export async function findFile ({ collectionDir, resourceId }) {
-  const [ filePath ] = await glob(path.join(collectionDir, `r.${resourceId}*`))
-  return filePath
-}
-
-export async function openFileStream ({ filePath }) {
-  try {
-    const resourceStream = fs.createReadStream(filePath)
-    return new Promise((resolve, reject) => {
-      resourceStream
-        .on('error', error => {
-          reject(new Error(`Error creating a read stream: ${error}`))
-        })
-        .on('open', () => {
-          console.info(`GET -- Reading ${filePath}`)
-          resolve(resourceStream)
-        })
-    })
-  } catch (e) {
-    console.warn(`GET -- error reading ${filePath}: ${error.message}`)
-  }
+  return backend.writeResource({ spaceId, collectionId, resourceId, request })
 }
 
 /**
- * Deletes a given resource from storage.
- * @param spaceId {string}
- * @param collectionId {string}
- * @param resourceId {string}
- * @returns {Promise<void>}
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.resourceId {string}
+ * @param [options.contentType] {string}
  */
-export async function deleteResource ({ spaceId, collectionId, resourceId }) {
-  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
-  const collectionDir = path.join(spacesRepository, spaceId, collectionId)
-
-  // A given resourceId can have several different content type representations
-  // All of them need to be deleted (we're not going to ask the user to
-  //  specify which content type to delete)
-  const filesForResource = await glob(path.join(collectionDir, `r.${resourceId}*`))
-  return Promise.all(
-    filesForResource.map(async (filename) => { return rm(filename)})
-  )
+export async function getResource({ spaceId, collectionId, resourceId, contentType }) {
+  return backend.getResource({ spaceId, collectionId, resourceId, contentType })
 }
 
-export async function getResource ({ spaceId, collectionId, resourceId, contentType }) {
-  const spacesRepository = path.join(import.meta.dirname, '..', 'data', 'spaces')
-  const collectionDir = path.join(spacesRepository, spaceId, collectionId)
-
-  let filename, filePath, storedResourceType
-  if (contentType) {
-    filename = fileNameFor({ resourceId, contentType })
-    filePath = path.join(collectionDir, filename)
-    storedResourceType = contentType
-  } else {
-    filePath = await findFile({ collectionDir, resourceId })
-    storedResourceType = mime.lookup(filePath)
-  }
-
-  if (!filePath) {
-    throw new ResourceNotFoundError({ requestName: 'Get Resource' })
-  }
-
-  let resourceStream
-  // First, try to see if resource exists for the requested content type directly
-  try {
-    await fsStat(filePath)
-  } catch (e) {
-    if (e.code === 'ENOENT') {
-      throw new ResourceNotFoundError({ requestName: 'Get Resource' })
-    }
-    throw e
-  }
-
-  // File exists, return a stream on it
-  return { resourceStream: await openFileStream({ filePath }), storedResourceType }
+/**
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.resourceId {string}
+ */
+export async function deleteResource({ spaceId, collectionId, resourceId }) {
+  return backend.deleteResource({ spaceId, collectionId, resourceId })
 }

@@ -5,7 +5,7 @@
  */
 import { it, describe } from 'node:test'
 import assert from 'node:assert'
-import { fileNameFor } from '../src/storage.js'
+import { fileNameFor } from '../src/backends/filesystem.js'
 
 describe('Storage API', () => {
   describe('fileNameFor()', () => {
