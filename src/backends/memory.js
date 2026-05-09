@@ -112,10 +112,10 @@ export class MemoryBackend {
    */
   async listCollectionItems({spaceId, collectionId}) {
     const collection = this.collection(spaceId, collectionId)
-    const rows = []
+    const items = []
     for (const [key, {contentType}] of collection.resources) {
       const resourceId = key.split('::')[0]
-      rows.push({
+      items.push({
         id: resourceId,
         url: `/space/${spaceId}/${collectionId}/${resourceId}`,
         contentType
@@ -126,8 +126,8 @@ export class MemoryBackend {
       url: `/space/${spaceId}/${collectionId}`,
       name: collection.description.name,
       type: collection.description.type || ['Collection'],
-      totalItems: rows.length,
-      rows
+      totalItems: items.length,
+      items
     }
   }
 

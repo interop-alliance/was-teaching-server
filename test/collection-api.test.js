@@ -78,8 +78,8 @@ describe('Collections API', () => {
     assert.equal(listResponse.name, 'Verifiable Credentials')
     assert.deepStrictEqual(listResponse.type, ['Collection'])
     assert.equal(typeof listResponse.totalItems, 'number')
-    assert.ok(Array.isArray(listResponse.rows))
-    assert.equal(listResponse.totalItems, listResponse.rows.length)
+    assert.ok(Array.isArray(listResponse.items))
+    assert.equal(listResponse.totalItems, listResponse.items.length)
   })
 
   it('[root] get collection description via GET :collectionId', async () => {

@@ -175,7 +175,7 @@ export class FileSystemBackend {
     } catch (err) {
       console.error(err)
     }
-    const rows = keys.map(fullFilepath => {
+    const items = keys.map(fullFilepath => {
       const [, resourceId, encodedMimeType] =
         path.basename(fullFilepath, '.json').split('.')
       return {
@@ -189,8 +189,8 @@ export class FileSystemBackend {
       url: `/space/${spaceId}/${collectionId}`,
       name: collectionDescription.name,
       type: collectionDescription.type || ['Collection'],
-      totalItems: rows.length,
-      rows
+      totalItems: items.length,
+      items
     }
   }
 
