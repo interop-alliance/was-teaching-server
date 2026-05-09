@@ -184,8 +184,6 @@ export class FileSystemBackend {
         contentType: decodeURIComponent(encodedMimeType)
       }
     })
-    // Serialize using PouchDB/CouchDB results format
-    // each entry in 'rows' looks like: { id, url, contentType }
     return {
       id: collectionId,
       url: `/space/${spaceId}/${collectionId}`,
