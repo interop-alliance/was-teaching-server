@@ -122,8 +122,11 @@ export class MemoryBackend {
       })
     }
     return {
-      offset: 0,
-      total_rows: rows.length,
+      id: collectionId,
+      url: `/space/${spaceId}/${collectionId}`,
+      name: collection.description.name,
+      type: collection.description.type || ['Collection'],
+      totalItems: rows.length,
       rows
     }
   }

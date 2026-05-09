@@ -167,6 +167,7 @@ export class FileSystemBackend {
    */
   async listCollectionItems ({ spaceId, collectionId }) {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const collectionDescription = await this.getCollectionDescription({ spaceId, collectionId })
     let keys
     try {
       // Array of filename keys (see fileNameFor() for details)
@@ -186,8 +187,11 @@ export class FileSystemBackend {
     // Serialize using PouchDB/CouchDB results format
     // each entry in 'rows' looks like: { id, url, contentType }
     return {
-      offset: 0,
-      total_rows: keys.length,
+      id: collectionId,
+      url: `/space/${spaceId}/${collectionId}`,
+      name: collectionDescription.name,
+      type: collectionDescription.type || ['Collection'],
+      totalItems: rows.length,
       rows
     }
   }
