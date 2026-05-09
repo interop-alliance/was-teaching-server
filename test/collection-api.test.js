@@ -72,7 +72,14 @@ describe('Collections API', () => {
       method: 'GET'
     })
     assert.equal(response.status, 200)
-    console.log(response.data)
+    const listResponse = response.data
+    assert.equal(listResponse.id, 'credentials')
+    assert.equal(listResponse.url, `/space/${alice.space1.id}/credentials`)
+    assert.equal(listResponse.name, 'Verifiable Credentials')
+    assert.deepStrictEqual(listResponse.type, ['Collection'])
+    assert.equal(typeof listResponse.totalItems, 'number')
+    assert.ok(Array.isArray(listResponse.rows))
+    assert.equal(listResponse.totalItems, listResponse.rows.length)
   })
 
   it('[root] get collection description via GET :collectionId', async () => {
