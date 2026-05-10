@@ -26,7 +26,8 @@
     "pino": "^9.9.5",
     "pino-pretty": "^13.1.1",
     "tar-stream": "^3.2.0",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "yaml": "^2.8.4"
   },
   "devDependencies": {
     "@digitalcredentials/ezcap": "^6.0.0",

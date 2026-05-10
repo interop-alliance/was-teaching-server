@@ -98,3 +98,11 @@ export async function getResource({ spaceId, collectionId, resourceId, contentTy
 export async function deleteResource({ spaceId, collectionId, resourceId }) {
   return backend.deleteResource({ spaceId, collectionId, resourceId })
 }
+
+/**
+ * @param options {object}
+ * @param options.spaceId {string}
+ */
+export async function exportSpace({ spaceId }) {
+  return backend.exportSpace({ spaceId })
+}
