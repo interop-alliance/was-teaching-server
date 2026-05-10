@@ -3,6 +3,7 @@ import { handleZcapVerify } from '../zcap.js'
 import { InvalidSpaceIdError, SpaceNotFoundError } from '../errors.js'
 import { writeCollection, deleteSpace, getSpaceDescription, writeSpace }
   from '../storage.js'
+import { exportSpace } from '../lib/export.js'
 
 export class SpaceRequest {
   /**
@@ -164,6 +165,46 @@ export class SpaceRequest {
     await deleteSpace({ spaceId })
 
     return reply.status(204).send()
+  }
+
+  /**
+   * POST /space/:spaceId/export
+   * Request handler for "Export Space" request
+   * Before this, `parseAuthHeaders()` hook executed, resulting in:
+   * request:
+   * POST /space/12345/export HTTP/1.1
+   * Host: example.com
+   * Authorization: ...
+   * Accept: application/x-tar
+   * Content-Length: 0
+
+   * Response:
+   * HTTP/1.1 200 OK
+   * Content-type: application/x-tar
+   * Transfer-Encoding: chunked
+   *
+   * <binary data of the resulting .tar file>
+   */
+  static async export (request, reply) {
+    const { params: { spaceId }, url, method, headers } = request
+    const { serverUrl } = this
+
+    // Fetch the space by id, from storage. Needed for signature verification.
+    const spaceDescription = await getSpaceDescription({ spaceId })
+    if (!spaceDescription) {
+      throw new SpaceNotFoundError({ requestName: 'Export Space' })
+    }
+    const spaceController = spaceDescription.controller
+
+    // Perform zCap signature verification (throws appropriate errors)
+    const allowedTarget = (new URL(`/space/${spaceId}/export`, serverUrl)).toString()
+    await handleZcapVerify({ url, allowedTarget, allowedAction: 'POST', method,
+      headers, serverUrl, spaceController })
+
+    // zCap checks out, continue
+    const tarFile = await exportSpace({ spaceId })
+
+    return reply.status(200).type('application/x-tar').send(tarFile)
   }
 }
 

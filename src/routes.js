@@ -52,6 +52,9 @@ export async function initSpaceRoutes (app, options) {
   app.post('/space/:spaceId',
     async (request, reply) => reply.redirect('/space/:spaceId/'))
   app.post('/space/:spaceId/', SpaceRequest.post)
+
+  // POST /space/12345/export
+  app.post('/space/:spaceId/export', SpaceRequest.export)
 }
 
 export async function initCollectionRoutes (app, options) {
