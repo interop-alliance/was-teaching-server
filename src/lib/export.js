@@ -5,7 +5,7 @@ import { getSpaceDescription } from '../storage.js'
 import { UBC_MANIFEST_URL, SPACE_URL, COLLECTION_URL, RESOURCE_URL } from '../../config.default.js'
 import { SpaceNotFoundError } from '../errors.js'
 
-export const exportSpace = async ({ spaceId }) => {
+export async function exportSpace ({ spaceId }) {
   const spaceDescription = await getSpaceDescription({ spaceId })
   if (!spaceDescription) {
     throw new SpaceNotFoundError({ requestName: 'Export Space' })
