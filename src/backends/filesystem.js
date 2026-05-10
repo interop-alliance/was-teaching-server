@@ -4,9 +4,17 @@ import { pipeline } from 'node:stream/promises'
 import fs from 'node:fs'
 import jsonfs from 'fs-json-store'
 import { glob } from 'glob'
-import { StorageError, ResourceNotFoundError } from '../errors.js'
+import { StorageError, ResourceNotFoundError, SpaceNotFoundError } from '../errors.js'
 import mime from 'mime-types'
 import { isJson } from '../lib/isJson.js'
+import tar from 'tar-stream'
+import YAML from 'yaml'
+import {
+  UBC_MANIFEST_URL,
+  SPACE_URL,
+  COLLECTION_URL,
+  RESOURCE_URL
+} from '../../config.default.js'
 
 const { Store: MetadataJsonStore } = jsonfs
 
@@ -120,6 +128,96 @@ export class FileSystemBackend {
    */
   async deleteSpace ({ spaceId }) {
     return await rm(this._spaceDir(spaceId), { recursive: true })
+  }
+
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @returns {Promise<Pack>} tar-stream pack
+   */
+  async exportSpace ({ spaceId }) {
+    const spaceDescription = await this.getSpaceDescription({ spaceId })
+    if (!spaceDescription) {
+      throw new SpaceNotFoundError({ requestName: 'Export Space' })
+    }
+
+    const sourceSpaceDir = this._spaceDir(spaceId)
+    const spaceEntries = await fs.promises.readdir(sourceSpaceDir, { withFileTypes: true })
+    spaceEntries.sort((a, b) => a.name.localeCompare(b.name))
+
+    const collectionEntriesByDir = {}
+    for (const entry of spaceEntries) {
+      if (!entry.isDirectory()) continue
+      const entries = await fs.promises.readdir(path.join(sourceSpaceDir, entry.name), { withFileTypes: true })
+      collectionEntriesByDir[entry.name] = entries
+        .filter(e => e.isFile())
+        .sort((a, b) => a.name.localeCompare(b.name))
+    }
+
+    const spaceContents = []
+    for (const entry of spaceEntries) {
+      if (!entry.isDirectory()) {
+        // top-level files in space (e.g. .space.<spaceId>.json)
+        spaceContents.push(entry.name)
+        continue
+      }
+
+      const collectionContents = []
+      for (const file of collectionEntriesByDir[entry.name]) {
+        if (file.name.startsWith('.collection.')) {
+          collectionContents.push({ [file.name]: { url: COLLECTION_URL } })
+        } else if (file.name.startsWith('r.')) {
+          collectionContents.push({ [file.name]: { url: RESOURCE_URL } })
+        } else {
+          collectionContents.push(file.name)
+        }
+      }
+
+      spaceContents.push({
+        [entry.name]: {
+          contents: collectionContents
+        }
+      })
+    }
+
+    const manifest = {
+      'ubc-version': '0.1',
+      contents: {
+        'manifest.yml': { url: UBC_MANIFEST_URL },
+        space: {
+          url: SPACE_URL,
+          contents: {
+            [spaceId]: {
+              url: SPACE_URL,
+              contents: spaceContents
+            }
+          }
+        }
+      }
+    }
+
+    const pack = tar.pack()
+    pack.entry({ name: 'manifest.yml' }, YAML.stringify(manifest))
+    pack.entry({ name: 'space/', type: 'directory' })
+    pack.entry({ name: `space/${spaceId}/`, type: 'directory' })
+
+    for (const entry of spaceEntries) {
+      const entryTarget = `space/${spaceId}/${entry.name}`
+
+      if (entry.isDirectory()) {
+        pack.entry({ name: `${entryTarget}/`, type: 'directory' })
+        for (const file of collectionEntriesByDir[entry.name]) {
+          const bytes = await fs.promises.readFile(path.join(sourceSpaceDir, entry.name, file.name))
+          pack.entry({ name: `${entryTarget}/${file.name}` }, bytes)
+        }
+      } else if (entry.isFile()) {
+        const bytes = await fs.promises.readFile(path.join(sourceSpaceDir, entry.name))
+        pack.entry({ name: entryTarget }, bytes)
+      }
+    }
+
+    pack.finalize()
+    return pack
   }
 
   // Collections

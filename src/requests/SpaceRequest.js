@@ -1,9 +1,8 @@
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { InvalidSpaceIdError, SpaceNotFoundError } from '../errors.js'
-import { writeCollection, deleteSpace, getSpaceDescription, writeSpace }
+import { writeCollection, deleteSpace, getSpaceDescription, writeSpace, exportSpace }
   from '../storage.js'
-import { exportSpace } from '../lib/export.js'
 
 export class SpaceRequest {
   /**

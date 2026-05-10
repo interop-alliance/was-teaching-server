@@ -5,7 +5,12 @@
  */
 import { it, describe } from 'node:test'
 import assert from 'node:assert'
-import { fileNameFor } from '../src/backends/filesystem.js'
+import os from 'node:os'
+import path from 'node:path'
+import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import tar from 'tar-stream'
+import YAML from 'yaml'
+import { FileSystemBackend, fileNameFor } from '../src/backends/filesystem.js'
 
 describe('Storage API', () => {
   describe('fileNameFor()', () => {
@@ -14,6 +19,94 @@ describe('Storage API', () => {
         resourceId: '12345', shortname: 'blog-post', contentType: 'application/json'
       })
       assert.equal(filename, 'r.12345.application%2Fjson.json')
+    })
+  })
+
+  describe('FileSystemBackend.exportSpace()', () => {
+    it('should export space tarball with manifest and serialized files', async () => {
+      const tempDir = await mkdtemp(path.join(os.tmpdir(), 'was-export-test-'))
+      await mkdir(path.join(tempDir, 'spaces'))
+      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const spaceId = 'test-space'
+      const collectionId = 'credentials'
+      const resourceId = 'credential-1'
+
+      try {
+        await backend.writeSpace({
+          spaceId,
+          spaceDescription: {
+            id: spaceId,
+            type: ['Space'],
+            name: 'Export Test Space',
+            controller: 'did:key:test-controller'
+          }
+        })
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionDescription: {
+            id: collectionId,
+            type: ['Collection'],
+            name: 'Verifiable Credentials'
+          }
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId,
+          request: {
+            headers: { 'content-type': 'application/json' },
+            body: {
+              id: resourceId,
+              type: ['VerifiableCredential']
+            }
+          }
+        })
+
+        const pack = await backend.exportSpace({ spaceId })
+        const entries = []
+        const extract = tar.extract()
+
+        await new Promise((resolve, reject) => {
+          extract.on('entry', (header, stream, next) => {
+            const chunks = []
+            stream.on('data', chunk => chunks.push(Buffer.from(chunk)))
+            stream.on('end', () => {
+              entries.push({
+                name: header.name,
+                body: Buffer.concat(chunks)
+              })
+              next()
+            })
+            stream.on('error', reject)
+          })
+          extract.on('finish', resolve)
+          extract.on('error', reject)
+          pack.on('error', reject)
+          pack.pipe(extract)
+        })
+
+        const resourceFilename = fileNameFor({ resourceId, contentType: 'application/json' })
+        const entryNames = entries.map(entry => entry.name)
+
+        assert.ok(entryNames.includes('manifest.yml'))
+        assert.ok(entryNames.includes('space/'))
+        assert.ok(entryNames.includes(`space/${spaceId}/`))
+        assert.ok(entryNames.includes(`space/${spaceId}/.space.${spaceId}.json`))
+        assert.ok(entryNames.includes(`space/${spaceId}/${collectionId}/`))
+        assert.ok(entryNames.includes(`space/${spaceId}/${collectionId}/.collection.${collectionId}.json`))
+        assert.ok(entryNames.includes(`space/${spaceId}/${collectionId}/${resourceFilename}`))
+
+        const manifestEntry = entries.find(entry => entry.name === 'manifest.yml')
+        assert.ok(manifestEntry)
+        const manifest = YAML.parse(manifestEntry.body.toString('utf8'))
+
+        assert.equal(manifest['ubc-version'], '0.1')
+        assert.equal(manifest.contents.space.url,
+          'https://digitalcredentials.github.io/wallet-attached-storage-spec/#spaces')
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
     })
   })
 })
