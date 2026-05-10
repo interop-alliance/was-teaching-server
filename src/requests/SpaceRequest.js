@@ -170,20 +170,6 @@ export class SpaceRequest {
   /**
    * POST /space/:spaceId/export
    * Request handler for "Export Space" request
-   * Before this, `parseAuthHeaders()` hook executed, resulting in:
-   * request:
-   * POST /space/12345/export HTTP/1.1
-   * Host: example.com
-   * Authorization: ...
-   * Accept: application/x-tar
-   * Content-Length: 0
-
-   * Response:
-   * HTTP/1.1 200 OK
-   * Content-type: application/x-tar
-   * Transfer-Encoding: chunked
-   *
-   * <binary data of the resulting .tar file>
    */
   static async export (request, reply) {
     const { params: { spaceId }, url, method, headers } = request
