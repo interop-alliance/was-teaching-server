@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { InvalidSpaceIdError, SpaceNotFoundError } from '../errors.js'
-import { writeCollection, deleteSpace, getSpaceDescription, writeSpace, exportSpace }
+import { writeCollection, deleteSpace, getSpaceDescription, writeSpace, exportSpace, listCollections }
   from '../storage.js'
 
 export class SpaceRequest {
@@ -190,6 +190,31 @@ export class SpaceRequest {
     const tarFile = await exportSpace({ spaceId })
 
     return reply.status(200).type('application/x-tar').send(tarFile)
+  }
+
+  static async listCollections (request, reply) {
+    const { params: { spaceId }, url, method, headers } = request
+    const { serverUrl } = this
+
+    // Fetch the space by id, from storage. Needed for signature verification.
+    const spaceDescription = await getSpaceDescription({ spaceId })
+    if (!spaceDescription) {
+      throw new SpaceNotFoundError({ requestName: 'List Collections' })
+    }
+    const spaceController = spaceDescription.controller
+
+    // Perform zCap signature verification (throws appropriate errors)
+    const allowedTarget = (new URL(`/space/${spaceId}/collections/`, serverUrl)).toString()
+    await handleZcapVerify({ url, allowedTarget, allowedAction: 'GET', method,
+      headers, serverUrl, spaceController })
+
+    const collections = await listCollections({ spaceId })
+    console.log('🚀 ~ SpaceRequest ~ listCollections ~ collections:', collections)
+    return reply.status(200).send({
+      url: `/space/${spaceId}/collections/`,
+      totalItems: collections.length,
+      items: collections
+    })
   }
 }
 
