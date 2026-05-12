@@ -45,7 +45,10 @@ export async function initSpaceRoutes (app, options) {
   app.delete('/space/:spaceId', SpaceRequest.delete)
 
   // List Collections for a space
-  // TODO
+  app.put('/space/:spaceId/collections',
+    async (request, reply) => reply.redirect('/space/:spaceId/collections/'))
+  app.get('/space/:spaceId/collections/', SpaceRequest.listCollections)
+
   app.get('/space/:spaceId/', async (request, reply) => {})
 
   // Add Collection to a Space

@@ -69,6 +69,22 @@ export class MemoryBackend {
     this._spaces.delete(spaceId)
   }
 
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
+   */
+  async listCollections({spaceId}) {
+    const space = this.space(spaceId)
+    const items = []
+    for (const [collectionId] of space.collections) {
+      items.push({
+        id: collectionId,
+        url: `/space/${spaceId}/${collectionId}`
+      })
+    }
+    return items
+  }
+
   // Collections
 
   /**

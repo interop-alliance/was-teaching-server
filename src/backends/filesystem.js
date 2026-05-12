@@ -133,6 +133,23 @@ export class FileSystemBackend {
   /**
    * @param options {object}
    * @param options.spaceId {string}
+   * @returns {Promise<object[]>}
+   */
+  async listCollections ({ spaceId }) {
+    const spaceDir = this._spaceDir(spaceId)
+    const spaceEntries = await fs.promises.readdir(spaceDir, { withFileTypes: true })
+    const collectionEntries = spaceEntries
+      .filter(entry => entry.isDirectory())
+      .sort((a, b) => a.name.localeCompare(b.name))
+    return collectionEntries.map(entry => ({
+      id: entry.name,
+      url: `/space/${spaceId}/${entry.name}`
+    }))
+  }
+
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
    * @returns {Promise<Pack>} tar-stream pack
    */
   async exportSpace ({ spaceId }) {
