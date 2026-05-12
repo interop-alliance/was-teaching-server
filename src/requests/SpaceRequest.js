@@ -209,7 +209,6 @@ export class SpaceRequest {
       headers, serverUrl, spaceController })
 
     const collections = await listCollections({ spaceId })
-    console.log('🚀 ~ SpaceRequest ~ listCollections ~ collections:', collections)
     return reply.status(200).send({
       url: `/space/${spaceId}/collections/`,
       totalItems: collections.length,
