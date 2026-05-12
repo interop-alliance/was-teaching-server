@@ -33,6 +33,14 @@ export async function deleteSpace({ spaceId }) {
 /**
  * @param options {object}
  * @param options.spaceId {string}
+ */
+export async function listCollections({ spaceId }) {
+  return backend.listCollections({ spaceId })
+}
+
+/**
+ * @param options {object}
+ * @param options.spaceId {string}
  * @param options.collectionId {string}
  * @param options.collectionDescription {object}
  */
