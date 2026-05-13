@@ -4,8 +4,8 @@
   "version": "0.0.4",
   "scripts": {
     "start": "node src/start.js | pino-pretty",
-    "test": "node --test test/*",
-    "testonly": "node --test-only test/*",
+    "test": "node test/setup.js",
+    "testonly": "node test/setup.js --test-only",
     "conformance": "node --test conformance/*.test.js"
   },
   "dependencies": {
