@@ -141,10 +141,20 @@ export class FileSystemBackend {
     const collectionEntries = spaceEntries
       .filter(entry => entry.isDirectory())
       .sort((a, b) => a.name.localeCompare(b.name))
-    return collectionEntries.map(entry => ({
-      id: entry.name,
-      url: `/space/${spaceId}/${entry.name}`
-    }))
+    const collections = []
+    for (const entry of collectionEntries) {
+      const collectionDescription = await this.getCollectionDescription({
+        spaceId,
+        collectionId: entry.name
+      })
+      collections.push({
+        id: entry.name,
+        url: `/space/${spaceId}/${entry.name}`,
+        name: collectionDescription.name
+      })
+    }
+
+    return collections
   }
 
   /**

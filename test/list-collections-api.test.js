@@ -73,7 +73,8 @@ describe('List Collections API', () => {
       items: [
         {
           id: collectionId,
-          url: `/space/${spaceId}/${collectionId}`
+          url: `/space/${spaceId}/${collectionId}`,
+          name: 'List Collections Test Collection'
         }
       ]
     })

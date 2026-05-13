@@ -76,10 +76,11 @@ export class MemoryBackend {
   async listCollections({spaceId}) {
     const space = this.space(spaceId)
     const items = []
-    for (const [collectionId] of space.collections) {
+    for (const [collectionId, collection] of space.collections) {
       items.push({
         id: collectionId,
-        url: `/space/${spaceId}/${collectionId}`
+        url: `/space/${spaceId}/${collectionId}`,
+        name: collection.description.name
       })
     }
     return items
