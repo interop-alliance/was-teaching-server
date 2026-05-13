@@ -15,6 +15,7 @@ describe('Spaces', () => {
     ({ alice, aliceDelegatedApp, bob } = await buildZcapClients())
     alice.space1 = { id: generateId() }
     alice.space2 = { id: generateId() }
+    alice.space3 = { id: generateId() }
     // Pre-create alice.space1 so tests that need an existing space are not
     // implicitly coupled to the creation test's ordering
     await createSpace({
@@ -24,7 +25,7 @@ describe('Spaces', () => {
   })
 
   after(async () => {
-    for (const spaceId of [alice.space1.id, alice.space2.id]) {
+    for (const spaceId of [alice.space1.id, alice.space2.id, alice.space3.id]) {
       try {
         await alice.rootClient.request({
           url: new URL(`/space/${spaceId}`, serverUrl).toString(),
@@ -179,6 +180,53 @@ describe('Spaces', () => {
         checkResponse = err.response
       }
       assert.equal(checkResponse.status, 404)
+    })
+  })
+
+  describe('Collections API', () => {
+    let collectionId, resourceId
+
+    before(async () => {
+      collectionId = generateId()
+      resourceId = generateId()
+
+      await createSpace({
+        spaceDescription: { id: alice.space3.id, name: "Alice's Space #3 (Collections Test)", controller: alice.did },
+        rootClient: alice.rootClient
+      })
+
+      await alice.rootClient.request({
+        url: new URL(`/space/${alice.space3.id}/${collectionId}`, serverUrl).toString(),
+        method: 'PUT',
+        json: { id: collectionId, name: 'Test Collection' }
+      })
+
+      await alice.rootClient.request({
+        url: new URL(`/space/${alice.space3.id}/${collectionId}/${resourceId}`, serverUrl).toString(),
+        method: 'PUT',
+        json: { id: resourceId, name: 'Test Resource' }
+      })
+    })
+
+    it('[root] GET /space/:spaceId/collections/ lists collections for a space', async () => {
+      const collectionsUrl = new URL(`/space/${alice.space3.id}/collections/`, serverUrl).toString()
+
+      const response = await alice.rootClient.request({
+        url: collectionsUrl,
+        method: 'GET'
+      })
+
+      assert.equal(response.status, 200)
+      assert.deepStrictEqual(response.data, {
+        url: `/space/${alice.space3.id}/collections/`,
+        totalItems: 1,
+        items: [
+          {
+            id: collectionId,
+            url: `/space/${alice.space3.id}/${collectionId}`
+          }
+        ]
+      })
     })
   })
 })
