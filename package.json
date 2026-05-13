@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node src/start.js | pino-pretty",
     "test": "node --test test/*",
-    "testonly": "node --test-only test/*"
+    "testonly": "node --test-only test/*",
+    "conformance": "node --test conformance/*.test.js"
   },
   "dependencies": {
     "@digitalbazaar/http-signature-header": "^5.0.1",
