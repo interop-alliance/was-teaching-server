@@ -1,5 +1,9 @@
 # History
 
+## 0.0.5 - 2026-05-11
+### Added
+- Implement 'List Collections' request.
+
 ## 0.0.4 - 2026-05-11
 ### Changed
 - Refactor storage.js into file and memory backends.
