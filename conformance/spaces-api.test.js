@@ -1,0 +1,184 @@
+/**
+ * WAS conformance tests — Spaces Repository and Space API
+ * Using Node.js test runner
+ * @see https://nodejs.org/api/test.html
+ */
+import { it, describe, before, after } from 'node:test'
+import assert from 'node:assert'
+
+import { buildZcapClients, createSpace, generateId, zcapClient, serverUrl } from './helpers.js'
+
+describe('Spaces', () => {
+  let alice, aliceDelegatedApp, bob
+
+  before(async () => {
+    ({ alice, aliceDelegatedApp, bob } = await buildZcapClients())
+    alice.space1 = { id: generateId() }
+    alice.space2 = { id: generateId() }
+    // Pre-create alice.space1 so tests that need an existing space are not
+    // implicitly coupled to the creation test's ordering
+    await createSpace({
+      spaceDescription: { id: alice.space1.id, name: "Alice's Space #1 (Home)", controller: alice.did },
+      rootClient: alice.rootClient
+    })
+  })
+
+  after(async () => {
+    for (const spaceId of [alice.space1.id, alice.space2.id]) {
+      try {
+        await alice.rootClient.request({
+          url: new URL(`/space/${spaceId}`, serverUrl).toString(),
+          method: 'DELETE'
+        })
+      } catch { /* best-effort cleanup */ }
+    }
+  })
+
+  describe('Spaces Repository API', () => {
+    it('GET /spaces/ should 401 error when no authorization headers', async () => {
+      const response = await fetch(new URL('/spaces/', serverUrl))
+      assert.equal(response.status, 401)
+      assert.match(response.headers.get('content-type'), /application\/problem\+json/)
+    })
+
+    it('POST /spaces/ should 401 error when no authorization headers', async () => {
+      const response = await fetch(new URL('/spaces/', serverUrl), { method: 'POST' })
+      assert.equal(response.status, 401)
+      assert.match(response.headers.get('content-type'), /application\/problem\+json/)
+    })
+  })
+
+  describe('Space API', () => {
+    it('[root] create space via POST', async () => {
+      const freshSpaceId = generateId()
+      const spaceDescription = {
+        id: freshSpaceId, name: 'Conformance Test Space', controller: alice.did
+      }
+      const response = await createSpace({ spaceDescription, rootClient: alice.rootClient })
+      assert.equal(response.status, 201)
+      assert.deepStrictEqual(response.data, {
+        id: freshSpaceId,
+        name: 'Conformance Test Space',
+        type: ['Space'],
+        controller: alice.did
+      })
+      assert.match(response.headers.get('content-type'), /application\/json/)
+      assert.equal(response.headers.get('location'), `${serverUrl}/spaces/${freshSpaceId}`)
+
+      // Clean up the space created by this test
+      await alice.rootClient.request({
+        url: new URL(`/space/${freshSpaceId}`, serverUrl).toString(),
+        method: 'DELETE'
+      })
+    })
+
+    it('[root] create space by id via PUT', async () => {
+      const spaceDescription = {
+        id: alice.space2.id, name: "Alice's Space #2 (School)", controller: alice.did
+      }
+      const spaceUrl = new URL(`/space/${alice.space2.id}`, serverUrl).toString()
+      const response = await alice.rootClient.request({
+        url: spaceUrl, method: 'PUT', json: spaceDescription
+      })
+
+      assert.equal(response.headers.get('location'), spaceUrl)
+
+      const checkResponse = await alice.rootClient.request({
+        url: spaceUrl, method: 'GET'
+      })
+      assert.equal(checkResponse.status, 200)
+    })
+
+    it('GET /space/:spaceId should 401 error when no authorization headers', async () => {
+      const spaceUrl = new URL(`/space/${alice.space1.id}`, serverUrl).toString()
+      const response = await fetch(spaceUrl, { method: 'GET' })
+      assert.equal(response.status, 401)
+      assert.match(response.headers.get('content-type'), /application\/problem\+json/)
+    })
+
+    it('GET /space/:spaceId should 404 error on not found space id', async () => {
+      const spaceUrl = new URL('/space/space-id-that-does-not-exist', serverUrl).toString()
+      let expectedError
+      try {
+        await alice.rootClient.request({ url: spaceUrl, method: 'GET', action: 'GET' })
+      } catch (err) {
+        expectedError = err
+      }
+      assert.equal(expectedError.response.status, 404)
+      assert.match(expectedError.response.headers.get('content-type'), /application\/problem\+json/)
+    })
+
+    it('[root] read space via GET with proper authorization', async () => {
+      const spaceUrl = new URL(`/space/${alice.space1.id}`, serverUrl).toString()
+      const response = await alice.rootClient.request({
+        url: spaceUrl, method: 'GET', action: 'GET'
+      })
+      assert.equal(response.status, 200)
+      assert.match(response.headers.get('content-type'), /application\/json/)
+      assert.deepStrictEqual(response.data, {
+        id: alice.space1.id,
+        name: "Alice's Space #1 (Home)",
+        type: ['Space'],
+        controller: alice.did
+      })
+    })
+
+    it('[delegated] authorized app should GET /space/:spaceId', async () => {
+      const aliceAppClient = zcapClient({ signer: aliceDelegatedApp.signer })
+      const spaceUrl = new URL(`/space/${alice.space1.id}`, serverUrl).toString()
+
+      const delegatedSpaceCapability = await alice.rootClient.delegate({
+        allowedActions: ['GET'], invocationTarget: spaceUrl,
+        controller: aliceDelegatedApp.did
+      })
+
+      const appResponse = await aliceAppClient.request({
+        url: spaceUrl, capability: delegatedSpaceCapability,
+        method: 'GET', action: 'GET'
+      })
+      assert.equal(appResponse.status, 200)
+      assert.match(appResponse.headers.get('content-type'), /application\/json/)
+      assert.deepStrictEqual(appResponse.data, {
+        id: alice.space1.id,
+        name: "Alice's Space #1 (Home)",
+        type: ['Space'],
+        controller: alice.did
+      })
+    })
+
+    it('[root] Bob should not be able to GET Alice space', async () => {
+      const spaceUrl = new URL(`/space/${alice.space1.id}`, serverUrl).toString()
+      let expectedError
+      try {
+        await bob.rootClient.request({ url: spaceUrl, action: 'GET' })
+      } catch (err) {
+        expectedError = err
+      }
+      // Bob gets a 404 instead of a 403 to avoid revealing the space's existence
+      assert.equal(expectedError.response.status, 404)
+      assert.match(expectedError.response.headers.get('content-type'), /application\/problem\+json/)
+    })
+
+    it('[root] Alice should be able to DELETE her provisioned space', async () => {
+      const spaceId = generateId()
+      await createSpace({
+        spaceDescription: { id: spaceId, name: 'Space to Delete', controller: alice.did },
+        rootClient: alice.rootClient
+      })
+
+      const spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
+      const deleteResponse = await alice.rootClient.request({
+        url: spaceUrl, method: 'DELETE'
+      })
+      assert.equal(deleteResponse.status, 204)
+
+      let checkResponse
+      try {
+        await alice.rootClient.request({ url: spaceUrl, method: 'GET' })
+      } catch (err) {
+        checkResponse = err.response
+      }
+      assert.equal(checkResponse.status, 404)
+    })
+  })
+})
