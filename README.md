@@ -77,10 +77,6 @@ SERVER_URL='http://localhost:3002' PORT=3002 npm start
 ```
 npm test
 ```
-or
-```
-yarn test
-```
 
 ## Security
 

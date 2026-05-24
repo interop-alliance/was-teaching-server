@@ -232,4 +232,26 @@ describe('Resource API', () => {
 
     assert.equal(checkResponse.status, 404)
   })
+
+  it.only('[un-authorized!] Read a public Resource by acl policy', async () => {
+    // Create new public collection
+    const collectionId = 'public-collection'
+    const collectionUrl =
+      (new URL(`/space/${alice.space1.id}/${collectionId}`, serverUrl)).toString()
+    const body = {
+      id: collectionId, name: 'Public Collection'
+    }
+    await alice.rootClient.request({
+      url: collectionUrl, method: 'PUT', json: body
+    })
+
+    // Check it was created
+    const existResponse = await alice.rootClient.request({
+      url: collectionUrl, method: 'GET'
+    })
+    assert.equal(existResponse.status, 200)
+
+    // Cleanup: Delete collection
+    await alice.rootClient.request({ url: collectionUrl, method: 'DELETE' })
+  })
 })

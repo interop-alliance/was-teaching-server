@@ -20,8 +20,9 @@ export async function initSpacesRepositoryRoutes (app, options) {
 
   // List Spaces
   app.get('/spaces', async (request, reply) => reply.redirect('/spaces/'))
-  // TODO
-  app.get('/spaces/', async (request, reply) => {})
+
+  // TODO - Implement the 'List Spaces' request (spec: #list-spaces)
+  app.get('/spaces/', async (request, reply) => reply.status(501).send())
 }
 
 export async function initSpaceRoutes (app, options) {
@@ -48,8 +49,6 @@ export async function initSpaceRoutes (app, options) {
   app.put('/space/:spaceId/collections',
     async (request, reply) => reply.redirect('/space/:spaceId/collections/'))
   app.get('/space/:spaceId/collections/', SpaceRequest.listCollections)
-
-  app.get('/space/:spaceId/', async (request, reply) => {})
 
   // Add Collection to a Space
   app.post('/space/:spaceId',
