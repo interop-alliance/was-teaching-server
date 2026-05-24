@@ -223,6 +223,7 @@ describe('Spaces', () => {
         items: [
           {
             id: collectionId,
+            name: 'Test Collection',
             url: `/space/${alice.space3.id}/${collectionId}`
           }
         ]

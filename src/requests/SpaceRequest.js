@@ -1,3 +1,7 @@
+/**
+ * Request handlers for Space operations: get/update/delete a Space, add a
+ * Collection to it, list its Collections, and export it.
+ */
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { InvalidSpaceIdError, SpaceNotFoundError } from '../errors.js'

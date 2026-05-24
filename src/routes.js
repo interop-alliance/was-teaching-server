@@ -1,3 +1,8 @@
+/**
+ * Route layer: maps URL patterns to *Request handler methods. Each group first
+ * installs the `requireAuthHeaders` then `parseAuthHeaders` onRequest hooks, and
+ * redirects slash/no-slash variants to the canonical form.
+ */
 import { SpacesRepositoryRequest } from './requests/SpacesRepositoryRequest.js'
 import { SpaceRequest } from './requests/SpaceRequest.js'
 import { handleError } from './errors.js'

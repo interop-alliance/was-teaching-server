@@ -1,3 +1,9 @@
+/**
+ * In-memory persistence backend: stores Spaces, Collections, and Resources in
+ * nested Maps. One of two interchangeable backends; implements the
+ * StorageBackend contract documented in storage.js (same method shape as
+ * FileSystemBackend).
+ */
 import { Readable } from 'node:stream'
 import { ResourceNotFoundError } from '../errors.js'
 import { isJson } from '../lib/isJson.js'
@@ -58,7 +64,8 @@ export class MemoryBackend {
    * @param options.spaceId {string}
    */
   async getSpaceDescription({spaceId}) {
-    return this.space(spaceId).description
+    // Contract: resolve falsy (not throw) when the Space does not exist.
+    return this._spaces.get(spaceId)?.description
   }
 
   /**
@@ -110,7 +117,8 @@ export class MemoryBackend {
    * @param options.collectionId {string}
    */
   async getCollectionDescription({spaceId, collectionId}) {
-    return this.collection(spaceId, collectionId).description
+    // Contract: resolve falsy (not throw) when the Space/Collection is absent.
+    return this._spaces.get(spaceId)?.collections.get(collectionId)?.description
   }
 
   /**

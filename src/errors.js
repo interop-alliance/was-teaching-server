@@ -1,3 +1,7 @@
+/**
+ * Custom error classes (each carries title / detail / statusCode) plus
+ * handleError, the Fastify error handler installed by each route group.
+ */
 import { SPEC_URL } from '../config.default.js'
 
 export class SpaceNotFoundError extends Error {

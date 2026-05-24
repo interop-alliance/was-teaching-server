@@ -1,3 +1,9 @@
+/**
+ * Filesystem persistence backend: stores Spaces, Collections, and Resources as
+ * directories and files under `data/spaces/`. One of two interchangeable
+ * backends; implements the StorageBackend contract documented in storage.js
+ * (same method shape as MemoryBackend).
+ */
 import path from 'node:path'
 import { mkdir, rm, stat as fsStat } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'

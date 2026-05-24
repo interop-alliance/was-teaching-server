@@ -1,3 +1,8 @@
+/**
+ * Auth onRequest hooks: `requireAuthHeaders` (401 if Authorization /
+ * Capability-Invocation are missing) and `parseAuthHeaders` (parses the auth
+ * headers into `request.zcap`). Installed by every route group in routes.js.
+ */
 import { AuthHeaderParseError, MissingAuthError, MissingKeyIdError } from './errors.js'
 import { parseSignatureHeader } from '@digitalbazaar/http-signature-header'
 

@@ -1,3 +1,7 @@
+/**
+ * Request handlers for Resource operations: create-by-id, get, and delete a
+ * Resource (JSON object or binary blob).
+ */
 import { handleZcapVerify } from '../zcap.js'
 import {
   getCollectionDescription,

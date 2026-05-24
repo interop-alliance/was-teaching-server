@@ -1,3 +1,7 @@
+/**
+ * Request handler for SpacesRepository operations: 
+ * - POST /spaces/ (Create Space).
+ */
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { SpaceControllerMismatchError } from '../errors.js'

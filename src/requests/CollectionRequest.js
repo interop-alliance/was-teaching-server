@@ -1,3 +1,7 @@
+/**
+ * Request handlers for Collection operations: get/update/delete a Collection,
+ * list its items, and add a Resource to it.
+ */
 import { v4 as uuidv4 } from 'uuid'
 
 import { handleZcapVerify } from '../zcap.js'

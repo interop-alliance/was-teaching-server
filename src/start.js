@@ -1,3 +1,7 @@
+/**
+ * Entry point: reads SERVER_URL / PORT from env, builds the app via
+ * createApp() and starts listening.
+ */
 import { createApp } from './server.js'
 
 export async function startServer () {

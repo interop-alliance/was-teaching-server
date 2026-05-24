@@ -1,3 +1,8 @@
+/**
+ * ZCap verification: handleZcapVerify() checks the capability-invocation
+ * signature against the Space controller's Ed25519 key, synthesizing the root
+ * capability via the document loader.
+ */
 import { securityLoader } from '@digitalcredentials/security-document-loader'
 import { verifyCapabilityInvocation } from '@interop-alliance/http-signature-zcap-verify'
 import { Ed25519VerificationKey2020 } from '@digitalcredentials/ed25519-verification-key-2020'

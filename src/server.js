@@ -1,3 +1,8 @@
+/**
+ * App factory: createApp() builds the Fastify instance, registers plugins
+ * (cors, static, view, multipart), decorates `serverUrl`, and mounts the four
+ * route groups.
+ */
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import fastifyView from '@fastify/view'
