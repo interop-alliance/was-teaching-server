@@ -1,7 +1,7 @@
-import { ZcapClient } from '@digitalcredentials/ezcap'
-import { decodeSecretKeySeed } from 'bnid'
-import { Ed25519Signature2020 } from '@digitalcredentials/ed25519-signature-2020'
-import { Ed25519VerificationKey2020 } from '@digitalcredentials/ed25519-verification-key-2020'
+import { ZcapClient } from '@interop/ezcap'
+import { decodeSecretKeySeed } from '@digitalcredentials/bnid'
+import { Ed25519Signature2020 } from '@interop/ed25519-signature'
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
 export const fixtures = {
   alice: {
@@ -37,7 +37,7 @@ export const fixtures = {
 // const didKeyDriver = didKey.driver()
 // didKeyDriver.use({
 //   multibaseMultikeyHeader: 'z6Mk',
-//   fromMultibase: Ed25519VerificationKey2020.from
+//   fromMultibase: Ed25519VerificationKey.from
 // });
 export function client ({ signer }) {
   return new ZcapClient({
@@ -49,7 +49,7 @@ export function client ({ signer }) {
 
 export async function zcapClients () {
   // Set up Alice's root / admin key pair and client
-  const aliceAdminKeyPair = await Ed25519VerificationKey2020.generate({
+  const aliceAdminKeyPair = await Ed25519VerificationKey.generate({
     seed: fixtures.alice.secret.adminKeySeedBytes
   })
   const aliceRootDid = `did:key:${aliceAdminKeyPair.fingerprint()}`
@@ -58,7 +58,7 @@ export async function zcapClients () {
   const aliceRootClient = client({ signer: aliceRootSigner })
 
   // Set up a key pair for Alice's delegated app
-  const aliceDelegatedAppKeyPair = await Ed25519VerificationKey2020.generate({
+  const aliceDelegatedAppKeyPair = await Ed25519VerificationKey.generate({
     seed: fixtures.aliceDelegatedApp.secret.adminKeySeedBytes
   })
   const aliceDelegatedAppDid = `did:key:${aliceDelegatedAppKeyPair.fingerprint()}`
@@ -66,7 +66,7 @@ export async function zcapClients () {
   const aliceDelegatedAppSigner = aliceDelegatedAppKeyPair.signer()
 
   // Set up Bob's root / admin key pair and client
-  const bobAdminKeyPair = await Ed25519VerificationKey2020.generate({
+  const bobAdminKeyPair = await Ed25519VerificationKey.generate({
     seed: fixtures.bob.secret.adminKeySeedBytes
   })
   const bobRootDid = `did:key:${bobAdminKeyPair.fingerprint()}`
@@ -75,7 +75,7 @@ export async function zcapClients () {
   const bobRootClient = client({ signer: bobRootSigner })
 
   // Set up a key pair and signer for Bob's delegated app
-  const bobDelegatedAppKeyPair = await Ed25519VerificationKey2020.generate({
+  const bobDelegatedAppKeyPair = await Ed25519VerificationKey.generate({
     seed: fixtures.bobDelegatedApp.secret.adminKeySeedBytes
   })
   const bobDelegatedAppDid = `did:key:${bobDelegatedAppKeyPair.fingerprint()}`

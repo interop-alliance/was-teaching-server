@@ -1,7 +1,7 @@
-import { ZcapClient } from '@digitalcredentials/ezcap'
-import { decodeSecretKeySeed } from 'bnid'
-import { Ed25519Signature2020 } from '@digitalcredentials/ed25519-signature-2020'
-import { Ed25519VerificationKey2020 } from '@digitalcredentials/ed25519-verification-key-2020'
+import { ZcapClient } from '@interop/ezcap'
+import { decodeSecretKeySeed } from '@digitalcredentials/bnid'
+import { Ed25519Signature2020 } from '@interop/ed25519-signature'
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { v4 as uuidv4 } from 'uuid'
 
 import { serverUrl, onboardingToken } from './config.js'
@@ -22,20 +22,20 @@ export function zcapClient ({ signer }) {
 }
 
 export async function buildZcapClients () {
-  const aliceKeyPair = await Ed25519VerificationKey2020.generate({
+  const aliceKeyPair = await Ed25519VerificationKey.generate({
     seed: decodeSecretKeySeed({ secretKeySeed: secretKeySeeds.alice })
   })
   const aliceRootDid = `did:key:${aliceKeyPair.fingerprint()}`
   aliceKeyPair.id = `${aliceRootDid}#${aliceKeyPair.fingerprint()}`
   const aliceRootClient = zcapClient({ signer: aliceKeyPair.signer() })
 
-  const aliceDelegatedAppKeyPair = await Ed25519VerificationKey2020.generate({
+  const aliceDelegatedAppKeyPair = await Ed25519VerificationKey.generate({
     seed: decodeSecretKeySeed({ secretKeySeed: secretKeySeeds.aliceDelegatedApp })
   })
   const aliceDelegatedAppDid = `did:key:${aliceDelegatedAppKeyPair.fingerprint()}`
   aliceDelegatedAppKeyPair.id = `${aliceDelegatedAppDid}#${aliceDelegatedAppKeyPair.fingerprint()}`
 
-  const bobKeyPair = await Ed25519VerificationKey2020.generate({
+  const bobKeyPair = await Ed25519VerificationKey.generate({
     seed: decodeSecretKeySeed({ secretKeySeed: secretKeySeeds.bob })
   })
   const bobRootDid = `did:key:${bobKeyPair.fingerprint()}`

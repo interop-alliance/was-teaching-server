@@ -1,0 +1,4 @@
+minimumReleaseAgeExclude:
+  - '@interop/ezcap@7.0.3'
+  - '@interop/zcap@9.0.3'
+  - '@interop/ezcap@7.0.4'

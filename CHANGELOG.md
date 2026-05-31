@@ -1,5 +1,9 @@
 # History
 
+## 0.0.6 - 
+### Changed
+- Migrate to `@interop/` forks of the key, signature and DID packages.
+
 ## 0.0.5 - 2026-05-11
 ### Added
 - Implement 'List Collections' request.

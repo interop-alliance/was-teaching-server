@@ -3,17 +3,17 @@
  * signature against the Space controller's Ed25519 key, synthesizing the root
  * capability via the document loader.
  */
-import { securityLoader } from '@digitalcredentials/security-document-loader'
+import { securityLoader } from '@interop/security-document-loader'
 import { verifyCapabilityInvocation } from '@interop-alliance/http-signature-zcap-verify'
-import { Ed25519VerificationKey2020 } from '@digitalcredentials/ed25519-verification-key-2020'
-import { Ed25519Signature2020 } from '@digitalcredentials/ed25519-signature-2020'
-import * as didKey from '@digitalcredentials/did-method-key'
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
+import { Ed25519Signature2020 } from '@interop/ed25519-signature'
+import * as didKey from '@interop/did-method-key'
 import { AuthVerificationError, UnauthorizedError } from './errors.js'
 
 const didKeyDriver = didKey.driver()
 didKeyDriver.use({
   multibaseMultikeyHeader: 'z6Mk',
-  fromMultibase: Ed25519VerificationKey2020.from
+  fromMultibase: Ed25519VerificationKey.from
 });
 
 export async function handleZcapVerify ({
@@ -77,7 +77,7 @@ export async function verifyZcap ({
     url: fullRequestUrl, method, headers, ...expected, documentLoader,
     async getVerifier ({ keyId }) {
       const verificationMethod = await didKeyDriver.get({url: keyId});
-      const key = await Ed25519VerificationKey2020.from(verificationMethod);
+      const key = await Ed25519VerificationKey.from(verificationMethod);
       const verifier = key.verifier();
       return { verifier, verificationMethod }
     },

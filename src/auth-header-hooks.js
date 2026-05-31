@@ -4,7 +4,7 @@
  * headers into `request.zcap`). Installed by every route group in routes.js.
  */
 import { AuthHeaderParseError, MissingAuthError, MissingKeyIdError } from './errors.js'
-import { parseSignatureHeader } from '@digitalbazaar/http-signature-header'
+import { parseSignatureHeader } from '@interop/http-signature-header'
 
 /**
  * Adds a request.zcap property, which contains the three parsed auth-related
