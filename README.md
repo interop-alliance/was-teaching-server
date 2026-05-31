@@ -1,5 +1,7 @@
 # WAS Teaching Server (_was-teaching-server_)
 
+[![Node.js CI](https://github.com/interop-alliance/was-teaching-server/workflows/CI/badge.svg)](https://github.com/interop-alliance/was-teaching-server/actions?query=workflow%3A%22CI%22)
+
 > A basic [Wallet Attached Storage](https://digitalcredentials.github.io/wallet-attached-storage-spec/) Server used to demonstrate the specification
 
 ## Table of Contents
