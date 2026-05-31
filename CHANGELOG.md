@@ -1,6 +1,6 @@
 # History
 
-## 0.0.6 - 
+## 0.0.6 - 2026-05-31
 ### Changed
 - Migrate to `@interop/` forks of the key, signature and DID packages.
 
