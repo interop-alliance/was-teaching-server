@@ -192,3 +192,18 @@ export async function deleteResource({ spaceId, collectionId, resourceId }) {
 export async function exportSpace({ spaceId }) {
   return backend.exportSpace({ spaceId })
 }
+
+/**
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.tarStream {import('node:stream').Readable}
+ * @returns {Promise<{
+ *   collectionsCreated: number,
+ *   collectionsSkipped: number,
+ *   resourcesCreated: number,
+ *   resourcesSkipped: number
+ * }>}
+ */
+export async function importSpace({ spaceId, tarStream }) {
+  return backend.importSpace({ spaceId, tarStream })
+}

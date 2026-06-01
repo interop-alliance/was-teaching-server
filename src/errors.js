@@ -117,6 +117,15 @@ export class StorageError extends Error {
   }
 }
 
+export class InvalidImportError extends Error {
+  constructor ({ message } = {}, ...params) {
+    super(message, ...params)
+    this.title = 'Invalid space import'
+    this.detail = message || 'The uploaded archive is not a valid WAS space export.'
+    this.statusCode = 400
+  }
+}
+
 export async function handleError (error, request, reply) {
   return reply
     .status(error.statusCode || 500)

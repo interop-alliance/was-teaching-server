@@ -4,8 +4,8 @@
  */
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
-import { InvalidSpaceIdError, SpaceNotFoundError } from '../errors.js'
-import { writeCollection, deleteSpace, getSpaceDescription, writeSpace, exportSpace, listCollections }
+import { InvalidSpaceIdError, InvalidImportError, SpaceNotFoundError } from '../errors.js'
+import { writeCollection, deleteSpace, getSpaceDescription, writeSpace, exportSpace, importSpace, listCollections }
   from '../storage.js'
 
 export class SpaceRequest {
@@ -194,6 +194,32 @@ export class SpaceRequest {
     const tarFile = await exportSpace({ spaceId })
 
     return reply.status(200).type('application/x-tar').send(tarFile)
+  }
+
+  /**
+   * POST /space/:spaceId/import
+   * Request handler for "Import Space" request (merge from tarball)
+   */
+  static async import (request, reply) {
+    const { params: { spaceId }, url, method, headers } = request
+    const { serverUrl } = this
+
+    const spaceDescription = await getSpaceDescription({ spaceId })
+    if (!spaceDescription) {
+      throw new SpaceNotFoundError({ requestName: 'Import Space' })
+    }
+    const spaceController = spaceDescription.controller
+
+    const allowedTarget = (new URL(`/space/${spaceId}/import`, serverUrl)).toString()
+    await handleZcapVerify({ url, allowedTarget, allowedAction: 'POST', method,
+      headers, serverUrl, spaceController })
+
+    try {
+      const summary = await importSpace({ spaceId, tarStream: request.body })
+      return reply.status(200).send(summary)
+    } catch (err) {
+      throw new InvalidImportError({ message: err.message })
+    }
   }
 
   static async listCollections (request, reply) {

@@ -62,6 +62,12 @@ export async function initSpaceRoutes (app, options) {
 
   // POST /space/12345/export
   app.post('/space/:spaceId/export', SpaceRequest.export)
+
+  // POST /space/12345/import
+  app.addContentTypeParser('application/x-tar', (_req, body, done) => {
+    done(null, body)
+  })
+  app.post('/space/:spaceId/import', SpaceRequest.import)
 }
 
 export async function initCollectionRoutes (app, options) {

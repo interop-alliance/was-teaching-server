@@ -21,6 +21,10 @@ import {
   COLLECTION_URL,
   RESOURCE_URL
 } from '../../config.default.js'
+import {
+  extractTarEntries,
+  buildImportPlan
+} from '../lib/importTar.js'
 
 const { Store: MetadataJsonStore } = jsonfs
 
@@ -251,6 +255,41 @@ export class FileSystemBackend {
 
     pack.finalize()
     return pack
+  }
+
+  async importSpace ({ spaceId, tarStream }) {
+    const entries = await extractTarEntries(tarStream)
+    const { collections } = buildImportPlan(entries)
+    const stats = {
+      collectionsCreated: 0,
+      collectionsSkipped: 0,
+      resourcesCreated: 0,
+      resourcesSkipped: 0
+    }
+
+    for (const { collectionId, collectionDescription, resources } of collections) {
+      // check if collection already exists
+      if (await this.getCollectionDescription({ spaceId, collectionId })) {
+        stats.collectionsSkipped++
+      } else {
+        await this.writeCollection({ spaceId, collectionId, collectionDescription })
+        stats.collectionsCreated++
+      }
+
+      const collectionDir = this._collectionDir({ spaceId, collectionId })
+
+      for (const { fileName, resourceId, body } of resources) {
+        if (await this._findFile({ collectionDir, resourceId })) {
+          stats.resourcesSkipped++
+          continue
+        }
+
+        await fs.promises.writeFile(path.join(collectionDir, fileName), body)
+        stats.resourcesCreated++
+      }
+    }
+
+    return stats
   }
 
   // Collections
