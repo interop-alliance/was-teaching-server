@@ -37,7 +37,7 @@ importers:
         version: 5.0.2
       '@interop/security-document-loader':
         specifier: ^9.0.0
-        version: 9.0.0(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.6))
+        version: 9.2.0(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.7))
       fastify:
         specifier: ^5.8.5
         version: 5.8.5
@@ -71,7 +71,7 @@ importers:
     devDependencies:
       '@digitalcredentials/bnid':
         specifier: ^5.0.0
-        version: 5.0.0(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.6))
+        version: 5.0.0(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.7))
       '@interop/ezcap':
         specifier: ^7.0.4
         version: 7.0.4
@@ -165,6 +165,10 @@ packages:
     resolution: {integrity: sha512-c7U6KYLEcAv1lh6QdBocOzuqmE5HKT2BAwn+0roiIPv527c+6qUh7rPHMrbVavWYTgk9kWBhCPba+Ql7gwG57g==}
     engines: {node: '>=14'}
 
+  '@digitalbazaar/multikey-context@2.0.1':
+    resolution: {integrity: sha512-fHuaJNWpHLZH20GQemS+iPUn7/GuZ62UGhpmD9aZuKvN62lrPTeBK1V6C1BvfdIIWRsCqa1CUda+PDZa6d6X1A==}
+    engines: {node: '>=18'}
+
   '@digitalbazaar/security-context@1.0.1':
     resolution: {integrity: sha512-0WZa6tPiTZZF8leBtQgYAfXQePFQp2z5ivpCEN/iZguYYZ0TB9qRmWtan5XH6mNFuusHtMcyIzAcReyE6rZPhA==}
 
@@ -202,8 +206,8 @@ packages:
   '@digitalcredentials/open-badges-context@3.0.0':
     resolution: {integrity: sha512-pyXirpq29gy+NIaTBozDEm7nk1Oh8Yqie2WR0JuIqRX0ePCbiFeMv2uPEP3TXzyh1Jz++28fD+qjNojlhUmiIw==}
 
-  '@digitalcredentials/ssi@5.4.2':
-    resolution: {integrity: sha512-/rNw47tbC8661tNzVBbKfmX6jaZT+NE7PhPkaFzHdMIzzY8knGotiPqp+8UjjWcQTkzXrqeu1AktRSAnEF+IFw==}
+  '@digitalcredentials/ssi@5.5.0':
+    resolution: {integrity: sha512-vKJwLlab+SPqOygpcreSbQZxP+hIwcLq7rJYA+oHFJQqrTXatWl9oWW+cnCv5R4VCARUhPOUio5xhM/v8YdXXA==}
     engines: {node: '>=20.0'}
 
   '@fastify/accept-negotiator@2.0.1':
@@ -252,6 +256,10 @@ packages:
     resolution: {integrity: sha512-2sAZAwRw+zrbR3QPma2T7o7XH//KiXk1JLaVTDOANe7vZhdENyd7ePeNezH4l7OxH1ar6L0qEayOrEG5clYK9w==}
     engines: {node: '>=18'}
 
+  '@interop/data-integrity-core@6.1.0':
+    resolution: {integrity: sha512-kxm+1pfN1f9gxAxUdxeq0zhq1H54fTJQhpWGc13OD6CAjUWm+d36+fQFkA+uC63/hF9R9vVUbjKqwSiC3/kyqg==}
+    engines: {node: '>=24.0'}
+
   '@interop/did-io@2.0.1':
     resolution: {integrity: sha512-L70N0ra0/7SkZx3xw/CF/UOMbl0qATpm99ybacLhbOm9MlTbQGLgw+1h+YKHsVf81uTvaxHa8tbtA5fnM62UQw==}
     engines: {node: '>=24.0'}
@@ -260,8 +268,16 @@ packages:
     resolution: {integrity: sha512-47Rkx/tYNfVVCHi3IhIyxlM2eCUul+X4vZWBrQMCKoafgQYhnMPhWHPXRs9mugc21rUH+kBaY4he6b45VtGPWw==}
     engines: {node: '>=24.0'}
 
+  '@interop/did-io@4.0.0':
+    resolution: {integrity: sha512-ZEiaUEE721+mYopd0FCi68+3N6/baPsDhIpryb13DAtcWrixk+Goh5/dyHpdn492rjPZOp4BukxCCHL149To+Q==}
+    engines: {node: '>=24.0'}
+
   '@interop/did-method-key@6.2.1':
     resolution: {integrity: sha512-b1gjaWGyucczFSAcZK06M8m4FP1Nf2DsFqM4a7p0riwtHbNmD9J59ohnKoajJN+QlhrieesR65CV2Mo6xsyCPg==}
+    engines: {node: '>=24.0'}
+
+  '@interop/did-method-key@7.0.0':
+    resolution: {integrity: sha512-/jkfBFUhB2v+naggozPwvl68oVxI9OZjUmAu04mdMQBR1WuBq8tN6UkEp/rkn3b0WPbyY1YZtcApjE2sgTIVlg==}
     engines: {node: '>=24.0'}
 
   '@interop/did-web-resolver@6.0.0':
@@ -279,6 +295,10 @@ packages:
 
   '@interop/ed25519-verification-key@6.2.0':
     resolution: {integrity: sha512-UEJZeB+b5rp5kr2ZYqH2qiKnLQwRTHxQnhArnzL2Flve33HDRHkne8qHZPVjtJpOUYzHHnV7XGgp/ApST9GzjQ==}
+    engines: {node: '>=20'}
+
+  '@interop/ed25519-verification-key@7.0.1':
+    resolution: {integrity: sha512-CqCJlNaBMmj3sPqo1291aAObKQlJINjUnTur2aGS6rFBLWtsUQCqPxAiSLn1HythmwuB7x+al6bRnmt7ZCAAEg==}
     engines: {node: '>=20'}
 
   '@interop/ezcap@7.0.4':
@@ -302,8 +322,8 @@ packages:
     resolution: {integrity: sha512-Sd+wNfMCvkxvNUoV+VoLfwn+IjTdtk0T1j/tQqxUiYUOkmS0V24O3ENiwCWfgUNkmmGIhlno9VIzLzd9mDwRkw==}
     engines: {node: '>=14'}
 
-  '@interop/http-signature-zcap-invoke@6.1.2':
-    resolution: {integrity: sha512-Z9ZD2UNxJqgfWKf5vhYx5TGeh+lbidT6Yv1DyXF2UnLNeLluxq9QAQbfYygdidksABxtSfqSMZ169fNBhwsrAQ==}
+  '@interop/http-signature-zcap-invoke@6.2.0':
+    resolution: {integrity: sha512-wyY4wLdwVM7rndzGnhXGBg6J4m+ilNWBRn19HpodZnrql1ZE6HCR5aekpHjZHL+X1dPlk4TDD4rf3xQ8XdeL0g==}
     engines: {node: '>=20'}
 
   '@interop/jsonld-signatures@11.6.2':
@@ -318,8 +338,8 @@ packages:
     resolution: {integrity: sha512-5rn5uPzP2T0fVsPZ42MSi9QXYg5WWtepRmZXN1wL4zx/o2NW4Rm+ZnkfqTSqMPLaLuzfUhoJGFxsY0rnvcz7wQ==}
     engines: {node: '>=24.0'}
 
-  '@interop/security-document-loader@9.0.0':
-    resolution: {integrity: sha512-8EuWSX02wJ9oQ1cRXYmLfIT19mNROJYluaVJAFoe67zhGDILZeRNxNTXknPqakXIsbGhIy1BdWLVSCHMlfvtdw==}
+  '@interop/security-document-loader@9.2.0':
+    resolution: {integrity: sha512-+n0tigC9+T0e/LopdkWd9hbZYAfI89TAYaDCHMqIBb1n6v40jvRoKN0LxO6Yxbx2JbxYJZsdNjjCvzxqYcq4/w==}
     engines: {node: '>=24.0'}
 
   '@interop/zcap@9.0.3':
@@ -470,6 +490,9 @@ packages:
     engines: {node: '>=0.4.0'}
     hasBin: true
 
+  aes-key-wrapping-2019-context@1.0.3:
+    resolution: {integrity: sha512-AK4zedEjlOycOtH7c8lXSiayqvZ5FWkkxEox2Vo7kUU5IAjBCPZ1p/Pkw6MF9d4SfuvfKgzlcVPlJf9lhngMrA==}
+
   agent-base@7.1.4:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
@@ -550,8 +573,8 @@ packages:
     resolution: {integrity: sha512-6M5XjcnsygQNPMCMPXSK379xrJFiZ/AEMNBmFEmQW8d/789VQATvriyi5r0HYTL9TkQ26rn3kgdTG3aisbrXkQ==}
     engines: {bare: '>=1.14.0'}
 
-  bare-path@3.0.0:
-    resolution: {integrity: sha512-tyfW2cQcB5NN8Saijrhqn0Zh7AnFNsnczRcuWODH0eYAXBsJ5gVxAUuNr7tsHSC6IZ77cA0SitzT+s47kot8Mw==}
+  bare-path@3.0.1:
+    resolution: {integrity: sha512-ghj2DSK/2e99a1anTVPCV4m4YIYtrbXhfM7V3D7XZLOTsybnYyaJloymGqssQc8l/or0UoDyRtNQkmkEF/ysgQ==}
 
   bare-stream@2.13.1:
     resolution: {integrity: sha512-Vp0cnjYyrEC4whYTymQ+YZi6pBpfiICZO3cfRG8sy67ZNWe951urv1x4eW1BKNngw3U+3fPYb5JQvHbCtxH7Ow==}
@@ -995,9 +1018,9 @@ packages:
     engines: {node: '>=6'}
     hasBin: true
 
-  jsonld-document-loader@1.2.1:
-    resolution: {integrity: sha512-CtFyIBZApeVvs6QgyS7Gcp8h1dUs+1XNHcV4Sr6O9ItPaL0hVgqe47Tgs3RNH0A5Bc4p3UFPKAJVHKSOQq4mhQ==}
-    engines: {node: '>=12'}
+  jsonld-document-loader@2.3.0:
+    resolution: {integrity: sha512-u06N5O5sCewgXyxFnnRSm0w3o47ps834QjYzpOMc13Nq+AJQd/JGYrW/WZnz5D+8NEvnKXph7AFi6MA7ZJ8Q0Q==}
+    engines: {node: '>=18'}
 
   jsonld-signatures@11.6.0:
     resolution: {integrity: sha512-hzYNZXnfy4cUFf9aiFBtduUz+cknbfBLWtTKvoqVyP2ECPwqfsfkHWFlhccWfAKV/LJkPLyKZRwC1B4T5LO4ZQ==}
@@ -1320,8 +1343,8 @@ packages:
     resolution: {integrity: sha512-jCvmsr+1IUSMUyzOkRcvnVbX3ZYC6g9TDrDbFuFmRDq7PD4yaGbLKNQL6k2jnArV8hjYxh7hVhAZB6s9HDGpZA==}
     engines: {node: '>=0.10.0'}
 
-  react@19.2.6:
-    resolution: {integrity: sha512-sfWGGfavi0xr8Pg0sVsyHMAOziVYKgPLNrS7ig+ivMNb3wbCBw3KxtflsGBAwD3gYQlE/AEZsTLgToRrSCjb0Q==}
+  react@19.2.7:
+    resolution: {integrity: sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ==}
     engines: {node: '>=0.10.0'}
 
   real-require@0.2.0:
@@ -1404,6 +1427,9 @@ packages:
 
   setprototypeof@1.2.0:
     resolution: {integrity: sha512-E5LDX7Wrp85Kil5bhZv46j8jOeboKq5JMmYM3gVGdGH8xFpPWXUMsNrlODCrkoxMEeNi/XZIwuRvY4XNwYMJpw==}
+
+  sha256-hmac-key-2019-context@1.0.3:
+    resolution: {integrity: sha512-DoJx5HPDB56ZIUEDUR+uVgSqUOZ8nzvMTVWllP6gKHN3BUxfz9h3Yy+AJIMnfJCpxmQbcqCTj7ptwKkbCIDLAA==}
 
   shebang-command@2.0.0:
     resolution: {integrity: sha512-kHxr2zZpYtdmrN1qDjrrX/Z1rR1kG8Dx+gkpK1G4eXmvXswmcE1hTWBWYUzlraYw1/yZp6YuDY77YtvbN0dmDA==}
@@ -1497,8 +1523,8 @@ packages:
   throat@5.0.0:
     resolution: {integrity: sha512-fcwX4mndzpLQKBS1DVYhGAcYaYt7vsHNIvQV+WXMvnow5cgjPphq5CaayLaGsjRdSCKZFNGt7/GYAuXaNOiYCA==}
 
-  tinyglobby@0.2.16:
-    resolution: {integrity: sha512-pn99VhoACYR8nFHhxqix+uvsbXineAasWm5ojXoN8xEwK5Kd3/TrhNn1wByuD52UxWRLy8pu+kRMniEi6Eq9Zg==}
+  tinyglobby@0.2.17:
+    resolution: {integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==}
     engines: {node: '>=12.0.0'}
 
   tmpl@1.0.5:
@@ -1542,8 +1568,8 @@ packages:
     resolution: {integrity: sha512-4yqz8a3n5HmGTlsbADNtr/dJlhkh/55Rq798G6ibiULcXbDtaLpTl1pvdqcbFfeoj3iSi52lePFM7h9H21cw/A==}
     engines: {node: '>=18.17'}
 
-  undici@7.26.0:
-    resolution: {integrity: sha512-3O9Tf67pGhgOv9jM35AbhkXAKi13f3oy3aE4CSgr+TckGeY+/iu97ZXN+J7DpHPzLbVApFd1IFhcnBjREYXYcg==}
+  undici@7.27.0:
+    resolution: {integrity: sha512-+t2Z/GwkZQDtu00813aP66ygViGtPHKhhoFZpQKpKrE+9jIgES+Zw+mFNaDWOVRKiuJjuqKHzD3B1sfGg8+ZOQ==}
     engines: {node: '>=20.18.1'}
 
   unpipe@1.0.0:
@@ -1747,6 +1773,8 @@ snapshots:
     dependencies:
       assert-plus: 1.0.0
 
+  '@digitalbazaar/multikey-context@2.0.1': {}
+
   '@digitalbazaar/security-context@1.0.1': {}
 
   '@digitalbazaar/vc-bitstring-status-list-context@1.1.0': {}
@@ -1767,10 +1795,10 @@ snapshots:
       '@digitalbazaar/zcap-context': 2.0.1
       jsonld-signatures: 11.6.0
 
-  '@digitalcredentials/bnid@5.0.0(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.6))':
+  '@digitalcredentials/bnid@5.0.0(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.7))':
     dependencies:
       base-x: 5.0.1
-      react-native-securerandom: 1.0.1(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.6))
+      react-native-securerandom: 1.0.1(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.7))
     transitivePeerDependencies:
       - react-native
 
@@ -1778,11 +1806,11 @@ snapshots:
 
   '@digitalcredentials/keypair@3.0.0':
     dependencies:
-      '@digitalcredentials/ssi': 5.4.2
+      '@digitalcredentials/ssi': 5.5.0
 
   '@digitalcredentials/open-badges-context@3.0.0': {}
 
-  '@digitalcredentials/ssi@5.4.2': {}
+  '@digitalcredentials/ssi@5.5.0': {}
 
   '@fastify/accept-negotiator@2.0.1': {}
 
@@ -1855,28 +1883,42 @@ snapshots:
       base64url-universal: 2.0.0
       pako: 2.1.0
 
+  '@interop/data-integrity-core@6.1.0': {}
+
   '@interop/did-io@2.0.1':
     dependencies:
-      '@digitalcredentials/ssi': 5.4.2
+      '@digitalcredentials/ssi': 5.5.0
       '@interop/lru-memoize': 4.0.2
 
   '@interop/did-io@3.0.0':
     dependencies:
       '@digitalcredentials/keypair': 3.0.0
-      '@digitalcredentials/ssi': 5.4.2
+      '@digitalcredentials/ssi': 5.5.0
+      '@interop/lru-memoize': 4.0.2
+
+  '@interop/did-io@4.0.0':
+    dependencies:
+      '@interop/data-integrity-core': 6.1.0
       '@interop/lru-memoize': 4.0.2
 
   '@interop/did-method-key@6.2.1':
     dependencies:
       '@digitalbazaar/x25519-key-agreement-key-2020': 3.0.1
       '@digitalcredentials/keypair': 3.0.0
-      '@digitalcredentials/ssi': 5.4.2
+      '@digitalcredentials/ssi': 5.5.0
       '@interop/did-io': 3.0.0
       '@interop/ed25519-verification-key': 6.2.0
 
-  '@interop/did-web-resolver@6.0.0(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.6))':
+  '@interop/did-method-key@7.0.0':
     dependencies:
-      '@digitalcredentials/bnid': 5.0.0(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.6))
+      '@digitalbazaar/x25519-key-agreement-key-2020': 3.0.1
+      '@interop/data-integrity-core': 6.1.0
+      '@interop/did-io': 4.0.0
+      '@interop/ed25519-verification-key': 7.0.1
+
+  '@interop/did-web-resolver@6.0.0(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.7))':
+    dependencies:
+      '@digitalcredentials/bnid': 5.0.0(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.7))
       '@interop/did-io': 2.0.1
       '@interop/http-client': 1.0.3
       did-context: 3.1.1
@@ -1897,7 +1939,14 @@ snapshots:
   '@interop/ed25519-verification-key@6.2.0':
     dependencies:
       '@digitalcredentials/keypair': 3.0.0
-      '@digitalcredentials/ssi': 5.4.2
+      '@digitalcredentials/ssi': 5.5.0
+      '@noble/ed25519': 3.1.0
+      '@noble/hashes': 2.2.0
+      '@scure/base': 2.2.0
+
+  '@interop/ed25519-verification-key@7.0.1':
+    dependencies:
+      '@interop/data-integrity-core': 6.1.0
       '@noble/ed25519': 3.1.0
       '@noble/hashes': 2.2.0
       '@scure/base': 2.2.0
@@ -1905,7 +1954,7 @@ snapshots:
   '@interop/ezcap@7.0.4':
     dependencies:
       '@interop/http-client': 1.0.3
-      '@interop/http-signature-zcap-invoke': 6.1.2
+      '@interop/http-signature-zcap-invoke': 6.2.0
       '@interop/jsonld-signatures': 11.6.2
       '@interop/zcap': 9.0.3
       uuid: 14.0.0
@@ -1915,14 +1964,15 @@ snapshots:
   '@interop/http-client@1.0.3':
     dependencies:
       ky: 1.14.3
-      undici: 7.26.0
+      undici: 7.27.0
 
   '@interop/http-digest-header@2.3.2': {}
 
   '@interop/http-signature-header@5.0.2': {}
 
-  '@interop/http-signature-zcap-invoke@6.1.2':
+  '@interop/http-signature-zcap-invoke@6.2.0':
     dependencies:
+      '@interop/data-integrity-core': 6.1.0
       '@interop/http-digest-header': 2.3.2
       '@interop/http-signature-header': 5.0.2
       pako: 2.1.0
@@ -1948,24 +1998,28 @@ snapshots:
     dependencies:
       lru-cache: 11.5.1
 
-  '@interop/security-document-loader@9.0.0(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.6))':
+  '@interop/security-document-loader@9.2.0(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.7))':
     dependencies:
       '@digitalbazaar/data-integrity-context': 2.0.1
+      '@digitalbazaar/multikey-context': 2.0.1
       '@digitalbazaar/vc-bitstring-status-list-context': 1.1.0
       '@digitalbazaar/vc-status-list-context': 3.1.1
       '@digitalbazaar/zcap-context': 2.0.1
       '@digitalcredentials/credentials-v2-context': 1.0.0
       '@digitalcredentials/open-badges-context': 3.0.0
-      '@interop/did-io': 2.0.1
-      '@interop/did-method-key': 6.2.1
-      '@interop/did-web-resolver': 6.0.0(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.6))
-      '@interop/ed25519-verification-key': 6.2.0
+      '@interop/data-integrity-core': 6.1.0
+      '@interop/did-io': 4.0.0
+      '@interop/did-method-key': 7.0.0
+      '@interop/did-web-resolver': 6.0.0(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.7))
+      '@interop/ed25519-verification-key': 7.0.1
       '@interop/http-client': 1.0.3
+      aes-key-wrapping-2019-context: 1.0.3
       credentials-context: 2.0.0
       did-context: 3.1.1
       ed25519-signature-2020-context: 1.1.0
       html-entities: 2.6.0
-      jsonld-document-loader: 1.2.1
+      jsonld-document-loader: 2.3.0
+      sha256-hmac-key-2019-context: 1.0.3
       x25519-key-agreement-2020-context: 1.0.0
     transitivePeerDependencies:
       - react-native
@@ -2033,7 +2087,7 @@ snapshots:
       hermes-parser: 0.33.3
       invariant: 2.2.4
       nullthrows: 1.1.1
-      tinyglobby: 0.2.16
+      tinyglobby: 0.2.17
       yargs: 17.7.2
 
   '@react-native/community-cli-plugin@0.85.3':
@@ -2085,12 +2139,12 @@ snapshots:
 
   '@react-native/normalize-colors@0.85.3': {}
 
-  '@react-native/virtualized-lists@0.85.3(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.6))(react@19.2.6)':
+  '@react-native/virtualized-lists@0.85.3(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.7))(react@19.2.7)':
     dependencies:
       invariant: 2.2.4
       nullthrows: 1.1.1
-      react: 19.2.6
-      react-native: 0.85.3(@babel/core@7.29.7)(react@19.2.6)
+      react: 19.2.7
+      react-native: 0.85.3(@babel/core@7.29.7)(react@19.2.7)
 
   '@scure/base@2.2.0': {}
 
@@ -2128,6 +2182,8 @@ snapshots:
       negotiator: 1.0.0
 
   acorn@8.16.0: {}
+
+  aes-key-wrapping-2019-context@1.0.3: {}
 
   agent-base@7.1.4: {}
 
@@ -2176,7 +2232,7 @@ snapshots:
   bare-fs@4.7.1:
     dependencies:
       bare-events: 2.8.3
-      bare-path: 3.0.0
+      bare-path: 3.0.1
       bare-stream: 2.13.1(bare-events@2.8.3)
       bare-url: 2.4.3
       fast-fifo: 1.3.2
@@ -2186,7 +2242,7 @@ snapshots:
 
   bare-os@3.9.1: {}
 
-  bare-path@3.0.0:
+  bare-path@3.0.1:
     dependencies:
       bare-os: 3.9.1
 
@@ -2201,7 +2257,7 @@ snapshots:
 
   bare-url@2.4.3:
     dependencies:
-      bare-path: 3.0.0
+      bare-path: 3.0.1
 
   base-x@5.0.1: {}
 
@@ -2605,7 +2661,7 @@ snapshots:
 
   json5@2.2.3: {}
 
-  jsonld-document-loader@1.2.1: {}
+  jsonld-document-loader@2.3.0: {}
 
   jsonld-signatures@11.6.0:
     dependencies:
@@ -3026,12 +3082,12 @@ snapshots:
 
   react-is@18.3.1: {}
 
-  react-native-securerandom@1.0.1(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.6)):
+  react-native-securerandom@1.0.1(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.7)):
     dependencies:
       base64-js: 1.5.1
-      react-native: 0.85.3(@babel/core@7.29.7)(react@19.2.6)
+      react-native: 0.85.3(@babel/core@7.29.7)(react@19.2.7)
 
-  react-native@0.85.3(@babel/core@7.29.7)(react@19.2.6):
+  react-native@0.85.3(@babel/core@7.29.7)(react@19.2.7):
     dependencies:
       '@react-native/assets-registry': 0.85.3
       '@react-native/codegen': 0.85.3(@babel/core@7.29.7)
@@ -3039,7 +3095,7 @@ snapshots:
       '@react-native/gradle-plugin': 0.85.3
       '@react-native/js-polyfills': 0.85.3
       '@react-native/normalize-colors': 0.85.3
-      '@react-native/virtualized-lists': 0.85.3(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.6))(react@19.2.6)
+      '@react-native/virtualized-lists': 0.85.3(react-native@0.85.3(@babel/core@7.29.7)(react@19.2.7))(react@19.2.7)
       abort-controller: 3.0.0
       anser: 1.4.10
       ansi-regex: 5.0.1
@@ -3055,14 +3111,14 @@ snapshots:
       nullthrows: 1.1.1
       pretty-format: 29.7.0
       promise: 8.3.0
-      react: 19.2.6
+      react: 19.2.7
       react-devtools-core: 6.1.5
       react-refresh: 0.14.2
       regenerator-runtime: 0.13.11
       scheduler: 0.27.0
       semver: 7.8.1
       stacktrace-parser: 0.1.11
-      tinyglobby: 0.2.16
+      tinyglobby: 0.2.17
       whatwg-fetch: 3.6.20
       ws: 7.5.11
       yargs: 17.7.2
@@ -3076,7 +3132,7 @@ snapshots:
 
   react-refresh@0.14.2: {}
 
-  react@19.2.6: {}
+  react@19.2.7: {}
 
   real-require@0.2.0: {}
 
@@ -3148,6 +3204,8 @@ snapshots:
   setimmediate@1.0.5: {}
 
   setprototypeof@1.2.0: {}
+
+  sha256-hmac-key-2019-context@1.0.3: {}
 
   shebang-command@2.0.0:
     dependencies:
@@ -3250,7 +3308,7 @@ snapshots:
 
   throat@5.0.0: {}
 
-  tinyglobby@0.2.16:
+  tinyglobby@0.2.17:
     dependencies:
       fdir: 6.5.0(picomatch@4.0.4)
       picomatch: 4.0.4
@@ -3280,7 +3338,7 @@ snapshots:
 
   undici@6.26.0: {}
 
-  undici@7.26.0: {}
+  undici@7.27.0: {}
 
   unpipe@1.0.0: {}
 

@@ -46,6 +46,7 @@
     ]
   },
   "bin": {},
+  "packageManager": "pnpm@11.3.0",
   "engines": {
     "node": ">=24.0"
   },
