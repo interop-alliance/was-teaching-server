@@ -1,21 +1,23 @@
 /**
- * Using Node.js test runner
- * @see https://nodejs.org/api/test.html
+ * Server integration tests (Vitest).
  */
-import { it, describe, before, after } from 'node:test'
+import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
+import type { AddressInfo } from 'node:net'
+import type { FastifyInstance } from 'fastify'
 
 import { createApp } from '../src/server.js'
 
 describe('Server', () => {
-  let fastify, serverUrl
+  let fastify: FastifyInstance, serverUrl: string
 
-  before(async () => {
+  beforeAll(async () => {
     fastify = createApp()
     await fastify.listen()
-    serverUrl = 'http://localhost:' + fastify.server.address().port
+    serverUrl =
+      'http://localhost:' + (fastify.server.address() as AddressInfo).port
   })
-  after(async () => {
+  afterAll(async () => {
     return fastify.close()
   })
 

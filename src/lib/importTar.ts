@@ -1,14 +1,44 @@
-import tar from 'tar-stream'
+import * as tar from 'tar-stream'
 import YAML from 'yaml'
+import type { Readable } from 'node:stream'
+import type { CollectionDescription } from '../types.js'
+
+/** One extracted archive entry, keyed by its archive path. */
+export interface TarEntry {
+  type: 'file' | 'directory'
+  body?: Buffer
+}
+
+/** One resource staged for import by {@link buildImportPlan}. */
+export interface ImportPlanResource {
+  fileName: string
+  resourceId: string
+  body: Buffer
+}
+
+/** One collection (plus its resources) staged for import. */
+export interface ImportPlanCollection {
+  collectionId: string
+  collectionDescription: CollectionDescription
+  resources: ImportPlanResource[]
+}
+
+/** The merge plan produced by {@link buildImportPlan}. */
+export interface ImportPlan {
+  collections: ImportPlanCollection[]
+}
 
 /**
- * @param {import('node:stream').Readable} tarStream
- * @returns {Promise<Map<string, { type: 'file' | 'directory', body?: Buffer }>>}
+ * @param options {object}
+ * @param options.tarStream {Readable}
+ * @returns {Promise<Map<string, TarEntry>>}
  */
-export async function extractTarEntries (tarStream) {
-  const entries = new Map()
+export async function extractTarEntries(
+  tarStream: Readable
+): Promise<Map<string, TarEntry>> {
+  const entries = new Map<string, TarEntry>()
 
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     const extract = tar.extract()
 
     extract.on('entry', (header, stream, next) => {
@@ -19,7 +49,7 @@ export async function extractTarEntries (tarStream) {
         return
       }
 
-      const chunks = []
+      const chunks: Buffer[] = []
       stream.on('data', chunk => chunks.push(Buffer.from(chunk)))
       stream.on('end', () => {
         entries.set(header.name, {
@@ -43,10 +73,10 @@ export async function extractTarEntries (tarStream) {
 /**
  * Validates that the archive carries a well-formed UBC v0.1 `manifest.yml`
  * describing a WAS space export. Throws on any problem.
- * @param {Map<string, { type: string, body?: Buffer }>} entries
+ * @param entries {Map<string, TarEntry>}
  * @returns {void}
  */
-export function validateManifest (entries) {
+export function validateManifest(entries: Map<string, TarEntry>): void {
   const manifestEntry = entries.get('manifest.yml')
   if (!manifestEntry?.body) {
     throw new Error('Archive is missing manifest.yml.')
@@ -83,19 +113,13 @@ export function validateManifest (entries) {
  * The source space id in the path may differ from the import target; only
  * collection metadata and r.* resource files are merged into the destination.
  *
- * @param {Map<string, { type: string, body?: Buffer }>} entries
- * @returns {{
- *   collections: Array<{
- *     collectionId: string,
- *     collectionDescription: object,
- *     resources: Array<{ fileName: string, resourceId: string, body: Buffer }>
- *   }>
- * }}
+ * @param entries {Map<string, TarEntry>}
+ * @returns {ImportPlan}
  */
-export function buildImportPlan (entries) {
+export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
   validateManifest(entries)
 
-  let sourceSpaceId
+  let sourceSpaceId: string | undefined
   for (const name of entries.keys()) {
     const match = name.match(/^space\/([^/]+)\//)
     if (match) {
@@ -108,13 +132,13 @@ export function buildImportPlan (entries) {
   }
 
   const prefix = `space/${sourceSpaceId}/`
-  const collectionIds = new Set()
+  const collectionIds = new Set<string>()
   for (const name of entries.keys()) {
     if (!name.startsWith(prefix)) {
       continue
     }
     const match = name.slice(prefix.length).match(/^([^/]+)\//)
-    if (match) {
+    if (match?.[1]) {
       collectionIds.add(match[1])
     }
   }
@@ -122,14 +146,18 @@ export function buildImportPlan (entries) {
   const collections = [...collectionIds].sort().map(collectionId => {
     const collectionMetaKey = `${prefix}${collectionId}/.collection.${collectionId}.json`
     const metaEntry = entries.get(collectionMetaKey)
-    const collectionDescription = metaEntry?.body
+    const collectionDescription: CollectionDescription = metaEntry?.body
       ? JSON.parse(metaEntry.body.toString('utf8'))
       : { id: collectionId, type: ['Collection'], name: collectionId }
 
     const collectionPrefix = `${prefix}${collectionId}/`
-    const resources = []
+    const resources: ImportPlanResource[] = []
     for (const [entryName, entry] of entries) {
-      if (!entryName.startsWith(collectionPrefix) || entry.type !== 'file') {
+      if (
+        !entryName.startsWith(collectionPrefix) ||
+        entry.type !== 'file' ||
+        !entry.body
+      ) {
         continue
       }
 
@@ -139,7 +167,7 @@ export function buildImportPlan (entries) {
       }
 
       const parts = fileName.split('.')
-      if (parts.length < 4) {
+      if (parts.length < 4 || !parts[1]) {
         continue
       }
 

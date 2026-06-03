@@ -2,6 +2,8 @@
  * Request handlers for Resource operations: create-by-id, get, and delete a
  * Resource (JSON object or binary blob).
  */
+import type { FastifyReply, FastifyRequest } from 'fastify'
+import type { Readable } from 'node:stream'
 import { handleZcapVerify } from '../zcap.js'
 import {
   getCollectionDescription,
@@ -10,7 +12,12 @@ import {
   getSpaceDescription,
   writeResource
 } from '../storage.js'
-import { CollectionNotFoundError, ResourceNotFoundError, SpaceNotFoundError } from '../errors.js'
+import {
+  CollectionNotFoundError,
+  ResourceNotFoundError,
+  SpaceNotFoundError,
+  StorageError
+} from '../errors.js'
 
 export class ResourceRequest {
   /**
@@ -21,17 +28,23 @@ export class ResourceRequest {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
    *
-   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
-   *   `this.serverUrl`.
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
-   * @returns {Promise<void>}
+   * @returns {Promise<FastifyReply>}
    */
-  static async put (request, reply) {
+  static async put(
+    request: FastifyRequest<{
+      Params: { spaceId: string; collectionId: string; resourceId: string }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
     const {
-      params: { spaceId, collectionId, resourceId }, url, method, headers, body
+      params: { spaceId, collectionId, resourceId },
+      url,
+      method,
+      headers
     } = request
-    const { serverUrl } = this
+    const { serverUrl } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await getSpaceDescription({ spaceId })
@@ -41,22 +54,36 @@ export class ResourceRequest {
     const spaceController = spaceDescription.controller
 
     // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = (new URL(`/space/${spaceId}/${collectionId}/${resourceId}`,
-      serverUrl)).toString()
-    await handleZcapVerify({ url, allowedTarget, allowedAction: 'PUT', method,
-      headers, serverUrl, spaceController })
+    const allowedTarget = new URL(
+      `/space/${spaceId}/${collectionId}/${resourceId}`,
+      serverUrl
+    ).toString()
+    await handleZcapVerify({
+      url,
+      allowedTarget,
+      allowedAction: 'PUT',
+      method,
+      headers,
+      serverUrl,
+      spaceController
+    })
 
     // zCap checks out, continue
 
     // Fetch collection by id
-    const collectionDescription = await getCollectionDescription({ spaceId, collectionId })
+    const collectionDescription = await getCollectionDescription({
+      spaceId,
+      collectionId
+    })
     if (!collectionDescription) {
       throw new CollectionNotFoundError({ requestName: 'Put Resource' })
     }
     try {
       await writeResource({ spaceId, collectionId, resourceId, request })
     } catch (e) {
-      throw new Error('Could not create resource: ' + e.message, { cause: e })
+      throw new Error('Could not create resource: ' + (e as Error).message, {
+        cause: e
+      })
     }
     return reply.status(204).send()
   }
@@ -69,16 +96,23 @@ export class ResourceRequest {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
    *
-   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
-   *   `this.serverUrl`.
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
-   * @returns {Promise<void>}
+   * @returns {Promise<FastifyReply>}
    */
-  static async get (request, reply) {
-    const { params: { spaceId, collectionId, resourceId },
-      url, method, headers } = request
-    const { serverUrl } = this
+  static async get(
+    request: FastifyRequest<{
+      Params: { spaceId: string; collectionId: string; resourceId: string }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId, collectionId, resourceId },
+      url,
+      method,
+      headers
+    } = request
+    const { serverUrl } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await getSpaceDescription({ spaceId })
@@ -88,24 +122,43 @@ export class ResourceRequest {
     const spaceController = spaceDescription.controller
 
     // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = (new URL(`/space/${spaceId}/${collectionId}/${resourceId}`,
-      serverUrl)).toString()
-    await handleZcapVerify({ url, allowedTarget, allowedAction: 'GET', method,
-      headers, serverUrl, spaceController })
+    const allowedTarget = new URL(
+      `/space/${spaceId}/${collectionId}/${resourceId}`,
+      serverUrl
+    ).toString()
+    await handleZcapVerify({
+      url,
+      allowedTarget,
+      allowedAction: 'GET',
+      method,
+      headers,
+      serverUrl,
+      spaceController
+    })
 
     // zCap checks out, continue
 
     // Fetch collection by id
-    const collectionDescription = await getCollectionDescription({ spaceId, collectionId })
+    const collectionDescription = await getCollectionDescription({
+      spaceId,
+      collectionId
+    })
     if (!collectionDescription) {
       throw new CollectionNotFoundError({ requestName: 'Get Resource' })
     }
 
     const contentType = request.headers['content-type']
-    let resourceStream, storedResourceType
+    let resourceStream: Readable | undefined
+    let storedResourceType: string | undefined
     try {
-      ({ resourceStream, storedResourceType } =
-        await getResource({ spaceId, collectionId, resourceId, contentType }))
+      const result = await getResource({
+        spaceId,
+        collectionId,
+        resourceId,
+        contentType
+      })
+      resourceStream = result.resourceStream
+      storedResourceType = result.storedResourceType
     } catch (err) {
       request.log.error(err)
     }
@@ -114,7 +167,7 @@ export class ResourceRequest {
       throw new ResourceNotFoundError({ requestName: 'Get Resource' })
     }
 
-    return reply.status(200).type(storedResourceType).send(resourceStream)
+    return reply.status(200).type(storedResourceType!).send(resourceStream)
   }
 
   /**
@@ -125,17 +178,23 @@ export class ResourceRequest {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
    *
-   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
-   *   `this.serverUrl`.
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
-   * @returns {Promise<void>}
+   * @returns {Promise<FastifyReply>}
    */
-  static async delete (request, reply) {
+  static async delete(
+    request: FastifyRequest<{
+      Params: { spaceId: string; collectionId: string; resourceId: string }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
     const {
-      params: { spaceId, collectionId, resourceId }, url, method, headers
+      params: { spaceId, collectionId, resourceId },
+      url,
+      method,
+      headers
     } = request
-    const { serverUrl } = this
+    const { serverUrl } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await getSpaceDescription({ spaceId })
@@ -145,25 +204,39 @@ export class ResourceRequest {
     const spaceController = spaceDescription.controller
 
     // Fetch collection by id
-    const collectionDescription = await getCollectionDescription({ spaceId, collectionId })
+    const collectionDescription = await getCollectionDescription({
+      spaceId,
+      collectionId
+    })
     if (!collectionDescription) {
       throw new CollectionNotFoundError({ requestName: 'Delete Resource' })
     }
 
     // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = (new URL(`/space/${spaceId}/${collectionId}/${resourceId}`,
-      serverUrl)).toString()
-    await handleZcapVerify({ url, allowedTarget, allowedAction: 'DELETE', method,
-      headers, serverUrl, spaceController })
+    const allowedTarget = new URL(
+      `/space/${spaceId}/${collectionId}/${resourceId}`,
+      serverUrl
+    ).toString()
+    await handleZcapVerify({
+      url,
+      allowedTarget,
+      allowedAction: 'DELETE',
+      method,
+      headers,
+      serverUrl,
+      spaceController
+    })
 
     // zCap checks out, continue
     try {
       await deleteResource({ spaceId, collectionId, resourceId })
     } catch (err) {
       console.log(err)
-      throw new StorageError({ requestName: 'Delete Resource' })
+      throw new StorageError({
+        cause: err as Error,
+        requestName: 'Delete Resource'
+      })
     }
-
 
     return reply.status(204).send()
   }

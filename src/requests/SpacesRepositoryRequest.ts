@@ -1,11 +1,13 @@
 /**
- * Request handler for SpacesRepository operations: 
+ * Request handler for SpacesRepository operations:
  * - POST /spaces/ (Create Space).
  */
+import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { SpaceControllerMismatchError } from '../errors.js'
 import { writeSpace } from '../storage.js'
+import type { IDID } from '../types.js'
 
 export class SpacesRepositoryRequest {
   /**
@@ -16,21 +18,31 @@ export class SpacesRepositoryRequest {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
    *
-   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
-   *   `this.serverUrl`.
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
-   * @returns {Promise<void>}
+   * @returns {Promise<FastifyReply>}
    */
-  static async post (request, reply) {
-    const { body, url, method, headers, zcap: { keyId } } = request
-    const { serverUrl } = this
+  static async post(
+    request: FastifyRequest<{
+      Body: { id?: string; name: string; controller: IDID }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      body,
+      url,
+      method,
+      headers,
+      zcap: { keyId }
+    } = request
+    const { serverUrl } = request.server
 
     // Check to make sure the DID that signed the zcap matches controller
-    const [ zcapSigningDid ] = keyId.split('#')
+    const [zcapSigningDid] = keyId.split('#')
     if (zcapSigningDid !== body.controller) {
       throw new SpaceControllerMismatchError({
-        zcapSigningDid, controller: body.controller
+        zcapSigningDid: zcapSigningDid!,
+        controller: body.controller
       })
     }
 
@@ -39,17 +51,23 @@ export class SpacesRepositoryRequest {
     const spaceDescription = { ...body, id: spaceId, type: ['Space'] }
 
     // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = (new URL(`/spaces/`, serverUrl)).toString()
-    await handleZcapVerify({ url, allowedTarget, allowedAction: 'POST', method,
-      headers, serverUrl, spaceController: body.controller, requestName: 'Create Space' })
+    const allowedTarget = new URL(`/spaces/`, serverUrl).toString()
+    await handleZcapVerify({
+      url,
+      allowedTarget,
+      allowedAction: 'POST',
+      method,
+      headers,
+      serverUrl,
+      spaceController: body.controller,
+      requestName: 'Create Space'
+    })
 
     // zCap checks out, continue
     await writeSpace({ spaceId, spaceDescription })
 
-    const createdSpaceUrl = (new URL(`/spaces/${spaceId}`, serverUrl)).toString()
+    const createdSpaceUrl = new URL(`/spaces/${spaceId}`, serverUrl).toString()
     reply.header('Location', createdSpaceUrl)
     return reply.status(201).send(spaceDescription)
   }
 }
-
-

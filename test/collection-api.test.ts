@@ -1,25 +1,24 @@
 /**
- * Collections API unit tests
- * Using Node.js test runner
- * @see https://nodejs.org/api/test.html
+ * Collections API unit tests (Vitest).
  */
-import { it, describe, before, after } from 'node:test'
+import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
+import type { FastifyInstance } from 'fastify'
 
 import { createApp } from '../src/server.js'
 import { zcapClients } from './helpers.js'
 
 describe('Collections API', () => {
-  let fastify, serverUrl, alice, bob
+  let fastify: FastifyInstance, serverUrl: string, alice: any
   const PORT = 7767
 
-  before(async () => {
-    ({ alice, bob } = await zcapClients())
+  beforeAll(async () => {
+    ;({ alice } = await zcapClients())
     serverUrl = `http://localhost:${PORT}` // fastify.server.address().port
     fastify = createApp({ serverUrl })
     await fastify.listen({ port: PORT })
   })
-  after(async () => {
+  afterAll(async () => {
     return fastify.close()
   })
 
@@ -28,31 +27,44 @@ describe('Collections API', () => {
       method: 'POST'
     })
     assert.equal(response.status, 401)
-    assert.match(response.headers.get('content-type'), /application\/problem\+json/)
+    assert.match(
+      response.headers.get('content-type')!,
+      /application\/problem\+json/
+    )
   })
 
   it('POST /space/:spaceId/ should 404 error on not found space id', async () => {
-    const spaceUrl = (new URL('/space/space-id-that-does-not-exist/', serverUrl))
-      .toString()
-    let expectedError
+    const spaceUrl = new URL(
+      '/space/space-id-that-does-not-exist/',
+      serverUrl
+    ).toString()
+    let expectedError: any
     try {
       await alice.rootClient.request({
-        url: spaceUrl, method: 'POST', action: 'POST'
+        url: spaceUrl,
+        method: 'POST',
+        action: 'POST'
       })
     } catch (error) {
       expectedError = error
     }
     assert.equal(expectedError.response.status, 404)
-    assert.match(expectedError.response.headers.get('content-type'), /application\/problem\+json/)
+    assert.match(
+      expectedError.response.headers.get('content-type'),
+      /application\/problem\+json/
+    )
   })
 
   it('[root] create collection via POST', async () => {
     const body = {
-      id: 'credentials', name: 'Verifiable Credentials'
+      id: 'credentials',
+      name: 'Verifiable Credentials'
     }
     const response = await alice.rootClient.request({
-      url: (new URL(`/space/${alice.space1.id}/`, serverUrl)).toString(),
-      method: 'POST', action: 'POST', json: body
+      url: new URL(`/space/${alice.space1.id}/`, serverUrl).toString(),
+      method: 'POST',
+      action: 'POST',
+      json: body
     })
     assert.equal(response.status, 201)
 
@@ -63,12 +75,18 @@ describe('Collections API', () => {
       type: ['Collection']
     })
     assert.match(response.headers.get('content-type'), /application\/json/)
-    assert.equal(response.headers.get('location'), `${serverUrl}/space/${alice.space1.id}/${body.id}`)
+    assert.equal(
+      response.headers.get('location'),
+      `${serverUrl}/space/${alice.space1.id}/${body.id}`
+    )
   })
 
   it('[root] list collection items via GET :collectionId/', async () => {
     const response = await alice.rootClient.request({
-      url: (new URL(`/space/${alice.space1.id}/credentials/`, serverUrl)).toString(),
+      url: new URL(
+        `/space/${alice.space1.id}/credentials/`,
+        serverUrl
+      ).toString(),
       method: 'GET'
     })
     assert.equal(response.status, 200)
@@ -84,8 +102,12 @@ describe('Collections API', () => {
 
   it('[root] get collection description via GET :collectionId', async () => {
     const response = await alice.rootClient.request({
-      url: (new URL(`/space/${alice.space1.id}/credentials`, serverUrl)).toString(),
-      method: 'GET', action: 'GET'
+      url: new URL(
+        `/space/${alice.space1.id}/credentials`,
+        serverUrl
+      ).toString(),
+      method: 'GET',
+      action: 'GET'
     })
     assert.equal(response.status, 200)
     assert.deepStrictEqual(response.data, {
@@ -98,34 +120,42 @@ describe('Collections API', () => {
   it('[root] create and delete a collection by id', async () => {
     // Create new collection
     const collectionId = 'new-collection'
-    const collectionUrl =
-      (new URL(`/space/${alice.space1.id}/${collectionId}`, serverUrl)).toString()
+    const collectionUrl = new URL(
+      `/space/${alice.space1.id}/${collectionId}`,
+      serverUrl
+    ).toString()
     const body = {
-      id: collectionId, name: 'New Collection'
+      id: collectionId,
+      name: 'New Collection'
     }
     await alice.rootClient.request({
-      url: collectionUrl, method: 'PUT', json: body
+      url: collectionUrl,
+      method: 'PUT',
+      json: body
     })
 
     // Check it was created
     const existResponse = await alice.rootClient.request({
-      url: collectionUrl, method: 'GET'
+      url: collectionUrl,
+      method: 'GET'
     })
     assert.equal(existResponse.status, 200)
 
     // Now delete collection
     const deleteResponse = await alice.rootClient.request({
-      url: collectionUrl, method: 'DELETE'
+      url: collectionUrl,
+      method: 'DELETE'
     })
     assert.equal(deleteResponse.status, 204)
 
     // Ensure it was deleted
-    let checkResponse
+    let checkResponse: any
     try {
       await alice.rootClient.request({
-        url: collectionUrl, method: 'GET'
+        url: collectionUrl,
+        method: 'GET'
       })
-    } catch (err) {
+    } catch (err: any) {
       checkResponse = err.response
     }
     assert.equal(checkResponse.status, 404)

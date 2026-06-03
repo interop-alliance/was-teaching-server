@@ -3,8 +3,14 @@
  * Capability-Invocation are missing) and `parseAuthHeaders` (parses the auth
  * headers into `request.zcap`). Installed by every route group in routes.js.
  */
-import { AuthHeaderParseError, MissingAuthError, MissingKeyIdError } from './errors.js'
+import type { FastifyReply, FastifyRequest } from 'fastify'
+import {
+  AuthHeaderParseError,
+  MissingAuthError,
+  MissingKeyIdError
+} from './errors.js'
 import { parseSignatureHeader } from '@interop/http-signature-header'
+import type { ParsedZcap } from './types.js'
 
 /**
  * Adds a request.zcap property, which contains the three parsed auth-related
@@ -37,23 +43,29 @@ import { parseSignatureHeader } from '@interop/http-signature-header'
  * @param reply {import('fastify').FastifyReply}
  * @returns {Promise<void>}
  */
-export async function parseAuthHeaders (request, reply) {
+export async function parseAuthHeaders(
+  request: FastifyRequest,
+  _reply: FastifyReply
+): Promise<void> {
   const { headers } = request
 
-  let params
+  let keyId: string | undefined
   try {
     // { keyId, headers, signature, created, expires }
-    ({ params } = parseSignatureHeader(headers.authorization))
-    request.zcap = { ...params }
-    request.zcap.invocation = headers['capability-invocation']
-    request.zcap.digest = headers['digest']
+    const { params } = parseSignatureHeader(headers.authorization ?? '')
+    keyId = params.keyId
+    request.zcap = {
+      ...params,
+      invocation: headers['capability-invocation'],
+      digest: headers.digest
+    } as ParsedZcap
 
     // console.log('PARAMS:', request.zcap)
-  } catch(err) {
-    throw new AuthHeaderParseError({ cause: err })
+  } catch (err) {
+    throw new AuthHeaderParseError({ cause: err as Error })
   }
   // Ensure keyId was parsed from the Authorization header
-  if (!params?.keyId) {
+  if (!keyId) {
     throw new MissingKeyIdError()
   }
 }
@@ -66,9 +78,12 @@ export async function parseAuthHeaders (request, reply) {
  * @param reply {import('fastify').FastifyReply}
  * @returns {Promise<void>}
  */
-export async function requireAuthHeaders (request, reply) {
+export async function requireAuthHeaders(
+  request: FastifyRequest,
+  _reply: FastifyReply
+): Promise<void> {
   const { headers } = request
-  if (!(headers['authorization'] && headers['capability-invocation'])) {
+  if (!(headers.authorization && headers['capability-invocation'])) {
     throw new MissingAuthError()
   }
 }

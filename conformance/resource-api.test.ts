@@ -6,16 +6,25 @@
 import { it, describe, before, after } from 'node:test'
 import assert from 'node:assert'
 
-import { buildZcapClients, createSpace, generateId, serverUrl } from './helpers.js'
+import {
+  buildZcapClients,
+  createSpace,
+  generateId,
+  serverUrl
+} from './helpers.js'
 
 describe('Resource API', () => {
-  let alice, bob
+  let alice: any, bob: any
 
   before(async () => {
-    ({ alice, bob } = await buildZcapClients())
+    ;({ alice, bob } = await buildZcapClients())
     alice.space1 = { id: generateId() }
     await createSpace({
-      spaceDescription: { id: alice.space1.id, name: "Alice's Space #1", controller: alice.did },
+      spaceDescription: {
+        id: alice.space1.id,
+        name: "Alice's Space #1",
+        controller: alice.did
+      },
       rootClient: alice.rootClient
     })
     // Pre-create the credentials collection so resource tests can POST/PUT into it
@@ -32,7 +41,9 @@ describe('Resource API', () => {
         url: new URL(`/space/${alice.space1.id}`, serverUrl).toString(),
         method: 'DELETE'
       })
-    } catch { /* best-effort cleanup */ }
+    } catch {
+      /* best-effort cleanup */
+    }
   })
 
   it('GET /space/:spaceId/:resourceId should 401 error when no authorization headers', async () => {
@@ -41,55 +52,83 @@ describe('Resource API', () => {
       { method: 'GET' }
     )
     assert.equal(response.status, 401)
-    assert.match(response.headers.get('content-type'), /application\/problem\+json/)
+    assert.match(
+      response.headers.get('content-type')!,
+      /application\/problem\+json/
+    )
   })
 
   it('GET /space/:spaceId/:collectionId/:resourceId should 404 error on not found space id', async () => {
     const url = new URL(
-      '/space/space-id-that-does-not-exist/unknown-collection/unknown-resource', serverUrl
+      '/space/space-id-that-does-not-exist/unknown-collection/unknown-resource',
+      serverUrl
     ).toString()
-    let expectedError
+    let expectedError: any
     try {
       await alice.rootClient.request({ url, method: 'GET' })
     } catch (err) {
       expectedError = err
     }
     assert.equal(expectedError.response.status, 404)
-    assert.match(expectedError.response.headers.get('content-type'), /application\/problem\+json/)
+    assert.match(
+      expectedError.response.headers.get('content-type'),
+      /application\/problem\+json/
+    )
   })
 
   it('[root] POST and GET Resource with proper authorization', async () => {
     const body = { id: 'sample-resource', name: 'Sample Verifiable Credential' }
     const response = await alice.rootClient.request({
-      url: new URL(`/space/${alice.space1.id}/credentials/`, serverUrl).toString(),
-      method: 'POST', action: 'POST', json: body
+      url: new URL(
+        `/space/${alice.space1.id}/credentials/`,
+        serverUrl
+      ).toString(),
+      method: 'POST',
+      action: 'POST',
+      json: body
     })
     assert.equal(response.status, 201)
     assert.equal(response.data['content-type'], 'application/json')
     assert.match(response.headers.get('content-type'), /application\/json/)
 
     const resourceUrl = response.headers.get('location')
-    assert.ok(resourceUrl.startsWith(`${serverUrl}/space/${alice.space1.id}/credentials/`))
+    assert.ok(
+      resourceUrl.startsWith(
+        `${serverUrl}/space/${alice.space1.id}/credentials/`
+      )
+    )
 
     const fetchResourceResponse = await alice.rootClient.request({
-      url: resourceUrl, method: 'GET'
+      url: resourceUrl,
+      method: 'GET'
     })
     assert.equal(fetchResourceResponse.status, 200)
-    assert.match(fetchResourceResponse.headers.get('content-type'), /application\/json/)
-    assert.equal(fetchResourceResponse.data.name, 'Sample Verifiable Credential')
+    assert.match(
+      fetchResourceResponse.headers.get('content-type'),
+      /application\/json/
+    )
+    assert.equal(
+      fetchResourceResponse.data.name,
+      'Sample Verifiable Credential'
+    )
   })
 
   it('[root] POST and GET a non-JSON resource', async () => {
     const body = new Blob(['line 1\nline2\n'], { type: 'text/plain' })
     const response = await alice.rootClient.request({
-      url: new URL(`/space/${alice.space1.id}/credentials/`, serverUrl).toString(),
-      method: 'POST', body
+      url: new URL(
+        `/space/${alice.space1.id}/credentials/`,
+        serverUrl
+      ).toString(),
+      method: 'POST',
+      body
     })
     assert.equal(response.status, 201)
 
     const createdUrl = response.headers.get('location')
     const fetchResourceResponse = await alice.rootClient.request({
-      url: createdUrl, method: 'GET'
+      url: createdUrl,
+      method: 'GET'
     })
     assert.equal(fetchResourceResponse.status, 200)
     const responseBody = await fetchResourceResponse.text()
@@ -99,17 +138,21 @@ describe('Resource API', () => {
   it('[root] PUT and GET Resource', async () => {
     const resourceId = 'put-resource'
     const resourceUrl = new URL(
-      `/space/${alice.space1.id}/credentials/${resourceId}`, serverUrl
+      `/space/${alice.space1.id}/credentials/${resourceId}`,
+      serverUrl
     ).toString()
     const body = { id: resourceId, name: 'PUT Resource Test' }
 
     const putResponse = await alice.rootClient.request({
-      url: resourceUrl, method: 'PUT', json: body
+      url: resourceUrl,
+      method: 'PUT',
+      json: body
     })
     assert.equal(putResponse.status, 204)
 
     const getResponse = await alice.rootClient.request({
-      url: resourceUrl, method: 'GET'
+      url: resourceUrl,
+      method: 'GET'
     })
     assert.equal(getResponse.status, 200)
     assert.equal(getResponse.data.name, 'PUT Resource Test')
@@ -117,48 +160,71 @@ describe('Resource API', () => {
 
   it('[root] PUT Resource to non-existent collection should 404', async () => {
     const resourceUrl = new URL(
-      `/space/${alice.space1.id}/collection-does-not-exist/some-resource`, serverUrl
+      `/space/${alice.space1.id}/collection-does-not-exist/some-resource`,
+      serverUrl
     ).toString()
-    let expectedError
+    let expectedError: any
     try {
-      await alice.rootClient.request({ url: resourceUrl, method: 'PUT', json: { name: 'test' } })
+      await alice.rootClient.request({
+        url: resourceUrl,
+        method: 'PUT',
+        json: { name: 'test' }
+      })
     } catch (err) {
       expectedError = err
     }
     assert.equal(expectedError.response.status, 404)
-    assert.match(expectedError.response.headers.get('content-type'), /application\/problem\+json/)
+    assert.match(
+      expectedError.response.headers.get('content-type'),
+      /application\/problem\+json/
+    )
   })
 
   it('[root] PUT Resource should update existing resource (upsert)', async () => {
     const resourceId = 'upsert-resource'
     const resourceUrl = new URL(
-      `/space/${alice.space1.id}/credentials/${resourceId}`, serverUrl
+      `/space/${alice.space1.id}/credentials/${resourceId}`,
+      serverUrl
     ).toString()
 
     await alice.rootClient.request({
-      url: resourceUrl, method: 'PUT', json: { id: resourceId, name: 'Original Name' }
+      url: resourceUrl,
+      method: 'PUT',
+      json: { id: resourceId, name: 'Original Name' }
     })
 
     const secondPut = await alice.rootClient.request({
-      url: resourceUrl, method: 'PUT', json: { id: resourceId, name: 'Updated Name' }
+      url: resourceUrl,
+      method: 'PUT',
+      json: { id: resourceId, name: 'Updated Name' }
     })
     assert.equal(secondPut.status, 204)
 
-    const getResponse = await alice.rootClient.request({ url: resourceUrl, method: 'GET' })
+    const getResponse = await alice.rootClient.request({
+      url: resourceUrl,
+      method: 'GET'
+    })
     assert.equal(getResponse.status, 200)
     assert.equal(getResponse.data.name, 'Updated Name')
   })
 
   it("[root] Bob should not be able to GET Alice's resources", async () => {
-    const body = { id: 'alice-private-resource', name: 'Alice Private Resource' }
+    const body = {
+      id: 'alice-private-resource',
+      name: 'Alice Private Resource'
+    }
     const postResponse = await alice.rootClient.request({
-      url: new URL(`/space/${alice.space1.id}/credentials/`, serverUrl).toString(),
-      method: 'POST', json: body
+      url: new URL(
+        `/space/${alice.space1.id}/credentials/`,
+        serverUrl
+      ).toString(),
+      method: 'POST',
+      json: body
     })
     assert.equal(postResponse.status, 201)
     const resourceUrl = postResponse.headers.get('location')
 
-    let expectedError
+    let expectedError: any
     try {
       await bob.rootClient.request({ url: resourceUrl, method: 'GET' })
     } catch (err) {
@@ -166,7 +232,10 @@ describe('Resource API', () => {
     }
     // Bob gets a 404, not a 403, to avoid revealing the resource's existence
     assert.equal(expectedError.response.status, 404)
-    assert.match(expectedError.response.headers.get('content-type'), /application\/problem\+json/)
+    assert.match(
+      expectedError.response.headers.get('content-type'),
+      /application\/problem\+json/
+    )
 
     await alice.rootClient.request({ url: resourceUrl, method: 'DELETE' })
   })
@@ -174,30 +243,40 @@ describe('Resource API', () => {
   it('[root] POST and DELETE Resource with proper authorization', async () => {
     const body = { id: 'sample-resource-to-delete', name: 'Sample Delete' }
     const response = await alice.rootClient.request({
-      url: new URL(`/space/${alice.space1.id}/credentials/`, serverUrl).toString(),
-      method: 'POST', json: body
+      url: new URL(
+        `/space/${alice.space1.id}/credentials/`,
+        serverUrl
+      ).toString(),
+      method: 'POST',
+      json: body
     })
     assert.equal(response.status, 201)
     assert.equal(response.data['content-type'], 'application/json')
     assert.match(response.headers.get('content-type'), /application\/json/)
 
     const resourceUrl = response.headers.get('location')
-    assert.ok(resourceUrl.startsWith(`${serverUrl}/space/${alice.space1.id}/credentials/`))
+    assert.ok(
+      resourceUrl.startsWith(
+        `${serverUrl}/space/${alice.space1.id}/credentials/`
+      )
+    )
 
     const fetchResourceResponse = await alice.rootClient.request({
-      url: resourceUrl, method: 'GET'
+      url: resourceUrl,
+      method: 'GET'
     })
     assert.equal(fetchResourceResponse.status, 200)
 
     const deleteResponse = await alice.rootClient.request({
-      url: resourceUrl, method: 'DELETE'
+      url: resourceUrl,
+      method: 'DELETE'
     })
     assert.equal(deleteResponse.status, 204)
 
-    let checkResponse
+    let checkResponse: any
     try {
       await alice.rootClient.request({ url: resourceUrl, method: 'GET' })
-    } catch (err) {
+    } catch (err: any) {
       checkResponse = err.response
     }
     assert.equal(checkResponse.status, 404)

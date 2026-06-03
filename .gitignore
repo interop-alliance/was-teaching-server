@@ -142,3 +142,6 @@ yarn.lock
 
 # Project specific
 data/*
+
+# TypeScript build output (tsc → dist/)
+dist/

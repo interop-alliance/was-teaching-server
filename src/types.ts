@@ -12,6 +12,9 @@
  * `FastifyRequest.zcap` (set by the `parseAuthHeaders` hook).
  */
 import type { FastifyRequest } from 'fastify'
+// Pull in @fastify/multipart's `FastifyRequest.file()` augmentation program-wide
+// (the backends call `request.file()` without importing the plugin directly).
+import type {} from '@fastify/multipart'
 import type { Readable } from 'node:stream'
 import type {
   IDID,

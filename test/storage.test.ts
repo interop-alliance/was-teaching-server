@@ -1,22 +1,22 @@
 /**
- * Storage tests
- * Using Node.js test runner
- * @see https://nodejs.org/api/test.html
+ * Storage tests (Vitest).
  */
-import { it, describe } from 'node:test'
+import { it, describe } from 'vitest'
 import assert from 'node:assert'
 import os from 'node:os'
 import path from 'node:path'
 import { mkdtemp, mkdir, rm } from 'node:fs/promises'
-import tar from 'tar-stream'
+import * as tar from 'tar-stream'
 import YAML from 'yaml'
+import type { FastifyRequest } from 'fastify'
 import { FileSystemBackend, fileNameFor } from '../src/backends/filesystem.js'
 
 describe('Storage API', () => {
   describe('fileNameFor()', () => {
     it('should map a content type to filename', () => {
       const filename = fileNameFor({
-        resourceId: '12345', shortname: 'blog-post', contentType: 'application/json'
+        resourceId: '12345',
+        contentType: 'application/json'
       })
       assert.equal(filename, 'r.12345.application%2Fjson.json')
     })
@@ -60,16 +60,16 @@ describe('Storage API', () => {
               id: resourceId,
               type: ['VerifiableCredential']
             }
-          }
+          } as unknown as FastifyRequest
         })
 
         const pack = await backend.exportSpace({ spaceId })
-        const entries = []
+        const entries: Array<{ name: string; body: Buffer }> = []
         const extract = tar.extract()
 
-        await new Promise((resolve, reject) => {
+        await new Promise<void>((resolve, reject) => {
           extract.on('entry', (header, stream, next) => {
-            const chunks = []
+            const chunks: Buffer[] = []
             stream.on('data', chunk => chunks.push(Buffer.from(chunk)))
             stream.on('end', () => {
               entries.push({
@@ -86,24 +86,41 @@ describe('Storage API', () => {
           pack.pipe(extract)
         })
 
-        const resourceFilename = fileNameFor({ resourceId, contentType: 'application/json' })
+        const resourceFilename = fileNameFor({
+          resourceId,
+          contentType: 'application/json'
+        })
         const entryNames = entries.map(entry => entry.name)
 
         assert.ok(entryNames.includes('manifest.yml'))
         assert.ok(entryNames.includes('space/'))
         assert.ok(entryNames.includes(`space/${spaceId}/`))
-        assert.ok(entryNames.includes(`space/${spaceId}/.space.${spaceId}.json`))
+        assert.ok(
+          entryNames.includes(`space/${spaceId}/.space.${spaceId}.json`)
+        )
         assert.ok(entryNames.includes(`space/${spaceId}/${collectionId}/`))
-        assert.ok(entryNames.includes(`space/${spaceId}/${collectionId}/.collection.${collectionId}.json`))
-        assert.ok(entryNames.includes(`space/${spaceId}/${collectionId}/${resourceFilename}`))
+        assert.ok(
+          entryNames.includes(
+            `space/${spaceId}/${collectionId}/.collection.${collectionId}.json`
+          )
+        )
+        assert.ok(
+          entryNames.includes(
+            `space/${spaceId}/${collectionId}/${resourceFilename}`
+          )
+        )
 
-        const manifestEntry = entries.find(entry => entry.name === 'manifest.yml')
+        const manifestEntry = entries.find(
+          entry => entry.name === 'manifest.yml'
+        )
         assert.ok(manifestEntry)
         const manifest = YAML.parse(manifestEntry.body.toString('utf8'))
 
         assert.equal(manifest['ubc-version'], '0.1')
-        assert.equal(manifest.contents.space.url,
-          'https://digitalcredentials.github.io/wallet-attached-storage-spec/#spaces')
+        assert.equal(
+          manifest.contents.space.url,
+          'https://digitalcredentials.github.io/wallet-attached-storage-spec/#spaces'
+        )
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }

@@ -1,44 +1,71 @@
 /**
  * In-memory persistence backend: stores Spaces, Collections, and Resources in
  * nested Maps. One of two interchangeable backends; implements the
- * StorageBackend contract documented in storage.js (same method shape as
+ * StorageBackend contract documented in types.ts (same method shape as
  * FileSystemBackend).
+ *
+ * Note: `exportSpace` / `importSpace` are not implemented here (the filesystem
+ * backend is the one wired into storage.ts); they throw if called.
  */
 import { Readable } from 'node:stream'
+import type { FastifyRequest } from 'fastify'
 import { ResourceNotFoundError } from '../errors.js'
 import { isJson } from '../lib/isJson.js'
+import type {
+  SpaceDescription,
+  CollectionDescription,
+  CollectionSummary,
+  CollectionListing,
+  ResourceResult,
+  ImportStats,
+  StorageBackend
+} from '../types.js'
+
+/** A single stored resource representation. */
+interface MemoryResource {
+  data: Buffer
+  contentType: string
+}
+
+/** A Collection record: its description plus keyed resource representations. */
+interface MemoryCollection {
+  description: CollectionDescription
+  resources: Map<string, MemoryResource>
+}
+
+/** A Space record: its description plus its Collections. */
+interface MemorySpace {
+  description: SpaceDescription
+  collections: Map<string, MemoryCollection>
+}
 
 /**
  * Consumes a readable stream and concatenates it into a single Buffer.
  * @param stream {import('node:stream').Readable}
  * @returns {Promise<Buffer>}
  */
-async function collectStream(stream) {
-  const chunks = []
+async function collectStream(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = []
   for await (const chunk of stream) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
   }
   return Buffer.concat(chunks)
 }
 
-export class MemoryBackend {
+export class MemoryBackend implements StorageBackend {
+  // resource key format: `${resourceId}::${contentType}`
+  _spaces: Map<string, MemorySpace>
+
   constructor() {
-    // Map<spaceId, {
-    //    description,
-    //    collections: Map<collectionId,
-    //      { description, resources: Map<key, { data, contentType }> }>
-    // }>
-    // resource key format: `${resourceId}::${contentType}`
     this._spaces = new Map()
   }
 
   /**
    * @param spaceId {string}
-   * @returns {{ description: import('../storage.js').SpaceDescription,
-   *   collections: Map<string, object> }} the in-memory space record
+   * @returns {MemorySpace} the in-memory space record
    * @throws {Error} if the Space does not exist
    */
-  space(spaceId) {
+  space(spaceId: string): MemorySpace {
     const space = this._spaces.get(spaceId)
     if (!space) {
       throw new Error(`Space not found: ${spaceId}`)
@@ -49,12 +76,10 @@ export class MemoryBackend {
   /**
    * @param spaceId {string}
    * @param collectionId {string}
-   * @returns {{ description: import('../storage.js').CollectionDescription,
-   *   resources: Map<string, { data: Buffer, contentType: string }> }} the
-   *   in-memory collection record
+   * @returns {MemoryCollection} the in-memory collection record
    * @throws {Error} if the Space or Collection does not exist
    */
-  collection(spaceId, collectionId) {
+  collection(spaceId: string, collectionId: string): MemoryCollection {
     const collection = this.space(spaceId).collections.get(collectionId)
     if (!collection) {
       throw new Error(`Collection not found: ${collectionId}`)
@@ -67,25 +92,38 @@ export class MemoryBackend {
   /**
    * @param options {object}
    * @param options.spaceId {string}
-   * @param options.spaceDescription {import('../storage.js').SpaceDescription}
+   * @param options.spaceDescription {SpaceDescription}
    * @returns {Promise<void>} Resolved value is implementation-defined and ignored.
    */
-  async writeSpace({spaceId, spaceDescription}) {
-    if (this._spaces.has(spaceId)) {
-      this._spaces.get(spaceId).description = spaceDescription
+  async writeSpace({
+    spaceId,
+    spaceDescription
+  }: {
+    spaceId: string
+    spaceDescription: SpaceDescription
+  }): Promise<void> {
+    const existing = this._spaces.get(spaceId)
+    if (existing) {
+      existing.description = spaceDescription
     } else {
-      this._spaces.set(spaceId, {description: spaceDescription, collections: new Map()})
+      this._spaces.set(spaceId, {
+        description: spaceDescription,
+        collections: new Map()
+      })
     }
-    return spaceDescription
   }
 
   /**
    * @param options {object}
    * @param options.spaceId {string}
-   * @returns {Promise<import('../storage.js').SpaceDescription|undefined>}
+   * @returns {Promise<SpaceDescription|undefined>}
    *   Resolves falsy when the Space does not exist (must not throw).
    */
-  async getSpaceDescription({spaceId}) {
+  async getSpaceDescription({
+    spaceId
+  }: {
+    spaceId: string
+  }): Promise<SpaceDescription | undefined> {
     // Contract: resolve falsy (not throw) when the Space does not exist.
     return this._spaces.get(spaceId)?.description
   }
@@ -95,18 +133,22 @@ export class MemoryBackend {
    * @param options.spaceId {string}
    * @returns {Promise<void>}
    */
-  async deleteSpace({spaceId}) {
+  async deleteSpace({ spaceId }: { spaceId: string }): Promise<void> {
     this._spaces.delete(spaceId)
   }
 
   /**
    * @param options {object}
    * @param options.spaceId {string}
-   * @returns {Promise<import('../storage.js').CollectionSummary[]>}
+   * @returns {Promise<CollectionSummary[]>}
    */
-  async listCollections({spaceId}) {
+  async listCollections({
+    spaceId
+  }: {
+    spaceId: string
+  }): Promise<CollectionSummary[]> {
     const space = this.space(spaceId)
-    const items = []
+    const items: CollectionSummary[] = []
     for (const [collectionId, collection] of space.collections) {
       items.push({
         id: collectionId,
@@ -117,33 +159,72 @@ export class MemoryBackend {
     return items
   }
 
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @returns {Promise<Readable>}
+   */
+  async exportSpace(_options: { spaceId: string }): Promise<Readable> {
+    throw new Error('exportSpace is not implemented for MemoryBackend.')
+  }
+
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.tarStream {Readable}
+   * @returns {Promise<ImportStats>}
+   */
+  async importSpace(_options: {
+    spaceId: string
+    tarStream: Readable
+  }): Promise<ImportStats> {
+    throw new Error('importSpace is not implemented for MemoryBackend.')
+  }
+
   // Collections
 
   /**
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @param options.collectionDescription {import('../storage.js').CollectionDescription}
+   * @param options.collectionDescription {CollectionDescription}
    * @returns {Promise<void>} Resolved value is implementation-defined and ignored.
    */
-  async writeCollection({spaceId, collectionId, collectionDescription}) {
+  async writeCollection({
+    spaceId,
+    collectionId,
+    collectionDescription
+  }: {
+    spaceId: string
+    collectionId: string
+    collectionDescription: CollectionDescription
+  }): Promise<void> {
     const space = this.space(spaceId)
-    if (space.collections.has(collectionId)) {
-      space.collections.get(collectionId).description = collectionDescription
+    const existing = space.collections.get(collectionId)
+    if (existing) {
+      existing.description = collectionDescription
     } else {
-      space.collections.set(collectionId, {description: collectionDescription, resources: new Map()})
+      space.collections.set(collectionId, {
+        description: collectionDescription,
+        resources: new Map()
+      })
     }
-    return collectionDescription
   }
 
   /**
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @returns {Promise<import('../storage.js').CollectionDescription|undefined>}
+   * @returns {Promise<CollectionDescription|undefined>}
    *   Resolves falsy when the Space/Collection is absent (must not throw).
    */
-  async getCollectionDescription({spaceId, collectionId}) {
+  async getCollectionDescription({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<CollectionDescription | undefined> {
     // Contract: resolve falsy (not throw) when the Space/Collection is absent.
     return this._spaces.get(spaceId)?.collections.get(collectionId)?.description
   }
@@ -154,7 +235,13 @@ export class MemoryBackend {
    * @param options.collectionId {string}
    * @returns {Promise<void>}
    */
-  async deleteCollection({spaceId, collectionId}) {
+  async deleteCollection({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<void> {
     this.space(spaceId).collections.delete(collectionId)
   }
 
@@ -162,13 +249,19 @@ export class MemoryBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @returns {Promise<import('../storage.js').CollectionListing>}
+   * @returns {Promise<CollectionListing>}
    */
-  async listCollectionItems({spaceId, collectionId}) {
+  async listCollectionItems({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<CollectionListing> {
     const collection = this.collection(spaceId, collectionId)
     const items = []
-    for (const [key, {contentType}] of collection.resources) {
-      const resourceId = key.split('::')[0]
+    for (const [key, { contentType }] of collection.resources) {
+      const resourceId = key.split('::')[0]!
       items.push({
         id: resourceId,
         url: `/space/${spaceId}/${collectionId}/${resourceId}`,
@@ -195,25 +288,38 @@ export class MemoryBackend {
    * @param options.request {import('fastify').FastifyRequest}
    * @returns {Promise<void>}
    */
-  async writeResource({spaceId, collectionId, resourceId, request}) {
+  async writeResource({
+    spaceId,
+    collectionId,
+    resourceId,
+    request
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    request: FastifyRequest
+  }): Promise<void> {
     const collection = this.collection(spaceId, collectionId)
     const requestContentType = request.headers['content-type']
-    let data, dataContentType
+    let data: Buffer
+    let dataContentType: string | undefined
 
-    if (isJson({contentType: requestContentType})) {
+    if (isJson({ contentType: requestContentType })) {
       data = Buffer.from(JSON.stringify(request.body))
       dataContentType = requestContentType
-    } else if (requestContentType.startsWith('multipart')) {
-      const file = request.file()
-      dataContentType = file.mimetype
-      data = await collectStream(file.file)
+    } else if (requestContentType?.startsWith('multipart')) {
+      const file = await request.file()
+      dataContentType = file!.mimetype
+      data = await collectStream(file!.file)
     } else {
-      data = await collectStream(request.body)
+      data = await collectStream(request.body as Readable)
       dataContentType = requestContentType
     }
 
-    collection.resources.set(`${resourceId}::${dataContentType}`,
-      {data, contentType: dataContentType})
+    collection.resources.set(`${resourceId}::${dataContentType}`, {
+      data,
+      contentType: dataContentType as string
+    })
   }
 
   /**
@@ -222,11 +328,21 @@ export class MemoryBackend {
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param [options.contentType] {string}
-   * @returns {Promise<import('../storage.js').ResourceResult>}
+   * @returns {Promise<ResourceResult>}
    */
-  async getResource({spaceId, collectionId, resourceId, contentType}) {
+  async getResource({
+    spaceId,
+    collectionId,
+    resourceId,
+    contentType
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    contentType?: string
+  }): Promise<ResourceResult> {
     const collection = this.collection(spaceId, collectionId)
-    let entry
+    let entry: MemoryResource | undefined
 
     if (contentType) {
       entry = collection.resources.get(`${resourceId}::${contentType}`)
@@ -240,7 +356,7 @@ export class MemoryBackend {
     }
 
     if (!entry) {
-      throw new ResourceNotFoundError({requestName: 'Get Resource'})
+      throw new ResourceNotFoundError({ requestName: 'Get Resource' })
     }
 
     return {
@@ -256,7 +372,15 @@ export class MemoryBackend {
    * @param options.resourceId {string}
    * @returns {Promise<void>}
    */
-  async deleteResource({spaceId, collectionId, resourceId}) {
+  async deleteResource({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+  }): Promise<void> {
     const collection = this.collection(spaceId, collectionId)
     for (const key of collection.resources.keys()) {
       if (key.startsWith(`${resourceId}::`)) {

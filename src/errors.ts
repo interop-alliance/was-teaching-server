@@ -2,7 +2,7 @@
  * Custom error classes (each carries title / detail / statusCode) plus
  * handleError, the Fastify error handler installed by each route group.
  */
-import { SPEC_URL } from '../config.default.js'
+import type { FastifyReply, FastifyRequest } from 'fastify'
 
 /**
  * 404 — the requested Space does not exist, or the caller is not authorized.
@@ -11,8 +11,14 @@ import { SPEC_URL } from '../config.default.js'
  * @param params {...*}   forwarded to Error
  */
 export class SpaceNotFoundError extends Error {
-  constructor ({ requestName } = {}, ...params) {
-    super(params)
+  title: string
+  detail: string
+  statusCode: number
+  constructor(
+    { requestName }: { requestName?: string } = {},
+    ...params: unknown[]
+  ) {
+    super(params as never)
     this.title = `Invalid ${requestName || 'Space'} request`
     this.detail = 'Space not found or invalid authorization.'
     this.statusCode = 404
@@ -26,8 +32,14 @@ export class SpaceNotFoundError extends Error {
  * @param params {...*}   forwarded to Error
  */
 export class InvalidSpaceIdError extends Error {
-  constructor ({ requestName } = {}, ...params) {
-    super(params)
+  title: string
+  detail: string
+  statusCode: number
+  constructor(
+    { requestName }: { requestName?: string } = {},
+    ...params: unknown[]
+  ) {
+    super(params as never)
     this.title = `Invalid ${requestName || 'Space'} request`
     this.detail = 'Invalid space id (make sure it is URL-safe).'
     this.statusCode = 400
@@ -39,8 +51,11 @@ export class InvalidSpaceIdError extends Error {
  * @param params {...*}   forwarded to Error
  */
 export class InvalidCollectionError extends Error {
-  constructor (...params) {
-    super(params)
+  title: string
+  detail: string
+  statusCode: number
+  constructor(...params: unknown[]) {
+    super(params as never)
     this.title = 'Invalid Collection Description body'
     this.detail = 'Collection Description body is missing or invalid.'
     this.statusCode = 400
@@ -55,8 +70,14 @@ export class InvalidCollectionError extends Error {
  * @param params {...*}   forwarded to Error
  */
 export class CollectionNotFoundError extends Error {
-  constructor ({ requestName } = {}, ...params) {
-    super(params)
+  title: string
+  detail: string
+  statusCode: number
+  constructor(
+    { requestName }: { requestName?: string } = {},
+    ...params: unknown[]
+  ) {
+    super(params as never)
     this.title = `Invalid ${requestName || 'Collection'} request`
     this.detail = 'Collection not found or invalid authorization.'
     this.statusCode = 404
@@ -70,8 +91,14 @@ export class CollectionNotFoundError extends Error {
  * @param params {...*}   forwarded to Error
  */
 export class ResourceNotFoundError extends Error {
-  constructor ({ requestName } = {}, ...params) {
-    super(params)
+  title: string
+  detail: string
+  statusCode: number
+  constructor(
+    { requestName }: { requestName?: string } = {},
+    ...params: unknown[]
+  ) {
+    super(params as never)
     this.title = `Invalid ${requestName || 'Resource'} request`
     this.detail = 'Resource not found or invalid authorization.'
     this.statusCode = 404
@@ -86,8 +113,11 @@ export class ResourceNotFoundError extends Error {
  * @param params {...*}   forwarded to Error
  */
 export class UnauthorizedError extends Error {
-  constructor ({ requestName }, ...params) {
-    super(params)
+  title: string
+  detail: string
+  statusCode: number
+  constructor({ requestName }: { requestName?: string }, ...params: unknown[]) {
+    super(params as never)
     this.title = `Invalid ${requestName} request.`
     this.detail = 'URL not found or invalid authorization.'
     this.statusCode = 404
@@ -99,10 +129,14 @@ export class UnauthorizedError extends Error {
  * @param params {...*}   forwarded to Error
  */
 export class MissingAuthError extends Error {
-  constructor (...params) {
-    super(params)
+  title: string
+  detail: string
+  statusCode: number
+  constructor(...params: unknown[]) {
+    super(params as never)
     this.title = 'Invalid request'
-    this.detail = 'Authorization and Capability-Invocation headers are required.'
+    this.detail =
+      'Authorization and Capability-Invocation headers are required.'
     this.statusCode = 401
   }
 }
@@ -112,8 +146,11 @@ export class MissingAuthError extends Error {
  * @param params {...*}   forwarded to Error
  */
 export class MissingKeyIdError extends Error {
-  constructor (...params) {
-    super(params)
+  title: string
+  detail: string
+  statusCode: number
+  constructor(...params: unknown[]) {
+    super(params as never)
     this.title = 'Invalid Authorization header'
     this.detail = 'Authorization header is missing the keyId parameter.'
     this.statusCode = 400
@@ -128,11 +165,15 @@ export class MissingKeyIdError extends Error {
  * @param params {...*}   forwarded to Error
  */
 export class AuthHeaderParseError extends Error {
-  constructor ({ cause }, ...params) {
-    super(params)
+  title: string
+  detail: string
+  statusCode: number
+  constructor({ cause }: { cause: Error }, ...params: unknown[]) {
+    super(params as never)
     this.cause = cause
     this.title = 'Invalid authorization headers'
-    this.detail = 'Error parsing Authorization, Capability-Invocation, or Digest headers.'
+    this.detail =
+      'Error parsing Authorization, Capability-Invocation, or Digest headers.'
     this.statusCode = 400
   }
 }
@@ -145,8 +186,14 @@ export class AuthHeaderParseError extends Error {
  * @param params {...*}   forwarded to Error
  */
 export class AuthVerificationError extends Error {
-  constructor ({ requestName, cause }, ...params) {
-    super(params)
+  title: string
+  detail: string
+  statusCode: number
+  constructor(
+    { requestName, cause }: { requestName: string; cause: Error },
+    ...params: unknown[]
+  ) {
+    super(params as never)
     this.cause = cause
     this.title = `Invalid ${requestName} request.`
     this.detail = 'Error verifying authorization headers.'
@@ -163,10 +210,20 @@ export class AuthVerificationError extends Error {
  * @param params {...*}   forwarded to Error
  */
 export class SpaceControllerMismatchError extends Error {
-  constructor ({ zcapSigningDid, controller }, ...params) {
-    super(params)
+  title: string
+  detail: string
+  statusCode: number
+  constructor(
+    {
+      zcapSigningDid,
+      controller
+    }: { zcapSigningDid: string; controller: string },
+    ...params: unknown[]
+  ) {
+    super(params as never)
     this.title = 'Invalid Create Space request'
-    this.detail = 'Authorization capability signing DID' +
+    this.detail =
+      'Authorization capability signing DID' +
       ` ("${zcapSigningDid}") does not match the controller in the body ("${controller}").`
     this.statusCode = 400
   }
@@ -176,13 +233,22 @@ export class SpaceControllerMismatchError extends Error {
  * 500 — an underlying storage operation failed.
  * @param options {object}
  * @param options.cause {Error}   the underlying storage error
+ * @param [options.requestName] {string}   request name used in the error title
  * @param params {...*}   forwarded to Error
  */
 export class StorageError extends Error {
-  constructor ({ cause }, ...params) {
-    super(params)
+  title: string
+  detail: string
+  statusCode: number
+  constructor(
+    { cause, requestName }: { cause: Error; requestName?: string },
+    ...params: unknown[]
+  ) {
+    super(params as never)
     this.cause = cause
-    this.title = `Storage Error: ${cause.message}`
+    this.title = requestName
+      ? `Storage Error (${requestName}): ${cause.message}`
+      : `Storage Error: ${cause.message}`
     console.warn('Storage Error', cause)
     this.detail = cause.message
     this.statusCode = 500
@@ -196,10 +262,14 @@ export class StorageError extends Error {
  * @param params {...*}   forwarded to Error
  */
 export class InvalidImportError extends Error {
-  constructor ({ message } = {}, ...params) {
-    super(message, ...params)
+  title: string
+  detail: string
+  statusCode: number
+  constructor({ message }: { message?: string } = {}, ...params: unknown[]) {
+    super(message, ...(params as []))
     this.title = 'Invalid space import'
-    this.detail = message || 'The uploaded archive is not a valid WAS space export.'
+    this.detail =
+      message || 'The uploaded archive is not a valid WAS space export.'
     this.statusCode = 400
   }
 }
@@ -211,16 +281,22 @@ export class InvalidImportError extends Error {
  * @param error {Error & { statusCode?: number, title?: string, detail?: string }}
  * @param request {import('fastify').FastifyRequest}
  * @param reply {import('fastify').FastifyReply}
- * @returns {Promise<void>}
+ * @returns {Promise<FastifyReply>}
  */
-export async function handleError (error, request, reply) {
-  return reply
-    .status(error.statusCode || 500)
-    .type('application/problem+json')
-    // .type('application/json')
-    .send({
-      // type: `${SPEC_URL}#read-space-errors`,
-      title: error.title,
-      errors: [{ detail: error.detail }]
-    })
+export async function handleError(
+  error: Error & { statusCode?: number; title?: string; detail?: string },
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<FastifyReply> {
+  return (
+    reply
+      .status(error.statusCode || 500)
+      .type('application/problem+json')
+      // .type('application/json')
+      .send({
+        // type: `${SPEC_URL}#read-space-errors`,
+        title: error.title,
+        errors: [{ detail: error.detail }]
+      })
+  )
 }

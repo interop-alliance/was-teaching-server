@@ -1,26 +1,25 @@
 /**
- * List Collections API unit tests
- * Using Node.js test runner
- * @see https://nodejs.org/api/test.html
+ * List Collections API unit tests (Vitest).
  */
-import { it, describe, before, after } from 'node:test'
+import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
+import type { FastifyInstance } from 'fastify'
 
 import { createApp } from '../src/server.js'
 import { zcapClients } from './helpers.js'
 
 describe('List Collections API', () => {
-  let fastify, serverUrl, alice
+  let fastify: FastifyInstance, serverUrl: string, alice: any
   const PORT = 7777
 
-  before(async () => {
-    ({ alice } = await zcapClients())
+  beforeAll(async () => {
+    ;({ alice } = await zcapClients())
     serverUrl = `http://localhost:${PORT}`
     fastify = createApp({ serverUrl })
     await fastify.listen({ port: PORT })
   })
 
-  after(async () => {
+  afterAll(async () => {
     return fastify.close()
   })
 
@@ -29,10 +28,19 @@ describe('List Collections API', () => {
     const collectionId = `list-collections-collection-${crypto.randomUUID()}`
     const resourceId = `list-collections-resource-${crypto.randomUUID()}`
 
-    const spaceUrl = (new URL(`/space/${spaceId}`, serverUrl)).toString()
-    const collectionUrl = (new URL(`/space/${spaceId}/${collectionId}`, serverUrl)).toString()
-    const resourceUrl = (new URL(`/space/${spaceId}/${collectionId}/${resourceId}`, serverUrl)).toString()
-    const collectionsUrl = (new URL(`/space/${spaceId}/collections/`, serverUrl)).toString()
+    const spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
+    const collectionUrl = new URL(
+      `/space/${spaceId}/${collectionId}`,
+      serverUrl
+    ).toString()
+    const resourceUrl = new URL(
+      `/space/${spaceId}/${collectionId}/${resourceId}`,
+      serverUrl
+    ).toString()
+    const collectionsUrl = new URL(
+      `/space/${spaceId}/collections/`,
+      serverUrl
+    ).toString()
 
     await alice.rootClient.request({
       url: spaceUrl,

@@ -3,7 +3,10 @@
  * (cors, static, view, multipart), decorates `serverUrl`, and mounts the four
  * route groups.
  */
-import Fastify from 'fastify'
+import Fastify, {
+  type FastifyInstance,
+  type FastifyServerOptions
+} from 'fastify'
 import cors from '@fastify/cors'
 import fastifyView from '@fastify/view'
 import fastifyStatic from '@fastify/static'
@@ -12,11 +15,21 @@ import Multipart from '@fastify/multipart'
 import handlebars from 'handlebars'
 import path from 'node:path'
 
-import { initCollectionRoutes, initResourceRoutes, initSpaceRoutes, initSpacesRepositoryRoutes } from './routes.js'
-import { SPEC_URL } from '../config.default.js'
+import {
+  initCollectionRoutes,
+  initResourceRoutes,
+  initSpaceRoutes,
+  initSpacesRepositoryRoutes
+} from './routes.js'
+import { SPEC_URL } from './config.default.js'
 
 // TODO: https://github.com/fastify/fastify-helmet
 // TODO: https://github.com/fastify/fastify-env
+
+/** The constraint-strategy type Fastify's `routerOptions.constraints` accepts. */
+type ContentTypeConstraint = NonNullable<
+  NonNullable<FastifyServerOptions['routerOptions']>['constraints']
+>[string]
 
 /**
  * Set up a route constraint that will allow custom routing based on
@@ -29,18 +42,28 @@ import { SPEC_URL } from '../config.default.js'
  * string; `deriveConstraint(req, ctx)` returns the request's `content-type`
  * header value used to select a matching route.
  */
-const contentTypeStrategy = {
+const contentTypeStrategy: ContentTypeConstraint = {
   name: 'content-type',
   storage: function () {
-    let contentTypes = {};
+    // Holds find-my-way route handlers keyed by content-type; the handler type
+    // lives in the (transitive, non-importable) find-my-way package.
+    let contentTypes: Record<string, any> = {}
     return {
-      get: (contentType) => contentTypes[contentType] || null,
-      set: (contentType, store) => { contentTypes[contentType] = store },
-      del: (contentType) => { delete contentTypes[contentType] },
-      empty: () => { contentTypes = {} }
-    };
+      get: contentType => contentTypes[contentType] || null,
+      set: (contentType, store) => {
+        contentTypes[contentType] = store
+      },
+      del: contentType => {
+        delete contentTypes[contentType]
+      },
+      empty: () => {
+        contentTypes = {}
+      }
+    }
   },
-  deriveConstraint: (req, ctx) => req.headers['content-type']
+  // Returns undefined when the header is absent (find-my-way treats that as "no
+  // constraint"); the strategy type declares `string`, so cast to satisfy it.
+  deriveConstraint: (req, _ctx) => req.headers['content-type'] as string
 }
 
 /**
@@ -51,7 +74,9 @@ const contentTypeStrategy = {
  *   and match ZCap invocationTarget URLs (host and port must match exactly)
  * @returns {import('fastify').FastifyInstance}
  */
-export function createApp ({ serverUrl } = {}) {
+export function createApp({
+  serverUrl
+}: { serverUrl?: string } = {}): FastifyInstance {
   // By default uses 'pino' logger
   const fastify = Fastify({
     logger: true,
@@ -62,7 +87,7 @@ export function createApp ({ serverUrl } = {}) {
     }
   })
 
-  fastify.decorate('serverUrl', serverUrl)
+  fastify.decorate('serverUrl', serverUrl as string)
 
   // Disable CORS
   fastify.register(cors, {
@@ -106,4 +131,3 @@ export function createApp ({ serverUrl } = {}) {
 
   return fastify
 }
-

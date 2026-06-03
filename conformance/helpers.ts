@@ -2,6 +2,7 @@ import { ZcapClient } from '@interop/ezcap'
 import { decodeSecretKeySeed } from '@digitalcredentials/bnid'
 import { Ed25519Signature2020 } from '@interop/ed25519-signature'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
+import type { ISigner } from '@interop/data-integrity-core'
 import { v4 as uuidv4 } from 'uuid'
 
 import { serverUrl, onboardingToken } from './config.js'
@@ -13,7 +14,7 @@ const secretKeySeeds = {
   bobDelegatedApp: 'z1AfgF2HQvQaaAhod3KEYUHwY5epGtP5QmbEMKtMFf8XcYk'
 }
 
-export function zcapClient ({ signer }) {
+export function zcapClient({ signer }: { signer: ISigner }): ZcapClient {
   return new ZcapClient({
     SuiteClass: Ed25519Signature2020,
     invocationSigner: signer,
@@ -21,7 +22,7 @@ export function zcapClient ({ signer }) {
   })
 }
 
-export async function buildZcapClients () {
+export async function buildZcapClients() {
   const aliceKeyPair = await Ed25519VerificationKey.generate({
     seed: decodeSecretKeySeed({ secretKeySeed: secretKeySeeds.alice })
   })
@@ -30,7 +31,9 @@ export async function buildZcapClients () {
   const aliceRootClient = zcapClient({ signer: aliceKeyPair.signer() })
 
   const aliceDelegatedAppKeyPair = await Ed25519VerificationKey.generate({
-    seed: decodeSecretKeySeed({ secretKeySeed: secretKeySeeds.aliceDelegatedApp })
+    seed: decodeSecretKeySeed({
+      secretKeySeed: secretKeySeeds.aliceDelegatedApp
+    })
   })
   const aliceDelegatedAppDid = `did:key:${aliceDelegatedAppKeyPair.fingerprint()}`
   aliceDelegatedAppKeyPair.id = `${aliceDelegatedAppDid}#${aliceDelegatedAppKeyPair.fingerprint()}`
@@ -64,10 +67,16 @@ export async function buildZcapClients () {
  *
  * @param options {object}
  * @param options.spaceDescription {object}
- * @param options.rootClient {object} ZCap client — used when no onboarding token is set
- * @returns {Promise<{status: number, headers: Headers, data: object}>}
+ * @param options.rootClient {ZcapClient} ZCap client — used when no onboarding token is set
+ * @returns {Promise<{status: number, headers: Headers, data: any}>}
  */
-export async function createSpace ({ spaceDescription, rootClient }) {
+export async function createSpace({
+  spaceDescription,
+  rootClient
+}: {
+  spaceDescription: object
+  rootClient: ZcapClient
+}): Promise<{ status: number; headers: Headers; data: any }> {
   if (onboardingToken) {
     const response = await fetch(new URL('/spaces/', serverUrl), {
       method: 'POST',
@@ -85,7 +94,11 @@ export async function createSpace ({ spaceDescription, rootClient }) {
     method: 'POST',
     json: spaceDescription
   })
-  return { status: response.status, headers: response.headers, data: response.data }
+  return {
+    status: response.status,
+    headers: response.headers,
+    data: response.data
+  }
 }
 
 export { serverUrl, onboardingToken, uuidv4 as generateId }

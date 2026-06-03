@@ -2,11 +2,25 @@
  * Request handlers for Space operations: get/update/delete a Space, add a
  * Collection to it, list its Collections, and export it.
  */
+import type { FastifyReply, FastifyRequest } from 'fastify'
+import type { Readable } from 'node:stream'
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
-import { InvalidSpaceIdError, InvalidImportError, SpaceNotFoundError } from '../errors.js'
-import { writeCollection, deleteSpace, getSpaceDescription, writeSpace, exportSpace, importSpace, listCollections }
-  from '../storage.js'
+import {
+  InvalidSpaceIdError,
+  InvalidImportError,
+  SpaceNotFoundError
+} from '../errors.js'
+import {
+  writeCollection,
+  deleteSpace,
+  getSpaceDescription,
+  writeSpace,
+  exportSpace,
+  importSpace,
+  listCollections
+} from '../storage.js'
+import type { IDID } from '../types.js'
 
 export class SpaceRequest {
   /**
@@ -25,15 +39,21 @@ export class SpaceRequest {
    *   "controller": "did:key:z6MkpBMbMaRSv5nsgifRAwEKvHHoiKDMhiAHShTFNmkJNdVW"
    * }
    *
-   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
-   *   `this.serverUrl`.
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
-   * @returns {Promise<void>}
+   * @returns {Promise<FastifyReply>}
    */
-  static async get (request, reply) {
-    const { params: { spaceId }, url, method, headers } = request
-    const { serverUrl } = this
+  static async get(
+    request: FastifyRequest<{ Params: { spaceId: string } }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId },
+      url,
+      method,
+      headers
+    } = request
+    const { serverUrl } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await getSpaceDescription({ spaceId })
@@ -43,9 +63,17 @@ export class SpaceRequest {
     const spaceController = spaceDescription.controller
 
     // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = (new URL(`/space/${spaceId}`, serverUrl)).toString()
-    await handleZcapVerify({ url, allowedTarget, allowedAction: 'GET', method,
-      headers, serverUrl, spaceController, requestName: 'Get Space' })
+    const allowedTarget = new URL(`/space/${spaceId}`, serverUrl).toString()
+    await handleZcapVerify({
+      url,
+      allowedTarget,
+      allowedAction: 'GET',
+      method,
+      headers,
+      serverUrl,
+      spaceController,
+      requestName: 'Get Space'
+    })
 
     // zCap checks out, continue
     return reply.status(200).send(spaceDescription)
@@ -59,51 +87,82 @@ export class SpaceRequest {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
    *
-   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
-   *   `this.serverUrl`.
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
-   * @returns {Promise<void>}
+   * @returns {Promise<FastifyReply>}
    */
-  static async put (request, reply) {
+  static async put(
+    request: FastifyRequest<{
+      Params: { spaceId: string }
+      Body: { name: string; controller: IDID }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
     const {
-      params: { spaceId }, url, method, headers, body, zcap: { keyId }
+      params: { spaceId },
+      url,
+      method,
+      headers,
+      body,
+      zcap: { keyId }
     } = request
-    const { serverUrl } = this
+    const { serverUrl } = request.server
 
     // Check to see if space already exists (if yes, this will be an Update)
     const existingSpaceDescription = await getSpaceDescription({ spaceId })
     const existingController = existingSpaceDescription?.controller
 
-    const [ zcapSigningDid ] = keyId.split('#')
+    const [zcapSigningDid] = keyId.split('#')
 
-    request.log.info(`Handling PUT request for spaceId: ${spaceId}, zcapSigningDid: ${zcapSigningDid}, existingSpaceDescription: ${existingSpaceDescription ? 'exists' : 'does not exist'}`)
+    request.log.info(
+      `Handling PUT request for spaceId: ${spaceId}, zcapSigningDid: ${zcapSigningDid}, existingSpaceDescription: ${existingSpaceDescription ? 'exists' : 'does not exist'}`
+    )
 
     // Important. For exising space objects, make sure the request carries
     // authorization matching the old controller
-    const authorizedController = existingController ?? zcapSigningDid
+    const authorizedController = existingController ?? (zcapSigningDid as IDID)
 
     // Perform zCap signature verification (throws appropriate errors)
     let spaceUrl
     try {
-      spaceUrl = (new URL(`/space/${spaceId}`, serverUrl)).toString()
+      spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
     } catch (e) {
-      request.log.error(`Failed to construct spaceUrl for spaceId: ${spaceId}, serverUrl: ${serverUrl}, error: ${e.message}`)
-      throw new InvalidSpaceIdError({ requestName: 'Update Space'})
+      request.log.error(
+        `Failed to construct spaceUrl for spaceId: ${spaceId}, serverUrl: ${serverUrl}, error: ${(e as Error).message}`
+      )
+      throw new InvalidSpaceIdError({ requestName: 'Update Space' })
     }
 
     request.log.info(`spaceUrl: ${spaceUrl}, serverUrl: ${serverUrl}`)
-    await handleZcapVerify({ url, allowedTarget: spaceUrl, allowedAction: 'PUT', method,
-      headers, serverUrl, spaceController: authorizedController, logger: request.log })
+    await handleZcapVerify({
+      url,
+      allowedTarget: spaceUrl,
+      allowedAction: 'PUT',
+      method,
+      headers,
+      serverUrl,
+      spaceController: authorizedController,
+      logger: request.log
+    })
 
     request.log.info('zCap verified')
 
     // Compose Space Description object body, new or updated
     const spaceDescription = existingSpaceDescription
-      // Existing: Update only the allowed fields
-      ? { ...existingSpaceDescription, id: spaceId, name: body.name, controller: body.controller}
-      // New Space
-      : { id: spaceId, type: ['Space'], name: body.name, controller: body.controller }
+      ? // Existing: Update only the allowed fields
+        {
+          ...existingSpaceDescription,
+          id: spaceId,
+          name: body.name,
+          controller: body.controller
+        }
+      : // New Space
+        {
+          id: spaceId,
+          type: ['Space'],
+          name: body.name,
+          controller: body.controller
+        }
 
     // zCap checks out, continue
     await writeSpace({ spaceId, spaceDescription })
@@ -122,15 +181,25 @@ export class SpaceRequest {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
    *
-   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
-   *   `this.serverUrl`.
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
-   * @returns {Promise<void>}
+   * @returns {Promise<FastifyReply>}
    */
-  static async post (request, reply) {
-    const { params: { spaceId }, url, method, headers, body } = request
-    const { serverUrl } = this
+  static async post(
+    request: FastifyRequest<{
+      Params: { spaceId: string }
+      Body: { id?: string; name: string }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId },
+      url,
+      method,
+      headers,
+      body
+    } = request
+    const { serverUrl } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await getSpaceDescription({ spaceId })
@@ -140,20 +209,34 @@ export class SpaceRequest {
     const spaceController = spaceDescription.controller
 
     // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = (new URL(`/space/${spaceId}/`, serverUrl)).toString()
-    await handleZcapVerify({ url, allowedTarget, allowedAction: 'POST', method,
-      headers, serverUrl, spaceController })
+    const allowedTarget = new URL(`/space/${spaceId}/`, serverUrl).toString()
+    await handleZcapVerify({
+      url,
+      allowedTarget,
+      allowedAction: 'POST',
+      method,
+      headers,
+      serverUrl,
+      spaceController
+    })
 
     // zCap checks out, continue
     // TODO: use a uuid v5 or another hash based id here instead
     // TODO: Protect against .space resource id collision
     const collectionId = body.id || uuidv4()
     const { name } = body
-    const collectionDescription = { id: collectionId, type: ['Collection'], name }
+    const collectionDescription = {
+      id: collectionId,
+      type: ['Collection'],
+      name
+    }
 
     await writeCollection({ spaceId, collectionId, collectionDescription })
 
-    const createdUrl = (new URL(`/space/${spaceId}/${collectionId}`, serverUrl)).toString()
+    const createdUrl = new URL(
+      `/space/${spaceId}/${collectionId}`,
+      serverUrl
+    ).toString()
     reply.header('Location', createdUrl)
     return reply.status(201).send(collectionDescription)
   }
@@ -166,15 +249,21 @@ export class SpaceRequest {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
    *
-   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
-   *   `this.serverUrl`.
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
-   * @returns {Promise<void>}
+   * @returns {Promise<FastifyReply>}
    */
-  static async delete (request, reply) {
-    const { params: { spaceId }, url, method, headers } = request
-    const { serverUrl } = this
+  static async delete(
+    request: FastifyRequest<{ Params: { spaceId: string } }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId },
+      url,
+      method,
+      headers
+    } = request
+    const { serverUrl } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await getSpaceDescription({ spaceId })
@@ -184,9 +273,16 @@ export class SpaceRequest {
     const spaceController = spaceDescription.controller
 
     // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = (new URL(`/space/${spaceId}`, serverUrl)).toString()
-    await handleZcapVerify({ url, allowedTarget, allowedAction: 'DELETE', method,
-      headers, serverUrl, spaceController })
+    const allowedTarget = new URL(`/space/${spaceId}`, serverUrl).toString()
+    await handleZcapVerify({
+      url,
+      allowedTarget,
+      allowedAction: 'DELETE',
+      method,
+      headers,
+      serverUrl,
+      spaceController
+    })
 
     // zCap checks out, continue
     await deleteSpace({ spaceId })
@@ -198,15 +294,21 @@ export class SpaceRequest {
    * POST /space/:spaceId/export
    * Request handler for "Export Space" request
    *
-   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
-   *   `this.serverUrl`.
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
-   * @returns {Promise<void>}
+   * @returns {Promise<FastifyReply>}
    */
-  static async export (request, reply) {
-    const { params: { spaceId }, url, method, headers } = request
-    const { serverUrl } = this
+  static async export(
+    request: FastifyRequest<{ Params: { spaceId: string } }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId },
+      url,
+      method,
+      headers
+    } = request
+    const { serverUrl } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await getSpaceDescription({ spaceId })
@@ -216,9 +318,19 @@ export class SpaceRequest {
     const spaceController = spaceDescription.controller
 
     // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = (new URL(`/space/${spaceId}/export`, serverUrl)).toString()
-    await handleZcapVerify({ url, allowedTarget, allowedAction: 'POST', method,
-      headers, serverUrl, spaceController })
+    const allowedTarget = new URL(
+      `/space/${spaceId}/export`,
+      serverUrl
+    ).toString()
+    await handleZcapVerify({
+      url,
+      allowedTarget,
+      allowedAction: 'POST',
+      method,
+      headers,
+      serverUrl,
+      spaceController
+    })
 
     // zCap checks out, continue
     const tarFile = await exportSpace({ spaceId })
@@ -230,15 +342,21 @@ export class SpaceRequest {
    * POST /space/:spaceId/import
    * Request handler for "Import Space" request (merge from tarball)
    *
-   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
-   *   `this.serverUrl`.
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
-   * @returns {Promise<void>}
+   * @returns {Promise<FastifyReply>}
    */
-  static async import (request, reply) {
-    const { params: { spaceId }, url, method, headers } = request
-    const { serverUrl } = this
+  static async import(
+    request: FastifyRequest<{ Params: { spaceId: string }; Body: Readable }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId },
+      url,
+      method,
+      headers
+    } = request
+    const { serverUrl } = request.server
 
     const spaceDescription = await getSpaceDescription({ spaceId })
     if (!spaceDescription) {
@@ -246,15 +364,25 @@ export class SpaceRequest {
     }
     const spaceController = spaceDescription.controller
 
-    const allowedTarget = (new URL(`/space/${spaceId}/import`, serverUrl)).toString()
-    await handleZcapVerify({ url, allowedTarget, allowedAction: 'POST', method,
-      headers, serverUrl, spaceController })
+    const allowedTarget = new URL(
+      `/space/${spaceId}/import`,
+      serverUrl
+    ).toString()
+    await handleZcapVerify({
+      url,
+      allowedTarget,
+      allowedAction: 'POST',
+      method,
+      headers,
+      serverUrl,
+      spaceController
+    })
 
     try {
       const summary = await importSpace({ spaceId, tarStream: request.body })
       return reply.status(200).send(summary)
     } catch (err) {
-      throw new InvalidImportError({ message: err.message })
+      throw new InvalidImportError({ message: (err as Error).message })
     }
   }
 
@@ -262,15 +390,21 @@ export class SpaceRequest {
    * GET /space/:spaceId/collections/
    * Request handler for "List Collections" request
    *
-   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
-   *   `this.serverUrl`.
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
-   * @returns {Promise<void>}
+   * @returns {Promise<FastifyReply>}
    */
-  static async listCollections (request, reply) {
-    const { params: { spaceId }, url, method, headers } = request
-    const { serverUrl } = this
+  static async listCollections(
+    request: FastifyRequest<{ Params: { spaceId: string } }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId },
+      url,
+      method,
+      headers
+    } = request
+    const { serverUrl } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await getSpaceDescription({ spaceId })
@@ -280,9 +414,19 @@ export class SpaceRequest {
     const spaceController = spaceDescription.controller
 
     // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = (new URL(`/space/${spaceId}/collections/`, serverUrl)).toString()
-    await handleZcapVerify({ url, allowedTarget, allowedAction: 'GET', method,
-      headers, serverUrl, spaceController })
+    const allowedTarget = new URL(
+      `/space/${spaceId}/collections/`,
+      serverUrl
+    ).toString()
+    await handleZcapVerify({
+      url,
+      allowedTarget,
+      allowedAction: 'GET',
+      method,
+      headers,
+      serverUrl,
+      spaceController
+    })
 
     const collections = await listCollections({ spaceId })
     return reply.status(200).send({
@@ -299,9 +443,15 @@ export class SpaceRequest {
  * @param options {object}
  * @param options.spaceId {string}
  * @param options.requestName {string}
- * @returns {Promise<string>} Controller DID for a given space.
+ * @returns {Promise<IDID>} Controller DID for a given space.
  */
-export async function getSpaceController ({ spaceId, requestName }) {
+export async function getSpaceController({
+  spaceId,
+  requestName
+}: {
+  spaceId: string
+  requestName: string
+}): Promise<IDID> {
   const spaceDescription = await getSpaceDescription({ spaceId })
   if (!spaceDescription) {
     throw new SpaceNotFoundError({ requestName })

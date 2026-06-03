@@ -5,7 +5,9 @@
  * @param options.contentType {string}
  * @returns {boolean}
  */
-export function isJson({ contentType }) {
-  return typeof contentType === 'string' &&
-    (contentType.match(/application\/[^+]*[+]?(json);?.*/))
+export function isJson({ contentType }: { contentType?: string }): boolean {
+  return (
+    typeof contentType === 'string' &&
+    Boolean(contentType.match(/application\/[^+]*[+]?(json);?.*/))
+  )
 }

@@ -1,62 +1,78 @@
 /**
- * Resource API unit tests
- * Using Node.js test runner
- * @see https://nodejs.org/api/test.html
+ * Resource API unit tests (Vitest).
  */
-import { it, describe, before, after } from 'node:test'
+import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
+import type { FastifyInstance } from 'fastify'
 
 import { createApp } from '../src/server.js'
 import { zcapClients } from './helpers.js'
 
 describe('Resource API', () => {
-  let fastify, serverUrl, alice, bob
+  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
   const PORT = 7768
 
-  before(async () => {
-    ({ alice, bob } = await zcapClients())
+  beforeAll(async () => {
+    ;({ alice, bob } = await zcapClients())
     serverUrl = `http://localhost:${PORT}` // fastify.server.address().port
     fastify = createApp({ serverUrl })
     await fastify.listen({ port: PORT })
   })
-  after(async () => {
+  afterAll(async () => {
     return fastify.close()
   })
 
   it('GET /space/:spaceId/:resourceId should 401 error when no authorization headers', async () => {
-    const response = await fetch(new URL('/space/any-space-id/any-collection/any-resource', serverUrl), {
-      method: 'GET'
-    })
+    const response = await fetch(
+      new URL('/space/any-space-id/any-collection/any-resource', serverUrl),
+      {
+        method: 'GET'
+      }
+    )
     assert.equal(response.status, 401)
-    assert.match(response.headers.get('content-type'), /application\/problem\+json/)
+    assert.match(
+      response.headers.get('content-type')!,
+      /application\/problem\+json/
+    )
   })
 
   // TODO: make sure all iterations return ResourceNotFound error
   it('GET /space/:spaceId/:collectionId/:resourceId should 404 error on not found space id', async () => {
-    const url = (new URL('/space/space-id-that-does-not-exist/unknown-collection/unknown-resource', serverUrl))
-      .toString()
-    let expectedError
+    const url = new URL(
+      '/space/space-id-that-does-not-exist/unknown-collection/unknown-resource',
+      serverUrl
+    ).toString()
+    let expectedError: any
     try {
       await alice.rootClient.request({
-        url, method: 'GET'
+        url,
+        method: 'GET'
       })
     } catch (error) {
       console.log('ERROR', error)
       expectedError = error
     }
     assert.equal(expectedError.response.status, 404)
-    assert.match(expectedError.response.headers.get('content-type'),
-      /application\/problem\+json/)
+    assert.match(
+      expectedError.response.headers.get('content-type'),
+      /application\/problem\+json/
+    )
   })
 
   it('[root] POST and GET Resource with proper authorization', async () => {
     // First, create the Resource
     const body = {
-      id: 'sample-resource', name: 'Sample Verifiable Credential'
+      id: 'sample-resource',
+      name: 'Sample Verifiable Credential'
     }
     const response = await alice.rootClient.request({
-      url: (new URL(`/space/${alice.space1.id}/credentials/`, serverUrl)).toString(),
-      method: 'POST', action: 'POST', json: body
+      url: new URL(
+        `/space/${alice.space1.id}/credentials/`,
+        serverUrl
+      ).toString(),
+      method: 'POST',
+      action: 'POST',
+      json: body
     })
     assert.equal(response.status, 201)
 
@@ -64,41 +80,56 @@ describe('Resource API', () => {
 
     assert.match(response.headers.get('content-type'), /application\/json/)
     const resourceUrl = response.headers.get('location')
-    assert.ok(resourceUrl.startsWith(`${serverUrl}/space/${alice.space1.id}/credentials/`))
+    assert.ok(
+      resourceUrl.startsWith(
+        `${serverUrl}/space/${alice.space1.id}/credentials/`
+      )
+    )
 
     // Next, GET the created resource
     const fetchResourceResponse = await alice.rootClient.request({
-      url: resourceUrl, method: 'GET'
+      url: resourceUrl,
+      method: 'GET'
     })
     assert.equal(fetchResourceResponse.status, 200)
-    assert.match(fetchResourceResponse.headers.get('content-type'),
-      /application\/json/)
-    assert.equal(fetchResourceResponse.data.name, 'Sample Verifiable Credential')
+    assert.match(
+      fetchResourceResponse.headers.get('content-type'),
+      /application\/json/
+    )
+    assert.equal(
+      fetchResourceResponse.data.name,
+      'Sample Verifiable Credential'
+    )
   })
 
   it('[root] POST and GET a non-JSON resource', async () => {
-    const body = new Blob(['line 1\nline2\n'], {type: 'text/plain'})
-    let response
+    const body = new Blob(['line 1\nline2\n'], { type: 'text/plain' })
+    let response: any
     try {
       response = await alice.rootClient.request({
-        url: (new URL(`/space/${alice.space1.id}/credentials/`, serverUrl)).toString(),
-        method: 'POST', body
+        url: new URL(
+          `/space/${alice.space1.id}/credentials/`,
+          serverUrl
+        ).toString(),
+        method: 'POST',
+        body
       })
-    } catch (e) {
-      console.log(e.data)
+    } catch (err: any) {
+      console.log(err.data)
     }
 
     assert.equal(response.status, 201)
     const createdUrl = response.headers.get('location')
 
     // Next, GET the created resource
-    let fetchResourceResponse
+    let fetchResourceResponse: any
     try {
       fetchResourceResponse = await alice.rootClient.request({
-        url: createdUrl, method: 'GET'
+        url: createdUrl,
+        method: 'GET'
       })
-    } catch (e) {
-      console.log(e.data)
+    } catch (err: any) {
+      console.log(err.data)
     }
     assert.equal(fetchResourceResponse.status, 200)
     const responseBody = await fetchResourceResponse.text()
@@ -107,77 +138,99 @@ describe('Resource API', () => {
 
   it('[root] PUT and GET Resource', async () => {
     const resourceId = 'put-resource'
-    const resourceUrl = (new URL(
-      `/space/${alice.space1.id}/credentials/${resourceId}`, serverUrl
-    )).toString()
+    const resourceUrl = new URL(
+      `/space/${alice.space1.id}/credentials/${resourceId}`,
+      serverUrl
+    ).toString()
     const body = { id: resourceId, name: 'PUT Resource Test' }
 
     const putResponse = await alice.rootClient.request({
-      url: resourceUrl, method: 'PUT', json: body
+      url: resourceUrl,
+      method: 'PUT',
+      json: body
     })
     assert.equal(putResponse.status, 204)
 
     const getResponse = await alice.rootClient.request({
-      url: resourceUrl, method: 'GET'
+      url: resourceUrl,
+      method: 'GET'
     })
     assert.equal(getResponse.status, 200)
     assert.equal(getResponse.data.name, 'PUT Resource Test')
   })
 
   it('[root] PUT Resource to non-existent collection should 404', async () => {
-    const resourceUrl = (new URL(
-      `/space/${alice.space1.id}/collection-does-not-exist/some-resource`, serverUrl
-    )).toString()
-    let expectedError
+    const resourceUrl = new URL(
+      `/space/${alice.space1.id}/collection-does-not-exist/some-resource`,
+      serverUrl
+    ).toString()
+    let expectedError: any
     try {
       await alice.rootClient.request({
-        url: resourceUrl, method: 'PUT', json: { name: 'test' }
+        url: resourceUrl,
+        method: 'PUT',
+        json: { name: 'test' }
       })
     } catch (error) {
       expectedError = error
     }
     assert.equal(expectedError.response.status, 404)
-    assert.match(expectedError.response.headers.get('content-type'),
-      /application\/problem\+json/)
+    assert.match(
+      expectedError.response.headers.get('content-type'),
+      /application\/problem\+json/
+    )
   })
 
   it('[root] PUT Resource should update existing resource (upsert)', async () => {
     const resourceId = 'upsert-resource'
-    const resourceUrl = (new URL(
-      `/space/${alice.space1.id}/credentials/${resourceId}`, serverUrl
-    )).toString()
+    const resourceUrl = new URL(
+      `/space/${alice.space1.id}/credentials/${resourceId}`,
+      serverUrl
+    ).toString()
 
     // Initial PUT
     await alice.rootClient.request({
-      url: resourceUrl, method: 'PUT', json: { id: resourceId, name: 'Original Name' }
+      url: resourceUrl,
+      method: 'PUT',
+      json: { id: resourceId, name: 'Original Name' }
     })
 
     // Second PUT with updated content
     const secondPut = await alice.rootClient.request({
-      url: resourceUrl, method: 'PUT', json: { id: resourceId, name: 'Updated Name' }
+      url: resourceUrl,
+      method: 'PUT',
+      json: { id: resourceId, name: 'Updated Name' }
     })
     assert.equal(secondPut.status, 204)
 
     // GET should reflect the updated content
     const getResponse = await alice.rootClient.request({
-      url: resourceUrl, method: 'GET'
+      url: resourceUrl,
+      method: 'GET'
     })
     assert.equal(getResponse.status, 200)
     assert.equal(getResponse.data.name, 'Updated Name')
   })
 
-  it('[root] Bob should not be able to GET Alice\'s resources', async () => {
+  it("[root] Bob should not be able to GET Alice's resources", async () => {
     // First, Alice creates a resource
-    const body = { id: 'alice-private-resource', name: 'Alice Private Resource' }
+    const body = {
+      id: 'alice-private-resource',
+      name: 'Alice Private Resource'
+    }
     const postResponse = await alice.rootClient.request({
-      url: (new URL(`/space/${alice.space1.id}/credentials/`, serverUrl)).toString(),
-      method: 'POST', json: body
+      url: new URL(
+        `/space/${alice.space1.id}/credentials/`,
+        serverUrl
+      ).toString(),
+      method: 'POST',
+      json: body
     })
     assert.equal(postResponse.status, 201)
     const resourceUrl = postResponse.headers.get('location')
 
     // Bob tries to access Alice's resource
-    let expectedError
+    let expectedError: any
     try {
       await bob.rootClient.request({ url: resourceUrl, method: 'GET' })
     } catch (error) {
@@ -185,8 +238,10 @@ describe('Resource API', () => {
     }
     // Bob gets a 404, not a 403, to avoid revealing the resource's existence
     assert.equal(expectedError.response.status, 404)
-    assert.match(expectedError.response.headers.get('content-type'),
-      /application\/problem\+json/)
+    assert.match(
+      expectedError.response.headers.get('content-type'),
+      /application\/problem\+json/
+    )
 
     // Clean up the created resource
     await alice.rootClient.request({ url: resourceUrl, method: 'DELETE' })
@@ -195,59 +250,77 @@ describe('Resource API', () => {
   it('[root] POST and DELETE Resource with proper authorization', async () => {
     // First, create the Resource
     const body = {
-      id: 'sample-resource-to-delete', name: 'Sample Delete'
+      id: 'sample-resource-to-delete',
+      name: 'Sample Delete'
     }
     const response = await alice.rootClient.request({
-      url: (new URL(`/space/${alice.space1.id}/credentials/`, serverUrl)).toString(),
-      method: 'POST', json: body
+      url: new URL(
+        `/space/${alice.space1.id}/credentials/`,
+        serverUrl
+      ).toString(),
+      method: 'POST',
+      json: body
     })
     assert.equal(response.status, 201)
     assert.equal(response.data['content-type'], 'application/json')
 
     assert.match(response.headers.get('content-type'), /application\/json/)
     const resourceUrl = response.headers.get('location')
-    assert.ok(resourceUrl.startsWith(`${serverUrl}/space/${alice.space1.id}/credentials/`))
+    assert.ok(
+      resourceUrl.startsWith(
+        `${serverUrl}/space/${alice.space1.id}/credentials/`
+      )
+    )
 
     // Next, GET the created resource (to check it was created)
     const fetchResourceResponse = await alice.rootClient.request({
-      url: resourceUrl, method: 'GET'
+      url: resourceUrl,
+      method: 'GET'
     })
     assert.equal(fetchResourceResponse.status, 200)
 
     // Delete the resource
     const deleteResponse = await alice.rootClient.request({
-      url: resourceUrl, method: 'DELETE'
+      url: resourceUrl,
+      method: 'DELETE'
     })
     assert.equal(deleteResponse.status, 204)
 
     // Finally, check that it was deleted
-    let checkResponse
+    let checkResponse: any
     try {
       await alice.rootClient.request({
-        url: resourceUrl, method: 'GET'
+        url: resourceUrl,
+        method: 'GET'
       })
-    } catch (err) {
+    } catch (err: any) {
       checkResponse = err.response
     }
 
     assert.equal(checkResponse.status, 404)
   })
 
-  it.only('[un-authorized!] Read a public Resource by acl policy', async () => {
+  it('[un-authorized!] Read a public Resource by acl policy', async () => {
     // Create new public collection
     const collectionId = 'public-collection'
-    const collectionUrl =
-      (new URL(`/space/${alice.space1.id}/${collectionId}`, serverUrl)).toString()
+    const collectionUrl = new URL(
+      `/space/${alice.space1.id}/${collectionId}`,
+      serverUrl
+    ).toString()
     const body = {
-      id: collectionId, name: 'Public Collection'
+      id: collectionId,
+      name: 'Public Collection'
     }
     await alice.rootClient.request({
-      url: collectionUrl, method: 'PUT', json: body
+      url: collectionUrl,
+      method: 'PUT',
+      json: body
     })
 
     // Check it was created
     const existResponse = await alice.rootClient.request({
-      url: collectionUrl, method: 'GET'
+      url: collectionUrl,
+      method: 'GET'
     })
     assert.equal(existResponse.status, 200)
 
