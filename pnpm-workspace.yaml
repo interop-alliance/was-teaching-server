@@ -1,4 +1,15 @@
+allowBuilds:
+  esbuild: true
 minimumReleaseAgeExclude:
   - '@interop/ezcap@7.0.3'
   - '@interop/zcap@9.0.3'
   - '@interop/ezcap@7.0.4'
+  - '@interop/data-integrity-proof@3.2.0'
+  - '@interop/data-integrity-proof@3.2.1'
+  - '@interop/did-io@4.0.1'
+  - '@interop/did-method-key@7.1.0'
+  - '@interop/did-web-resolver@6.1.0'
+  - '@interop/ed25519-signature@7.0.1'
+  - '@interop/ezcap@7.1.0'
+  - '@interop/jsonld-signatures@11.6.7'
+  - '@interop/security-document-loader@9.2.1'
