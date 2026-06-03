@@ -13,6 +13,20 @@ import {
 import { CollectionNotFoundError, ResourceNotFoundError, SpaceNotFoundError } from '../errors.js'
 
 export class ResourceRequest {
+  /**
+   * PUT /space/:spaceId/:collectionId/:resourceId
+   * Request handler for "Create (or Update) Resource by Id" request
+   * Before this, `parseAuthHeaders()` hook executed, resulting in:
+   * request.zcap: {
+   *   keyId, headers, signature, created, expires, invocation, digest
+   * }
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
+   */
   static async put (request, reply) {
     const {
       params: { spaceId, collectionId, resourceId }, url, method, headers, body
@@ -54,6 +68,12 @@ export class ResourceRequest {
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
    */
   static async get (request, reply) {
     const { params: { spaceId, collectionId, resourceId },
@@ -104,6 +124,12 @@ export class ResourceRequest {
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
    */
   static async delete (request, reply) {
     const {

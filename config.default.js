@@ -1,3 +1,7 @@
+/**
+ * Default configuration: spec and FEP documentation URLs referenced by the
+ * home page, error responses, and space-export manifests.
+ */
 
 const env = process.env;
 

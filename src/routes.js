@@ -10,6 +10,14 @@ import { ResourceRequest } from './requests/ResourceRequest.js'
 import { CollectionRequest } from './requests/CollectionRequest.js'
 import { parseAuthHeaders, requireAuthHeaders } from './auth-header-hooks.js'
 
+/**
+ * Registers SpacesRepository routes (POST/GET /spaces). Installs the
+ * `requireAuthHeaders` then `parseAuthHeaders` onRequest hooks and the
+ * `handleError` error handler.
+ * @param app {import('fastify').FastifyInstance}
+ * @param options {object}   Fastify plugin options
+ * @returns {Promise<void>}
+ */
 export async function initSpacesRepositoryRoutes (app, options) {
   app.setErrorHandler(handleError)
 
@@ -30,6 +38,13 @@ export async function initSpacesRepositoryRoutes (app, options) {
   app.get('/spaces/', async (request, reply) => reply.status(501).send())
 }
 
+/**
+ * Registers Space routes (get/update/delete a Space, add/list Collections,
+ * export/import). Installs the auth hooks and the `handleError` error handler.
+ * @param app {import('fastify').FastifyInstance}
+ * @param options {object}   Fastify plugin options
+ * @returns {Promise<void>}
+ */
 export async function initSpaceRoutes (app, options) {
   app.setErrorHandler(handleError)
 
@@ -70,6 +85,13 @@ export async function initSpaceRoutes (app, options) {
   app.post('/space/:spaceId/import', SpaceRequest.import)
 }
 
+/**
+ * Registers Collection routes (get/update/delete a Collection, list its items,
+ * add a Resource). Installs the auth hooks and the `handleError` error handler.
+ * @param app {import('fastify').FastifyInstance}
+ * @param options {object}   Fastify plugin options
+ * @returns {Promise<void>}
+ */
 export async function initCollectionRoutes (app, options) {
   app.setErrorHandler(handleError)
 
@@ -100,6 +122,13 @@ export async function initCollectionRoutes (app, options) {
   app.delete('/space/:spaceId/:collectionId', CollectionRequest.delete)
 }
 
+/**
+ * Registers Resource routes (create-by-id, get, delete a Resource). Installs the
+ * auth hooks and the `handleError` error handler.
+ * @param app {import('fastify').FastifyInstance}
+ * @param options {object}   Fastify plugin options
+ * @returns {Promise<void>}
+ */
 export async function initResourceRoutes (app, options) {
   app.setErrorHandler(handleError)
 

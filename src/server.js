@@ -23,6 +23,11 @@ import { SPEC_URL } from '../config.default.js'
  * incoming content type.
  * Usage:
  * app.post('/my-route', { constraints: { 'content-type': 'application/xml' } }...
+ *
+ * Shape: a Fastify constraint strategy — `{ name, storage, deriveConstraint }`.
+ * `storage()` returns a get/set/del/empty store keyed by the content-type
+ * string; `deriveConstraint(req, ctx)` returns the request's `content-type`
+ * header value used to select a matching route.
  */
 const contentTypeStrategy = {
   name: 'content-type',
@@ -38,6 +43,14 @@ const contentTypeStrategy = {
   deriveConstraint: (req, ctx) => req.headers['content-type']
 }
 
+/**
+ * Builds the Fastify instance: registers plugins (cors, static, view,
+ * multipart), decorates `serverUrl`, and mounts the four route groups.
+ * @param options {object}
+ * @param [options.serverUrl] {string}   this server's base URL; used to build
+ *   and match ZCap invocationTarget URLs (host and port must match exactly)
+ * @returns {import('fastify').FastifyInstance}
+ */
 export function createApp ({ serverUrl } = {}) {
   // By default uses 'pino' logger
   const fastify = Fastify({

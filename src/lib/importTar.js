@@ -41,7 +41,10 @@ export async function extractTarEntries (tarStream) {
 }
 
 /**
+ * Validates that the archive carries a well-formed UBC v0.1 `manifest.yml`
+ * describing a WAS space export. Throws on any problem.
  * @param {Map<string, { type: string, body?: Buffer }>} entries
+ * @returns {void}
  */
 export function validateManifest (entries) {
   const manifestEntry = entries.get('manifest.yml')

@@ -24,6 +24,12 @@ export class SpaceRequest {
    *   "name": "Alice's space",
    *   "controller": "did:key:z6MkpBMbMaRSv5nsgifRAwEKvHHoiKDMhiAHShTFNmkJNdVW"
    * }
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
    */
   static async get (request, reply) {
     const { params: { spaceId }, url, method, headers } = request
@@ -52,6 +58,12 @@ export class SpaceRequest {
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
    */
   static async put (request, reply) {
     const {
@@ -109,6 +121,12 @@ export class SpaceRequest {
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
    */
   static async post (request, reply) {
     const { params: { spaceId }, url, method, headers, body } = request
@@ -147,6 +165,12 @@ export class SpaceRequest {
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
    */
   static async delete (request, reply) {
     const { params: { spaceId }, url, method, headers } = request
@@ -173,6 +197,12 @@ export class SpaceRequest {
   /**
    * POST /space/:spaceId/export
    * Request handler for "Export Space" request
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
    */
   static async export (request, reply) {
     const { params: { spaceId }, url, method, headers } = request
@@ -199,6 +229,12 @@ export class SpaceRequest {
   /**
    * POST /space/:spaceId/import
    * Request handler for "Import Space" request (merge from tarball)
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
    */
   static async import (request, reply) {
     const { params: { spaceId }, url, method, headers } = request
@@ -222,6 +258,16 @@ export class SpaceRequest {
     }
   }
 
+  /**
+   * GET /space/:spaceId/collections/
+   * Request handler for "List Collections" request
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
+   */
   static async listCollections (request, reply) {
     const { params: { spaceId }, url, method, headers } = request
     const { serverUrl } = this
@@ -250,9 +296,9 @@ export class SpaceRequest {
 /**
  * Load space description object from storage to get space controller.
  * TODO: Cache this
- * @param spaceId {string}
- * @param requestName {string}
- *
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.requestName {string}
  * @returns {Promise<string>} Controller DID for a given space.
  */
 export async function getSpaceController ({ spaceId, requestName }) {

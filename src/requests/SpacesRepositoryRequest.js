@@ -15,6 +15,12 @@ export class SpacesRepositoryRequest {
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
    */
   static async post (request, reply) {
     const { body, url, method, headers, zcap: { keyId } } = request

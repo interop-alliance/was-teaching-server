@@ -28,12 +28,26 @@ import {
 
 const { Store: MetadataJsonStore } = jsonfs
 
+/**
+ * Builds the on-disk filename for a resource representation:
+ * `r.<resourceId>.<encodedContentType>.<ext>`.
+ * @param options {object}
+ * @param options.resourceId {string}
+ * @param options.contentType {string}
+ * @returns {string}
+ */
 export function fileNameFor ({ resourceId, contentType }) {
   const encodedType = encodeURIComponent(contentType)
   const extension = mime.extension(contentType) || 'blob'
   return `r.${resourceId}.${encodedType}.${extension}`
 }
 
+/**
+ * Opens a read stream for a file, resolving once the stream has opened (and
+ * rejecting if it errors first).
+ * @param filePath {string}
+ * @returns {Promise<import('node:fs').ReadStream>}
+ */
 async function openFileStream (filePath) {
   const resourceStream = fs.createReadStream(filePath)
   return new Promise((resolve, reject) => {
@@ -62,8 +76,9 @@ export class FileSystemBackend {
   }
 
   /**
-   * @param spaceId {string}
-   * @returns {Promise<*>} Created space storage directory.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @returns {Promise<string>} Created space storage directory path.
    */
   async _ensureSpaceDir ({ spaceId }) {
     const spaceDir = this._spaceDir(spaceId)
@@ -80,9 +95,10 @@ export class FileSystemBackend {
   }
 
   /**
-   * @param spaceId {string}
-   * @param collectionId {string}
-   * @returns {Promise<*>} Created collection storage directory.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<string>} Created collection storage directory path.
    */
   async _ensureCollectionDir ({ spaceId, collectionId }) {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
@@ -99,6 +115,12 @@ export class FileSystemBackend {
     return collectionDir
   }
 
+  /**
+   * @param options {object}
+   * @param options.collectionDir {string}
+   * @param options.resourceId {string}
+   * @returns {Promise<string|undefined>} First matching resource file path.
+   */
   async _findFile ({ collectionDir, resourceId }) {
     const [filePath] = await glob(path.join(collectionDir, `r.${resourceId}*`))
     return filePath
@@ -109,8 +131,8 @@ export class FileSystemBackend {
   /**
    * @param options {object}
    * @param options.spaceId {string}
-   * @param options.spaceDescription {object}
-   * @returns {Promise<StoreEntity>}
+   * @param options.spaceDescription {import('../storage.js').SpaceDescription}
+   * @returns {Promise<void>} Resolved value is implementation-defined and ignored.
    */
   async writeSpace ({ spaceId, spaceDescription }) {
     const spaceDir = await this._ensureSpaceDir({ spaceId })
@@ -122,7 +144,8 @@ export class FileSystemBackend {
   /**
    * @param options {object}
    * @param options.spaceId {string}
-   * @returns {Promise<object>} Returns the JSON Space description object
+   * @returns {Promise<import('../storage.js').SpaceDescription|undefined>}
+   *   Resolves falsy when the Space does not exist (must not throw).
    */
   async getSpaceDescription ({ spaceId }) {
     const spaceDir = this._spaceDir(spaceId)
@@ -134,7 +157,7 @@ export class FileSystemBackend {
   /**
    * @param options {object}
    * @param options.spaceId {string}
-   * @returns {Promise<*>}
+   * @returns {Promise<void>}
    */
   async deleteSpace ({ spaceId }) {
     return await rm(this._spaceDir(spaceId), { recursive: true })
@@ -143,7 +166,7 @@ export class FileSystemBackend {
   /**
    * @param options {object}
    * @param options.spaceId {string}
-   * @returns {Promise<object[]>}
+   * @returns {Promise<import('../storage.js').CollectionSummary[]>}
    */
   async listCollections ({ spaceId }) {
     const spaceDir = this._spaceDir(spaceId)
@@ -170,7 +193,7 @@ export class FileSystemBackend {
   /**
    * @param options {object}
    * @param options.spaceId {string}
-   * @returns {Promise<Pack>} tar-stream pack
+   * @returns {Promise<import('tar-stream').Pack>} tar-stream pack
    */
   async exportSpace ({ spaceId }) {
     const spaceDescription = await this.getSpaceDescription({ spaceId })
@@ -257,6 +280,19 @@ export class FileSystemBackend {
     return pack
   }
 
+  /**
+   * Merges a WAS space-export tarball into an existing Space (collections and
+   * resources that already exist are skipped, not overwritten).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.tarStream {import('node:stream').Readable}
+   * @returns {Promise<{
+   *   collectionsCreated: number,
+   *   collectionsSkipped: number,
+   *   resourcesCreated: number,
+   *   resourcesSkipped: number
+   * }>}
+   */
   async importSpace ({ spaceId, tarStream }) {
     const entries = await extractTarEntries(tarStream)
     const { collections } = buildImportPlan(entries)
@@ -298,8 +334,8 @@ export class FileSystemBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @param options.collectionDescription {object}
-   * @returns {Promise<StoreEntity>}
+   * @param options.collectionDescription {import('../storage.js').CollectionDescription}
+   * @returns {Promise<void>} Resolved value is implementation-defined and ignored.
    */
   async writeCollection ({ spaceId, collectionId, collectionDescription }) {
     const collectionDir = await this._ensureCollectionDir({ spaceId, collectionId })
@@ -312,6 +348,8 @@ export class FileSystemBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
+   * @returns {Promise<import('../storage.js').CollectionDescription|undefined>}
+   *   Resolves falsy when the Collection does not exist (must not throw).
    */
   async getCollectionDescription ({ spaceId, collectionId }) {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
@@ -324,7 +362,7 @@ export class FileSystemBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @returns {Promise<*>}
+   * @returns {Promise<void>}
    */
   async deleteCollection ({ spaceId, collectionId }) {
     return await rm(this._collectionDir({ spaceId, collectionId }), { recursive: true })
@@ -334,6 +372,7 @@ export class FileSystemBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
+   * @returns {Promise<import('../storage.js').CollectionListing>}
    */
   async listCollectionItems ({ spaceId, collectionId }) {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
@@ -372,8 +411,8 @@ export class FileSystemBackend {
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
-   * @param options.request {object}
-   * @returns {Promise<*>}
+   * @param options.request {import('fastify').FastifyRequest}
+   * @returns {Promise<void>}
    */
   async writeResource ({ spaceId, collectionId, resourceId, request }) {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
@@ -405,6 +444,7 @@ export class FileSystemBackend {
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param [options.contentType] {string}
+   * @returns {Promise<import('../storage.js').ResourceResult>}
    */
   async getResource ({ spaceId, collectionId, resourceId, contentType }) {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
@@ -440,7 +480,7 @@ export class FileSystemBackend {
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
-   * @returns {Promise<*>}
+   * @returns {Promise<void>}
    */
   async deleteResource ({ spaceId, collectionId, resourceId }) {
     const collectionDir = this._collectionDir({ spaceId, collectionId })

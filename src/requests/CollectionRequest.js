@@ -24,6 +24,12 @@ export class CollectionRequest {
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
    */
   static async post (request, reply) {
     const { params: { spaceId, collectionId }, url, method, headers } = request
@@ -73,6 +79,12 @@ export class CollectionRequest {
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
    */
   static async put (request, reply) {
     const { params: { spaceId, collectionId }, url, method, headers, body } = request
@@ -117,6 +129,12 @@ export class CollectionRequest {
 
   /**
    * GET /space/:spaceId/:collectionId (no trailing slash): Get Collection details
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
    */
   static async get (request, reply) {
     const { params: { spaceId, collectionId }, url, method, headers } = request
@@ -148,6 +166,12 @@ export class CollectionRequest {
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
    */
   static async delete (request, reply) {
     const { params: { spaceId, collectionId }, url, method, headers } = request
@@ -179,6 +203,12 @@ export class CollectionRequest {
   /**
    * GET /space/:spaceId/:collectionId/ (with trailing slash):
    * List Collection items
+   *
+   * @this {import('fastify').FastifyInstance} Bound Fastify instance; provides
+   *   `this.serverUrl`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<void>}
    */
   static async list (request, reply) {
     const { params: { spaceId, collectionId }, url, method, headers } = request

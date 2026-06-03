@@ -4,6 +4,11 @@
  */
 import { createApp } from './server.js'
 
+/**
+ * Reads SERVER_URL / PORT from env, builds the app via createApp(), and starts
+ * listening. Exits the process with code 1 on startup failure.
+ * @returns {Promise<void>}
+ */
 export async function startServer () {
   let fastify
   try {

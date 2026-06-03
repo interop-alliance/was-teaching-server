@@ -33,8 +33,8 @@ import { parseSignatureHeader } from '@interop/http-signature-header'
  *   digest: 'mh=uEiCPO-qYr-z0GYV5F75-N1l8Rhjv4xIkKZsnbTZeZ7emSA'
  * }
  *
- * @param request
- * @param reply
+ * @param request {import('fastify').FastifyRequest}
+ * @param reply {import('fastify').FastifyReply}
  * @returns {Promise<void>}
  */
 export async function parseAuthHeaders (request, reply) {
@@ -58,6 +58,14 @@ export async function parseAuthHeaders (request, reply) {
   }
 }
 
+/**
+ * onRequest hook that enforces presence of the auth-related headers. Throws
+ * MissingAuthError (401) when `Authorization` or `Capability-Invocation` is
+ * absent.
+ * @param request {import('fastify').FastifyRequest}
+ * @param reply {import('fastify').FastifyReply}
+ * @returns {Promise<void>}
+ */
 export async function requireAuthHeaders (request, reply) {
   const { headers } = request
   if (!(headers['authorization'] && headers['capability-invocation'])) {

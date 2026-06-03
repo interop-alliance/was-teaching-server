@@ -4,6 +4,12 @@
  */
 import { SPEC_URL } from '../config.default.js'
 
+/**
+ * 404 — the requested Space does not exist, or the caller is not authorized.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ * @param params {...*}   forwarded to Error
+ */
 export class SpaceNotFoundError extends Error {
   constructor ({ requestName } = {}, ...params) {
     super(params)
@@ -13,6 +19,12 @@ export class SpaceNotFoundError extends Error {
   }
 }
 
+/**
+ * 400 — the provided space id is not URL-safe / otherwise invalid.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ * @param params {...*}   forwarded to Error
+ */
 export class InvalidSpaceIdError extends Error {
   constructor ({ requestName } = {}, ...params) {
     super(params)
@@ -22,6 +34,10 @@ export class InvalidSpaceIdError extends Error {
   }
 }
 
+/**
+ * 400 — the Collection Description request body is missing or invalid.
+ * @param params {...*}   forwarded to Error
+ */
 export class InvalidCollectionError extends Error {
   constructor (...params) {
     super(params)
@@ -31,6 +47,13 @@ export class InvalidCollectionError extends Error {
   }
 }
 
+/**
+ * 404 — the requested Collection does not exist, or the caller is not
+ * authorized.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ * @param params {...*}   forwarded to Error
+ */
 export class CollectionNotFoundError extends Error {
   constructor ({ requestName } = {}, ...params) {
     super(params)
@@ -40,6 +63,12 @@ export class CollectionNotFoundError extends Error {
   }
 }
 
+/**
+ * 404 — the requested Resource does not exist, or the caller is not authorized.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ * @param params {...*}   forwarded to Error
+ */
 export class ResourceNotFoundError extends Error {
   constructor ({ requestName } = {}, ...params) {
     super(params)
@@ -49,6 +78,13 @@ export class ResourceNotFoundError extends Error {
   }
 }
 
+/**
+ * 404 — capability invocation did not verify (reported as not-found so as not
+ * to leak resource existence).
+ * @param options {object}
+ * @param options.requestName {string}   request name used in the error title
+ * @param params {...*}   forwarded to Error
+ */
 export class UnauthorizedError extends Error {
   constructor ({ requestName }, ...params) {
     super(params)
@@ -58,6 +94,10 @@ export class UnauthorizedError extends Error {
   }
 }
 
+/**
+ * 401 — required `Authorization` / `Capability-Invocation` headers are missing.
+ * @param params {...*}   forwarded to Error
+ */
 export class MissingAuthError extends Error {
   constructor (...params) {
     super(params)
@@ -67,6 +107,10 @@ export class MissingAuthError extends Error {
   }
 }
 
+/**
+ * 400 — the `Authorization` header did not include a `keyId` parameter.
+ * @param params {...*}   forwarded to Error
+ */
 export class MissingKeyIdError extends Error {
   constructor (...params) {
     super(params)
@@ -76,6 +120,13 @@ export class MissingKeyIdError extends Error {
   }
 }
 
+/**
+ * 400 — failed to parse the `Authorization`, `Capability-Invocation`, or
+ * `Digest` headers.
+ * @param options {object}
+ * @param options.cause {Error}   the underlying parse error
+ * @param params {...*}   forwarded to Error
+ */
 export class AuthHeaderParseError extends Error {
   constructor ({ cause }, ...params) {
     super(params)
@@ -86,6 +137,13 @@ export class AuthHeaderParseError extends Error {
   }
 }
 
+/**
+ * 400 — an error was thrown while verifying the authorization headers.
+ * @param options {object}
+ * @param options.requestName {string}   request name used in the error title
+ * @param options.cause {Error}   the underlying verification error
+ * @param params {...*}   forwarded to Error
+ */
 export class AuthVerificationError extends Error {
   constructor ({ requestName, cause }, ...params) {
     super(params)
@@ -96,6 +154,14 @@ export class AuthVerificationError extends Error {
   }
 }
 
+/**
+ * 400 — the DID that signed the capability invocation does not match the
+ * `controller` in the Create Space request body.
+ * @param options {object}
+ * @param options.zcapSigningDid {string}   DID that signed the invocation
+ * @param options.controller {string}   controller DID supplied in the body
+ * @param params {...*}   forwarded to Error
+ */
 export class SpaceControllerMismatchError extends Error {
   constructor ({ zcapSigningDid, controller }, ...params) {
     super(params)
@@ -106,6 +172,12 @@ export class SpaceControllerMismatchError extends Error {
   }
 }
 
+/**
+ * 500 — an underlying storage operation failed.
+ * @param options {object}
+ * @param options.cause {Error}   the underlying storage error
+ * @param params {...*}   forwarded to Error
+ */
 export class StorageError extends Error {
   constructor ({ cause }, ...params) {
     super(params)
@@ -117,6 +189,12 @@ export class StorageError extends Error {
   }
 }
 
+/**
+ * 400 — the uploaded archive is not a valid WAS space export.
+ * @param options {object}
+ * @param [options.message] {string}   detail message describing the problem
+ * @param params {...*}   forwarded to Error
+ */
 export class InvalidImportError extends Error {
   constructor ({ message } = {}, ...params) {
     super(message, ...params)
@@ -126,6 +204,15 @@ export class InvalidImportError extends Error {
   }
 }
 
+/**
+ * Fastify error handler installed by each route group. Serializes the error to
+ * an `application/problem+json` response using its `statusCode` / `title` /
+ * `detail` (defaulting to 500 when no statusCode is present).
+ * @param error {Error & { statusCode?: number, title?: string, detail?: string }}
+ * @param request {import('fastify').FastifyRequest}
+ * @param reply {import('fastify').FastifyReply}
+ * @returns {Promise<void>}
+ */
 export async function handleError (error, request, reply) {
   return reply
     .status(error.statusCode || 500)
