@@ -17,6 +17,25 @@ describe('Resource API', () => {
     serverUrl = `http://localhost:${PORT}` // fastify.server.address().port
     fastify = createApp({ serverUrl })
     await fastify.listen({ port: PORT })
+
+    // Provision the Space and 'credentials' Collection this suite operates on.
+    // The 'data/' directory is gitignored, so these must be created here rather
+    // than relying on filesystem state left behind by other test files.
+    await alice.rootClient.request({
+      url: new URL(`/space/${alice.space1.id}`, serverUrl).toString(),
+      method: 'PUT',
+      json: {
+        id: alice.space1.id,
+        name: "Alice's Space #1 (Home)",
+        controller: alice.did
+      }
+    })
+    await alice.rootClient.request({
+      url: new URL(`/space/${alice.space1.id}/`, serverUrl).toString(),
+      method: 'POST',
+      action: 'POST',
+      json: { id: 'credentials', name: 'Verifiable Credentials' }
+    })
   })
   afterAll(async () => {
     return fastify.close()

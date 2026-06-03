@@ -1,6 +1,6 @@
 # History
 
-## 0.0.7 - TBD
+## 0.1.0 - TBD
 
 ### Changed
 
@@ -26,6 +26,7 @@
   resource writes).
 - `ResourceRequest.delete` / `CollectionRequest.delete` now import the
   `StorageError` they throw.
+- Fix test ordering bug in collection and resource api tests.
 
 ## 0.0.6 - 2026-05-31
 
