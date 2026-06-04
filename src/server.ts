@@ -21,7 +21,7 @@ import {
   initSpaceRoutes,
   initSpacesRepositoryRoutes
 } from './routes.js'
-import { SPEC_URL } from './config.default.js'
+import { SPEC_URL, SERVER_VERSION } from './config.default.js'
 
 // TODO: https://github.com/fastify/fastify-helmet
 // TODO: https://github.com/fastify/fastify-env
@@ -121,7 +121,7 @@ export function createApp({
 
   // Add a human-readable 'Welcome' page
   fastify.get('/', async (request, reply) => {
-    return reply.view('home', { title: 'Welcome', SPEC_URL })
+    return reply.view('home', { title: 'Welcome', SPEC_URL, SERVER_VERSION })
   })
 
   fastify.register(initSpacesRepositoryRoutes)
