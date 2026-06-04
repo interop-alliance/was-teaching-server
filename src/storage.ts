@@ -19,7 +19,6 @@
  */
 import path from 'node:path'
 import type { Readable } from 'node:stream'
-import type { FastifyRequest } from 'fastify'
 import { FileSystemBackend } from './backends/filesystem.js'
 import type {
   SpaceDescription,
@@ -27,6 +26,7 @@ import type {
   CollectionSummary,
   CollectionListing,
   ResourceResult,
+  ResourceInput,
   ImportStats
 } from './types.js'
 
@@ -167,22 +167,22 @@ export async function listCollectionItems({
  * @param options.spaceId {string}
  * @param options.collectionId {string}
  * @param options.resourceId {string}
- * @param options.request {import('fastify').FastifyRequest}   the Fastify
- *   request (body / multipart file)
+ * @param options.input {ResourceInput}   transport-neutral resource input
+ *   (JSON value or byte stream) resolved by the request layer
  * @returns {Promise<void>}
  */
 export async function writeResource({
   spaceId,
   collectionId,
   resourceId,
-  request
+  input
 }: {
   spaceId: string
   collectionId: string
   resourceId: string
-  request: FastifyRequest
+  input: ResourceInput
 }): Promise<void> {
-  return backend.writeResource({ spaceId, collectionId, resourceId, request })
+  return backend.writeResource({ spaceId, collectionId, resourceId, input })
 }
 
 /**

@@ -14,7 +14,8 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"conformance/**/*.ts\" \"*.md\"",
     "test-node": "vitest run",
     "test": "pnpm run fix && pnpm run lint && pnpm run build && pnpm run test-node",
-    "conformance": "tsx --test conformance/*.test.ts"
+    "conformance": "tsx --test conformance/*.test.ts",
+    "conformance:local": "tsx scripts/conformance-local.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",

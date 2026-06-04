@@ -17,10 +17,8 @@ import {
   SpaceNotFoundError
 } from '../errors.js'
 import * as mime from 'mime-types'
-import { isJson } from '../lib/isJson.js'
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
-import type { FastifyRequest } from 'fastify'
 import {
   UBC_MANIFEST_URL,
   SPACE_URL,
@@ -34,6 +32,7 @@ import type {
   CollectionSummary,
   CollectionListing,
   ResourceResult,
+  ResourceInput,
   ImportStats,
   StorageBackend
 } from '../types.js'
@@ -523,53 +522,36 @@ export class FileSystemBackend implements StorageBackend {
   // Resources
 
   /**
-   * Creates a non-JSON resource
+   * Writes a resource representation (JSON value or byte stream) to disk.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
-   * @param options.request {import('fastify').FastifyRequest}
+   * @param options.input {ResourceInput}
    * @returns {Promise<void>}
    */
   async writeResource({
     spaceId,
     collectionId,
     resourceId,
-    request
+    input
   }: {
     spaceId: string
     collectionId: string
     resourceId: string
-    request: FastifyRequest
+    input: ResourceInput
   }): Promise<void> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
-    const requestContentType = request.headers['content-type']
+    const filename = fileNameFor({ resourceId, contentType: input.contentType })
+    const filePath = path.join(collectionDir, filename)
 
-    if (isJson({ contentType: requestContentType })) {
-      const filename = fileNameFor({
-        resourceId,
-        contentType: requestContentType!
-      })
-      const resourceJsonStore = new MetadataJsonStore({
-        file: path.join(collectionDir, filename)
-      })
+    if (input.kind === 'json') {
+      const resourceJsonStore = new MetadataJsonStore({ file: filePath })
       console.log('Creating JSON resource')
-      await resourceJsonStore.write(request.body)
-    } else if (requestContentType?.startsWith('multipart')) {
-      const data = await request.file()
-      const dataContentType = data!.mimetype
-      const filename = fileNameFor({ resourceId, contentType: dataContentType })
-      const filePath = path.join(collectionDir, filename)
-      console.log('Writing multipart file, uploaded filename:', data!.filename)
-      await pipeline(data!.file, fs.createWriteStream(filePath))
+      await resourceJsonStore.write(input.data)
     } else {
-      const filename = fileNameFor({
-        resourceId,
-        contentType: requestContentType!
-      })
-      const filePath = path.join(collectionDir, filename)
-      console.log('Writing non-multipart blob')
-      await pipeline(request.body as Readable, fs.createWriteStream(filePath))
+      console.log('Writing blob')
+      await pipeline(input.stream, fs.createWriteStream(filePath))
     }
   }
 

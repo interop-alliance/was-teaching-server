@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid'
 
 import { handleZcapVerify } from '../zcap.js'
 import { getSpaceController } from './SpaceRequest.js'
+import { resolveResourceInput } from './resourceInput.js'
 import {
   CollectionNotFoundError,
   InvalidCollectionError,
@@ -81,8 +82,9 @@ export class CollectionRequest {
     const resourceId = uuidv4()
     let response: { id: string; 'content-type'?: string; url?: string }
 
+    const input = await resolveResourceInput(request)
     try {
-      await writeResource({ spaceId, collectionId, resourceId, request })
+      await writeResource({ spaceId, collectionId, resourceId, input })
       response = {
         id: resourceId,
         'content-type': request.headers['content-type']

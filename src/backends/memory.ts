@@ -8,15 +8,14 @@
  * backend is the one wired into storage.ts); they throw if called.
  */
 import { Readable } from 'node:stream'
-import type { FastifyRequest } from 'fastify'
 import { ResourceNotFoundError } from '../errors.js'
-import { isJson } from '../lib/isJson.js'
 import type {
   SpaceDescription,
   CollectionDescription,
   CollectionSummary,
   CollectionListing,
   ResourceResult,
+  ResourceInput,
   ImportStats,
   StorageBackend
 } from '../types.js'
@@ -285,40 +284,29 @@ export class MemoryBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
-   * @param options.request {import('fastify').FastifyRequest}
+   * @param options.input {ResourceInput}
    * @returns {Promise<void>}
    */
   async writeResource({
     spaceId,
     collectionId,
     resourceId,
-    request
+    input
   }: {
     spaceId: string
     collectionId: string
     resourceId: string
-    request: FastifyRequest
+    input: ResourceInput
   }): Promise<void> {
     const collection = this.collection(spaceId, collectionId)
-    const requestContentType = request.headers['content-type']
-    let data: Buffer
-    let dataContentType: string | undefined
+    const data =
+      input.kind === 'json'
+        ? Buffer.from(JSON.stringify(input.data))
+        : await collectStream(input.stream)
 
-    if (isJson({ contentType: requestContentType })) {
-      data = Buffer.from(JSON.stringify(request.body))
-      dataContentType = requestContentType
-    } else if (requestContentType?.startsWith('multipart')) {
-      const file = await request.file()
-      dataContentType = file!.mimetype
-      data = await collectStream(file!.file)
-    } else {
-      data = await collectStream(request.body as Readable)
-      dataContentType = requestContentType
-    }
-
-    collection.resources.set(`${resourceId}::${dataContentType}`, {
+    collection.resources.set(`${resourceId}::${input.contentType}`, {
       data,
-      contentType: dataContentType as string
+      contentType: input.contentType
     })
   }
 

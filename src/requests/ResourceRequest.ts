@@ -5,6 +5,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { Readable } from 'node:stream'
 import { handleZcapVerify } from '../zcap.js'
+import { resolveResourceInput } from './resourceInput.js'
 import {
   getCollectionDescription,
   getResource,
@@ -78,8 +79,9 @@ export class ResourceRequest {
     if (!collectionDescription) {
       throw new CollectionNotFoundError({ requestName: 'Put Resource' })
     }
+    const input = await resolveResourceInput(request)
     try {
-      await writeResource({ spaceId, collectionId, resourceId, request })
+      await writeResource({ spaceId, collectionId, resourceId, input })
     } catch (e) {
       throw new Error('Could not create resource: ' + (e as Error).message, {
         cause: e

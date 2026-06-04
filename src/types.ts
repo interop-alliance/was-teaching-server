@@ -11,9 +11,9 @@
  * `fastify.decorate` in server.ts, read in handlers via `request.server`) and
  * `FastifyRequest.zcap` (set by the `parseAuthHeaders` hook).
  */
-import type { FastifyRequest } from 'fastify'
 // Pull in @fastify/multipart's `FastifyRequest.file()` augmentation program-wide
-// (the backends call `request.file()` without importing the plugin directly).
+// (the request layer calls `request.file()` without importing the plugin
+// directly).
 import type {} from '@fastify/multipart'
 import type { Readable } from 'node:stream'
 import type {
@@ -106,6 +106,20 @@ export interface ResourceResult {
   storedResourceType: string
 }
 
+/**
+ * Transport-neutral input to `writeResource`. The request layer resolves a
+ * Fastify request into one of these shapes (see `resolveResourceInput` in
+ * requests/resourceInput.ts) so that storage backends never depend on Fastify:
+ * - `kind: 'json'` carries the parsed JSON value in `data`.
+ * - `kind: 'binary'` carries a readable byte stream — a raw blob body, or the
+ *   file extracted from a multipart upload.
+ *
+ * In both cases `contentType` is the content-type the bytes are stored under.
+ */
+export type ResourceInput =
+  | { kind: 'json'; contentType: string; data: unknown }
+  | { kind: 'binary'; contentType: string; stream: Readable }
+
 /** Return shape of `importSpace()`: a per-merge tally. */
 export interface ImportStats {
   collectionsCreated: number
@@ -183,7 +197,7 @@ export interface StorageBackend {
     spaceId: string
     collectionId: string
     resourceId: string
-    request: FastifyRequest
+    input: ResourceInput
   }): Promise<void>
   getResource(options: {
     spaceId: string

@@ -1,5 +1,27 @@
 # History
 
+## 0.2.0 - TBD
+
+### Changed
+
+- Decouple the `StorageBackend` persistence port from the HTTP transport.
+  `writeResource` now takes a transport-neutral `ResourceInput` value object
+  (`{ kind: 'json'; data } | { kind: 'binary'; stream }`, both carrying a
+  `contentType`) instead of a raw Fastify `request`. A new request-layer
+  adapter, `resolveResourceInput()` in `src/requests/resourceInput.ts`, is now
+  the only place that reads `request.body` / `request.file()` and distinguishes
+  multipart from raw-blob bodies; the backends (`filesystem`, `memory`) no
+  longer import Fastify at all.
+
+  _Architectural note (ports & adapters):_ `StorageBackend` is a driven
+  (secondary) port with two interchangeable adapters. Passing the inbound
+  `FastifyRequest` into it coupled that driven port to the HTTP driving
+  (primary) adapter — the one dependency direction hexagonal architecture
+  forbids. Routing the conversion through `resolveResourceInput()` restores the
+  boundary: backends now depend only on domain types, can be unit-tested with
+  plain values (no fake request objects — see `test/storage.test.ts`), and the
+  multipart/blob distinction lives where it belongs, in the HTTP layer.
+
 ## 0.1.0 - 2026-06-04
 
 ### Changed

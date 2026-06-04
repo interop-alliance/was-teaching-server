@@ -8,7 +8,6 @@ import path from 'node:path'
 import { mkdtemp, mkdir, rm } from 'node:fs/promises'
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
-import type { FastifyRequest } from 'fastify'
 import { FileSystemBackend, fileNameFor } from '../src/backends/filesystem.js'
 
 describe('Storage API', () => {
@@ -54,13 +53,14 @@ describe('Storage API', () => {
           spaceId,
           collectionId,
           resourceId,
-          request: {
-            headers: { 'content-type': 'application/json' },
-            body: {
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: {
               id: resourceId,
               type: ['VerifiableCredential']
             }
-          } as unknown as FastifyRequest
+          }
         })
 
         const pack = await backend.exportSpace({ spaceId })
