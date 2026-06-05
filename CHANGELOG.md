@@ -33,6 +33,23 @@
   plain values (no fake request objects — see `test/storage.test.ts`), and the
   multipart/blob distinction lives where it belongs, in the HTTP layer.
 
+- Tighten the `StorageBackend` contract so a Resource has exactly one current
+  representation, identified by `resourceId` alone within a Collection.
+  Previously a resource's identity was effectively `(resourceId, contentType)`
+  -- an emergent property of how each backend stored the content-type out of
+  band (filename segment on the filesystem, composite `${resourceId}::${contentType}`
+  map key in memory). As a result, `PUT`-ing an id as one content-type and then
+  re-`PUT`-ing it under another left two stored representations instead of
+  replacing the first; `getResource` returned a nondeterministic one and the
+  listing emitted the id twice. Now `writeResource` replaces any prior
+  representation regardless of its content-type (the filesystem backend prunes
+  the old file after writing the new one; the memory backend overwrites in
+  place), and `getResource`'s `contentType` parameter is advisory -- the single
+  representation is resolved by `resourceId` alone, with the stored content-type
+  returned in `ResourceResult.storedResourceType`. The content-type stays
+  human-visible in the filesystem filename; it is now a descriptive attribute,
+  not part of identity. No method signatures or spec behaviour changed.
+
 ## 0.1.0 - 2026-06-04
 
 ### Changed

@@ -156,6 +156,14 @@ export interface ParsedZcap {
  * - Write methods are upserts (create if absent, overwrite if present); their
  *   resolved value is implementation-defined and ignored.
  * - Delete methods are idempotent and resolve once the target is gone.
+ * - Resources are identified by `resourceId` alone within a Collection; a
+ *   Resource has exactly one current representation. `writeResource` replaces
+ *   any existing representation, including one previously stored under a
+ *   different content-type. `getResource`'s `contentType` is an advisory hint:
+ *   single-representation backends return the one representation regardless, and
+ *   the stored content-type comes back in `ResourceResult.storedResourceType`.
+ *   Where the content-type lives is an adapter detail (filename segment /
+ *   map-value field / future SQL column).
  *
  * Note: `exportSpace` resolves a tar-stream `Pack` at runtime, typed here as the
  * `Readable` it extends (tar-stream ships no types; see Phase 5 audit).
@@ -204,6 +212,7 @@ export interface StorageBackend {
     spaceId: string
     collectionId: string
     resourceId: string
+    /** advisory hint only; single-representation backends ignore it for lookup */
     contentType?: string
   }): Promise<ResourceResult>
   deleteResource(options: {

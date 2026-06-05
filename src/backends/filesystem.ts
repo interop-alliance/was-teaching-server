@@ -60,6 +60,27 @@ export function fileNameFor({
 }
 
 /**
+ * Parses an on-disk resource filename (`r.<resourceId>.<encodedContentType>.<ext>`)
+ * back into its components. Returns the exact stored content-type (decoded from
+ * the filename segment, more reliable than `mime.lookup` on the extension),
+ * falling back to the spec default `application/octet-stream` if unparseable.
+ * @param fileName {string}   the basename of the resource file
+ * @returns {{ resourceId: string, contentType: string }}
+ */
+export function parseResourceFileName(fileName: string): {
+  resourceId: string
+  contentType: string
+} {
+  const [, resourceId, encodedType] = fileName.split('.')
+  return {
+    resourceId: resourceId!,
+    contentType: encodedType
+      ? decodeURIComponent(encodedType)
+      : 'application/octet-stream'
+  }
+}
+
+/**
  * Opens a read stream for a file, resolving once the stream has opened (and
  * rejecting if it errors first).
  * @param filePath {string}
@@ -163,7 +184,12 @@ export class FileSystemBackend implements StorageBackend {
     collectionDir: string
     resourceId: string
   }): Promise<string | undefined> {
-    const [filePath] = await glob(path.join(collectionDir, `r.${resourceId}*`))
+    // The trailing `.` anchors to the filename's segment boundary
+    // (`r.<resourceId>.<encodedType>.<ext>`) so a resourceId that is a prefix of
+    // another (e.g. `note` vs `notebook`) does not match the longer one.
+    const [filePath] = await glob(
+      path.join(collectionDir, `r.${resourceId}.*`)
+    )
     return filePath
   }
 
@@ -504,13 +530,13 @@ export class FileSystemBackend implements StorageBackend {
       console.error(err)
     }
     const items = keys.map(fullFilepath => {
-      const [, resourceId, encodedMimeType] = path
-        .basename(fullFilepath, '.json')
-        .split('.')
+      const { resourceId, contentType } = parseResourceFileName(
+        path.basename(fullFilepath)
+      )
       return {
-        id: resourceId!,
+        id: resourceId,
         url: `/space/${spaceId}/${collectionId}/${resourceId}`,
-        contentType: decodeURIComponent(encodedMimeType!)
+        contentType
       }
     })
     return {
@@ -557,6 +583,19 @@ export class FileSystemBackend implements StorageBackend {
       console.log('Writing blob')
       await pipeline(input.stream, fs.createWriteStream(filePath))
     }
+
+    // A Resource has a single current representation: remove any prior
+    // representation stored under a different content-type (its filename
+    // differs). Write-new-then-prune (not delete-then-write) so the resource is
+    // never momentarily absent.
+    const existing = await glob(
+      path.join(collectionDir, `r.${resourceId}.*`)
+    )
+    await Promise.all(
+      existing
+        .filter(name => path.resolve(name) !== path.resolve(filePath))
+        .map(name => rm(name))
+    )
   }
 
   /**
@@ -570,28 +609,17 @@ export class FileSystemBackend implements StorageBackend {
   async getResource({
     spaceId,
     collectionId,
-    resourceId,
-    contentType
+    resourceId
   }: {
     spaceId: string
     collectionId: string
     resourceId: string
+    // `contentType` is advisory and ignored for lookup: a Resource has a single
+    // current representation, resolved by `resourceId` alone.
     contentType?: string
   }): Promise<ResourceResult> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
-    let filePath: string | undefined
-    let storedResourceType: string | false
-
-    if (contentType) {
-      filePath = path.join(
-        collectionDir,
-        fileNameFor({ resourceId, contentType })
-      )
-      storedResourceType = contentType
-    } else {
-      filePath = await this._findFile({ collectionDir, resourceId })
-      storedResourceType = filePath ? mime.lookup(filePath) : false
-    }
+    const filePath = await this._findFile({ collectionDir, resourceId })
 
     if (!filePath) {
       throw new ResourceNotFoundError({ requestName: 'Get Resource' })
@@ -606,9 +634,15 @@ export class FileSystemBackend implements StorageBackend {
       throw err
     }
 
+    // Derive the stored content-type from the filename segment (the exact type
+    // it was written under), not from `mime.lookup` on the extension.
+    const { contentType: storedResourceType } = parseResourceFileName(
+      path.basename(filePath)
+    )
+
     return {
       resourceStream: await openFileStream(filePath),
-      storedResourceType: storedResourceType as string
+      storedResourceType
     }
   }
 
@@ -630,11 +664,13 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
   }): Promise<void> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
-    // A given resourceId can have several different content type representations
-    // All of them need to be deleted (we're not going to ask the user to
-    //  specify which content type to delete)
+    // A Resource has a single current representation, so this normally matches
+    // one file. The glob-all delete remains as defensive cleanup (idempotent,
+    // and would sweep up any stray prior-representation file). The trailing `.`
+    // anchors to the filename's segment boundary so a resourceId that is a
+    // prefix of another (e.g. `note` vs `notebook`) is not swept up too.
     const filesForResource = await glob(
-      path.join(collectionDir, `r.${resourceId}*`)
+      path.join(collectionDir, `r.${resourceId}.*`)
     )
     await Promise.all(filesForResource.map(filename => rm(filename)))
   }

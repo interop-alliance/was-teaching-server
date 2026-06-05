@@ -52,7 +52,6 @@ async function collectStream(stream: Readable): Promise<Buffer> {
 }
 
 export class MemoryBackend implements StorageBackend {
-  // resource key format: `${resourceId}::${contentType}`
   _spaces: Map<string, MemorySpace>
 
   constructor() {
@@ -259,8 +258,7 @@ export class MemoryBackend implements StorageBackend {
   }): Promise<CollectionListing> {
     const collection = this.collection(spaceId, collectionId)
     const items = []
-    for (const [key, { contentType }] of collection.resources) {
-      const resourceId = key.split('::')[0]!
+    for (const [resourceId, { contentType }] of collection.resources) {
       items.push({
         id: resourceId,
         url: `/space/${spaceId}/${collectionId}/${resourceId}`,
@@ -304,7 +302,10 @@ export class MemoryBackend implements StorageBackend {
         ? Buffer.from(JSON.stringify(input.data))
         : await collectStream(input.stream)
 
-    collection.resources.set(`${resourceId}::${input.contentType}`, {
+    // A Resource has a single current representation: keying by `resourceId`
+    // alone means this `Map.set` overwrites any prior representation in place,
+    // including one stored under a different content-type.
+    collection.resources.set(resourceId, {
       data,
       contentType: input.contentType
     })
@@ -321,27 +322,17 @@ export class MemoryBackend implements StorageBackend {
   async getResource({
     spaceId,
     collectionId,
-    resourceId,
-    contentType
+    resourceId
   }: {
     spaceId: string
     collectionId: string
     resourceId: string
+    // `contentType` is advisory and ignored for lookup: a Resource has a single
+    // current representation, resolved by `resourceId` alone.
     contentType?: string
   }): Promise<ResourceResult> {
     const collection = this.collection(spaceId, collectionId)
-    let entry: MemoryResource | undefined
-
-    if (contentType) {
-      entry = collection.resources.get(`${resourceId}::${contentType}`)
-    } else {
-      for (const [key, value] of collection.resources) {
-        if (key.startsWith(`${resourceId}::`)) {
-          entry = value
-          break
-        }
-      }
-    }
+    const entry = collection.resources.get(resourceId)
 
     if (!entry) {
       throw new ResourceNotFoundError({ requestName: 'Get Resource' })
@@ -370,10 +361,6 @@ export class MemoryBackend implements StorageBackend {
     resourceId: string
   }): Promise<void> {
     const collection = this.collection(spaceId, collectionId)
-    for (const key of collection.resources.keys()) {
-      if (key.startsWith(`${resourceId}::`)) {
-        collection.resources.delete(key)
-      }
-    }
+    collection.resources.delete(resourceId)
   }
 }
