@@ -119,11 +119,11 @@ Existence is checked on the first network verb: a **read** (`list`/`get`/
 
 ```ts
 class WasClient {
-  constructor(opts: { serverUrl: string; zcapClient: ZcapClient })
+  constructor(options: { serverUrl: string; zcapClient: ZcapClient })
 
-  static fromSigner(opts: { serverUrl: string; signer: ISigner }): WasClient
+  static fromSigner(options: { serverUrl: string; signer: ISigner }): WasClient
 
-  space(spaceId: string, opts?: { capability?: IZcap }): Space
+  space(spaceId: string, options?: { capability?: IZcap }): Space
 
   createSpace(desc: {
     id?: string;
@@ -134,8 +134,8 @@ class WasClient {
   listSpaces(): Promise<SpaceListing>          // server is 501 today: NotImplementedError
   fromCapability(zcap: IZcap): Space | Collection | Resource  // depth from invocationTarget
 
-  grant(opts: GrantOptions): Promise<IZcap>     // general delegation primitive (target/capability explicit)
-  request(opts: RequestInput): Promise<HttpResponse>  // signed escape hatch; raw response, raw errors
+  grant(options: GrantOptions): Promise<IZcap>     // general delegation primitive (target/capability explicit)
+  request(options: RequestInput): Promise<HttpResponse>  // signed escape hatch; raw response, raw errors
 }
 
 class Space {
@@ -145,12 +145,12 @@ class Space {
   configure(desc: { name?; controller? }): Promise<SpaceDescription>  // PUT /space/:id
   delete(): Promise<void>                                  // DELETE /space/:id
 
-  collection(id: string, opts?): Collection
+  collection(id: string, options?): Collection
 
   createCollection(desc: { id?; name? }): Promise<Collection>  // POST /space/:id/
   collections(): Promise<CollectionListing>               // GET /space/:id/collections/
 
-  grant(opts: GrantOptions): Promise<IZcap>                // delegate, target = this space URL
+  grant(options: GrantOptions): Promise<IZcap>                // delegate, target = this space URL
   export(): Promise<Uint8Array>                           // POST /space/:id/export (x-tar)
   import(tar: Uint8Array | Blob): Promise<ImportStats>    // POST /space/:id/import
 }
@@ -163,16 +163,16 @@ class Collection {
   configure(desc: { name? }): Promise<CollectionDescription>  // PUT /space/:id/:cid
   delete(): Promise<void>                                 // DELETE /space/:id/:cid (the collection)
 
-  resource(id: string, opts?): Resource
+  resource(id: string, options?): Resource
 
   add(data: Json | Blob | Uint8Array | Buffer,
-      opts?: { contentType?: string }): Promise<AddResult>   // POST /space/:id/:cid/
+      options?: { contentType?: string }): Promise<AddResult>   // POST /space/:id/:cid/
   get(resourceId: string): Promise<Json | Blob | null>       // GET resource (auto JSON)
-  put(resourceId: string, data, opts?: { contentType? }): Promise<void>  // PUT resource
+  put(resourceId: string, data, options?: { contentType? }): Promise<void>  // PUT resource
   list(): Promise<ResourceListing>                        // GET /space/:id/:cid/
   // delete a resource by id via the handle: collection.resource(id).delete()
 
-  grant(opts: GrantOptions): Promise<IZcap>                // target = this collection URL
+  grant(options: GrantOptions): Promise<IZcap>                // target = this collection URL
 }
 
 class Resource {                                          // sugar over Collection item ops
@@ -182,7 +182,7 @@ class Resource {                                          // sugar over Collecti
 
   getBytes(): Promise<Uint8Array | null>
 
-  put(data, opts?): Promise<void>
+  put(data, options?): Promise<void>
 
   delete(): Promise<void>                                 // DELETE the resource
 }
@@ -192,7 +192,7 @@ class Resource {                                          // sugar over Collecti
 
 - **Write** (`add`/`put`): if `data` is a plain object/array it is sent as JSON
   (`contentType` defaults `application/json`); if `Blob`/`Uint8Array`/`Buffer`
-  it is sent as binary (`contentType` from `opts.contentType` or `Blob.type`,
+  it is sent as binary (`contentType` from `options.contentType` or `Blob.type`,
   else `application/octet-stream`). `Buffer` is coerced to `Uint8Array` for
   ezcap. (Streaming upload is out of scope: ezcap `body` is `Blob | Uint8Array`;
   large-file streaming is a later enhancement.)
