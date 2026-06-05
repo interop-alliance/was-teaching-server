@@ -107,6 +107,10 @@ export class FileSystemBackend implements StorageBackend {
    */
   async _ensureSpaceDir({ spaceId }: { spaceId: string }): Promise<string> {
     const spaceDir = this._spaceDir(spaceId)
+    // Ensure the parent spaces/ directory exists (the dataDir may be brand new,
+    // e.g. a per-suite temp dir); the space dir itself is created non-recursively
+    // below so its EEXIST case can be detected.
+    await mkdir(this.spacesDir, { recursive: true })
     try {
       await mkdir(spaceDir)
     } catch (err) {

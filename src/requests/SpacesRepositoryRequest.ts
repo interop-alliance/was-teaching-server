@@ -6,7 +6,6 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { SpaceControllerMismatchError } from '../errors.js'
-import { writeSpace } from '../storage.js'
 import type { IDID } from '../types.js'
 
 export class SpacesRepositoryRequest {
@@ -35,7 +34,7 @@ export class SpacesRepositoryRequest {
       headers,
       zcap: { keyId }
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
 
     // Check to make sure the DID that signed the zcap matches controller
     const [zcapSigningDid] = keyId.split('#')
@@ -64,7 +63,7 @@ export class SpacesRepositoryRequest {
     })
 
     // zCap checks out, continue
-    await writeSpace({ spaceId, spaceDescription })
+    await storage.writeSpace({ spaceId, spaceDescription })
 
     const createdSpaceUrl = new URL(`/spaces/${spaceId}`, serverUrl).toString()
     reply.header('Location', createdSpaceUrl)

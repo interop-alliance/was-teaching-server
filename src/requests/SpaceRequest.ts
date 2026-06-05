@@ -11,16 +11,7 @@ import {
   InvalidImportError,
   SpaceNotFoundError
 } from '../errors.js'
-import {
-  writeCollection,
-  deleteSpace,
-  getSpaceDescription,
-  writeSpace,
-  exportSpace,
-  importSpace,
-  listCollections
-} from '../storage.js'
-import type { IDID } from '../types.js'
+import type { IDID, StorageBackend } from '../types.js'
 
 export class SpaceRequest {
   /**
@@ -53,10 +44,10 @@ export class SpaceRequest {
       method,
       headers
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await getSpaceDescription({ spaceId })
+    const spaceDescription = await storage.getSpaceDescription({ spaceId })
     if (!spaceDescription) {
       throw new SpaceNotFoundError({ requestName: 'Get Space' })
     }
@@ -106,10 +97,12 @@ export class SpaceRequest {
       body,
       zcap: { keyId }
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
 
     // Check to see if space already exists (if yes, this will be an Update)
-    const existingSpaceDescription = await getSpaceDescription({ spaceId })
+    const existingSpaceDescription = await storage.getSpaceDescription({
+      spaceId
+    })
     const existingController = existingSpaceDescription?.controller
 
     const [zcapSigningDid] = keyId.split('#')
@@ -165,7 +158,7 @@ export class SpaceRequest {
         }
 
     // zCap checks out, continue
-    await writeSpace({ spaceId, spaceDescription })
+    await storage.writeSpace({ spaceId, spaceDescription })
 
     reply.header('Location', spaceUrl)
     return existingSpaceDescription
@@ -199,10 +192,10 @@ export class SpaceRequest {
       headers,
       body
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await getSpaceDescription({ spaceId })
+    const spaceDescription = await storage.getSpaceDescription({ spaceId })
     if (!spaceDescription) {
       throw new SpaceNotFoundError({ requestName: 'Create Collection' })
     }
@@ -231,7 +224,11 @@ export class SpaceRequest {
       name
     }
 
-    await writeCollection({ spaceId, collectionId, collectionDescription })
+    await storage.writeCollection({
+      spaceId,
+      collectionId,
+      collectionDescription
+    })
 
     const createdUrl = new URL(
       `/space/${spaceId}/${collectionId}`,
@@ -263,10 +260,10 @@ export class SpaceRequest {
       method,
       headers
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await getSpaceDescription({ spaceId })
+    const spaceDescription = await storage.getSpaceDescription({ spaceId })
     if (!spaceDescription) {
       throw new SpaceNotFoundError({ requestName: 'Delete Space' })
     }
@@ -285,7 +282,7 @@ export class SpaceRequest {
     })
 
     // zCap checks out, continue
-    await deleteSpace({ spaceId })
+    await storage.deleteSpace({ spaceId })
 
     return reply.status(204).send()
   }
@@ -308,10 +305,10 @@ export class SpaceRequest {
       method,
       headers
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await getSpaceDescription({ spaceId })
+    const spaceDescription = await storage.getSpaceDescription({ spaceId })
     if (!spaceDescription) {
       throw new SpaceNotFoundError({ requestName: 'Export Space' })
     }
@@ -333,7 +330,7 @@ export class SpaceRequest {
     })
 
     // zCap checks out, continue
-    const tarFile = await exportSpace({ spaceId })
+    const tarFile = await storage.exportSpace({ spaceId })
 
     return reply.status(200).type('application/x-tar').send(tarFile)
   }
@@ -356,9 +353,9 @@ export class SpaceRequest {
       method,
       headers
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
 
-    const spaceDescription = await getSpaceDescription({ spaceId })
+    const spaceDescription = await storage.getSpaceDescription({ spaceId })
     if (!spaceDescription) {
       throw new SpaceNotFoundError({ requestName: 'Import Space' })
     }
@@ -379,7 +376,10 @@ export class SpaceRequest {
     })
 
     try {
-      const summary = await importSpace({ spaceId, tarStream: request.body })
+      const summary = await storage.importSpace({
+        spaceId,
+        tarStream: request.body
+      })
       return reply.status(200).send(summary)
     } catch (err) {
       throw new InvalidImportError({ message: (err as Error).message })
@@ -404,10 +404,10 @@ export class SpaceRequest {
       method,
       headers
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await getSpaceDescription({ spaceId })
+    const spaceDescription = await storage.getSpaceDescription({ spaceId })
     if (!spaceDescription) {
       throw new SpaceNotFoundError({ requestName: 'List Collections' })
     }
@@ -428,7 +428,7 @@ export class SpaceRequest {
       spaceController
     })
 
-    const collections = await listCollections({ spaceId })
+    const collections = await storage.listCollections({ spaceId })
     return reply.status(200).send({
       url: `/space/${spaceId}/collections/`,
       totalItems: collections.length,
@@ -441,18 +441,22 @@ export class SpaceRequest {
  * Load space description object from storage to get space controller.
  * TODO: Cache this
  * @param options {object}
+ * @param options.storage {StorageBackend}   the request's storage backend
+ *   (`request.server.storage`)
  * @param options.spaceId {string}
  * @param options.requestName {string}
  * @returns {Promise<IDID>} Controller DID for a given space.
  */
 export async function getSpaceController({
+  storage,
   spaceId,
   requestName
 }: {
+  storage: StorageBackend
   spaceId: string
   requestName: string
 }): Promise<IDID> {
-  const spaceDescription = await getSpaceDescription({ spaceId })
+  const spaceDescription = await storage.getSpaceDescription({ spaceId })
   if (!spaceDescription) {
     throw new SpaceNotFoundError({ requestName })
   }

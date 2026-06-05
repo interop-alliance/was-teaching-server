@@ -3,24 +3,33 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { createApp } from '../src/server.js'
+import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { zcapClients } from './helpers.js'
 
 describe('List Collections API', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any
+  let fastify: FastifyInstance, serverUrl: string, dataDir: string, alice: any
   const PORT = 7777
 
   beforeAll(async () => {
     ;({ alice } = await zcapClients())
     serverUrl = `http://localhost:${PORT}`
-    fastify = createApp({ serverUrl })
+    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
+    fastify = createApp({
+      serverUrl,
+      backend: new FileSystemBackend({ dataDir })
+    })
     await fastify.listen({ port: PORT })
   })
 
   afterAll(async () => {
-    return fastify.close()
+    await fastify.close()
+    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('[root] lists collections for a space', async () => {

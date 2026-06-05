@@ -4,6 +4,17 @@
 
 ### Changed
 
+- Make the storage backend an injectable dependency of `createApp()`. The app
+  factory now accepts a `backend` (`createApp({ serverUrl, backend })`) and
+  decorates the Fastify instance with it; request handlers read it as
+  `request.server.storage` rather than importing a module-level facade.
+  `src/storage.ts` no longer holds a hardcoded singleton — it exposes
+  `defaultBackend()` (a filesystem backend rooted at `data/`), which
+  `createApp()` uses when no backend is injected (production / `start.ts`). Each
+  `test/` suite now injects its own `FileSystemBackend` over an `mkdtemp` temp
+  dir and removes it in `afterAll`, so suites no longer share (or leak) the
+  gitignored `data/` directory.
+
 - Decouple the `StorageBackend` persistence port from the HTTP transport.
   `writeResource` now takes a transport-neutral `ResourceInput` value object
   (`{ kind: 'json'; data } | { kind: 'binary'; stream }`, both carrying a

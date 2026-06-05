@@ -21,6 +21,8 @@ import {
   initSpaceRoutes,
   initSpacesRepositoryRoutes
 } from './routes.js'
+import { defaultBackend } from './storage.js'
+import type { StorageBackend } from './types.js'
 import { SPEC_URL, SERVER_VERSION } from './config.default.js'
 
 // TODO: https://github.com/fastify/fastify-helmet
@@ -72,11 +74,15 @@ const contentTypeStrategy: ContentTypeConstraint = {
  * @param options {object}
  * @param [options.serverUrl] {string}   this server's base URL; used to build
  *   and match ZCap invocationTarget URLs (host and port must match exactly)
+ * @param [options.backend] {StorageBackend}   persistence backend to use;
+ *   defaults to a filesystem backend rooted at the project `data/` directory.
+ *   Tests inject their own (e.g. a FileSystemBackend over a temp dir).
  * @returns {import('fastify').FastifyInstance}
  */
 export function createApp({
-  serverUrl
-}: { serverUrl?: string } = {}): FastifyInstance {
+  serverUrl,
+  backend
+}: { serverUrl?: string; backend?: StorageBackend } = {}): FastifyInstance {
   // By default uses 'pino' logger
   const fastify = Fastify({
     logger: true,
@@ -88,6 +94,7 @@ export function createApp({
   })
 
   fastify.decorate('serverUrl', serverUrl as string)
+  fastify.decorate('storage', backend ?? defaultBackend())
 
   // Disable CORS
   fastify.register(cors, {

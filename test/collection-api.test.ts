@@ -3,24 +3,32 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { createApp } from '../src/server.js'
+import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { zcapClients } from './helpers.js'
 
 describe('Collections API', () => {
-  let fastify: FastifyInstance, serverUrl: string, alice: any
+  let fastify: FastifyInstance, serverUrl: string, dataDir: string, alice: any
   const PORT = 7767
 
   beforeAll(async () => {
     ;({ alice } = await zcapClients())
     serverUrl = `http://localhost:${PORT}` // fastify.server.address().port
-    fastify = createApp({ serverUrl })
+    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
+    fastify = createApp({
+      serverUrl,
+      backend: new FileSystemBackend({ dataDir })
+    })
     await fastify.listen({ port: PORT })
 
-    // Provision the Space this suite operates on. The 'data/' directory is
-    // gitignored, so it must be created here rather than relying on filesystem
-    // state left behind by other test files.
+    // Provision the Space this suite operates on. This suite uses its own
+    // temp dataDir, so it must create the Space here rather than relying on
+    // filesystem state left behind by other test files.
     await alice.rootClient.request({
       url: new URL(`/space/${alice.space1.id}`, serverUrl).toString(),
       method: 'PUT',
@@ -32,7 +40,8 @@ describe('Collections API', () => {
     })
   })
   afterAll(async () => {
-    return fastify.close()
+    await fastify.close()
+    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('POST /space/:spaceId/ should 401 error when no authorization headers', async () => {

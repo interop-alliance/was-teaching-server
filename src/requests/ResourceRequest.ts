@@ -7,13 +7,6 @@ import type { Readable } from 'node:stream'
 import { handleZcapVerify } from '../zcap.js'
 import { resolveResourceInput } from './resourceInput.js'
 import {
-  getCollectionDescription,
-  getResource,
-  deleteResource,
-  getSpaceDescription,
-  writeResource
-} from '../storage.js'
-import {
   CollectionNotFoundError,
   ResourceNotFoundError,
   SpaceNotFoundError,
@@ -45,10 +38,10 @@ export class ResourceRequest {
       method,
       headers
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await getSpaceDescription({ spaceId })
+    const spaceDescription = await storage.getSpaceDescription({ spaceId })
     if (!spaceDescription) {
       throw new SpaceNotFoundError({ requestName: 'Put Resource' })
     }
@@ -72,7 +65,7 @@ export class ResourceRequest {
     // zCap checks out, continue
 
     // Fetch collection by id
-    const collectionDescription = await getCollectionDescription({
+    const collectionDescription = await storage.getCollectionDescription({
       spaceId,
       collectionId
     })
@@ -81,7 +74,7 @@ export class ResourceRequest {
     }
     const input = await resolveResourceInput(request)
     try {
-      await writeResource({ spaceId, collectionId, resourceId, input })
+      await storage.writeResource({ spaceId, collectionId, resourceId, input })
     } catch (e) {
       throw new Error('Could not create resource: ' + (e as Error).message, {
         cause: e
@@ -114,10 +107,10 @@ export class ResourceRequest {
       method,
       headers
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await getSpaceDescription({ spaceId })
+    const spaceDescription = await storage.getSpaceDescription({ spaceId })
     if (!spaceDescription) {
       throw new SpaceNotFoundError({ requestName: 'Get Resource' })
     }
@@ -141,7 +134,7 @@ export class ResourceRequest {
     // zCap checks out, continue
 
     // Fetch collection by id
-    const collectionDescription = await getCollectionDescription({
+    const collectionDescription = await storage.getCollectionDescription({
       spaceId,
       collectionId
     })
@@ -153,7 +146,7 @@ export class ResourceRequest {
     let resourceStream: Readable | undefined
     let storedResourceType: string | undefined
     try {
-      const result = await getResource({
+      const result = await storage.getResource({
         spaceId,
         collectionId,
         resourceId,
@@ -196,17 +189,17 @@ export class ResourceRequest {
       method,
       headers
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await getSpaceDescription({ spaceId })
+    const spaceDescription = await storage.getSpaceDescription({ spaceId })
     if (!spaceDescription) {
       throw new SpaceNotFoundError({ requestName: 'Delete Resource' })
     }
     const spaceController = spaceDescription.controller
 
     // Fetch collection by id
-    const collectionDescription = await getCollectionDescription({
+    const collectionDescription = await storage.getCollectionDescription({
       spaceId,
       collectionId
     })
@@ -231,7 +224,7 @@ export class ResourceRequest {
 
     // zCap checks out, continue
     try {
-      await deleteResource({ spaceId, collectionId, resourceId })
+      await storage.deleteResource({ spaceId, collectionId, resourceId })
     } catch (err) {
       console.log(err)
       throw new StorageError({

@@ -146,8 +146,9 @@ export interface ParsedZcap {
 }
 
 /**
- * The persistence contract shared by `FileSystemBackend` and `MemoryBackend`;
- * the storage.ts facade delegates to whichever backend is active.
+ * The persistence contract shared by `FileSystemBackend` and `MemoryBackend`.
+ * The active backend is injected into the Fastify instance via
+ * `createApp({ backend })` and read in handlers as `request.server.storage`.
  *
  * Invariants:
  * - The getters resolve to a falsy value (not throw) when the target is absent;
@@ -215,6 +216,7 @@ export interface StorageBackend {
 declare module 'fastify' {
   interface FastifyInstance {
     serverUrl: string
+    storage: StorageBackend
   }
   interface FastifyRequest {
     zcap: ParsedZcap

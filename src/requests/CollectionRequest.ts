@@ -13,14 +13,6 @@ import {
   InvalidCollectionError,
   SpaceNotFoundError
 } from '../errors.js'
-import {
-  deleteCollection,
-  getCollectionDescription,
-  getSpaceDescription,
-  listCollectionItems,
-  writeCollection,
-  writeResource
-} from '../storage.js'
 
 export class CollectionRequest {
   /**
@@ -47,14 +39,18 @@ export class CollectionRequest {
       method,
       headers
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
     const requestName = 'Create Resource'
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceController = await getSpaceController({ spaceId, requestName })
+    const spaceController = await getSpaceController({
+      storage,
+      spaceId,
+      requestName
+    })
 
     // Fetch collection by id
-    const collectionDescription = await getCollectionDescription({
+    const collectionDescription = await storage.getCollectionDescription({
       spaceId,
       collectionId
     })
@@ -84,7 +80,7 @@ export class CollectionRequest {
 
     const input = await resolveResourceInput(request)
     try {
-      await writeResource({ spaceId, collectionId, resourceId, input })
+      await storage.writeResource({ spaceId, collectionId, resourceId, input })
       response = {
         id: resourceId,
         'content-type': request.headers['content-type']
@@ -134,7 +130,7 @@ export class CollectionRequest {
     if (!body) {
       throw new InvalidCollectionError()
     }
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
     const requestName = 'Update Collection'
     const collectionUrl = new URL(
       `/space/${spaceId}/${collectionId}`,
@@ -142,7 +138,7 @@ export class CollectionRequest {
     ).toString()
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await getSpaceDescription({ spaceId })
+    const spaceDescription = await storage.getSpaceDescription({ spaceId })
     if (!spaceDescription) {
       throw new SpaceNotFoundError({ requestName })
     }
@@ -160,7 +156,7 @@ export class CollectionRequest {
     })
 
     // zCap checks out, continue
-    const existingCollection = await getCollectionDescription({
+    const existingCollection = await storage.getCollectionDescription({
       spaceId,
       collectionId
     })
@@ -171,7 +167,11 @@ export class CollectionRequest {
         { id: collectionId, type: ['Collection'], name: body.name }
 
     try {
-      await writeCollection({ spaceId, collectionId, collectionDescription })
+      await storage.writeCollection({
+        spaceId,
+        collectionId,
+        collectionDescription
+      })
     } catch (e) {
       request.log.error(e)
       throw new Error('Could not update collection: ' + (e as Error).message, {
@@ -204,11 +204,15 @@ export class CollectionRequest {
       method,
       headers
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
     const requestName = 'Get Collection'
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceController = await getSpaceController({ spaceId, requestName })
+    const spaceController = await getSpaceController({
+      storage,
+      spaceId,
+      requestName
+    })
 
     // Perform zCap signature verification (throws appropriate errors)
     const collectionUrl = new URL(
@@ -226,7 +230,7 @@ export class CollectionRequest {
     })
 
     // Fetch collection by id
-    const collectionDescription = await getCollectionDescription({
+    const collectionDescription = await storage.getCollectionDescription({
       spaceId,
       collectionId
     })
@@ -264,7 +268,7 @@ export class CollectionRequest {
       method,
       headers
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
     const requestName = 'Delete Collection'
     const collectionUrl = new URL(
       `/space/${spaceId}/${collectionId}`,
@@ -272,7 +276,7 @@ export class CollectionRequest {
     ).toString()
 
     // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await getSpaceDescription({ spaceId })
+    const spaceDescription = await storage.getSpaceDescription({ spaceId })
     if (!spaceDescription) {
       throw new SpaceNotFoundError({ requestName })
     }
@@ -290,7 +294,7 @@ export class CollectionRequest {
     })
 
     try {
-      await deleteCollection({ spaceId, collectionId })
+      await storage.deleteCollection({ spaceId, collectionId })
     } catch (e) {
       request.log.error(e)
       throw new Error('Could not delete collection: ' + (e as Error).message, {
@@ -321,13 +325,17 @@ export class CollectionRequest {
       method,
       headers
     } = request
-    const { serverUrl } = request.server
+    const { serverUrl, storage } = request.server
     const requestName = 'List Collection'
 
-    const spaceController = await getSpaceController({ spaceId, requestName })
+    const spaceController = await getSpaceController({
+      storage,
+      spaceId,
+      requestName
+    })
 
     // Fetch collection by id
-    const collectionDescription = await getCollectionDescription({
+    const collectionDescription = await storage.getCollectionDescription({
       spaceId,
       collectionId
     })
@@ -350,7 +358,10 @@ export class CollectionRequest {
       spaceController
     })
 
-    const collectionItems = await listCollectionItems({ spaceId, collectionId })
+    const collectionItems = await storage.listCollectionItems({
+      spaceId,
+      collectionId
+    })
 
     return reply
       .status(200)
