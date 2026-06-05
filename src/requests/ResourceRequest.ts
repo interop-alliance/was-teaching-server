@@ -3,7 +3,6 @@
  * Resource (JSON object or binary blob).
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
-import type { Readable } from 'node:stream'
 import { handleZcapVerify } from '../zcap.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
@@ -157,26 +156,31 @@ export class ResourceRequest {
     }
 
     const contentType = request.headers['content-type']
-    let resourceStream: Readable | undefined
-    let storedResourceType: string | undefined
+    let result
     try {
-      const result = await storage.getResource({
+      result = await storage.getResource({
         spaceId,
         collectionId,
         resourceId,
         contentType
       })
-      resourceStream = result.resourceStream
-      storedResourceType = result.storedResourceType
     } catch (err) {
-      request.log.error(err)
+      // `getResource` throws ResourceNotFoundError for an absent resource;
+      // surface that as a 404. Any other failure is a real storage fault, not a
+      // missing resource, so wrap it as a 500 rather than masking it as 404.
+      if (err instanceof ResourceNotFoundError) {
+        throw err
+      }
+      throw new StorageError({
+        cause: err as Error,
+        requestName: 'Get Resource'
+      })
     }
 
-    if (!resourceStream) {
-      throw new ResourceNotFoundError({ requestName: 'Get Resource' })
-    }
-
-    return reply.status(200).type(storedResourceType!).send(resourceStream)
+    return reply
+      .status(200)
+      .type(result.storedResourceType)
+      .send(result.resourceStream)
   }
 
   /**
@@ -246,7 +250,6 @@ export class ResourceRequest {
     try {
       await storage.deleteResource({ spaceId, collectionId, resourceId })
     } catch (err) {
-      console.log(err)
       throw new StorageError({
         cause: err as Error,
         requestName: 'Delete Resource'

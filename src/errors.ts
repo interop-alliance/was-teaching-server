@@ -291,7 +291,6 @@ export class StorageError extends Error {
     this.title = requestName
       ? `Storage Error (${requestName}): ${cause.message}`
       : `Storage Error: ${cause.message}`
-    console.warn('Storage Error', cause)
     this.detail = cause.message
     this.statusCode = 500
   }
@@ -374,9 +373,17 @@ export async function handleError(
   request: FastifyRequest,
   reply: FastifyReply
 ): Promise<FastifyReply> {
+  const statusCode = error.statusCode || 500
+  // Log server-side faults (5xx, e.g. a StorageError and its underlying
+  // `cause`) here through the request logger -- rather than in the error
+  // constructors -- so logging lives in one place. Client errors (4xx) are
+  // expected and not logged.
+  if (statusCode >= 500) {
+    request.log.error({ err: error }, error.title || 'Request error')
+  }
   return (
     reply
-      .status(error.statusCode || 500)
+      .status(statusCode)
       .type('application/problem+json')
       // .type('application/json')
       .send({

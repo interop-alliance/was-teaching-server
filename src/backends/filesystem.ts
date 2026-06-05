@@ -11,6 +11,8 @@ import type { Readable } from 'node:stream'
 import fs from 'node:fs'
 import jsonfs from 'fs-json-store'
 import { glob } from 'glob'
+import pino from 'pino'
+import type { FastifyBaseLogger } from 'fastify'
 import {
   StorageError,
   ResourceNotFoundError,
@@ -38,6 +40,13 @@ import type {
 } from '../types.js'
 
 const { Store: MetadataJsonStore } = jsonfs
+
+/**
+ * Silent logger used when no logger is injected into the backend, so the backend
+ * stays quiet by default (e.g. in `defaultBackend()` before `createApp` wires
+ * `fastify.log` in, or in tests).
+ */
+const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
 
 /**
  * Builds the on-disk filename for a resource representation:
@@ -84,9 +93,13 @@ export function parseResourceFileName(fileName: string): {
  * Opens a read stream for a file, resolving once the stream has opened (and
  * rejecting if it errors first).
  * @param filePath {string}
+ * @param logger {FastifyBaseLogger}
  * @returns {Promise<import('node:fs').ReadStream>}
  */
-async function openFileStream(filePath: string): Promise<fs.ReadStream> {
+async function openFileStream(
+  filePath: string,
+  logger: FastifyBaseLogger
+): Promise<fs.ReadStream> {
   const resourceStream = fs.createReadStream(filePath)
   return new Promise((resolve, reject) => {
     resourceStream
@@ -94,7 +107,7 @@ async function openFileStream(filePath: string): Promise<fs.ReadStream> {
         reject(new Error(`Error creating a read stream: ${error}`))
       })
       .on('open', () => {
-        console.info(`GET -- Reading ${filePath}`)
+        logger.info(`GET -- Reading ${filePath}`)
         resolve(resourceStream)
       })
   })
@@ -102,9 +115,17 @@ async function openFileStream(filePath: string): Promise<fs.ReadStream> {
 
 export class FileSystemBackend implements StorageBackend {
   spacesDir: string
+  logger: FastifyBaseLogger
 
-  constructor({ dataDir }: { dataDir: string }) {
+  constructor({
+    dataDir,
+    logger
+  }: {
+    dataDir: string
+    logger?: FastifyBaseLogger
+  }) {
     this.spacesDir = path.join(dataDir, 'spaces')
+    this.logger = logger ?? silentLogger
   }
 
   /**
@@ -160,7 +181,7 @@ export class FileSystemBackend implements StorageBackend {
       await mkdir(spaceDir)
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
-        console.log(`Space "${spaceId}" already exists, overwriting.`)
+        this.logger.info(`Space "${spaceId}" already exists, overwriting.`)
       } else {
         throw new StorageError({ cause: err as Error })
       }
@@ -186,9 +207,11 @@ export class FileSystemBackend implements StorageBackend {
       await mkdir(collectionDir)
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
-        console.log(`Collection "${collectionId}" already exists, overwriting.`)
+        this.logger.info(
+          `Collection "${collectionId}" already exists, overwriting.`
+        )
       } else {
-        console.log('Error creating directory', err)
+        this.logger.error({ err }, 'Error creating directory')
         throw err // http 500
       }
     }
@@ -549,7 +572,7 @@ export class FileSystemBackend implements StorageBackend {
       // Array of filename keys (see fileNameFor() for details)
       keys = await glob(path.join(collectionDir, '*'))
     } catch (err) {
-      console.error(err)
+      this.logger.error({ err })
     }
     const items = keys.map(fullFilepath => {
       const { resourceId, contentType } = parseResourceFileName(
@@ -600,10 +623,10 @@ export class FileSystemBackend implements StorageBackend {
 
     if (input.kind === 'json') {
       const resourceJsonStore = new MetadataJsonStore({ file: filePath })
-      console.log('Creating JSON resource')
+      this.logger.info('Creating JSON resource')
       await resourceJsonStore.write(input.data)
     } else {
-      console.log('Writing blob')
+      this.logger.info('Writing blob')
       await pipeline(input.stream, fs.createWriteStream(filePath))
     }
 
@@ -662,7 +685,7 @@ export class FileSystemBackend implements StorageBackend {
     )
 
     return {
-      resourceStream: await openFileStream(filePath),
+      resourceStream: await openFileStream(filePath, this.logger),
       storedResourceType
     }
   }

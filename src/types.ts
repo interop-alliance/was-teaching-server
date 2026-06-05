@@ -15,6 +15,7 @@
 // (the request layer calls `request.file()` without importing the plugin
 // directly).
 import type {} from '@fastify/multipart'
+import type { FastifyBaseLogger } from 'fastify'
 import type { Readable } from 'node:stream'
 import type {
   IDID,
@@ -169,6 +170,13 @@ export interface ParsedZcap {
  * `Readable` it extends (tar-stream ships no types; see Phase 5 audit).
  */
 export interface StorageBackend {
+  /**
+   * Optional logger the backend writes diagnostics through (Fastify's pino
+   * logger, `FastifyBaseLogger`). `createApp` wires `fastify.log` here; backends
+   * default to a silent pino logger until it is set.
+   */
+  logger?: FastifyBaseLogger
+
   writeSpace(options: {
     spaceId: string
     spaceDescription: SpaceDescription

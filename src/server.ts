@@ -94,7 +94,11 @@ export function createApp({
   })
 
   fastify.decorate('serverUrl', serverUrl as string)
-  fastify.decorate('storage', backend ?? defaultBackend())
+  // Route the backend's diagnostics through the Fastify pino logger (the backend
+  // defaults to a silent logger until wired here).
+  const storage = backend ?? defaultBackend()
+  storage.logger = fastify.log
+  fastify.decorate('storage', storage)
 
   // Disable CORS
   fastify.register(cors, {

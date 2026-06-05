@@ -80,6 +80,23 @@
   descriptive attribute, not part of identity. No method signatures or spec
   behaviour changed.
 
+- Route all server diagnostics through the Fastify pino logger instead of
+  scattered `console.*` calls. `FileSystemBackend` now logs through an injected
+  logger (`StorageBackend.logger`, typed as Fastify's `FastifyBaseLogger`);
+  `createApp()` wires `fastify.log` into the active backend, and the backend
+  defaults to a silent pino logger until then. `StorageError` no longer logs
+  from its constructor -- `handleError` now logs 5xx faults (including the
+  underlying `cause`) once, through `request.log`, leaving 4xx client errors
+  unlogged.
+
+### Fixed
+
+- `GET /space/:spaceId/:collectionId/:resourceId` no longer masks every
+  `getResource` failure as a 404. The handler previously swallowed any error
+  from the backend and reported "resource not found"; it now re-throws a genuine
+  `ResourceNotFoundError` as the 404 and wraps any other failure as a typed 500
+  (`StorageError`) so real storage faults are no longer hidden.
+
 ## 0.1.0 - 2026-06-04
 
 ### Changed
