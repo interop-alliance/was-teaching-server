@@ -2,6 +2,35 @@
 
 ## 0.2.0 - TBD
 
+### Security
+
+- Sanitize `spaceId` / `collectionId` / `resourceId` against path traversal. A
+  new `src/lib/validateId.ts` exports `assertValidId(id, { kind })` /
+  `assertValidIds(ids)`, which reject any id that is not a single URL-safe path
+  segment (empty, `.`, `..`, containing `/` or `\`, or outside the RFC 3986
+  unreserved charset -- which also excludes every glob metacharacter). It is
+  enforced at the request layer (every `SpaceRequest` / `CollectionRequest` /
+  `ResourceRequest` handler, plus client-supplied ids in the Create Space /
+  Create Collection bodies) before any storage access, and at the tar-import
+  layer (`src/lib/importTar.ts`) for every id parsed out of an archive entry
+  name. As defense in depth, `FileSystemBackend` now asserts that every built
+  path resolves within its `spaces/` root before any filesystem operation. New
+  `InvalidCollectionIdError` / `InvalidResourceIdError` (400) join the existing
+  `InvalidSpaceIdError`.
+
+### Fixed
+
+- Replace generic `throw new Error('Could not ...')` in the Collection and
+  Resource create/update/delete paths with
+  `StorageError({ cause, requestName })` so storage failures surface a typed 500
+  with a title/detail through `handleError` instead of a bare 500 (and rename
+  the `e` catch vars to `err`).
+- Validate request bodies and headers before use: Create Space (`POST /spaces/`)
+  and Update Space (`PUT /space/:spaceId`) now reject a body missing `name` or
+  `controller` with a typed 400 (`InvalidRequestBodyError`) rather than failing
+  deeper, and `resolveResourceInput` rejects a missing `Content-Type` header
+  with a typed 400 (`MissingContentTypeError`) instead of asserting it non-null.
+
 ### Changed
 
 - Make the storage backend an injectable dependency of `createApp()`. The app
@@ -37,18 +66,19 @@
   representation, identified by `resourceId` alone within a Collection.
   Previously a resource's identity was effectively `(resourceId, contentType)`
   -- an emergent property of how each backend stored the content-type out of
-  band (filename segment on the filesystem, composite `${resourceId}::${contentType}`
-  map key in memory). As a result, `PUT`-ing an id as one content-type and then
-  re-`PUT`-ing it under another left two stored representations instead of
-  replacing the first; `getResource` returned a nondeterministic one and the
-  listing emitted the id twice. Now `writeResource` replaces any prior
-  representation regardless of its content-type (the filesystem backend prunes
-  the old file after writing the new one; the memory backend overwrites in
-  place), and `getResource`'s `contentType` parameter is advisory -- the single
-  representation is resolved by `resourceId` alone, with the stored content-type
-  returned in `ResourceResult.storedResourceType`. The content-type stays
-  human-visible in the filesystem filename; it is now a descriptive attribute,
-  not part of identity. No method signatures or spec behaviour changed.
+  band (filename segment on the filesystem, composite
+  `${resourceId}::${contentType}` map key in memory). As a result, `PUT`-ing an
+  id as one content-type and then re-`PUT`-ing it under another left two stored
+  representations instead of replacing the first; `getResource` returned a
+  nondeterministic one and the listing emitted the id twice. Now `writeResource`
+  replaces any prior representation regardless of its content-type (the
+  filesystem backend prunes the old file after writing the new one; the memory
+  backend overwrites in place), and `getResource`'s `contentType` parameter is
+  advisory -- the single representation is resolved by `resourceId` alone, with
+  the stored content-type returned in `ResourceResult.storedResourceType`. The
+  content-type stays human-visible in the filesystem filename; it is now a
+  descriptive attribute, not part of identity. No method signatures or spec
+  behaviour changed.
 
 ## 0.1.0 - 2026-06-04
 

@@ -107,8 +107,30 @@ export class FileSystemBackend implements StorageBackend {
     this.spacesDir = path.join(dataDir, 'spaces')
   }
 
+  /**
+   * Defense in depth: asserts that a built path stays within the storage root,
+   * so a malformed id that somehow slips past request-layer validation can
+   * never escape `spacesDir` (path traversal). The request and tar-import
+   * layers reject such ids first; this is the last line of defense.
+   * @param targetPath {string}
+   * @returns {void}
+   */
+  _assertContained(targetPath: string): void {
+    const root = path.resolve(this.spacesDir)
+    const resolved = path.resolve(targetPath)
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+      throw new StorageError({
+        cause: new Error(
+          `Resolved path "${resolved}" escapes the storage root.`
+        )
+      })
+    }
+  }
+
   _spaceDir(spaceId: string): string {
-    return path.join(this.spacesDir, spaceId)
+    const spaceDir = path.join(this.spacesDir, spaceId)
+    this._assertContained(spaceDir)
+    return spaceDir
   }
 
   _collectionDir({
@@ -118,7 +140,9 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
   }): string {
-    return path.join(this._spaceDir(spaceId), collectionId)
+    const collectionDir = path.join(this._spaceDir(spaceId), collectionId)
+    this._assertContained(collectionDir)
+    return collectionDir
   }
 
   /**
@@ -187,9 +211,7 @@ export class FileSystemBackend implements StorageBackend {
     // The trailing `.` anchors to the filename's segment boundary
     // (`r.<resourceId>.<encodedType>.<ext>`) so a resourceId that is a prefix of
     // another (e.g. `note` vs `notebook`) does not match the longer one.
-    const [filePath] = await glob(
-      path.join(collectionDir, `r.${resourceId}.*`)
-    )
+    const [filePath] = await glob(path.join(collectionDir, `r.${resourceId}.*`))
     return filePath
   }
 
@@ -574,6 +596,7 @@ export class FileSystemBackend implements StorageBackend {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
     const filename = fileNameFor({ resourceId, contentType: input.contentType })
     const filePath = path.join(collectionDir, filename)
+    this._assertContained(filePath)
 
     if (input.kind === 'json') {
       const resourceJsonStore = new MetadataJsonStore({ file: filePath })
@@ -588,9 +611,7 @@ export class FileSystemBackend implements StorageBackend {
     // representation stored under a different content-type (its filename
     // differs). Write-new-then-prune (not delete-then-write) so the resource is
     // never momentarily absent.
-    const existing = await glob(
-      path.join(collectionDir, `r.${resourceId}.*`)
-    )
+    const existing = await glob(path.join(collectionDir, `r.${resourceId}.*`))
     await Promise.all(
       existing
         .filter(name => path.resolve(name) !== path.resolve(filePath))

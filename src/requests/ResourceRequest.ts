@@ -6,6 +6,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { Readable } from 'node:stream'
 import { handleZcapVerify } from '../zcap.js'
 import { resolveResourceInput } from './resourceInput.js'
+import { assertValidIds } from '../lib/validateId.js'
 import {
   CollectionNotFoundError,
   ResourceNotFoundError,
@@ -39,6 +40,12 @@ export class ResourceRequest {
       headers
     } = request
     const { serverUrl, storage } = request.server
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds(
+      { spaceId, collectionId, resourceId },
+      { requestName: 'Put Resource' }
+    )
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await storage.getSpaceDescription({ spaceId })
@@ -75,9 +82,10 @@ export class ResourceRequest {
     const input = await resolveResourceInput(request)
     try {
       await storage.writeResource({ spaceId, collectionId, resourceId, input })
-    } catch (e) {
-      throw new Error('Could not create resource: ' + (e as Error).message, {
-        cause: e
+    } catch (err) {
+      throw new StorageError({
+        cause: err as Error,
+        requestName: 'Put Resource'
       })
     }
     return reply.status(204).send()
@@ -108,6 +116,12 @@ export class ResourceRequest {
       headers
     } = request
     const { serverUrl, storage } = request.server
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds(
+      { spaceId, collectionId, resourceId },
+      { requestName: 'Get Resource' }
+    )
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await storage.getSpaceDescription({ spaceId })
@@ -190,6 +204,12 @@ export class ResourceRequest {
       headers
     } = request
     const { serverUrl, storage } = request.server
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds(
+      { spaceId, collectionId, resourceId },
+      { requestName: 'Delete Resource' }
+    )
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await storage.getSpaceDescription({ spaceId })

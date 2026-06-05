@@ -47,6 +47,48 @@ export class InvalidSpaceIdError extends Error {
 }
 
 /**
+ * 400 — the provided collection id is not URL-safe / otherwise invalid.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ * @param params {...*}   forwarded to Error
+ */
+export class InvalidCollectionIdError extends Error {
+  title: string
+  detail: string
+  statusCode: number
+  constructor(
+    { requestName }: { requestName?: string } = {},
+    ...params: unknown[]
+  ) {
+    super(params as never)
+    this.title = `Invalid ${requestName || 'Collection'} request`
+    this.detail = 'Invalid collection id (make sure it is URL-safe).'
+    this.statusCode = 400
+  }
+}
+
+/**
+ * 400 — the provided resource id is not URL-safe / otherwise invalid.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ * @param params {...*}   forwarded to Error
+ */
+export class InvalidResourceIdError extends Error {
+  title: string
+  detail: string
+  statusCode: number
+  constructor(
+    { requestName }: { requestName?: string } = {},
+    ...params: unknown[]
+  ) {
+    super(params as never)
+    this.title = `Invalid ${requestName || 'Resource'} request`
+    this.detail = 'Invalid resource id (make sure it is URL-safe).'
+    this.statusCode = 400
+  }
+}
+
+/**
  * 400 — the Collection Description request body is missing or invalid.
  * @param params {...*}   forwarded to Error
  */
@@ -252,6 +294,50 @@ export class StorageError extends Error {
     console.warn('Storage Error', cause)
     this.detail = cause.message
     this.statusCode = 500
+  }
+}
+
+/**
+ * 400 — a required field of the request body is missing or invalid.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ * @param [options.detail] {string}   specific detail describing the problem
+ * @param params {...*}   forwarded to Error
+ */
+export class InvalidRequestBodyError extends Error {
+  title: string
+  detail: string
+  statusCode: number
+  constructor(
+    { requestName, detail }: { requestName?: string; detail?: string } = {},
+    ...params: unknown[]
+  ) {
+    super(params as never)
+    this.title = `Invalid ${requestName || 'request'} body`
+    this.detail =
+      detail || 'Request body is missing one or more required fields.'
+    this.statusCode = 400
+  }
+}
+
+/**
+ * 400 — the request is missing a required `Content-Type` header.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ * @param params {...*}   forwarded to Error
+ */
+export class MissingContentTypeError extends Error {
+  title: string
+  detail: string
+  statusCode: number
+  constructor(
+    { requestName }: { requestName?: string } = {},
+    ...params: unknown[]
+  ) {
+    super(params as never)
+    this.title = `Invalid ${requestName || 'request'}`
+    this.detail = 'A Content-Type header is required for this request.'
+    this.statusCode = 400
   }
 }
 

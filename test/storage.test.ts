@@ -174,13 +174,21 @@ describe('Storage API', () => {
           spaceId,
           collectionId,
           resourceId: 'note',
-          input: { kind: 'json', contentType: 'application/json', data: { which: 'note' } }
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { which: 'note' }
+          }
         })
         await backend.writeResource({
           spaceId,
           collectionId,
           resourceId: 'notebook',
-          input: { kind: 'json', contentType: 'application/json', data: { which: 'notebook' } }
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { which: 'notebook' }
+          }
         })
 
         // getResource resolves the exact id, not the prefix-sharing sibling.
@@ -189,12 +197,19 @@ describe('Storage API', () => {
           collectionId,
           resourceId: 'note'
         })
-        assert.deepEqual(JSON.parse(await streamToString(noteResult.resourceStream)), {
-          which: 'note'
-        })
+        assert.deepEqual(
+          JSON.parse(await streamToString(noteResult.resourceStream)),
+          {
+            which: 'note'
+          }
+        )
 
         // deleteResource removes only the exact id, leaving the sibling intact.
-        await backend.deleteResource({ spaceId, collectionId, resourceId: 'note' })
+        await backend.deleteResource({
+          spaceId,
+          collectionId,
+          resourceId: 'note'
+        })
 
         const remaining = (
           await readdir(path.join(tempDir, 'spaces', spaceId, collectionId))

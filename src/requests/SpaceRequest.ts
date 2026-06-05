@@ -6,9 +6,11 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { Readable } from 'node:stream'
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
+import { assertValidIds, assertValidId } from '../lib/validateId.js'
 import {
   InvalidSpaceIdError,
   InvalidImportError,
+  InvalidRequestBodyError,
   SpaceNotFoundError
 } from '../errors.js'
 import type { IDID, StorageBackend } from '../types.js'
@@ -45,6 +47,9 @@ export class SpaceRequest {
       headers
     } = request
     const { serverUrl, storage } = request.server
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId }, { requestName: 'Get Space' })
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await storage.getSpaceDescription({ spaceId })
@@ -99,6 +104,17 @@ export class SpaceRequest {
     } = request
     const { serverUrl, storage } = request.server
 
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId }, { requestName: 'Update Space' })
+
+    // The Space Description body must carry a name and a controller DID.
+    if (!body?.name || !body?.controller) {
+      throw new InvalidRequestBodyError({
+        requestName: 'Update Space',
+        detail: 'Space Description body requires "name" and "controller".'
+      })
+    }
+
     // Check to see if space already exists (if yes, this will be an Update)
     const existingSpaceDescription = await storage.getSpaceDescription({
       spaceId
@@ -119,9 +135,9 @@ export class SpaceRequest {
     let spaceUrl
     try {
       spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
-    } catch (e) {
+    } catch (err) {
       request.log.error(
-        `Failed to construct spaceUrl for spaceId: ${spaceId}, serverUrl: ${serverUrl}, error: ${(e as Error).message}`
+        `Failed to construct spaceUrl for spaceId: ${spaceId}, serverUrl: ${serverUrl}, error: ${(err as Error).message}`
       )
       throw new InvalidSpaceIdError({ requestName: 'Update Space' })
     }
@@ -194,6 +210,15 @@ export class SpaceRequest {
     } = request
     const { serverUrl, storage } = request.server
 
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId }, { requestName: 'Create Collection' })
+    if (body?.id !== undefined) {
+      assertValidId(body.id, {
+        kind: 'collection',
+        requestName: 'Create Collection'
+      })
+    }
+
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await storage.getSpaceDescription({ spaceId })
     if (!spaceDescription) {
@@ -262,6 +287,9 @@ export class SpaceRequest {
     } = request
     const { serverUrl, storage } = request.server
 
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId }, { requestName: 'Delete Space' })
+
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await storage.getSpaceDescription({ spaceId })
     if (!spaceDescription) {
@@ -306,6 +334,9 @@ export class SpaceRequest {
       headers
     } = request
     const { serverUrl, storage } = request.server
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId }, { requestName: 'Export Space' })
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await storage.getSpaceDescription({ spaceId })
@@ -354,6 +385,9 @@ export class SpaceRequest {
       headers
     } = request
     const { serverUrl, storage } = request.server
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId }, { requestName: 'Import Space' })
 
     const spaceDescription = await storage.getSpaceDescription({ spaceId })
     if (!spaceDescription) {
@@ -405,6 +439,9 @@ export class SpaceRequest {
       headers
     } = request
     const { serverUrl, storage } = request.server
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId }, { requestName: 'List Collections' })
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceDescription = await storage.getSpaceDescription({ spaceId })

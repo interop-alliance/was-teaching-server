@@ -117,10 +117,10 @@ identical** (including host and port) — ZCap `invocationTarget` URLs embed the
 full host:port, so even `localhost` vs `127.0.0.1` or a port mismatch will make
 delegated-access tests 404.
 
-For a local run, `pnpm conformance:local` does the whole dance for you: it
-spins up the server on a fixed local URL, waits until it answers, runs the
-suite with a matching `TEST_SERVER_URL`, and tears the server down afterward
-(even if the suite fails) — so the two URLs can't drift out of sync.
+For a local run, `pnpm conformance:local` does the whole dance for you: it spins
+up the server on a fixed local URL, waits until it answers, runs the suite with
+a matching `TEST_SERVER_URL`, and tears the server down afterward (even if the
+suite fails) — so the two URLs can't drift out of sync.
 
 ```bash
 # One-shot local run (recommended). Override the port with PORT=... if 3002 is

@@ -1,6 +1,7 @@
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
 import type { Readable } from 'node:stream'
+import { assertValidId } from './validateId.js'
 import type { CollectionDescription } from '../types.js'
 
 /** One extracted archive entry, keyed by its archive path. */
@@ -139,6 +140,12 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     }
     const match = name.slice(prefix.length).match(/^([^/]+)\//)
     if (match?.[1]) {
+      // Reject a path-traversal / non-URL-safe id parsed from the archive
+      // before it is used to build a destination path.
+      assertValidId(match[1], {
+        kind: 'collection',
+        requestName: 'Import Space'
+      })
       collectionIds.add(match[1])
     }
   }
@@ -170,6 +177,10 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       if (parts.length < 4 || !parts[1]) {
         continue
       }
+
+      // Reject a path-traversal / non-URL-safe resource id parsed from the
+      // archive before its bytes are written to a destination path.
+      assertValidId(parts[1], { kind: 'resource', requestName: 'Import Space' })
 
       resources.push({
         fileName,

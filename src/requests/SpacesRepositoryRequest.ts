@@ -5,7 +5,11 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
-import { SpaceControllerMismatchError } from '../errors.js'
+import { assertValidId } from '../lib/validateId.js'
+import {
+  SpaceControllerMismatchError,
+  InvalidRequestBodyError
+} from '../errors.js'
 import type { IDID } from '../types.js'
 
 export class SpacesRepositoryRequest {
@@ -35,6 +39,18 @@ export class SpacesRepositoryRequest {
       zcap: { keyId }
     } = request
     const { serverUrl, storage } = request.server
+
+    // The Space Description body must carry a name and a controller DID.
+    if (!body?.name || !body?.controller) {
+      throw new InvalidRequestBodyError({
+        requestName: 'Create Space',
+        detail: 'Space Description body requires "name" and "controller".'
+      })
+    }
+    // Reject a path-traversal / non-URL-safe client-supplied space id.
+    if (body.id !== undefined) {
+      assertValidId(body.id, { kind: 'space', requestName: 'Create Space' })
+    }
 
     // Check to make sure the DID that signed the zcap matches controller
     const [zcapSigningDid] = keyId.split('#')

@@ -8,10 +8,12 @@ import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { getSpaceController } from './SpaceRequest.js'
 import { resolveResourceInput } from './resourceInput.js'
+import { assertValidIds } from '../lib/validateId.js'
 import {
   CollectionNotFoundError,
   InvalidCollectionError,
-  SpaceNotFoundError
+  SpaceNotFoundError,
+  StorageError
 } from '../errors.js'
 
 export class CollectionRequest {
@@ -41,6 +43,9 @@ export class CollectionRequest {
     } = request
     const { serverUrl, storage } = request.server
     const requestName = 'Create Resource'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId, collectionId }, { requestName })
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceController = await getSpaceController({
@@ -85,10 +90,8 @@ export class CollectionRequest {
         id: resourceId,
         'content-type': request.headers['content-type']
       }
-    } catch (e) {
-      throw new Error('Could not create resource: ' + (e as Error).message, {
-        cause: e
-      })
+    } catch (err) {
+      throw new StorageError({ cause: err as Error, requestName })
     }
 
     const createdUrl = new URL(
@@ -132,6 +135,10 @@ export class CollectionRequest {
     }
     const { serverUrl, storage } = request.server
     const requestName = 'Update Collection'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId, collectionId }, { requestName })
+
     const collectionUrl = new URL(
       `/space/${spaceId}/${collectionId}`,
       serverUrl
@@ -172,11 +179,9 @@ export class CollectionRequest {
         collectionId,
         collectionDescription
       })
-    } catch (e) {
-      request.log.error(e)
-      throw new Error('Could not update collection: ' + (e as Error).message, {
-        cause: e
-      })
+    } catch (err) {
+      request.log.error(err)
+      throw new StorageError({ cause: err as Error, requestName })
     }
 
     reply.header('Location', collectionUrl)
@@ -206,6 +211,9 @@ export class CollectionRequest {
     } = request
     const { serverUrl, storage } = request.server
     const requestName = 'Get Collection'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId, collectionId }, { requestName })
 
     // Fetch the space by id, from storage. Needed for signature verification.
     const spaceController = await getSpaceController({
@@ -270,6 +278,10 @@ export class CollectionRequest {
     } = request
     const { serverUrl, storage } = request.server
     const requestName = 'Delete Collection'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId, collectionId }, { requestName })
+
     const collectionUrl = new URL(
       `/space/${spaceId}/${collectionId}`,
       serverUrl
@@ -295,11 +307,9 @@ export class CollectionRequest {
 
     try {
       await storage.deleteCollection({ spaceId, collectionId })
-    } catch (e) {
-      request.log.error(e)
-      throw new Error('Could not delete collection: ' + (e as Error).message, {
-        cause: e
-      })
+    } catch (err) {
+      request.log.error(err)
+      throw new StorageError({ cause: err as Error, requestName })
     }
 
     return reply.status(204).send()
@@ -327,6 +337,9 @@ export class CollectionRequest {
     } = request
     const { serverUrl, storage } = request.server
     const requestName = 'List Collection'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId, collectionId }, { requestName })
 
     const spaceController = await getSpaceController({
       storage,
