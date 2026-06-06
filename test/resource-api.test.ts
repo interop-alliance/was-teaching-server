@@ -53,14 +53,16 @@ describe('Resource API', () => {
     await rm(dataDir, { recursive: true, force: true })
   })
 
-  it('GET /space/:spaceId/:resourceId should 401 error when no authorization headers', async () => {
+  it('GET a resource with no auth headers falls through to policy and 404s (no public policy)', async () => {
+    // Reads no longer 401 at the hook: an anonymous read is allowed to attempt,
+    // and is denied as 404 (no-leak) when no access-control policy grants it.
     const response = await fetch(
       new URL('/space/any-space-id/any-collection/any-resource', serverUrl),
       {
         method: 'GET'
       }
     )
-    assert.equal(response.status, 401)
+    assert.equal(response.status, 404)
     assert.match(
       response.headers.get('content-type')!,
       /application\/problem\+json/

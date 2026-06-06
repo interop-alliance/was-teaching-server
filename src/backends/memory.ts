@@ -17,6 +17,7 @@ import type {
   ResourceResult,
   ResourceInput,
   ImportStats,
+  PolicyDocument,
   StorageBackend
 } from '../types.js'
 
@@ -26,16 +27,22 @@ interface MemoryResource {
   contentType: string
 }
 
-/** A Collection record: its description plus keyed resource representations. */
+/**
+ * A Collection record: its description, keyed resource representations, an
+ * optional Collection-level policy, and per-Resource policies.
+ */
 interface MemoryCollection {
   description: CollectionDescription
   resources: Map<string, MemoryResource>
+  policy?: PolicyDocument
+  resourcePolicies: Map<string, PolicyDocument>
 }
 
-/** A Space record: its description plus its Collections. */
+/** A Space record: its description, its Collections, and an optional policy. */
 interface MemorySpace {
   description: SpaceDescription
   collections: Map<string, MemoryCollection>
+  policy?: PolicyDocument
 }
 
 /**
@@ -204,7 +211,8 @@ export class MemoryBackend implements StorageBackend {
     } else {
       space.collections.set(collectionId, {
         description: collectionDescription,
-        resources: new Map()
+        resources: new Map(),
+        resourcePolicies: new Map()
       })
     }
   }
@@ -362,5 +370,107 @@ export class MemoryBackend implements StorageBackend {
   }): Promise<void> {
     const collection = this.collection(spaceId, collectionId)
     collection.resources.delete(resourceId)
+  }
+
+  // Policies
+
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @returns {Promise<PolicyDocument|undefined>}
+   *   Resolves falsy when no policy is set at that level (must not throw).
+   */
+  async getPolicy({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+  }): Promise<PolicyDocument | undefined> {
+    const space = this._spaces.get(spaceId)
+    if (!space) {
+      return undefined
+    }
+    if (collectionId === undefined) {
+      return space.policy
+    }
+    const collection = space.collections.get(collectionId)
+    if (!collection) {
+      return undefined
+    }
+    if (resourceId === undefined) {
+      return collection.policy
+    }
+    return collection.resourcePolicies.get(resourceId)
+  }
+
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @param options.policy {PolicyDocument}
+   * @returns {Promise<void>}
+   */
+  async writePolicy({
+    spaceId,
+    collectionId,
+    resourceId,
+    policy
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+    policy: PolicyDocument
+  }): Promise<void> {
+    if (collectionId === undefined) {
+      this.space(spaceId).policy = policy
+      return
+    }
+    const collection = this.collection(spaceId, collectionId)
+    if (resourceId === undefined) {
+      collection.policy = policy
+    } else {
+      collection.resourcePolicies.set(resourceId, policy)
+    }
+  }
+
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @returns {Promise<void>}   idempotent (no error if absent)
+   */
+  async deletePolicy({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+  }): Promise<void> {
+    const space = this._spaces.get(spaceId)
+    if (!space) {
+      return
+    }
+    if (collectionId === undefined) {
+      delete space.policy
+      return
+    }
+    const collection = space.collections.get(collectionId)
+    if (!collection) {
+      return
+    }
+    if (resourceId === undefined) {
+      delete collection.policy
+    } else {
+      collection.resourcePolicies.delete(resourceId)
+    }
   }
 }

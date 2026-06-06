@@ -62,6 +62,42 @@ for more details.
 - [Delete Resource by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#delete-resource-operation)
   (`DELETE /space/:spaceId/:collectionId/:resourceId`)
 
+#### Access Control Policy (public read)
+
+By default every operation requires a capability invocation. A **policy**
+auxiliary resource can override this to make a Space, Collection, or Resource
+world-readable — the common "create public link" use case (e.g. a wallet sharing
+a Verifiable Credential).
+
+- CRUD the policy at any level (controller-only):
+  - `GET|PUT|DELETE /space/:spaceId/policy`
+  - `GET|PUT|DELETE /space/:spaceId/:collectionId/policy`
+  - `GET|PUT|DELETE /space/:spaceId/:collectionId/:resourceId/policy`
+- Discover a policy via the `linkset` property on the Space/Collection
+  Description, or `GET /space/:spaceId[/:collectionId]/linkset`
+  (`application/linkset+json`, RFC9264).
+
+How a read is authorized: the server tries the capability invocation first; if
+none is presented, or it does not grant access, it falls back to the **effective
+policy** (resolved most-specific-first: Resource → Collection → Space). Policies
+are **permissive-only** — they can only broaden access beyond capabilities,
+never deny a valid capability holder. A denied read returns `404` (so existence
+is not leaked); writes always require a capability.
+
+The policy document is a small, `type`-discriminated, extensible shape. v1
+recognizes one type (any other `type` is treated as "grants nothing", so it
+falls through to the capability-only decision):
+
+```json
+{ "type": "PublicCanRead" }
+```
+
+Set it, for example, on a `public-credentials` Collection so anyone can
+`GET /space/:spaceId/public-credentials/:resourceId` without authorization. This
+minimal canned-policy approach (cf. S3 `public-read`, `chmod o+r`) covers the
+dominant public-read case; a richer policy language (e.g. Cedar) is left as a
+future, separate tier.
+
 ## Install
 
 Requires Node.js 24.x and [`pnpm`](https://pnpm.io/).

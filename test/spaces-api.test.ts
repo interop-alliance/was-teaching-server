@@ -71,7 +71,8 @@ describe('Spaces', () => {
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
-        controller: alice.did
+        controller: alice.did,
+        linkset: `/space/${alice.space1.id}/linkset`
       })
     })
 
@@ -85,13 +86,15 @@ describe('Spaces', () => {
       assert.notEqual(await space.describe(), null)
     })
 
-    it('GET /space/:spaceId should 401 error when no authorization headers', async () => {
+    it('GET a space with no auth headers falls through to policy and 404s (no public policy)', async () => {
+      // Reads no longer 401 at the hook: an anonymous read is allowed to attempt,
+      // and is denied as 404 (no-leak) when no access-control policy grants it.
       const spaceUrl = new URL(
         `/space/${alice.space1.id}`,
         serverUrl
       ).toString()
       const response = await fetch(spaceUrl, { method: 'GET' })
-      assert.equal(response.status, 401)
+      assert.equal(response.status, 404)
       assert.match(
         response.headers.get('content-type')!,
         /application\/problem\+json/
@@ -111,7 +114,8 @@ describe('Spaces', () => {
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
-        controller: alice.did
+        controller: alice.did,
+        linkset: `/space/${alice.space1.id}/linkset`
       })
     })
 
@@ -136,7 +140,8 @@ describe('Spaces', () => {
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
-        controller: alice.did
+        controller: alice.did,
+        linkset: `/space/${alice.space1.id}/linkset`
       })
     })
 

@@ -49,6 +49,12 @@ export async function parseAuthHeaders(
 ): Promise<void> {
   const { headers } = request
 
+  // No Authorization header presented (e.g. an anonymous read that a fallback
+  // policy may authorize). Leave `request.zcap` unset; the handler decides.
+  if (!headers.authorization) {
+    return
+  }
+
   let keyId: string | undefined
   try {
     // { keyId, headers, signature, created, expires }
@@ -73,7 +79,8 @@ export async function parseAuthHeaders(
 /**
  * onRequest hook that enforces presence of the auth-related headers. Throws
  * MissingAuthError (401) when `Authorization` or `Capability-Invocation` is
- * absent.
+ * absent. Used by route groups where every operation is privileged (e.g. the
+ * SpacesRepository admin routes).
  * @param request {import('fastify').FastifyRequest}
  * @param reply {import('fastify').FastifyReply}
  * @returns {Promise<void>}
@@ -86,4 +93,29 @@ export async function requireAuthHeaders(
   if (!(headers.authorization && headers['capability-invocation'])) {
     throw new MissingAuthError()
   }
+}
+
+/**
+ * Like `requireAuthHeaders`, but lets safe (read) methods through without auth
+ * so the handler can fall back to an access-control policy (e.g. a
+ * world-readable Resource). The handler still denies anonymous reads that no
+ * policy authorizes. Unsafe methods (writes) still require auth. Used by the
+ * Space / Collection / Resource content route groups.
+ * @param request {import('fastify').FastifyRequest}
+ * @param reply {import('fastify').FastifyReply}
+ * @returns {Promise<void>}
+ */
+export async function requireAuthHeadersOrPublicRead(
+  request: FastifyRequest,
+  _reply: FastifyReply
+): Promise<void> {
+  const { headers, method } = request
+  if (headers.authorization && headers['capability-invocation']) {
+    return
+  }
+  // Safe methods may proceed unauthenticated; authorize() decides via policy.
+  if (method === 'GET' || method === 'HEAD') {
+    return
+  }
+  throw new MissingAuthError()
 }

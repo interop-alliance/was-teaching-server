@@ -25,7 +25,8 @@ import {
   UBC_MANIFEST_URL,
   SPACE_URL,
   COLLECTION_URL,
-  RESOURCE_URL
+  RESOURCE_URL,
+  POLICY_URL
 } from '../config.default.js'
 import { extractTarEntries, buildImportPlan } from '../lib/importTar.js'
 import type {
@@ -36,6 +37,7 @@ import type {
   ResourceResult,
   ResourceInput,
   ImportStats,
+  PolicyDocument,
   StorageBackend
 } from '../types.js'
 
@@ -365,6 +367,8 @@ export class FileSystemBackend implements StorageBackend {
       for (const file of collectionEntriesByDir[entry.name] ?? []) {
         if (file.name.startsWith('.collection.')) {
           collectionContents.push({ [file.name]: { url: COLLECTION_URL } })
+        } else if (file.name.startsWith('.policy.')) {
+          collectionContents.push({ [file.name]: { url: POLICY_URL } })
         } else if (file.name.startsWith('r.')) {
           collectionContents.push({ [file.name]: { url: RESOURCE_URL } })
         } else {
@@ -439,21 +443,40 @@ export class FileSystemBackend implements StorageBackend {
     tarStream: Readable
   }): Promise<ImportStats> {
     const entries = await extractTarEntries(tarStream)
-    const { collections } = buildImportPlan(entries)
+    const { spacePolicy, collections } = buildImportPlan(entries)
     const stats: ImportStats = {
       collectionsCreated: 0,
       collectionsSkipped: 0,
       resourcesCreated: 0,
-      resourcesSkipped: 0
+      resourcesSkipped: 0,
+      policiesCreated: 0,
+      policiesSkipped: 0
+    }
+
+    // Space-level policy: restore it when the destination has none (the import
+    // target Space pre-exists, so this fills in a missing policy without
+    // clobbering one the destination already carries).
+    if (spacePolicy) {
+      if (await this.getPolicy({ spaceId })) {
+        stats.policiesSkipped++
+      } else {
+        await this.writePolicy({ spaceId, policy: spacePolicy })
+        stats.policiesCreated++
+      }
     }
 
     for (const {
       collectionId,
       collectionDescription,
-      resources
+      collectionPolicy,
+      resources,
+      resourcePolicies
     } of collections) {
       // check if collection already exists
-      if (await this.getCollectionDescription({ spaceId, collectionId })) {
+      const collectionExisted = Boolean(
+        await this.getCollectionDescription({ spaceId, collectionId })
+      )
+      if (collectionExisted) {
         stats.collectionsSkipped++
       } else {
         await this.writeCollection({
@@ -464,16 +487,42 @@ export class FileSystemBackend implements StorageBackend {
         stats.collectionsCreated++
       }
 
+      // A collection-level policy travels with a newly-created collection; for
+      // an existing (skipped) collection, leave its access policy untouched.
+      if (collectionPolicy) {
+        if (collectionExisted) {
+          stats.policiesSkipped++
+        } else {
+          await this.writePolicy({ spaceId, collectionId, policy: collectionPolicy })
+          stats.policiesCreated++
+        }
+      }
+
       const collectionDir = this._collectionDir({ spaceId, collectionId })
 
       for (const { fileName, resourceId, body } of resources) {
         if (await this._findFile({ collectionDir, resourceId })) {
           stats.resourcesSkipped++
+          // A resource-level policy travels with a newly-created resource only.
+          if (resourcePolicies.has(resourceId)) {
+            stats.policiesSkipped++
+          }
           continue
         }
 
         await fs.promises.writeFile(path.join(collectionDir, fileName), body)
         stats.resourcesCreated++
+
+        const resourcePolicy = resourcePolicies.get(resourceId)
+        if (resourcePolicy) {
+          await this.writePolicy({
+            spaceId,
+            collectionId,
+            resourceId,
+            policy: resourcePolicy
+          })
+          stats.policiesCreated++
+        }
       }
     }
 
@@ -717,5 +766,112 @@ export class FileSystemBackend implements StorageBackend {
       path.join(collectionDir, `r.${resourceId}.*`)
     )
     await Promise.all(filesForResource.map(filename => rm(filename)))
+  }
+
+  // Policies
+
+  /**
+   * Builds the on-disk path for a policy document. Stored as a dot-file keyed by
+   * the entity id, alongside the matching `.space.` / `.collection.` description:
+   * Space policy in the space dir, Collection and Resource policy in the
+   * collection dir (the keying id differs, so they never collide).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @returns {string}
+   */
+  _policyFile({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+  }): string {
+    const dir =
+      collectionId !== undefined
+        ? this._collectionDir({ spaceId, collectionId })
+        : this._spaceDir(spaceId)
+    const filename = `.policy.${resourceId ?? collectionId ?? spaceId}.json`
+    const filePath = path.join(dir, filename)
+    this._assertContained(filePath)
+    return filePath
+  }
+
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @returns {Promise<PolicyDocument|undefined>}
+   *   Resolves falsy when no policy is set at that level (must not throw).
+   */
+  async getPolicy({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+  }): Promise<PolicyDocument | undefined> {
+    const metaStore = new MetadataJsonStore<PolicyDocument>({
+      file: this._policyFile({ spaceId, collectionId, resourceId })
+    })
+    return await metaStore.read()
+  }
+
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @param options.policy {PolicyDocument}
+   * @returns {Promise<void>}
+   */
+  async writePolicy({
+    spaceId,
+    collectionId,
+    resourceId,
+    policy
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+    policy: PolicyDocument
+  }): Promise<void> {
+    // Ensure the containing directory exists (Space or Collection dir).
+    if (collectionId !== undefined) {
+      await this._ensureCollectionDir({ spaceId, collectionId })
+    } else {
+      await this._ensureSpaceDir({ spaceId })
+    }
+    const metaStore = new MetadataJsonStore<PolicyDocument>({
+      file: this._policyFile({ spaceId, collectionId, resourceId })
+    })
+    await metaStore.write(policy)
+  }
+
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @returns {Promise<void>}   idempotent (no error if absent)
+   */
+  async deletePolicy({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+  }): Promise<void> {
+    await rm(this._policyFile({ spaceId, collectionId, resourceId }), {
+      force: true
+    })
   }
 }

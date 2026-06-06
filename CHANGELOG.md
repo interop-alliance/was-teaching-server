@@ -1,5 +1,46 @@
 # History
 
+## Unreleased - TBD
+
+### Added
+
+- Access-control **policy** documents, enabling world-readable ("public read")
+  Collections and Resources. A `policy` auxiliary resource may be set at the
+  Space, Collection, or Resource level via
+  `GET|PUT|DELETE /space/{id}[/{col}[/{res}]]/policy`. Reads (`GET`/`HEAD`) now
+  fall back to the effective policy when no capability is presented, or when the
+  presented capability does not authorize the request -- so an anonymous `GET`
+  of a resource in a Collection whose policy is `{ "type": "PublicCanRead" }`
+  succeeds. Policies are **permissive-only** (they broaden access beyond
+  capabilities, never restrict a valid capability holder) and resolved
+  most-specific-first (Resource over Collection over Space, per the spec). The
+  policy document is a `type`-discriminated, extensible shape: v1 recognizes
+  only `PublicCanRead`; any unrecognized `type` grants nothing (fail-closed).
+  New modules: `src/policy.ts` (resolution + evaluation + linkset building),
+  `src/authorize.ts` (the capability-then-policy decision), and
+  `src/requests/PolicyRequest.ts` (the policy CRUD handler).
+- **Linkset discovery** (RFC9264): Space and Collection Description objects now
+  carry a `linkset` property, and `GET /space/{id}/linkset` /
+  `GET /space/{id}/{col}/linkset` return an `application/linkset+json` document
+  advertising the access-control `policy` resource (relation
+  `https://wallet.storage/spec#policy`) when one is set.
+- Space export/import now round-trips policies. Space-, Collection-, and
+  Resource-level `.policy.*` documents are carried in the export tarball and
+  restored on import: the space policy fills in when the target has none
+  (no clobber), and Collection/Resource policies travel with a newly-created
+  Collection/Resource. `ImportStats` gains `policiesCreated` / `policiesSkipped`.
+
+### Changed
+
+- Read requests (`GET`/`HEAD`) on Space / Collection / Resource routes no longer
+  require auth headers up front: they are allowed through so the handler can
+  fall back to an access-control policy. An anonymous (or unauthorized) read
+  that no policy grants is now denied with **404** (consistent with the existing
+  no-leak policy for failed capability invocation) rather than **401**. Writes,
+  and all SpacesRepository (`/spaces`) admin routes, still require auth (401
+  when absent). `policy` and `linkset` are now reserved id segments and cannot
+  be used as Collection or Resource ids.
+
 ## 0.2.0 - 2026-06-06
 
 ### Added

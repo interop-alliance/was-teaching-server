@@ -2,7 +2,26 @@ import * as tar from 'tar-stream'
 import YAML from 'yaml'
 import type { Readable } from 'node:stream'
 import { assertValidId } from './validateId.js'
-import type { CollectionDescription } from '../types.js'
+import type { CollectionDescription, PolicyDocument } from '../types.js'
+
+/** Prefix / suffix of a policy dot-file (`.policy.<id>.json`). */
+const POLICY_PREFIX = '.policy.'
+const POLICY_SUFFIX = '.json'
+
+/**
+ * If `fileName` is a policy dot-file (`.policy.<id>.json`), returns the `<id>`
+ * it is keyed by; otherwise undefined. Uses slice (not split) so ids containing
+ * dots (URL-safe `.` is allowed) round-trip correctly.
+ * @param fileName {string}
+ * @returns {string | undefined}
+ */
+function policyFileId(fileName: string): string | undefined {
+  if (!fileName.startsWith(POLICY_PREFIX) || !fileName.endsWith(POLICY_SUFFIX)) {
+    return undefined
+  }
+  const id = fileName.slice(POLICY_PREFIX.length, -POLICY_SUFFIX.length)
+  return id.length > 0 ? id : undefined
+}
 
 /** One extracted archive entry, keyed by its archive path. */
 export interface TarEntry {
@@ -17,15 +36,21 @@ export interface ImportPlanResource {
   body: Buffer
 }
 
-/** One collection (plus its resources) staged for import. */
+/** One collection (plus its resources and policies) staged for import. */
 export interface ImportPlanCollection {
   collectionId: string
   collectionDescription: CollectionDescription
+  /** Collection-level access-control policy, if the archive carries one. */
+  collectionPolicy?: PolicyDocument
   resources: ImportPlanResource[]
+  /** Resource-level policies, keyed by resourceId. */
+  resourcePolicies: Map<string, PolicyDocument>
 }
 
 /** The merge plan produced by {@link buildImportPlan}. */
 export interface ImportPlan {
+  /** Space-level access-control policy, if the archive carries one. */
+  spacePolicy?: PolicyDocument
   collections: ImportPlanCollection[]
 }
 
@@ -107,12 +132,16 @@ export function validateManifest(entries: Map<string, TarEntry>): void {
  * - space/
  * - space/<sourceSpaceId>/
  * - space/<sourceSpaceId>/.space.<sourceSpaceId>.json (space metadata; ignored on import)
+ * - space/<sourceSpaceId>/.policy.<sourceSpaceId>.json (space-level policy)
  * - space/<sourceSpaceId>/<collectionId>/
  * - space/<sourceSpaceId>/<collectionId>/.collection.<collectionId>.json
+ * - space/<sourceSpaceId>/<collectionId>/.policy.<collectionId>.json (collection policy)
+ * - space/<sourceSpaceId>/<collectionId>/.policy.<resourceId>.json (resource policy)
  * - space/<sourceSpaceId>/<collectionId>/r.<resourceId>.<encodedContentType>.<ext>
  *
- * The source space id in the path may differ from the import target; only
- * collection metadata and r.* resource files are merged into the destination.
+ * The source space id in the path may differ from the import target; collection
+ * metadata, r.* resource files, and `.policy.*` policy files are merged into the
+ * destination.
  *
  * @param entries {Map<string, TarEntry>}
  * @returns {ImportPlan}
@@ -133,6 +162,14 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
   }
 
   const prefix = `space/${sourceSpaceId}/`
+
+  // Space-level policy (`.policy.<sourceSpaceId>.json` at the space root).
+  const spacePolicyEntry = entries.get(
+    `${prefix}.policy.${sourceSpaceId}.json`
+  )
+  const spacePolicy: PolicyDocument | undefined = spacePolicyEntry?.body
+    ? JSON.parse(spacePolicyEntry.body.toString('utf8'))
+    : undefined
   const collectionIds = new Set<string>()
   for (const name of entries.keys()) {
     if (!name.startsWith(prefix)) {
@@ -159,6 +196,8 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
 
     const collectionPrefix = `${prefix}${collectionId}/`
     const resources: ImportPlanResource[] = []
+    let collectionPolicy: PolicyDocument | undefined
+    const resourcePolicies = new Map<string, PolicyDocument>()
     for (const [entryName, entry] of entries) {
       if (
         !entryName.startsWith(collectionPrefix) ||
@@ -169,7 +208,29 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       }
 
       const fileName = entryName.slice(collectionPrefix.length)
-      if (!fileName.startsWith('r.') || fileName.includes('/')) {
+      if (fileName.includes('/')) {
+        continue
+      }
+
+      // Policy dot-files: `.policy.<collectionId>.json` is the Collection policy;
+      // `.policy.<resourceId>.json` is a Resource policy keyed by resource id.
+      const policyId = policyFileId(fileName)
+      if (policyId !== undefined) {
+        const policy: PolicyDocument = JSON.parse(entry.body.toString('utf8'))
+        if (policyId === collectionId) {
+          collectionPolicy = policy
+        } else {
+          // Reject a path-traversal / non-URL-safe id parsed from the archive.
+          assertValidId(policyId, {
+            kind: 'resource',
+            requestName: 'Import Space'
+          })
+          resourcePolicies.set(policyId, policy)
+        }
+        continue
+      }
+
+      if (!fileName.startsWith('r.')) {
         continue
       }
 
@@ -189,8 +250,14 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       })
     }
 
-    return { collectionId, collectionDescription, resources }
+    return {
+      collectionId,
+      collectionDescription,
+      collectionPolicy,
+      resources,
+      resourcePolicies
+    }
   })
 
-  return { collections }
+  return { spacePolicy, collections }
 }

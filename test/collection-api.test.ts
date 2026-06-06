@@ -78,7 +78,8 @@ describe('Collections API', () => {
     assert.deepStrictEqual(await collection.describe(), {
       id: 'credentials',
       name: 'Verifiable Credentials',
-      type: ['Collection']
+      type: ['Collection'],
+      linkset: `/space/${alice.space1.id}/credentials/linkset`
     })
   })
 
@@ -100,7 +101,8 @@ describe('Collections API', () => {
       {
         id: 'credentials',
         name: 'Verifiable Credentials',
-        type: ['Collection']
+        type: ['Collection'],
+        linkset: `/space/${alice.space1.id}/credentials/linkset`
       }
     )
   })

@@ -21,6 +21,12 @@ export type IdKind = 'space' | 'collection' | 'resource'
 // both as a single path segment and inside a glob pattern.
 const ID_PATTERN = /^[A-Za-z0-9._~-]+$/
 
+// Reserved path segments that name auxiliary resources at the Collection /
+// Resource position (`/space/{id}/policy`, `/space/{id}/linkset`, etc.). A
+// client-chosen Collection or Resource id matching one of these would shadow
+// the reserved route, so reject it.
+const RESERVED_SEGMENTS = new Set(['policy', 'linkset'])
+
 /**
  * Asserts that an id is a single, URL-safe path segment, throwing the typed
  * 400 error matching `kind` otherwise.
@@ -41,7 +47,9 @@ export function assertValidId(
     id !== '..' &&
     !id.includes('/') &&
     !id.includes('\\') &&
-    ID_PATTERN.test(id)
+    ID_PATTERN.test(id) &&
+    // Collections and Resources may not take a reserved auxiliary-resource name.
+    !(kind !== 'space' && RESERVED_SEGMENTS.has(id))
 
   if (valid) {
     return

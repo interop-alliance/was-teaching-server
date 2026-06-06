@@ -9,7 +9,12 @@ import { SpaceRequest } from './requests/SpaceRequest.js'
 import { handleError } from './errors.js'
 import { ResourceRequest } from './requests/ResourceRequest.js'
 import { CollectionRequest } from './requests/CollectionRequest.js'
-import { parseAuthHeaders, requireAuthHeaders } from './auth-header-hooks.js'
+import { PolicyRequest } from './requests/PolicyRequest.js'
+import {
+  parseAuthHeaders,
+  requireAuthHeaders,
+  requireAuthHeadersOrPublicRead
+} from './auth-header-hooks.js'
 
 /**
  * Registers SpacesRepository routes (POST/GET /spaces). Installs the
@@ -55,9 +60,9 @@ export async function initSpaceRoutes(
 ): Promise<void> {
   app.setErrorHandler(handleError)
 
-  // All Space routes require auth-related headers
-  // Check headers are present (throw 401 otherwise)
-  app.addHook('onRequest', requireAuthHeaders)
+  // Writes require auth; reads (GET/HEAD) may proceed unauthenticated so the
+  // handler can fall back to an access-control policy (e.g. a public Space).
+  app.addHook('onRequest', requireAuthHeadersOrPublicRead)
   // Parse the relevant request headers, set the request.zcap parameter
   app.addHook('onRequest', parseAuthHeaders)
 
@@ -78,6 +83,15 @@ export async function initSpaceRoutes(
     reply.redirect('/space/:spaceId/collections/')
   )
   app.get('/space/:spaceId/collections/', SpaceRequest.listCollections)
+
+  // Space access-control policy (reserved segment; Fastify routes static
+  // segments ahead of the `:collectionId` parameter, so this never collides).
+  app.get('/space/:spaceId/policy', PolicyRequest.get)
+  app.put('/space/:spaceId/policy', PolicyRequest.put)
+  app.delete('/space/:spaceId/policy', PolicyRequest.delete)
+
+  // Space linkset (RFC9264 policy discovery)
+  app.get('/space/:spaceId/linkset', SpaceRequest.linkset)
 
   // Add Collection to a Space
   app.post('/space/:spaceId', async (request, reply) =>
@@ -108,9 +122,9 @@ export async function initCollectionRoutes(
 ): Promise<void> {
   app.setErrorHandler(handleError)
 
-  // All Collection routes require auth-related headers
-  // Check headers are present (throw 401 otherwise)
-  app.addHook('onRequest', requireAuthHeaders)
+  // Writes require auth; reads (GET/HEAD) may proceed unauthenticated so the
+  // handler can fall back to an access-control policy (e.g. a public Collection).
+  app.addHook('onRequest', requireAuthHeadersOrPublicRead)
   // Parse the relevant request headers, set the request.zcap parameter
   app.addHook('onRequest', parseAuthHeaders)
 
@@ -118,6 +132,15 @@ export async function initCollectionRoutes(
   app.get('/space/:spaceId/:collectionId', CollectionRequest.get)
   // List Collection items
   app.get('/space/:spaceId/:collectionId/', CollectionRequest.list)
+
+  // Collection access-control policy (reserved segment; static-beats-parametric
+  // routing keeps this ahead of the `:resourceId` parameter).
+  app.get('/space/:spaceId/:collectionId/policy', PolicyRequest.get)
+  app.put('/space/:spaceId/:collectionId/policy', PolicyRequest.put)
+  app.delete('/space/:spaceId/:collectionId/policy', PolicyRequest.delete)
+
+  // Collection linkset (RFC9264 policy discovery)
+  app.get('/space/:spaceId/:collectionId/linkset', CollectionRequest.linkset)
 
   // Add Resource to a Collection
   app.post('/space/:spaceId/:collectionId', async (request, reply) =>
@@ -153,9 +176,9 @@ export async function initResourceRoutes(
 ): Promise<void> {
   app.setErrorHandler(handleError)
 
-  // All Resource routes require auth-related headers
-  // Check headers are present (throw 401 otherwise)
-  app.addHook('onRequest', requireAuthHeaders)
+  // Writes require auth; reads (GET/HEAD) may proceed unauthenticated so the
+  // handler can fall back to an access-control policy (e.g. a public Resource).
+  app.addHook('onRequest', requireAuthHeadersOrPublicRead)
   // Parse the relevant request headers, set the request.zcap parameter
   app.addHook('onRequest', parseAuthHeaders)
 
@@ -174,5 +197,13 @@ export async function initResourceRoutes(
   app.delete(
     '/space/:spaceId/:collectionId/:resourceId',
     ResourceRequest.delete
+  )
+
+  // Resource access-control policy (reserved segment)
+  app.get('/space/:spaceId/:collectionId/:resourceId/policy', PolicyRequest.get)
+  app.put('/space/:spaceId/:collectionId/:resourceId/policy', PolicyRequest.put)
+  app.delete(
+    '/space/:spaceId/:collectionId/:resourceId/policy',
+    PolicyRequest.delete
   )
 }

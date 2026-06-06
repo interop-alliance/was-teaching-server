@@ -11,7 +11,7 @@ import assert from 'node:assert'
 
 import type { Space } from '@interop/was-client'
 
-import { buildZcapClients } from './helpers.js'
+import { buildZcapClients, serverUrl } from './helpers.js'
 
 describe('WasClient — Export / Import', () => {
   let alice: any
@@ -51,6 +51,13 @@ describe('WasClient — Export / Import', () => {
     })
     await collection.put('first', { body: 'one' })
     await collection.put('second', { body: 'two' })
+    // Make the collection world-readable so we can verify the policy survives
+    // the export/import round-trip.
+    await alice.was.request({
+      path: `/space/${source.id}/notes/policy`,
+      method: 'PUT',
+      json: { type: 'PublicCanRead' }
+    })
 
     const archive = await source.export()
     assert.ok(archive instanceof Uint8Array)
@@ -60,8 +67,18 @@ describe('WasClient — Export / Import', () => {
     const stats = await target.import(archive)
     assert.ok(stats.collectionsCreated >= 1)
     assert.ok(stats.resourcesCreated >= 2)
+    assert.ok(stats.policiesCreated >= 1)
 
     const imported = (await target.collection('notes').get('first')) as any
     assert.equal(imported.body, 'one')
+
+    // The PublicCanRead policy round-tripped: an anonymous GET of the imported
+    // resource in the target space succeeds.
+    const anonResponse = await fetch(
+      new URL(`/space/${target.id}/notes/first`, serverUrl)
+    )
+    assert.equal(anonResponse.status, 200)
+    const anonBody = (await anonResponse.json()) as { body: string }
+    assert.equal(anonBody.body, 'one')
   })
 })

@@ -63,6 +63,12 @@ export interface SpaceDescription {
   name?: string
   /** the `did:key` that owns (controls) the Space */
   controller: IDID
+  /**
+   * URL of the Space's linkset resource (RFC9264), where auxiliary resources
+   * such as the access-control `policy` are discovered. Attached at response
+   * time, not persisted.
+   */
+  linkset?: string
 }
 
 /**
@@ -73,6 +79,25 @@ export interface CollectionDescription {
   /** e.g. `['Collection']` */
   type: string[]
   name: string
+  /**
+   * URL of the Collection's linkset resource (RFC9264); see
+   * `SpaceDescription.linkset`. Attached at response time, not persisted.
+   */
+  linkset?: string
+}
+
+/**
+ * An access-control policy document attached to a Space, Collection, or
+ * Resource (the `policy` reserved resource at each level). A `type`-discriminated
+ * open shape: v1 recognizes only `{ "type": "PublicCanRead" }` (see
+ * `policy.ts`). Unrecognized `type` values grant nothing (fail-closed), so the
+ * request falls through to the normal zcap-only authorization decision. Policies
+ * are permissive-only: they can broaden access beyond what a capability grants,
+ * never restrict a valid capability holder.
+ */
+export interface PolicyDocument {
+  type: string
+  [key: string]: unknown
 }
 
 /** One entry of a `listCollections()` result. */
@@ -128,6 +153,8 @@ export interface ImportStats {
   collectionsSkipped: number
   resourcesCreated: number
   resourcesSkipped: number
+  policiesCreated: number
+  policiesSkipped: number
 }
 
 /**
@@ -229,6 +256,26 @@ export interface StorageBackend {
     collectionId: string
     resourceId: string
   }): Promise<void>
+
+  // Access-control policy documents. The level is selected by which ids are
+  // present: Space (`spaceId`), Collection (`+ collectionId`), or Resource
+  // (`+ collectionId + resourceId`). Getters resolve falsy when absent.
+  getPolicy(options: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+  }): Promise<PolicyDocument | undefined>
+  writePolicy(options: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+    policy: PolicyDocument
+  }): Promise<void>
+  deletePolicy(options: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+  }): Promise<void>
 }
 
 declare module 'fastify' {
@@ -237,6 +284,9 @@ declare module 'fastify' {
     storage: StorageBackend
   }
   interface FastifyRequest {
-    zcap: ParsedZcap
+    // Set by the `parseAuthHeaders` hook when auth headers are present. Absent
+    // for anonymous reads (the `requireAuthHeaders` hook lets safe methods
+    // through without auth so a fallback policy can grant access).
+    zcap?: ParsedZcap
   }
 }

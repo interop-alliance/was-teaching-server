@@ -31,14 +31,11 @@ export class SpacesRepositoryRequest {
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
-    const {
-      body,
-      url,
-      method,
-      headers,
-      zcap: { keyId }
-    } = request
+    const { body, url, method, headers } = request
     const { serverUrl, storage } = request.server
+    // POST is a non-safe method, so `requireAuthHeaders` guarantees auth headers
+    // were present and `parseAuthHeaders` set `request.zcap` before this handler.
+    const { keyId } = request.zcap!
 
     // The Space Description body must carry a controller DID. The `name`
     // property is optional (see spec: Space Description object).

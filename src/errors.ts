@@ -176,6 +176,40 @@ export class ResourceNotFoundError extends ProblemError {
 }
 
 /**
+ * 404 — no access-control policy document is set at the requested level
+ * (reported as not-found, consistent with the privacy-merged kind).
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ */
+export class PolicyNotFoundError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({
+      type: ProblemTypes.NOT_FOUND,
+      title: `Invalid ${requestName || 'Policy'} request`,
+      detail: 'Policy not found or invalid authorization.',
+      statusCode: 404
+    })
+  }
+}
+
+/**
+ * 400 — the access-control policy document is missing or malformed (it must be
+ * a JSON object carrying a string `type`).
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ */
+export class InvalidPolicyError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({
+      type: ProblemTypes.INVALID_REQUEST_BODY,
+      title: `Invalid ${requestName || 'Policy'} body`,
+      detail: 'Policy document must be a JSON object with a string "type".',
+      statusCode: 400
+    })
+  }
+}
+
+/**
  * 404 — capability invocation did not verify (reported as not-found so as not
  * to leak resource existence).
  * @param options {object}

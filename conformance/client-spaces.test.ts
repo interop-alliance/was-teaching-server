@@ -54,7 +54,8 @@ describe('WasClient — Spaces & Collections', () => {
         id: space.id,
         type: ['Space'],
         name: 'Home',
-        controller: alice.did
+        controller: alice.did,
+        linkset: `/space/${space.id}/linkset`
       })
     })
 
@@ -103,7 +104,8 @@ describe('WasClient — Spaces & Collections', () => {
       assert.deepStrictEqual(await collection.describe(), {
         id: 'credentials',
         type: ['Collection'],
-        name: 'Verifiable Credentials'
+        name: 'Verifiable Credentials',
+        linkset: `/space/${space.id}/credentials/linkset`
       })
     })
 

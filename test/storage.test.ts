@@ -141,6 +141,96 @@ describe('Storage API', () => {
     })
   })
 
+  describe('FileSystemBackend export/import round-trips policies', () => {
+    it('restores space, collection, and resource policies', async () => {
+      const tempDir = await mkdtemp(
+        path.join(os.tmpdir(), 'was-policy-roundtrip-')
+      )
+      await mkdir(path.join(tempDir, 'spaces'))
+      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const src = 'source-space'
+      const dst = 'target-space'
+      const collectionId = 'credentials'
+      const resourceId = 'vc-1'
+
+      try {
+        // Populate the source space with a policy at every level.
+        await backend.writeSpace({
+          spaceId: src,
+          spaceDescription: {
+            id: src,
+            type: ['Space'],
+            name: 'Source',
+            controller: 'did:key:test-controller'
+          }
+        })
+        await backend.writeCollection({
+          spaceId: src,
+          collectionId,
+          collectionDescription: {
+            id: collectionId,
+            type: ['Collection'],
+            name: 'Verifiable Credentials'
+          }
+        })
+        await backend.writeResource({
+          spaceId: src,
+          collectionId,
+          resourceId,
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { id: resourceId }
+          }
+        })
+        await backend.writePolicy({
+          spaceId: src,
+          policy: { type: 'SpaceLevelPolicy' }
+        })
+        await backend.writePolicy({
+          spaceId: src,
+          collectionId,
+          policy: { type: 'PublicCanRead' }
+        })
+        await backend.writePolicy({
+          spaceId: src,
+          collectionId,
+          resourceId,
+          policy: { type: 'ResourceLevelPolicy' }
+        })
+
+        // Export the source, then import the archive into a fresh target space.
+        const pack = await backend.exportSpace({ spaceId: src })
+        await backend.writeSpace({
+          spaceId: dst,
+          spaceDescription: {
+            id: dst,
+            type: ['Space'],
+            name: 'Target',
+            controller: 'did:key:test-controller'
+          }
+        })
+        const stats = await backend.importSpace({ spaceId: dst, tarStream: pack })
+
+        assert.equal(stats.policiesCreated, 3)
+        assert.equal(stats.policiesSkipped, 0)
+        assert.deepEqual(await backend.getPolicy({ spaceId: dst }), {
+          type: 'SpaceLevelPolicy'
+        })
+        assert.deepEqual(
+          await backend.getPolicy({ spaceId: dst, collectionId }),
+          { type: 'PublicCanRead' }
+        )
+        assert.deepEqual(
+          await backend.getPolicy({ spaceId: dst, collectionId, resourceId }),
+          { type: 'ResourceLevelPolicy' }
+        )
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+  })
+
   describe('FileSystemBackend resourceId prefix collisions', () => {
     it('does not match a resourceId that is a prefix of another', async () => {
       const tempDir = await mkdtemp(path.join(os.tmpdir(), 'was-prefix-test-'))

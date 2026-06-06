@@ -6,6 +6,8 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
 
 import { handleZcapVerify } from '../zcap.js'
+import { authorize } from '../authorize.js'
+import { buildPolicyLinkset } from '../policy.js'
 import { getSpaceController } from './SpaceRequest.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
@@ -214,10 +216,7 @@ export class CollectionRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
-      params: { spaceId, collectionId },
-      url,
-      method,
-      headers
+      params: { spaceId, collectionId }
     } = request
     const { serverUrl, storage } = request.server
     const requestName = 'Get Collection'
@@ -232,19 +231,18 @@ export class CollectionRequest {
       requestName
     })
 
-    // Perform zCap signature verification (throws appropriate errors)
+    // Authorize: capability invocation first, then fall back to policy.
     const collectionUrl = new URL(
       `/space/${spaceId}/${collectionId}`,
       serverUrl
     ).toString()
-    await handleZcapVerify({
-      url,
+    await authorize({
+      request,
       allowedTarget: collectionUrl,
-      allowedAction: 'GET',
-      method,
-      headers,
-      serverUrl,
-      spaceController
+      spaceId,
+      collectionId,
+      spaceController,
+      requestName
     })
 
     // Fetch collection by id
@@ -256,10 +254,65 @@ export class CollectionRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
+    // Advertise the Collection's linkset (policy discovery) on the description;
+    // a relative URL, consistent with the other URL fields the API returns.
+    const linkset = `/space/${spaceId}/${collectionId}/linkset`
+
     return reply
       .status(200)
       .type('application/json')
-      .send(JSON.stringify(collectionDescription))
+      .send(JSON.stringify({ ...collectionDescription, linkset }))
+  }
+
+  /**
+   * GET /space/:spaceId/:collectionId/linkset
+   * Request handler for the Collection's linkset (RFC9264): advertises the
+   * Collection's access-control `policy` resource for discovery. Readable by
+   * whoever may read the Collection (capability or fallback policy).
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async linkset(
+    request: FastifyRequest<{
+      Params: { spaceId: string; collectionId: string }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId, collectionId }
+    } = request
+    const { serverUrl, storage } = request.server
+    const requestName = 'Get Collection Linkset'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId, collectionId }, { requestName })
+
+    const spaceController = await getSpaceController({
+      storage,
+      spaceId,
+      requestName
+    })
+
+    const allowedTarget = new URL(
+      `/space/${spaceId}/${collectionId}/linkset`,
+      serverUrl
+    ).toString()
+    await authorize({
+      request,
+      allowedTarget,
+      spaceId,
+      collectionId,
+      spaceController,
+      requestName
+    })
+
+    const linkset = await buildPolicyLinkset({ storage, spaceId, collectionId })
+    return reply
+      .status(200)
+      .type('application/linkset+json')
+      .send(JSON.stringify(linkset))
   }
 
   /**
@@ -340,10 +393,7 @@ export class CollectionRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
-      params: { spaceId, collectionId },
-      url,
-      method,
-      headers
+      params: { spaceId, collectionId }
     } = request
     const { serverUrl, storage } = request.server
     const requestName = 'List Collection'
@@ -366,19 +416,18 @@ export class CollectionRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
-    // Perform zCap signature verification (throws appropriate errors)
+    // Authorize: capability invocation first, then fall back to policy.
     const allowedTarget = new URL(
       `/space/${spaceId}/${collectionId}/`,
       serverUrl
     ).toString()
-    await handleZcapVerify({
-      url,
+    await authorize({
+      request,
       allowedTarget,
-      allowedAction: 'GET',
-      method,
-      headers,
-      serverUrl,
-      spaceController
+      spaceId,
+      collectionId,
+      spaceController,
+      requestName
     })
 
     const collectionItems = await storage.listCollectionItems({

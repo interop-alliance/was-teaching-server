@@ -4,6 +4,7 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { handleZcapVerify } from '../zcap.js'
+import { authorize } from '../authorize.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
 import {
@@ -109,10 +110,7 @@ export class ResourceRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
-      params: { spaceId, collectionId, resourceId },
-      url,
-      method,
-      headers
+      params: { spaceId, collectionId, resourceId }
     } = request
     const { serverUrl, storage } = request.server
 
@@ -129,22 +127,23 @@ export class ResourceRequest {
     }
     const spaceController = spaceDescription.controller
 
-    // Perform zCap signature verification (throws appropriate errors)
+    // Authorize: capability invocation first, then fall back to an
+    // access-control policy (e.g. a world-readable Resource). Throws on denial.
     const allowedTarget = new URL(
       `/space/${spaceId}/${collectionId}/${resourceId}`,
       serverUrl
     ).toString()
-    await handleZcapVerify({
-      url,
+    await authorize({
+      request,
       allowedTarget,
-      allowedAction: 'GET',
-      method,
-      headers,
-      serverUrl,
-      spaceController
+      spaceId,
+      collectionId,
+      resourceId,
+      spaceController,
+      requestName: 'Get Resource'
     })
 
-    // zCap checks out, continue
+    // authorized, continue
 
     // Fetch collection by id
     const collectionDescription = await storage.getCollectionDescription({
