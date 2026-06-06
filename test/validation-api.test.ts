@@ -97,30 +97,17 @@ describe('Request validation API', () => {
   })
 
   describe('Malformed request body (1c)', () => {
-    it('POST /spaces/ without a name yields 400 with a title (not a bare 500)', async () => {
-      let expectedError: any
-      try {
-        await alice.rootClient.request({
-          url: new URL('/spaces/', serverUrl).toString(),
-          method: 'POST',
-          json: { controller: alice.did }
-        })
-      } catch (error) {
-        expectedError = error
-      }
-      assert.ok(expectedError)
-      assert.equal(expectedError.response.status, 400)
-      assert.ok(expectedError.data.title)
-      assert.equal(
-        expectedError.data.type,
-        'https://wallet.storage/spec#invalid-request-body'
-      )
-      // The missing field is reported with an RFC 6901 pointer.
-      assert.equal(expectedError.data.errors[0].pointer, '#/name')
-      assert.match(
-        expectedError.response.headers.get('content-type'),
-        /application\/problem\+json/
-      )
+    it('POST /spaces/ without a name succeeds (name is optional)', async () => {
+      // The Space Description `name` property is optional per the spec, so a
+      // create request that omits it must succeed.
+      const response = await alice.rootClient.request({
+        url: new URL('/spaces/', serverUrl).toString(),
+        method: 'POST',
+        json: { controller: alice.did }
+      })
+      assert.equal(response.status, 201)
+      assert.equal(response.data.name, undefined)
+      assert.equal(response.data.controller, alice.did)
     })
 
     it('POST /spaces/ without a controller yields 400 with a title', async () => {
@@ -140,24 +127,19 @@ describe('Request validation API', () => {
       assert.equal(expectedError.data.errors[0].pointer, '#/controller')
     })
 
-    it('PUT /space/:spaceId without a name yields 400 with a title', async () => {
+    it('PUT /space/:spaceId without a name succeeds (name is optional)', async () => {
+      // The Space Description `name` property is optional per the spec, so an
+      // update request that omits it must succeed.
       const spaceUrl = new URL(
         `/space/${alice.space1.id}`,
         serverUrl
       ).toString()
-      let expectedError: any
-      try {
-        await alice.rootClient.request({
-          url: spaceUrl,
-          method: 'PUT',
-          json: { controller: alice.did }
-        })
-      } catch (error) {
-        expectedError = error
-      }
-      assert.ok(expectedError)
-      assert.equal(expectedError.response.status, 400)
-      assert.ok(expectedError.data.title)
+      const response = await alice.rootClient.request({
+        url: spaceUrl,
+        method: 'PUT',
+        json: { controller: alice.did }
+      })
+      assert.equal(response.status, 204)
     })
   })
 })

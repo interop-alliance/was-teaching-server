@@ -90,7 +90,7 @@ export class SpaceRequest {
   static async put(
     request: FastifyRequest<{
       Params: { spaceId: string }
-      Body: { name: string; controller: IDID }
+      Body: { name?: string; controller: IDID }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
@@ -107,14 +107,8 @@ export class SpaceRequest {
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId }, { requestName: 'Update Space' })
 
-    // The Space Description body must carry a name and a controller DID.
-    if (!body?.name) {
-      throw new InvalidRequestBodyError({
-        requestName: 'Update Space',
-        detail: 'Space Description body requires a "name" property.',
-        pointer: '#/name'
-      })
-    }
+    // The Space Description body must carry a controller DID. The `name`
+    // property is optional (see spec: Space Description object).
     if (!body?.controller) {
       throw new InvalidRequestBodyError({
         requestName: 'Update Space',
@@ -164,21 +158,22 @@ export class SpaceRequest {
 
     request.log.info('zCap verified')
 
-    // Compose Space Description object body, new or updated
+    // Compose Space Description object body, new or updated. `name` is
+    // optional, so only include it when the request supplies one.
     const spaceDescription = existingSpaceDescription
       ? // Existing: Update only the allowed fields
         {
           ...existingSpaceDescription,
           id: spaceId,
-          name: body.name,
-          controller: body.controller
+          controller: body.controller,
+          ...(body.name !== undefined && { name: body.name })
         }
       : // New Space
         {
           id: spaceId,
           type: ['Space'],
-          name: body.name,
-          controller: body.controller
+          controller: body.controller,
+          ...(body.name !== undefined && { name: body.name })
         }
 
     // zCap checks out, continue
@@ -205,7 +200,7 @@ export class SpaceRequest {
   static async post(
     request: FastifyRequest<{
       Params: { spaceId: string }
-      Body: { id?: string; name: string }
+      Body: { id?: string; name?: string }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
@@ -250,7 +245,8 @@ export class SpaceRequest {
     // TODO: use a uuid v5 or another hash based id here instead
     // TODO: Protect against .space resource id collision
     const collectionId = body.id || uuidv4()
-    const { name } = body
+    // `name` is optional; default it to the Collection id when missing (spec).
+    const name = body.name ?? collectionId
     const collectionDescription = {
       id: collectionId,
       type: ['Collection'],

@@ -119,7 +119,7 @@ export class CollectionRequest {
   static async put(
     request: FastifyRequest<{
       Params: { spaceId: string; collectionId: string }
-      Body: { name: string }
+      Body: { name?: string }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
@@ -167,11 +167,21 @@ export class CollectionRequest {
       spaceId,
       collectionId
     })
+    // `name` is optional. On update, only overwrite it when supplied (otherwise
+    // keep the existing name); on create, default it to the Collection id (spec).
     const collectionDescription = existingCollection
       ? // Existing: Update only the allowed fields
-        { ...existingCollection, id: collectionId, name: body.name }
+        {
+          ...existingCollection,
+          id: collectionId,
+          ...(body.name !== undefined && { name: body.name })
+        }
       : // New Collection
-        { id: collectionId, type: ['Collection'], name: body.name }
+        {
+          id: collectionId,
+          type: ['Collection'],
+          name: body.name ?? collectionId
+        }
 
     try {
       await storage.writeCollection({

@@ -27,7 +27,7 @@ export class SpacesRepositoryRequest {
    */
   static async post(
     request: FastifyRequest<{
-      Body: { id?: string; name: string; controller: IDID }
+      Body: { id?: string; name?: string; controller: IDID }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
@@ -40,14 +40,8 @@ export class SpacesRepositoryRequest {
     } = request
     const { serverUrl, storage } = request.server
 
-    // The Space Description body must carry a name and a controller DID.
-    if (!body?.name) {
-      throw new InvalidRequestBodyError({
-        requestName: 'Create Space',
-        detail: 'Space Description body requires a "name" property.',
-        pointer: '#/name'
-      })
-    }
+    // The Space Description body must carry a controller DID. The `name`
+    // property is optional (see spec: Space Description object).
     if (!body?.controller) {
       throw new InvalidRequestBodyError({
         requestName: 'Create Space',

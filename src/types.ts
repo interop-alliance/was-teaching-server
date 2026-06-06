@@ -59,7 +59,8 @@ export interface SpaceDescription {
   id: string
   /** e.g. `['Space']` */
   type: string[]
-  name: string
+  /** optional human-readable name for the Space (see spec) */
+  name?: string
   /** the `did:key` that owns (controls) the Space */
   controller: IDID
 }
