@@ -145,6 +145,12 @@ describe('Spaces', () => {
 
       assert.equal(expectedError.response.status, 404)
       assert.equal(expectedError.data.title, 'Invalid Get Space request')
+      // The not-found kind is privacy-merged; `type` must not reveal whether
+      // the space is absent vs unauthorized.
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#not-found'
+      )
       assert.match(
         expectedError.response.headers.get('content-type'),
         /application\/problem\+json/

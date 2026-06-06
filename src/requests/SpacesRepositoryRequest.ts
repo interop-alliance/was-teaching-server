@@ -41,10 +41,18 @@ export class SpacesRepositoryRequest {
     const { serverUrl, storage } = request.server
 
     // The Space Description body must carry a name and a controller DID.
-    if (!body?.name || !body?.controller) {
+    if (!body?.name) {
       throw new InvalidRequestBodyError({
         requestName: 'Create Space',
-        detail: 'Space Description body requires "name" and "controller".'
+        detail: 'Space Description body requires a "name" property.',
+        pointer: '#/name'
+      })
+    }
+    if (!body?.controller) {
+      throw new InvalidRequestBodyError({
+        requestName: 'Create Space',
+        detail: 'Space Description body requires a "controller" property.',
+        pointer: '#/controller'
       })
     }
     // Reject a path-traversal / non-URL-safe client-supplied space id.

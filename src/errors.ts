@@ -1,27 +1,82 @@
 /**
- * Custom error classes (each carries title / detail / statusCode) plus
+ * Custom error classes (each carries type / title / detail / statusCode) plus
  * handleError, the Fastify error handler installed by each route group.
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
+
+import { ProblemTypes, type ProblemType } from './problem-types.js'
+
+/**
+ * A single entry in the `errors` array of an `application/problem+json`
+ * response.
+ * @property detail {string}   specific explanation of this occurrence
+ * @property [pointer] {string}   RFC 6901 JSON Pointer (in `#/field` form)
+ *   identifying the offending part of the request body
+ */
+export interface Problem {
+  detail: string
+  pointer?: string
+}
+
+/**
+ * Base class for the server's error hierarchy. Carries the four
+ * `application/problem+json` fields (`type` / `title` / `detail` /
+ * `statusCode`) plus an optional `problems` array of `{ detail, pointer }`
+ * entries; `handleError` serializes these to the wire. Subclasses set their
+ * distinguishing values via `super({ ... })`.
+ * @param options {object}
+ * @param options.type {ProblemType}   problem-kind URI (see problem-types.ts)
+ * @param options.title {string}   short human-readable summary
+ * @param options.detail {string}   specific explanation of the occurrence
+ * @param options.statusCode {number}   HTTP status code
+ * @param [options.problems] {Problem[]}   per-field error entries
+ * @param [options.cause] {Error}   the underlying error, when wrapping one
+ */
+export class ProblemError extends Error {
+  type: ProblemType
+  title: string
+  detail: string
+  statusCode: number
+  problems?: Problem[]
+  constructor({
+    type,
+    title,
+    detail,
+    statusCode,
+    problems,
+    cause
+  }: {
+    type: ProblemType
+    title: string
+    detail: string
+    statusCode: number
+    problems?: Problem[]
+    cause?: Error
+  }) {
+    super(detail, cause ? { cause } : undefined)
+    this.type = type
+    this.title = title
+    this.detail = detail
+    this.statusCode = statusCode
+    if (problems) {
+      this.problems = problems
+    }
+  }
+}
 
 /**
  * 404 — the requested Space does not exist, or the caller is not authorized.
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
- * @param params {...*}   forwarded to Error
  */
-export class SpaceNotFoundError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor(
-    { requestName }: { requestName?: string } = {},
-    ...params: unknown[]
-  ) {
-    super(params as never)
-    this.title = `Invalid ${requestName || 'Space'} request`
-    this.detail = 'Space not found or invalid authorization.'
-    this.statusCode = 404
+export class SpaceNotFoundError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({
+      type: ProblemTypes.NOT_FOUND,
+      title: `Invalid ${requestName || 'Space'} request`,
+      detail: 'Space not found or invalid authorization.',
+      statusCode: 404
+    })
   }
 }
 
@@ -29,20 +84,15 @@ export class SpaceNotFoundError extends Error {
  * 400 — the provided space id is not URL-safe / otherwise invalid.
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
- * @param params {...*}   forwarded to Error
  */
-export class InvalidSpaceIdError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor(
-    { requestName }: { requestName?: string } = {},
-    ...params: unknown[]
-  ) {
-    super(params as never)
-    this.title = `Invalid ${requestName || 'Space'} request`
-    this.detail = 'Invalid space id (make sure it is URL-safe).'
-    this.statusCode = 400
+export class InvalidSpaceIdError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({
+      type: ProblemTypes.INVALID_ID,
+      title: `Invalid ${requestName || 'Space'} request`,
+      detail: 'Invalid space id (make sure it is URL-safe).',
+      statusCode: 400
+    })
   }
 }
 
@@ -50,20 +100,15 @@ export class InvalidSpaceIdError extends Error {
  * 400 — the provided collection id is not URL-safe / otherwise invalid.
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
- * @param params {...*}   forwarded to Error
  */
-export class InvalidCollectionIdError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor(
-    { requestName }: { requestName?: string } = {},
-    ...params: unknown[]
-  ) {
-    super(params as never)
-    this.title = `Invalid ${requestName || 'Collection'} request`
-    this.detail = 'Invalid collection id (make sure it is URL-safe).'
-    this.statusCode = 400
+export class InvalidCollectionIdError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({
+      type: ProblemTypes.INVALID_ID,
+      title: `Invalid ${requestName || 'Collection'} request`,
+      detail: 'Invalid collection id (make sure it is URL-safe).',
+      statusCode: 400
+    })
   }
 }
 
@@ -71,36 +116,29 @@ export class InvalidCollectionIdError extends Error {
  * 400 — the provided resource id is not URL-safe / otherwise invalid.
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
- * @param params {...*}   forwarded to Error
  */
-export class InvalidResourceIdError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor(
-    { requestName }: { requestName?: string } = {},
-    ...params: unknown[]
-  ) {
-    super(params as never)
-    this.title = `Invalid ${requestName || 'Resource'} request`
-    this.detail = 'Invalid resource id (make sure it is URL-safe).'
-    this.statusCode = 400
+export class InvalidResourceIdError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({
+      type: ProblemTypes.INVALID_ID,
+      title: `Invalid ${requestName || 'Resource'} request`,
+      detail: 'Invalid resource id (make sure it is URL-safe).',
+      statusCode: 400
+    })
   }
 }
 
 /**
  * 400 — the Collection Description request body is missing or invalid.
- * @param params {...*}   forwarded to Error
  */
-export class InvalidCollectionError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor(...params: unknown[]) {
-    super(params as never)
-    this.title = 'Invalid Collection Description body'
-    this.detail = 'Collection Description body is missing or invalid.'
-    this.statusCode = 400
+export class InvalidCollectionError extends ProblemError {
+  constructor() {
+    super({
+      type: ProblemTypes.INVALID_REQUEST_BODY,
+      title: 'Invalid Collection Description body',
+      detail: 'Collection Description body is missing or invalid.',
+      statusCode: 400
+    })
   }
 }
 
@@ -109,20 +147,15 @@ export class InvalidCollectionError extends Error {
  * authorized.
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
- * @param params {...*}   forwarded to Error
  */
-export class CollectionNotFoundError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor(
-    { requestName }: { requestName?: string } = {},
-    ...params: unknown[]
-  ) {
-    super(params as never)
-    this.title = `Invalid ${requestName || 'Collection'} request`
-    this.detail = 'Collection not found or invalid authorization.'
-    this.statusCode = 404
+export class CollectionNotFoundError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({
+      type: ProblemTypes.NOT_FOUND,
+      title: `Invalid ${requestName || 'Collection'} request`,
+      detail: 'Collection not found or invalid authorization.',
+      statusCode: 404
+    })
   }
 }
 
@@ -130,20 +163,15 @@ export class CollectionNotFoundError extends Error {
  * 404 — the requested Resource does not exist, or the caller is not authorized.
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
- * @param params {...*}   forwarded to Error
  */
-export class ResourceNotFoundError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor(
-    { requestName }: { requestName?: string } = {},
-    ...params: unknown[]
-  ) {
-    super(params as never)
-    this.title = `Invalid ${requestName || 'Resource'} request`
-    this.detail = 'Resource not found or invalid authorization.'
-    this.statusCode = 404
+export class ResourceNotFoundError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({
+      type: ProblemTypes.NOT_FOUND,
+      title: `Invalid ${requestName || 'Resource'} request`,
+      detail: 'Resource not found or invalid authorization.',
+      statusCode: 404
+    })
   }
 }
 
@@ -152,50 +180,44 @@ export class ResourceNotFoundError extends Error {
  * to leak resource existence).
  * @param options {object}
  * @param options.requestName {string}   request name used in the error title
- * @param params {...*}   forwarded to Error
  */
-export class UnauthorizedError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor({ requestName }: { requestName?: string }, ...params: unknown[]) {
-    super(params as never)
-    this.title = `Invalid ${requestName} request.`
-    this.detail = 'URL not found or invalid authorization.'
-    this.statusCode = 404
+export class UnauthorizedError extends ProblemError {
+  constructor({ requestName }: { requestName?: string }) {
+    super({
+      type: ProblemTypes.NOT_FOUND,
+      title: `Invalid ${requestName} request.`,
+      detail: 'URL not found or invalid authorization.',
+      statusCode: 404
+    })
   }
 }
 
 /**
  * 401 — required `Authorization` / `Capability-Invocation` headers are missing.
- * @param params {...*}   forwarded to Error
  */
-export class MissingAuthError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor(...params: unknown[]) {
-    super(params as never)
-    this.title = 'Invalid request'
-    this.detail =
-      'Authorization and Capability-Invocation headers are required.'
-    this.statusCode = 401
+export class MissingAuthError extends ProblemError {
+  constructor() {
+    super({
+      type: ProblemTypes.MISSING_AUTHORIZATION,
+      title: 'Invalid request',
+      detail:
+        'Authorization and Capability-Invocation headers are required.',
+      statusCode: 401
+    })
   }
 }
 
 /**
  * 400 — the `Authorization` header did not include a `keyId` parameter.
- * @param params {...*}   forwarded to Error
  */
-export class MissingKeyIdError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor(...params: unknown[]) {
-    super(params as never)
-    this.title = 'Invalid Authorization header'
-    this.detail = 'Authorization header is missing the keyId parameter.'
-    this.statusCode = 400
+export class MissingKeyIdError extends ProblemError {
+  constructor() {
+    super({
+      type: ProblemTypes.INVALID_AUTHORIZATION_HEADER,
+      title: 'Invalid Authorization header',
+      detail: 'Authorization header is missing the keyId parameter.',
+      statusCode: 400
+    })
   }
 }
 
@@ -204,19 +226,17 @@ export class MissingKeyIdError extends Error {
  * `Digest` headers.
  * @param options {object}
  * @param options.cause {Error}   the underlying parse error
- * @param params {...*}   forwarded to Error
  */
-export class AuthHeaderParseError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor({ cause }: { cause: Error }, ...params: unknown[]) {
-    super(params as never)
-    this.cause = cause
-    this.title = 'Invalid authorization headers'
-    this.detail =
-      'Error parsing Authorization, Capability-Invocation, or Digest headers.'
-    this.statusCode = 400
+export class AuthHeaderParseError extends ProblemError {
+  constructor({ cause }: { cause: Error }) {
+    super({
+      type: ProblemTypes.INVALID_AUTHORIZATION_HEADER,
+      title: 'Invalid authorization headers',
+      detail:
+        'Error parsing Authorization, Capability-Invocation, or Digest headers.',
+      statusCode: 400,
+      cause
+    })
   }
 }
 
@@ -225,21 +245,16 @@ export class AuthHeaderParseError extends Error {
  * @param options {object}
  * @param options.requestName {string}   request name used in the error title
  * @param options.cause {Error}   the underlying verification error
- * @param params {...*}   forwarded to Error
  */
-export class AuthVerificationError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor(
-    { requestName, cause }: { requestName: string; cause: Error },
-    ...params: unknown[]
-  ) {
-    super(params as never)
-    this.cause = cause
-    this.title = `Invalid ${requestName} request.`
-    this.detail = 'Error verifying authorization headers.'
-    this.statusCode = 400
+export class AuthVerificationError extends ProblemError {
+  constructor({ requestName, cause }: { requestName: string; cause: Error }) {
+    super({
+      type: ProblemTypes.INVALID_AUTHORIZATION_HEADER,
+      title: `Invalid ${requestName} request.`,
+      detail: 'Error verifying authorization headers.',
+      statusCode: 400,
+      cause
+    })
   }
 }
 
@@ -249,25 +264,25 @@ export class AuthVerificationError extends Error {
  * @param options {object}
  * @param options.zcapSigningDid {string}   DID that signed the invocation
  * @param options.controller {string}   controller DID supplied in the body
- * @param params {...*}   forwarded to Error
  */
-export class SpaceControllerMismatchError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor(
-    {
-      zcapSigningDid,
-      controller
-    }: { zcapSigningDid: string; controller: string },
-    ...params: unknown[]
-  ) {
-    super(params as never)
-    this.title = 'Invalid Create Space request'
-    this.detail =
+export class SpaceControllerMismatchError extends ProblemError {
+  constructor({
+    zcapSigningDid,
+    controller
+  }: {
+    zcapSigningDid: string
+    controller: string
+  }) {
+    const detail =
       'Authorization capability signing DID' +
       ` ("${zcapSigningDid}") does not match the controller in the body ("${controller}").`
-    this.statusCode = 400
+    super({
+      type: ProblemTypes.CONTROLLER_MISMATCH,
+      title: 'Invalid Create Space request',
+      detail,
+      statusCode: 400,
+      problems: [{ detail, pointer: '#/controller' }]
+    })
   }
 }
 
@@ -276,23 +291,18 @@ export class SpaceControllerMismatchError extends Error {
  * @param options {object}
  * @param options.cause {Error}   the underlying storage error
  * @param [options.requestName] {string}   request name used in the error title
- * @param params {...*}   forwarded to Error
  */
-export class StorageError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor(
-    { cause, requestName }: { cause: Error; requestName?: string },
-    ...params: unknown[]
-  ) {
-    super(params as never)
-    this.cause = cause
-    this.title = requestName
-      ? `Storage Error (${requestName}): ${cause.message}`
-      : `Storage Error: ${cause.message}`
-    this.detail = cause.message
-    this.statusCode = 500
+export class StorageError extends ProblemError {
+  constructor({ cause, requestName }: { cause: Error; requestName?: string }) {
+    super({
+      type: ProblemTypes.STORAGE_ERROR,
+      title: requestName
+        ? `Storage Error (${requestName}): ${cause.message}`
+        : `Storage Error: ${cause.message}`,
+      detail: cause.message,
+      statusCode: 500,
+      cause
+    })
   }
 }
 
@@ -301,21 +311,26 @@ export class StorageError extends Error {
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  * @param [options.detail] {string}   specific detail describing the problem
- * @param params {...*}   forwarded to Error
+ * @param [options.pointer] {string}   RFC 6901 JSON Pointer (`#/field` form)
+ *   to the offending body field
  */
-export class InvalidRequestBodyError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor(
-    { requestName, detail }: { requestName?: string; detail?: string } = {},
-    ...params: unknown[]
-  ) {
-    super(params as never)
-    this.title = `Invalid ${requestName || 'request'} body`
-    this.detail =
+export class InvalidRequestBodyError extends ProblemError {
+  constructor({
+    requestName,
+    detail,
+    pointer
+  }: { requestName?: string; detail?: string; pointer?: string } = {}) {
+    const resolvedDetail =
       detail || 'Request body is missing one or more required fields.'
-    this.statusCode = 400
+    super({
+      type: ProblemTypes.INVALID_REQUEST_BODY,
+      title: `Invalid ${requestName || 'request'} body`,
+      detail: resolvedDetail,
+      statusCode: 400,
+      ...(pointer
+        ? { problems: [{ detail: resolvedDetail, pointer }] }
+        : {})
+    })
   }
 }
 
@@ -323,20 +338,15 @@ export class InvalidRequestBodyError extends Error {
  * 400 — the request is missing a required `Content-Type` header.
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
- * @param params {...*}   forwarded to Error
  */
-export class MissingContentTypeError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor(
-    { requestName }: { requestName?: string } = {},
-    ...params: unknown[]
-  ) {
-    super(params as never)
-    this.title = `Invalid ${requestName || 'request'}`
-    this.detail = 'A Content-Type header is required for this request.'
-    this.statusCode = 400
+export class MissingContentTypeError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({
+      type: ProblemTypes.MISSING_CONTENT_TYPE,
+      title: `Invalid ${requestName || 'request'}`,
+      detail: 'A Content-Type header is required for this request.',
+      statusCode: 400
+    })
   }
 }
 
@@ -344,32 +354,38 @@ export class MissingContentTypeError extends Error {
  * 400 — the uploaded archive is not a valid WAS space export.
  * @param options {object}
  * @param [options.message] {string}   detail message describing the problem
- * @param params {...*}   forwarded to Error
  */
-export class InvalidImportError extends Error {
-  title: string
-  detail: string
-  statusCode: number
-  constructor({ message }: { message?: string } = {}, ...params: unknown[]) {
-    super(message, ...(params as []))
-    this.title = 'Invalid space import'
-    this.detail =
-      message || 'The uploaded archive is not a valid WAS space export.'
-    this.statusCode = 400
+export class InvalidImportError extends ProblemError {
+  constructor({ message }: { message?: string } = {}) {
+    super({
+      type: ProblemTypes.INVALID_IMPORT,
+      title: 'Invalid space import',
+      detail:
+        message || 'The uploaded archive is not a valid WAS space export.',
+      statusCode: 400
+    })
   }
 }
 
 /**
  * Fastify error handler installed by each route group. Serializes the error to
- * an `application/problem+json` response using its `statusCode` / `title` /
- * `detail` (defaulting to 500 when no statusCode is present).
- * @param error {Error & { statusCode?: number, title?: string, detail?: string }}
+ * an `application/problem+json` response using its `type` / `title` / `detail`
+ * (or `problems`), defaulting to a 500 internal error when no statusCode is
+ * present. The spec requires `type` and `title`, so both always fall back to a
+ * sensible value.
+ * @param error {Error & { statusCode?: number, type?: string, title?: string, detail?: string, problems?: Problem[] }}
  * @param request {import('fastify').FastifyRequest}
  * @param reply {import('fastify').FastifyReply}
  * @returns {Promise<FastifyReply>}
  */
 export async function handleError(
-  error: Error & { statusCode?: number; title?: string; detail?: string },
+  error: Error & {
+    statusCode?: number
+    type?: string
+    title?: string
+    detail?: string
+    problems?: Problem[]
+  },
   request: FastifyRequest,
   reply: FastifyReply
 ): Promise<FastifyReply> {
@@ -381,15 +397,12 @@ export async function handleError(
   if (statusCode >= 500) {
     request.log.error({ err: error }, error.title || 'Request error')
   }
-  return (
-    reply
-      .status(statusCode)
-      .type('application/problem+json')
-      // .type('application/json')
-      .send({
-        // type: `${SPEC_URL}#read-space-errors`,
-        title: error.title,
-        errors: [{ detail: error.detail }]
-      })
-  )
+  return reply
+    .status(statusCode)
+    .type('application/problem+json')
+    .send({
+      type: error.type || ProblemTypes.INTERNAL_ERROR,
+      title: error.title || 'Request error',
+      errors: error.problems ?? [{ detail: error.detail }]
+    })
 }

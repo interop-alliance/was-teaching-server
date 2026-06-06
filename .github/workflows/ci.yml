@@ -29,3 +29,25 @@ jobs:
 
       - name: Test (Node)
         run: pnpm run test-node
+
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Spawns the server as a subprocess, waits for it to answer, runs the
+      # standalone conformance suite against it, then tears it down. PORT is
+      # passed explicitly so the run does not depend on the script's default.
+      - name: Conformance (server spawned in-process)
+        run: pnpm conformance:local
+        env:
+          PORT: '3002'

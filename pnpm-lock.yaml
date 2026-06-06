@@ -81,6 +81,9 @@ importers:
       '@interop/ezcap':
         specifier: ^7.1.0
         version: 7.1.0
+      '@interop/was-client':
+        specifier: ^0.1.0
+        version: 0.1.0(@interop/jsonld-signatures@11.6.7)
       '@types/mime-types':
         specifier: 3.0.1
         version: 3.0.1
@@ -509,6 +512,10 @@ packages:
     resolution: {integrity: sha512-W/sE/ziIJEBgPy0e5hPKoHQBeYeZGqvANxyehyMYJUXsxiMwv4tM80YB18UWTJ03HFkTQf5OWCkqZO0SGP1nhw==}
     engines: {node: '>=24.0'}
 
+  '@interop/data-integrity-core@6.1.2':
+    resolution: {integrity: sha512-koNgRHhQ26JUVdCnjJPloJA18cSUpWwqa3CFuwekoKztOUl6/ZgubFvi9FSGNEuAWq2RJuSVUXgvlRl7XrSHhQ==}
+    engines: {node: '>=24.0'}
+
   '@interop/data-integrity-proof@3.2.0':
     resolution: {integrity: sha512-8gUMdQmvfzjs/DN9oM03fOlVdQYhnyGTrplh12w0+AIJg1tI4jknEyU1iZQD3XhgVLq83pt9uYRTdxjcWbXsog==}
     engines: {node: '>=24.0'}
@@ -544,6 +551,10 @@ packages:
 
   '@interop/ezcap@7.1.0':
     resolution: {integrity: sha512-oOwKpQMaWYrhxfz2XtBSXp1nOXATmakq+7BALIrmrBPNhxn+zGfW6jaPFojXjrs+wlpT5my8ETqjzfRouy1bUg==}
+    engines: {node: '>=20.0'}
+
+  '@interop/ezcap@7.1.1':
+    resolution: {integrity: sha512-WUSimX+bgx4Fa1TIDeqhaeQtZV31XJ14Ve8G7vvm+VhBdORvA8MzMQqzr0aEjVjy0moOCJXDrb7hbuzhNffguA==}
     engines: {node: '>=20.0'}
 
   '@interop/http-client@1.0.3':
@@ -589,6 +600,10 @@ packages:
 
   '@interop/security-document-loader@9.2.1':
     resolution: {integrity: sha512-086eNSOv2LfgHKiuQqMeTKks4GuzhASW0BXjQIQjrXa/DaKW0nlLxaDVxuZyFwQGruTZAzxhs/gTXqzOTDoKyA==}
+    engines: {node: '>=24.0'}
+
+  '@interop/was-client@0.1.0':
+    resolution: {integrity: sha512-NUu9n46G9E2OGwVAMcimSiUfkckxDogXdnB3Duo+s7i1GcPu0EVZLOJRXLIGRDp7rlexchF9p9fij547rKzoew==}
     engines: {node: '>=24.0'}
 
   '@interop/zcap@10.1.0':
@@ -2932,6 +2947,8 @@ snapshots:
 
   '@interop/data-integrity-core@6.1.1': {}
 
+  '@interop/data-integrity-core@6.1.2': {}
+
   '@interop/data-integrity-proof@3.2.0':
     dependencies:
       '@interop/data-integrity-core': 6.1.0
@@ -2995,6 +3012,18 @@ snapshots:
       '@interop/http-signature-zcap-invoke': 6.2.0
       '@interop/jsonld-signatures': 11.6.2
       '@interop/zcap': 10.1.0
+      uuid: 14.0.0
+    transitivePeerDependencies:
+      - expo-crypto
+
+  '@interop/ezcap@7.1.1':
+    dependencies:
+      '@interop/data-integrity-core': 6.1.1
+      '@interop/data-integrity-proof': 3.2.1
+      '@interop/http-client': 1.0.3
+      '@interop/http-signature-zcap-invoke': 6.2.0
+      '@interop/jsonld-signatures': 11.6.7
+      '@interop/zcap': 11.0.1
       uuid: 14.0.0
     transitivePeerDependencies:
       - expo-crypto
@@ -3078,6 +3107,16 @@ snapshots:
       x25519-key-agreement-2020-context: 1.0.0
     transitivePeerDependencies:
       - react-native
+
+  '@interop/was-client@0.1.0(@interop/jsonld-signatures@11.6.7)':
+    dependencies:
+      '@interop/data-integrity-core': 6.1.2
+      '@interop/ed25519-signature': 7.0.1(@interop/jsonld-signatures@11.6.7)
+      '@interop/ezcap': 7.1.1
+      '@interop/http-client': 1.0.3
+    transitivePeerDependencies:
+      - '@interop/jsonld-signatures'
+      - expo-crypto
 
   '@interop/zcap@10.1.0':
     dependencies:

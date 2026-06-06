@@ -7,3 +7,4 @@ minimumReleaseAgeExclude:
   - '@interop/http-signature-zcap-verify@12.0.2'
   - '@interop/jsonld-signatures@11.6.7'
   - '@interop/zcap@11.0.1'
+  - '@interop/was-client@0.1.0'

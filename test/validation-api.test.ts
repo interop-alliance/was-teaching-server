@@ -62,6 +62,11 @@ describe('Request validation API', () => {
       assert.ok(expectedError, 'expected the traversal request to be rejected')
       assert.equal(expectedError.response.status, 400)
       assert.ok(expectedError.data.title, 'expected a problem+json title')
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#invalid-id',
+        'expected a spec-required problem type'
+      )
 
       // Defense in depth: nothing was written outside the spaces/ root.
       const dataEntries = await readdir(dataDir)
@@ -106,6 +111,12 @@ describe('Request validation API', () => {
       assert.ok(expectedError)
       assert.equal(expectedError.response.status, 400)
       assert.ok(expectedError.data.title)
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#invalid-request-body'
+      )
+      // The missing field is reported with an RFC 6901 pointer.
+      assert.equal(expectedError.data.errors[0].pointer, '#/name')
       assert.match(
         expectedError.response.headers.get('content-type'),
         /application\/problem\+json/
@@ -126,6 +137,7 @@ describe('Request validation API', () => {
       assert.ok(expectedError)
       assert.equal(expectedError.response.status, 400)
       assert.ok(expectedError.data.title)
+      assert.equal(expectedError.data.errors[0].pointer, '#/controller')
     })
 
     it('PUT /space/:spaceId without a name yields 400 with a title', async () => {
