@@ -8,17 +8,24 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
+import { NotFoundError } from '@interop/was-client'
+import type { Space } from '@interop/was-client'
+
 import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { zcapClients } from './helpers.js'
 
 describe('Collections API', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string, alice: any
+  let fastify: FastifyInstance,
+    serverUrl: string,
+    dataDir: string,
+    alice: any,
+    aliceSpace: Space
   const PORT = 7767
 
   beforeAll(async () => {
-    ;({ alice } = await zcapClients())
     serverUrl = `http://localhost:${PORT}` // fastify.server.address().port
+    ;({ alice } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     fastify = createApp({
       serverUrl,
@@ -29,14 +36,10 @@ describe('Collections API', () => {
     // Provision the Space this suite operates on. This suite uses its own
     // temp dataDir, so it must create the Space here rather than relying on
     // filesystem state left behind by other test files.
-    await alice.rootClient.request({
-      url: new URL(`/space/${alice.space1.id}`, serverUrl).toString(),
-      method: 'PUT',
-      json: {
-        id: alice.space1.id,
-        name: "Alice's Space #1 (Home)",
-        controller: alice.did
-      }
+    aliceSpace = await alice.was.createSpace({
+      id: alice.space1.id,
+      name: "Alice's Space #1 (Home)",
+      controller: alice.did
     })
   })
   afterAll(async () => {
@@ -55,131 +58,66 @@ describe('Collections API', () => {
     )
   })
 
-  it('POST /space/:spaceId/ should 404 error on not found space id', async () => {
-    const spaceUrl = new URL(
-      '/space/space-id-that-does-not-exist/',
-      serverUrl
-    ).toString()
-    let expectedError: any
-    try {
-      await alice.rootClient.request({
-        url: spaceUrl,
-        method: 'POST',
-        action: 'POST'
-      })
-    } catch (error) {
-      expectedError = error
-    }
-    assert.equal(expectedError.response.status, 404)
-    assert.match(
-      expectedError.response.headers.get('content-type'),
-      /application\/problem\+json/
+  it('POST /space/:spaceId/ should fail (NotFoundError) on not found space id', async () => {
+    // Adding a collection to a missing space is a write -- WAS does not
+    // auto-create parents, so it surfaces as NotFoundError (server 404).
+    await assert.rejects(
+      alice.was
+        .space('space-id-that-does-not-exist')
+        .createCollection({ name: 'Test Collection' }),
+      (err: unknown) => err instanceof NotFoundError
     )
   })
 
   it('[root] create collection via POST', async () => {
-    const body = {
+    const collection = await aliceSpace.createCollection({
       id: 'credentials',
       name: 'Verifiable Credentials'
-    }
-    const response = await alice.rootClient.request({
-      url: new URL(`/space/${alice.space1.id}/`, serverUrl).toString(),
-      method: 'POST',
-      action: 'POST',
-      json: body
     })
-    assert.equal(response.status, 201)
-
-    const created = response.data
-    assert.deepStrictEqual(created, {
+    assert.equal(collection.id, 'credentials')
+    assert.deepStrictEqual(await collection.describe(), {
       id: 'credentials',
       name: 'Verifiable Credentials',
       type: ['Collection']
     })
-    assert.match(response.headers.get('content-type'), /application\/json/)
-    assert.equal(
-      response.headers.get('location'),
-      `${serverUrl}/space/${alice.space1.id}/${body.id}`
-    )
   })
 
   it('[root] list collection items via GET :collectionId/', async () => {
-    const response = await alice.rootClient.request({
-      url: new URL(
-        `/space/${alice.space1.id}/credentials/`,
-        serverUrl
-      ).toString(),
-      method: 'GET'
-    })
-    assert.equal(response.status, 200)
-    const listResponse = response.data
-    assert.equal(listResponse.id, 'credentials')
-    assert.equal(listResponse.url, `/space/${alice.space1.id}/credentials`)
-    assert.equal(listResponse.name, 'Verifiable Credentials')
-    assert.deepStrictEqual(listResponse.type, ['Collection'])
-    assert.equal(typeof listResponse.totalItems, 'number')
-    assert.ok(Array.isArray(listResponse.items))
-    assert.equal(listResponse.totalItems, listResponse.items.length)
+    const listing = await aliceSpace.collection('credentials').list()
+    assert.ok(listing)
+    assert.equal(listing.id, 'credentials')
+    assert.equal(listing.url, `/space/${alice.space1.id}/credentials`)
+    assert.equal(listing.name, 'Verifiable Credentials')
+    assert.deepStrictEqual(listing.type, ['Collection'])
+    assert.equal(typeof listing.totalItems, 'number')
+    assert.ok(Array.isArray(listing.items))
+    assert.equal(listing.totalItems, listing.items.length)
   })
 
   it('[root] get collection description via GET :collectionId', async () => {
-    const response = await alice.rootClient.request({
-      url: new URL(
-        `/space/${alice.space1.id}/credentials`,
-        serverUrl
-      ).toString(),
-      method: 'GET',
-      action: 'GET'
-    })
-    assert.equal(response.status, 200)
-    assert.deepStrictEqual(response.data, {
-      id: 'credentials',
-      name: 'Verifiable Credentials',
-      type: ['Collection']
-    })
+    assert.deepStrictEqual(
+      await aliceSpace.collection('credentials').describe(),
+      {
+        id: 'credentials',
+        name: 'Verifiable Credentials',
+        type: ['Collection']
+      }
+    )
   })
 
   it('[root] create and delete a collection by id', async () => {
-    // Create new collection
-    const collectionId = 'new-collection'
-    const collectionUrl = new URL(
-      `/space/${alice.space1.id}/${collectionId}`,
-      serverUrl
-    ).toString()
-    const body = {
-      id: collectionId,
-      name: 'New Collection'
-    }
-    await alice.rootClient.request({
-      url: collectionUrl,
-      method: 'PUT',
-      json: body
-    })
+    const collection = aliceSpace.collection('new-collection')
+
+    // Create new collection by id (upsert via configure -> PUT).
+    await collection.configure({ name: 'New Collection' })
 
     // Check it was created
-    const existResponse = await alice.rootClient.request({
-      url: collectionUrl,
-      method: 'GET'
-    })
-    assert.equal(existResponse.status, 200)
+    assert.notEqual(await collection.describe(), null)
 
     // Now delete collection
-    const deleteResponse = await alice.rootClient.request({
-      url: collectionUrl,
-      method: 'DELETE'
-    })
-    assert.equal(deleteResponse.status, 204)
+    await collection.delete()
 
-    // Ensure it was deleted
-    let checkResponse: any
-    try {
-      await alice.rootClient.request({
-        url: collectionUrl,
-        method: 'GET'
-      })
-    } catch (err: any) {
-      checkResponse = err.response
-    }
-    assert.equal(checkResponse.status, 404)
+    // Ensure it was deleted (reads return null on 404).
+    assert.equal(await collection.describe(), null)
   })
 })

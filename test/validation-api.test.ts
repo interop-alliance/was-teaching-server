@@ -19,8 +19,8 @@ describe('Request validation API', () => {
   const PORT = 7771
 
   beforeAll(async () => {
-    ;({ alice } = await zcapClients())
     serverUrl = `http://localhost:${PORT}`
+    ;({ alice } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     fastify = createApp({
       serverUrl,
@@ -29,14 +29,10 @@ describe('Request validation API', () => {
     await fastify.listen({ port: PORT })
 
     // Provision a Space for the body/traversal tests to operate against.
-    await alice.rootClient.request({
-      url: new URL(`/space/${alice.space1.id}`, serverUrl).toString(),
-      method: 'PUT',
-      json: {
-        id: alice.space1.id,
-        name: "Alice's Space #1 (Home)",
-        controller: alice.did
-      }
+    await alice.was.createSpace({
+      id: alice.space1.id,
+      name: "Alice's Space #1 (Home)",
+      controller: alice.did
     })
   })
   afterAll(async () => {
@@ -44,14 +40,14 @@ describe('Request validation API', () => {
     await rm(dataDir, { recursive: true, force: true })
   })
 
-  describe('Path traversal (1a)', () => {
+  describe('Path traversal', () => {
     it('rejects a traversal spaceId with a typed 400, no filesystem escape', async () => {
       // `%2e%2e%2f` decodes to `../` in the route param, never splitting the
       // route -- the handler sees a spaceId of `../../pwned`.
       const traversalUrl = `${serverUrl}/space/%2e%2e%2f%2e%2e%2fpwned`
       let expectedError: any
       try {
-        await alice.rootClient.request({
+        await alice.was.request({
           url: traversalUrl,
           method: 'PUT',
           json: { name: 'pwned', controller: alice.did }
@@ -82,7 +78,7 @@ describe('Request validation API', () => {
       const url = `${serverUrl}/space/${alice.space1.id}/%2e%2e%2fevil`
       let expectedError: any
       try {
-        await alice.rootClient.request({
+        await alice.was.request({
           url,
           method: 'PUT',
           json: { name: 'evil' }
@@ -96,11 +92,11 @@ describe('Request validation API', () => {
     })
   })
 
-  describe('Malformed request body (1c)', () => {
+  describe('Malformed request body', () => {
     it('POST /spaces/ without a name succeeds (name is optional)', async () => {
       // The Space Description `name` property is optional per the spec, so a
       // create request that omits it must succeed.
-      const response = await alice.rootClient.request({
+      const response = await alice.was.request({
         url: new URL('/spaces/', serverUrl).toString(),
         method: 'POST',
         json: { controller: alice.did }
@@ -113,7 +109,7 @@ describe('Request validation API', () => {
     it('POST /spaces/ without a controller yields 400 with a title', async () => {
       let expectedError: any
       try {
-        await alice.rootClient.request({
+        await alice.was.request({
           url: new URL('/spaces/', serverUrl).toString(),
           method: 'POST',
           json: { name: 'No controller' }
@@ -134,7 +130,7 @@ describe('Request validation API', () => {
         `/space/${alice.space1.id}`,
         serverUrl
       ).toString()
-      const response = await alice.rootClient.request({
+      const response = await alice.was.request({
         url: spaceUrl,
         method: 'PUT',
         json: { controller: alice.did }

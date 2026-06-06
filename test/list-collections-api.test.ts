@@ -17,8 +17,8 @@ describe('List Collections API', () => {
   const PORT = 7777
 
   beforeAll(async () => {
-    ;({ alice } = await zcapClients())
     serverUrl = `http://localhost:${PORT}`
+    ;({ alice } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     fastify = createApp({
       serverUrl,
@@ -37,54 +37,22 @@ describe('List Collections API', () => {
     const collectionId = `list-collections-collection-${crypto.randomUUID()}`
     const resourceId = `list-collections-resource-${crypto.randomUUID()}`
 
-    const spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
-    const collectionUrl = new URL(
-      `/space/${spaceId}/${collectionId}`,
-      serverUrl
-    ).toString()
-    const resourceUrl = new URL(
-      `/space/${spaceId}/${collectionId}/${resourceId}`,
-      serverUrl
-    ).toString()
-    const collectionsUrl = new URL(
-      `/space/${spaceId}/collections/`,
-      serverUrl
-    ).toString()
-
-    await alice.rootClient.request({
-      url: spaceUrl,
-      method: 'PUT',
-      json: {
-        name: 'List Collections Test Space',
-        controller: alice.did
-      }
+    const space = await alice.was.createSpace({
+      id: spaceId,
+      name: 'List Collections Test Space',
+      controller: alice.did
+    })
+    const collection = await space.createCollection({
+      id: collectionId,
+      name: 'List Collections Test Collection'
+    })
+    await collection.put(resourceId, {
+      id: resourceId,
+      name: 'List Collections Test Resource'
     })
 
-    await alice.rootClient.request({
-      url: collectionUrl,
-      method: 'PUT',
-      json: {
-        id: collectionId,
-        name: 'List Collections Test Collection'
-      }
-    })
-
-    await alice.rootClient.request({
-      url: resourceUrl,
-      method: 'PUT',
-      json: {
-        id: resourceId,
-        name: 'List Collections Test Resource'
-      }
-    })
-
-    const response = await alice.rootClient.request({
-      url: collectionsUrl,
-      method: 'GET'
-    })
-
-    assert.equal(response.status, 200)
-    assert.deepStrictEqual(response.data, {
+    const listing = await space.collections()
+    assert.deepStrictEqual(listing, {
       url: `/space/${spaceId}/collections/`,
       totalItems: 1,
       items: [

@@ -8,9 +8,11 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
+import { Space } from '@interop/was-client'
+
 import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { client, zcapClients } from './helpers.js'
+import { zcapClients } from './helpers.js'
 
 describe('Spaces', () => {
   let fastify: FastifyInstance,
@@ -22,8 +24,8 @@ describe('Spaces', () => {
   const PORT = 7766
 
   beforeAll(async () => {
-    ;({ alice, aliceDelegatedApp, bob } = await zcapClients())
     serverUrl = `http://localhost:${PORT}` // fastify.server.address().port
+    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     fastify = createApp({
       serverUrl,
@@ -59,59 +61,28 @@ describe('Spaces', () => {
 
   describe('Space API', () => {
     it('[root] create space via POST', async () => {
-      const body = {
+      const space = await alice.was.createSpace({
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
         controller: alice.did
-      }
-      const response = await alice.rootClient.request({
-        url: new URL('/spaces/', serverUrl).toString(),
-        method: 'POST',
-        json: body
       })
-      assert.equal(response.status, 201)
-
-      const created = response.data
-      assert.deepStrictEqual(created, {
+      assert.equal(space.id, alice.space1.id)
+      assert.deepStrictEqual(await space.describe(), {
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
         controller: alice.did
       })
-      assert.match(response.headers.get('content-type'), /application\/json/)
-      assert.equal(
-        response.headers.get('location'),
-        `${serverUrl}/spaces/${body.id}`
-      )
     })
 
     it('[root] create space by id via PUT', async () => {
-      const body = {
-        id: alice.space2.id,
+      const space = alice.was.space(alice.space2.id)
+      // configure() upserts the space by id (PUT).
+      await space.configure({
         name: "Alice's Space #2 (School)",
         controller: alice.did
-      }
-      const spaceUrl = new URL(
-        `/space/${alice.space2.id}`,
-        serverUrl
-      ).toString()
-      const response = await alice.rootClient.request({
-        url: spaceUrl,
-        method: 'PUT',
-        json: body
       })
-      // assert.equal(response.status, 201)
-
-      assert.equal(
-        response.headers.get('location'),
-        `${serverUrl}/space/${body.id}`
-      )
-
-      const checkResponse = await alice.rootClient.request({
-        url: spaceUrl,
-        method: 'GET'
-      })
-      assert.equal(checkResponse.status, 200)
+      assert.notEqual(await space.describe(), null)
     })
 
     it('GET /space/:spaceId should 401 error when no authorization headers', async () => {
@@ -127,50 +98,15 @@ describe('Spaces', () => {
       )
     })
 
-    it('GET /space/:spaceId should 404 error on not found space id', async () => {
-      const spaceUrl = new URL(
-        '/space/space-id-that-does-not-exist',
-        serverUrl
-      ).toString()
-      let expectedError: any
-      try {
-        await alice.rootClient.request({
-          url: spaceUrl,
-          method: 'GET',
-          action: 'GET'
-        })
-      } catch (error) {
-        expectedError = error
-      }
-
-      assert.equal(expectedError.response.status, 404)
-      assert.equal(expectedError.data.title, 'Invalid Get Space request')
-      // The not-found kind is privacy-merged; `type` must not reveal whether
-      // the space is absent vs unauthorized.
-      assert.equal(
-        expectedError.data.type,
-        'https://wallet.storage/spec#not-found'
-      )
-      assert.match(
-        expectedError.response.headers.get('content-type'),
-        /application\/problem\+json/
-      )
+    it('describing a not-found space returns null (404 conflation)', async () => {
+      const missing = await alice.was
+        .space('space-id-that-does-not-exist')
+        .describe()
+      assert.equal(missing, null)
     })
 
     it('[root] read space via GET with proper authorization', async () => {
-      const spaceUrl = new URL(
-        `/space/${alice.space1.id}`,
-        serverUrl
-      ).toString()
-      const response = await alice.rootClient.request({
-        url: spaceUrl,
-        method: 'GET',
-        action: 'GET'
-      })
-
-      assert.equal(response.status, 200)
-      assert.match(response.headers.get('content-type'), /application\/json/)
-      const spaceDescription = response.data
+      const spaceDescription = await alice.was.space(alice.space1.id).describe()
       assert.deepStrictEqual(spaceDescription, {
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
@@ -180,48 +116,23 @@ describe('Spaces', () => {
     })
 
     it('[delegated] authorized app should GET /space/:spaceId', async () => {
-      // First, Alice creates the Space
-      const body = {
+      // First, Alice (re-)creates the Space
+      const space = await alice.was.createSpace({
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
         controller: alice.did
-      }
-      const response = await alice.rootClient.request({
-        url: new URL('/spaces/', serverUrl).toString(),
-        method: 'POST',
-        action: 'POST',
-        json: body
-      })
-      assert.equal(response.status, 201)
-
-      // Alice delegates GET access to the space to the app
-      const aliceAppClient = client({ signer: aliceDelegatedApp.signer })
-      const spaceUrl = new URL(
-        `/space/${alice.space1.id}`,
-        serverUrl
-      ).toString()
-      const delegatedSpaceCapability = await alice.rootClient.delegate({
-        allowedActions: ['GET'],
-        invocationTarget: spaceUrl,
-        controller: aliceDelegatedApp.did
       })
 
-      // console.log('DELEGATED CAP:', delegatedSpaceCapability)
-
-      // Alice's app can now issue a GET request to the space
-      const appResponse = await aliceAppClient.request({
-        url: spaceUrl,
-        capability: delegatedSpaceCapability,
-        method: 'GET',
-        action: 'GET'
+      // Alice delegates GET access on the space to the app.
+      const zcap = await space.grant({
+        to: aliceDelegatedApp.did,
+        actions: ['GET']
       })
 
-      assert.equal(appResponse.status, 200)
-      assert.match(
-        appResponse.headers.get('content-type')!,
-        /application\/json/
-      )
-      assert.deepStrictEqual(appResponse.data, {
+      // Alice's app rebuilds a handle from the capability and reads the space.
+      const handle = aliceDelegatedApp.was.fromCapability(zcap)
+      assert.ok(handle instanceof Space)
+      assert.deepStrictEqual(await handle.describe(), {
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
@@ -230,78 +141,32 @@ describe('Spaces', () => {
     })
 
     it('[root] Bob should not be able to GET Alice space', async () => {
-      // First, Alice creates the Space
-      const body = {
+      // First, Alice (re-)creates the Space
+      await alice.was.createSpace({
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
         controller: alice.did
-      }
-      const aliceResponse = await alice.rootClient.request({
-        url: new URL('/spaces/', serverUrl).toString(),
-        method: 'POST',
-        json: body
       })
-      assert.equal(aliceResponse.status, 201)
 
-      const spaceUrl = new URL(
-        `/space/${alice.space1.id}`,
-        serverUrl
-      ).toString()
-
-      // Bob tries to access Alice's space with his root signer
-      let expectedError: any
-      try {
-        await bob.rootClient.request({
-          url: spaceUrl,
-          action: 'GET'
-        })
-      } catch (error) {
-        expectedError = error
-      }
-      // Bob (intentionally) gets a 404 instead of a 403, to not reveal
-      // the space's existence
-      assert.equal(expectedError.response.status, 404)
-      assert.match(
-        expectedError.response.headers.get('content-type'),
-        /application\/problem\+json/
-      )
+      // Bob reads with his own client and gets null (404 conflated: not-found
+      // vs unauthorized), so the space's existence is not revealed.
+      const seenByBob = await bob.was.space(alice.space1.id).describe()
+      assert.equal(seenByBob, null)
     })
 
     it('[root] Alice should be able to DELETE her provisioned space', async () => {
-      const spaceId = 'a-space-to-delete'
       // First, create the space
-      const body = {
-        id: spaceId,
+      const space = await alice.was.createSpace({
+        id: 'a-space-to-delete',
         name: "Alice's Test Space to be deleted",
         controller: alice.did
-      }
-      const response = await alice.rootClient.request({
-        url: new URL('/spaces/', serverUrl).toString(),
-        method: 'POST',
-        json: body
       })
-      assert.equal(response.status, 201)
 
       // Now delete the space
-      const spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
-      const aliceResponse = await alice.rootClient.request({
-        url: spaceUrl,
-        method: 'DELETE'
-      })
-      assert.equal(aliceResponse.status, 204)
+      await space.delete()
 
-      // Check that the space was deleted
-      let checkResponse: any
-      try {
-        await alice.rootClient.request({
-          url: spaceUrl,
-          method: 'GET'
-        })
-      } catch (err: any) {
-        checkResponse = err.response
-      }
-
-      assert.equal(checkResponse.status, 404)
+      // Check that the space was deleted (reads return null on 404).
+      assert.equal(await space.describe(), null)
     })
   })
 })

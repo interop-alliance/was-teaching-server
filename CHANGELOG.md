@@ -11,8 +11,8 @@
   operations per [[RFC9457]] -- not per operation. Privacy-sensitive conditions
   (Space / Collection / Resource not found, failed capability invocation) all
   collapse to a single `#not-found` so `type` cannot be used to probe resource
-  existence. Body-validation responses now also carry a `pointer` (RFC 6901
-  JSON Pointer, `#/field` form) identifying the offending field; the combined
+  existence. Body-validation responses now also carry a `pointer` (RFC 6901 JSON
+  Pointer, `#/field` form) identifying the offending field; the combined
   Create/Update Space "name and controller" check is split so each missing field
   reports its own `#/name` / `#/controller` pointer. The WAS spec gains an
   "Error Type Registry" appendix documenting the catalog.
@@ -25,11 +25,12 @@
   boilerplate. `handleError` now serializes `type` and the `problems` array
   (falling back to `[{ detail }]`).
 - Refactor `conformance/helpers.ts` to dogfood `@interop/was-client`: identities
-  built by `buildZcapClients()` now carry a high-level `was` client alongside the
-  raw `rootClient`, a new `wasClient({ signer })` helper mirrors
+  built by `buildZcapClients()` now carry a high-level `was` client alongside
+  the raw `rootClient`, a new `wasClient({ signer })` helper mirrors
   `zcapClient({ signer })`, and `createSpace()`'s ZCap path goes through
   `WasClient.request()`. The exported helper surface is unchanged. (Requires the
-  unpublished `@interop/was-client` dependency to be added once it ships to npm.)
+  unpublished `@interop/was-client` dependency to be added once it ships to
+  npm.)
 
 ### Security
 

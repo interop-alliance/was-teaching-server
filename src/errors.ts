@@ -200,8 +200,7 @@ export class MissingAuthError extends ProblemError {
     super({
       type: ProblemTypes.MISSING_AUTHORIZATION,
       title: 'Invalid request',
-      detail:
-        'Authorization and Capability-Invocation headers are required.',
+      detail: 'Authorization and Capability-Invocation headers are required.',
       statusCode: 401
     })
   }
@@ -327,9 +326,7 @@ export class InvalidRequestBodyError extends ProblemError {
       title: `Invalid ${requestName || 'request'} body`,
       detail: resolvedDetail,
       statusCode: 400,
-      ...(pointer
-        ? { problems: [{ detail: resolvedDetail, pointer }] }
-        : {})
+      ...(pointer ? { problems: [{ detail: resolvedDetail, pointer }] } : {})
     })
   }
 }
