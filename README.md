@@ -79,7 +79,7 @@ a Verifiable Credential).
 
 How a read is authorized: the server tries the capability invocation first; if
 none is presented, or it does not grant access, it falls back to the **effective
-policy** (resolved most-specific-first: Resource → Collection → Space). Policies
+policy** (resolved most-specific-first: Resource > Collection > Space). Policies
 are **permissive-only** — they can only broaden access beyond capabilities,
 never deny a valid capability holder. A denied read returns `404` (so existence
 is not leaked); writes always require a capability.
@@ -123,7 +123,7 @@ SERVER_URL='http://localhost:3002' PORT=3002 pnpm dev
 
 ### Building and Starting the Server
 
-`pnpm build` compiles `src/` to `dist/` and copies `src/views` → `dist/views`,
+`pnpm build` compiles `src/` to `dist/` and copies `src/views` > `dist/views`,
 then `pnpm start` runs the compiled output:
 
 ```

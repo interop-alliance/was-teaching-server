@@ -149,6 +149,53 @@ describe('Access-control policy API', () => {
     assert.equal(response.status, 200)
   })
 
+  it('a space-level PublicCanRead policy is inherited by collections and resources', async () => {
+    // Use a fresh Space so the space-wide policy does not affect other tests.
+    const inheritedSpaceId = crypto.randomUUID()
+    const space = await alice.was.createSpace({
+      id: inheritedSpaceId,
+      name: 'Inherited Public Space',
+      controller: alice.did
+    })
+    const collection = await space.createCollection({
+      id: 'docs',
+      name: 'Docs'
+    })
+    await collection.put('readme', { id: 'readme', name: 'Read Me' })
+
+    // Sanity check: with no policy anywhere, the resource is private (404).
+    const beforeResponse = await fetch(
+      new URL(`/space/${inheritedSpaceId}/docs/readme`, serverUrl)
+    )
+    assert.equal(beforeResponse.status, 404)
+
+    // Set ONLY a space-level policy -- no collection- or resource-level policy.
+    const put = await alice.was.request({
+      path: `/space/${inheritedSpaceId}/policy`,
+      method: 'PUT',
+      json: { type: 'PublicCanRead' }
+    })
+    assert.equal(put.status, 201)
+
+    // The resource inherits the space policy (anonymous GET succeeds).
+    const resourceResponse = await fetch(
+      new URL(`/space/${inheritedSpaceId}/docs/readme`, serverUrl)
+    )
+    assert.equal(resourceResponse.status, 200)
+    const body = (await resourceResponse.json()) as { name: string }
+    assert.equal(body.name, 'Read Me')
+
+    // The collection description and listing inherit it too.
+    const describeResponse = await fetch(
+      new URL(`/space/${inheritedSpaceId}/docs`, serverUrl)
+    )
+    assert.equal(describeResponse.status, 200)
+    const listResponse = await fetch(
+      new URL(`/space/${inheritedSpaceId}/docs/`, serverUrl)
+    )
+    assert.equal(listResponse.status, 200)
+  })
+
   it('reading/writing the policy resource itself requires auth (401)', async () => {
     const getResponse = await fetch(
       new URL(`/space/${alice.space1.id}/public-credentials/policy`, serverUrl)
