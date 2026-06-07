@@ -1,8 +1,7 @@
 /**
  * Filesystem persistence backend: stores Spaces, Collections, and Resources as
- * directories and files under `data/spaces/`. One of two interchangeable
- * backends; implements the StorageBackend contract documented in types.ts
- * (same method shape as MemoryBackend).
+ * directories and files under `data/spaces/`. The default (and currently only)
+ * adapter implementing the StorageBackend contract documented in types.ts.
  */
 import path from 'node:path'
 import { mkdir, rm, stat as fsStat } from 'node:fs/promises'

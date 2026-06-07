@@ -175,8 +175,9 @@ export interface ParsedZcap {
 }
 
 /**
- * The persistence contract shared by `FileSystemBackend` and `MemoryBackend`.
- * The active backend is injected into the Fastify instance via
+ * The persistence contract a storage backend implements (currently
+ * `FileSystemBackend`; the port is designed to admit additional adapters). The
+ * active backend is injected into the Fastify instance via
  * `createApp({ backend })` and read in handlers as `request.server.storage`.
  *
  * Invariants:

@@ -1,5 +1,16 @@
 # History
 
+## Unreleased - TBD
+
+### Removed
+
+- The in-memory storage backend (`src/backends/memory.ts`). It was never wired
+  into the server or the test suite -- its purpose was to drive the
+  `StorageBackend` port to the right level of abstraction, which it has done.
+  That abstraction now lives in the port (`src/types.ts`) and survives the
+  removal; a future durable/queryable backend (SQLite/Postgres/LMDB) will be the
+  real second adapter that proves the port.
+
 ## 0.3.0 - 2026-06-06
 
 ### Added
