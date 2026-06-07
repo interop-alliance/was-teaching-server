@@ -12,11 +12,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: pnpm/action-setup@v6
-
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
+
+      # Provision pnpm via Corepack (bundled with Node) from the
+      # `packageManager` pin in package.json, avoiding the flaky
+      # pnpm/action-setup self-installer.
+      - name: Enable Corepack
+        run: corepack enable
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -35,11 +39,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: pnpm/action-setup@v6
-
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
+
+      # Provision pnpm via Corepack (bundled with Node) from the
+      # `packageManager` pin in package.json, avoiding the flaky
+      # pnpm/action-setup self-installer.
+      - name: Enable Corepack
+        run: corepack enable
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
