@@ -131,4 +131,44 @@ describe('Access-control policy API', () => {
     const response = await fetch(resourceUrl())
     assert.equal(response.status, 404)
   })
+
+  it('a resource-level policy grants public read on a single resource', async () => {
+    // The collection policy was just removed, so this isolates resource-level.
+    await alice.rootClient.request({
+      url: new URL(`${resourceUrl()}/policy`, serverUrl).toString(),
+      method: 'PUT',
+      json: { type: 'PublicCanRead' }
+    })
+    const response = await fetch(resourceUrl())
+    assert.equal(response.status, 200)
+
+    // Clean up so it does not mask the space-level inheritance check below.
+    await alice.rootClient.request({
+      url: new URL(`${resourceUrl()}/policy`, serverUrl).toString(),
+      method: 'DELETE'
+    })
+    assert.equal((await fetch(resourceUrl())).status, 404)
+  })
+
+  it('a space-level policy is inherited by resources', async () => {
+    // A second resource with no policy of its own.
+    const inheritedUrl = new URL(
+      `/space/${alice.space1.id}/${collectionId}/inherited-vc`,
+      serverUrl
+    ).toString()
+    await alice.rootClient.request({
+      url: inheritedUrl,
+      method: 'PUT',
+      json: { id: 'inherited-vc', name: 'Inherited' }
+    })
+    assert.equal((await fetch(inheritedUrl)).status, 404)
+
+    // A space-level PublicCanRead policy makes it readable by inheritance.
+    await alice.rootClient.request({
+      url: new URL(`/space/${alice.space1.id}/policy`, serverUrl).toString(),
+      method: 'PUT',
+      json: { type: 'PublicCanRead' }
+    })
+    assert.equal((await fetch(inheritedUrl)).status, 200)
+  })
 })

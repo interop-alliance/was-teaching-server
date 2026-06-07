@@ -65,17 +65,11 @@ describe('Access-control policy API', () => {
     assert.equal(response.status, 404)
   })
 
-  it('[controller] PUT a PublicCanRead policy on the collection (201)', async () => {
-    const response = await alice.was.request({
-      path: `/space/${alice.space1.id}/public-credentials/policy`,
-      method: 'PUT',
-      json: { type: 'PublicCanRead' }
+  it('[controller] collection.setPublic() sets a PublicCanRead policy', async () => {
+    await publicCollection.setPublic()
+    assert.deepEqual(await publicCollection.getPolicy(), {
+      type: 'PublicCanRead'
     })
-    assert.equal(response.status, 201)
-    assert.equal(
-      response.headers.get('location'),
-      `${serverUrl}/space/${alice.space1.id}/public-credentials/policy`
-    )
   })
 
   it('anonymous GET of a resource in a PublicCanRead collection succeeds (200)', async () => {
@@ -123,12 +117,8 @@ describe('Access-control policy API', () => {
       name: 'Closed Collection'
     })
     await closed.put('secret', { id: 'secret', name: 'secret' })
-    const put = await alice.was.request({
-      path: `/space/${alice.space1.id}/closed-collection/policy`,
-      method: 'PUT',
-      json: { type: 'SomethingUnsupported' }
-    })
-    assert.equal(put.status, 201)
+    // setPolicy() is the generic primitive (any extensible `type`).
+    await closed.setPolicy({ type: 'SomethingUnsupported' })
 
     const response = await fetch(
       new URL(`/space/${alice.space1.id}/closed-collection/secret`, serverUrl)
@@ -138,11 +128,10 @@ describe('Access-control policy API', () => {
 
   it('a resource-level policy overrides a (missing) collection policy', async () => {
     // 'closed-collection' has a fail-closed policy; grant just one resource.
-    await alice.was.request({
-      path: `/space/${alice.space1.id}/closed-collection/secret/policy`,
-      method: 'PUT',
-      json: { type: 'PublicCanRead' }
-    })
+    await aliceSpace
+      .collection('closed-collection')
+      .resource('secret')
+      .setPublic()
     const response = await fetch(
       new URL(`/space/${alice.space1.id}/closed-collection/secret`, serverUrl)
     )
@@ -170,12 +159,7 @@ describe('Access-control policy API', () => {
     assert.equal(beforeResponse.status, 404)
 
     // Set ONLY a space-level policy -- no collection- or resource-level policy.
-    const put = await alice.was.request({
-      path: `/space/${inheritedSpaceId}/policy`,
-      method: 'PUT',
-      json: { type: 'PublicCanRead' }
-    })
-    assert.equal(put.status, 201)
+    await space.setPublic()
 
     // The resource inherits the space policy (anonymous GET succeeds).
     const resourceResponse = await fetch(
@@ -209,16 +193,6 @@ describe('Access-control policy API', () => {
     assert.equal(deleteResponse.status, 401)
   })
 
-  it('[controller] GET the policy document (200)', async () => {
-    const response = await alice.was.request({
-      path: `/space/${alice.space1.id}/public-credentials/policy`,
-      method: 'GET'
-    })
-    assert.equal(response.status, 200)
-    // The http-client attaches the parsed JSON body as `response.data`.
-    assert.equal(response.data.type, 'PublicCanRead')
-  })
-
   it('the collection linkset advertises the policy resource', async () => {
     // The collection is public, so its linkset is discoverable anonymously.
     const response = await fetch(
@@ -240,12 +214,9 @@ describe('Access-control policy API', () => {
     )
   })
 
-  it('[controller] DELETE the policy revokes public access (404)', async () => {
-    const del = await alice.was.request({
-      path: `/space/${alice.space1.id}/public-credentials/policy`,
-      method: 'DELETE'
-    })
-    assert.equal(del.status, 204)
+  it('[controller] collection.clearPolicy() revokes public access (404)', async () => {
+    await publicCollection.clearPolicy()
+    assert.equal(await publicCollection.getPolicy(), null)
 
     const response = await fetch(new URL(publicResourcePath(), serverUrl))
     assert.equal(response.status, 404)

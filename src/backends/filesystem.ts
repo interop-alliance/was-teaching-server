@@ -493,7 +493,11 @@ export class FileSystemBackend implements StorageBackend {
         if (collectionExisted) {
           stats.policiesSkipped++
         } else {
-          await this.writePolicy({ spaceId, collectionId, policy: collectionPolicy })
+          await this.writePolicy({
+            spaceId,
+            collectionId,
+            policy: collectionPolicy
+          })
           stats.policiesCreated++
         }
       }

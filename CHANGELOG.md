@@ -26,9 +26,10 @@
   `https://wallet.storage/spec#policy`) when one is set.
 - Space export/import now round-trips policies. Space-, Collection-, and
   Resource-level `.policy.*` documents are carried in the export tarball and
-  restored on import: the space policy fills in when the target has none
-  (no clobber), and Collection/Resource policies travel with a newly-created
-  Collection/Resource. `ImportStats` gains `policiesCreated` / `policiesSkipped`.
+  restored on import: the space policy fills in when the target has none (no
+  clobber), and Collection/Resource policies travel with a newly-created
+  Collection/Resource. `ImportStats` gains `policiesCreated` /
+  `policiesSkipped`.
 
 ### Changed
 

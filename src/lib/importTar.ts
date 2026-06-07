@@ -16,7 +16,10 @@ const POLICY_SUFFIX = '.json'
  * @returns {string | undefined}
  */
 function policyFileId(fileName: string): string | undefined {
-  if (!fileName.startsWith(POLICY_PREFIX) || !fileName.endsWith(POLICY_SUFFIX)) {
+  if (
+    !fileName.startsWith(POLICY_PREFIX) ||
+    !fileName.endsWith(POLICY_SUFFIX)
+  ) {
     return undefined
   }
   const id = fileName.slice(POLICY_PREFIX.length, -POLICY_SUFFIX.length)
@@ -164,9 +167,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
   const prefix = `space/${sourceSpaceId}/`
 
   // Space-level policy (`.policy.<sourceSpaceId>.json` at the space root).
-  const spacePolicyEntry = entries.get(
-    `${prefix}.policy.${sourceSpaceId}.json`
-  )
+  const spacePolicyEntry = entries.get(`${prefix}.policy.${sourceSpaceId}.json`)
   const spacePolicy: PolicyDocument | undefined = spacePolicyEntry?.body
     ? JSON.parse(spacePolicyEntry.body.toString('utf8'))
     : undefined

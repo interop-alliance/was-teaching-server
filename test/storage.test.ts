@@ -210,7 +210,10 @@ describe('Storage API', () => {
             controller: 'did:key:test-controller'
           }
         })
-        const stats = await backend.importSpace({ spaceId: dst, tarStream: pack })
+        const stats = await backend.importSpace({
+          spaceId: dst,
+          tarStream: pack
+        })
 
         assert.equal(stats.policiesCreated, 3)
         assert.equal(stats.policiesSkipped, 0)

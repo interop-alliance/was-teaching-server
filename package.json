@@ -44,7 +44,7 @@
     "@digitalcredentials/bnid": "^5.0.0",
     "@eslint/js": "^10.0.1",
     "@interop/ezcap": "^7.1.0",
-    "@interop/was-client": "^0.1.0",
+    "@interop/was-client": "^0.2.0",
     "@types/mime-types": "3.0.1",
     "@types/node": "^24.0.0",
     "@types/tar-stream": "3.1.4",
