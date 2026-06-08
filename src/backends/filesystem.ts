@@ -28,6 +28,7 @@ import {
   POLICY_URL
 } from '../config.default.js'
 import { extractTarEntries, buildImportPlan } from '../lib/importTar.js'
+import { collectionPath, resourcePath } from '../lib/paths.js'
 import type {
   SpaceDescription,
   CollectionDescription,
@@ -315,7 +316,7 @@ export class FileSystemBackend implements StorageBackend {
       })
       collections.push({
         id: entry.name,
-        url: `/space/${spaceId}/${entry.name}`,
+        url: collectionPath({ spaceId, collectionId: entry.name }),
         name: collectionDescription!.name
       })
     }
@@ -632,13 +633,13 @@ export class FileSystemBackend implements StorageBackend {
       )
       return {
         id: resourceId,
-        url: `/space/${spaceId}/${collectionId}/${resourceId}`,
+        url: resourcePath({ spaceId, collectionId, resourceId }),
         contentType
       }
     })
     return {
       id: collectionId,
-      url: `/space/${spaceId}/${collectionId}`,
+      url: collectionPath({ spaceId, collectionId }),
       name: collectionDescription!.name,
       type: collectionDescription!.type || ['Collection'],
       totalItems: items.length,

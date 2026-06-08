@@ -1,39 +1,102 @@
 /**
  * Single source of truth for the server's relative URL path templates. The route
- * shapes registered in `routes.ts` (`/space/:spaceId`, `/space/:spaceId/:col`,
- * the `policy` / `linkset` auxiliary resources) are mirrored here as builder
- * functions, so handlers and policy code construct the same paths from one place
- * rather than re-deriving them inline (which risks drift from the routes).
+ * shapes registered in `routes.ts` (the `/spaces` repository, `/space/:spaceId`,
+ * `/space/:spaceId/:collectionId`, the `policy` / `linkset` auxiliary resources,
+ * and the `export` / `import` actions) are mirrored here as builder functions, so
+ * handlers, the policy code, and the storage backends construct the same paths
+ * from one place rather than re-deriving them inline (which risks drift from the
+ * routes).
  *
- * These return the canonical, no-trailing-slash form. Trailing-slash "list/add"
- * variants stay at their call sites (the slash carries spec meaning there).
+ * Builders return the canonical, no-trailing-slash member form by default. The
+ * spec assigns distinct meaning to a trailing slash -- it addresses the
+ * container / "list-or-add-to" view of a member -- so the container builders take
+ * an explicit `trailingSlash` option (or, for the always-container `/spaces/` and
+ * `.../collections/`, bake the slash in) rather than leaving the slash to drift
+ * across call sites. A leaf Resource has no children, so `resourcePath` has no
+ * container form.
  */
 
 /**
- * `/space/:spaceId`
+ * The SpacesRepository container (`/spaces/`) or one of its members
+ * (`/spaces/:spaceId`). The member form is used for the `Location` header of a
+ * newly created Space; the container form is the `POST`/`GET` target.
+ * @param options {object}
+ * @param [options.spaceId] {string}   when present, the repository member path;
+ *   otherwise the (trailing-slash) container path
+ * @returns {string}
+ */
+export function spacesPath({ spaceId }: { spaceId?: string } = {}): string {
+  return spaceId !== undefined ? `/spaces/${spaceId}` : `/spaces/`
+}
+
+/**
+ * `/space/:spaceId` (member) or `/space/:spaceId/` (container -- the
+ * "add a Collection" / Space-as-container view) when `trailingSlash` is set.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param [options.trailingSlash] {boolean}   address the container form
+ * @returns {string}
+ */
+export function spacePath({
+  spaceId,
+  trailingSlash = false
+}: {
+  spaceId: string
+  trailingSlash?: boolean
+}): string {
+  return `/space/${spaceId}${trailingSlash ? '/' : ''}`
+}
+
+/**
+ * `/space/:spaceId/collections/` -- the "List Collections" container path.
  * @param options {object}
  * @param options.spaceId {string}
  * @returns {string}
  */
-export function spacePath({ spaceId }: { spaceId: string }): string {
-  return `/space/${spaceId}`
+export function collectionsPath({ spaceId }: { spaceId: string }): string {
+  return `${spacePath({ spaceId })}/collections/`
 }
 
 /**
- * `/space/:spaceId/:collectionId`
+ * `/space/:spaceId/export` -- the "Export Space" action path.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @returns {string}
+ */
+export function exportPath({ spaceId }: { spaceId: string }): string {
+  return `${spacePath({ spaceId })}/export`
+}
+
+/**
+ * `/space/:spaceId/import` -- the "Import Space" action path.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @returns {string}
+ */
+export function importPath({ spaceId }: { spaceId: string }): string {
+  return `${spacePath({ spaceId })}/import`
+}
+
+/**
+ * `/space/:spaceId/:collectionId` (member) or `/space/:spaceId/:collectionId/`
+ * (container -- the "add a Resource" / "list items" view) when `trailingSlash`
+ * is set.
  * @param options {object}
  * @param options.spaceId {string}
  * @param options.collectionId {string}
+ * @param [options.trailingSlash] {boolean}   address the container form
  * @returns {string}
  */
 export function collectionPath({
   spaceId,
-  collectionId
+  collectionId,
+  trailingSlash = false
 }: {
   spaceId: string
   collectionId: string
+  trailingSlash?: boolean
 }): string {
-  return `/space/${spaceId}/${collectionId}`
+  return `/space/${spaceId}/${collectionId}${trailingSlash ? '/' : ''}`
 }
 
 /**

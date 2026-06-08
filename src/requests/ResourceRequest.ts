@@ -6,6 +6,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
+import { resourcePath } from '../lib/paths.js'
 import {
   CollectionNotFoundError,
   ResourceNotFoundError,
@@ -45,7 +46,7 @@ export class ResourceRequest {
     await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: `/space/${spaceId}/${collectionId}/${resourceId}`,
+      targetPath: resourcePath({ spaceId, collectionId, resourceId }),
       requestName
     })
 
@@ -103,7 +104,7 @@ export class ResourceRequest {
       spaceId,
       collectionId,
       resourceId,
-      targetPath: `/space/${spaceId}/${collectionId}/${resourceId}`,
+      targetPath: resourcePath({ spaceId, collectionId, resourceId }),
       requestName
     })
 
@@ -175,7 +176,7 @@ export class ResourceRequest {
     await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: `/space/${spaceId}/${collectionId}/${resourceId}`,
+      targetPath: resourcePath({ spaceId, collectionId, resourceId }),
       requestName
     })
 

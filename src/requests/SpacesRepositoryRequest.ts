@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { invalidateSpaceDescription } from './spaceContext.js'
 import { assertValidId } from '../lib/validateId.js'
+import { spacesPath } from '../lib/paths.js'
 import { assertValidController } from '../lib/validateDid.js'
 import {
   SpaceControllerMismatchError,
@@ -68,7 +69,7 @@ export class SpacesRepositoryRequest {
     const spaceDescription = { ...body, id: spaceId, type: ['Space'] }
 
     // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = new URL(`/spaces/`, serverUrl).toString()
+    const allowedTarget = new URL(spacesPath(), serverUrl).toString()
     await handleZcapVerify({
       url,
       allowedTarget,
@@ -86,7 +87,10 @@ export class SpacesRepositoryRequest {
     // next read sees the freshly created Space.
     invalidateSpaceDescription({ storage, spaceId })
 
-    const createdSpaceUrl = new URL(`/spaces/${spaceId}`, serverUrl).toString()
+    const createdSpaceUrl = new URL(
+      spacesPath({ spaceId }),
+      serverUrl
+    ).toString()
     reply.header('Location', createdSpaceUrl)
     return reply.status(201).send(spaceDescription)
   }

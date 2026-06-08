@@ -14,7 +14,14 @@ import {
 } from './spaceContext.js'
 import { assertValidIds, assertValidId } from '../lib/validateId.js'
 import { assertValidController } from '../lib/validateDid.js'
-import { linksetPath } from '../lib/paths.js'
+import {
+  spacePath,
+  collectionPath,
+  collectionsPath,
+  exportPath,
+  importPath,
+  linksetPath
+} from '../lib/paths.js'
 import {
   ProblemError,
   InvalidSpaceIdError,
@@ -61,7 +68,7 @@ export class SpaceRequest {
     const { spaceDescription } = await fetchSpaceAndAuthorize({
       request,
       spaceId,
-      targetPath: `/space/${spaceId}`,
+      targetPath: spacePath({ spaceId }),
       requestName
     })
 
@@ -174,7 +181,7 @@ export class SpaceRequest {
     // Perform zCap signature verification (throws appropriate errors)
     let spaceUrl
     try {
-      spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
+      spaceUrl = new URL(spacePath({ spaceId }), serverUrl).toString()
     } catch (err) {
       request.log.error(
         `Failed to construct spaceUrl for spaceId: ${spaceId}, serverUrl: ${serverUrl}, error: ${(err as Error).message}`
@@ -262,7 +269,7 @@ export class SpaceRequest {
     await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: `/space/${spaceId}/`,
+      targetPath: spacePath({ spaceId, trailingSlash: true }),
       requestName
     })
 
@@ -284,7 +291,7 @@ export class SpaceRequest {
     })
 
     const createdUrl = new URL(
-      `/space/${spaceId}/${collectionId}`,
+      collectionPath({ spaceId, collectionId }),
       serverUrl
     ).toString()
     reply.header('Location', createdUrl)
@@ -321,7 +328,7 @@ export class SpaceRequest {
     await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: `/space/${spaceId}`,
+      targetPath: spacePath({ spaceId }),
       requestName
     })
 
@@ -359,7 +366,7 @@ export class SpaceRequest {
     await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: `/space/${spaceId}/export`,
+      targetPath: exportPath({ spaceId }),
       requestName
     })
 
@@ -395,7 +402,7 @@ export class SpaceRequest {
     await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: `/space/${spaceId}/import`,
+      targetPath: importPath({ spaceId }),
       requestName
     })
 
@@ -445,13 +452,13 @@ export class SpaceRequest {
     await fetchSpaceAndAuthorize({
       request,
       spaceId,
-      targetPath: `/space/${spaceId}/collections/`,
+      targetPath: collectionsPath({ spaceId }),
       requestName
     })
 
     const collections = await storage.listCollections({ spaceId })
     return reply.status(200).send({
-      url: `/space/${spaceId}/collections/`,
+      url: collectionsPath({ spaceId }),
       totalItems: collections.length,
       items: collections
     })

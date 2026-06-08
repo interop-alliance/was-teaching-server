@@ -61,7 +61,17 @@
   and linkset code (`src/policy.ts`, `PolicyRequest`, and the Space/Collection
   linkset handlers) now builds those paths through the helpers rather than
   re-deriving them inline. The linkset relation URI moved from `src/policy.ts`
-  into `config.default.ts` (`POLICY_LINK_RELATION`).
+  into `config.default.ts` (`POLICY_LINK_RELATION`). The follow-up full sweep
+  then routed _every_ remaining inline path template through the module: the
+  trailing-slash container forms via a `trailingSlash` option on `spacePath` /
+  `collectionPath`, plus new `spacesPath` (SpacesRepository container and member
+  -- the latter being the create `Location`, deliberately `/spaces/:id`),
+  `collectionsPath`, `exportPath`, and `importPath` builders. All `*Request.ts`
+  `targetPath`s, the `Location`-header `new URL(...)` constructions, the
+  `List Collections` `url` field, and the `FileSystemBackend` listing `url`
+  fields now build through the helpers, making `src/lib/paths.ts` the single
+  source of truth for every server path shape. New `test/paths.test.ts` pins
+  each builder's member-vs-container output. No API change.
 - Removed dead code: the commented-out `@fastify/accepts` import/registration in
   `src/server.ts`, the commented debug log in `src/auth-header-hooks.ts`, and
   the three speculative `// TODO: use a uuid v5 or another hash based id`

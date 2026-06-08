@@ -9,7 +9,7 @@ import { buildPolicyLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
-import { linksetPath } from '../lib/paths.js'
+import { collectionPath, resourcePath, linksetPath } from '../lib/paths.js'
 import {
   CollectionNotFoundError,
   InvalidCollectionError,
@@ -49,7 +49,11 @@ export class CollectionRequest {
     await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: `/space/${spaceId}/${collectionId}/`,
+      targetPath: collectionPath({
+        spaceId,
+        collectionId,
+        trailingSlash: true
+      }),
       requestName
     })
 
@@ -78,7 +82,7 @@ export class CollectionRequest {
     }
 
     const createdUrl = new URL(
-      `/space/${spaceId}/${collectionId}/${resourceId}`,
+      resourcePath({ spaceId, collectionId, resourceId }),
       serverUrl
     ).toString()
     reply.header('Location', createdUrl)
@@ -124,7 +128,7 @@ export class CollectionRequest {
     const { allowedTarget: collectionUrl } = await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: `/space/${spaceId}/${collectionId}`,
+      targetPath: collectionPath({ spaceId, collectionId }),
       requestName
     })
 
@@ -194,7 +198,7 @@ export class CollectionRequest {
       request,
       spaceId,
       collectionId,
-      targetPath: `/space/${spaceId}/${collectionId}`,
+      targetPath: collectionPath({ spaceId, collectionId }),
       requestName
     })
 
@@ -291,7 +295,7 @@ export class CollectionRequest {
     await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: `/space/${spaceId}/${collectionId}`,
+      targetPath: collectionPath({ spaceId, collectionId }),
       requestName
     })
 
@@ -334,7 +338,11 @@ export class CollectionRequest {
       request,
       spaceId,
       collectionId,
-      targetPath: `/space/${spaceId}/${collectionId}/`,
+      targetPath: collectionPath({
+        spaceId,
+        collectionId,
+        trailingSlash: true
+      }),
       requestName
     })
 
