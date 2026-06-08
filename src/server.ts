@@ -10,7 +10,6 @@ import Fastify, {
 import cors from '@fastify/cors'
 import fastifyView from '@fastify/view'
 import fastifyStatic from '@fastify/static'
-// import Accepts from '@fastify/accepts'
 import Multipart from '@fastify/multipart'
 import handlebars from 'handlebars'
 import path from 'node:path'
@@ -126,9 +125,6 @@ export function createApp({
       files: 1
     }
   })
-
-  // Add a content-type Accepts parser
-  // fastify.register(Accepts)
 
   // Add a human-readable 'Welcome' page
   fastify.get('/', async (request, reply) => {

@@ -2,6 +2,7 @@ import * as tar from 'tar-stream'
 import YAML from 'yaml'
 import type { Readable } from 'node:stream'
 import { assertValidId } from './validateId.js'
+import { InvalidImportError } from '../errors.js'
 import type { CollectionDescription, PolicyDocument } from '../types.js'
 
 /** Prefix / suffix of a policy dot-file (`.policy.<id>.json`). */
@@ -108,22 +109,29 @@ export async function extractTarEntries(
 export function validateManifest(entries: Map<string, TarEntry>): void {
   const manifestEntry = entries.get('manifest.yml')
   if (!manifestEntry?.body) {
-    throw new Error('Archive is missing manifest.yml.')
+    throw new InvalidImportError({ message: 'Archive is missing manifest.yml.' })
   }
 
   let manifest
   try {
     manifest = YAML.parse(manifestEntry.body.toString('utf8'))
-  } catch {
-    throw new Error('Archive manifest.yml is not valid YAML.')
+  } catch (err) {
+    throw new InvalidImportError({
+      message: 'Archive manifest.yml is not valid YAML.',
+      cause: err as Error
+    })
   }
 
   if (manifest['ubc-version'] !== '0.1') {
-    throw new Error('Unsupported archive manifest version.')
+    throw new InvalidImportError({
+      message: 'Unsupported archive manifest version.'
+    })
   }
 
   if (!manifest.contents?.space) {
-    throw new Error('Archive manifest does not describe a WAS space export.')
+    throw new InvalidImportError({
+      message: 'Archive manifest does not describe a WAS space export.'
+    })
   }
 }
 
@@ -161,7 +169,9 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     }
   }
   if (!sourceSpaceId) {
-    throw new Error('Archive does not contain space data.')
+    throw new InvalidImportError({
+      message: 'Archive does not contain space data.'
+    })
   }
 
   const prefix = `space/${sourceSpaceId}/`

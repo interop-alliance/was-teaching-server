@@ -65,8 +65,6 @@ export async function parseAuthHeaders(
       invocation: headers['capability-invocation'],
       digest: headers.digest
     } as ParsedZcap
-
-    // console.log('PARAMS:', request.zcap)
   } catch (err) {
     throw new AuthHeaderParseError({ cause: err as Error })
   }

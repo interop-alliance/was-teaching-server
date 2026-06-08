@@ -61,7 +61,6 @@ export class SpacesRepositoryRequest {
       })
     }
 
-    // TODO: use a uuid v5 or another hash based id here instead
     const spaceId = body.id || uuidv4()
     const spaceDescription = { ...body, id: spaceId, type: ['Space'] }
 

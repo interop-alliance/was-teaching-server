@@ -14,6 +14,7 @@ import {
 } from './spaceContext.js'
 import { assertValidIds, assertValidId } from '../lib/validateId.js'
 import {
+  ProblemError,
   InvalidSpaceIdError,
   InvalidImportError,
   InvalidRequestBodyError
@@ -262,7 +263,6 @@ export class SpaceRequest {
     })
 
     // zCap checks out, continue
-    // TODO: use a uuid v5 or another hash based id here instead
     // TODO: Protect against .space resource id collision
     const collectionId = body.id || uuidv4()
     // `name` is optional; default it to the Collection id when missing (spec).
@@ -402,7 +402,16 @@ export class SpaceRequest {
       })
       return reply.status(200).send(summary)
     } catch (err) {
-      throw new InvalidImportError({ message: (err as Error).message })
+      // Archive-validation failures already surface as typed ProblemErrors
+      // (e.g. InvalidImportError from the manifest checks, or an invalid-id
+      // error from a malformed archive id) -- let those through unchanged,
+      // preserving their status code and message. Anything else is an
+      // unexpected failure decoding the upload: wrap it as a generic
+      // invalid-import 400, keeping the original as the `cause`.
+      if (err instanceof ProblemError) {
+        throw err
+      }
+      throw new InvalidImportError({ cause: err as Error })
     }
   }
 

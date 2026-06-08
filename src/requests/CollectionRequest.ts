@@ -62,7 +62,6 @@ export class CollectionRequest {
     }
 
     // zCap checks out, continue
-    // TODO: use a uuid v5 or another hash based id here instead
     const resourceId = uuidv4()
     let response: { id: string; 'content-type'?: string; url?: string }
 

@@ -385,15 +385,20 @@ export class MissingContentTypeError extends ProblemError {
  * 400 — the uploaded archive is not a valid WAS space export.
  * @param options {object}
  * @param [options.message] {string}   detail message describing the problem
+ * @param [options.cause] {Error}   the underlying error, when wrapping one
  */
 export class InvalidImportError extends ProblemError {
-  constructor({ message }: { message?: string } = {}) {
+  constructor({
+    message,
+    cause
+  }: { message?: string; cause?: Error } = {}) {
     super({
       type: ProblemTypes.INVALID_IMPORT,
       title: 'Invalid space import',
       detail:
         message || 'The uploaded archive is not a valid WAS space export.',
-      statusCode: 400
+      statusCode: 400,
+      cause
     })
   }
 }

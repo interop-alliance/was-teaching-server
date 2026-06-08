@@ -15,8 +15,29 @@
   TTL is a backstop that also bounds staleness across multiple server processes
   sharing one backend. No API change.
 
+### Fixed
+
+- Dead-code and error-handling cleanup (tech-debt Phase 4c):
+  - `src/lib/importTar.ts` now throws the typed `InvalidImportError` for the five
+    archive-validation failures instead of generic `Error`, and the
+    invalid-YAML case chains the underlying parse error as its `cause`
+    (`InvalidImportError` gained an optional `cause`). The `Import Space` handler
+    no longer flattens every failure into a fresh `InvalidImportError`: typed
+    `ProblemError`s now propagate unchanged (preserving status code and
+    message), and only an unexpected decode failure is wrapped -- keeping the
+    original as the `cause`.
+  - `resolveResourceInput` (`src/requests/resourceInput.ts`) guards the
+    multipart parse: a `multipart` request with no file part now returns a clean
+    `400` instead of throwing a raw `TypeError` on a non-null assertion.
+
 ### Changed
 
+- Removed dead code (tech-debt Phase 4c): the commented-out `@fastify/accepts`
+  import/registration in `src/server.ts`, the commented debug log in
+  `src/auth-header-hooks.ts`, and the three speculative
+  `// TODO: use a uuid v5 or another hash based id` comments (random v4 ids are
+  correct for these server-assigns-id create endpoints; deterministic ids have
+  no natural key here and would change semantics).
 - Extracted the fetch-space-and-verify boilerplate repeated across ~18 handlers
   (in five files) into the new neutral module `src/requests/spaceContext.ts`. It
   loads the Space and builds the capability `invocationTarget` URL once, then

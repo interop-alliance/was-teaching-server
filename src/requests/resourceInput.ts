@@ -7,7 +7,7 @@
 import type { FastifyRequest } from 'fastify'
 import type { Readable } from 'node:stream'
 import { isJson } from '../lib/isJson.js'
-import { MissingContentTypeError } from '../errors.js'
+import { MissingContentTypeError, InvalidRequestBodyError } from '../errors.js'
 import type { ResourceInput } from '../types.js'
 
 /**
@@ -26,8 +26,17 @@ export async function resolveResourceInput(
     return { kind: 'json', contentType, data: request.body }
   }
   if (contentType.startsWith('multipart')) {
+    // `request.file()` resolves `undefined` when the multipart request carries
+    // no file part; guard it so that surfaces as a clean 400 rather than a raw
+    // TypeError on the null dereference below.
     const file = await request.file()
-    return { kind: 'binary', contentType: file!.mimetype, stream: file!.file }
+    if (!file) {
+      throw new InvalidRequestBodyError({
+        requestName: 'Write Resource',
+        detail: 'multipart request is missing a file part.'
+      })
+    }
+    return { kind: 'binary', contentType: file.mimetype, stream: file.file }
   }
   return {
     kind: 'binary',
