@@ -2,6 +2,19 @@
 
 ## Unreleased - TBD
 
+### Added
+
+- Memoized the Space Description lookup (tech-debt Phase 4b). After 4a, every
+  authorized handler reads the Space Description through
+  `getSpaceDescriptionOrThrow` in `src/requests/spaceContext.ts`, so it is now
+  cached per storage backend via `@interop/lru-memoize` (a `WeakMap`-scoped
+  `LruCache` per backend, short TTL from `SPACE_DESCRIPTION_CACHE_TTL`). Writes
+  invalidate explicitly through the new `invalidateSpaceDescription()` --
+  wired into Space create (`POST /spaces/`), update (`PUT /space/:spaceId`),
+  and delete -- so a read after a write never serves a stale description; the
+  TTL is a backstop that also bounds staleness across multiple server processes
+  sharing one backend. No API change.
+
 ### Changed
 
 - Extracted the fetch-space-and-verify boilerplate repeated across ~18 handlers

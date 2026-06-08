@@ -14,6 +14,17 @@ export const SERVER_VERSION = JSON.parse(
   fs.readFileSync(packageJsonPath, 'utf8')
 ).version as string
 
+/**
+ * Space Description cache (see src/requests/spaceContext.ts). The description is
+ * read on every authorized handler, so it is memoized per storage backend.
+ * Writes invalidate the entry explicitly; the short TTL is a backstop that also
+ * bounds staleness when several server processes share one storage backend (so
+ * one process's cache cannot serve another process's write indefinitely).
+ */
+export const SPACE_DESCRIPTION_CACHE_TTL = 5_000 // milliseconds
+/** Max number of Space Descriptions held per backend cache (LRU-bounded). */
+export const SPACE_DESCRIPTION_CACHE_MAX = 1_000
+
 export const SPEC_URL =
   'https://digitalcredentials.github.io/wallet-attached-storage-spec/'
 export const UBC_MANIFEST_URL =

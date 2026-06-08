@@ -7,7 +7,11 @@ import type { Readable } from 'node:stream'
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { buildPolicyLinkset } from '../policy.js'
-import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
+import {
+  fetchSpaceAndAuthorize,
+  fetchSpaceAndVerify,
+  invalidateSpaceDescription
+} from './spaceContext.js'
 import { assertValidIds, assertValidId } from '../lib/validateId.js'
 import {
   InvalidSpaceIdError,
@@ -207,6 +211,8 @@ export class SpaceRequest {
 
     // zCap checks out, continue
     await storage.writeSpace({ spaceId, spaceDescription })
+    // Bust any cached (now-stale) description so the next read sees this write.
+    invalidateSpaceDescription({ storage, spaceId })
 
     reply.header('Location', spaceUrl)
     return existingSpaceDescription
@@ -317,6 +323,8 @@ export class SpaceRequest {
 
     // zCap checks out, continue
     await storage.deleteSpace({ spaceId })
+    // Bust the cached description so the next read sees the Space as gone (404).
+    invalidateSpaceDescription({ storage, spaceId })
 
     return reply.status(204).send()
   }

@@ -5,6 +5,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
+import { invalidateSpaceDescription } from './spaceContext.js'
 import { assertValidId } from '../lib/validateId.js'
 import {
   SpaceControllerMismatchError,
@@ -79,6 +80,9 @@ export class SpacesRepositoryRequest {
 
     // zCap checks out, continue
     await storage.writeSpace({ spaceId, spaceDescription })
+    // Bust any cached (e.g. negatively cached) description for this id so the
+    // next read sees the freshly created Space.
+    invalidateSpaceDescription({ storage, spaceId })
 
     const createdSpaceUrl = new URL(`/spaces/${spaceId}`, serverUrl).toString()
     reply.header('Location', createdSpaceUrl)

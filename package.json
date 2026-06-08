@@ -28,6 +28,7 @@
     "@interop/ed25519-verification-key": "^7.0.1",
     "@interop/http-signature-header": "^5.0.2",
     "@interop/http-signature-zcap-verify": "^12.0.2",
+    "@interop/lru-memoize": "^4.0.3",
     "@interop/security-document-loader": "^9.2.1",
     "fastify": "^5.8.5",
     "fs-json-store": "^8.0.1",
