@@ -2,6 +2,20 @@
 
 ## Unreleased - TBD
 
+### Changed
+
+- Extracted the fetch-space-and-verify boilerplate repeated across ~18 handlers
+  (in five files) into the new neutral module `src/requests/spaceContext.ts`. It
+  loads the Space and builds the capability `invocationTarget` URL once, then
+  exposes two named entry points so each call site names its authorization
+  model: `fetchSpaceAndAuthorize()` (**capability-or-policy** -- capability
+  invocation first, then access-control policy fallback; for read/list
+  endpoints) and `fetchSpaceAndVerify()` (**capability-only**; for
+  write/privileged + policy endpoints). Both return the verified context. The
+  old `getSpaceController` helper was dropped (subsumed). No behavior change,
+  except the handlers that fetched the Collection before verifying now verify
+  first (tech-debt Phase 4a).
+
 ### Removed
 
 - The in-memory storage backend (`src/backends/memory.ts`). It was never wired

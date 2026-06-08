@@ -5,16 +5,13 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
 
-import { handleZcapVerify } from '../zcap.js'
-import { authorize } from '../authorize.js'
 import { buildPolicyLinkset } from '../policy.js'
-import { getSpaceController } from './SpaceRequest.js'
+import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
 import {
   CollectionNotFoundError,
   InvalidCollectionError,
-  SpaceNotFoundError,
   StorageError
 } from '../errors.js'
 
@@ -38,10 +35,7 @@ export class CollectionRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
-      params: { spaceId, collectionId },
-      url,
-      method,
-      headers
+      params: { spaceId, collectionId }
     } = request
     const { serverUrl, storage } = request.server
     const requestName = 'Create Resource'
@@ -49,10 +43,12 @@ export class CollectionRequest {
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId, collectionId }, { requestName })
 
-    // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceController = await getSpaceController({
-      storage,
+    // Verify (capability-only): creating a Resource requires a valid capability
+    // invocation; no access-control-policy fallback.
+    await fetchSpaceAndVerify({
+      request,
       spaceId,
+      targetPath: `/space/${spaceId}/${collectionId}/`,
       requestName
     })
 
@@ -64,21 +60,6 @@ export class CollectionRequest {
     if (!collectionDescription) {
       throw new CollectionNotFoundError({ requestName })
     }
-
-    // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = new URL(
-      `/space/${spaceId}/${collectionId}/`,
-      serverUrl
-    ).toString()
-    await handleZcapVerify({
-      url,
-      allowedTarget,
-      allowedAction: 'POST',
-      method,
-      headers,
-      serverUrl,
-      spaceController
-    })
 
     // zCap checks out, continue
     // TODO: use a uuid v5 or another hash based id here instead
@@ -127,41 +108,24 @@ export class CollectionRequest {
   ): Promise<FastifyReply> {
     const {
       params: { spaceId, collectionId },
-      url,
-      method,
-      headers,
       body
     } = request
     if (!body) {
       throw new InvalidCollectionError()
     }
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
     const requestName = 'Update Collection'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId, collectionId }, { requestName })
 
-    const collectionUrl = new URL(
-      `/space/${spaceId}/${collectionId}`,
-      serverUrl
-    ).toString()
-
-    // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await storage.getSpaceDescription({ spaceId })
-    if (!spaceDescription) {
-      throw new SpaceNotFoundError({ requestName })
-    }
-    const spaceController = spaceDescription.controller
-
-    // Perform zCap signature verification (throws appropriate errors)
-    await handleZcapVerify({
-      url,
-      allowedTarget: collectionUrl,
-      allowedAction: 'PUT',
-      method,
-      headers,
-      serverUrl,
-      spaceController
+    // Verify (capability-only): updating a Collection requires a valid
+    // capability invocation; no access-control-policy fallback.
+    const { allowedTarget: collectionUrl } = await fetchSpaceAndVerify({
+      request,
+      spaceId,
+      targetPath: `/space/${spaceId}/${collectionId}`,
+      requestName
     })
 
     // zCap checks out, continue
@@ -218,30 +182,19 @@ export class CollectionRequest {
     const {
       params: { spaceId, collectionId }
     } = request
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
     const requestName = 'Get Collection'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId, collectionId }, { requestName })
 
-    // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceController = await getSpaceController({
-      storage,
-      spaceId,
-      requestName
-    })
-
-    // Authorize: capability invocation first, then fall back to policy.
-    const collectionUrl = new URL(
-      `/space/${spaceId}/${collectionId}`,
-      serverUrl
-    ).toString()
-    await authorize({
+    // Authorize (capability-or-policy): capability invocation first, then the
+    // effective access-control policy as a fallback (a public-readable Collection).
+    await fetchSpaceAndAuthorize({
       request,
-      allowedTarget: collectionUrl,
       spaceId,
       collectionId,
-      spaceController,
+      targetPath: `/space/${spaceId}/${collectionId}`,
       requestName
     })
 
@@ -283,28 +236,19 @@ export class CollectionRequest {
     const {
       params: { spaceId, collectionId }
     } = request
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
     const requestName = 'Get Collection Linkset'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId, collectionId }, { requestName })
 
-    const spaceController = await getSpaceController({
-      storage,
-      spaceId,
-      requestName
-    })
-
-    const allowedTarget = new URL(
-      `/space/${spaceId}/${collectionId}/linkset`,
-      serverUrl
-    ).toString()
-    await authorize({
+    // Authorize (capability-or-policy): readable by whoever may read the
+    // Collection (capability invocation, else the effective policy).
+    await fetchSpaceAndAuthorize({
       request,
-      allowedTarget,
       spaceId,
       collectionId,
-      spaceController,
+      targetPath: `/space/${spaceId}/${collectionId}/linkset`,
       requestName
     })
 
@@ -334,38 +278,21 @@ export class CollectionRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
-      params: { spaceId, collectionId },
-      url,
-      method,
-      headers
+      params: { spaceId, collectionId }
     } = request
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
     const requestName = 'Delete Collection'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId, collectionId }, { requestName })
 
-    const collectionUrl = new URL(
-      `/space/${spaceId}/${collectionId}`,
-      serverUrl
-    ).toString()
-
-    // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await storage.getSpaceDescription({ spaceId })
-    if (!spaceDescription) {
-      throw new SpaceNotFoundError({ requestName })
-    }
-    const spaceController = spaceDescription.controller
-
-    // Perform zCap signature verification (throws appropriate errors)
-    await handleZcapVerify({
-      url,
-      allowedTarget: collectionUrl,
-      allowedAction: 'DELETE',
-      method,
-      headers,
-      serverUrl,
-      spaceController
+    // Verify (capability-only): deleting a Collection requires a valid
+    // capability invocation; no access-control-policy fallback.
+    await fetchSpaceAndVerify({
+      request,
+      spaceId,
+      targetPath: `/space/${spaceId}/${collectionId}`,
+      requestName
     })
 
     try {
@@ -395,15 +322,19 @@ export class CollectionRequest {
     const {
       params: { spaceId, collectionId }
     } = request
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
     const requestName = 'List Collection'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId, collectionId }, { requestName })
 
-    const spaceController = await getSpaceController({
-      storage,
+    // Authorize (capability-or-policy): capability invocation first, then the
+    // effective access-control policy as a fallback (a public-readable Collection).
+    await fetchSpaceAndAuthorize({
+      request,
       spaceId,
+      collectionId,
+      targetPath: `/space/${spaceId}/${collectionId}/`,
       requestName
     })
 
@@ -415,20 +346,6 @@ export class CollectionRequest {
     if (!collectionDescription) {
       throw new CollectionNotFoundError({ requestName })
     }
-
-    // Authorize: capability invocation first, then fall back to policy.
-    const allowedTarget = new URL(
-      `/space/${spaceId}/${collectionId}/`,
-      serverUrl
-    ).toString()
-    await authorize({
-      request,
-      allowedTarget,
-      spaceId,
-      collectionId,
-      spaceController,
-      requestName
-    })
 
     const collectionItems = await storage.listCollectionItems({
       spaceId,

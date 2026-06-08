@@ -7,8 +7,7 @@
  * not apply here -- a policy is controller-managed metadata, not public data).
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
-import { handleZcapVerify } from '../zcap.js'
-import { getSpaceController } from './SpaceRequest.js'
+import { fetchSpaceAndVerify } from './spaceContext.js'
 import { assertValidIds } from '../lib/validateId.js'
 import {
   InvalidPolicyError,
@@ -72,30 +71,18 @@ export class PolicyRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const { spaceId, collectionId, resourceId } = request.params
-    const { url, method, headers } = request
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
     const requestName = 'Get Policy'
 
     assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
     requireAuth(request)
 
-    const spaceController = await getSpaceController({
-      storage,
+    // Verify (capability-only): a policy is controller-managed metadata, so
+    // reading it requires a valid capability invocation -- no policy fallback.
+    await fetchSpaceAndVerify({
+      request,
       spaceId,
-      requestName
-    })
-    const allowedTarget = new URL(
-      policyPath({ spaceId, collectionId, resourceId }),
-      serverUrl
-    ).toString()
-    await handleZcapVerify({
-      url,
-      allowedTarget,
-      allowedAction: 'GET',
-      method,
-      headers,
-      serverUrl,
-      spaceController,
+      targetPath: policyPath({ spaceId, collectionId, resourceId }),
       requestName
     })
 
@@ -126,8 +113,8 @@ export class PolicyRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const { spaceId, collectionId, resourceId } = request.params
-    const { url, method, headers, body } = request
-    const { serverUrl, storage } = request.server
+    const { body } = request
+    const { storage } = request.server
     const requestName = 'Update Policy'
 
     assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
@@ -142,23 +129,12 @@ export class PolicyRequest {
     }
     const policy = body as PolicyDocument
 
-    const spaceController = await getSpaceController({
-      storage,
+    // Verify (capability-only): a policy is controller-managed metadata, so
+    // writing it requires a valid capability invocation -- no policy fallback.
+    const { allowedTarget: policyUrl } = await fetchSpaceAndVerify({
+      request,
       spaceId,
-      requestName
-    })
-    const policyUrl = new URL(
-      policyPath({ spaceId, collectionId, resourceId }),
-      serverUrl
-    ).toString()
-    await handleZcapVerify({
-      url,
-      allowedTarget: policyUrl,
-      allowedAction: 'PUT',
-      method,
-      headers,
-      serverUrl,
-      spaceController,
+      targetPath: policyPath({ spaceId, collectionId, resourceId }),
       requestName
     })
 
@@ -188,29 +164,17 @@ export class PolicyRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const { spaceId, collectionId, resourceId } = request.params
-    const { url, method, headers } = request
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
     const requestName = 'Delete Policy'
 
     assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
 
-    const spaceController = await getSpaceController({
-      storage,
+    // Verify (capability-only): a policy is controller-managed metadata, so
+    // deleting it requires a valid capability invocation -- no policy fallback.
+    await fetchSpaceAndVerify({
+      request,
       spaceId,
-      requestName
-    })
-    const policyUrl = new URL(
-      policyPath({ spaceId, collectionId, resourceId }),
-      serverUrl
-    ).toString()
-    await handleZcapVerify({
-      url,
-      allowedTarget: policyUrl,
-      allowedAction: 'DELETE',
-      method,
-      headers,
-      serverUrl,
-      spaceController,
+      targetPath: policyPath({ spaceId, collectionId, resourceId }),
       requestName
     })
 

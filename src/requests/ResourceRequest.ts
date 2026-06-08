@@ -3,14 +3,12 @@
  * Resource (JSON object or binary blob).
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
-import { handleZcapVerify } from '../zcap.js'
-import { authorize } from '../authorize.js'
+import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
 import {
   CollectionNotFoundError,
   ResourceNotFoundError,
-  SpaceNotFoundError,
   StorageError
 } from '../errors.js'
 
@@ -34,39 +32,21 @@ export class ResourceRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
-      params: { spaceId, collectionId, resourceId },
-      url,
-      method,
-      headers
+      params: { spaceId, collectionId, resourceId }
     } = request
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
+    const requestName = 'Put Resource'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
-    assertValidIds(
-      { spaceId, collectionId, resourceId },
-      { requestName: 'Put Resource' }
-    )
+    assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
 
-    // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await storage.getSpaceDescription({ spaceId })
-    if (!spaceDescription) {
-      throw new SpaceNotFoundError({ requestName: 'Put Resource' })
-    }
-    const spaceController = spaceDescription.controller
-
-    // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = new URL(
-      `/space/${spaceId}/${collectionId}/${resourceId}`,
-      serverUrl
-    ).toString()
-    await handleZcapVerify({
-      url,
-      allowedTarget,
-      allowedAction: 'PUT',
-      method,
-      headers,
-      serverUrl,
-      spaceController
+    // Verify (capability-only): creating/updating a Resource requires a valid
+    // capability invocation; no access-control-policy fallback.
+    await fetchSpaceAndVerify({
+      request,
+      spaceId,
+      targetPath: `/space/${spaceId}/${collectionId}/${resourceId}`,
+      requestName
     })
 
     // zCap checks out, continue
@@ -77,16 +57,13 @@ export class ResourceRequest {
       collectionId
     })
     if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName: 'Put Resource' })
+      throw new CollectionNotFoundError({ requestName })
     }
     const input = await resolveResourceInput(request)
     try {
       await storage.writeResource({ spaceId, collectionId, resourceId, input })
     } catch (err) {
-      throw new StorageError({
-        cause: err as Error,
-        requestName: 'Put Resource'
-      })
+      throw new StorageError({ cause: err as Error, requestName })
     }
     return reply.status(204).send()
   }
@@ -112,35 +89,22 @@ export class ResourceRequest {
     const {
       params: { spaceId, collectionId, resourceId }
     } = request
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
+    const requestName = 'Get Resource'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
-    assertValidIds(
-      { spaceId, collectionId, resourceId },
-      { requestName: 'Get Resource' }
-    )
+    assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
 
-    // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await storage.getSpaceDescription({ spaceId })
-    if (!spaceDescription) {
-      throw new SpaceNotFoundError({ requestName: 'Get Resource' })
-    }
-    const spaceController = spaceDescription.controller
-
-    // Authorize: capability invocation first, then fall back to an
-    // access-control policy (e.g. a world-readable Resource). Throws on denial.
-    const allowedTarget = new URL(
-      `/space/${spaceId}/${collectionId}/${resourceId}`,
-      serverUrl
-    ).toString()
-    await authorize({
+    // Authorize (capability-or-policy): capability invocation first, then fall
+    // back to the effective access-control policy (e.g. a world-readable
+    // Resource). Throws on denial.
+    await fetchSpaceAndAuthorize({
       request,
-      allowedTarget,
       spaceId,
       collectionId,
       resourceId,
-      spaceController,
-      requestName: 'Get Resource'
+      targetPath: `/space/${spaceId}/${collectionId}/${resourceId}`,
+      requestName
     })
 
     // authorized, continue
@@ -151,7 +115,7 @@ export class ResourceRequest {
       collectionId
     })
     if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName: 'Get Resource' })
+      throw new CollectionNotFoundError({ requestName })
     }
 
     const contentType = request.headers['content-type']
@@ -170,10 +134,7 @@ export class ResourceRequest {
       if (err instanceof ResourceNotFoundError) {
         throw err
       }
-      throw new StorageError({
-        cause: err as Error,
-        requestName: 'Get Resource'
-      })
+      throw new StorageError({ cause: err as Error, requestName })
     }
 
     return reply
@@ -201,25 +162,22 @@ export class ResourceRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
-      params: { spaceId, collectionId, resourceId },
-      url,
-      method,
-      headers
+      params: { spaceId, collectionId, resourceId }
     } = request
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
+    const requestName = 'Delete Resource'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
-    assertValidIds(
-      { spaceId, collectionId, resourceId },
-      { requestName: 'Delete Resource' }
-    )
+    assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
 
-    // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await storage.getSpaceDescription({ spaceId })
-    if (!spaceDescription) {
-      throw new SpaceNotFoundError({ requestName: 'Delete Resource' })
-    }
-    const spaceController = spaceDescription.controller
+    // Verify (capability-only): deleting a Resource requires a valid capability
+    // invocation; no access-control-policy fallback.
+    await fetchSpaceAndVerify({
+      request,
+      spaceId,
+      targetPath: `/space/${spaceId}/${collectionId}/${resourceId}`,
+      requestName
+    })
 
     // Fetch collection by id
     const collectionDescription = await storage.getCollectionDescription({
@@ -227,32 +185,14 @@ export class ResourceRequest {
       collectionId
     })
     if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName: 'Delete Resource' })
+      throw new CollectionNotFoundError({ requestName })
     }
-
-    // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = new URL(
-      `/space/${spaceId}/${collectionId}/${resourceId}`,
-      serverUrl
-    ).toString()
-    await handleZcapVerify({
-      url,
-      allowedTarget,
-      allowedAction: 'DELETE',
-      method,
-      headers,
-      serverUrl,
-      spaceController
-    })
 
     // zCap checks out, continue
     try {
       await storage.deleteResource({ spaceId, collectionId, resourceId })
     } catch (err) {
-      throw new StorageError({
-        cause: err as Error,
-        requestName: 'Delete Resource'
-      })
+      throw new StorageError({ cause: err as Error, requestName })
     }
 
     return reply.status(204).send()

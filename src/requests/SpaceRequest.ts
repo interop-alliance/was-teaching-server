@@ -6,16 +6,15 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { Readable } from 'node:stream'
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
-import { authorize } from '../authorize.js'
 import { buildPolicyLinkset } from '../policy.js'
+import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { assertValidIds, assertValidId } from '../lib/validateId.js'
 import {
   InvalidSpaceIdError,
   InvalidImportError,
-  InvalidRequestBodyError,
-  SpaceNotFoundError
+  InvalidRequestBodyError
 } from '../errors.js'
-import type { IDID, StorageBackend } from '../types.js'
+import type { IDID } from '../types.js'
 
 export class SpaceRequest {
   /**
@@ -45,26 +44,18 @@ export class SpaceRequest {
     const {
       params: { spaceId }
     } = request
-    const { serverUrl, storage } = request.server
+    const requestName = 'Get Space'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
-    assertValidIds({ spaceId }, { requestName: 'Get Space' })
+    assertValidIds({ spaceId }, { requestName })
 
-    // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await storage.getSpaceDescription({ spaceId })
-    if (!spaceDescription) {
-      throw new SpaceNotFoundError({ requestName: 'Get Space' })
-    }
-    const spaceController = spaceDescription.controller
-
-    // Authorize: capability invocation first, then fall back to policy.
-    const allowedTarget = new URL(`/space/${spaceId}`, serverUrl).toString()
-    await authorize({
+    // Authorize (capability-or-policy): capability invocation first, then the
+    // Space's access-control policy as a fallback (a public-readable Space).
+    const { spaceDescription } = await fetchSpaceAndAuthorize({
       request,
-      allowedTarget,
       spaceId,
-      spaceController,
-      requestName: 'Get Space'
+      targetPath: `/space/${spaceId}`,
+      requestName
     })
 
     // authorized, continue. Advertise the Space's linkset (policy discovery);
@@ -90,27 +81,17 @@ export class SpaceRequest {
     const {
       params: { spaceId }
     } = request
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
     const requestName = 'Get Space Linkset'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId }, { requestName })
 
-    const spaceController = await getSpaceController({
-      storage,
-      spaceId,
-      requestName
-    })
-
-    const allowedTarget = new URL(
-      `/space/${spaceId}/linkset`,
-      serverUrl
-    ).toString()
-    await authorize({
+    // Authorize (capability-or-policy): readable by whoever may read the Space.
+    await fetchSpaceAndAuthorize({
       request,
-      allowedTarget,
       spaceId,
-      spaceController,
+      targetPath: `/space/${spaceId}/linkset`,
       requestName
     })
 
@@ -254,39 +235,24 @@ export class SpaceRequest {
   ): Promise<FastifyReply> {
     const {
       params: { spaceId },
-      url,
-      method,
-      headers,
       body
     } = request
     const { serverUrl, storage } = request.server
+    const requestName = 'Create Collection'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
-    assertValidIds({ spaceId }, { requestName: 'Create Collection' })
+    assertValidIds({ spaceId }, { requestName })
     if (body?.id !== undefined) {
-      assertValidId(body.id, {
-        kind: 'collection',
-        requestName: 'Create Collection'
-      })
+      assertValidId(body.id, { kind: 'collection', requestName })
     }
 
-    // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await storage.getSpaceDescription({ spaceId })
-    if (!spaceDescription) {
-      throw new SpaceNotFoundError({ requestName: 'Create Collection' })
-    }
-    const spaceController = spaceDescription.controller
-
-    // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = new URL(`/space/${spaceId}/`, serverUrl).toString()
-    await handleZcapVerify({
-      url,
-      allowedTarget,
-      allowedAction: 'POST',
-      method,
-      headers,
-      serverUrl,
-      spaceController
+    // Verify (capability-only): creating a Collection requires a valid
+    // capability invocation; no access-control-policy fallback.
+    await fetchSpaceAndVerify({
+      request,
+      spaceId,
+      targetPath: `/space/${spaceId}/`,
+      requestName
     })
 
     // zCap checks out, continue
@@ -332,33 +298,21 @@ export class SpaceRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
-      params: { spaceId },
-      url,
-      method,
-      headers
+      params: { spaceId }
     } = request
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
+    const requestName = 'Delete Space'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
-    assertValidIds({ spaceId }, { requestName: 'Delete Space' })
+    assertValidIds({ spaceId }, { requestName })
 
-    // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await storage.getSpaceDescription({ spaceId })
-    if (!spaceDescription) {
-      throw new SpaceNotFoundError({ requestName: 'Delete Space' })
-    }
-    const spaceController = spaceDescription.controller
-
-    // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = new URL(`/space/${spaceId}`, serverUrl).toString()
-    await handleZcapVerify({
-      url,
-      allowedTarget,
-      allowedAction: 'DELETE',
-      method,
-      headers,
-      serverUrl,
-      spaceController
+    // Verify (capability-only): deleting a Space requires a valid capability
+    // invocation; no access-control-policy fallback.
+    await fetchSpaceAndVerify({
+      request,
+      spaceId,
+      targetPath: `/space/${spaceId}`,
+      requestName
     })
 
     // zCap checks out, continue
@@ -380,36 +334,21 @@ export class SpaceRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
-      params: { spaceId },
-      url,
-      method,
-      headers
+      params: { spaceId }
     } = request
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
+    const requestName = 'Export Space'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
-    assertValidIds({ spaceId }, { requestName: 'Export Space' })
+    assertValidIds({ spaceId }, { requestName })
 
-    // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await storage.getSpaceDescription({ spaceId })
-    if (!spaceDescription) {
-      throw new SpaceNotFoundError({ requestName: 'Export Space' })
-    }
-    const spaceController = spaceDescription.controller
-
-    // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = new URL(
-      `/space/${spaceId}/export`,
-      serverUrl
-    ).toString()
-    await handleZcapVerify({
-      url,
-      allowedTarget,
-      allowedAction: 'POST',
-      method,
-      headers,
-      serverUrl,
-      spaceController
+    // Verify (capability-only): exporting a Space requires a valid capability
+    // invocation; no access-control-policy fallback.
+    await fetchSpaceAndVerify({
+      request,
+      spaceId,
+      targetPath: `/space/${spaceId}/export`,
+      requestName
     })
 
     // zCap checks out, continue
@@ -431,34 +370,21 @@ export class SpaceRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
-      params: { spaceId },
-      url,
-      method,
-      headers
+      params: { spaceId }
     } = request
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
+    const requestName = 'Import Space'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
-    assertValidIds({ spaceId }, { requestName: 'Import Space' })
+    assertValidIds({ spaceId }, { requestName })
 
-    const spaceDescription = await storage.getSpaceDescription({ spaceId })
-    if (!spaceDescription) {
-      throw new SpaceNotFoundError({ requestName: 'Import Space' })
-    }
-    const spaceController = spaceDescription.controller
-
-    const allowedTarget = new URL(
-      `/space/${spaceId}/import`,
-      serverUrl
-    ).toString()
-    await handleZcapVerify({
-      url,
-      allowedTarget,
-      allowedAction: 'POST',
-      method,
-      headers,
-      serverUrl,
-      spaceController
+    // Verify (capability-only): importing into a Space requires a valid
+    // capability invocation; no access-control-policy fallback.
+    await fetchSpaceAndVerify({
+      request,
+      spaceId,
+      targetPath: `/space/${spaceId}/import`,
+      requestName
     })
 
     try {
@@ -487,29 +413,19 @@ export class SpaceRequest {
     const {
       params: { spaceId }
     } = request
-    const { serverUrl, storage } = request.server
+    const { storage } = request.server
+    const requestName = 'List Collections'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
-    assertValidIds({ spaceId }, { requestName: 'List Collections' })
+    assertValidIds({ spaceId }, { requestName })
 
-    // Fetch the space by id, from storage. Needed for signature verification.
-    const spaceDescription = await storage.getSpaceDescription({ spaceId })
-    if (!spaceDescription) {
-      throw new SpaceNotFoundError({ requestName: 'List Collections' })
-    }
-    const spaceController = spaceDescription.controller
-
-    // Authorize: capability invocation first, then fall back to space policy.
-    const allowedTarget = new URL(
-      `/space/${spaceId}/collections/`,
-      serverUrl
-    ).toString()
-    await authorize({
+    // Authorize (capability-or-policy): capability invocation first, then the
+    // Space's access-control policy as a fallback (a public-readable Space).
+    await fetchSpaceAndAuthorize({
       request,
-      allowedTarget,
       spaceId,
-      spaceController,
-      requestName: 'List Collections'
+      targetPath: `/space/${spaceId}/collections/`,
+      requestName
     })
 
     const collections = await storage.listCollections({ spaceId })
@@ -519,30 +435,4 @@ export class SpaceRequest {
       items: collections
     })
   }
-}
-
-/**
- * Load space description object from storage to get space controller.
- * TODO: Cache this
- * @param options {object}
- * @param options.storage {StorageBackend}   the request's storage backend
- *   (`request.server.storage`)
- * @param options.spaceId {string}
- * @param options.requestName {string}
- * @returns {Promise<IDID>} Controller DID for a given space.
- */
-export async function getSpaceController({
-  storage,
-  spaceId,
-  requestName
-}: {
-  storage: StorageBackend
-  spaceId: string
-  requestName: string
-}): Promise<IDID> {
-  const spaceDescription = await storage.getSpaceDescription({ spaceId })
-  if (!spaceDescription) {
-    throw new SpaceNotFoundError({ requestName })
-  }
-  return spaceDescription.controller
 }
