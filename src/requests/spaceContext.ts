@@ -90,9 +90,9 @@ async function getSpaceDescriptionOrThrow({
   spaceId: string
   requestName: string
 }): Promise<SpaceDescription> {
-  const spaceDescription = await descriptionCacheFor(
-    storage
-  ).memoize<SpaceDescription | undefined>({
+  const spaceDescription = await descriptionCacheFor(storage).memoize<
+    SpaceDescription | undefined
+  >({
     key: spaceId,
     fn: () => storage.getSpaceDescription({ spaceId })
   })

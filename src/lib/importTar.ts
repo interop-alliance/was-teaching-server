@@ -109,7 +109,9 @@ export async function extractTarEntries(
 export function validateManifest(entries: Map<string, TarEntry>): void {
   const manifestEntry = entries.get('manifest.yml')
   if (!manifestEntry?.body) {
-    throw new InvalidImportError({ message: 'Archive is missing manifest.yml.' })
+    throw new InvalidImportError({
+      message: 'Archive is missing manifest.yml.'
+    })
   }
 
   let manifest

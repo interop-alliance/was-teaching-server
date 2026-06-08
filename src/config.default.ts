@@ -25,6 +25,12 @@ export const SPACE_DESCRIPTION_CACHE_TTL = 5_000 // milliseconds
 /** Max number of Space Descriptions held per backend cache (LRU-bounded). */
 export const SPACE_DESCRIPTION_CACHE_MAX = 1_000
 
+/**
+ * Linkset relation URI for the access-control `policy` auxiliary resource
+ * (RFC9264 linkset discovery; see src/policy.ts and the linkset handlers).
+ */
+export const POLICY_LINK_RELATION = 'https://wallet.storage/spec#policy'
+
 export const SPEC_URL =
   'https://digitalcredentials.github.io/wallet-attached-storage-spec/'
 export const UBC_MANIFEST_URL =

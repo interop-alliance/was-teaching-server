@@ -86,7 +86,13 @@ export async function authorize({
     collectionId,
     resourceId
   })
-  if (policyGrants({ policy, action })) {
+  if (policyGrants({ policy, action, logger: request.log })) {
+    // Log granted public-access decisions so they are auditable (an anonymous
+    // or otherwise-unauthorized read allowed purely by a policy).
+    request.log.info(
+      { spaceId, collectionId, resourceId, action, policyType: policy?.type },
+      'Access granted by access-control policy.'
+    )
     return
   }
 

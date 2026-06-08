@@ -214,6 +214,43 @@ describe('Access-control policy API', () => {
     )
   })
 
+  it('rejects a malformed (non-did:key) controller on Create Space (400)', async () => {
+    // The raw request escape hatch signs with Alice's key but lets us send a
+    // body the high-level client would reject, exercising the server-side guard.
+    for (const controller of ['not-a-did', 'did:key:notbase58!', 'did:web:x']) {
+      let thrown: any
+      try {
+        await alice.was.request({
+          path: '/spaces/',
+          method: 'POST',
+          json: { name: 'bad-controller', controller }
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown, `expected controller "${controller}" to be rejected`)
+      assert.equal(thrown.response.status, 400)
+    }
+  })
+
+  it('rejects a policy with an empty / whitespace-only type (400)', async () => {
+    // type-check runs before the zcap verify, so a signed request still 400s.
+    for (const type of ['', '   ']) {
+      let thrown: any
+      try {
+        await alice.was.request({
+          path: `/space/${alice.space1.id}/public-credentials/policy`,
+          method: 'PUT',
+          json: { type }
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown, `expected type ${JSON.stringify(type)} to be rejected`)
+      assert.equal(thrown.response.status, 400)
+    }
+  })
+
   it('[controller] collection.clearPolicy() revokes public access (404)', async () => {
     await publicCollection.clearPolicy()
     assert.equal(await publicCollection.getPolicy(), null)

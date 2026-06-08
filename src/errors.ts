@@ -194,7 +194,7 @@ export class PolicyNotFoundError extends ProblemError {
 
 /**
  * 400 — the access-control policy document is missing or malformed (it must be
- * a JSON object carrying a string `type`).
+ * a JSON object carrying a non-empty string `type`).
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
@@ -203,7 +203,8 @@ export class InvalidPolicyError extends ProblemError {
     super({
       type: ProblemTypes.INVALID_REQUEST_BODY,
       title: `Invalid ${requestName || 'Policy'} body`,
-      detail: 'Policy document must be a JSON object with a string "type".',
+      detail:
+        'Policy document must be a JSON object with a non-empty string "type".',
       statusCode: 400
     })
   }
@@ -287,6 +288,27 @@ export class AuthVerificationError extends ProblemError {
       detail: 'Error verifying authorization headers.',
       statusCode: 400,
       cause
+    })
+  }
+}
+
+/**
+ * 400 — the `controller` field is present but is not a syntactically valid
+ * `did:key` DID (the only DID method this server accepts). Caught at the request
+ * layer so a malformed controller is rejected on the way in rather than failing
+ * later, at capability-verification time.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ */
+export class InvalidControllerError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    const detail = 'The "controller" property must be a valid did:key DID.'
+    super({
+      type: ProblemTypes.INVALID_REQUEST_BODY,
+      title: `Invalid ${requestName || 'request'} body`,
+      detail,
+      statusCode: 400,
+      problems: [{ detail, pointer: '#/controller' }]
     })
   }
 }
@@ -388,10 +410,7 @@ export class MissingContentTypeError extends ProblemError {
  * @param [options.cause] {Error}   the underlying error, when wrapping one
  */
 export class InvalidImportError extends ProblemError {
-  constructor({
-    message,
-    cause
-  }: { message?: string; cause?: Error } = {}) {
+  constructor({ message, cause }: { message?: string; cause?: Error } = {}) {
     super({
       type: ProblemTypes.INVALID_IMPORT,
       title: 'Invalid space import',

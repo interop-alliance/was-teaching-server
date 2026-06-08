@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { invalidateSpaceDescription } from './spaceContext.js'
 import { assertValidId } from '../lib/validateId.js'
+import { assertValidController } from '../lib/validateDid.js'
 import {
   SpaceControllerMismatchError,
   InvalidRequestBodyError
@@ -47,6 +48,8 @@ export class SpacesRepositoryRequest {
         pointer: '#/controller'
       })
     }
+    // Reject a malformed / non-`did:key` controller before it is stored.
+    assertValidController(body.controller, { requestName: 'Create Space' })
     // Reject a path-traversal / non-URL-safe client-supplied space id.
     if (body.id !== undefined) {
       assertValidId(body.id, { kind: 'space', requestName: 'Create Space' })

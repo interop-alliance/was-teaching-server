@@ -13,6 +13,8 @@ import {
   invalidateSpaceDescription
 } from './spaceContext.js'
 import { assertValidIds, assertValidId } from '../lib/validateId.js'
+import { assertValidController } from '../lib/validateDid.js'
+import { linksetPath } from '../lib/paths.js'
 import {
   ProblemError,
   InvalidSpaceIdError,
@@ -65,7 +67,7 @@ export class SpaceRequest {
 
     // authorized, continue. Advertise the Space's linkset (policy discovery);
     // a relative URL, consistent with the other URL fields the API returns.
-    const linkset = `/space/${spaceId}/linkset`
+    const linkset = linksetPath({ spaceId })
     return reply.status(200).send({ ...spaceDescription, linkset })
   }
 
@@ -96,7 +98,7 @@ export class SpaceRequest {
     await fetchSpaceAndAuthorize({
       request,
       spaceId,
-      targetPath: `/space/${spaceId}/linkset`,
+      targetPath: linksetPath({ spaceId }),
       requestName
     })
 
@@ -150,6 +152,8 @@ export class SpaceRequest {
         pointer: '#/controller'
       })
     }
+    // Reject a malformed / non-`did:key` controller before it is stored.
+    assertValidController(body.controller, { requestName: 'Update Space' })
 
     // Check to see if space already exists (if yes, this will be an Update)
     const existingSpaceDescription = await storage.getSpaceDescription({

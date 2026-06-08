@@ -9,6 +9,7 @@ import { buildPolicyLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
+import { linksetPath } from '../lib/paths.js'
 import {
   CollectionNotFoundError,
   InvalidCollectionError,
@@ -208,7 +209,7 @@ export class CollectionRequest {
 
     // Advertise the Collection's linkset (policy discovery) on the description;
     // a relative URL, consistent with the other URL fields the API returns.
-    const linkset = `/space/${spaceId}/${collectionId}/linkset`
+    const linkset = linksetPath({ spaceId, collectionId })
 
     return reply
       .status(200)
@@ -247,7 +248,7 @@ export class CollectionRequest {
       request,
       spaceId,
       collectionId,
-      targetPath: `/space/${spaceId}/${collectionId}/linkset`,
+      targetPath: linksetPath({ spaceId, collectionId }),
       requestName
     })
 

@@ -4,6 +4,12 @@
 
 ### Added
 
+- Observability on the access-control policy authorization path (Phase 5c). A
+  policy-granted read now emits an info log -- "Access granted by access-control
+  policy." with `spaceId` / `collectionId` / `resourceId` / `action` /
+  `policyType` -- so public-access decisions are auditable, and an unrecognized
+  policy `type` now emits a warn as it fail-closes in `policyGrants`. The
+  decision logic is unchanged; this is purely diagnostics.
 - Test + CI tooling:
   - Added a `test:coverage` script (`vitest run --coverage`) and wired coverage
     into CI: the `test` job now runs `pnpm run test:coverage` and uploads the
@@ -16,26 +22,26 @@
     (header gating and `request.zcap` parsing), and `test/importTar.test.ts`
     (manifest validation, merge-plan building, tar extraction, and the
     id-traversal guards). Coverage of all three modules is now ~94-100%.
-- Memoized the Space Description lookup. Every
-  authorized handler reads the Space Description through
-  `getSpaceDescriptionOrThrow` in `src/requests/spaceContext.ts`, so it is now
-  cached per storage backend via `@interop/lru-memoize` (a `WeakMap`-scoped
-  `LruCache` per backend, short TTL from `SPACE_DESCRIPTION_CACHE_TTL`). Writes
-  invalidate explicitly through the new `invalidateSpaceDescription()` --
-  wired into Space create (`POST /spaces/`), update (`PUT /space/:spaceId`),
-  and delete -- so a read after a write never serves a stale description; the
-  TTL is a backstop that also bounds staleness across multiple server processes
-  sharing one backend. No API change.
+- Memoized the Space Description lookup. Every authorized handler reads the
+  Space Description through `getSpaceDescriptionOrThrow` in
+  `src/requests/spaceContext.ts`, so it is now cached per storage backend via
+  `@interop/lru-memoize` (a `WeakMap`-scoped `LruCache` per backend, short TTL
+  from `SPACE_DESCRIPTION_CACHE_TTL`). Writes invalidate explicitly through the
+  new `invalidateSpaceDescription()` -- wired into Space create
+  (`POST /spaces/`), update (`PUT /space/:spaceId`), and delete -- so a read
+  after a write never serves a stale description; the TTL is a backstop that
+  also bounds staleness across multiple server processes sharing one backend. No
+  API change.
 
 ### Fixed
 
 - Dead-code and error-handling cleanup:
-  - `src/lib/importTar.ts` now throws the typed `InvalidImportError` for the five
-    archive-validation failures instead of generic `Error`, and the
+  - `src/lib/importTar.ts` now throws the typed `InvalidImportError` for the
+    five archive-validation failures instead of generic `Error`, and the
     invalid-YAML case chains the underlying parse error as its `cause`
-    (`InvalidImportError` gained an optional `cause`). The `Import Space` handler
-    no longer flattens every failure into a fresh `InvalidImportError`: typed
-    `ProblemError`s now propagate unchanged (preserving status code and
+    (`InvalidImportError` gained an optional `cause`). The `Import Space`
+    handler no longer flattens every failure into a fresh `InvalidImportError`:
+    typed `ProblemError`s now propagate unchanged (preserving status code and
     message), and only an unexpected decode failure is wrapped -- keeping the
     original as the `cause`.
   - `resolveResourceInput` (`src/requests/resourceInput.ts`) guards the
@@ -44,12 +50,24 @@
 
 ### Changed
 
-- Removed dead code: the commented-out `@fastify/accepts`
-  import/registration in `src/server.ts`, the commented debug log in
-  `src/auth-header-hooks.ts`, and the three speculative
-  `// TODO: use a uuid v5 or another hash based id` comments (random v4 ids are
-  correct for these server-assigns-id create endpoints; deterministic ids have
-  no natural key here and would change semantics).
+- Tighten `PUT .../policy` body validation (Phase 5b): a policy `type` that is
+  empty or whitespace-only is now rejected with a 400 (`InvalidPolicyError`)
+  instead of being stored. The recognized-types set stays intentionally open (an
+  unknown `type` is stored and fail-closes at evaluation time), so this is a
+  shape check only, not a known-types allowlist.
+- Centralize the relative URL path templates (Phase 5d). New `src/lib/paths.ts`
+  exposes `spacePath` / `collectionPath` / `resourcePath` / `policyPath` /
+  `linksetPath` builders that mirror the route shapes in `routes.ts`; the policy
+  and linkset code (`src/policy.ts`, `PolicyRequest`, and the Space/Collection
+  linkset handlers) now builds those paths through the helpers rather than
+  re-deriving them inline. The linkset relation URI moved from `src/policy.ts`
+  into `config.default.ts` (`POLICY_LINK_RELATION`).
+- Removed dead code: the commented-out `@fastify/accepts` import/registration in
+  `src/server.ts`, the commented debug log in `src/auth-header-hooks.ts`, and
+  the three speculative `// TODO: use a uuid v5 or another hash based id`
+  comments (random v4 ids are correct for these server-assigns-id create
+  endpoints; deterministic ids have no natural key here and would change
+  semantics).
 - Extracted the fetch-space-and-verify boilerplate repeated across ~18 handlers
   (in five files) into the new neutral module `src/requests/spaceContext.ts`. It
   loads the Space and builds the capability `invocationTarget` URL once, then
@@ -70,6 +88,16 @@
   That abstraction now lives in the port (`src/types.ts`) and survives the
   removal; a future durable/queryable backend (SQLite/Postgres/LMDB) will be the
   real second adapter that proves the port.
+
+### Security
+
+- Validate the Space `controller` DID at the request layer (Phase 5a).
+  `POST /spaces/` (Create Space) and `PUT /space/:spaceId` (Update Space) now
+  reject a body whose `controller` is not a syntactically valid Ed25519
+  `did:key` with a typed 400 (`InvalidControllerError`, pointer `#/controller`)
+  on the way in -- rather than storing a malformed controller that only fails
+  later, at capability-verification time. New `src/lib/validateDid.ts` exports
+  `assertValidController` / `isValidController`.
 
 ## 0.3.0 - 2026-06-06
 

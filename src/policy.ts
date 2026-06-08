@@ -7,13 +7,13 @@
  * (fail-closed). Also builds the RFC9264 linkset that advertises a Space's or
  * Collection's policy resource for discovery.
  */
+import type { FastifyBaseLogger } from 'fastify'
 import type { PolicyDocument, StorageBackend } from './types.js'
+import { POLICY_LINK_RELATION } from './config.default.js'
+import { collectionPath, spacePath, policyPath } from './lib/paths.js'
 
 /** The kind of access a request needs; derived from the HTTP method. */
 export type AccessAction = 'read' | 'write'
-
-/** Linkset relation URI for the access-control policy auxiliary resource. */
-export const POLICY_LINK_RELATION = 'https://wallet.storage/spec#policy'
 
 /**
  * Resolves the policy that governs a target, honoring the spec's
@@ -66,14 +66,18 @@ export async function resolveEffectivePolicy({
  * @param options {object}
  * @param [options.policy] {PolicyDocument}   the effective policy, if any
  * @param options.action {AccessAction}
+ * @param [options.logger] {FastifyBaseLogger}   logger for the fail-closed warn
+ *   on an unrecognized policy type
  * @returns {boolean}
  */
 export function policyGrants({
   policy,
-  action
+  action,
+  logger
 }: {
   policy?: PolicyDocument
   action: AccessAction
+  logger?: FastifyBaseLogger
 }): boolean {
   if (!policy) {
     return false
@@ -83,6 +87,12 @@ export function policyGrants({
       return action === 'read'
     default:
       // Unknown policy type: grant nothing, fall through to zcap-only decision.
+      // Warn so a misconfigured / unsupported policy is diagnosable (the
+      // fail-closed behavior itself is correct; this is purely a signal).
+      logger?.warn(
+        { policyType: policy.type },
+        'Unrecognized access-control policy type; granting nothing (fail-closed).'
+      )
       return false
   }
 }
@@ -110,9 +120,9 @@ export async function buildPolicyLinkset({
 }): Promise<{ linkset: Array<Record<string, unknown>> }> {
   const anchor =
     collectionId !== undefined
-      ? `/space/${spaceId}/${collectionId}`
-      : `/space/${spaceId}`
-  const policyHref = `${anchor}/policy`
+      ? collectionPath({ spaceId, collectionId })
+      : spacePath({ spaceId })
+  const policyHref = policyPath({ spaceId, collectionId })
   const policy =
     collectionId !== undefined
       ? await storage.getPolicy({ spaceId, collectionId })
