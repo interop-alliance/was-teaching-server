@@ -4,7 +4,19 @@
 
 ### Added
 
-- Memoized the Space Description lookup (tech-debt Phase 4b). After 4a, every
+- Test + CI tooling:
+  - Added a `test:coverage` script (`vitest run --coverage`) and wired coverage
+    into CI: the `test` job now runs `pnpm run test:coverage` and uploads the
+    v8/lcov `coverage/` report (reporters already configured in
+    `vite.config.ts`) as a downloadable build artifact.
+  - Added direct unit tests for the previously integration-only core --
+    `test/zcap.test.ts` (the `handleZcapVerify` error contract:
+    `UnauthorizedError` on a failed invocation vs `AuthVerificationError` +
+    `cause` + logging on a verification error), `test/auth-header-hooks.test.ts`
+    (header gating and `request.zcap` parsing), and `test/importTar.test.ts`
+    (manifest validation, merge-plan building, tar extraction, and the
+    id-traversal guards). Coverage of all three modules is now ~94-100%.
+- Memoized the Space Description lookup. Every
   authorized handler reads the Space Description through
   `getSpaceDescriptionOrThrow` in `src/requests/spaceContext.ts`, so it is now
   cached per storage backend via `@interop/lru-memoize` (a `WeakMap`-scoped
@@ -17,7 +29,7 @@
 
 ### Fixed
 
-- Dead-code and error-handling cleanup (tech-debt Phase 4c):
+- Dead-code and error-handling cleanup:
   - `src/lib/importTar.ts` now throws the typed `InvalidImportError` for the five
     archive-validation failures instead of generic `Error`, and the
     invalid-YAML case chains the underlying parse error as its `cause`
@@ -32,7 +44,7 @@
 
 ### Changed
 
-- Removed dead code (tech-debt Phase 4c): the commented-out `@fastify/accepts`
+- Removed dead code: the commented-out `@fastify/accepts`
   import/registration in `src/server.ts`, the commented debug log in
   `src/auth-header-hooks.ts`, and the three speculative
   `// TODO: use a uuid v5 or another hash based id` comments (random v4 ids are
@@ -48,7 +60,7 @@
   write/privileged + policy endpoints). Both return the verified context. The
   old `getSpaceController` helper was dropped (subsumed). No behavior change,
   except the handlers that fetched the Collection before verifying now verify
-  first (tech-debt Phase 4a).
+  first.
 
 ### Removed
 

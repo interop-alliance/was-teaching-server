@@ -13,6 +13,7 @@
     "fix": "eslint --fix src test conformance && pnpm run format",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"conformance/**/*.ts\" \"*.md\"",
     "test-node": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test": "pnpm run fix && pnpm run lint && pnpm run build && pnpm run test-node",
     "conformance": "tsx --test conformance/*.test.ts",
     "conformance:local": "tsx scripts/conformance-local.ts"
