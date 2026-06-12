@@ -93,6 +93,10 @@ export async function initSpaceRoutes(
   // Space linkset (RFC9264 policy discovery)
   app.get('/space/:spaceId/linkset', SpaceRequest.linkset)
 
+  // Space Backends Available (reserved segment; static-beats-parametric routing
+  // keeps this ahead of the `:collectionId` parameter in the Collection routes).
+  app.get('/space/:spaceId/backends', SpaceRequest.listBackends)
+
   // Add Collection to a Space
   app.post('/space/:spaceId', async (request, reply) =>
     reply.redirect('/space/:spaceId/')
@@ -215,12 +219,9 @@ export async function initResourceRoutes(
   // Update Resource Metadata (user-writable `custom`) is not implemented yet;
   // the spec says unimplemented optional metadata endpoints SHOULD return
   // unsupported-operation (501).
-  app.put(
-    '/space/:spaceId/:collectionId/:resourceId/meta',
-    async () => {
-      throw new UnsupportedOperationError({
-        requestName: 'Update Resource Metadata'
-      })
-    }
-  )
+  app.put('/space/:spaceId/:collectionId/:resourceId/meta', async () => {
+    throw new UnsupportedOperationError({
+      requestName: 'Update Resource Metadata'
+    })
+  })
 }

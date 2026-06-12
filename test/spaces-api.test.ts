@@ -174,4 +174,63 @@ describe('Spaces', () => {
       assert.equal(await space.describe(), null)
     })
   })
+
+  describe('Space Backends (/backends)', () => {
+    // The single server-configured filesystem backend, registered as `default`.
+    const defaultBackendDescriptor = {
+      id: 'default',
+      name: 'Server Filesystem',
+      managedBy: 'server',
+      storageMode: ['document', 'blob'],
+      persistence: 'durable'
+    }
+
+    it('[signed] GET /backends lists the default backend descriptor', async () => {
+      const spaceId = crypto.randomUUID()
+      await alice.was.createSpace({
+        id: spaceId,
+        name: 'Backends Test Space',
+        controller: alice.did
+      })
+
+      const response = await alice.was.request({
+        url: `${serverUrl}/space/${spaceId}/backends`,
+        method: 'GET'
+      })
+      assert.equal(response.status, 200)
+      assert.match(response.headers.get('content-type')!, /application\/json/)
+      assert.deepStrictEqual(response.data, [defaultBackendDescriptor])
+    })
+
+    it('anonymous GET /backends of a private space 404s (no leak)', async () => {
+      const spaceId = crypto.randomUUID()
+      await alice.was.createSpace({
+        id: spaceId,
+        name: 'Private Backends Space',
+        controller: alice.did
+      })
+
+      const response = await fetch(
+        new URL(`/space/${spaceId}/backends`, serverUrl)
+      )
+      assert.equal(response.status, 404)
+    })
+
+    it('anonymous GET /backends of a PublicCanRead space succeeds', async () => {
+      const spaceId = crypto.randomUUID()
+      const space = await alice.was.createSpace({
+        id: spaceId,
+        name: 'Public Backends Space',
+        controller: alice.did
+      })
+      await space.setPublic()
+
+      const response = await fetch(
+        new URL(`/space/${spaceId}/backends`, serverUrl)
+      )
+      assert.equal(response.status, 200)
+      const backends = (await response.json()) as unknown[]
+      assert.deepStrictEqual(backends, [defaultBackendDescriptor])
+    })
+  })
 })

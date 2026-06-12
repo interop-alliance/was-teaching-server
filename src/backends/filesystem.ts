@@ -39,6 +39,7 @@ import type {
   ResourceInput,
   ImportStats,
   PolicyDocument,
+  BackendDescriptor,
   StorageBackend
 } from '../types.js'
 
@@ -129,6 +130,22 @@ export class FileSystemBackend implements StorageBackend {
   }) {
     this.spacesDir = path.join(dataDir, 'spaces')
     this.logger = logger ?? silentLogger
+  }
+
+  /**
+   * Self-description advertised at `GET /space/:spaceId/backends`. The
+   * filesystem backend is the single server-configured default: it stores both
+   * JSON documents and binary blobs on disk, so its data survives restarts.
+   * @returns {BackendDescriptor}
+   */
+  describe(): BackendDescriptor {
+    return {
+      id: 'default',
+      name: 'Server Filesystem',
+      managedBy: 'server',
+      storageMode: ['document', 'blob'],
+      persistence: 'durable'
+    }
   }
 
   /**

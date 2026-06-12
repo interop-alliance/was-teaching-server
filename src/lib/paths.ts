@@ -148,6 +148,16 @@ export function policyPath({
 }
 
 /**
+ * `/space/:spaceId/backends` -- the "Space Backends Available" list path.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @returns {string}
+ */
+export function backendsPath({ spaceId }: { spaceId: string }): string {
+  return `${spacePath({ spaceId })}/backends`
+}
+
+/**
  * `/space/:spaceId/:collectionId/:resourceId/meta` -- the Resource Metadata
  * (reserved `meta` segment) path. Reserved only at the Resource level, so it
  * takes the full id triple.

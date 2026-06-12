@@ -20,7 +20,8 @@ import {
   collectionsPath,
   exportPath,
   importPath,
-  linksetPath
+  linksetPath,
+  backendsPath
 } from '../lib/paths.js'
 import {
   ProblemError,
@@ -462,5 +463,45 @@ export class SpaceRequest {
       totalItems: collections.length,
       items: collections
     })
+  }
+
+  /**
+   * GET /space/:spaceId/backends
+   * Request handler for the "Space Backends Available" request: the list of
+   * storage backends registered for the Space. This reference server ships a
+   * single server-configured backend (registered as `default`), so the list has
+   * one entry, derived from the active backend's own `describe()`.
+   *
+   * Authorization is capability-or-policy, the same as List Collections: the
+   * backends list is no more sensitive than the Space description, so a
+   * public-readable Space may also list its backends.
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async listBackends(
+    request: FastifyRequest<{ Params: { spaceId: string } }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId }
+    } = request
+    const { storage } = request.server
+    const requestName = 'List Backends'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId }, { requestName })
+
+    // Authorize (capability-or-policy): capability invocation first, then the
+    // Space's access-control policy as a fallback (a public-readable Space).
+    await fetchSpaceAndAuthorize({
+      request,
+      spaceId,
+      targetPath: backendsPath({ spaceId }),
+      requestName
+    })
+
+    return reply.status(200).type('application/json').send([storage.describe()])
   }
 }

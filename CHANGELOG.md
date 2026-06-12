@@ -4,6 +4,14 @@
 
 ### Added
 
+- Implement the `GET /space/:spaceId/backends` ("Space Backends Available")
+  endpoint. Returns the list of storage backends registered for the Space; this
+  reference server ships one server-configured backend, so the list has a single
+  entry derived from the active backend's own `describe()`. Each entry is a
+  Backend description object (spec "Backend Data Model"): `id`, `name`,
+  `managedBy`, `storageMode`, and `persistence`. Authorization is
+  capability-or-policy, the same as List Collections (a public-readable Space may
+  list its backends).
 - Implement `/meta` resource endpoint.
 - Observability on the access-control policy authorization path (Phase 5c). A
   policy-granted read now emits an info log -- "Access granted by access-control

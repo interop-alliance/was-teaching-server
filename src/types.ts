@@ -139,6 +139,32 @@ export interface ResourceMetadata {
   size: number
 }
 
+/**
+ * A Backend description object (spec "Backend Data Model"), as returned in the
+ * array at `GET /space/:spaceId/backends`. The spec only REQUIRES `id` and
+ * defines defaults for the rest; this server always populates all five fields
+ * so a client can pick a `backend` for a Collection knowingly.
+ *
+ * - `id` -- the registration id under the Space (`default` for the single
+ *   server-configured backend this reference server ships with).
+ * - `name` -- a human-readable label.
+ * - `managedBy` -- who operates the backend: `server` (configured server-side)
+ *   or `external` (a Bring Your Own Storage provider registered by the client).
+ *   Spec default: `server`.
+ * - `storageMode` -- which representations the backend can store: `document`
+ *   (structured JSON) and/or `blob` (opaque binary). Spec default: both.
+ * - `persistence` -- whether the storage engine keeps data on persistent media
+ *   that survives a restart (`durable`) or only in memory (`volatile`). Spec
+ *   default: `durable`.
+ */
+export interface BackendDescriptor {
+  id: string
+  name: string
+  managedBy: 'server' | 'external'
+  storageMode: Array<'document' | 'blob'>
+  persistence: 'durable' | 'volatile'
+}
+
 /** Return shape of `getResource()`. */
 export interface ResourceResult {
   resourceStream: Readable
@@ -218,6 +244,13 @@ export interface StorageBackend {
    * default to a silent pino logger until it is set.
    */
   logger?: FastifyBaseLogger
+
+  /**
+   * The backend's self-description, as advertised at
+   * `GET /space/:spaceId/backends`. Synchronous: a backend knows its own
+   * characteristics without any I/O.
+   */
+  describe(): BackendDescriptor
 
   writeSpace(options: {
     spaceId: string

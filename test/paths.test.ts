@@ -19,6 +19,7 @@ import {
   resourcePath,
   policyPath,
   metaPath,
+  backendsPath,
   linksetPath
 } from '../src/lib/paths.js'
 
@@ -116,6 +117,12 @@ describe('metaPath', () => {
       metaPath({ spaceId: 's1', collectionId: 'c1', resourceId: 'r1' }),
       '/space/s1/c1/r1/meta'
     )
+  })
+})
+
+describe('backendsPath', () => {
+  it('builds the space backends list path', () => {
+    assert.equal(backendsPath({ spaceId: 's1' }), '/space/s1/backends')
   })
 })
 
