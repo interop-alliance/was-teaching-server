@@ -14,7 +14,8 @@ import {
   InvalidSpaceIdError,
   InvalidCollectionIdError,
   InvalidResourceIdError,
-  MissingContentTypeError
+  MissingContentTypeError,
+  ReservedIdError
 } from '../src/errors.js'
 
 describe('assertValidId', () => {
@@ -62,6 +63,58 @@ describe('assertValidId', () => {
       assert.ok(thrown.title)
     })
   }
+
+  // The spec's Reserved Path Segment Registry, per id position (plus the
+  // server's own non-spec `import` endpoint at the collection position).
+  const reservedCollectionIds = [
+    'backends',
+    'collections',
+    'export',
+    'import',
+    'linkset',
+    'policy',
+    'query',
+    'quotas'
+  ]
+  for (const id of reservedCollectionIds) {
+    it(`rejects reserved collection id "${id}" with a typed 409`, () => {
+      let thrown: any
+      try {
+        assertValidId(id, { kind: 'collection' })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown instanceof ReservedIdError)
+      assert.equal(thrown.statusCode, 409)
+      assert.equal(thrown.type, 'https://wallet.storage/spec#reserved-id')
+    })
+  }
+
+  const reservedResourceIds = ['backend', 'linkset', 'policy', 'query', 'quota']
+  for (const id of reservedResourceIds) {
+    it(`rejects reserved resource id "${id}" with a typed 409`, () => {
+      let thrown: any
+      try {
+        assertValidId(id, { kind: 'resource' })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown instanceof ReservedIdError)
+      assert.equal(thrown.statusCode, 409)
+    })
+  }
+
+  it('reserved segments only apply at their own position', () => {
+    // Space ids have no reserved siblings.
+    assert.doesNotThrow(() => assertValidId('export', { kind: 'space' }))
+    assert.doesNotThrow(() => assertValidId('policy', { kind: 'space' }))
+    // Space-level-only segments are fine as resource ids...
+    assert.doesNotThrow(() => assertValidId('export', { kind: 'resource' }))
+    assert.doesNotThrow(() => assertValidId('quotas', { kind: 'resource' }))
+    // ...and collection-level-only segments are fine as collection ids.
+    assert.doesNotThrow(() => assertValidId('backend', { kind: 'collection' }))
+    assert.doesNotThrow(() => assertValidId('quota', { kind: 'collection' }))
+  })
 
   it('throws the error class matching the id kind', () => {
     assert.throws(

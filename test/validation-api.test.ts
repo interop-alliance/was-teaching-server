@@ -92,6 +92,52 @@ describe('Request validation API', () => {
     })
   })
 
+  describe('Reserved path segments', () => {
+    it('PUT /space/:spaceId/export cannot create a Collection named "export" (409)', async () => {
+      // No static PUT route exists at /export (export is POST-only), so the
+      // request falls through to the parametric Create Collection route --
+      // which must reject the reserved id rather than create the Collection.
+      let expectedError: any
+      try {
+        await alice.was.request({
+          url: `${serverUrl}/space/${alice.space1.id}/export`,
+          method: 'PUT',
+          json: { name: 'export' }
+        })
+      } catch (error) {
+        expectedError = error
+      }
+      assert.ok(expectedError, 'expected the reserved id to be rejected')
+      assert.equal(expectedError.response.status, 409)
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#reserved-id',
+        'expected the spec reserved-id problem type'
+      )
+    })
+
+    it('PUT of a Resource named "quota" is rejected (409)', async () => {
+      // `quota` is reserved at the Collection level (the future per-Collection
+      // quota report endpoint).
+      let expectedError: any
+      try {
+        await alice.was.request({
+          url: `${serverUrl}/space/${alice.space1.id}/stuff/quota`,
+          method: 'PUT',
+          json: { hello: 'world' }
+        })
+      } catch (error) {
+        expectedError = error
+      }
+      assert.ok(expectedError, 'expected the reserved id to be rejected')
+      assert.equal(expectedError.response.status, 409)
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#reserved-id'
+      )
+    })
+  })
+
   describe('Malformed request body', () => {
     it('POST /spaces/ without a name succeeds (name is optional)', async () => {
       // The Space Description `name` property is optional per the spec, so a

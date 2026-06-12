@@ -150,6 +150,49 @@ export class IdConflictError extends ProblemError {
 }
 
 /**
+ * 409 — a client-supplied id collides with a segment from the spec's Reserved
+ * Path Segment Registry: the id would shadow the reserved route at that
+ * position (e.g. a Collection named `export` would shadow
+ * `/space/{id}/export`).
+ * @param options {object}
+ * @param options.kind {string}   which id position collided ('collection',
+ *   'resource'), used in the error title and detail
+ * @param options.id {string}   the offending reserved id
+ */
+export class ReservedIdError extends ProblemError {
+  constructor({ kind, id }: { kind: string; id: string }) {
+    const detail = `'${id}' is a reserved path segment and cannot be used as a ${kind} id.`
+    super({
+      type: ProblemTypes.RESERVED_ID,
+      title: `Invalid ${kind} id (from reserved list).`,
+      detail,
+      statusCode: 409,
+      problems: [{ detail, pointer: '#/id' }]
+    })
+  }
+}
+
+/**
+ * 409 — a Collection create/update names a `backend` id that is not in the
+ * Space's backends-available list (spec `unsupported-backend`).
+ * @param options {object}
+ * @param options.backendId {string}   the unrecognized backend id
+ */
+export class UnsupportedBackendError extends ProblemError {
+  constructor({ backendId }: { backendId: string }) {
+    const detail = `Backend '${backendId}' is not in this Space's backends-available list.`
+    super({
+      type: ProblemTypes.UNSUPPORTED_BACKEND,
+      title:
+        "Unsupported backend id, check the space's 'backends available' list.",
+      detail,
+      statusCode: 409,
+      problems: [{ detail, pointer: '#/backend' }]
+    })
+  }
+}
+
+/**
  * 400 — the Collection Description request body is missing or invalid.
  */
 export class InvalidCollectionError extends ProblemError {
@@ -335,29 +378,37 @@ export class InvalidControllerError extends ProblemError {
 }
 
 /**
- * 400 — the DID that signed the capability invocation does not match the
- * `controller` in the Create Space request body.
+ * 400 — the capability invocation on a Create Space request (via POST or
+ * create-via-PUT) is not *authorized by* the `controller` in the request body:
+ * it is neither signed directly by that DID nor accompanied by a delegation
+ * chain rooted in it.
  * @param options {object}
  * @param options.zcapSigningDid {string}   DID that signed the invocation
  * @param options.controller {string}   controller DID supplied in the body
+ * @param [options.cause] {Error}   the underlying chain-verification failure,
+ *   for a delegated invocation rejected at verification time
  */
 export class SpaceControllerMismatchError extends ProblemError {
   constructor({
     zcapSigningDid,
-    controller
+    controller,
+    cause
   }: {
     zcapSigningDid: string
     controller: string
+    cause?: Error
   }) {
     const detail =
-      'Authorization capability signing DID' +
-      ` ("${zcapSigningDid}") does not match the controller in the body ("${controller}").`
+      `The invocation must be authorized by the 'controller' DID in the` +
+      ` request body ("${controller}"): signed by it, or via a delegation` +
+      ` chain rooted in it (invocation signed by "${zcapSigningDid}").`
     super({
       type: ProblemTypes.CONTROLLER_MISMATCH,
       title: 'Invalid Create Space request',
       detail,
       statusCode: 400,
-      problems: [{ detail, pointer: '#/controller' }]
+      problems: [{ detail, pointer: '#/controller' }],
+      cause
     })
   }
 }
@@ -430,6 +481,40 @@ export class QuotaExceededError extends ProblemError {
       title: `Insufficient Storage${requestName ? ` (${requestName})` : ''}`,
       detail: `Space '${spaceId}' storage quota of ${capacityBytes} bytes is exhausted.`,
       statusCode: 507
+    })
+  }
+}
+
+/**
+ * 413 — an upload exceeds the target backend's per-request `maxUploadBytes`
+ * constraint. Distinct from `quota-exceeded` (507): this limit is per-request,
+ * not cumulative, so smaller uploads may still succeed.
+ * @param options {object}
+ * @param options.maxUploadBytes {number}   the backend's per-upload limit
+ * @param options.backendId {string}   the backend enforcing the limit
+ * @param [options.uploadBytes] {number}   the upload's size, when known up
+ *   front (a streamed upload without a Content-Length only reveals the
+ *   overflow, not the total)
+ */
+export class PayloadTooLargeError extends ProblemError {
+  constructor({
+    maxUploadBytes,
+    backendId,
+    uploadBytes
+  }: {
+    maxUploadBytes: number
+    backendId: string
+    uploadBytes?: number
+  }) {
+    const detail =
+      uploadBytes === undefined
+        ? `Upload exceeds 'maxUploadBytes' of ${maxUploadBytes} for backend '${backendId}'.`
+        : `Upload size ${uploadBytes} exceeds 'maxUploadBytes' of ${maxUploadBytes} for backend '${backendId}'.`
+    super({
+      type: ProblemTypes.PAYLOAD_TOO_LARGE,
+      title: "Upload exceeds the backend's maximum upload size.",
+      detail,
+      statusCode: 413
     })
   }
 }

@@ -39,6 +39,19 @@ export const ProblemTypes = {
    */
   ID_CONFLICT: `${SPEC_URL}#id-conflict`,
 
+  /**
+   * A client-supplied `id` collides with a segment from the spec's Reserved
+   * Path Segment Registry (e.g. a Collection named `export` would shadow
+   * `/space/{id}/export`). Typical status 409.
+   */
+  RESERVED_ID: `${SPEC_URL}#reserved-id`,
+
+  /**
+   * A Collection create/update names a `backend` id that is not in the Space's
+   * backends-available list. Typical status 409.
+   */
+  UNSUPPORTED_BACKEND: `${SPEC_URL}#unsupported-backend`,
+
   /** The request body is missing or invalid (missing required fields, etc.). */
   INVALID_REQUEST_BODY: `${SPEC_URL}#invalid-request-body`,
 
@@ -71,6 +84,14 @@ export const ProblemTypes = {
    * is exhausted (see the spec "Quotas" section). Typical status 507.
    */
   QUOTA_EXCEEDED: `${SPEC_URL}#quota-exceeded`,
+
+  /**
+   * An upload exceeds the target backend's `maxUploadBytes` constraint (see
+   * the spec "Quotas" section). Unlike `quota-exceeded`, this rejection is
+   * per-request, not cumulative: smaller uploads may still succeed. Typical
+   * status 413.
+   */
+  PAYLOAD_TOO_LARGE: `${SPEC_URL}#payload-too-large`,
 
   /**
    * The server does not implement this OPTIONAL operation (e.g. updating

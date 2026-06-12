@@ -259,11 +259,11 @@ describe('Access-control policy API', () => {
     assert.equal(response.status, 404)
   })
 
-  it('reserved ids (policy, linkset) cannot be used as collection ids (400)', async () => {
+  it('reserved ids (policy, linkset, ...) cannot be used as collection ids (409 reserved-id)', async () => {
     // Use the raw request escape hatch: the high-level client rejects reserved
     // ids before sending, so this exercises the server-side guard. The escape
     // hatch throws on non-2xx, so assert via the thrown response.
-    for (const reserved of ['policy', 'linkset']) {
+    for (const reserved of ['policy', 'linkset', 'export', 'quotas']) {
       let thrown: any
       try {
         await alice.was.request({
@@ -275,7 +275,12 @@ describe('Access-control policy API', () => {
         thrown = err
       }
       assert.ok(thrown, `expected reserved id "${reserved}" to be rejected`)
-      assert.equal(thrown.response.status, 400)
+      assert.equal(thrown.response.status, 409)
+      assert.equal(
+        thrown.data.type,
+        'https://wallet.storage/spec#reserved-id',
+        'expected the spec reserved-id problem type'
+      )
     }
   })
 })

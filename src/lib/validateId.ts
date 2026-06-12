@@ -5,11 +5,14 @@
  * rejects anything that is not a single, URL-safe path segment -- empty, `.`,
  * `..`, a value containing `/` or `\`, or any character outside the RFC 3986
  * "unreserved" set -- so a malicious id can never escape its parent directory.
+ * It also rejects Collection / Resource ids that collide with the spec's
+ * Reserved Path Segment Registry (`reserved-id`, 409).
  */
 import {
   InvalidSpaceIdError,
   InvalidCollectionIdError,
-  InvalidResourceIdError
+  InvalidResourceIdError,
+  ReservedIdError
 } from '../errors.js'
 
 /** Which kind of id is being validated (selects the thrown error class). */
@@ -21,15 +24,36 @@ export type IdKind = 'space' | 'collection' | 'resource'
 // both as a single path segment and inside a glob pattern.
 const ID_PATTERN = /^[A-Za-z0-9._~-]+$/
 
-// Reserved path segments that name auxiliary resources at the Collection /
-// Resource position (`/space/{id}/policy`, `/space/{id}/linkset`, etc.). A
-// client-chosen Collection or Resource id matching one of these would shadow
-// the reserved route, so reject it.
-const RESERVED_SEGMENTS = new Set(['policy', 'linkset'])
+// Reserved path segments from the spec's Reserved Path Segment Registry (plus
+// the server's own non-spec `import` endpoint). A client-chosen Collection or
+// Resource id matching one of these would shadow the reserved route at that
+// position (e.g. a Collection named `export` would shadow
+// `/space/{id}/export`), so the spec requires rejecting it with 409
+// `reserved-id`. Space ids have no reserved siblings (`/space/{id}` has no
+// static neighbors), so no set exists for the `space` kind.
+const RESERVED_COLLECTION_IDS = new Set([
+  'backends',
+  'collections',
+  'export',
+  'import', // non-spec: this server's tar-import endpoint
+  'linkset',
+  'policy',
+  'query',
+  'quotas'
+])
+const RESERVED_RESOURCE_IDS = new Set([
+  'backend',
+  'linkset',
+  'policy',
+  'query',
+  'quota'
+])
 
 /**
- * Asserts that an id is a single, URL-safe path segment, throwing the typed
- * 400 error matching `kind` otherwise.
+ * Asserts that an id is a single, URL-safe path segment that does not collide
+ * with a reserved path segment -- throwing the typed 400 `invalid-id` error
+ * matching `kind` for an unsafe id, or the 409 `reserved-id` error for a
+ * reserved-segment collision.
  * @param id {string}   the id parsed from a URL param, body, or tar entry
  * @param options {object}
  * @param options.kind {IdKind}   which id is being validated
@@ -40,28 +64,35 @@ export function assertValidId(
   id: string,
   { kind, requestName }: { kind: IdKind; requestName?: string }
 ): void {
-  const valid =
+  const urlSafe =
     typeof id === 'string' &&
     id.length > 0 &&
     id !== '.' &&
     id !== '..' &&
     !id.includes('/') &&
     !id.includes('\\') &&
-    ID_PATTERN.test(id) &&
-    // Collections and Resources may not take a reserved auxiliary-resource name.
-    !(kind !== 'space' && RESERVED_SEGMENTS.has(id))
+    ID_PATTERN.test(id)
 
-  if (valid) {
-    return
+  if (!urlSafe) {
+    switch (kind) {
+      case 'collection':
+        throw new InvalidCollectionIdError({ requestName })
+      case 'resource':
+        throw new InvalidResourceIdError({ requestName })
+      default:
+        throw new InvalidSpaceIdError({ requestName })
+    }
   }
 
-  switch (kind) {
-    case 'collection':
-      throw new InvalidCollectionIdError({ requestName })
-    case 'resource':
-      throw new InvalidResourceIdError({ requestName })
-    default:
-      throw new InvalidSpaceIdError({ requestName })
+  // Collections and Resources may not take a reserved path-segment name.
+  const reserved =
+    kind === 'collection'
+      ? RESERVED_COLLECTION_IDS
+      : kind === 'resource'
+        ? RESERVED_RESOURCE_IDS
+        : undefined
+  if (reserved?.has(id)) {
+    throw new ReservedIdError({ kind, id })
   }
 }
 

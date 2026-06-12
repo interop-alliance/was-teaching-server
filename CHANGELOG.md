@@ -4,6 +4,42 @@
 
 ### Added
 
+- Complete the spec's Error Type Registry (`src/problem-types.ts`): added the
+  three missing problem kinds and matching error classes -- `reserved-id` (409,
+  `ReservedIdError`), `unsupported-backend` (409, `UnsupportedBackendError`),
+  and `payload-too-large` (413, `PayloadTooLargeError`). `reserved-id` is
+  enforced immediately: the id sanitizer (`src/lib/validateId.ts`) now carries
+  the spec's full Reserved Path Segment Registry, per id position -- Collection
+  ids may not be `backends` / `collections` / `export` / `linkset` / `policy` /
+  `query` / `quotas` (plus this server's non-spec `import`), and Resource ids
+  may not be `backend` / `linkset` / `policy` / `query` / `quota` -- and a
+  collision is rejected with the spec's `reserved-id` (409) instead of the
+  previous `invalid-id` (400), which also only covered `policy` and `linkset`.
+  This closes a routing hole on verbs without a static route: for example,
+  `PUT /space/:spaceId/export` used to fall through to the parametric Create
+  Collection route and happily create a Collection literally named `export`,
+  shadowing the export endpoint. The other two new kinds have no emit sites yet:
+  `unsupported-backend` awaits the Collection `backend` property, and
+  `payload-too-large` awaits the per-upload `maxUploadBytes` constraint.
+
+- Support the spec's delegated Create Space chain of authorization. The
+  invocation on `POST /spaces/` (and on create-via-`PUT /space/:spaceId`, see
+  Fixed below) must be _authorized by_ the body's `controller`: signed directly
+  by it (the common case), or signed by another DID presenting a delegation
+  chain rooted in it -- enabling provisioning services that create a Space on a
+  user's behalf, with the user's DID as `controller` from the start. Previously
+  `POST /spaces/` rejected any signer other than the body's `controller` with
+  `controller-mismatch` _before_ verification, which blocked the delegated form.
+  The friendly pre-verification 400 is kept for bare-root invocations (where the
+  signer is the invoker, so it must be the controller); a delegated invocation
+  is instead judged by the capability-chain verification (which synthesizes the
+  root capability with the body's `controller` as its controller), and a chain
+  not rooted in the body's `controller` is rejected with the spec's
+  `controller-mismatch` (400). New `isRootInvocation()` helper in `src/zcap.ts`
+  distinguishes the two `Capability-Invocation` header forms;
+  `SpaceControllerMismatchError` now carries the spec's "signed by it, or via a
+  delegation chain rooted in it" detail (and an optional `cause`).
+
 - Enforce a per-Space storage quota (spec "Quotas"). A new
   `STORAGE_LIMIT_PER_SPACE` environment variable sets each Space's capacity in
   bytes; when configured, writes that would push a Space over its limit are
@@ -84,6 +120,17 @@
 
 ### Fixed
 
+- Close the create-via-PUT controller consent gap. `PUT /space/:spaceId`
+  creating a _new_ Space used to verify the invocation against the signer
+  itself, never tying it to the body's `controller` -- so any signer could
+  create a Space whose stored controller is an unrelated, non-consenting DID
+  (squatting meaningful ids "in their name", or burning per-controller
+  onboarding allowances). Creates now apply the same
+  authorized-by-body-controller rule as `POST /spaces/` (signed by the body's
+  `controller` directly, or via a delegation chain rooted in it; violations are
+  `controller-mismatch`, 400). Updates of an existing Space are unchanged: they
+  verify against the _stored_ controller, with the body's `controller` as just
+  the proposed new value.
 - Dead-code and error-handling cleanup:
   - `src/lib/importTar.ts` now throws the typed `InvalidImportError` for the
     five archive-validation failures instead of generic `Error`, and the
@@ -96,40 +143,39 @@
   - `resolveResourceInput` (`src/requests/resourceInput.ts`) guards the
     multipart parse: a `multipart` request with no file part now returns a clean
     `400` instead of throwing a raw `TypeError` on a non-null assertion.
-- Validate the Space `controller` DID at the request layer.
-  `POST /spaces/` (Create Space) and `PUT /space/:spaceId` (Update Space) now
-  reject a body whose `controller` is not a syntactically valid Ed25519
-  `did:key` with a typed 400 (`InvalidControllerError`, pointer `#/controller`)
-  on the way in -- rather than storing a malformed controller that only fails
-  later, at capability-verification time. New `src/lib/validateDid.ts` exports
+- Validate the Space `controller` DID at the request layer. `POST /spaces/`
+  (Create Space) and `PUT /space/:spaceId` (Update Space) now reject a body
+  whose `controller` is not a syntactically valid Ed25519 `did:key` with a typed
+  400 (`InvalidControllerError`, pointer `#/controller`) on the way in -- rather
+  than storing a malformed controller that only fails later, at
+  capability-verification time. New `src/lib/validateDid.ts` exports
   `assertValidController` / `isValidController`.
 - Reject `POST /spaces/` (Create Space) with an `id` that already exists,
-  instead of silently overwriting the existing Space. The
-  handler now checks for an existing Space Description before anything else and
-  rejects with the spec's `id-conflict` (409) error type (new
-  `ProblemTypes.ID_CONFLICT` catalog entry and `IdConflictError` class, pointer
-  `#/id`). Create-or-replace at a client-chosen id remains available via the
-  idempotent `PUT /space/:spaceId`. Create Collection
-  (`POST /space/:spaceId/`) gets the same `id-conflict` (409) check instead of
-  silently overwriting -- there it runs *after* the capability verification, so
-  an unauthorized caller cannot probe Collection ids; create-or-replace remains
-  the idempotent `PUT /space/:spaceId/:collectionId`.
+  instead of silently overwriting the existing Space. The handler now checks for
+  an existing Space Description before anything else and rejects with the spec's
+  `id-conflict` (409) error type (new `ProblemTypes.ID_CONFLICT` catalog entry
+  and `IdConflictError` class, pointer `#/id`). Create-or-replace at a
+  client-chosen id remains available via the idempotent `PUT /space/:spaceId`.
+  Create Collection (`POST /space/:spaceId/`) gets the same `id-conflict` (409)
+  check instead of silently overwriting -- there it runs _after_ the capability
+  verification, so an unauthorized caller cannot probe Collection ids;
+  create-or-replace remains the idempotent `PUT /space/:spaceId/:collectionId`.
 
 ### Changed
 
-- Tighten `PUT .../policy` body validation: a policy `type` that is
-  empty or whitespace-only is now rejected with a 400 (`InvalidPolicyError`)
-  instead of being stored. The recognized-types set stays intentionally open (an
-  unknown `type` is stored and fail-closes at evaluation time), so this is a
-  shape check only, not a known-types allowlist.
-- Centralize the relative URL path templates. New `src/lib/paths.ts`
-  exposes `spacePath` / `collectionPath` / `resourcePath` / `policyPath` /
-  `linksetPath` builders that mirror the route shapes in `routes.ts`; the policy
-  and linkset code (`src/policy.ts`, `PolicyRequest`, and the Space/Collection
-  linkset handlers) now builds those paths through the helpers rather than
-  re-deriving them inline. The linkset relation URI moved from `src/policy.ts`
-  into `config.default.ts` (`POLICY_LINK_RELATION`). The follow-up full sweep
-  then routed _every_ remaining inline path template through the module: the
+- Tighten `PUT .../policy` body validation: a policy `type` that is empty or
+  whitespace-only is now rejected with a 400 (`InvalidPolicyError`) instead of
+  being stored. The recognized-types set stays intentionally open (an unknown
+  `type` is stored and fail-closes at evaluation time), so this is a shape check
+  only, not a known-types allowlist.
+- Centralize the relative URL path templates. New `src/lib/paths.ts` exposes
+  `spacePath` / `collectionPath` / `resourcePath` / `policyPath` / `linksetPath`
+  builders that mirror the route shapes in `routes.ts`; the policy and linkset
+  code (`src/policy.ts`, `PolicyRequest`, and the Space/Collection linkset
+  handlers) now builds those paths through the helpers rather than re-deriving
+  them inline. The linkset relation URI moved from `src/policy.ts` into
+  `config.default.ts` (`POLICY_LINK_RELATION`). The follow-up full sweep then
+  routed _every_ remaining inline path template through the module: the
   trailing-slash container forms via a `trailingSlash` option on `spacePath` /
   `collectionPath`, plus new `spacesPath` (SpacesRepository container and member
   -- the latter being the create `Location`, deliberately `/spaces/:id`),

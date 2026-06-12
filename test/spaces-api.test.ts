@@ -234,6 +234,214 @@ describe('Spaces', () => {
     })
   })
 
+  describe('Create Space chain of authorization', () => {
+    // The spec defines Create Space (POST and create-via-PUT) authorization as
+    // *authorized by* the body's controller: signed directly by it, or via a
+    // delegation chain rooted in it (delegated provisioning). A request bound
+    // to neither is rejected with `controller-mismatch` (400).
+
+    /**
+     * Performs a signed request expected to fail, returning the thrown error.
+     *
+     * @param options {object}
+     * @param options.client {WasClient}
+     * @param options.request {object}   `was.request()` input
+     * @returns {Promise<any>}
+     */
+    async function requestError({
+      client,
+      request
+    }: {
+      client: any
+      request: object
+    }): Promise<any> {
+      try {
+        await client.request(request)
+      } catch (err) {
+        return err
+      }
+      assert.fail('expected the request to be rejected')
+    }
+
+    it('[root] POST signed by a different DID than the body controller yields controller-mismatch (400)', async () => {
+      // Bob signs a bare-root invocation but names Alice as the controller:
+      // Alice has authorized nothing, so this must be rejected.
+      const spaceId = crypto.randomUUID()
+      const expectedError = await requestError({
+        client: bob.was,
+        request: {
+          url: new URL('/spaces/', serverUrl).toString(),
+          method: 'POST',
+          json: { id: spaceId, name: 'Unconsented', controller: alice.did }
+        }
+      })
+      assert.equal(expectedError.response.status, 400)
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#controller-mismatch'
+      )
+      assert.equal(expectedError.data.errors[0].pointer, '#/controller')
+
+      // The Space was not created: its named controller cannot read it.
+      assert.equal(await alice.was.space(spaceId).describe(), null)
+    })
+
+    it("[delegated] a provisioning service creates a Space on Alice's behalf via POST", async () => {
+      // Alice delegates a POST /spaces/ capability to her provisioning app...
+      const spacesUrl = new URL('/spaces/', serverUrl).toString()
+      const zcap = await alice.was.grant({
+        to: aliceDelegatedApp.did,
+        actions: ['POST'],
+        target: spacesUrl
+      })
+
+      // ...and the app creates a Space that Alice controls from the start.
+      const spaceId = crypto.randomUUID()
+      const response = await aliceDelegatedApp.was.request({
+        url: spacesUrl,
+        method: 'POST',
+        capability: zcap,
+        json: {
+          id: spaceId,
+          name: 'Provisioned for Alice',
+          controller: alice.did
+        }
+      })
+      assert.equal(response.status, 201)
+      assert.equal(response.data.controller, alice.did)
+
+      // The stored controller is Alice's DID: her root key reads the Space.
+      const description = await alice.was.space(spaceId).describe()
+      assert.equal(description?.controller, alice.did)
+      assert.equal(description?.name, 'Provisioned for Alice')
+    })
+
+    it('[delegated] a POST chain not rooted in the body controller yields controller-mismatch (400)', async () => {
+      // The app holds a capability delegated by Alice, but names Bob as the
+      // controller: the chain is not rooted in Bob, so Bob has consented to
+      // nothing.
+      const spacesUrl = new URL('/spaces/', serverUrl).toString()
+      const zcap = await alice.was.grant({
+        to: aliceDelegatedApp.did,
+        actions: ['POST'],
+        target: spacesUrl
+      })
+
+      const spaceId = crypto.randomUUID()
+      const expectedError = await requestError({
+        client: aliceDelegatedApp.was,
+        request: {
+          url: spacesUrl,
+          method: 'POST',
+          capability: zcap,
+          json: { id: spaceId, name: 'Squatted on Bob', controller: bob.did }
+        }
+      })
+      assert.equal(expectedError.response.status, 400)
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#controller-mismatch'
+      )
+      assert.equal(await bob.was.space(spaceId).describe(), null)
+    })
+
+    it('[root] create-via-PUT signed by a different DID than the body controller yields controller-mismatch (400)', async () => {
+      // The consent gap this closes: a PUT create used to verify against the
+      // signer, never tying the invocation to the body's controller.
+      const spaceId = crypto.randomUUID()
+      const expectedError = await requestError({
+        client: bob.was,
+        request: {
+          url: new URL(`/space/${spaceId}`, serverUrl).toString(),
+          method: 'PUT',
+          json: { name: 'Unconsented', controller: alice.did }
+        }
+      })
+      assert.equal(expectedError.response.status, 400)
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#controller-mismatch'
+      )
+      assert.equal(await alice.was.space(spaceId).describe(), null)
+    })
+
+    it("[delegated] a provisioning service creates a Space on Alice's behalf via PUT", async () => {
+      // Alice delegates a PUT capability for the (not yet existing) Space URL.
+      const spaceId = crypto.randomUUID()
+      const spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
+      const zcap = await alice.was.grant({
+        to: aliceDelegatedApp.did,
+        actions: ['PUT'],
+        target: spaceUrl
+      })
+
+      const response = await aliceDelegatedApp.was.request({
+        url: spaceUrl,
+        method: 'PUT',
+        capability: zcap,
+        json: { name: 'Provisioned by PUT', controller: alice.did }
+      })
+      assert.equal(response.status, 201)
+
+      const description = await alice.was.space(spaceId).describe()
+      assert.equal(description?.controller, alice.did)
+      assert.equal(description?.name, 'Provisioned by PUT')
+    })
+
+    it('[delegated] a PUT-create chain not rooted in the body controller yields controller-mismatch (400)', async () => {
+      const spaceId = crypto.randomUUID()
+      const spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
+      const zcap = await alice.was.grant({
+        to: aliceDelegatedApp.did,
+        actions: ['PUT'],
+        target: spaceUrl
+      })
+
+      const expectedError = await requestError({
+        client: aliceDelegatedApp.was,
+        request: {
+          url: spaceUrl,
+          method: 'PUT',
+          capability: zcap,
+          json: { name: 'Squatted on Bob', controller: bob.did }
+        }
+      })
+      assert.equal(expectedError.response.status, 400)
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#controller-mismatch'
+      )
+      assert.equal(await bob.was.space(spaceId).describe(), null)
+    })
+
+    it('[root] an update still verifies against the stored controller, not the body', async () => {
+      // Once the Space exists, only the *stored* controller (or its delegate)
+      // may update it -- the body's controller is just the proposed new value.
+      // Bob cannot seize Alice's Space by PUTting it with himself as the
+      // controller (masked as 404, per the error-handling privacy invariant).
+      const spaceId = crypto.randomUUID()
+      await alice.was.createSpace({
+        id: spaceId,
+        name: "Alice's Space",
+        controller: alice.did
+      })
+
+      const expectedError = await requestError({
+        client: bob.was,
+        request: {
+          url: new URL(`/space/${spaceId}`, serverUrl).toString(),
+          method: 'PUT',
+          json: { name: 'Seized', controller: bob.did }
+        }
+      })
+      assert.equal(expectedError.response.status, 404)
+
+      const description = await alice.was.space(spaceId).describe()
+      assert.equal(description?.controller, alice.did)
+      assert.equal(description?.name, "Alice's Space")
+    })
+  })
+
   describe('Space Backends (/backends)', () => {
     // The single server-configured filesystem backend, registered as `default`.
     const defaultBackendDescriptor = {

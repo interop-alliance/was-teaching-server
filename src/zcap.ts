@@ -28,6 +28,26 @@ interface ZcapLogger {
 }
 
 /**
+ * Returns true when a `Capability-Invocation` header value is the bare root
+ * form (`zcap id="urn:zcap:root:..."` -- the signer invokes the root capability
+ * directly), false when it embeds a delegated capability
+ * (`zcap capability="<base64url(gzip(json))>"`). The check is safe on the raw
+ * header: a `capability=` substring cannot occur inside the root form's
+ * url-encoded `id` (where `=` is percent-encoded).
+ *
+ * @param options {object}
+ * @param options.invocation {string}   the raw `Capability-Invocation` header
+ * @returns {boolean}
+ */
+export function isRootInvocation({
+  invocation
+}: {
+  invocation: string
+}): boolean {
+  return !invocation.includes('capability=')
+}
+
+/**
  * Verifies the capability-invocation signature on a request against the Space
  * controller's key. Throws AuthVerificationError if verification itself errors,
  * or UnauthorizedError if the capability does not verify.

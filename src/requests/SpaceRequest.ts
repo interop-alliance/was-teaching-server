@@ -5,7 +5,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { Readable } from 'node:stream'
 import { v4 as uuidv4 } from 'uuid'
-import { handleZcapVerify } from '../zcap.js'
+import { handleZcapVerify, isRootInvocation } from '../zcap.js'
 import { buildPolicyLinkset } from '../policy.js'
 import {
   fetchSpaceAndAuthorize,
@@ -29,7 +29,8 @@ import {
   InvalidSpaceIdError,
   InvalidImportError,
   InvalidRequestBodyError,
-  IdConflictError
+  IdConflictError,
+  SpaceControllerMismatchError
 } from '../errors.js'
 import type { IDID } from '../types.js'
 
@@ -177,9 +178,27 @@ export class SpaceRequest {
       `Handling PUT request for spaceId: ${spaceId}, zcapSigningDid: ${zcapSigningDid}, existingSpaceDescription: ${existingSpaceDescription ? 'exists' : 'does not exist'}`
     )
 
-    // Important. For exising space objects, make sure the request carries
-    // authorization matching the old controller
-    const authorizedController = existingController ?? (zcapSigningDid as IDID)
+    // Important. For existing Spaces, the request must carry authorization
+    // matching the *stored* controller (the body's controller is just the
+    // proposed new value). On create there is no stored controller yet, so --
+    // as with Create Space via POST -- the invocation must be authorized by
+    // the *body's* controller: signed directly by it, or via a delegation
+    // chain rooted in it. Verifying a create against the signer instead would
+    // let anyone install an unrelated, non-consenting DID as controller.
+    const authorizedController = existingController ?? body.controller
+    const rootInvocation = isRootInvocation({
+      invocation: request.zcap!.invocation
+    })
+    if (
+      !existingSpaceDescription &&
+      rootInvocation &&
+      zcapSigningDid !== body.controller
+    ) {
+      throw new SpaceControllerMismatchError({
+        zcapSigningDid: zcapSigningDid!,
+        controller: body.controller
+      })
+    }
 
     // Perform zCap signature verification (throws appropriate errors)
     let spaceUrl
@@ -193,16 +212,31 @@ export class SpaceRequest {
     }
 
     request.log.info(`spaceUrl: ${spaceUrl}, serverUrl: ${serverUrl}`)
-    await handleZcapVerify({
-      url,
-      allowedTarget: spaceUrl,
-      allowedAction: 'PUT',
-      method,
-      headers,
-      serverUrl,
-      spaceController: authorizedController,
-      logger: request.log
-    })
+    try {
+      await handleZcapVerify({
+        url,
+        allowedTarget: spaceUrl,
+        allowedAction: 'PUT',
+        method,
+        headers,
+        serverUrl,
+        spaceController: authorizedController,
+        logger: request.log
+      })
+    } catch (err) {
+      // A delegated *create* that fails to verify is a chain not rooted in
+      // the body's controller: spec `controller-mismatch` (400). Updates (and
+      // root-form creates, whose signer already matched the controller above)
+      // keep their generic verification errors.
+      if (!existingSpaceDescription && !rootInvocation) {
+        throw new SpaceControllerMismatchError({
+          zcapSigningDid: zcapSigningDid!,
+          controller: body.controller,
+          cause: err as Error
+        })
+      }
+      throw err
+    }
 
     request.log.info('zCap verified')
 
