@@ -197,4 +197,134 @@ describe('Resource API', () => {
     // Cleanup: Delete collection
     await publicCollection.delete()
   })
+
+  describe('Resource Metadata (/meta)', () => {
+    // Build the absolute `/meta` URL for a credentials-collection resource.
+    const metaUrl = (resourceId: string) =>
+      `${serverUrl}/space/${alice.space1.id}/credentials/${resourceId}/meta`
+
+    it('[signed] GET /meta of a JSON resource returns contentType + size', async () => {
+      const resourceId = 'meta-json'
+      await aliceCredentials.put(resourceId, {
+        id: resourceId,
+        name: 'Meta JSON Resource'
+      })
+
+      const response = await alice.was.request({
+        url: metaUrl(resourceId),
+        method: 'GET'
+      })
+      assert.equal(response.status, 200)
+      assert.match(
+        response.headers.get('content-type')!,
+        /application\/json/
+      )
+      const meta = response.data as { contentType: string; size: number }
+      assert.equal(meta.contentType, 'application/json')
+      // fs-json-store's serialization decides the stored bytes; just assert it
+      // is a sensible positive integer (the public-read case below checks the
+      // size against the exact bytes returned by a GET of the resource).
+      assert.ok(Number.isInteger(meta.size) && meta.size > 0)
+    })
+
+    it('[signed] GET /meta of a binary resource returns its content-type + size', async () => {
+      // 'line 1\nline2\n' is exactly 13 bytes.
+      const blob = new Blob(['line 1\nline2\n'], { type: 'text/plain' })
+      const result = await aliceCredentials.add(blob)
+
+      const response = await alice.was.request({
+        url: `${result.url}/meta`,
+        method: 'GET'
+      })
+      assert.equal(response.status, 200)
+      const meta = response.data as { contentType: string; size: number }
+      assert.equal(meta.contentType, 'text/plain')
+      assert.equal(meta.size, 13)
+    })
+
+    it('[signed] GET /meta of a nonexistent resource 404s', async () => {
+      let thrown: any
+      try {
+        await alice.was.request({
+          url: metaUrl('does-not-exist'),
+          method: 'GET'
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown, 'expected a missing resource meta read to be rejected')
+      assert.equal(thrown.response.status, 404)
+    })
+
+    it("[signed] Bob's GET /meta of Alice's resource 404s (conflation)", async () => {
+      const resourceId = 'meta-private'
+      await aliceCredentials.put(resourceId, {
+        id: resourceId,
+        name: 'Private Meta Resource'
+      })
+
+      let thrown: any
+      try {
+        await bob.was.request({ url: metaUrl(resourceId), method: 'GET' })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown, "expected Bob's meta read to be rejected")
+      assert.equal(thrown.response.status, 404)
+    })
+
+    it('anonymous GET /meta of a resource in a PublicCanRead collection succeeds', async () => {
+      const publicCollection = await aliceSpace.createCollection({
+        id: 'meta-public',
+        name: 'Meta Public Collection'
+      })
+      await publicCollection.put('readme', { id: 'readme', name: 'Read Me' })
+
+      const resourceUrl = `${serverUrl}/space/${alice.space1.id}/meta-public/readme`
+
+      // Before any policy: anonymous /meta read is denied (404, no leak).
+      const beforeResponse = await fetch(new URL(`${resourceUrl}/meta`))
+      assert.equal(beforeResponse.status, 404)
+
+      await publicCollection.setPublic()
+
+      // With PublicCanRead: anonymous /meta read succeeds, and the reported
+      // size matches the exact byte length of a GET of the resource itself.
+      const resourceBytes = await (await fetch(new URL(resourceUrl))).arrayBuffer()
+      const metaResponse = await fetch(new URL(`${resourceUrl}/meta`))
+      assert.equal(metaResponse.status, 200)
+      assert.match(
+        metaResponse.headers.get('content-type')!,
+        /application\/json/
+      )
+      const meta = (await metaResponse.json()) as {
+        contentType: string
+        size: number
+      }
+      assert.equal(meta.contentType, 'application/json')
+      assert.equal(meta.size, resourceBytes.byteLength)
+    })
+
+    it('PUT /meta is not implemented (501 unsupported-operation)', async () => {
+      const resourceId = 'meta-put'
+      await aliceCredentials.put(resourceId, {
+        id: resourceId,
+        name: 'PUT Meta Resource'
+      })
+
+      let thrown: any
+      try {
+        await alice.was.request({
+          url: metaUrl(resourceId),
+          method: 'PUT',
+          json: { custom: { label: 'nope' } }
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown, 'expected PUT /meta to be rejected')
+      assert.equal(thrown.response.status, 501)
+      assert.match(thrown.data.type, /#unsupported-operation$/)
+    })
+  })
 })

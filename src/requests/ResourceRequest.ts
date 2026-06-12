@@ -6,7 +6,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
-import { resourcePath } from '../lib/paths.js'
+import { resourcePath, metaPath } from '../lib/paths.js'
 import {
   CollectionNotFoundError,
   ResourceNotFoundError,
@@ -142,6 +142,76 @@ export class ResourceRequest {
       .status(200)
       .type(result.storedResourceType)
       .send(result.resourceStream)
+  }
+
+  /**
+   * GET /space/:spaceId/:collectionId/:resourceId/meta
+   * Request handler for "Read Resource Metadata" request. Returns the two
+   * REQUIRED server-managed fields, `contentType` and `size`. Authorization is
+   * capability-or-policy, the same as Get Resource: metadata reveals nothing
+   * beyond what a GET of the resource itself exposes via Content-Type /
+   * Content-Length, so a `PublicCanRead` policy also grants metadata reads.
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async getMeta(
+    request: FastifyRequest<{
+      Params: { spaceId: string; collectionId: string; resourceId: string }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId, collectionId, resourceId }
+    } = request
+    const { storage } = request.server
+    const requestName = 'Get Resource Metadata'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
+
+    // Authorize (capability-or-policy): the capability's `invocationTarget` is
+    // the full `/meta` URL (matching the request URL), and the policy level
+    // resolves at the resource as for Get Resource.
+    await fetchSpaceAndAuthorize({
+      request,
+      spaceId,
+      collectionId,
+      resourceId,
+      targetPath: metaPath({ spaceId, collectionId, resourceId }),
+      requestName
+    })
+
+    // authorized, continue
+
+    // Fetch collection by id
+    const collectionDescription = await storage.getCollectionDescription({
+      spaceId,
+      collectionId
+    })
+    if (!collectionDescription) {
+      throw new CollectionNotFoundError({ requestName })
+    }
+
+    let metadata
+    try {
+      metadata = await storage.getResourceMetadata({
+        spaceId,
+        collectionId,
+        resourceId
+      })
+    } catch (err) {
+      throw new StorageError({ cause: err as Error, requestName })
+    }
+    if (!metadata) {
+      throw new ResourceNotFoundError({ requestName })
+    }
+
+    return reply
+      .status(200)
+      .type('application/json')
+      .send(JSON.stringify(metadata))
   }
 
   /**

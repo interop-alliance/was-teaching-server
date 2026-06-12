@@ -35,6 +35,7 @@ import type {
   CollectionSummary,
   CollectionListing,
   ResourceResult,
+  ResourceMetadata,
   ResourceInput,
   ImportStats,
   PolicyDocument,
@@ -741,6 +742,49 @@ export class FileSystemBackend implements StorageBackend {
       resourceStream: await openFileStream(filePath, this.logger),
       storedResourceType
     }
+  }
+
+  /**
+   * Reads the server-managed metadata (content-type and byte size) of a
+   * Resource's current representation. Both fields are derived from the stored
+   * file -- no separate metadata persistence. Resolves `undefined` when the
+   * Resource is absent (including a delete race on `stat`).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @returns {Promise<ResourceMetadata|undefined>}
+   */
+  async getResourceMetadata({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+  }): Promise<ResourceMetadata | undefined> {
+    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const filePath = await this._findFile({ collectionDir, resourceId })
+    if (!filePath) {
+      return undefined
+    }
+
+    let stats
+    try {
+      stats = await fsStat(filePath)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return undefined
+      }
+      throw err
+    }
+
+    // Derive the stored content-type from the filename segment (the exact type
+    // it was written under), as `getResource` does.
+    const { contentType } = parseResourceFileName(path.basename(filePath))
+
+    return { contentType, size: stats.size }
   }
 
   /**

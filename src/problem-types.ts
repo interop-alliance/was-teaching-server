@@ -59,6 +59,12 @@ export const ProblemTypes = {
   /** An underlying storage operation failed (server-side fault). */
   STORAGE_ERROR: `${SPEC_URL}#storage-error`,
 
+  /**
+   * The server does not implement this OPTIONAL operation (e.g. updating
+   * Resource Metadata). Typical status 501.
+   */
+  UNSUPPORTED_OPERATION: `${SPEC_URL}#unsupported-operation`,
+
   /** Fallback for an unexpected server-side fault with no more specific kind. */
   INTERNAL_ERROR: `${SPEC_URL}#internal-error`
 } as const

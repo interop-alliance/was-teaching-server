@@ -404,6 +404,23 @@ export class MissingContentTypeError extends ProblemError {
 }
 
 /**
+ * 501 — the server does not implement this OPTIONAL operation (e.g. updating
+ * Resource Metadata, which is not yet supported).
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ */
+export class UnsupportedOperationError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({
+      type: ProblemTypes.UNSUPPORTED_OPERATION,
+      title: `Unsupported ${requestName || 'operation'}`,
+      detail: 'This server does not implement this optional operation.',
+      statusCode: 501
+    })
+  }
+}
+
+/**
  * 400 — the uploaded archive is not a valid WAS space export.
  * @param options {object}
  * @param [options.message] {string}   detail message describing the problem

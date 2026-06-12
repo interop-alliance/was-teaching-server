@@ -126,6 +126,19 @@ export interface CollectionListing {
   items: ResourceSummary[]
 }
 
+/**
+ * A Resource Metadata object (spec "Resource Metadata Data Model"), addressable
+ * at the reserved `/meta` segment under a Resource. v1 exposes only the two
+ * REQUIRED server-managed fields. The optional `createdAt` / `updatedAt`
+ * timestamps and the user-writable `custom` object come later.
+ */
+export interface ResourceMetadata {
+  /** MIME type of the stored representation */
+  contentType: string
+  /** length in bytes of the stored representation */
+  size: number
+}
+
 /** Return shape of `getResource()`. */
 export interface ResourceResult {
   resourceStream: Readable
@@ -257,6 +270,11 @@ export interface StorageBackend {
     collectionId: string
     resourceId: string
   }): Promise<void>
+  getResourceMetadata(options: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+  }): Promise<ResourceMetadata | undefined>
 
   // Access-control policy documents. The level is selected by which ids are
   // present: Space (`spaceId`), Collection (`+ collectionId`), or Resource

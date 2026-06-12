@@ -242,6 +242,49 @@ describe('Resource API', () => {
     await alice.rootClient.request({ url: resourceUrl, method: 'DELETE' })
   })
 
+  it('[root] GET Resource Metadata (/meta), or skip if unimplemented', async () => {
+    // Resource Metadata is OPTIONAL: a server that does not implement it
+    // responds 501 `unsupported-operation`, which this test treats as a skip.
+    const resourceId = generateId()
+    const resourceUrl = new URL(
+      `/space/${alice.space1.id}/credentials/${resourceId}`,
+      serverUrl
+    ).toString()
+    await alice.rootClient.request({
+      url: resourceUrl,
+      method: 'PUT',
+      json: { id: resourceId, name: 'Metadata Resource' }
+    })
+
+    const metaUrl = `${resourceUrl}/meta`
+    let response: any
+    try {
+      response = await alice.rootClient.request({ url: metaUrl, method: 'GET' })
+    } catch (err: any) {
+      if (err.response?.status === 501) {
+        // Optional endpoint not implemented -- pass with skip.
+        return
+      }
+      throw err
+    }
+
+    assert.equal(response.status, 200)
+    assert.match(response.headers.get('content-type'), /application\/json/)
+    assert.equal(response.data.contentType, 'application/json')
+    assert.ok(
+      Number.isInteger(response.data.size) && response.data.size > 0,
+      'size should be a positive integer'
+    )
+
+    // An anonymous (unsigned) meta read must not leak existence: 404 problem+json.
+    const anonResponse = await fetch(new URL(metaUrl))
+    assert.equal(anonResponse.status, 404)
+    assert.match(
+      anonResponse.headers.get('content-type')!,
+      /application\/problem\+json/
+    )
+  })
+
   it('[root] POST and DELETE Resource with proper authorization', async () => {
     const body = { id: 'sample-resource-to-delete', name: 'Sample Delete' }
     const response = await alice.rootClient.request({

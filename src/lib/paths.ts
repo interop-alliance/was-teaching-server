@@ -148,6 +148,28 @@ export function policyPath({
 }
 
 /**
+ * `/space/:spaceId/:collectionId/:resourceId/meta` -- the Resource Metadata
+ * (reserved `meta` segment) path. Reserved only at the Resource level, so it
+ * takes the full id triple.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.resourceId {string}
+ * @returns {string}
+ */
+export function metaPath({
+  spaceId,
+  collectionId,
+  resourceId
+}: {
+  spaceId: string
+  collectionId: string
+  resourceId: string
+}): string {
+  return `${resourcePath({ spaceId, collectionId, resourceId })}/meta`
+}
+
+/**
  * The `linkset` discovery resource path for a Space (`spaceId`) or Collection
  * (`+ collectionId`).
  * @param options {object}

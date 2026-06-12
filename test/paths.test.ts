@@ -18,6 +18,7 @@ import {
   collectionPath,
   resourcePath,
   policyPath,
+  metaPath,
   linksetPath
 } from '../src/lib/paths.js'
 
@@ -105,6 +106,15 @@ describe('policyPath', () => {
     assert.equal(
       policyPath({ spaceId: 's1', collectionId: 'c1', resourceId: 'r1' }),
       '/space/s1/c1/r1/policy'
+    )
+  })
+})
+
+describe('metaPath', () => {
+  it('builds the resource metadata path', () => {
+    assert.equal(
+      metaPath({ spaceId: 's1', collectionId: 'c1', resourceId: 'r1' }),
+      '/space/s1/c1/r1/meta'
     )
   })
 })

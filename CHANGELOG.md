@@ -4,6 +4,7 @@
 
 ### Added
 
+- Implement `/meta` resource endpoint.
 - Observability on the access-control policy authorization path (Phase 5c). A
   policy-granted read now emits an info log -- "Access granted by access-control
   policy." with `spaceId` / `collectionId` / `resourceId` / `action` /
