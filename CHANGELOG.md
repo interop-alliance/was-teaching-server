@@ -109,9 +109,11 @@
   rejects with the spec's `id-conflict` (409) error type (new
   `ProblemTypes.ID_CONFLICT` catalog entry and `IdConflictError` class, pointer
   `#/id`). Create-or-replace at a client-chosen id remains available via the
-  idempotent `PUT /space/:spaceId`. The same check for Create Collection
-  (`POST /space/:spaceId/`, less severe: it requires the Space controller's
-  capability) remains future work.
+  idempotent `PUT /space/:spaceId`. Create Collection
+  (`POST /space/:spaceId/`) gets the same `id-conflict` (409) check instead of
+  silently overwriting -- there it runs *after* the capability verification, so
+  an unauthorized caller cannot probe Collection ids; create-or-replace remains
+  the idempotent `PUT /space/:spaceId/:collectionId`.
 
 ### Changed
 

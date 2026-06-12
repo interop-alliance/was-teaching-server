@@ -28,7 +28,8 @@ import {
   ProblemError,
   InvalidSpaceIdError,
   InvalidImportError,
-  InvalidRequestBodyError
+  InvalidRequestBodyError,
+  IdConflictError
 } from '../errors.js'
 import type { IDID } from '../types.js'
 
@@ -276,6 +277,19 @@ export class SpaceRequest {
     })
 
     // zCap checks out, continue
+    // POST must not replace an existing Collection: spec `id-conflict` (409);
+    // create-or-replace by id is PUT's job. Checked after the capability
+    // verification so an unauthorized caller cannot probe Collection ids.
+    if (
+      body?.id !== undefined &&
+      (await storage.getCollectionDescription({
+        spaceId,
+        collectionId: body.id
+      }))
+    ) {
+      throw new IdConflictError({ kind: 'Collection' })
+    }
+
     // TODO: Protect against .space resource id collision
     const collectionId = body.id || uuidv4()
     // `name` is optional; default it to the Collection id when missing (spec).

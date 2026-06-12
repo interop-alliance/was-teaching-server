@@ -83,6 +83,36 @@ describe('Collections API', () => {
     })
   })
 
+  it('POST with an existing collection id yields id-conflict (409)', async () => {
+    const collectionId = crypto.randomUUID()
+    await aliceSpace.createCollection({
+      id: collectionId,
+      name: 'Conflict Test Collection'
+    })
+
+    let expectedError: any
+    try {
+      await alice.was.request({
+        url: new URL(`/space/${alice.space1.id}/`, serverUrl).toString(),
+        method: 'POST',
+        json: { id: collectionId, name: 'Replacement' }
+      })
+    } catch (error) {
+      expectedError = error
+    }
+    assert.ok(expectedError, 'expected the duplicate-id POST to be rejected')
+    assert.equal(expectedError.response.status, 409)
+    assert.equal(
+      expectedError.data.type,
+      'https://wallet.storage/spec#id-conflict'
+    )
+    assert.equal(expectedError.data.errors[0].pointer, '#/id')
+
+    // The description is untouched.
+    const description = await aliceSpace.collection(collectionId).describe()
+    assert.equal(description.name, 'Conflict Test Collection')
+  })
+
   it('[root] list collection items via GET :collectionId/', async () => {
     const listing = await aliceSpace.collection('credentials').list()
     assert.ok(listing)

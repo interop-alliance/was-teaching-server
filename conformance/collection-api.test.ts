@@ -94,6 +94,27 @@ describe('Collections API', () => {
     )
   })
 
+  it('[root] POST with an existing collection id yields id-conflict (409)', async () => {
+    // 'credentials' was created by the POST test above.
+    let expectedError: any
+    try {
+      await alice.rootClient.request({
+        url: new URL(`/space/${alice.space1.id}/`, serverUrl).toString(),
+        method: 'POST',
+        action: 'POST',
+        json: { id: 'credentials', name: 'Replacement' }
+      })
+    } catch (err) {
+      expectedError = err
+    }
+    assert.ok(expectedError, 'expected the duplicate-id POST to be rejected')
+    assert.equal(expectedError.response.status, 409)
+    assert.equal(
+      expectedError.data.type,
+      'https://wallet.storage/spec#id-conflict'
+    )
+  })
+
   it('[root] list collection items via GET :collectionId/', async () => {
     const response = await alice.rootClient.request({
       url: new URL(
