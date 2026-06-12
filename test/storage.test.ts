@@ -323,4 +323,101 @@ describe('Storage API', () => {
       }
     })
   })
+
+  describe('FileSystemBackend.reportUsage()', () => {
+    /**
+     * Provisions a Space with one Collection holding one JSON Resource, on a
+     * backend with the given (optional) configured capacity.
+     */
+    async function provision(capacityBytes?: number) {
+      const tempDir = await mkdtemp(path.join(os.tmpdir(), 'was-usage-test-'))
+      await mkdir(path.join(tempDir, 'spaces'))
+      const backend = new FileSystemBackend({ dataDir: tempDir, capacityBytes })
+      const spaceId = 'usage-space'
+      const collectionId = 'credentials'
+      await backend.writeSpace({
+        spaceId,
+        spaceDescription: {
+          id: spaceId,
+          type: ['Space'],
+          name: 'Usage Test Space',
+          controller: 'did:key:test-controller'
+        }
+      })
+      await backend.writeCollection({
+        spaceId,
+        collectionId,
+        collectionDescription: {
+          id: collectionId,
+          type: ['Collection'],
+          name: 'Credentials'
+        }
+      })
+      await backend.writeResource({
+        spaceId,
+        collectionId,
+        resourceId: 'vc-1',
+        input: {
+          kind: 'json',
+          contentType: 'application/json',
+          data: { id: 'vc-1', name: 'A Verifiable Credential' }
+        }
+      })
+      return { backend, spaceId, collectionId, tempDir }
+    }
+
+    it('reports non-zero usage and an unlimited limit by default', async () => {
+      const { backend, spaceId, collectionId, tempDir } = await provision()
+      try {
+        const usage = await backend.reportUsage({ spaceId })
+        assert.equal(usage.id, 'default')
+        assert.equal(usage.managedBy, 'server')
+        assert.equal(usage.state, 'ok')
+        assert.ok(usage.usageBytes > 0)
+        assert.deepStrictEqual(usage.limit, { isUnlimited: true })
+        assert.deepStrictEqual(usage.restrictedActions, [])
+        // The per-Collection breakdown is always included (see reportUsage).
+        assert.ok(usage.usageByCollection)
+        assert.deepStrictEqual(
+          usage.usageByCollection!.map(collection => collection.id),
+          [collectionId]
+        )
+        assert.ok(usage.usageByCollection![0].usageBytes > 0)
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it('reports near-limit / over-quota states against a configured capacity', async () => {
+      // Measure actual usage first, then size a capacity to land in each band.
+      const probe = await provision()
+      const usageBytes = (
+        await probe.backend.reportUsage({
+          spaceId: probe.spaceId
+        })
+      ).usageBytes
+      await rm(probe.tempDir, { recursive: true, force: true })
+
+      // near-limit: usage is at/above 90% but below capacity.
+      const near = await provision(Math.ceil(usageBytes / 0.95))
+      try {
+        const usage = await near.backend.reportUsage({ spaceId: near.spaceId })
+        assert.equal(usage.state, 'near-limit')
+        assert.equal(usage.limit.isUnlimited, false)
+        assert.deepStrictEqual(usage.restrictedActions, [])
+      } finally {
+        await rm(near.tempDir, { recursive: true, force: true })
+      }
+
+      // over-quota: usage meets/exceeds capacity; writes become restricted.
+      const over = await provision(Math.floor(usageBytes / 2))
+      try {
+        const usage = await over.backend.reportUsage({ spaceId: over.spaceId })
+        assert.equal(usage.state, 'over-quota')
+        assert.deepStrictEqual(usage.restrictedActions, ['POST', 'PUT'])
+      } finally {
+        await rm(over.tempDir, { recursive: true, force: true })
+      }
+    })
+  })
 })

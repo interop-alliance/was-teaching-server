@@ -158,6 +158,16 @@ export function backendsPath({ spaceId }: { spaceId: string }): string {
 }
 
 /**
+ * `/space/:spaceId/quotas` -- the Space Quota report path (spec "Quotas").
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @returns {string}
+ */
+export function quotasPath({ spaceId }: { spaceId: string }): string {
+  return `${spacePath({ spaceId })}/quotas`
+}
+
+/**
  * `/space/:spaceId/:collectionId/:resourceId/meta` -- the Resource Metadata
  * (reserved `meta` segment) path. Reserved only at the Resource level, so it
  * takes the full id triple.

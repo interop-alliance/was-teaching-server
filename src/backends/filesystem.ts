@@ -6,6 +6,8 @@
 import path from 'node:path'
 import { mkdir, rm, stat as fsStat } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import type { Readable } from 'node:stream'
 import fs from 'node:fs'
 import jsonfs from 'fs-json-store'
@@ -25,7 +27,8 @@ import {
   SPACE_URL,
   COLLECTION_URL,
   RESOURCE_URL,
-  POLICY_URL
+  POLICY_URL,
+  QUOTA_NEAR_LIMIT_FRACTION
 } from '../config.default.js'
 import { extractTarEntries, buildImportPlan } from '../lib/importTar.js'
 import { collectionPath, resourcePath } from '../lib/paths.js'
@@ -40,10 +43,16 @@ import type {
   ImportStats,
   PolicyDocument,
   BackendDescriptor,
+  BackendUsage,
+  BackendState,
+  StorageLimit,
+  CollectionUsage,
   StorageBackend
 } from '../types.js'
 
 const { Store: MetadataJsonStore } = jsonfs
+
+const execFileAsync = promisify(execFile)
 
 /**
  * Silent logger used when no logger is injected into the backend, so the backend
@@ -120,16 +129,27 @@ async function openFileStream(
 export class FileSystemBackend implements StorageBackend {
   spacesDir: string
   logger: FastifyBaseLogger
+  /**
+   * Storage capacity this backend enforces in its quota report, in bytes.
+   * `undefined` means no configured limit -- the backend reports an unlimited
+   * quota (state always `ok`). A finite value drives the `near-limit` /
+   * `over-quota` state thresholds (see `reportUsage`). Note this server does not
+   * yet *enforce* the limit on writes; it is reported for quota visibility.
+   */
+  capacityBytes?: number
 
   constructor({
     dataDir,
-    logger
+    logger,
+    capacityBytes
   }: {
     dataDir: string
     logger?: FastifyBaseLogger
+    capacityBytes?: number
   }) {
     this.spacesDir = path.join(dataDir, 'spaces')
     this.logger = logger ?? silentLogger
+    this.capacityBytes = capacityBytes
   }
 
   /**
@@ -145,6 +165,121 @@ export class FileSystemBackend implements StorageBackend {
       managedBy: 'server',
       storageMode: ['document', 'blob'],
       persistence: 'durable'
+    }
+  }
+
+  /**
+   * Measures disk usage under the Space dir with `du`, returning the grand total
+   * and a per-Collection breakdown in one pass. `du -d 1 -B 1` (GNU coreutils)
+   * reports each immediate subdirectory (one per Collection) plus the Space dir
+   * itself (the total, which also covers top-level Space files such as the
+   * `.space.` / `.policy.` documents), all in bytes. An absent Space dir (ENOENT
+   * before the dir is provisioned) reports zero usage rather than throwing.
+   * @param spaceDir {string}
+   * @returns {Promise<{ total: number, byCollection: CollectionUsage[] }>}
+   */
+  async _diskUsage(
+    spaceDir: string
+  ): Promise<{ total: number; byCollection: CollectionUsage[] }> {
+    let stdout: string
+    try {
+      ;({ stdout } = await execFileAsync('du', [
+        '-d',
+        '1',
+        '-B',
+        '1',
+        spaceDir
+      ]))
+    } catch (err) {
+      // `du` exits non-zero (with an ENOENT-style stderr) when the dir is
+      // absent; treat that as zero usage. Anything else is a real failure.
+      if (
+        (err as NodeJS.ErrnoException).code === 'ENOENT' ||
+        /No such file or directory/.test((err as Error).message)
+      ) {
+        return { total: 0, byCollection: [] }
+      }
+      throw new StorageError({ cause: err as Error })
+    }
+
+    const rootResolved = path.resolve(spaceDir)
+    let total = 0
+    const byCollection: CollectionUsage[] = []
+    for (const line of stdout.split('\n')) {
+      if (!line) {
+        continue
+      }
+      const tab = line.indexOf('\t')
+      const usageBytes = Number(line.slice(0, tab))
+      const entryPath = line.slice(tab + 1)
+      if (path.resolve(entryPath) === rootResolved) {
+        // The summary line for the Space dir itself is the grand total.
+        total = usageBytes
+      } else {
+        // Every immediate subdirectory is a Collection (see `listCollections`).
+        byCollection.push({ id: path.basename(entryPath), usageBytes })
+      }
+    }
+    byCollection.sort((a, b) => a.id.localeCompare(b.id))
+    return { total, byCollection }
+  }
+
+  /**
+   * Measures the bytes this Space consumes on disk for the Space Quota report
+   * (spec "Quotas"). `usageBytes` is the `du` total under the Space dir
+   * (Collection dirs plus top-level Space files); `usageByCollection` breaks the
+   * per-Collection totals out (they sum to slightly less than `usageBytes`,
+   * since the Space-level files belong to no Collection).
+   *
+   * The per-Collection breakdown is always included for now. The spec makes it
+   * opt-in via `?include=collections`, but a query string in the request URL
+   * currently breaks ZCap invocationTarget matching (the signed root capability
+   * target would include the query), so the breakdown is returned unconditionally
+   * pending an upstream fix; see the `quotas` handler.
+   *
+   * `state` / `restrictedActions` derive from usage vs `capacityBytes`: an
+   * unlimited backend is always `ok`; a finite capacity yields `near-limit` at
+   * `QUOTA_NEAR_LIMIT_FRACTION` of capacity and `over-quota` (with reads/deletes
+   * still allowed, but `POST`/`PUT` restricted) at or above full.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @returns {Promise<BackendUsage>}
+   */
+  async reportUsage({ spaceId }: { spaceId: string }): Promise<BackendUsage> {
+    const spaceDir = this._spaceDir(spaceId)
+    const measuredAt = new Date().toISOString()
+
+    const { total: usageBytes, byCollection: usageByCollection } =
+      await this._diskUsage(spaceDir)
+
+    const limit: StorageLimit =
+      this.capacityBytes === undefined
+        ? { isUnlimited: true }
+        : { capacityBytes: this.capacityBytes, isUnlimited: false }
+
+    let state: BackendState = 'ok'
+    let restrictedActions: string[] = []
+    if (this.capacityBytes !== undefined) {
+      if (usageBytes >= this.capacityBytes) {
+        state = 'over-quota'
+        // The backend is full: writes are restricted, reads/deletes still work.
+        restrictedActions = ['POST', 'PUT']
+      } else if (usageBytes >= this.capacityBytes * QUOTA_NEAR_LIMIT_FRACTION) {
+        state = 'near-limit'
+      }
+    }
+
+    const { id, name, managedBy } = this.describe()
+    return {
+      id,
+      name,
+      managedBy,
+      state,
+      usageBytes,
+      limit,
+      restrictedActions,
+      measuredAt,
+      usageByCollection
     }
   }
 

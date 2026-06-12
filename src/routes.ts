@@ -97,6 +97,12 @@ export async function initSpaceRoutes(
   // keeps this ahead of the `:collectionId` parameter in the Collection routes).
   app.get('/space/:spaceId/backends', SpaceRequest.listBackends)
 
+  // Space Quota report (reserved segment; static-beats-parametric routing keeps
+  // this ahead of the `:collectionId` parameter). The per-Collection breakdown
+  // (spec's `?include=collections`) is always included for now -- see the
+  // handler note on the ZCap query-string limitation.
+  app.get('/space/:spaceId/quotas', SpaceRequest.quotas)
+
   // Add Collection to a Space
   app.post('/space/:spaceId', async (request, reply) =>
     reply.redirect('/space/:spaceId/')

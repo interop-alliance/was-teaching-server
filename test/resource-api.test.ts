@@ -215,10 +215,7 @@ describe('Resource API', () => {
         method: 'GET'
       })
       assert.equal(response.status, 200)
-      assert.match(
-        response.headers.get('content-type')!,
-        /application\/json/
-      )
+      assert.match(response.headers.get('content-type')!, /application\/json/)
       const meta = response.data as { contentType: string; size: number }
       assert.equal(meta.contentType, 'application/json')
       // fs-json-store's serialization decides the stored bytes; just assert it
@@ -290,7 +287,9 @@ describe('Resource API', () => {
 
       // With PublicCanRead: anonymous /meta read succeeds, and the reported
       // size matches the exact byte length of a GET of the resource itself.
-      const resourceBytes = await (await fetch(new URL(resourceUrl))).arrayBuffer()
+      const resourceBytes = await (
+        await fetch(new URL(resourceUrl))
+      ).arrayBuffer()
       const metaResponse = await fetch(new URL(`${resourceUrl}/meta`))
       assert.equal(metaResponse.status, 200)
       assert.match(

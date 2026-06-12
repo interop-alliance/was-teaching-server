@@ -31,6 +31,14 @@ export const SPACE_DESCRIPTION_CACHE_MAX = 1_000
  */
 export const POLICY_LINK_RELATION = 'https://wallet.storage/spec#policy'
 
+/**
+ * Fraction of a backend's configured capacity at or above which its quota
+ * report `state` becomes `near-limit` (spec "Quotas"). Below this it is `ok`;
+ * at or above full capacity it is `over-quota`. Only applies when a finite
+ * capacity is configured (an unlimited backend is always `ok`).
+ */
+export const QUOTA_NEAR_LIMIT_FRACTION = 0.9
+
 export const SPEC_URL =
   'https://digitalcredentials.github.io/wallet-attached-storage-spec/'
 export const UBC_MANIFEST_URL =

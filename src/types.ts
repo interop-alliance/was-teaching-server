@@ -165,6 +165,70 @@ export interface BackendDescriptor {
   persistence: 'durable' | 'volatile'
 }
 
+/**
+ * A backend's current condition in a quota report (spec "Quotas"). `ok`,
+ * `near-limit`, and `over-quota` are derived from usage vs the configured limit;
+ * `unreachable` is reserved for `external` backends whose provider cannot be
+ * queried (the server-managed filesystem backend never reports it).
+ */
+export type BackendState = 'ok' | 'near-limit' | 'over-quota' | 'unreachable'
+
+/**
+ * The storage limit for a backend (spec "Quotas"). When `isUnlimited` is `true`,
+ * `capacityBytes` MAY be omitted (the filesystem backend omits it unless a
+ * capacity was configured).
+ */
+export interface StorageLimit {
+  capacityBytes?: number
+  isUnlimited: boolean
+}
+
+/** One Collection's consumption within a backend's `usageByCollection` array. */
+export interface CollectionUsage {
+  id: string
+  usageBytes: number
+}
+
+/**
+ * One backend's entry in a Space Quota report (spec "Quotas"). Combines the
+ * backend's identifying properties (`id` / `name` / `managedBy`, from its
+ * `describe()`) with the measured usage for the reporting Space.
+ *
+ * - `usageBytes` -- total bytes this Space consumes on this backend.
+ * - `restrictedActions` -- uppercase HTTP verbs (the WAS Authorization action
+ *   vocabulary) currently unavailable on the backend; e.g. a full backend
+ *   reports `["POST", "PUT"]` while still permitting reads and deletes.
+ * - `measuredAt` -- when the usage numbers were measured (distinct from the
+ *   report's top-level `respondedAt`).
+ * - `usageByCollection` -- per-Collection breakdown. The spec makes this opt-in
+ *   via `?include=collections`, but this server returns it unconditionally for
+ *   now (a query string breaks ZCap target matching); the field stays optional
+ *   to leave room for the compact form once that is resolved.
+ */
+export interface BackendUsage {
+  id: string
+  name: string
+  managedBy: 'server' | 'external'
+  state: BackendState
+  usageBytes: number
+  limit: StorageLimit
+  constraints?: { maxUploadBytes: number }
+  restrictedActions: string[]
+  measuredAt: string
+  usageByCollection?: CollectionUsage[]
+}
+
+/**
+ * The Space Quota report (spec "Quotas"), returned by
+ * `GET /space/:spaceId/quotas`: a measurement timestamp plus one `BackendUsage`
+ * entry per backend registered for the Space (this reference server ships a
+ * single backend, so the array has one entry).
+ */
+export interface SpaceQuotaReport {
+  respondedAt: string
+  backends: BackendUsage[]
+}
+
 /** Return shape of `getResource()`. */
 export interface ResourceResult {
   resourceStream: Readable
@@ -251,6 +315,16 @@ export interface StorageBackend {
    * characteristics without any I/O.
    */
   describe(): BackendDescriptor
+
+  /**
+   * Measures the storage the given Space consumes on this backend, for the
+   * Space Quota report (spec "Quotas"). Resolves a `BackendUsage` entry: the
+   * backend's identity plus measured `usageBytes`, derived `state`, the
+   * configured `limit`, and a per-Collection `usageByCollection` breakdown. The
+   * Space is guaranteed to exist by the request layer before this is called; an
+   * absent Space dir reports zero usage.
+   */
+  reportUsage(options: { spaceId: string }): Promise<BackendUsage>
 
   writeSpace(options: {
     spaceId: string

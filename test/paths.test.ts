@@ -20,6 +20,7 @@ import {
   policyPath,
   metaPath,
   backendsPath,
+  quotasPath,
   linksetPath
 } from '../src/lib/paths.js'
 
@@ -123,6 +124,12 @@ describe('metaPath', () => {
 describe('backendsPath', () => {
   it('builds the space backends list path', () => {
     assert.equal(backendsPath({ spaceId: 's1' }), '/space/s1/backends')
+  })
+})
+
+describe('quotasPath', () => {
+  it('builds the space quota report path', () => {
+    assert.equal(quotasPath({ spaceId: 's1' }), '/space/s1/quotas')
   })
 })
 

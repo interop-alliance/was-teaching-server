@@ -4,14 +4,40 @@
 
 ### Added
 
+- Implement the `GET /space/:spaceId/quotas` ("Quotas") endpoint. Returns the
+  Space's storage report grouped by backend (spec "Quotas"); this reference
+  server ships one server-configured backend, so the `backends` array has a
+  single entry. Each entry combines the backend's identity (`id` / `name` /
+  `managedBy`, from its `describe()`) with measured `usageBytes`, a derived
+  `state` (`ok` / `near-limit` / `over-quota`), the configured `limit`
+  (`isUnlimited` by default -- the filesystem backend reports an unlimited quota
+  unless a `capacityBytes` is configured), `restrictedActions`
+  (`["POST", "PUT"]` once `over-quota`), a `measuredAt` timestamp, and a
+  per-Collection `usageByCollection` breakdown. Usage is measured with `du` (GNU
+  coreutils) on the Space's storage directory. Authorization is
+  capability-or-policy, the same as List Collections and the backends list (a
+  caller not authorized to read the report receives a 404, per the spec's
+  maximum-privacy invariant). The new `StorageBackend.reportUsage()` port method
+  backs the endpoint, and `FileSystemBackend` gains an optional `capacityBytes`
+  constructor option that drives the `state` thresholds.
+
+  _Known limitation:_ the spec makes the per-Collection breakdown opt-in via
+  `?include=collections`, but a query string in the request URL currently breaks
+  ZCap `invocationTarget` matching (the signed root capability target would
+  include the query and no longer match the bare `/quotas` path). For now the
+  breakdown is returned unconditionally and the query parameter is not
+  consulted, pending an upstream fix in the ezcap client. The per-Collection
+  `/quota` endpoint (`GET /space/:spaceId/:collectionId/quota`) is not yet
+  implemented.
+
 - Implement the `GET /space/:spaceId/backends` ("Space Backends Available")
   endpoint. Returns the list of storage backends registered for the Space; this
   reference server ships one server-configured backend, so the list has a single
   entry derived from the active backend's own `describe()`. Each entry is a
   Backend description object (spec "Backend Data Model"): `id`, `name`,
   `managedBy`, `storageMode`, and `persistence`. Authorization is
-  capability-or-policy, the same as List Collections (a public-readable Space may
-  list its backends).
+  capability-or-policy, the same as List Collections (a public-readable Space
+  may list its backends).
 - Implement `/meta` resource endpoint.
 - Observability on the access-control policy authorization path (Phase 5c). A
   policy-granted read now emits an info log -- "Access granted by access-control

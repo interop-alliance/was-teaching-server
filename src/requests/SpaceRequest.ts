@@ -21,7 +21,8 @@ import {
   exportPath,
   importPath,
   linksetPath,
-  backendsPath
+  backendsPath,
+  quotasPath
 } from '../lib/paths.js'
 import {
   ProblemError,
@@ -503,5 +504,63 @@ export class SpaceRequest {
     })
 
     return reply.status(200).type('application/json').send([storage.describe()])
+  }
+
+  /**
+   * GET /space/:spaceId/quotas
+   * Request handler for the "Quotas" request: the Space's storage report,
+   * grouped by backend (spec "Quotas"). This reference server ships a single
+   * server-configured backend, so the `backends` array has one entry, measured
+   * from the active backend's `reportUsage()`.
+   *
+   * Each entry always carries the per-Collection `usageByCollection` breakdown.
+   * The spec makes that breakdown opt-in via `?include=collections`, but a query
+   * string in the request URL currently breaks ZCap invocationTarget matching
+   * (the signed root capability target would include the query and no longer
+   * match the bare `/quotas` path), so for now the breakdown is returned
+   * unconditionally and the query parameter is not consulted. This is expected
+   * to be revisited once the upstream ezcap client supports invocation targets
+   * that ignore the query string.
+   *
+   * Authorization is capability-or-policy, the same as List Collections and the
+   * backends list: a caller not authorized to read the report receives a 404
+   * (the spec's maximum-privacy invariant), and a public-readable Space may read
+   * its quota report.
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async quotas(
+    request: FastifyRequest<{ Params: { spaceId: string } }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId }
+    } = request
+    const { storage } = request.server
+    const requestName = 'Get Quotas'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId }, { requestName })
+
+    // Authorize (capability-or-policy): capability invocation first, then the
+    // Space's access-control policy as a fallback (a public-readable Space).
+    await fetchSpaceAndAuthorize({
+      request,
+      spaceId,
+      targetPath: quotasPath({ spaceId }),
+      requestName
+    })
+
+    const usage = await storage.reportUsage({ spaceId })
+
+    return reply
+      .status(200)
+      .type('application/json')
+      .send({
+        respondedAt: new Date().toISOString(),
+        backends: [usage]
+      })
   }
 }
