@@ -11,7 +11,8 @@ import { spacesPath } from '../lib/paths.js'
 import { assertValidController } from '../lib/validateDid.js'
 import {
   SpaceControllerMismatchError,
-  InvalidRequestBodyError
+  InvalidRequestBodyError,
+  IdConflictError
 } from '../errors.js'
 import type { IDID } from '../types.js'
 
@@ -54,6 +55,13 @@ export class SpacesRepositoryRequest {
     // Reject a path-traversal / non-URL-safe client-supplied space id.
     if (body.id !== undefined) {
       assertValidId(body.id, { kind: 'space', requestName: 'Create Space' })
+      // POST must never replace an existing Space: the signature below is
+      // verified against the *body's* controller, so without this check any
+      // caller could overwrite a Space (controller included) by POSTing its
+      // id. Spec: `id-conflict` (409); create-or-replace by id is PUT's job.
+      if (await storage.getSpaceDescription({ spaceId: body.id })) {
+        throw new IdConflictError({ kind: 'Space' })
+      }
     }
 
     // Check to make sure the DID that signed the zcap matches controller

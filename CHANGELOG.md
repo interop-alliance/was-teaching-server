@@ -53,7 +53,7 @@
   capability-or-policy, the same as List Collections (a public-readable Space
   may list its backends).
 - Implement `/meta` resource endpoint.
-- Observability on the access-control policy authorization path (Phase 5c). A
+- Observability on the access-control policy authorization path. A
   policy-granted read now emits an info log -- "Access granted by access-control
   policy." with `spaceId` / `collectionId` / `resourceId` / `action` /
   `policyType` -- so public-access decisions are auditable, and an unrecognized
@@ -96,15 +96,31 @@
   - `resolveResourceInput` (`src/requests/resourceInput.ts`) guards the
     multipart parse: a `multipart` request with no file part now returns a clean
     `400` instead of throwing a raw `TypeError` on a non-null assertion.
+- Validate the Space `controller` DID at the request layer.
+  `POST /spaces/` (Create Space) and `PUT /space/:spaceId` (Update Space) now
+  reject a body whose `controller` is not a syntactically valid Ed25519
+  `did:key` with a typed 400 (`InvalidControllerError`, pointer `#/controller`)
+  on the way in -- rather than storing a malformed controller that only fails
+  later, at capability-verification time. New `src/lib/validateDid.ts` exports
+  `assertValidController` / `isValidController`.
+- Reject `POST /spaces/` (Create Space) with an `id` that already exists,
+  instead of silently overwriting the existing Space. The
+  handler now checks for an existing Space Description before anything else and
+  rejects with the spec's `id-conflict` (409) error type (new
+  `ProblemTypes.ID_CONFLICT` catalog entry and `IdConflictError` class, pointer
+  `#/id`). Create-or-replace at a client-chosen id remains available via the
+  idempotent `PUT /space/:spaceId`. The same check for Create Collection
+  (`POST /space/:spaceId/`, less severe: it requires the Space controller's
+  capability) remains future work.
 
 ### Changed
 
-- Tighten `PUT .../policy` body validation (Phase 5b): a policy `type` that is
+- Tighten `PUT .../policy` body validation: a policy `type` that is
   empty or whitespace-only is now rejected with a 400 (`InvalidPolicyError`)
   instead of being stored. The recognized-types set stays intentionally open (an
   unknown `type` is stored and fail-closes at evaluation time), so this is a
   shape check only, not a known-types allowlist.
-- Centralize the relative URL path templates (Phase 5d). New `src/lib/paths.ts`
+- Centralize the relative URL path templates. New `src/lib/paths.ts`
   exposes `spacePath` / `collectionPath` / `resourcePath` / `policyPath` /
   `linksetPath` builders that mirror the route shapes in `routes.ts`; the policy
   and linkset code (`src/policy.ts`, `PolicyRequest`, and the Space/Collection
@@ -147,16 +163,6 @@
   That abstraction now lives in the port (`src/types.ts`) and survives the
   removal; a future durable/queryable backend (SQLite/Postgres/LMDB) will be the
   real second adapter that proves the port.
-
-### Security
-
-- Validate the Space `controller` DID at the request layer (Phase 5a).
-  `POST /spaces/` (Create Space) and `PUT /space/:spaceId` (Update Space) now
-  reject a body whose `controller` is not a syntactically valid Ed25519
-  `did:key` with a typed 400 (`InvalidControllerError`, pointer `#/controller`)
-  on the way in -- rather than storing a malformed controller that only fails
-  later, at capability-verification time. New `src/lib/validateDid.ts` exports
-  `assertValidController` / `isValidController`.
 
 ## 0.3.0 - 2026-06-06
 

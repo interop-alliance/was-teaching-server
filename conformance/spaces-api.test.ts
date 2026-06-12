@@ -101,6 +101,30 @@ describe('Spaces', () => {
       })
     })
 
+    it('[root] POST /spaces/ with an existing id yields id-conflict (409)', async () => {
+      // alice.space1 was pre-created in before(). The onboarding-token path of
+      // createSpace() returns the status; the zcap path throws on non-2xx --
+      // capture either shape.
+      let status: number | undefined, problem: any
+      try {
+        const response = await createSpace({
+          spaceDescription: {
+            id: alice.space1.id,
+            name: 'Duplicate Space',
+            controller: alice.did
+          },
+          rootClient: alice.rootClient
+        })
+        status = response.status
+        problem = response.data
+      } catch (err: any) {
+        status = err.response?.status
+        problem = err.data
+      }
+      assert.equal(status, 409)
+      assert.equal(problem.type, 'https://wallet.storage/spec#id-conflict')
+    })
+
     it('[root] create space by id via PUT', async () => {
       const spaceDescription = {
         id: alice.space2.id,

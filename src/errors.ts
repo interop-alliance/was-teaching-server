@@ -129,6 +129,27 @@ export class InvalidResourceIdError extends ProblemError {
 }
 
 /**
+ * 409 — a `POST` create operation supplied an `id` that already exists.
+ * Create-or-replace at a client-chosen id is the idempotent `PUT` path, which
+ * does not conflict.
+ * @param options {object}
+ * @param options.kind {string}   what was being created ('Space', 'Collection',
+ *   'Resource'), used in the error title and detail
+ */
+export class IdConflictError extends ProblemError {
+  constructor({ kind }: { kind: string }) {
+    const detail = `Use PUT to create-or-replace a ${kind} at a chosen id.`
+    super({
+      type: ProblemTypes.ID_CONFLICT,
+      title: `A ${kind} with this id already exists.`,
+      detail,
+      statusCode: 409,
+      problems: [{ detail, pointer: '#/id' }]
+    })
+  }
+}
+
+/**
  * 400 — the Collection Description request body is missing or invalid.
  */
 export class InvalidCollectionError extends ProblemError {

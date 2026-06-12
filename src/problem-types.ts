@@ -32,6 +32,13 @@ export const ProblemTypes = {
   /** A Space / Collection / Resource id is missing or not URL-safe. */
   INVALID_ID: `${SPEC_URL}#invalid-id`,
 
+  /**
+   * A client-supplied `id` in a `POST` create operation already exists.
+   * (Create-or-replace at a chosen id is the idempotent `PUT` path, which does
+   * not conflict.) Typical status 409.
+   */
+  ID_CONFLICT: `${SPEC_URL}#id-conflict`,
+
   /** The request body is missing or invalid (missing required fields, etc.). */
   INVALID_REQUEST_BODY: `${SPEC_URL}#invalid-request-body`,
 

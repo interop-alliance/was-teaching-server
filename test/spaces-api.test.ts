@@ -76,6 +76,64 @@ describe('Spaces', () => {
       })
     })
 
+    it('POST /spaces/ with an existing id yields id-conflict (409)', async () => {
+      const spaceId = crypto.randomUUID()
+      await alice.was.createSpace({
+        id: spaceId,
+        name: 'Conflict Test Space',
+        controller: alice.did
+      })
+
+      let expectedError: any
+      try {
+        await alice.was.request({
+          url: new URL('/spaces/', serverUrl).toString(),
+          method: 'POST',
+          json: { id: spaceId, name: 'Replacement', controller: alice.did }
+        })
+      } catch (error) {
+        expectedError = error
+      }
+      assert.ok(expectedError, 'expected the duplicate-id POST to be rejected')
+      assert.equal(expectedError.response.status, 409)
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#id-conflict'
+      )
+      assert.equal(expectedError.data.errors[0].pointer, '#/id')
+    })
+
+    it("POST /spaces/ cannot overwrite another controller's Space", async () => {
+      const spaceId = crypto.randomUUID()
+      await alice.was.createSpace({
+        id: spaceId,
+        name: "Alice's Space",
+        controller: alice.did
+      })
+
+      // Bob signs with his own key and supplies his own controller -- before
+      // the existence check, Create Space verified against the body's
+      // controller, so this request silently replaced Alice's Space
+      // (controller included).
+      let expectedError: any
+      try {
+        await bob.was.request({
+          url: new URL('/spaces/', serverUrl).toString(),
+          method: 'POST',
+          json: { id: spaceId, name: 'Hijacked', controller: bob.did }
+        })
+      } catch (error) {
+        expectedError = error
+      }
+      assert.ok(expectedError, 'expected the takeover POST to be rejected')
+      assert.equal(expectedError.response.status, 409)
+
+      // Alice's description (controller included) is untouched.
+      const description = await alice.was.space(spaceId).describe()
+      assert.equal(description.controller, alice.did)
+      assert.equal(description.name, "Alice's Space")
+    })
+
     it('[root] create space by id via PUT', async () => {
       const space = alice.was.space(alice.space2.id)
       // configure() upserts the space by id (PUT).
@@ -120,9 +178,10 @@ describe('Spaces', () => {
     })
 
     it('[delegated] authorized app should GET /space/:spaceId', async () => {
-      // First, Alice (re-)creates the Space
-      const space = await alice.was.createSpace({
-        id: alice.space1.id,
+      // First, Alice (re-)provisions the Space -- via the idempotent PUT path,
+      // since POSTing an existing id now yields `id-conflict` (409).
+      const space = alice.was.space(alice.space1.id)
+      await space.configure({
         name: "Alice's Space #1 (Home)",
         controller: alice.did
       })
@@ -146,9 +205,9 @@ describe('Spaces', () => {
     })
 
     it('[root] Bob should not be able to GET Alice space', async () => {
-      // First, Alice (re-)creates the Space
-      await alice.was.createSpace({
-        id: alice.space1.id,
+      // First, Alice (re-)provisions the Space -- via the idempotent PUT path,
+      // since POSTing an existing id now yields `id-conflict` (409).
+      await alice.was.space(alice.space1.id).configure({
         name: "Alice's Space #1 (Home)",
         controller: alice.did
       })
