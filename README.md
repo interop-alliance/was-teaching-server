@@ -131,6 +131,14 @@ pnpm build
 SERVER_URL='http://localhost:3002' PORT=3002 pnpm start
 ```
 
+### Environment Variables
+
+| Variable                  | Default             | Description                                                                                                                                                                                   |
+| ------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SERVER_URL`              | (none)              | This server's base URL; used to build and match ZCap `invocationTarget` URLs (host and port must match the client's exactly).                                                                 |
+| `PORT`                    | `3002`              | TCP port to listen on.                                                                                                                                                                        |
+| `STORAGE_LIMIT_PER_SPACE` | (unset = unlimited) | Per-Space storage quota in **bytes** (spec "Quotas"). When set, writes that would push a Space over this limit are rejected with `quota-exceeded` (507). Unset means each Space is unlimited. |
+
 ### Running Tests
 
 The full gate (lint + build + Vitest integration tests):

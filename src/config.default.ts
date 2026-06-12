@@ -39,6 +39,28 @@ export const POLICY_LINK_RELATION = 'https://wallet.storage/spec#policy'
  */
 export const QUOTA_NEAR_LIMIT_FRACTION = 0.9
 
+/**
+ * Parses the `STORAGE_LIMIT_PER_SPACE` env value into a per-Space capacity in
+ * bytes (spec "Quotas"). v1 accepts a plain non-negative integer number of
+ * bytes; an unset or empty value returns `undefined`, meaning each Space has no
+ * configured limit (the backend reports and enforces an unlimited quota).
+ * @param raw {string|undefined}   the raw env value
+ * @returns {number|undefined}   capacity in bytes, or `undefined` when unset
+ */
+export function parseStorageLimit(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw.trim() === '') {
+    return undefined
+  }
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(
+      `STORAGE_LIMIT_PER_SPACE must be a non-negative integer number of ` +
+        `bytes; got "${raw}".`
+    )
+  }
+  return value
+}
+
 export const SPEC_URL =
   'https://digitalcredentials.github.io/wallet-attached-storage-spec/'
 export const UBC_MANIFEST_URL =

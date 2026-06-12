@@ -10,7 +10,8 @@ import { resourcePath, metaPath } from '../lib/paths.js'
 import {
   CollectionNotFoundError,
   ResourceNotFoundError,
-  StorageError
+  StorageError,
+  rethrowOrWrapStorageError
 } from '../errors.js'
 
 export class ResourceRequest {
@@ -64,7 +65,7 @@ export class ResourceRequest {
     try {
       await storage.writeResource({ spaceId, collectionId, resourceId, input })
     } catch (err) {
-      throw new StorageError({ cause: err as Error, requestName })
+      rethrowOrWrapStorageError({ err, requestName })
     }
     return reply.status(204).send()
   }

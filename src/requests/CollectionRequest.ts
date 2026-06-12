@@ -13,7 +13,8 @@ import { collectionPath, resourcePath, linksetPath } from '../lib/paths.js'
 import {
   CollectionNotFoundError,
   InvalidCollectionError,
-  StorageError
+  StorageError,
+  rethrowOrWrapStorageError
 } from '../errors.js'
 
 export class CollectionRequest {
@@ -78,7 +79,7 @@ export class CollectionRequest {
         'content-type': request.headers['content-type']
       }
     } catch (err) {
-      throw new StorageError({ cause: err as Error, requestName })
+      rethrowOrWrapStorageError({ err, requestName })
     }
 
     const createdUrl = new URL(

@@ -76,12 +76,20 @@ const contentTypeStrategy: ContentTypeConstraint = {
  * @param [options.backend] {StorageBackend}   persistence backend to use;
  *   defaults to a filesystem backend rooted at the project `data/` directory.
  *   Tests inject their own (e.g. a FileSystemBackend over a temp dir).
+ * @param [options.storageLimitPerSpace] {number}   per-Space storage limit in
+ *   bytes (spec "Quotas"); applied only to the default backend (an injected
+ *   `backend` carries its own `capacityBytes`). `undefined` means unlimited.
  * @returns {import('fastify').FastifyInstance}
  */
 export function createApp({
   serverUrl,
-  backend
-}: { serverUrl?: string; backend?: StorageBackend } = {}): FastifyInstance {
+  backend,
+  storageLimitPerSpace
+}: {
+  serverUrl?: string
+  backend?: StorageBackend
+  storageLimitPerSpace?: number
+} = {}): FastifyInstance {
   // By default uses 'pino' logger
   const fastify = Fastify({
     logger: true,
@@ -95,7 +103,8 @@ export function createApp({
   fastify.decorate('serverUrl', serverUrl as string)
   // Route the backend's diagnostics through the Fastify pino logger (the backend
   // defaults to a silent logger until wired here).
-  const storage = backend ?? defaultBackend()
+  const storage =
+    backend ?? defaultBackend({ capacityBytes: storageLimitPerSpace })
   storage.logger = fastify.log
   fastify.decorate('storage', storage)
 

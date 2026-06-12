@@ -60,6 +60,12 @@ export const ProblemTypes = {
   STORAGE_ERROR: `${SPEC_URL}#storage-error`,
 
   /**
+   * A write was rejected because the target backend's per-Space storage quota
+   * is exhausted (see the spec "Quotas" section). Typical status 507.
+   */
+  QUOTA_EXCEEDED: `${SPEC_URL}#quota-exceeded`,
+
+  /**
    * The server does not implement this OPTIONAL operation (e.g. updating
    * Resource Metadata). Typical status 501.
    */

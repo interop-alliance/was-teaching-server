@@ -4,6 +4,20 @@
 
 ### Added
 
+- Enforce a per-Space storage quota (spec "Quotas"). A new
+  `STORAGE_LIMIT_PER_SPACE` environment variable sets each Space's capacity in
+  bytes; when configured, writes that would push a Space over its limit are
+  rejected with a new `quota-exceeded` (507) error. Enforcement lives in
+  `FileSystemBackend.writeResource` and `importSpace`: a cheap `du`-based
+  pre-flight rejects writes whose size is known up front (JSON bodies and blobs
+  with a `Content-Length`), and a byte-counting streaming guard hard-caps blobs
+  whose size is not declared (cleaning up the partial file on overflow). The
+  limit is a soft cap under concurrency (two simultaneous writes can each pass
+  the pre-flight and jointly overshoot); the streaming guard still bounds each
+  individual write. Unset (`STORAGE_LIMIT_PER_SPACE` absent) leaves every Space
+  unlimited, as before, with zero enforcement overhead. The per-upload
+  `maxUploadBytes` / `payload-too-large` (413) constraint remains future work.
+
 - Implement the `GET /space/:spaceId/quotas` ("Quotas") endpoint. Returns the
   Space's storage report grouped by backend (spec "Quotas"); this reference
   server ships one server-configured backend, so the `backends` array has a

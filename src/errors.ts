@@ -362,6 +362,58 @@ export class StorageError extends ProblemError {
 }
 
 /**
+ * Rethrows a structured failure from a storage call unchanged (any
+ * `ProblemError`, e.g. a 507 quota-exceeded raised by the backend), preserving
+ * its status code; wraps anything else -- a genuinely unexpected fault -- as a
+ * 500 `StorageError`. For use in request handlers' catch blocks around storage
+ * operations.
+ * @param options {object}
+ * @param options.err {unknown}   the caught error
+ * @param [options.requestName] {string}   request name used in the error title
+ * @returns {never}
+ */
+export function rethrowOrWrapStorageError({
+  err,
+  requestName
+}: {
+  err: unknown
+  requestName?: string
+}): never {
+  if (err instanceof ProblemError) {
+    throw err
+  }
+  throw new StorageError({ cause: err as Error, requestName })
+}
+
+/**
+ * 507 — a write was rejected because the target backend's per-Space storage
+ * quota is exhausted (spec "Quotas"). Distinct from `payload-too-large` (413),
+ * which is a per-request upload-size limit rather than a cumulative one.
+ * @param options {object}
+ * @param options.spaceId {string}   the Space whose quota is exhausted
+ * @param options.capacityBytes {number}   the configured per-Space limit
+ * @param [options.requestName] {string}   request name used in the error title
+ */
+export class QuotaExceededError extends ProblemError {
+  constructor({
+    spaceId,
+    capacityBytes,
+    requestName
+  }: {
+    spaceId: string
+    capacityBytes: number
+    requestName?: string
+  }) {
+    super({
+      type: ProblemTypes.QUOTA_EXCEEDED,
+      title: `Insufficient Storage${requestName ? ` (${requestName})` : ''}`,
+      detail: `Space '${spaceId}' storage quota of ${capacityBytes} bytes is exhausted.`,
+      statusCode: 507
+    })
+  }
+}
+
+/**
  * 400 — a required field of the request body is missing or invalid.
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title

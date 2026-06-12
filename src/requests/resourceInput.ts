@@ -38,9 +38,17 @@ export async function resolveResourceInput(
     }
     return { kind: 'binary', contentType: file.mimetype, stream: file.file }
   }
+  // A raw (non-multipart) blob body carries its size in `Content-Length` when
+  // present; expose it as `declaredBytes` so the backend can pre-flight the
+  // quota check before streaming. Ignore an absent or malformed value.
+  const contentLength = Number(request.headers['content-length'])
   return {
     kind: 'binary',
     contentType,
-    stream: request.body as Readable
+    stream: request.body as Readable,
+    declaredBytes:
+      Number.isInteger(contentLength) && contentLength >= 0
+        ? contentLength
+        : undefined
   }
 }

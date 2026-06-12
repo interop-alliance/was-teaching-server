@@ -19,10 +19,16 @@ import type { StorageBackend } from './types.js'
 /**
  * Builds the default filesystem-backed storage, rooted at the project `data/`
  * directory. Used by `createApp()` when no backend is injected (production).
+ * @param options {object}
+ * @param [options.capacityBytes] {number}   per-Space storage limit in bytes
+ *   (spec "Quotas"); `undefined` means each Space is unlimited.
  * @returns {StorageBackend}
  */
-export function defaultBackend(): StorageBackend {
+export function defaultBackend({
+  capacityBytes
+}: { capacityBytes?: number } = {}): StorageBackend {
   return new FileSystemBackend({
-    dataDir: path.join(import.meta.dirname, '..', 'data')
+    dataDir: path.join(import.meta.dirname, '..', 'data'),
+    capacityBytes
   })
 }

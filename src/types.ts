@@ -242,13 +242,21 @@ export interface ResourceResult {
  * requests/resourceInput.ts) so that storage backends never depend on Fastify:
  * - `kind: 'json'` carries the parsed JSON value in `data`.
  * - `kind: 'binary'` carries a readable byte stream — a raw blob body, or the
- *   file extracted from a multipart upload.
+ *   file extracted from a multipart upload. `declaredBytes` is the up-front size
+ *   when known (a raw body's `Content-Length`), used for an early quota
+ *   pre-flight; it is absent for multipart parts, whose size is unknown until
+ *   the stream is consumed (the backend's streaming guard enforces the limit).
  *
  * In both cases `contentType` is the content-type the bytes are stored under.
  */
 export type ResourceInput =
   | { kind: 'json'; contentType: string; data: unknown }
-  | { kind: 'binary'; contentType: string; stream: Readable }
+  | {
+      kind: 'binary'
+      contentType: string
+      stream: Readable
+      declaredBytes?: number
+    }
 
 /** Return shape of `importSpace()`: a per-merge tally. */
 export interface ImportStats {

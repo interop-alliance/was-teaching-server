@@ -332,7 +332,10 @@ describe('Storage API', () => {
     async function provision(capacityBytes?: number) {
       const tempDir = await mkdtemp(path.join(os.tmpdir(), 'was-usage-test-'))
       await mkdir(path.join(tempDir, 'spaces'))
-      const backend = new FileSystemBackend({ dataDir: tempDir, capacityBytes })
+      // Provision unlimited so the writes below are never blocked by quota
+      // enforcement, then apply the capacity afterward -- these tests exercise
+      // reportUsage()'s state derivation, not the write-path enforcement.
+      const backend = new FileSystemBackend({ dataDir: tempDir })
       const spaceId = 'usage-space'
       const collectionId = 'credentials'
       await backend.writeSpace({
@@ -363,6 +366,7 @@ describe('Storage API', () => {
           data: { id: 'vc-1', name: 'A Verifiable Credential' }
         }
       })
+      backend.capacityBytes = capacityBytes
       return { backend, spaceId, collectionId, tempDir }
     }
 

@@ -8,7 +8,7 @@ import { mkdir, rm, stat as fsStat } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { Readable } from 'node:stream'
+import { Transform, type Readable } from 'node:stream'
 import fs from 'node:fs'
 import jsonfs from 'fs-json-store'
 import { glob } from 'glob'
@@ -17,7 +17,8 @@ import type { FastifyBaseLogger } from 'fastify'
 import {
   StorageError,
   ResourceNotFoundError,
-  SpaceNotFoundError
+  SpaceNotFoundError,
+  QuotaExceededError
 } from '../errors.js'
 import * as mime from 'mime-types'
 import * as tar from 'tar-stream'
@@ -130,11 +131,12 @@ export class FileSystemBackend implements StorageBackend {
   spacesDir: string
   logger: FastifyBaseLogger
   /**
-   * Storage capacity this backend enforces in its quota report, in bytes.
-   * `undefined` means no configured limit -- the backend reports an unlimited
-   * quota (state always `ok`). A finite value drives the `near-limit` /
-   * `over-quota` state thresholds (see `reportUsage`). Note this server does not
-   * yet *enforce* the limit on writes; it is reported for quota visibility.
+   * Per-Space storage capacity, in bytes (spec "Quotas"). `undefined` means no
+   * configured limit -- the backend reports an unlimited quota (state always
+   * `ok`) and skips write-path enforcement. A finite value drives the
+   * `near-limit` / `over-quota` state thresholds (see `reportUsage`) and is
+   * enforced on the write path: `writeResource` and `importSpace` reject writes
+   * that would push a Space over capacity with `QuotaExceededError` (507).
    */
   capacityBytes?: number
 
@@ -281,6 +283,74 @@ export class FileSystemBackend implements StorageBackend {
       measuredAt,
       usageByCollection
     }
+  }
+
+  /**
+   * Quota pre-flight for the write path (spec "Quotas"): measures the Space's
+   * current on-disk usage and returns the remaining headroom in bytes against
+   * `capacityBytes`. Throws `QuotaExceededError` (507) when the Space is already
+   * at or over capacity, or when a known `incomingBytes` would not fit. Callers
+   * pass the configured `capacityBytes` explicitly (an unlimited backend skips
+   * enforcement entirely and never calls this).
+   *
+   * This is a soft limit under concurrency: two simultaneous writes can each pass
+   * against the same usage snapshot and jointly overshoot. The per-write
+   * streaming guard (`_quotaGuard`) still bounds each individual write.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.capacityBytes {number}   the configured per-Space limit
+   * @param [options.incomingBytes] {number}   known size of the pending write
+   * @returns {Promise<number>}   remaining headroom in bytes
+   */
+  async _assertSpaceHeadroom({
+    spaceId,
+    capacityBytes,
+    incomingBytes = 0
+  }: {
+    spaceId: string
+    capacityBytes: number
+    incomingBytes?: number
+  }): Promise<number> {
+    const { total: usageBytes } = await this._diskUsage(this._spaceDir(spaceId))
+    const headroom = capacityBytes - usageBytes
+    if (headroom <= 0 || incomingBytes > headroom) {
+      throw new QuotaExceededError({ spaceId, capacityBytes })
+    }
+    return headroom
+  }
+
+  /**
+   * A pass-through `Transform` that counts the bytes flowing through it and
+   * aborts the pipeline with `QuotaExceededError` (507) once the cumulative total
+   * would exceed `headroomBytes`. Hard-caps a streamed blob write whose size is
+   * not known up front (so the pre-flight check alone cannot catch it), e.g. a
+   * multipart upload or a body without `Content-Length`.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.capacityBytes {number}   the configured per-Space limit
+   * @param options.headroomBytes {number}   max bytes this write may add
+   * @returns {Transform}
+   */
+  _quotaGuard({
+    spaceId,
+    capacityBytes,
+    headroomBytes
+  }: {
+    spaceId: string
+    capacityBytes: number
+    headroomBytes: number
+  }): Transform {
+    let written = 0
+    return new Transform({
+      transform(chunk, _encoding, callback) {
+        written += chunk.length
+        if (written > headroomBytes) {
+          callback(new QuotaExceededError({ spaceId, capacityBytes }))
+          return
+        }
+        callback(null, chunk)
+      }
+    })
   }
 
   /**
@@ -597,6 +667,25 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<ImportStats> {
     const entries = await extractTarEntries(tarStream)
     const { spacePolicy, collections } = buildImportPlan(entries)
+
+    // Quota pre-flight (spec "Quotas"): reject a bulk import that would not fit
+    // in the Space's remaining headroom before writing anything. Sums every
+    // staged resource body; duplicates the merge below skips are counted too, so
+    // this is a conservative (early-rejecting) estimate.
+    if (this.capacityBytes !== undefined) {
+      let incomingBytes = 0
+      for (const { resources } of collections) {
+        for (const { body } of resources) {
+          incomingBytes += body.length
+        }
+      }
+      await this._assertSpaceHeadroom({
+        spaceId,
+        capacityBytes: this.capacityBytes,
+        incomingBytes
+      })
+    }
+
     const stats: ImportStats = {
       collectionsCreated: 0,
       collectionsSkipped: 0,
@@ -828,12 +917,46 @@ export class FileSystemBackend implements StorageBackend {
     this._assertContained(filePath)
 
     if (input.kind === 'json') {
+      if (this.capacityBytes !== undefined) {
+        // JSON bodies are fully in memory, so their serialized size is known up
+        // front and the pre-flight check alone suffices (no streaming guard).
+        await this._assertSpaceHeadroom({
+          spaceId,
+          capacityBytes: this.capacityBytes,
+          incomingBytes: Buffer.byteLength(JSON.stringify(input.data))
+        })
+      }
       const resourceJsonStore = new MetadataJsonStore({ file: filePath })
       this.logger.info('Creating JSON resource')
       await resourceJsonStore.write(input.data)
     } else {
       this.logger.info('Writing blob')
-      await pipeline(input.stream, fs.createWriteStream(filePath))
+      const { capacityBytes } = this
+      if (capacityBytes === undefined) {
+        await pipeline(input.stream, fs.createWriteStream(filePath))
+      } else {
+        // Pre-flight on the declared size (when present), then pipe through a
+        // guard that hard-caps the cumulative bytes -- so a body that omits or
+        // understates its size still cannot exceed the Space's headroom. On
+        // overflow, remove the partial file before surfacing the error.
+        const headroomBytes = await this._assertSpaceHeadroom({
+          spaceId,
+          capacityBytes,
+          incomingBytes: input.declaredBytes ?? 0
+        })
+        try {
+          await pipeline(
+            input.stream,
+            this._quotaGuard({ spaceId, capacityBytes, headroomBytes }),
+            fs.createWriteStream(filePath)
+          )
+        } catch (err) {
+          if (err instanceof QuotaExceededError) {
+            await rm(filePath, { force: true })
+          }
+          throw err
+        }
+      }
     }
 
     // A Resource has a single current representation: remove any prior
