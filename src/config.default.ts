@@ -32,6 +32,12 @@ export const SPACE_DESCRIPTION_CACHE_MAX = 1_000
 export const POLICY_LINK_RELATION = 'https://wallet.storage/spec#policy'
 
 /**
+ * Linkset relation URI for a Collection's selected `backend` auxiliary resource
+ * (RFC9264 linkset discovery; advertised at `/space/{id}/{cid}/backend`).
+ */
+export const BACKEND_LINK_RELATION = 'https://wallet.storage/spec#backend'
+
+/**
  * Fraction of a backend's configured capacity at or above which its quota
  * report `state` becomes `near-limit` (spec "Quotas"). Below this it is `ok`;
  * at or above full capacity it is `over-quota`. Only applies when a finite

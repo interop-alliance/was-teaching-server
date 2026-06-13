@@ -190,6 +190,24 @@ export function metaPath({
 }
 
 /**
+ * `/space/:spaceId/:collectionId/backend` -- the "Collection Backend Selected"
+ * resource path (reserved `backend` segment at the Resource level).
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @returns {string}
+ */
+export function backendPath({
+  spaceId,
+  collectionId
+}: {
+  spaceId: string
+  collectionId: string
+}): string {
+  return `${collectionPath({ spaceId, collectionId })}/backend`
+}
+
+/**
  * The `linkset` discovery resource path for a Space (`spaceId`) or Collection
  * (`+ collectionId`).
  * @param options {object}

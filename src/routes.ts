@@ -150,6 +150,10 @@ export async function initCollectionRoutes(
   // Collection linkset (RFC9264 policy discovery)
   app.get('/space/:spaceId/:collectionId/linkset', CollectionRequest.linkset)
 
+  // Collection Backend Selected (reserved segment; static-beats-parametric
+  // routing keeps this ahead of the `:resourceId` parameter in Resource routes).
+  app.get('/space/:spaceId/:collectionId/backend', CollectionRequest.getBackend)
+
   // Add Resource to a Collection
   app.post('/space/:spaceId/:collectionId', async (request, reply) =>
     reply.redirect('/space/:spaceId/:collectionId/')

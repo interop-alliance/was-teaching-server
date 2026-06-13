@@ -79,6 +79,7 @@ describe('Collections API', () => {
       id: 'credentials',
       name: 'Verifiable Credentials',
       type: ['Collection'],
+      backend: { id: 'default' },
       linkset: `/space/${alice.space1.id}/credentials/linkset`
     })
   })
@@ -132,6 +133,7 @@ describe('Collections API', () => {
         id: 'credentials',
         name: 'Verifiable Credentials',
         type: ['Collection'],
+        backend: { id: 'default' },
         linkset: `/space/${alice.space1.id}/credentials/linkset`
       }
     )
@@ -151,5 +153,140 @@ describe('Collections API', () => {
 
     // Ensure it was deleted (reads return null on 404).
     assert.equal(await collection.describe(), null)
+  })
+
+  describe('Collection backend selection', () => {
+    it('POST with backend { id: "default" } persists and echoes it', async () => {
+      const collectionId = crypto.randomUUID()
+      const response = await alice.was.request({
+        url: new URL(`/space/${alice.space1.id}/`, serverUrl).toString(),
+        method: 'POST',
+        json: {
+          id: collectionId,
+          name: 'Explicit Backend',
+          backend: { id: 'default' }
+        }
+      })
+      assert.equal(response.status, 201)
+      assert.deepStrictEqual(response.data.backend, { id: 'default' })
+
+      // And it is reflected in the Collection description.
+      const description = await aliceSpace.collection(collectionId).describe()
+      assert.deepStrictEqual(description.backend, { id: 'default' })
+    })
+
+    it('POST with an unknown backend id yields unsupported-backend (409)', async () => {
+      let expectedError: any
+      try {
+        await alice.was.request({
+          url: new URL(`/space/${alice.space1.id}/`, serverUrl).toString(),
+          method: 'POST',
+          json: {
+            id: crypto.randomUUID(),
+            name: 'Bad Backend',
+            backend: { id: 'no-such-backend' }
+          }
+        })
+      } catch (error) {
+        expectedError = error
+      }
+      assert.ok(
+        expectedError,
+        'expected the unknown-backend POST to be rejected'
+      )
+      assert.equal(expectedError.response.status, 409)
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#unsupported-backend'
+      )
+      assert.equal(expectedError.data.errors[0].pointer, '#/backend')
+    })
+
+    it('POST with a malformed backend yields invalid-request-body (400)', async () => {
+      let expectedError: any
+      try {
+        await alice.was.request({
+          url: new URL(`/space/${alice.space1.id}/`, serverUrl).toString(),
+          method: 'POST',
+          json: {
+            id: crypto.randomUUID(),
+            name: 'Malformed Backend',
+            backend: 'default'
+          }
+        })
+      } catch (error) {
+        expectedError = error
+      }
+      assert.ok(
+        expectedError,
+        'expected the malformed-backend POST to be rejected'
+      )
+      assert.equal(expectedError.response.status, 400)
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#invalid-request-body'
+      )
+      assert.equal(expectedError.data.errors[0].pointer, '#/backend')
+    })
+
+    it('GET :collectionId/backend returns the full backend descriptor', async () => {
+      const response = await alice.was.request({
+        url: new URL(
+          `/space/${alice.space1.id}/credentials/backend`,
+          serverUrl
+        ).toString(),
+        method: 'GET'
+      })
+      assert.equal(response.status, 200)
+      assert.deepStrictEqual(response.data, {
+        id: 'default',
+        name: 'Server Filesystem',
+        managedBy: 'server',
+        storageMode: ['document', 'blob'],
+        persistence: 'durable'
+      })
+    })
+
+    it('GET :collectionId/backend on a missing collection yields 404', async () => {
+      let expectedError: any
+      try {
+        await alice.was.request({
+          url: new URL(
+            `/space/${alice.space1.id}/no-such-collection/backend`,
+            serverUrl
+          ).toString(),
+          method: 'GET'
+        })
+      } catch (error) {
+        expectedError = error
+      }
+      assert.ok(expectedError, 'expected a 404 for the missing collection')
+      assert.equal(expectedError.response.status, 404)
+    })
+
+    it('PUT create-by-id default-fills the backend', async () => {
+      const collection = aliceSpace.collection(crypto.randomUUID())
+      await collection.configure({ name: 'PUT Default Backend' })
+      const description = await collection.describe()
+      assert.deepStrictEqual(description.backend, { id: 'default' })
+    })
+
+    it('Collection linkset advertises the backend relation', async () => {
+      const response = await alice.was.request({
+        url: new URL(
+          `/space/${alice.space1.id}/credentials/linkset`,
+          serverUrl
+        ).toString(),
+        method: 'GET'
+      })
+      assert.equal(response.status, 200)
+      const [entry] = response.data.linkset
+      assert.deepStrictEqual(entry['https://wallet.storage/spec#backend'], [
+        {
+          href: `/space/${alice.space1.id}/credentials/backend`,
+          type: 'application/json'
+        }
+      ])
+    })
   })
 })

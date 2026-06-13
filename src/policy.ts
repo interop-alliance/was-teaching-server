@@ -9,8 +9,16 @@
  */
 import type { FastifyBaseLogger } from 'fastify'
 import type { PolicyDocument, StorageBackend } from './types.js'
-import { POLICY_LINK_RELATION } from './config.default.js'
-import { collectionPath, spacePath, policyPath } from './lib/paths.js'
+import {
+  POLICY_LINK_RELATION,
+  BACKEND_LINK_RELATION
+} from './config.default.js'
+import {
+  collectionPath,
+  spacePath,
+  policyPath,
+  backendPath
+} from './lib/paths.js'
 
 /** The kind of access a request needs; derived from the HTTP method. */
 export type AccessAction = 'read' | 'write'
@@ -99,9 +107,15 @@ export function policyGrants({
 
 /**
  * Builds the RFC9264 linkset for a Space or Collection, advertising its
- * access-control `policy` resource (relation `POLICY_LINK_RELATION`) when a
- * policy document is set at that exact level. Collection vs Space is selected by
- * whether `collectionId` is present.
+ * auxiliary resources for discovery. Collection vs Space is selected by whether
+ * `collectionId` is present.
+ *
+ * Relations:
+ * - `policy` (`POLICY_LINK_RELATION`) -- the access-control policy resource,
+ *   advertised only when a policy document is set at that exact level.
+ * - `backend` (`BACKEND_LINK_RELATION`) -- the "Collection Backend Selected"
+ *   resource, advertised unconditionally on a Collection (every Collection has
+ *   a backend); not a Space-level relation.
  *
  * @param options {object}
  * @param options.storage {StorageBackend}   the request's storage backend
@@ -109,7 +123,7 @@ export function policyGrants({
  * @param [options.collectionId] {string}
  * @returns {Promise<object>} a `{ linkset: [...] }` object
  */
-export async function buildPolicyLinkset({
+export async function buildLinkset({
   storage,
   spaceId,
   collectionId
@@ -132,6 +146,11 @@ export async function buildPolicyLinkset({
   if (policy) {
     entry[POLICY_LINK_RELATION] = [
       { href: policyHref, type: 'application/json' }
+    ]
+  }
+  if (collectionId !== undefined) {
+    entry[BACKEND_LINK_RELATION] = [
+      { href: backendPath({ spaceId, collectionId }), type: 'application/json' }
     ]
   }
   return { linkset: [entry] }

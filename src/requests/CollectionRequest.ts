@@ -5,11 +5,21 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
 
-import { buildPolicyLinkset } from '../policy.js'
+import { buildLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
-import { collectionPath, resourcePath, linksetPath } from '../lib/paths.js'
+import {
+  assertSupportedBackend,
+  resolveBackendDescriptor,
+  DEFAULT_BACKEND_ID
+} from '../lib/backends.js'
+import {
+  collectionPath,
+  resourcePath,
+  linksetPath,
+  backendPath
+} from '../lib/paths.js'
 import {
   CollectionNotFoundError,
   InvalidCollectionError,
@@ -107,7 +117,7 @@ export class CollectionRequest {
   static async put(
     request: FastifyRequest<{
       Params: { spaceId: string; collectionId: string }
-      Body: { name?: string }
+      Body: { name?: string; backend?: unknown }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
@@ -123,6 +133,18 @@ export class CollectionRequest {
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId, collectionId }, { requestName })
+    // Validate a supplied backend against the Space's backends-available (bad
+    // shape 400, unknown id 409). An absent `backend` resolves to undefined here
+    // so an update leaves the existing selection untouched; a create defaults it
+    // to the server default below.
+    const suppliedBackend =
+      body.backend !== undefined
+        ? assertSupportedBackend({
+            storage,
+            backend: body.backend,
+            requestName
+          })
+        : undefined
 
     // Verify (capability-only): updating a Collection requires a valid
     // capability invocation; no access-control-policy fallback.
@@ -138,20 +160,23 @@ export class CollectionRequest {
       spaceId,
       collectionId
     })
-    // `name` is optional. On update, only overwrite it when supplied (otherwise
-    // keep the existing name); on create, default it to the Collection id (spec).
+    // `name` and `backend` are optional. On update, only overwrite each when
+    // supplied (otherwise keep the existing value); on create, default `name` to
+    // the Collection id and `backend` to the server default (spec).
     const collectionDescription = existingCollection
       ? // Existing: Update only the allowed fields
         {
           ...existingCollection,
           id: collectionId,
-          ...(body.name !== undefined && { name: body.name })
+          ...(body.name !== undefined && { name: body.name }),
+          ...(suppliedBackend !== undefined && { backend: suppliedBackend })
         }
       : // New Collection
         {
           id: collectionId,
           type: ['Collection'],
-          name: body.name ?? collectionId
+          name: body.name ?? collectionId,
+          backend: suppliedBackend ?? { id: DEFAULT_BACKEND_ID }
         }
 
     try {
@@ -216,17 +241,22 @@ export class CollectionRequest {
     // a relative URL, consistent with the other URL fields the API returns.
     const linkset = linksetPath({ spaceId, collectionId })
 
+    // Report the selected backend, default-filled for Collections created before
+    // the `backend` property existed (spec: an unset backend is `default`).
+    const backend = collectionDescription.backend ?? { id: DEFAULT_BACKEND_ID }
+
     return reply
       .status(200)
       .type('application/json')
-      .send(JSON.stringify({ ...collectionDescription, linkset }))
+      .send(JSON.stringify({ ...collectionDescription, backend, linkset }))
   }
 
   /**
    * GET /space/:spaceId/:collectionId/linkset
    * Request handler for the Collection's linkset (RFC9264): advertises the
-   * Collection's access-control `policy` resource for discovery. Readable by
-   * whoever may read the Collection (capability or fallback policy).
+   * Collection's access-control `policy` and selected `backend` resources for
+   * discovery. Readable by whoever may read the Collection (capability or
+   * fallback policy).
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
@@ -257,11 +287,64 @@ export class CollectionRequest {
       requestName
     })
 
-    const linkset = await buildPolicyLinkset({ storage, spaceId, collectionId })
+    const linkset = await buildLinkset({ storage, spaceId, collectionId })
     return reply
       .status(200)
       .type('application/linkset+json')
       .send(JSON.stringify(linkset))
+  }
+
+  /**
+   * GET /space/:spaceId/:collectionId/backend
+   * Request handler for "Collection Backend Selected": returns the detailed
+   * backend description object for the Collection's selected backend (resolved
+   * from the Collection's stored `{ id }` against the Space's backends-available;
+   * default-filled for Collections created before the property existed).
+   *
+   * Authorization is capability-or-policy, the same as Get Collection: the
+   * selected backend is no more sensitive than the Collection description, so a
+   * public-readable Collection may also read its backend.
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async getBackend(
+    request: FastifyRequest<{
+      Params: { spaceId: string; collectionId: string }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId, collectionId }
+    } = request
+    const { storage } = request.server
+    const requestName = 'Get Collection Backend'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId, collectionId }, { requestName })
+
+    // Authorize (capability-or-policy): readable by whoever may read the
+    // Collection (capability invocation, else the effective policy).
+    await fetchSpaceAndAuthorize({
+      request,
+      spaceId,
+      collectionId,
+      targetPath: backendPath({ spaceId, collectionId }),
+      requestName
+    })
+
+    // Fetch collection by id
+    const collectionDescription = await storage.getCollectionDescription({
+      spaceId,
+      collectionId
+    })
+    if (!collectionDescription) {
+      throw new CollectionNotFoundError({ requestName })
+    }
+
+    const backend = resolveBackendDescriptor({ storage, collectionDescription })
+    return reply.status(200).type('application/json').send(backend)
   }
 
   /**

@@ -4,6 +4,20 @@
 
 ### Added
 
+- Implement Collection backend selection (spec "Collection Backend Selected" /
+  "Backends"). A Collection Description now carries an optional `backend` object
+  (`{ "id": "default" }` by default); Create Collection (POST) and Update/Create
+  Collection (PUT) accept a body `backend`, validate its `id` against the
+  Space's backends-available, and persist the normalized value. An unknown id is
+  rejected with `unsupported-backend` (409) -- the error registry's previously
+  type-only entry now has its emit site -- and a malformed `backend` (not an
+  object with a string `id`) is `invalid-request-body` (400). The new
+  `GET /space/{id}/{cid}/backend` ("Collection Backend Selected") returns the
+  full backend descriptor for the Collection's selection, and the Collection
+  linkset now advertises the `backend` relation
+  (`https://wallet.storage/spec#backend`). Get Collection reports the selected
+  backend, default-filled for Collections created before the property existed.
+
 - Implement the List Spaces operation, `GET /spaces/` (spec "List Spaces
   Operation"), replacing the hardcoded 501. The response is
   `{ url, totalItems, items }` with only the Spaces the caller is authorized to

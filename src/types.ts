@@ -80,6 +80,13 @@ export interface CollectionDescription {
   type: string[]
   name: string
   /**
+   * The storage backend selected for this Collection (spec "Collection Backend
+   * Selected"). Identified by `id`, which MUST be one of the Space's
+   * backends-available. Omitted by a client at create time, the server fills it
+   * with the default `{ id: 'default' }`; persisted thereafter.
+   */
+  backend?: { id: string }
+  /**
    * URL of the Collection's linkset resource (RFC9264); see
    * `SpaceDescription.linkset`. Attached at response time, not persisted.
    */

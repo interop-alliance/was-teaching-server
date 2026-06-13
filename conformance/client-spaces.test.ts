@@ -111,6 +111,7 @@ describe('WasClient — Spaces & Collections', () => {
         id: 'credentials',
         type: ['Collection'],
         name: 'Verifiable Credentials',
+        backend: { id: 'default' },
         linkset: `/space/${space.id}/credentials/linkset`
       })
     })

@@ -6,7 +6,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { Readable } from 'node:stream'
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify, isRootInvocation } from '../zcap.js'
-import { buildPolicyLinkset } from '../policy.js'
+import { buildLinkset } from '../policy.js'
 import {
   fetchSpaceAndAuthorize,
   fetchSpaceAndVerify,
@@ -14,6 +14,10 @@ import {
 } from './spaceContext.js'
 import { assertValidIds, assertValidId } from '../lib/validateId.js'
 import { assertValidController } from '../lib/validateDid.js'
+import {
+  assertSupportedBackend,
+  listAvailableBackends
+} from '../lib/backends.js'
 import {
   spacePath,
   collectionPath,
@@ -113,7 +117,7 @@ export class SpaceRequest {
       requestName
     })
 
-    const linkset = await buildPolicyLinkset({ storage, spaceId })
+    const linkset = await buildLinkset({ storage, spaceId })
     return reply
       .status(200)
       .type('application/linkset+json')
@@ -284,7 +288,7 @@ export class SpaceRequest {
   static async post(
     request: FastifyRequest<{
       Params: { spaceId: string }
-      Body: { id?: string; name?: string }
+      Body: { id?: string; name?: string; backend?: unknown }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
@@ -300,6 +304,13 @@ export class SpaceRequest {
     if (body?.id !== undefined) {
       assertValidId(body.id, { kind: 'collection', requestName })
     }
+    // Validate (and default-fill) the selected backend against the Space's
+    // backends-available: a bad shape is 400, an unknown id is 409.
+    const backend = assertSupportedBackend({
+      storage,
+      backend: body?.backend,
+      requestName
+    })
 
     // Verify (capability-only): creating a Collection requires a valid
     // capability invocation; no access-control-policy fallback.
@@ -331,7 +342,8 @@ export class SpaceRequest {
     const collectionDescription = {
       id: collectionId,
       type: ['Collection'],
-      name
+      name,
+      backend
     }
 
     await storage.writeCollection({
@@ -551,7 +563,10 @@ export class SpaceRequest {
       requestName
     })
 
-    return reply.status(200).type('application/json').send([storage.describe()])
+    return reply
+      .status(200)
+      .type('application/json')
+      .send(listAvailableBackends(storage))
   }
 
   /**
