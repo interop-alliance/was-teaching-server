@@ -14,6 +14,7 @@ import {
   parseAuthHeaders,
   requireAuthHeadersOrPublicRead
 } from './auth-header-hooks.js'
+import { captureRawBody, verifyBodyDigest } from './digest.js'
 
 /**
  * Registers SpacesRepository routes (POST/GET /spaces). Installs the
@@ -35,6 +36,12 @@ export async function initSpacesRepositoryRoutes(
   app.addHook('onRequest', requireAuthHeadersOrPublicRead)
   // Parse the relevant request headers, set the request.zcap parameter
   app.addHook('onRequest', parseAuthHeaders)
+  // Capture raw body bytes (JSON/text) so the digest can be recomputed against
+  // exactly what the client signed (spec "Request Body Integrity").
+  app.addHook('preParsing', captureRawBody)
+  // Enforce the Digest header binding: require it covered by the signature and,
+  // when the raw body is available, recompute and compare it.
+  app.addHook('preValidation', verifyBodyDigest)
 
   // Add a Space to a SpacesRepository (Create Space)
   app.post('/spaces', async (request, reply) => reply.redirect('/spaces/'))
@@ -63,6 +70,12 @@ export async function initSpaceRoutes(
   app.addHook('onRequest', requireAuthHeadersOrPublicRead)
   // Parse the relevant request headers, set the request.zcap parameter
   app.addHook('onRequest', parseAuthHeaders)
+  // Capture raw body bytes (JSON/text) so the digest can be recomputed against
+  // exactly what the client signed (spec "Request Body Integrity").
+  app.addHook('preParsing', captureRawBody)
+  // Enforce the Digest header binding: require it covered by the signature and,
+  // when the raw body is available, recompute and compare it.
+  app.addHook('preValidation', verifyBodyDigest)
 
   // Get Space description object
   app.get('/space/:spaceId', SpaceRequest.get)
@@ -135,6 +148,12 @@ export async function initCollectionRoutes(
   app.addHook('onRequest', requireAuthHeadersOrPublicRead)
   // Parse the relevant request headers, set the request.zcap parameter
   app.addHook('onRequest', parseAuthHeaders)
+  // Capture raw body bytes (JSON/text) so the digest can be recomputed against
+  // exactly what the client signed (spec "Request Body Integrity").
+  app.addHook('preParsing', captureRawBody)
+  // Enforce the Digest header binding: require it covered by the signature and,
+  // when the raw body is available, recompute and compare it.
+  app.addHook('preValidation', verifyBodyDigest)
 
   // Get Collection description
   app.get('/space/:spaceId/:collectionId', CollectionRequest.get)
@@ -197,6 +216,12 @@ export async function initResourceRoutes(
   app.addHook('onRequest', requireAuthHeadersOrPublicRead)
   // Parse the relevant request headers, set the request.zcap parameter
   app.addHook('onRequest', parseAuthHeaders)
+  // Capture raw body bytes (JSON/text) so the digest can be recomputed against
+  // exactly what the client signed (spec "Request Body Integrity").
+  app.addHook('preParsing', captureRawBody)
+  // Enforce the Digest header binding: require it covered by the signature and,
+  // when the raw body is available, recompute and compare it.
+  app.addHook('preValidation', verifyBodyDigest)
 
   // Create a Resource by Id
   app.put(

@@ -4,6 +4,21 @@
 
 ### Added
 
+- Enforce Request Body Integrity via the `Digest` header (spec "Request Body
+  Integrity"). Any request carrying a `Content-Type` must cover the `digest`
+  header in its HTTP Signature (MUST) and present a `Digest` header; for
+  JSON/text bodies the server now independently recomputes the body's multihash
+  and compares it to the header (SHOULD), so a body cannot be swapped without
+  invalidating the signature. A missing, uncovered, malformed, or non-matching
+  digest is rejected with `invalid-authorization-header` (400). Implemented as
+  two route-group hooks (`src/digest.ts`): `captureRawBody` (preParsing) tees
+  the exact body bytes onto `request.rawBody` so the digest is checked against
+  precisely what the client signed (re-serializing the parsed JSON is not
+  guaranteed byte-identical); `verifyBodyDigest` (preValidation) performs the
+  checks before capability verification. Streamed bodies (multipart uploads, tar
+  import) are left unbuffered and get the covered-header + presence checks only.
+  Adds the `@interop/http-digest-header` dependency (`verifyHeaderValue`).
+
 - Implement Update Resource Metadata, `PUT /space/{id}/{cid}/{rid}/meta` (spec
   "Update Resource Metadata"), replacing the previous `unsupported-operation`
   (501) stub. A `PUT` is a full replacement of the Metadata object's

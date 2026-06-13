@@ -339,6 +339,26 @@ export class AuthHeaderParseError extends ProblemError {
 }
 
 /**
+ * 400 — the `Digest` header is missing, malformed, not covered by the request
+ * signature, or does not match the received body (spec "Request Body
+ * Integrity"). All of these are reported as `invalid-authorization-header`.
+ * @param options {object}
+ * @param options.detail {string}   which of the digest conditions failed
+ * @param [options.cause] {Error}   the underlying error, when wrapping one
+ */
+export class InvalidDigestError extends ProblemError {
+  constructor({ detail, cause }: { detail: string; cause?: Error }) {
+    super({
+      type: ProblemTypes.INVALID_AUTHORIZATION_HEADER,
+      title: 'Invalid Digest header',
+      detail,
+      statusCode: 400,
+      cause
+    })
+  }
+}
+
+/**
  * 400 — an error was thrown while verifying the authorization headers.
  * @param options {object}
  * @param options.requestName {string}   request name used in the error title

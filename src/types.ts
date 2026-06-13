@@ -486,5 +486,11 @@ declare module 'fastify' {
     // for anonymous reads (the `requireAuthHeaders` hook lets safe methods
     // through without auth so a fallback policy can grant access).
     zcap?: ParsedZcap
+    // The exact request body bytes, captured by the `captureRawBody` preParsing
+    // hook for JSON/text bodies so `verifyBodyDigest` can recompute the `Digest`
+    // header against what the client signed (re-serializing the parsed body is
+    // not guaranteed byte-identical). Absent for streamed (multipart / tar)
+    // bodies, which are left unbuffered.
+    rawBody?: Buffer
   }
 }
