@@ -30,6 +30,7 @@ import {
   COLLECTION_URL,
   RESOURCE_URL,
   POLICY_URL,
+  META_URL,
   QUOTA_NEAR_LIMIT_FRACTION
 } from '../config.default.js'
 import { extractTarEntries, buildImportPlan } from '../lib/importTar.js'
@@ -41,6 +42,7 @@ import type {
   CollectionListing,
   ResourceResult,
   ResourceMetadata,
+  ResourceCustomMetadata,
   ResourceInput,
   ImportStats,
   PolicyDocument,
@@ -62,6 +64,30 @@ const execFileAsync = promisify(execFile)
  * `fastify.log` in, or in tests).
  */
 const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
+
+/**
+ * The on-disk shape of a Resource's metadata sidecar (`.meta.<resourceId>.json`,
+ * see `metaSidecarFileName`). Only the server-managed timestamps and the
+ * user-writable `custom` object are persisted; `contentType` / `size` are always
+ * derived from the stored representation, never duplicated here.
+ */
+interface MetaSidecar {
+  createdAt: string
+  updatedAt: string
+  custom?: ResourceCustomMetadata
+}
+
+/**
+ * Builds the on-disk filename for a Resource's metadata sidecar:
+ * `.meta.<resourceId>.json`. A dot-file kept alongside the resource
+ * representation in the Collection dir (the same convention as `.policy.` /
+ * `.collection.`), holding the timestamps and user-writable `custom` object.
+ * @param resourceId {string}
+ * @returns {string}
+ */
+export function metaSidecarFileName(resourceId: string): string {
+  return `.meta.${resourceId}.json`
+}
 
 /**
  * Builds the on-disk filename for a resource representation:
@@ -729,6 +755,8 @@ export class FileSystemBackend implements StorageBackend {
           collectionContents.push({ [file.name]: { url: COLLECTION_URL } })
         } else if (file.name.startsWith('.policy.')) {
           collectionContents.push({ [file.name]: { url: POLICY_URL } })
+        } else if (file.name.startsWith('.meta.')) {
+          collectionContents.push({ [file.name]: { url: META_URL } })
         } else if (file.name.startsWith('r.')) {
           collectionContents.push({ [file.name]: { url: RESOURCE_URL } })
         } else {
@@ -849,7 +877,8 @@ export class FileSystemBackend implements StorageBackend {
       collectionDescription,
       collectionPolicy,
       resources,
-      resourcePolicies
+      resourcePolicies,
+      resourceMetadata
     } of collections) {
       // check if collection already exists
       const collectionExisted = Boolean(
@@ -895,6 +924,17 @@ export class FileSystemBackend implements StorageBackend {
 
         await fs.promises.writeFile(path.join(collectionDir, fileName), body)
         stats.resourcesCreated++
+
+        // A metadata sidecar travels with a newly-created resource (preserving
+        // its timestamps and user-writable `custom`); an absent one leaves
+        // `getResourceMetadata` to fall back to the file's stat times.
+        const metadataBytes = resourceMetadata.get(resourceId)
+        if (metadataBytes) {
+          await fs.promises.writeFile(
+            this._metaSidecarPath({ collectionDir, resourceId }),
+            metadataBytes
+          )
+        }
 
         const resourcePolicy = resourcePolicies.get(resourceId)
         if (resourcePolicy) {
@@ -1006,16 +1046,26 @@ export class FileSystemBackend implements StorageBackend {
     } catch (err) {
       this.logger.error({ err })
     }
-    const items = keys.map(fullFilepath => {
-      const { resourceId, contentType } = parseResourceFileName(
-        path.basename(fullFilepath)
-      )
-      return {
-        id: resourceId,
-        url: resourcePath({ spaceId, collectionId, resourceId }),
-        contentType
-      }
-    })
+    const items = await Promise.all(
+      keys.map(async fullFilepath => {
+        const { resourceId, contentType } = parseResourceFileName(
+          path.basename(fullFilepath)
+        )
+        // Surface the user-writable `custom.name` (spec: updating it updates the
+        // name shown in Collection listings) from the Resource's sidecar.
+        const sidecar = await this._readMetaSidecar({
+          collectionDir,
+          resourceId
+        })
+        const name = sidecar?.custom?.name
+        return {
+          id: resourceId,
+          url: resourcePath({ spaceId, collectionId, resourceId }),
+          contentType,
+          ...(name !== undefined && { name })
+        }
+      })
+    )
     return {
       id: collectionId,
       url: collectionPath({ spaceId, collectionId }),
@@ -1134,6 +1184,21 @@ export class FileSystemBackend implements StorageBackend {
         .filter(name => path.resolve(name) !== path.resolve(filePath))
         .map(name => rm(name))
     )
+
+    // Maintain the server-managed timestamps: a content write sets `createdAt`
+    // on first write and bumps `updatedAt`, preserving any user-writable
+    // `custom` already stored in the sidecar.
+    const now = new Date().toISOString()
+    const prior = await this._readMetaSidecar({ collectionDir, resourceId })
+    await this._writeMetaSidecar({
+      collectionDir,
+      resourceId,
+      sidecar: {
+        createdAt: prior?.createdAt ?? now,
+        updatedAt: now,
+        ...(prior?.custom && { custom: prior.custom })
+      }
+    })
   }
 
   /**
@@ -1185,10 +1250,77 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Reads the server-managed metadata (content-type and byte size) of a
-   * Resource's current representation. Both fields are derived from the stored
-   * file -- no separate metadata persistence. Resolves `undefined` when the
-   * Resource is absent (including a delete race on `stat`).
+   * Builds the on-disk path for a Resource's metadata sidecar
+   * (`.meta.<resourceId>.json`) in its Collection dir.
+   * @param options {object}
+   * @param options.collectionDir {string}
+   * @param options.resourceId {string}
+   * @returns {string}
+   */
+  _metaSidecarPath({
+    collectionDir,
+    resourceId
+  }: {
+    collectionDir: string
+    resourceId: string
+  }): string {
+    const filePath = path.join(collectionDir, metaSidecarFileName(resourceId))
+    this._assertContained(filePath)
+    return filePath
+  }
+
+  /**
+   * Reads a Resource's metadata sidecar. Resolves `undefined` when none has been
+   * written yet (e.g. a Resource created before sidecars existed).
+   * @param options {object}
+   * @param options.collectionDir {string}
+   * @param options.resourceId {string}
+   * @returns {Promise<MetaSidecar|undefined>}
+   */
+  async _readMetaSidecar({
+    collectionDir,
+    resourceId
+  }: {
+    collectionDir: string
+    resourceId: string
+  }): Promise<MetaSidecar | undefined> {
+    const metaStore = new MetadataJsonStore<MetaSidecar>({
+      file: this._metaSidecarPath({ collectionDir, resourceId })
+    })
+    return await metaStore.read()
+  }
+
+  /**
+   * Writes a Resource's metadata sidecar (full replacement).
+   * @param options {object}
+   * @param options.collectionDir {string}
+   * @param options.resourceId {string}
+   * @param options.sidecar {MetaSidecar}
+   * @returns {Promise<void>}
+   */
+  async _writeMetaSidecar({
+    collectionDir,
+    resourceId,
+    sidecar
+  }: {
+    collectionDir: string
+    resourceId: string
+    sidecar: MetaSidecar
+  }): Promise<void> {
+    const metaStore = new MetadataJsonStore<MetaSidecar>({
+      file: this._metaSidecarPath({ collectionDir, resourceId })
+    })
+    await metaStore.write(sidecar)
+  }
+
+  /**
+   * Reads the metadata of a Resource's current representation: the REQUIRED
+   * server-managed fields (`contentType`, `size`, both derived from the stored
+   * file), plus the OPTIONAL `createdAt` / `updatedAt` timestamps and the
+   * user-writable `custom` object read from the sidecar. For a Resource written
+   * before sidecars existed, the timestamps fall back to the file's birth/modify
+   * times and `custom` is omitted. Resolves `undefined` when the Resource is
+   * absent (including a delete race on `stat`).
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -1224,7 +1356,73 @@ export class FileSystemBackend implements StorageBackend {
     // it was written under), as `getResource` does.
     const { contentType } = parseResourceFileName(path.basename(filePath))
 
-    return { contentType, size: stats.size }
+    const sidecar = await this._readMetaSidecar({ collectionDir, resourceId })
+    const createdAt = sidecar?.createdAt ?? stats.birthtime.toISOString()
+    const updatedAt = sidecar?.updatedAt ?? stats.mtime.toISOString()
+    const hasCustom = sidecar?.custom && Object.keys(sidecar.custom).length > 0
+
+    return {
+      contentType,
+      size: stats.size,
+      createdAt,
+      updatedAt,
+      ...(hasCustom && { custom: sidecar!.custom })
+    }
+  }
+
+  /**
+   * Replaces the user-writable `custom` object of a Resource's metadata sidecar
+   * (full replacement; `{}` clears it), bumping `updatedAt`. Does not create a
+   * Resource: resolves `false` when the Resource is absent so the handler can
+   * 404. The two REQUIRED server-managed fields are untouched (they are derived
+   * from the stored representation, never written here).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.custom {ResourceCustomMetadata}
+   * @returns {Promise<boolean>}   `false` when the Resource does not exist
+   */
+  async writeResourceMetadata({
+    spaceId,
+    collectionId,
+    resourceId,
+    custom
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    custom: ResourceCustomMetadata
+  }): Promise<boolean> {
+    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const filePath = await this._findFile({ collectionDir, resourceId })
+    if (!filePath) {
+      return false
+    }
+
+    const now = new Date().toISOString()
+    const prior = await this._readMetaSidecar({ collectionDir, resourceId })
+    // Fall back to the file's birth time for `createdAt` if the Resource
+    // predates sidecars (so a meta write does not lose its creation time).
+    let createdAt = prior?.createdAt
+    if (!createdAt) {
+      try {
+        createdAt = (await fsStat(filePath)).birthtime.toISOString()
+      } catch {
+        createdAt = now
+      }
+    }
+    const hasCustom = Object.keys(custom).length > 0
+    await this._writeMetaSidecar({
+      collectionDir,
+      resourceId,
+      sidecar: {
+        createdAt,
+        updatedAt: now,
+        ...(hasCustom && { custom })
+      }
+    })
+    return true
   }
 
   /**
@@ -1254,6 +1452,11 @@ export class FileSystemBackend implements StorageBackend {
       path.join(collectionDir, `r.${resourceId}.*`)
     )
     await Promise.all(filesForResource.map(filename => rm(filename)))
+    // The Metadata object is deleted together with the Resource (spec "Resource
+    // Metadata Data Model"); sweep its sidecar too.
+    await rm(this._metaSidecarPath({ collectionDir, resourceId }), {
+      force: true
+    })
   }
 
   // Policies

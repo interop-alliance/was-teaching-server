@@ -5,26 +5,47 @@ import { assertValidId } from './validateId.js'
 import { InvalidImportError } from '../errors.js'
 import type { CollectionDescription, PolicyDocument } from '../types.js'
 
-/** Prefix / suffix of a policy dot-file (`.policy.<id>.json`). */
+/** Suffix shared by the description / policy / metadata dot-files. */
+const JSON_SUFFIX = '.json'
+/** Prefix of a policy dot-file (`.policy.<id>.json`). */
 const POLICY_PREFIX = '.policy.'
-const POLICY_SUFFIX = '.json'
+/** Prefix of a resource metadata sidecar (`.meta.<id>.json`). */
+const META_PREFIX = '.meta.'
+
+/**
+ * If `fileName` is a dot-file with the given prefix and `.json` suffix, returns
+ * the `<id>` between them; otherwise undefined. Uses slice (not split) so ids
+ * containing dots (URL-safe `.` is allowed) round-trip correctly.
+ * @param fileName {string}
+ * @param prefix {string}
+ * @returns {string | undefined}
+ */
+function dotFileId(fileName: string, prefix: string): string | undefined {
+  if (!fileName.startsWith(prefix) || !fileName.endsWith(JSON_SUFFIX)) {
+    return undefined
+  }
+  const id = fileName.slice(prefix.length, -JSON_SUFFIX.length)
+  return id.length > 0 ? id : undefined
+}
 
 /**
  * If `fileName` is a policy dot-file (`.policy.<id>.json`), returns the `<id>`
- * it is keyed by; otherwise undefined. Uses slice (not split) so ids containing
- * dots (URL-safe `.` is allowed) round-trip correctly.
+ * it is keyed by; otherwise undefined.
  * @param fileName {string}
  * @returns {string | undefined}
  */
 function policyFileId(fileName: string): string | undefined {
-  if (
-    !fileName.startsWith(POLICY_PREFIX) ||
-    !fileName.endsWith(POLICY_SUFFIX)
-  ) {
-    return undefined
-  }
-  const id = fileName.slice(POLICY_PREFIX.length, -POLICY_SUFFIX.length)
-  return id.length > 0 ? id : undefined
+  return dotFileId(fileName, POLICY_PREFIX)
+}
+
+/**
+ * If `fileName` is a metadata sidecar (`.meta.<resourceId>.json`), returns the
+ * `<resourceId>` it is keyed by; otherwise undefined.
+ * @param fileName {string}
+ * @returns {string | undefined}
+ */
+function metaSidecarFileId(fileName: string): string | undefined {
+  return dotFileId(fileName, META_PREFIX)
 }
 
 /** One extracted archive entry, keyed by its archive path. */
@@ -49,6 +70,8 @@ export interface ImportPlanCollection {
   resources: ImportPlanResource[]
   /** Resource-level policies, keyed by resourceId. */
   resourcePolicies: Map<string, PolicyDocument>
+  /** Resource metadata sidecars (raw `.meta.<id>.json` bytes), keyed by resourceId. */
+  resourceMetadata: Map<string, Buffer>
 }
 
 /** The merge plan produced by {@link buildImportPlan}. */
@@ -211,6 +234,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     const resources: ImportPlanResource[] = []
     let collectionPolicy: PolicyDocument | undefined
     const resourcePolicies = new Map<string, PolicyDocument>()
+    const resourceMetadata = new Map<string, Buffer>()
     for (const [entryName, entry] of entries) {
       if (
         !entryName.startsWith(collectionPrefix) ||
@@ -243,6 +267,16 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
         continue
       }
 
+      // Metadata sidecar (`.meta.<resourceId>.json`): carried as raw bytes and
+      // written alongside a newly-created resource (preserving its timestamps
+      // and user-writable `custom`).
+      const metaId = metaSidecarFileId(fileName)
+      if (metaId !== undefined) {
+        assertValidId(metaId, { kind: 'resource', requestName: 'Import Space' })
+        resourceMetadata.set(metaId, entry.body)
+        continue
+      }
+
       if (!fileName.startsWith('r.')) {
         continue
       }
@@ -268,7 +302,8 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       collectionDescription,
       collectionPolicy,
       resources,
-      resourcePolicies
+      resourcePolicies,
+      resourceMetadata
     }
   })
 

@@ -304,26 +304,167 @@ describe('Resource API', () => {
       assert.equal(meta.size, resourceBytes.byteLength)
     })
 
-    it('PUT /meta is not implemented (501 unsupported-operation)', async () => {
-      const resourceId = 'meta-put'
-      await aliceCredentials.put(resourceId, {
-        id: resourceId,
-        name: 'PUT Meta Resource'
+    it('[signed] GET /meta carries createdAt + updatedAt timestamps', async () => {
+      const resourceId = 'meta-timestamps'
+      await aliceCredentials.put(resourceId, { id: resourceId })
+
+      const { data: meta } = await alice.was.request({
+        url: metaUrl(resourceId),
+        method: 'GET'
       })
+      assert.ok(
+        !Number.isNaN(Date.parse(meta.createdAt)),
+        'createdAt is an RFC3339 date-time'
+      )
+      assert.ok(
+        !Number.isNaN(Date.parse(meta.updatedAt)),
+        'updatedAt is an RFC3339 date-time'
+      )
+      // No user-writable metadata has been set, so `custom` is omitted.
+      assert.equal(meta.custom, undefined)
+    })
+
+    it('[signed] PUT /meta sets custom, surfaced by GET /meta and the listing', async () => {
+      const resourceId = 'meta-writable'
+      await aliceCredentials.put(resourceId, { id: resourceId })
+
+      const putResponse = await alice.was.request({
+        url: metaUrl(resourceId),
+        method: 'PUT',
+        json: {
+          custom: {
+            name: 'Hello World greeting',
+            tags: { project: 'demo', status: 'draft' }
+          }
+        }
+      })
+      assert.equal(putResponse.status, 204)
+
+      // GET /meta reflects the new custom object (server-managed fields intact).
+      const { data: meta } = await alice.was.request({
+        url: metaUrl(resourceId),
+        method: 'GET'
+      })
+      assert.equal(meta.contentType, 'application/json')
+      assert.equal(meta.custom.name, 'Hello World greeting')
+      assert.deepEqual(meta.custom.tags, { project: 'demo', status: 'draft' })
+
+      // The List Collection result now shows the custom.name as the Resource name.
+      const { data: listing } = await alice.was.request({
+        url: `${serverUrl}/space/${alice.space1.id}/credentials/`,
+        method: 'GET'
+      })
+      const entry = listing.items.find((item: any) => item.id === resourceId)
+      assert.equal(entry.name, 'Hello World greeting')
+    })
+
+    it('[signed] PUT /meta is a full replacement; an empty body clears custom', async () => {
+      const resourceId = 'meta-clear'
+      await aliceCredentials.put(resourceId, { id: resourceId })
+
+      await alice.was.request({
+        url: metaUrl(resourceId),
+        method: 'PUT',
+        json: { custom: { name: 'Temporary' } }
+      })
+      // An empty body object clears all user-writable properties.
+      await alice.was.request({
+        url: metaUrl(resourceId),
+        method: 'PUT',
+        json: {}
+      })
+
+      const { data: meta } = await alice.was.request({
+        url: metaUrl(resourceId),
+        method: 'GET'
+      })
+      assert.equal(meta.custom, undefined)
+    })
+
+    it('[signed] PUT /meta ignores server-managed top-level props (roundtrip)', async () => {
+      const resourceId = 'meta-roundtrip'
+      await aliceCredentials.put(resourceId, { id: resourceId })
+
+      // GET the whole Metadata object, tweak custom, and PUT it back unstripped.
+      const { data: meta } = await alice.was.request({
+        url: metaUrl(resourceId),
+        method: 'GET'
+      })
+      const putResponse = await alice.was.request({
+        url: metaUrl(resourceId),
+        method: 'PUT',
+        json: {
+          ...meta,
+          contentType: 'text/totally-bogus',
+          size: 999999,
+          custom: { name: 'Roundtripped' }
+        }
+      })
+      assert.equal(putResponse.status, 204)
+
+      const { data: after } = await alice.was.request({
+        url: metaUrl(resourceId),
+        method: 'GET'
+      })
+      // Server-managed fields are untouched by the roundtrip; custom updated.
+      assert.equal(after.contentType, 'application/json')
+      assert.notEqual(after.size, 999999)
+      assert.equal(after.custom.name, 'Roundtripped')
+    })
+
+    it('[signed] PUT /meta of a nonexistent resource 404s (does not create)', async () => {
+      let thrown: any
+      try {
+        await alice.was.request({
+          url: metaUrl('does-not-exist'),
+          method: 'PUT',
+          json: { custom: { name: 'nope' } }
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(
+        thrown,
+        'expected PUT /meta of a missing resource to be rejected'
+      )
+      assert.equal(thrown.response.status, 404)
+    })
+
+    it('[signed] PUT /meta with a non-object custom 400s', async () => {
+      const resourceId = 'meta-badbody'
+      await aliceCredentials.put(resourceId, { id: resourceId })
 
       let thrown: any
       try {
         await alice.was.request({
           url: metaUrl(resourceId),
           method: 'PUT',
-          json: { custom: { label: 'nope' } }
+          json: { custom: 'not-an-object' }
         })
       } catch (err) {
         thrown = err
       }
-      assert.ok(thrown, 'expected PUT /meta to be rejected')
-      assert.equal(thrown.response.status, 501)
-      assert.match(thrown.data.type, /#unsupported-operation$/)
+      assert.ok(thrown, 'expected an invalid custom body to be rejected')
+      assert.equal(thrown.response.status, 400)
+      assert.match(thrown.data.type, /#invalid-request-body$/)
+    })
+
+    it("[signed] Bob's PUT /meta of Alice's resource 404s (conflation)", async () => {
+      const resourceId = 'meta-bob-write'
+      await aliceCredentials.put(resourceId, { id: resourceId })
+
+      let thrown: any
+      try {
+        await bob.was.request({
+          url: metaUrl(resourceId),
+          method: 'PUT',
+          json: { custom: { name: 'hijack' } }
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown, "expected Bob's meta write to be rejected")
+      assert.equal(thrown.response.status, 404)
     })
   })
 })

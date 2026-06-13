@@ -128,6 +128,16 @@ describe('buildImportPlan', () => {
         fileEntry(JSON.stringify(resourcePolicy))
       ],
       [
+        'space/S1/colA/.meta.res1.json',
+        fileEntry(
+          JSON.stringify({
+            createdAt: '2026-06-10T09:12:00.000Z',
+            updatedAt: '2026-06-12T13:25:00.000Z',
+            custom: { name: 'Resource One' }
+          })
+        )
+      ],
+      [
         'space/S1/colA/r.res1.application%2Fjson.json',
         fileEntry(JSON.stringify({ hello: 'world' }))
       ],
@@ -161,6 +171,14 @@ describe('buildImportPlan', () => {
     assert.deepStrictEqual(colA!.resourcePolicies.get('res1'), {
       type: 'PublicCanRead',
       scope: 'resource'
+    })
+    // The resource's metadata sidecar is carried as raw bytes, keyed by id.
+    const metaBytes = colA!.resourceMetadata.get('res1')
+    assert.ok(metaBytes, 'expected a metadata sidecar for res1')
+    assert.deepStrictEqual(JSON.parse(metaBytes!.toString('utf8')), {
+      createdAt: '2026-06-10T09:12:00.000Z',
+      updatedAt: '2026-06-12T13:25:00.000Z',
+      custom: { name: 'Resource One' }
     })
 
     // colB has only a description (no policy, no resources).

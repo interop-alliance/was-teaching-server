@@ -6,7 +6,7 @@
 import type { FastifyInstance, FastifyPluginOptions } from 'fastify'
 import { SpacesRepositoryRequest } from './requests/SpacesRepositoryRequest.js'
 import { SpaceRequest } from './requests/SpaceRequest.js'
-import { handleError, UnsupportedOperationError } from './errors.js'
+import { handleError } from './errors.js'
 import { ResourceRequest } from './requests/ResourceRequest.js'
 import { CollectionRequest } from './requests/CollectionRequest.js'
 import { PolicyRequest } from './requests/PolicyRequest.js'
@@ -228,12 +228,9 @@ export async function initResourceRoutes(
     '/space/:spaceId/:collectionId/:resourceId/meta',
     ResourceRequest.getMeta
   )
-  // Update Resource Metadata (user-writable `custom`) is not implemented yet;
-  // the spec says unimplemented optional metadata endpoints SHOULD return
-  // unsupported-operation (501).
-  app.put('/space/:spaceId/:collectionId/:resourceId/meta', async () => {
-    throw new UnsupportedOperationError({
-      requestName: 'Update Resource Metadata'
-    })
-  })
+  // Update Resource Metadata (full replacement of the user-writable `custom`).
+  app.put(
+    '/space/:spaceId/:collectionId/:resourceId/meta',
+    ResourceRequest.putMeta
+  )
 }

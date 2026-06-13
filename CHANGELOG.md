@@ -4,6 +4,25 @@
 
 ### Added
 
+- Implement Update Resource Metadata, `PUT /space/{id}/{cid}/{rid}/meta` (spec
+  "Update Resource Metadata"), replacing the previous `unsupported-operation`
+  (501) stub. A `PUT` is a full replacement of the Metadata object's
+  user-writable `custom` object (`name`, `tags`): any property omitted is
+  cleared, and a body with no `custom` (e.g. `{}`) clears them all.
+  Server-managed properties are untouched and any top-level property other than
+  `custom` in the body is ignored, so a client may GET-modify-PUT the whole
+  object. The operation does not create -- a `PUT` to the `/meta` of a
+  nonexistent Resource is a 404 -- and returns 204; a malformed body or `custom`
+  shape is `invalid-request-body` (400). Authorization is capability-only (the
+  `PUT` action), like Put Resource. Read Resource Metadata (`GET .../meta`) now
+  also returns the OPTIONAL `createdAt` / `updatedAt` timestamps and the
+  `custom` object, and a Resource's `custom.name` is surfaced as its `name` in
+  List Collection results. Metadata is persisted in a per-Resource sidecar
+  (`.meta.<resourceId>.json`, the same dot-file convention as `.policy.`) via
+  the new `StorageBackend` `writeResourceMetadata()`; the sidecar is
+  created/maintained on Resource writes, swept on delete, and carried through
+  Space export/import.
+
 - Implement the per-Collection Quota report, `GET /space/{id}/{cid}/quota` (spec
   "Quotas"). Returns a single backend-usage entry scoped to the Collection:
   `usageBytes` reflects only that Collection's consumption, while `state` /

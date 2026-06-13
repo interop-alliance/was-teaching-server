@@ -125,3 +125,5 @@ export const RESOURCE_URL =
   'https://digitalcredentials.github.io/wallet-attached-storage-spec/#resource-data-model'
 export const POLICY_URL =
   'https://digitalcredentials.github.io/wallet-attached-storage-spec/#policy'
+export const META_URL =
+  'https://digitalcredentials.github.io/wallet-attached-storage-spec/#resource-metadata-data-model'

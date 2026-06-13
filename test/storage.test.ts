@@ -232,6 +232,87 @@ describe('Storage API', () => {
         await rm(tempDir, { recursive: true, force: true })
       }
     })
+
+    it('restores resource metadata sidecars (custom + timestamps)', async () => {
+      const tempDir = await mkdtemp(
+        path.join(os.tmpdir(), 'was-meta-roundtrip-')
+      )
+      await mkdir(path.join(tempDir, 'spaces'))
+      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const src = 'source-space'
+      const dst = 'target-space'
+      const collectionId = 'credentials'
+      const resourceId = 'vc-1'
+
+      try {
+        await backend.writeSpace({
+          spaceId: src,
+          spaceDescription: {
+            id: src,
+            type: ['Space'],
+            name: 'Source',
+            controller: 'did:key:test-controller'
+          }
+        })
+        await backend.writeCollection({
+          spaceId: src,
+          collectionId,
+          collectionDescription: {
+            id: collectionId,
+            type: ['Collection'],
+            name: 'Verifiable Credentials'
+          }
+        })
+        await backend.writeResource({
+          spaceId: src,
+          collectionId,
+          resourceId,
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { id: resourceId }
+          }
+        })
+        await backend.writeResourceMetadata({
+          spaceId: src,
+          collectionId,
+          resourceId,
+          custom: { name: 'Credential One', tags: { status: 'final' } }
+        })
+        const before = await backend.getResourceMetadata({
+          spaceId: src,
+          collectionId,
+          resourceId
+        })
+
+        const pack = await backend.exportSpace({ spaceId: src })
+        await backend.writeSpace({
+          spaceId: dst,
+          spaceDescription: {
+            id: dst,
+            type: ['Space'],
+            name: 'Target',
+            controller: 'did:key:test-controller'
+          }
+        })
+        await backend.importSpace({ spaceId: dst, tarStream: pack })
+
+        const after = await backend.getResourceMetadata({
+          spaceId: dst,
+          collectionId,
+          resourceId
+        })
+        assert.deepEqual(after!.custom, {
+          name: 'Credential One',
+          tags: { status: 'final' }
+        })
+        // Timestamps survive the roundtrip unchanged (sidecar carried verbatim).
+        assert.equal(after!.createdAt, before!.createdAt)
+        assert.equal(after!.updatedAt, before!.updatedAt)
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
   })
 
   describe('FileSystemBackend resourceId prefix collisions', () => {

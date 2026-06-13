@@ -121,6 +121,8 @@ export interface ResourceSummary {
   /** relative URL of the Resource */
   url: string
   contentType: string
+  /** human-readable name from the Resource's `custom.name`, when set */
+  name?: string
 }
 
 /** Return shape of `listCollectionItems()`. */
@@ -134,16 +136,37 @@ export interface CollectionListing {
 }
 
 /**
+ * The user-writable portion of a Resource's Metadata object (spec "Resource
+ * Metadata Data Model"), nested under `custom`. Set via Update Resource Metadata
+ * (`PUT .../meta`); a full replacement, so any property omitted is cleared.
+ */
+export interface ResourceCustomMetadata {
+  /**
+   * Human-readable name for the Resource. The same `name` returned by List
+   * Collection -- updating it here updates the name shown in listings.
+   */
+  name?: string
+  /** Application-defined annotations; values SHOULD be strings. */
+  tags?: Record<string, unknown>
+}
+
+/**
  * A Resource Metadata object (spec "Resource Metadata Data Model"), addressable
- * at the reserved `/meta` segment under a Resource. v1 exposes only the two
- * REQUIRED server-managed fields. The optional `createdAt` / `updatedAt`
- * timestamps and the user-writable `custom` object come later.
+ * at the reserved `/meta` segment under a Resource. `contentType` and `size` are
+ * the REQUIRED server-managed fields; `createdAt` / `updatedAt` are the OPTIONAL
+ * server-managed timestamps, and `custom` holds the user-writable properties.
  */
 export interface ResourceMetadata {
   /** MIME type of the stored representation */
   contentType: string
   /** length in bytes of the stored representation */
   size: number
+  /** RFC3339 date-time the Resource was created */
+  createdAt?: string
+  /** RFC3339 date-time the Resource's content or custom metadata last changed */
+  updatedAt?: string
+  /** user-writable properties (omitted when none are set) */
+  custom?: ResourceCustomMetadata
 }
 
 /**
@@ -420,6 +443,17 @@ export interface StorageBackend {
     collectionId: string
     resourceId: string
   }): Promise<ResourceMetadata | undefined>
+  /**
+   * Replaces the user-writable `custom` object of a Resource's Metadata (full
+   * replacement; pass `{}` to clear). Resolves `false` when the Resource does
+   * not exist (this operation does not create one) so the handler can 404.
+   */
+  writeResourceMetadata(options: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    custom: ResourceCustomMetadata
+  }): Promise<boolean>
 
   // Access-control policy documents. The level is selected by which ids are
   // present: Space (`spaceId`), Collection (`+ collectionId`), or Resource
