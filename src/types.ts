@@ -342,6 +342,13 @@ export interface StorageBackend {
     spaceId: string
   }): Promise<SpaceDescription | undefined>
   deleteSpace(options: { spaceId: string }): Promise<void>
+  /**
+   * Enumerates every Space stored on this backend (the candidate set for the
+   * List Spaces operation; the request layer filters it down to the Spaces the
+   * caller is authorized to see). Resolves an empty array when nothing is
+   * stored yet (must not throw on an absent storage root).
+   */
+  listSpaces(): Promise<SpaceDescription[]>
   listCollections(options: { spaceId: string }): Promise<CollectionSummary[]>
   exportSpace(options: { spaceId: string }): Promise<Readable>
   importSpace(options: {

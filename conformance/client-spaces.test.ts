@@ -11,7 +11,7 @@
 import { it, describe, before, after } from 'node:test'
 import assert from 'node:assert'
 
-import { NotFoundError, NotImplementedError } from '@interop/was-client'
+import { NotFoundError } from '@interop/was-client'
 import type { Space } from '@interop/was-client'
 
 import { buildZcapClients } from './helpers.js'
@@ -80,10 +80,16 @@ describe('WasClient — Spaces & Collections', () => {
       assert.equal(reread?.name, 'Renamed')
     })
 
-    it('listSpaces surfaces NotImplementedError (server 501)', async () => {
-      await assert.rejects(
-        alice.was.listSpaces(),
-        (err: unknown) => err instanceof NotImplementedError
+    it('listSpaces includes a created space', async () => {
+      // A persistent external server may hold other spaces for Alice from
+      // earlier runs, so assert containment rather than exact contents.
+      const space = await newSpace('Listed Space')
+      const listing = await alice.was.listSpaces()
+      assert.equal(listing.url, '/spaces/')
+      assert.equal(listing.totalItems, listing.items.length)
+      assert.deepStrictEqual(
+        listing.items.find(item => item.id === space.id),
+        { id: space.id, name: 'Listed Space', url: `/space/${space.id}` }
       )
     })
   })

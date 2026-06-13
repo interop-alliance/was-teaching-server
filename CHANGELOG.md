@@ -4,6 +4,21 @@
 
 ### Added
 
+- Implement the List Spaces operation, `GET /spaces/` (spec "List Spaces
+  Operation"), replacing the hardcoded 501. The response is
+  `{ url, totalItems, items }` with only the Spaces the caller is authorized to
+  see; each item carries `id`, `name` (when set), and the relative `url`
+  (`/space/{id}`). An anonymous or unauthorized request is not an error -- it
+  gets the empty-items `200`, the spec's explicit exception to 404 masking, so
+  the listing reveals nothing about which Spaces exist (the SpacesRepository
+  route group now installs `requireAuthHeadersOrPublicRead` so the read can
+  reach the handler; Create Space still 401s without auth headers). Candidates
+  come from the new `StorageBackend.listSpaces()` (filesystem backend: the
+  subdirectories of the spaces root), and authorization is decided once per
+  distinct Space controller: a bare-root invocation lists the signer's own
+  Spaces, while a delegated invocation lists the Spaces of whichever controller
+  roots its capability chain.
+
 - Complete the spec's Error Type Registry (`src/problem-types.ts`): added the
   three missing problem kinds and matching error classes -- `reserved-id` (409,
   `ReservedIdError`), `unsupported-backend` (409, `UnsupportedBackendError`),

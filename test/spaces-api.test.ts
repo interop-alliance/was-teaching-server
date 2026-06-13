@@ -39,13 +39,17 @@ describe('Spaces', () => {
   })
 
   describe('Spaces Repository API', () => {
-    it('GET /spaces/ should 401 error when no authorization headers', async () => {
+    it('GET /spaces/ without auth headers returns the empty listing (200)', async () => {
+      // List Spaces is the spec's exception to 404 masking: an anonymous
+      // request is not an error -- it is simply authorized to see no spaces.
       const response = await fetch(new URL('/spaces/', serverUrl))
-      assert.equal(response.status, 401)
-      assert.match(
-        response.headers.get('content-type')!,
-        /application\/problem\+json/
-      )
+      assert.equal(response.status, 200)
+      assert.match(response.headers.get('content-type')!, /application\/json/)
+      assert.deepStrictEqual(await response.json(), {
+        url: '/spaces/',
+        totalItems: 0,
+        items: []
+      })
     })
     it('POST /spaces/ should 401 error when no authorization headers', async () => {
       const response = await fetch(new URL('/spaces/', serverUrl), {
@@ -439,6 +443,94 @@ describe('Spaces', () => {
       const description = await alice.was.space(spaceId).describe()
       assert.equal(description?.controller, alice.did)
       assert.equal(description?.name, "Alice's Space")
+    })
+  })
+
+  describe('List Spaces (GET /spaces/)', () => {
+    // The suite's server is shared across tests, so the listings below assert
+    // containment / exclusion of known spaces rather than exact contents.
+
+    it('[root] a controller lists only their own spaces', async () => {
+      const aliceSpaceId = crypto.randomUUID()
+      const bobSpaceId = crypto.randomUUID()
+      await alice.was.createSpace({
+        id: aliceSpaceId,
+        name: 'Alice Listing Test',
+        controller: alice.did
+      })
+      await bob.was.createSpace({
+        id: bobSpaceId,
+        name: 'Bob Listing Test',
+        controller: bob.did
+      })
+
+      const listing = await alice.was.listSpaces()
+      assert.equal(listing.url, '/spaces/')
+      assert.equal(listing.totalItems, listing.items.length)
+      assert.deepStrictEqual(
+        listing.items.find((item: any) => item.id === aliceSpaceId),
+        {
+          id: aliceSpaceId,
+          name: 'Alice Listing Test',
+          url: `/space/${aliceSpaceId}`
+        }
+      )
+      // Bob's space is invisible to Alice...
+      assert.ok(!listing.items.some((item: any) => item.id === bobSpaceId))
+
+      // ...and vice versa.
+      const bobListing = await bob.was.listSpaces()
+      assert.ok(bobListing.items.some((item: any) => item.id === bobSpaceId))
+      assert.ok(!bobListing.items.some((item: any) => item.id === aliceSpaceId))
+    })
+
+    it('[root] a signer controlling no spaces gets the empty listing', async () => {
+      // The delegated app's own DID controls no Space (it only ever acts via
+      // delegation), so its bare-root listing is empty -- not an error.
+      const listing = await aliceDelegatedApp.was.listSpaces()
+      assert.deepStrictEqual(listing, {
+        url: '/spaces/',
+        totalItems: 0,
+        items: []
+      })
+    })
+
+    it("[delegated] an app with a GET /spaces/ capability lists the delegator's spaces", async () => {
+      const aliceSpaceId = crypto.randomUUID()
+      const bobSpaceId = crypto.randomUUID()
+      await alice.was.createSpace({
+        id: aliceSpaceId,
+        name: 'Delegated Listing Test',
+        controller: alice.did
+      })
+      await bob.was.createSpace({
+        id: bobSpaceId,
+        name: 'Bob Bystander Space',
+        controller: bob.did
+      })
+
+      // Alice delegates List Spaces to her app...
+      const spacesUrl = new URL('/spaces/', serverUrl).toString()
+      const zcap = await alice.was.grant({
+        to: aliceDelegatedApp.did,
+        actions: ['GET'],
+        target: spacesUrl
+      })
+
+      // ...and the app sees the spaces of the chain's root (Alice), no others.
+      const response = await aliceDelegatedApp.was.request({
+        url: spacesUrl,
+        method: 'GET',
+        capability: zcap
+      })
+      assert.equal(response.status, 200)
+      const listing = response.data
+      assert.equal(listing.totalItems, listing.items.length)
+      assert.ok(listing.items.some((item: any) => item.id === aliceSpaceId))
+      assert.ok(
+        !listing.items.some((item: any) => item.id === bobSpaceId),
+        "a chain rooted in Alice must not reveal Bob's spaces"
+      )
     })
   })
 

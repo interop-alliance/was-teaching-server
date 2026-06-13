@@ -1,13 +1,14 @@
 /**
  * Request handler for SpacesRepository operations:
- * - POST /spaces/ (Create Space).
+ * - POST /spaces/ (Create Space)
+ * - GET /spaces/ (List Spaces).
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
-import { handleZcapVerify, isRootInvocation } from '../zcap.js'
+import { handleZcapVerify, isRootInvocation, verifyZcap } from '../zcap.js'
 import { invalidateSpaceDescription } from './spaceContext.js'
 import { assertValidId } from '../lib/validateId.js'
-import { spacesPath } from '../lib/paths.js'
+import { spacePath, spacesPath } from '../lib/paths.js'
 import { assertValidController } from '../lib/validateDid.js'
 import {
   SpaceControllerMismatchError,
@@ -17,6 +18,95 @@ import {
 import type { IDID } from '../types.js'
 
 export class SpacesRepositoryRequest {
+  /**
+   * GET /spaces/
+   * Request handler for "List Spaces" (spec "List Spaces Operation"): returns
+   * `{ url, totalItems, items }` with only the Spaces the caller is authorized
+   * to see. An anonymous or unauthorized request is NOT an error -- it gets the
+   * empty-items 200, the spec's explicit exception to 404 masking -- so nothing
+   * is revealed about which Spaces exist.
+   *
+   * Authorization is per Space controller: the root capability for `/spaces/`
+   * is synthesized with the candidate Space's controller (see `verifyZcap`), so
+   * one verification decides visibility for every Space sharing that
+   * controller. A bare-root invocation can only verify where the signer *is*
+   * the controller, so those candidates are filtered before any signature
+   * work; a delegated invocation reveals the Spaces of whichever controller
+   * roots its capability chain.
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async get(
+    request: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const { url, method, headers } = request
+    const { serverUrl, storage } = request.server
+
+    const items: Array<{ id: string; name?: string; url: string }> = []
+    const listing = { url: spacesPath(), totalItems: 0, items }
+
+    // No (complete) authorization presented: authorized to see no Spaces,
+    // which is the empty 200, not an error.
+    if (!request.zcap?.invocation) {
+      return reply.send(listing)
+    }
+
+    const { keyId, invocation } = request.zcap
+    const [zcapSigningDid] = keyId.split('#')
+    const rootInvocation = isRootInvocation({ invocation })
+    const allowedTarget = new URL(spacesPath(), serverUrl).toString()
+
+    // Visibility is identical across Spaces sharing a controller (the
+    // verification depends only on the controller), so verify once per
+    // distinct controller. A failed verification just excludes that
+    // controller's Spaces -- never an error response.
+    const verifiedByController = new Map<IDID, boolean>()
+    for (const space of await storage.listSpaces()) {
+      const { controller } = space
+      if (rootInvocation && controller !== zcapSigningDid) {
+        continue // a bare-root invocation cannot verify for another controller
+      }
+      let authorized = verifiedByController.get(controller)
+      if (authorized === undefined) {
+        try {
+          const result = await verifyZcap({
+            url,
+            allowedTarget,
+            allowedAction: 'GET',
+            method,
+            headers,
+            serverUrl,
+            spaceController: controller
+          })
+          authorized = result.verified === true
+        } catch (err) {
+          request.log.debug(
+            { err },
+            'List Spaces: invocation did not verify for a candidate controller'
+          )
+          authorized = false
+        }
+        verifiedByController.set(controller, authorized)
+      }
+      if (authorized) {
+        const item: { id: string; name?: string; url: string } = {
+          id: space.id,
+          url: spacePath({ spaceId: space.id })
+        }
+        if (space.name !== undefined) {
+          item.name = space.name
+        }
+        items.push(item)
+      }
+    }
+
+    listing.totalItems = items.length
+    return reply.send(listing)
+  }
+
   /**
    * POST /spaces/
    * Request handler for "Create Space" request

@@ -515,6 +515,40 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * Enumerates every Space stored on this backend (each immediate subdirectory
+   * of the spaces root), sorted by Space id. An absent spaces root (nothing
+   * stored yet) resolves an empty list, not an error; a directory without a
+   * readable description file (e.g. a partially deleted Space) is skipped.
+   * @returns {Promise<SpaceDescription[]>}
+   */
+  async listSpaces(): Promise<SpaceDescription[]> {
+    let rootEntries: fs.Dirent[]
+    try {
+      rootEntries = await fs.promises.readdir(this.spacesDir, {
+        withFileTypes: true
+      })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return []
+      }
+      throw new StorageError({ cause: err as Error })
+    }
+    const spaceEntries = rootEntries
+      .filter(entry => entry.isDirectory())
+      .sort((a, b) => a.name.localeCompare(b.name))
+    const spaces: SpaceDescription[] = []
+    for (const entry of spaceEntries) {
+      const spaceDescription = await this.getSpaceDescription({
+        spaceId: entry.name
+      })
+      if (spaceDescription) {
+        spaces.push(spaceDescription)
+      }
+    }
+    return spaces
+  }
+
+  /**
    * @param options {object}
    * @param options.spaceId {string}
    * @returns {Promise<CollectionSummary[]>}

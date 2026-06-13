@@ -48,13 +48,55 @@ describe('Spaces', () => {
   })
 
   describe('Spaces Repository API', () => {
-    it('GET /spaces/ should 401 error when no authorization headers', async () => {
+    it('GET /spaces/ without auth headers returns the empty listing (200)', async () => {
+      // List Spaces is the spec's exception to 404 masking: an anonymous
+      // request is not an error -- it is simply authorized to see no spaces.
       const response = await fetch(new URL('/spaces/', serverUrl))
-      assert.equal(response.status, 401)
-      assert.match(
-        response.headers.get('content-type')!,
-        /application\/problem\+json/
-      )
+      assert.equal(response.status, 200)
+      assert.match(response.headers.get('content-type')!, /application\/json/)
+      const listing = (await response.json()) as any
+      assert.equal(listing.url, '/spaces/')
+      assert.equal(listing.totalItems, 0)
+      assert.deepStrictEqual(listing.items, [])
+    })
+
+    it('[root] GET /spaces/ lists only spaces controlled by the requester', async () => {
+      // A persistent external server may hold any number of spaces for Alice
+      // from earlier runs, so assert containment / exclusion, not contents.
+      const bobSpaceId = generateId()
+      await createSpace({
+        spaceDescription: {
+          id: bobSpaceId,
+          name: "Bob's Listing Space",
+          controller: bob.did
+        },
+        rootClient: bob.rootClient
+      })
+
+      try {
+        const response = await alice.rootClient.request({
+          url: new URL('/spaces/', serverUrl).toString(),
+          method: 'GET'
+        })
+        assert.equal(response.status, 200)
+        const listing = response.data
+        assert.equal(listing.url, '/spaces/')
+        assert.equal(listing.totalItems, listing.items.length)
+        const aliceItem = listing.items.find(
+          (item: any) => item.id === alice.space1.id
+        )
+        assert.ok(aliceItem, "Alice's listing includes her pre-created space")
+        assert.equal(aliceItem.url, `/space/${alice.space1.id}`)
+        assert.ok(
+          !listing.items.some((item: any) => item.id === bobSpaceId),
+          "Alice's listing must not reveal Bob's space"
+        )
+      } finally {
+        await bob.rootClient.request({
+          url: new URL(`/space/${bobSpaceId}`, serverUrl).toString(),
+          method: 'DELETE'
+        })
+      }
     })
 
     it('POST /spaces/ should 401 error when no authorization headers', async () => {

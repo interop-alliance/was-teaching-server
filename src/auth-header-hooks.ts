@@ -1,7 +1,9 @@
 /**
  * Auth onRequest hooks: `requireAuthHeaders` (401 if Authorization /
- * Capability-Invocation are missing) and `parseAuthHeaders` (parses the auth
- * headers into `request.zcap`). Installed by every route group in routes.js.
+ * Capability-Invocation are missing), `requireAuthHeadersOrPublicRead` (same,
+ * but safe methods pass through unauthenticated), and `parseAuthHeaders`
+ * (parses the auth headers into `request.zcap`). Every route group in
+ * routes.js installs `requireAuthHeadersOrPublicRead` then `parseAuthHeaders`.
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import {
@@ -77,8 +79,10 @@ export async function parseAuthHeaders(
 /**
  * onRequest hook that enforces presence of the auth-related headers. Throws
  * MissingAuthError (401) when `Authorization` or `Capability-Invocation` is
- * absent. Used by route groups where every operation is privileged (e.g. the
- * SpacesRepository admin routes).
+ * absent. For route groups where every operation, reads included, is
+ * privileged. (No current group qualifies -- even the SpacesRepository group
+ * lets anonymous List Spaces reads through, answered with the spec's
+ * empty-items 200 -- so this is kept as the strict building block.)
  * @param request {import('fastify').FastifyRequest}
  * @param reply {import('fastify').FastifyReply}
  * @returns {Promise<void>}
@@ -95,10 +99,11 @@ export async function requireAuthHeaders(
 
 /**
  * Like `requireAuthHeaders`, but lets safe (read) methods through without auth
- * so the handler can fall back to an access-control policy (e.g. a
- * world-readable Resource). The handler still denies anonymous reads that no
- * policy authorizes. Unsafe methods (writes) still require auth. Used by the
- * Space / Collection / Resource content route groups.
+ * so the handler can decide what an anonymous read sees: a fallback
+ * access-control policy (e.g. a world-readable Resource), or for List Spaces
+ * the empty-items 200. The handler still denies anonymous reads that no policy
+ * authorizes. Unsafe methods (writes) still require auth. Used by every route
+ * group.
  * @param request {import('fastify').FastifyRequest}
  * @param reply {import('fastify').FastifyReply}
  * @returns {Promise<void>}

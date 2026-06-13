@@ -1,7 +1,7 @@
 /**
  * Route layer: maps URL patterns to *Request handler methods. Each group first
- * installs the `requireAuthHeaders` then `parseAuthHeaders` onRequest hooks, and
- * redirects slash/no-slash variants to the canonical form.
+ * installs the `requireAuthHeadersOrPublicRead` then `parseAuthHeaders`
+ * onRequest hooks, and redirects slash/no-slash variants to the canonical form.
  */
 import type { FastifyInstance, FastifyPluginOptions } from 'fastify'
 import { SpacesRepositoryRequest } from './requests/SpacesRepositoryRequest.js'
@@ -12,14 +12,13 @@ import { CollectionRequest } from './requests/CollectionRequest.js'
 import { PolicyRequest } from './requests/PolicyRequest.js'
 import {
   parseAuthHeaders,
-  requireAuthHeaders,
   requireAuthHeadersOrPublicRead
 } from './auth-header-hooks.js'
 
 /**
  * Registers SpacesRepository routes (POST/GET /spaces). Installs the
- * `requireAuthHeaders` then `parseAuthHeaders` onRequest hooks and the
- * `handleError` error handler.
+ * `requireAuthHeadersOrPublicRead` then `parseAuthHeaders` onRequest hooks and
+ * the `handleError` error handler.
  * @param app {import('fastify').FastifyInstance}
  * @param options {object}   Fastify plugin options
  * @returns {Promise<void>}
@@ -30,9 +29,10 @@ export async function initSpacesRepositoryRoutes(
 ): Promise<void> {
   app.setErrorHandler(handleError)
 
-  // All SpacesRepository routes require auth-related headers
-  // Check headers are present (throw 401 otherwise)
-  app.addHook('onRequest', requireAuthHeaders)
+  // Create Space (POST) requires auth-related headers (401 otherwise); a List
+  // Spaces read may proceed unauthenticated -- an anonymous list is the spec's
+  // empty-items 200, never an error (the exception to 404 masking).
+  app.addHook('onRequest', requireAuthHeadersOrPublicRead)
   // Parse the relevant request headers, set the request.zcap parameter
   app.addHook('onRequest', parseAuthHeaders)
 
@@ -42,9 +42,7 @@ export async function initSpacesRepositoryRoutes(
 
   // List Spaces
   app.get('/spaces', async (request, reply) => reply.redirect('/spaces/'))
-
-  // TODO - Implement the 'List Spaces' request (spec: #list-spaces)
-  app.get('/spaces/', async (request, reply) => reply.status(501).send())
+  app.get('/spaces/', SpacesRepositoryRequest.get)
 }
 
 /**
