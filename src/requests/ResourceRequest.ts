@@ -14,7 +14,7 @@ import {
   StorageError,
   rethrowOrWrapStorageError
 } from '../errors.js'
-import type { ResourceCustomMetadata } from '../types.js'
+import type { ResourceMetadataCustom } from '../types.js'
 
 /**
  * Validates and extracts the user-writable `custom` object from an Update
@@ -24,9 +24,9 @@ import type { ResourceCustomMetadata } from '../types.js'
  * (returns `{}`). Throws `InvalidRequestBodyError` (400) when the body or
  * `custom` shape is wrong.
  * @param body {unknown}   the parsed request body
- * @returns {ResourceCustomMetadata}
+ * @returns {ResourceMetadataCustom}
  */
-function parseCustomMetadata(body: unknown): ResourceCustomMetadata {
+function parseCustomMetadata(body: unknown): ResourceMetadataCustom {
   const requestName = 'Update Resource Metadata'
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
     throw new InvalidRequestBodyError({
@@ -63,9 +63,23 @@ function parseCustomMetadata(body: unknown): ResourceCustomMetadata {
       pointer: '/custom/tags'
     })
   }
+  // Tag values MUST be strings (spec: values SHOULD be strings; the wire type
+  // models them as `Record<string, string>`).
+  if (
+    tags !== undefined &&
+    Object.values(tags as Record<string, unknown>).some(
+      value => typeof value !== 'string'
+    )
+  ) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail: 'Every `custom.tags` value must be a string.',
+      pointer: '/custom/tags'
+    })
+  }
   return {
     ...(name !== undefined && { name }),
-    ...(tags !== undefined && { tags: tags as Record<string, unknown> })
+    ...(tags !== undefined && { tags: tags as Record<string, string> })
   }
 }
 

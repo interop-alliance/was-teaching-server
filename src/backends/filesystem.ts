@@ -39,10 +39,10 @@ import type {
   SpaceDescription,
   CollectionDescription,
   CollectionSummary,
-  CollectionListing,
+  CollectionResourcesList,
   ResourceResult,
   ResourceMetadata,
-  ResourceCustomMetadata,
+  ResourceMetadataCustom,
   ResourceInput,
   ImportStats,
   PolicyDocument,
@@ -51,6 +51,7 @@ import type {
   BackendState,
   StorageLimit,
   CollectionUsage,
+  Action,
   StorageBackend
 } from '../types.js'
 
@@ -74,7 +75,7 @@ const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
 interface MetaSidecar {
   createdAt: string
   updatedAt: string
-  custom?: ResourceCustomMetadata
+  custom?: ResourceMetadataCustom
 }
 
 /**
@@ -197,9 +198,12 @@ export class FileSystemBackend implements StorageBackend {
    * Self-description advertised at `GET /space/:spaceId/backends`. The
    * filesystem backend is the single server-configured default: it stores both
    * JSON documents and binary blobs on disk, so its data survives restarts.
-   * @returns {BackendDescriptor}
+   * @returns {Required<BackendDescriptor>}
    */
-  describe(): BackendDescriptor {
+  describe(): Required<BackendDescriptor> {
+    // The wire type only REQUIRES `id`; this backend always populates every
+    // field, so its return is the stricter `Required<BackendDescriptor>` (which
+    // also lets `reportUsage` read a non-optional `managedBy` off `describe()`).
     return {
       id: 'default',
       name: 'Server Filesystem',
@@ -360,7 +364,7 @@ export class FileSystemBackend implements StorageBackend {
         : { capacityBytes: this.capacityBytes, isUnlimited: false }
 
     let state: BackendState = 'ok'
-    let restrictedActions: string[] = []
+    let restrictedActions: Action[] = []
     if (this.capacityBytes !== undefined) {
       if (spaceTotalBytes >= this.capacityBytes) {
         state = 'over-quota'
@@ -703,7 +707,9 @@ export class FileSystemBackend implements StorageBackend {
       collections.push({
         id: entry.name,
         url: collectionPath({ spaceId, collectionId: entry.name }),
-        name: collectionDescription!.name
+        // `name` is optional on the wire type; a stored Collection always has
+        // one (create defaults it to the id), so fall back to the id defensively.
+        name: collectionDescription!.name ?? entry.name
       })
     }
 
@@ -1025,7 +1031,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @returns {Promise<CollectionListing>}
+   * @returns {Promise<CollectionResourcesList>}
    */
   async listCollectionItems({
     spaceId,
@@ -1033,7 +1039,7 @@ export class FileSystemBackend implements StorageBackend {
   }: {
     spaceId: string
     collectionId: string
-  }): Promise<CollectionListing> {
+  }): Promise<CollectionResourcesList> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
     const collectionDescription = await this.getCollectionDescription({
       spaceId,
@@ -1380,7 +1386,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
-   * @param options.custom {ResourceCustomMetadata}
+   * @param options.custom {ResourceMetadataCustom}
    * @returns {Promise<boolean>}   `false` when the Resource does not exist
    */
   async writeResourceMetadata({
@@ -1392,7 +1398,7 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
     resourceId: string
-    custom: ResourceCustomMetadata
+    custom: ResourceMetadataCustom
   }): Promise<boolean> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
     const filePath = await this._findFile({ collectionDir, resourceId })

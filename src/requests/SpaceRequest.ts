@@ -36,7 +36,12 @@ import {
   IdConflictError,
   SpaceControllerMismatchError
 } from '../errors.js'
-import type { IDID } from '../types.js'
+import type {
+  IDID,
+  SpaceDescription,
+  CollectionsList,
+  SpaceQuotaReport
+} from '../types.js'
 
 export class SpaceRequest {
   /**
@@ -83,7 +88,9 @@ export class SpaceRequest {
     // authorized, continue. Advertise the Space's linkset (policy discovery);
     // a relative URL, consistent with the other URL fields the API returns.
     const linkset = linksetPath({ spaceId })
-    return reply.status(200).send({ ...spaceDescription, linkset })
+    return reply
+      .status(200)
+      .send({ ...spaceDescription, linkset } satisfies SpaceDescription)
   }
 
   /**
@@ -523,7 +530,7 @@ export class SpaceRequest {
       url: collectionsPath({ spaceId }),
       totalItems: collections.length,
       items: collections
-    })
+    } satisfies CollectionsList)
   }
 
   /**
@@ -624,6 +631,6 @@ export class SpaceRequest {
       .send({
         respondedAt: new Date().toISOString(),
         backends: [usage]
-      })
+      } satisfies SpaceQuotaReport)
   }
 }

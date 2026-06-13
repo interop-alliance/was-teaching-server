@@ -9,6 +9,7 @@ import { buildLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
+import type { CollectionDescription } from '../types.js'
 import {
   assertSupportedBackend,
   resolveBackendDescriptor,
@@ -250,7 +251,13 @@ export class CollectionRequest {
     return reply
       .status(200)
       .type('application/json')
-      .send(JSON.stringify({ ...collectionDescription, backend, linkset }))
+      .send(
+        JSON.stringify({
+          ...collectionDescription,
+          backend,
+          linkset
+        } satisfies CollectionDescription)
+      )
   }
 
   /**

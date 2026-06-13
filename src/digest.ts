@@ -17,8 +17,8 @@
  *   `invalid-authorization-header` (400).
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
+import { verifyHeaderValue } from '@interop/http-digest-header'
 import { PassThrough, type Readable } from 'node:stream'
-import { verifyHeaderValue } from './lib/httpDigest.js'
 import { isJson } from './lib/isJson.js'
 import { InvalidDigestError } from './errors.js'
 

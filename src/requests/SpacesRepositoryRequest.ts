@@ -15,7 +15,7 @@ import {
   InvalidRequestBodyError,
   IdConflictError
 } from '../errors.js'
-import type { IDID } from '../types.js'
+import type { IDID, SpaceSummary, SpaceListing } from '../types.js'
 
 export class SpacesRepositoryRequest {
   /**
@@ -45,8 +45,8 @@ export class SpacesRepositoryRequest {
     const { url, method, headers } = request
     const { serverUrl, storage } = request.server
 
-    const items: Array<{ id: string; name?: string; url: string }> = []
-    const listing = { url: spacesPath(), totalItems: 0, items }
+    const items: SpaceSummary[] = []
+    const listing: SpaceListing = { url: spacesPath(), totalItems: 0, items }
 
     // No (complete) authorization presented: authorized to see no Spaces,
     // which is the empty 200, not an error.
@@ -92,7 +92,7 @@ export class SpacesRepositoryRequest {
         verifiedByController.set(controller, authorized)
       }
       if (authorized) {
-        const item: { id: string; name?: string; url: string } = {
+        const item: SpaceSummary = {
           id: space.id,
           url: spacePath({ spaceId: space.id })
         }

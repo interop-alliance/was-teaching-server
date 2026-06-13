@@ -4,19 +4,15 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 
-import { ProblemTypes, type ProblemType } from './problem-types.js'
+import {
+  ProblemTypes,
+  type ProblemType,
+  type Problem
+} from '@interop/storage-core'
 
-/**
- * A single entry in the `errors` array of an `application/problem+json`
- * response.
- * @property detail {string}   specific explanation of this occurrence
- * @property [pointer] {string}   RFC 6901 JSON Pointer (in `#/field` form)
- *   identifying the offending part of the request body
- */
-export interface Problem {
-  detail: string
-  pointer?: string
-}
+// Re-export the wire `Problem` entry shape (one element of the `errors` array)
+// so the rest of the server keeps importing it from this one module.
+export type { Problem }
 
 /**
  * Base class for the server's error hierarchy. Carries the four
@@ -25,7 +21,7 @@ export interface Problem {
  * entries; `handleError` serializes these to the wire. Subclasses set their
  * distinguishing values via `super({ ... })`.
  * @param options {object}
- * @param options.type {ProblemType}   problem-kind URI (see problem-types.ts)
+ * @param options.type {ProblemType}   problem-kind URI (see @interop/storage-core)
  * @param options.title {string}   short human-readable summary
  * @param options.detail {string}   specific explanation of the occurrence
  * @param options.statusCode {number}   HTTP status code

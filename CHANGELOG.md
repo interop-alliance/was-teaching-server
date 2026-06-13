@@ -256,6 +256,21 @@
 
 ### Changed
 
+- Adopt `@interop/storage-core` for the shared WAS wire model and error
+  vocabulary, replacing the in-repo declarations that were drifting from the
+  `was-client` copies. `src/types.ts` now imports/re-exports the data-model
+  shapes (`SpaceDescription`, `CollectionDescription`, `BackendDescriptor`,
+  `BackendUsage`, `ResourceMetadata`, etc.) from core and keeps only the
+  server-local contracts (`StorageBackend`, `ResourceInput`, `ResourceResult`,
+  `ParsedZcap`, the Fastify augmentation); `src/problem-types.ts` is removed in
+  favor of core's `ProblemTypes` / `ProblemType`, and `errors.ts` re-exports the
+  wire `Problem` shape from core. Two listing types were renamed to remove a
+  cross-repo collision: the resources-in-a-collection listing is now
+  `CollectionResourcesList` (was `CollectionListing`). The unified types also
+  tightened two producer behaviors: `FileSystemBackend.describe()` now returns
+  the always-populated `Required<BackendDescriptor>`, and `PUT .../meta` now
+  rejects non-string `custom.tags` values (400), matching the spec's string-tag
+  guidance.
 - Tighten `PUT .../policy` body validation: a policy `type` that is empty or
   whitespace-only is now rejected with a 400 (`InvalidPolicyError`) instead of
   being stored. The recognized-types set stays intentionally open (an unknown
