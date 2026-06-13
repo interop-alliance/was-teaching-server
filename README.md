@@ -133,11 +133,12 @@ SERVER_URL='http://localhost:3002' PORT=3002 pnpm start
 
 ### Environment Variables
 
-| Variable                  | Default             | Description                                                                                                                                                                                   |
-| ------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SERVER_URL`              | (none)              | This server's base URL; used to build and match ZCap `invocationTarget` URLs (host and port must match the client's exactly).                                                                 |
-| `PORT`                    | `3002`              | TCP port to listen on.                                                                                                                                                                        |
-| `STORAGE_LIMIT_PER_SPACE` | (unset = unlimited) | Per-Space storage quota in **bytes** (spec "Quotas"). When set, writes that would push a Space over this limit are rejected with `quota-exceeded` (507). Unset means each Space is unlimited. |
+| Variable                  | Default             | Description                                                                                                                                                                                                                                                             |
+| ------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SERVER_URL`              | (none)              | This server's base URL; used to build and match ZCap `invocationTarget` URLs (host and port must match the client's exactly).                                                                                                                                           |
+| `PORT`                    | `3002`              | TCP port to listen on.                                                                                                                                                                                                                                                  |
+| `STORAGE_LIMIT_PER_SPACE` | (unset = unlimited) | Per-Space storage quota in **bytes** (spec "Quotas"). When set, writes that would push a Space over this limit are rejected with `quota-exceeded` (507). Unset means each Space is unlimited.                                                                           |
+| `MAX_UPLOAD_BYTES`        | (unset = no cap)    | Per-upload size cap in **bytes** (spec "Quotas", the backend's `maxUploadBytes` constraint). When set, a single upload exceeding it is rejected with `payload-too-large` (413). Unset means no per-upload cap (distinct from the cumulative `STORAGE_LIMIT_PER_SPACE`). |
 
 ### Running Tests
 
