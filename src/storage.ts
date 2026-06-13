@@ -22,13 +22,17 @@ import type { StorageBackend } from './types.js'
  * @param options {object}
  * @param [options.capacityBytes] {number}   per-Space storage limit in bytes
  *   (spec "Quotas"); `undefined` means each Space is unlimited.
+ * @param [options.maxUploadBytes] {number}   per-upload size cap in bytes (spec
+ *   "Quotas", `maxUploadBytes`); `undefined` means no per-upload cap.
  * @returns {StorageBackend}
  */
 export function defaultBackend({
-  capacityBytes
-}: { capacityBytes?: number } = {}): StorageBackend {
+  capacityBytes,
+  maxUploadBytes
+}: { capacityBytes?: number; maxUploadBytes?: number } = {}): StorageBackend {
   return new FileSystemBackend({
     dataDir: path.join(import.meta.dirname, '..', 'data'),
-    capacityBytes
+    capacityBytes,
+    maxUploadBytes
   })
 }

@@ -271,7 +271,7 @@ describe('Collections API', () => {
       assert.deepStrictEqual(description.backend, { id: 'default' })
     })
 
-    it('Collection linkset advertises the backend relation', async () => {
+    it('Collection linkset advertises the backend and quota relations', async () => {
       const response = await alice.was.request({
         url: new URL(
           `/space/${alice.space1.id}/credentials/linkset`,
@@ -284,6 +284,12 @@ describe('Collections API', () => {
       assert.deepStrictEqual(entry['https://wallet.storage/spec#backend'], [
         {
           href: `/space/${alice.space1.id}/credentials/backend`,
+          type: 'application/json'
+        }
+      ])
+      assert.deepStrictEqual(entry['https://wallet.storage/spec#quota'], [
+        {
+          href: `/space/${alice.space1.id}/credentials/quota`,
           type: 'application/json'
         }
       ])

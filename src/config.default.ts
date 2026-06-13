@@ -38,6 +38,25 @@ export const POLICY_LINK_RELATION = 'https://wallet.storage/spec#policy'
 export const BACKEND_LINK_RELATION = 'https://wallet.storage/spec#backend'
 
 /**
+ * Linkset relation URI for a Collection's `quota` report auxiliary resource
+ * (RFC9264 linkset discovery; advertised at `/space/{id}/{cid}/quota`).
+ */
+export const QUOTA_LINK_RELATION = 'https://wallet.storage/spec#quota'
+
+/**
+ * Linkset relation URI for a Space's `backends-available` auxiliary resource
+ * (RFC9264 linkset discovery; advertised at `/space/{id}/backends`).
+ */
+export const BACKENDS_AVAILABLE_LINK_RELATION =
+  'https://wallet.storage/spec#backends-available'
+
+/**
+ * Linkset relation URI for a Space's `quotas` report auxiliary resource
+ * (RFC9264 linkset discovery; advertised at `/space/{id}/quotas`).
+ */
+export const QUOTAS_LINK_RELATION = 'https://wallet.storage/spec#quotas'
+
+/**
  * Fraction of a backend's configured capacity at or above which its quota
  * report `state` becomes `near-limit` (spec "Quotas"). Below this it is `ok`;
  * at or above full capacity it is `over-quota`. Only applies when a finite
@@ -62,6 +81,33 @@ export function parseStorageLimit(raw: string | undefined): number | undefined {
     throw new Error(
       `STORAGE_LIMIT_PER_SPACE must be a non-negative integer number of ` +
         `bytes; got "${raw}".`
+    )
+  }
+  return value
+}
+
+/**
+ * Parses the `MAX_UPLOAD_BYTES` env value into a per-upload size cap in bytes
+ * (spec "Quotas", the backend's `maxUploadBytes` constraint). v1 accepts a plain
+ * non-negative integer number of bytes; an unset or empty value returns
+ * `undefined`, meaning the backend advertises and enforces no per-upload cap
+ * (distinct from the cumulative per-Space quota). A single upload exceeding the
+ * cap is rejected with `payload-too-large` (413), while smaller uploads still
+ * succeed.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {number|undefined}   the per-upload cap in bytes, or `undefined`
+ */
+export function parseMaxUploadBytes(
+  raw: string | undefined
+): number | undefined {
+  if (raw === undefined || raw.trim() === '') {
+    return undefined
+  }
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(
+      `MAX_UPLOAD_BYTES must be a non-negative integer number of bytes; ` +
+        `got "${raw}".`
     )
   }
   return value

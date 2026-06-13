@@ -18,12 +18,14 @@ import {
   collectionPath,
   resourcePath,
   linksetPath,
-  backendPath
+  backendPath,
+  quotaPath
 } from '../lib/paths.js'
 import {
   CollectionNotFoundError,
   InvalidCollectionError,
   StorageError,
+  UnsupportedOperationError,
   rethrowOrWrapStorageError
 } from '../errors.js'
 
@@ -345,6 +347,66 @@ export class CollectionRequest {
 
     const backend = resolveBackendDescriptor({ storage, collectionDescription })
     return reply.status(200).type('application/json').send(backend)
+  }
+
+  /**
+   * GET /space/:spaceId/:collectionId/quota
+   * Request handler for the per-Collection "Quotas" report (spec "Quotas"):
+   * the storage report for a single Collection, scoped to its backend (a single
+   * backend-usage entry whose `usageBytes` reflects only this Collection). A
+   * backend that cannot account per-Collection yields `unsupported-operation`
+   * (501); the filesystem backend supports it.
+   *
+   * Authorization is capability-or-policy, the same as the Space Quota report:
+   * a caller not authorized to read it receives a 404 (maximum-privacy
+   * invariant), and a public-readable Collection may read its quota.
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async getQuota(
+    request: FastifyRequest<{
+      Params: { spaceId: string; collectionId: string }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId, collectionId }
+    } = request
+    const { storage } = request.server
+    const requestName = 'Get Collection Quota'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId, collectionId }, { requestName })
+
+    // Authorize (capability-or-policy): readable by whoever may read the
+    // Collection (capability invocation, else the effective policy).
+    await fetchSpaceAndAuthorize({
+      request,
+      spaceId,
+      collectionId,
+      targetPath: quotaPath({ spaceId, collectionId }),
+      requestName
+    })
+
+    // Fetch collection by id
+    const collectionDescription = await storage.getCollectionDescription({
+      spaceId,
+      collectionId
+    })
+    if (!collectionDescription) {
+      throw new CollectionNotFoundError({ requestName })
+    }
+
+    // A backend that cannot account per-Collection omits `reportCollectionUsage`;
+    // the spec sanctions a 501 there.
+    if (!storage.reportCollectionUsage) {
+      throw new UnsupportedOperationError({ requestName })
+    }
+
+    const usage = await storage.reportCollectionUsage({ spaceId, collectionId })
+    return reply.status(200).type('application/json').send(usage)
   }
 
   /**

@@ -128,4 +128,55 @@ describe('Quotas API', () => {
     assert.ok(thrown, 'expected an unauthorized quota read to be rejected')
     assert.equal(thrown.response.status, 404)
   })
+
+  describe('Per-Collection quota', () => {
+    it('[root] reports a single Collection scoped to its backend', async () => {
+      const response = await alice.was.request({
+        path: `/space/${spaceId}/${collectionId}/quota`,
+        method: 'GET'
+      })
+      assert.equal(response.status, 200)
+      assert.match(response.headers.get('content-type')!, /application\/json/)
+
+      const entry = response.data as BackendUsageBody
+      assert.equal(entry.id, 'default')
+      assert.equal(entry.name, 'Server Filesystem')
+      assert.equal(entry.managedBy, 'server')
+      assert.equal(entry.state, 'ok')
+      assert.ok(entry.usageBytes > 0, 'expected non-zero collection usage')
+      assert.deepStrictEqual(entry.limit, { isUnlimited: true })
+      assert.deepStrictEqual(entry.restrictedActions, [])
+      assert.match(entry.measuredAt, ISO_8601)
+      // A single-Collection report carries no per-Collection breakdown.
+      assert.equal(entry.usageByCollection, undefined)
+    })
+
+    it('an unauthorized caller gets 404 (maximum-privacy), not 403', async () => {
+      let thrown: any
+      try {
+        await bob.was.request({
+          path: `/space/${spaceId}/${collectionId}/quota`,
+          method: 'GET'
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown, 'expected an unauthorized read to be rejected')
+      assert.equal(thrown.response.status, 404)
+    })
+
+    it('a missing Collection yields 404', async () => {
+      let thrown: any
+      try {
+        await alice.was.request({
+          path: `/space/${spaceId}/no-such-collection/quota`,
+          method: 'GET'
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown, 'expected a 404 for the missing collection')
+      assert.equal(thrown.response.status, 404)
+    })
+  })
 })

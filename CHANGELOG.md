@@ -4,6 +4,36 @@
 
 ### Added
 
+- Implement the per-Collection Quota report, `GET /space/{id}/{cid}/quota` (spec
+  "Quotas"). Returns a single backend-usage entry scoped to the Collection:
+  `usageBytes` reflects only that Collection's consumption, while `state` /
+  `limit` / `restrictedActions` describe the backend's overall condition (the
+  quota is a per-backend limit). Backed by the new optional
+  `StorageBackend.reportCollectionUsage()` (filesystem: the Collection's slice
+  of the existing one-pass `du` breakdown); a backend that cannot account
+  per-Collection omits the method and the endpoint returns
+  `unsupported-operation` (501). Authorization is capability-or-policy, so an
+  unauthorized caller gets the maximum-privacy 404.
+
+- Implement the per-upload `maxUploadBytes` constraint and `payload-too-large`
+  (413) enforcement (spec "Quotas"). A new `MAX_UPLOAD_BYTES` env var (parsed by
+  `parseMaxUploadBytes`, threaded through `createApp` to the default backend)
+  caps the size of a single Create/Update Resource write, distinct from the
+  cumulative per-Space quota: an oversized JSON or blob write is rejected with
+  `payload-too-large` (413) -- via an up-front size pre-flight plus a streaming
+  `_uploadCapGuard` for bodies whose size is not declared -- while smaller
+  uploads still succeed. The cap is advertised in both the Space and
+  per-Collection quota reports under `constraints.maxUploadBytes`. This wires
+  the previously type-only `PayloadTooLargeError`.
+
+- Advertise the remaining quota/backend linkset relations (spec linksets): the
+  Collection linkset now carries the `quota` relation
+  (`https://wallet.storage/spec#quota`, alongside the `backend` relation), and
+  the Space linkset now carries `backends-available`
+  (`https://wallet.storage/spec#backends-available`) and `quotas`
+  (`https://wallet.storage/spec#quotas`), all unconditionally (their endpoints
+  always exist).
+
 - Implement Collection backend selection (spec "Collection Backend Selected" /
   "Backends"). A Collection Description now carries an optional `backend` object
   (`{ "id": "default" }` by default); Create Collection (POST) and Update/Create

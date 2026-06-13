@@ -208,6 +208,24 @@ export function backendPath({
 }
 
 /**
+ * `/space/:spaceId/:collectionId/quota` -- the per-Collection storage quota
+ * report path (reserved `quota` segment at the Resource level; spec "Quotas").
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @returns {string}
+ */
+export function quotaPath({
+  spaceId,
+  collectionId
+}: {
+  spaceId: string
+  collectionId: string
+}): string {
+  return `${collectionPath({ spaceId, collectionId })}/quota`
+}
+
+/**
  * The `linkset` discovery resource path for a Space (`spaceId`) or Collection
  * (`+ collectionId`).
  * @param options {object}

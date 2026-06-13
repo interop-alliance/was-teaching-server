@@ -80,6 +80,28 @@ describe('Spaces', () => {
       })
     })
 
+    it('[root] Space linkset advertises the backends-available and quotas relations', async () => {
+      const response = await alice.was.request({
+        path: `/space/${alice.space1.id}/linkset`,
+        method: 'GET'
+      })
+      assert.equal(response.status, 200)
+      const [entry] = (response.data as { linkset: Array<Record<string, any>> })
+        .linkset
+      assert.deepStrictEqual(
+        entry!['https://wallet.storage/spec#backends-available'],
+        [
+          {
+            href: `/space/${alice.space1.id}/backends`,
+            type: 'application/json'
+          }
+        ]
+      )
+      assert.deepStrictEqual(entry!['https://wallet.storage/spec#quotas'], [
+        { href: `/space/${alice.space1.id}/quotas`, type: 'application/json' }
+      ])
+    })
+
     it('POST /spaces/ with an existing id yields id-conflict (409)', async () => {
       const spaceId = crypto.randomUUID()
       await alice.was.createSpace({

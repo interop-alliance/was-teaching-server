@@ -79,16 +79,21 @@ const contentTypeStrategy: ContentTypeConstraint = {
  * @param [options.storageLimitPerSpace] {number}   per-Space storage limit in
  *   bytes (spec "Quotas"); applied only to the default backend (an injected
  *   `backend` carries its own `capacityBytes`). `undefined` means unlimited.
+ * @param [options.maxUploadBytes] {number}   per-upload size cap in bytes (spec
+ *   "Quotas", `maxUploadBytes`); applied only to the default backend (an
+ *   injected `backend` carries its own). `undefined` means no per-upload cap.
  * @returns {import('fastify').FastifyInstance}
  */
 export function createApp({
   serverUrl,
   backend,
-  storageLimitPerSpace
+  storageLimitPerSpace,
+  maxUploadBytes
 }: {
   serverUrl?: string
   backend?: StorageBackend
   storageLimitPerSpace?: number
+  maxUploadBytes?: number
 } = {}): FastifyInstance {
   // By default uses 'pino' logger
   const fastify = Fastify({
@@ -104,7 +109,8 @@ export function createApp({
   // Route the backend's diagnostics through the Fastify pino logger (the backend
   // defaults to a silent logger until wired here).
   const storage =
-    backend ?? defaultBackend({ capacityBytes: storageLimitPerSpace })
+    backend ??
+    defaultBackend({ capacityBytes: storageLimitPerSpace, maxUploadBytes })
   storage.logger = fastify.log
   fastify.decorate('storage', storage)
 

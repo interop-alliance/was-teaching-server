@@ -154,6 +154,10 @@ export async function initCollectionRoutes(
   // routing keeps this ahead of the `:resourceId` parameter in Resource routes).
   app.get('/space/:spaceId/:collectionId/backend', CollectionRequest.getBackend)
 
+  // Per-Collection Quota report (reserved segment; static-beats-parametric
+  // routing keeps this ahead of the `:resourceId` parameter in Resource routes).
+  app.get('/space/:spaceId/:collectionId/quota', CollectionRequest.getQuota)
+
   // Add Resource to a Collection
   app.post('/space/:spaceId/:collectionId', async (request, reply) =>
     reply.redirect('/space/:spaceId/:collectionId/')

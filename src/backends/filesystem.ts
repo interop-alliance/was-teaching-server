@@ -18,7 +18,8 @@ import {
   StorageError,
   ResourceNotFoundError,
   SpaceNotFoundError,
-  QuotaExceededError
+  QuotaExceededError,
+  PayloadTooLargeError
 } from '../errors.js'
 import * as mime from 'mime-types'
 import * as tar from 'tar-stream'
@@ -139,19 +140,31 @@ export class FileSystemBackend implements StorageBackend {
    * that would push a Space over capacity with `QuotaExceededError` (507).
    */
   capacityBytes?: number
+  /**
+   * Largest single upload the backend accepts, in bytes (spec "Quotas", the
+   * `maxUploadBytes` constraint). `undefined` means no per-upload cap. Distinct
+   * from `capacityBytes` (the cumulative per-Space quota): a write larger than
+   * this cap is rejected with `PayloadTooLargeError` (413) even when the Space
+   * has ample headroom, while smaller writes still succeed. Advertised in quota
+   * reports under `constraints.maxUploadBytes` and enforced on `writeResource`.
+   */
+  maxUploadBytes?: number
 
   constructor({
     dataDir,
     logger,
-    capacityBytes
+    capacityBytes,
+    maxUploadBytes
   }: {
     dataDir: string
     logger?: FastifyBaseLogger
     capacityBytes?: number
+    maxUploadBytes?: number
   }) {
     this.spacesDir = path.join(dataDir, 'spaces')
     this.logger = logger ?? silentLogger
     this.capacityBytes = capacityBytes
+    this.maxUploadBytes = maxUploadBytes
   }
 
   /**
@@ -254,6 +267,67 @@ export class FileSystemBackend implements StorageBackend {
     const { total: usageBytes, byCollection: usageByCollection } =
       await this._diskUsage(spaceDir)
 
+    return {
+      ...this._backendUsageFields({ usageBytes, spaceTotalBytes: usageBytes }),
+      measuredAt,
+      usageByCollection
+    }
+  }
+
+  /**
+   * Measures the bytes a single Collection consumes on disk for the
+   * per-Collection Quota report (spec "Quotas", `GET /space/{id}/{cid}/quota`).
+   * `usageBytes` is scoped to the Collection (its slice of the one-pass
+   * `_diskUsage` breakdown; zero if the Collection dir is empty or absent),
+   * while `state` / `limit` / `restrictedActions` describe the backend's overall
+   * condition (derived from the Space total -- the quota is a per-backend limit,
+   * not per-Collection). The per-Collection `usageByCollection` breakdown is
+   * omitted (a single Collection is the whole report).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<BackendUsage>}
+   */
+  async reportCollectionUsage({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<BackendUsage> {
+    const spaceDir = this._spaceDir(spaceId)
+    const measuredAt = new Date().toISOString()
+
+    const { total: spaceTotalBytes, byCollection } =
+      await this._diskUsage(spaceDir)
+    const usageBytes =
+      byCollection.find(entry => entry.id === collectionId)?.usageBytes ?? 0
+
+    return {
+      ...this._backendUsageFields({ usageBytes, spaceTotalBytes }),
+      measuredAt
+    }
+  }
+
+  /**
+   * Builds the backend-identity and condition fields shared by the Space and
+   * per-Collection quota reports. `usageBytes` is what the report shows (the
+   * Space total or a single Collection's slice); `spaceTotalBytes` drives the
+   * `state` / `restrictedActions`, which are backend-wide (the quota is a
+   * per-Space limit) and so always measured against the Space total. The
+   * `constraints.maxUploadBytes` cap is advertised when configured.
+   * @param options {object}
+   * @param options.usageBytes {number}   the usage figure to report
+   * @param options.spaceTotalBytes {number}   the Space total, for state
+   * @returns {Omit<BackendUsage, 'measuredAt' | 'usageByCollection'>}
+   */
+  _backendUsageFields({
+    usageBytes,
+    spaceTotalBytes
+  }: {
+    usageBytes: number
+    spaceTotalBytes: number
+  }): Omit<BackendUsage, 'measuredAt' | 'usageByCollection'> {
     const limit: StorageLimit =
       this.capacityBytes === undefined
         ? { isUnlimited: true }
@@ -262,11 +336,14 @@ export class FileSystemBackend implements StorageBackend {
     let state: BackendState = 'ok'
     let restrictedActions: string[] = []
     if (this.capacityBytes !== undefined) {
-      if (usageBytes >= this.capacityBytes) {
+      if (spaceTotalBytes >= this.capacityBytes) {
         state = 'over-quota'
         // The backend is full: writes are restricted, reads/deletes still work.
         restrictedActions = ['POST', 'PUT']
-      } else if (usageBytes >= this.capacityBytes * QUOTA_NEAR_LIMIT_FRACTION) {
+      } else if (
+        spaceTotalBytes >=
+        this.capacityBytes * QUOTA_NEAR_LIMIT_FRACTION
+      ) {
         state = 'near-limit'
       }
     }
@@ -279,9 +356,10 @@ export class FileSystemBackend implements StorageBackend {
       state,
       usageBytes,
       limit,
-      restrictedActions,
-      measuredAt,
-      usageByCollection
+      ...(this.maxUploadBytes !== undefined && {
+        constraints: { maxUploadBytes: this.maxUploadBytes }
+      }),
+      restrictedActions
     }
   }
 
@@ -346,6 +424,31 @@ export class FileSystemBackend implements StorageBackend {
         written += chunk.length
         if (written > headroomBytes) {
           callback(new QuotaExceededError({ spaceId, capacityBytes }))
+          return
+        }
+        callback(null, chunk)
+      }
+    })
+  }
+
+  /**
+   * A pass-through `Transform` that counts the bytes flowing through it and
+   * aborts the pipeline with `PayloadTooLargeError` (413) once the cumulative
+   * total exceeds `maxUploadBytes`. Caps a single streamed upload whose size is
+   * not known up front (e.g. a multipart part or a body without
+   * `Content-Length`), independently of the cumulative Space quota.
+   * @param options {object}
+   * @param options.maxUploadBytes {number}   the per-upload cap in bytes
+   * @returns {Transform}
+   */
+  _uploadCapGuard({ maxUploadBytes }: { maxUploadBytes: number }): Transform {
+    const backendId = this.describe().id
+    let written = 0
+    return new Transform({
+      transform(chunk, _encoding, callback) {
+        written += chunk.length
+        if (written > maxUploadBytes) {
+          callback(new PayloadTooLargeError({ maxUploadBytes, backendId }))
           return
         }
         callback(null, chunk)
@@ -950,14 +1053,25 @@ export class FileSystemBackend implements StorageBackend {
     const filePath = path.join(collectionDir, filename)
     this._assertContained(filePath)
 
+    const { capacityBytes, maxUploadBytes } = this
+
     if (input.kind === 'json') {
-      if (this.capacityBytes !== undefined) {
-        // JSON bodies are fully in memory, so their serialized size is known up
-        // front and the pre-flight check alone suffices (no streaming guard).
+      // JSON bodies are fully in memory, so their serialized size is known up
+      // front and the pre-flight checks alone suffice (no streaming guard). The
+      // per-upload cap (413) is checked before the cumulative quota (507).
+      const incomingBytes = Buffer.byteLength(JSON.stringify(input.data))
+      if (maxUploadBytes !== undefined && incomingBytes > maxUploadBytes) {
+        throw new PayloadTooLargeError({
+          maxUploadBytes,
+          backendId: this.describe().id,
+          uploadBytes: incomingBytes
+        })
+      }
+      if (capacityBytes !== undefined) {
         await this._assertSpaceHeadroom({
           spaceId,
-          capacityBytes: this.capacityBytes,
-          incomingBytes: Buffer.byteLength(JSON.stringify(input.data))
+          capacityBytes,
+          incomingBytes
         })
       }
       const resourceJsonStore = new MetadataJsonStore({ file: filePath })
@@ -965,31 +1079,48 @@ export class FileSystemBackend implements StorageBackend {
       await resourceJsonStore.write(input.data)
     } else {
       this.logger.info('Writing blob')
-      const { capacityBytes } = this
-      if (capacityBytes === undefined) {
-        await pipeline(input.stream, fs.createWriteStream(filePath))
-      } else {
-        // Pre-flight on the declared size (when present), then pipe through a
-        // guard that hard-caps the cumulative bytes -- so a body that omits or
-        // understates its size still cannot exceed the Space's headroom. On
-        // overflow, remove the partial file before surfacing the error.
+      // Pre-flight the declared size (when present) against the per-upload cap,
+      // then stream through guards that hard-cap a body whose size is omitted or
+      // understated: the upload cap (413) and, when a quota is configured, the
+      // Space headroom (507). On overflow either guard removes the partial file
+      // before surfacing the error.
+      if (
+        maxUploadBytes !== undefined &&
+        input.declaredBytes !== undefined &&
+        input.declaredBytes > maxUploadBytes
+      ) {
+        throw new PayloadTooLargeError({
+          maxUploadBytes,
+          backendId: this.describe().id,
+          uploadBytes: input.declaredBytes
+        })
+      }
+      const guards: Transform[] = []
+      if (maxUploadBytes !== undefined) {
+        guards.push(this._uploadCapGuard({ maxUploadBytes }))
+      }
+      if (capacityBytes !== undefined) {
         const headroomBytes = await this._assertSpaceHeadroom({
           spaceId,
           capacityBytes,
           incomingBytes: input.declaredBytes ?? 0
         })
-        try {
-          await pipeline(
-            input.stream,
-            this._quotaGuard({ spaceId, capacityBytes, headroomBytes }),
-            fs.createWriteStream(filePath)
-          )
-        } catch (err) {
-          if (err instanceof QuotaExceededError) {
-            await rm(filePath, { force: true })
-          }
-          throw err
+        guards.push(this._quotaGuard({ spaceId, capacityBytes, headroomBytes }))
+      }
+      try {
+        await pipeline([
+          input.stream,
+          ...guards,
+          fs.createWriteStream(filePath)
+        ])
+      } catch (err) {
+        if (
+          err instanceof QuotaExceededError ||
+          err instanceof PayloadTooLargeError
+        ) {
+          await rm(filePath, { force: true })
         }
+        throw err
       }
     }
 

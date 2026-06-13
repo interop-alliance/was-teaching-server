@@ -341,6 +341,22 @@ export interface StorageBackend {
    */
   reportUsage(options: { spaceId: string }): Promise<BackendUsage>
 
+  /**
+   * Measures the storage a single Collection consumes on this backend, for the
+   * per-Collection Quota report (spec "Quotas",
+   * `GET /space/{id}/{cid}/quota`). Resolves a `BackendUsage` entry whose
+   * `usageBytes` is scoped to the Collection, while `state` / `limit` /
+   * `restrictedActions` describe the backend's overall condition (the quota is a
+   * per-backend limit); the per-Collection breakdown (`usageByCollection`) is
+   * omitted. OPTIONAL: a backend that cannot account per-Collection omits this
+   * method, and the request layer returns `unsupported-operation` (501). The
+   * Space and Collection are guaranteed to exist by the request layer.
+   */
+  reportCollectionUsage?(options: {
+    spaceId: string
+    collectionId: string
+  }): Promise<BackendUsage>
+
   writeSpace(options: {
     spaceId: string
     spaceDescription: SpaceDescription

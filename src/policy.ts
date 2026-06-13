@@ -11,13 +11,19 @@ import type { FastifyBaseLogger } from 'fastify'
 import type { PolicyDocument, StorageBackend } from './types.js'
 import {
   POLICY_LINK_RELATION,
-  BACKEND_LINK_RELATION
+  BACKEND_LINK_RELATION,
+  QUOTA_LINK_RELATION,
+  BACKENDS_AVAILABLE_LINK_RELATION,
+  QUOTAS_LINK_RELATION
 } from './config.default.js'
 import {
   collectionPath,
   spacePath,
   policyPath,
-  backendPath
+  backendPath,
+  quotaPath,
+  backendsPath,
+  quotasPath
 } from './lib/paths.js'
 
 /** The kind of access a request needs; derived from the HTTP method. */
@@ -113,9 +119,12 @@ export function policyGrants({
  * Relations:
  * - `policy` (`POLICY_LINK_RELATION`) -- the access-control policy resource,
  *   advertised only when a policy document is set at that exact level.
- * - `backend` (`BACKEND_LINK_RELATION`) -- the "Collection Backend Selected"
- *   resource, advertised unconditionally on a Collection (every Collection has
- *   a backend); not a Space-level relation.
+ * - On a Collection (`collectionId` present): `backend` (`BACKEND_LINK_RELATION`)
+ *   and `quota` (`QUOTA_LINK_RELATION`), advertised unconditionally (every
+ *   Collection has a selected backend and a quota report endpoint).
+ * - On a Space (`collectionId` absent): `backends-available`
+ *   (`BACKENDS_AVAILABLE_LINK_RELATION`) and `quotas` (`QUOTAS_LINK_RELATION`),
+ *   advertised unconditionally (both endpoints always exist).
  *
  * @param options {object}
  * @param options.storage {StorageBackend}   the request's storage backend
@@ -151,6 +160,16 @@ export async function buildLinkset({
   if (collectionId !== undefined) {
     entry[BACKEND_LINK_RELATION] = [
       { href: backendPath({ spaceId, collectionId }), type: 'application/json' }
+    ]
+    entry[QUOTA_LINK_RELATION] = [
+      { href: quotaPath({ spaceId, collectionId }), type: 'application/json' }
+    ]
+  } else {
+    entry[BACKENDS_AVAILABLE_LINK_RELATION] = [
+      { href: backendsPath({ spaceId }), type: 'application/json' }
+    ]
+    entry[QUOTAS_LINK_RELATION] = [
+      { href: quotasPath({ spaceId }), type: 'application/json' }
     ]
   }
   return { linkset: [entry] }
