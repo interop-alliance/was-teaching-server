@@ -133,4 +133,105 @@ describe('WasClient — Spaces & Collections', () => {
       )
     })
   })
+
+  describe('backend & quota', () => {
+    let space: Space
+
+    before(async () => {
+      space = await newSpace('Backend & Quota Space')
+    })
+
+    it('reads the backend a collection is stored on', async () => {
+      const collection = await space.createCollection({ id: 'backend-probe' })
+      assert.deepStrictEqual(await collection.backend(), {
+        id: 'default',
+        name: 'Server Filesystem',
+        managedBy: 'server',
+        storageMode: ['document', 'blob'],
+        persistence: 'durable'
+      })
+    })
+
+    it('returns null reading the backend of a missing collection (404 conflation)', async () => {
+      const missing = space.collection('no-such-collection')
+      assert.equal(await missing.backend(), null)
+    })
+
+    it("reads a collection's storage quota, scoped to its backend", async () => {
+      const collection = await space.createCollection({ id: 'quota-probe' })
+      await collection.add({ hello: 'world' })
+      const usage = await collection.quota()
+      assert.ok(usage)
+      assert.equal(usage.id, 'default')
+      assert.equal(usage.managedBy, 'server')
+      assert.equal(usage.state, 'ok')
+      assert.ok(usage.usageBytes > 0, 'expected non-zero collection usage')
+      // The default filesystem backend has no configured capacity (unlimited).
+      assert.deepStrictEqual(usage.limit, { isUnlimited: true })
+      assert.deepStrictEqual(usage.restrictedActions, [])
+      assert.match(usage.measuredAt, /^\d{4}-\d{2}-\d{2}T/)
+      // The per-collection report is the whole report -- no nested breakdown.
+      assert.equal(usage.usageByCollection, undefined)
+    })
+
+    it('returns null reading the quota of a missing collection (404 conflation)', async () => {
+      const missing = space.collection('no-such-collection')
+      assert.equal(await missing.quota(), null)
+    })
+  })
+
+  describe('space backends & quotas', () => {
+    let space: Space
+
+    before(async () => {
+      space = await newSpace('Backends & Quotas Space')
+      const collection = await space.createCollection({ id: 'docs' })
+      await collection.add({ hello: 'world' })
+    })
+
+    it('lists the storage backends available in the space', async () => {
+      assert.deepStrictEqual(await space.backends(), [
+        {
+          id: 'default',
+          name: 'Server Filesystem',
+          managedBy: 'server',
+          storageMode: ['document', 'blob'],
+          persistence: 'durable'
+        }
+      ])
+    })
+
+    it('returns null listing backends of a missing space (404 conflation)', async () => {
+      assert.equal(await alice.was.space('no-such-space').backends(), null)
+    })
+
+    it('reads the space storage quota report, grouped by backend', async () => {
+      const report = await space.quotas()
+      assert.ok(report)
+      assert.match(report.respondedAt, /^\d{4}-\d{2}-\d{2}T/)
+      assert.equal(report.backends.length, 1)
+      const entry = report.backends[0]
+      assert.ok(entry)
+      assert.equal(entry.id, 'default')
+      assert.equal(entry.name, 'Server Filesystem')
+      assert.equal(entry.managedBy, 'server')
+      assert.equal(entry.state, 'ok')
+      assert.ok(entry.usageBytes > 0, 'expected non-zero usage')
+      // The default filesystem backend has no configured capacity (unlimited).
+      assert.deepStrictEqual(entry.limit, { isUnlimited: true })
+      assert.deepStrictEqual(entry.restrictedActions, [])
+      assert.match(entry.measuredAt, /^\d{4}-\d{2}-\d{2}T/)
+      // The space-level report carries a per-collection breakdown.
+      const breakdown = entry.usageByCollection
+      assert.ok(breakdown, 'expected a usageByCollection breakdown')
+      assert.ok(
+        breakdown.some(item => item.id === 'docs'),
+        'expected the docs collection in the breakdown'
+      )
+    })
+
+    it('returns null reading quotas of a missing space (404 conflation)', async () => {
+      assert.equal(await alice.was.space('no-such-space').quotas(), null)
+    })
+  })
 })

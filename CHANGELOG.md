@@ -4,6 +4,13 @@
 
 ### Added
 
+- Accept `application/<suffix>+json` request bodies (e.g. `application/edv+json`
+  for EDV-over-WAS encrypted documents, `application/ld+json`) by parsing them
+  as JSON. Fastify's built-in parser only matches `application/json` exactly, so
+  structured-suffix JSON media types previously returned 415; a root-level
+  content-type parser now handles them (the suffix content type is preserved on
+  read). `isJson()` already treated `+json` as JSON downstream.
+
 - `HEAD /space/{id}/{cid}/{rid}` (Head Resource). Returns the same headers a
   `GET` would, with no body: a bodyless 200 whose `Content-Type` and
   `Content-Length` are set from the Resource Metadata's `contentType`/`size`
@@ -26,11 +33,18 @@
   than one are rejected. The multipart `files` limit was raised from 1 to 2 so a
   disallowed second part reaches the handler to be rejected with this 400 (a
   `files: 1` limit instead has busboy silently drop it and raise its own
-  `FST_FILES_LIMIT` 413). The single permitted part is buffered in memory bounded
-  by the backend's `maxUploadBytes` (a multipart `fileSize` limit), so an
-  oversize multipart upload is rejected with `payload-too-large` (413) before it
-  is fully buffered. Large binaries should use the streaming raw-body upload
+  `FST_FILES_LIMIT` 413). The single permitted part is buffered in memory
+  bounded by the backend's `maxUploadBytes` (a multipart `fileSize` limit), so
+  an oversize multipart upload is rejected with `payload-too-large` (413) before
+  it is fully buffered. Large binaries should use the streaming raw-body upload
   path; multipart is a convenience for the HTML-form workflow (see the README).
+
+- Live `@interop/was-client` conformance coverage for storage introspection:
+  `space.backends()` / `space.quotas()` (the backend list and the per-backend
+  quota report with its per-collection breakdown) and `collection.backend()` /
+  `collection.quota()` (the Collection's selected backend descriptor and its
+  backend-scoped usage report). The collection-level tests require a published
+  client that exposes those methods.
 
 ### Changed
 

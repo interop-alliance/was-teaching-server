@@ -1,16 +1,4 @@
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
-  - '@interop/storage-core@0.1.0'
-  - '@interop/data-integrity-proof@3.4.0'
-  - '@interop/did-io@4.0.5'
-  - '@interop/did-method-key@7.3.2'
-  - '@interop/did-web-resolver@6.2.2'
-  - '@interop/ed25519-signature@7.1.2'
-  - '@interop/ezcap@7.2.1'
-  - '@interop/http-digest-header@3.0.0'
-  - '@interop/http-signature-zcap-invoke@6.2.3'
-  - '@interop/http-signature-zcap-verify@12.0.4'
-  - '@interop/security-document-loader@9.3.1'
-  - '@interop/was-client@0.4.0'
-  - '@interop/zcap@11.0.3'
+  - '@interop/was-client@0.5.0'

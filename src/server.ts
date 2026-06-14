@@ -156,6 +156,21 @@ export function createApp({
     }
   })
 
+  // Parse `application/<suffix>+json` bodies (e.g. `application/edv+json` for
+  // EDV-over-WAS encrypted documents, `application/ld+json`, etc.) as JSON, the
+  // same as plain `application/json`. Fastify's built-in JSON parser only
+  // matches `application/json` exactly, so structured-suffix JSON media types
+  // would otherwise be rejected with a 415. The regex deliberately requires a
+  // non-`+` suffix before `+json`, so it never shadows the built-in parser for
+  // plain `application/json`. Registered on the root instance so every route
+  // group inherits it; `isJson()` already treats `+json` as JSON downstream
+  // (digest capture, resource-input resolution).
+  fastify.addContentTypeParser(
+    /^application\/[^+]+\+json/,
+    { parseAs: 'string' },
+    fastify.getDefaultJsonParser('error', 'error')
+  )
+
   // Add a human-readable 'Welcome' page
   fastify.get('/', async (request, reply) => {
     return reply.view('home', { title: 'Welcome', SPEC_URL, SERVER_VERSION })

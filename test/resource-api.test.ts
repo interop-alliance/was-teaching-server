@@ -118,6 +118,30 @@ describe('Resource API', () => {
     assert.equal(fetched.name, 'PUT Resource Test')
   })
 
+  it('[root] PUT and GET an application/edv+json (structured-suffix JSON) resource', async () => {
+    // Structured-suffix JSON media types (e.g. `application/edv+json` for
+    // EDV-over-WAS encrypted documents) must be accepted as JSON, not rejected
+    // with a 415. Send raw bytes with an explicit content type so the server's
+    // `application/<suffix>+json` parser is exercised.
+    const resourceId = 'edv-doc'
+    const envelope = {
+      id: resourceId,
+      sequence: 0,
+      jwe: { ciphertext: 'AAAA' }
+    }
+    const bytes = new TextEncoder().encode(JSON.stringify(envelope))
+    await aliceCredentials.put(resourceId, bytes, {
+      contentType: 'application/edv+json'
+    })
+
+    const fetched = (await aliceCredentials.get(resourceId)) as any
+    assert.equal(fetched.jwe.ciphertext, 'AAAA')
+
+    // The structured-suffix content type is preserved on read.
+    const meta = await aliceCredentials.resource(resourceId).meta()
+    assert.match(meta!.contentType!, /application\/edv\+json/)
+  })
+
   it('[root] PUT Resource to non-existent collection should fail (NotFoundError)', async () => {
     // Writing into a missing collection is a write -- WAS does not auto-create
     // parents, so it surfaces as NotFoundError (server 404).
@@ -217,7 +241,10 @@ describe('Resource API', () => {
 
     it('anonymous HEAD of a private resource 404s (conflation, no leak)', async () => {
       const resourceId = 'head-private'
-      await aliceCredentials.put(resourceId, { id: resourceId, name: 'Private' })
+      await aliceCredentials.put(resourceId, {
+        id: resourceId,
+        name: 'Private'
+      })
 
       const resourceUrl = `${serverUrl}/space/${alice.space1.id}/credentials/${resourceId}`
       const response = await fetch(new URL(resourceUrl), { method: 'HEAD' })

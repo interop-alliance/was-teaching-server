@@ -18,8 +18,8 @@ importers:
         specifier: ^9.1.3
         version: 9.1.3
       '@fastify/view':
-        specifier: ^11.1.1
-        version: 11.1.1
+        specifier: ^12.0.0
+        version: 12.0.0
       '@interop/data-integrity-core':
         specifier: ^8.0.0
         version: 8.0.0
@@ -91,8 +91,8 @@ importers:
         specifier: ^7.2.1
         version: 7.2.1
       '@interop/was-client':
-        specifier: ^0.4.0
-        version: 0.4.0(@interop/jsonld-signatures@11.8.1)
+        specifier: ^0.5.0
+        version: 0.5.0(@interop/jsonld-signatures@11.8.1)
       '@types/mime-types':
         specifier: 3.0.1
         version: 3.0.1
@@ -490,8 +490,8 @@ packages:
   '@fastify/static@9.1.3':
     resolution: {integrity: sha512-aXrYtsiryLhRxRNaxNqsn7FUISeb7rB9q4eHUPIot5aeQBLNahnz1m6thzm7JWC1poSGXS9XrX8DvuMivp2hkQ==}
 
-  '@fastify/view@11.1.1':
-    resolution: {integrity: sha512-GiHqT3R2eKJgWmy0s45eELTC447a4+lTM2o+8fSWeKwBe9VToeePuHJcKtOEXPrKGSddGO0RsNayULiS3aeHeQ==}
+  '@fastify/view@12.0.0':
+    resolution: {integrity: sha512-Prcoim4yTwG6vPnIyGrWViDx6FFnchV0GQWeBgAgywlL1JflGhTLDhIsyd7EkOreYHyqALqxnmhhJhD4NrJTWw==}
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -546,12 +546,12 @@ packages:
     resolution: {integrity: sha512-ViVu+hy2yz4zd+e7WY/tiibT0D+8bvaTiiVWpP+5xyUX8ACQLoVJEtEoPQOBdIp7ZPP7QiXlS7mjvGLH7/BKdw==}
     engines: {node: '>=24.0'}
 
-  '@interop/ecdsa-multikey@2.3.0':
-    resolution: {integrity: sha512-C4Z+V5Y4/WG2AlQ+McbKJs/bXXJUR44YI2ooAtQ+ORh2zCVRLq+JyCusUxCxss1lIpappZHfOPJy31a/1f6xDQ==}
+  '@interop/ecdsa-multikey@2.3.1':
+    resolution: {integrity: sha512-OJ1WWuL2+c00hmNb7RRmtlcAsuvQVTUSLadEr9rxbVXzSejwffYyqpLApbhykoHEJn4cANlmkWKa7PfAWhO1vg==}
     engines: {node: '>=24.0'}
 
-  '@interop/ecdsa-signature@2.0.2':
-    resolution: {integrity: sha512-aV+zEcGhxNw3Yh00gVbKTC7ApS/N+aickml/zAdfoB5qXwkdiaRB2IKoXwaGi9ufhc58FGssoXSlakR4YQxMWA==}
+  '@interop/ecdsa-signature@2.0.3':
+    resolution: {integrity: sha512-XHWJX6ClaB2TBUnfnaHSsbUDsSNqBJLBYLM6vji/fgy7wmZzOww8W4sKcLWE/HipbU+kD4KsOqoxOFXzqKh84A==}
     engines: {node: '>=24.0'}
     peerDependencies:
       '@interop/jsonld-signatures': ^11.6.7
@@ -626,8 +626,8 @@ packages:
     resolution: {integrity: sha512-jdJl1TXqKamBq/J47QJ5sQq1n27t8iRcXmaWZKkRqfV6czxd8LEwxWFH/N4BK6LRWeAU0fdGEdNlLIWjxnecHA==}
     engines: {node: '>=22.0'}
 
-  '@interop/was-client@0.4.0':
-    resolution: {integrity: sha512-VtCFESMtA395TmtiOAtIWCJMdHN8B+5ESEDs47GdO7NsGWppwQFL/zj/nM6+Rr4RcDqrZTrosdPebGmK0of0+A==}
+  '@interop/was-client@0.5.0':
+    resolution: {integrity: sha512-c8kPTx6xPxAK3bfMzZZnUH7eUadCYK8PlRCgbfiCckOeOykBFKThI/B5y7ptiIsaw9OMl5wsnkLq/ZayKwppZQ==}
     engines: {node: '>=24.0'}
 
   '@interop/zcap@11.0.3':
@@ -2948,7 +2948,7 @@ snapshots:
       fastq: 1.20.1
       glob: 13.0.6
 
-  '@fastify/view@11.1.1':
+  '@fastify/view@12.0.0':
     dependencies:
       fastify-plugin: 5.1.0
       toad-cache: 3.7.1
@@ -3008,14 +3008,14 @@ snapshots:
     transitivePeerDependencies:
       - react-native-get-random-values
 
-  '@interop/ecdsa-multikey@2.3.0':
+  '@interop/ecdsa-multikey@2.3.1':
     dependencies:
-      '@interop/data-integrity-core': 7.0.0
+      '@interop/data-integrity-core': 8.0.0
       '@scure/base': 2.2.0
 
-  '@interop/ecdsa-signature@2.0.2(@interop/jsonld-signatures@11.8.1)':
+  '@interop/ecdsa-signature@2.0.3(@interop/jsonld-signatures@11.8.1)':
     dependencies:
-      '@interop/ecdsa-multikey': 2.3.0
+      '@interop/ecdsa-multikey': 2.3.1
       '@interop/jsonld': 9.0.2
       canonicalize: 3.0.0
       rdf-canonize: 5.0.0
@@ -3047,7 +3047,7 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.0.0
       '@interop/data-integrity-proof': 3.4.0
-      '@interop/ecdsa-signature': 2.0.2(@interop/jsonld-signatures@11.8.1)
+      '@interop/ecdsa-signature': 2.0.3(@interop/jsonld-signatures@11.8.1)
       '@interop/http-client': 1.0.3
       '@interop/http-signature-zcap-invoke': 6.2.3
       '@interop/jsonld-signatures': 11.8.1
@@ -3115,7 +3115,7 @@ snapshots:
       '@interop/did-io': 4.0.5
       '@interop/did-method-key': 7.3.2
       '@interop/did-web-resolver': 6.2.2
-      '@interop/ecdsa-multikey': 2.3.0
+      '@interop/ecdsa-multikey': 2.3.1
       '@interop/ed25519-verification-key': 8.0.0
       '@interop/http-client': 1.0.3
       aes-key-wrapping-2019-context: 1.0.3
@@ -3133,7 +3133,7 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.0.0
 
-  '@interop/was-client@0.4.0(@interop/jsonld-signatures@11.8.1)':
+  '@interop/was-client@0.5.0(@interop/jsonld-signatures@11.8.1)':
     dependencies:
       '@interop/data-integrity-core': 8.0.0
       '@interop/ed25519-signature': 7.1.2(@interop/jsonld-signatures@11.8.1)
