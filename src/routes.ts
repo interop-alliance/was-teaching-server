@@ -231,6 +231,12 @@ export async function initResourceRoutes(
   )
   app.put('/space/:spaceId/:collectionId/:resourceId', ResourceRequest.put)
 
+  // Head Resource. Declared before the GET route so it overrides Fastify's
+  // auto-exposed HEAD (which would share the GET handler and stream the body
+  // without a Content-Length); this handler reads only the Metadata and sets
+  // Content-Type/Content-Length from it (spec "Content Types and Representations").
+  app.head('/space/:spaceId/:collectionId/:resourceId', ResourceRequest.head)
+
   // Get Resource
   app.get('/space/:spaceId/:collectionId/:resourceId', ResourceRequest.get)
 

@@ -215,6 +215,85 @@ export class ResourceRequest {
   }
 
   /**
+   * HEAD /space/:spaceId/:collectionId/:resourceId
+   * Request handler for "Head Resource" request: the same authorization as Get
+   * Resource but with no response body. Per spec "Content Types and
+   * Representations", the response `Content-Type` and `Content-Length`
+   * correspond to the `contentType` and `size` of the Resource's Metadata object
+   * (the bytes a GET would return). HEAD is a safe method, authorized as a read
+   * (capability-or-policy), the same as GET; it reads only the Metadata so it
+   * never opens the resource byte stream.
+   *
+   * Registered explicitly (ahead of the GET route) rather than relying on
+   * Fastify's auto-exposed HEAD, which would share the GET handler and stream
+   * the whole body -- yielding no `Content-Length` for a streamed representation.
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async head(
+    request: FastifyRequest<{
+      Params: { spaceId: string; collectionId: string; resourceId: string }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId, collectionId, resourceId }
+    } = request
+    const { storage } = request.server
+    const requestName = 'Head Resource'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
+
+    // Authorize (capability-or-policy): the same read decision as Get Resource,
+    // against the same target (a HEAD reveals nothing a GET would not).
+    await fetchSpaceAndAuthorize({
+      request,
+      spaceId,
+      collectionId,
+      resourceId,
+      targetPath: resourcePath({ spaceId, collectionId, resourceId }),
+      requestName
+    })
+
+    // authorized, continue
+
+    // Fetch collection by id
+    const collectionDescription = await storage.getCollectionDescription({
+      spaceId,
+      collectionId
+    })
+    if (!collectionDescription) {
+      throw new CollectionNotFoundError({ requestName })
+    }
+
+    let metadata
+    try {
+      metadata = await storage.getResourceMetadata({
+        spaceId,
+        collectionId,
+        resourceId
+      })
+    } catch (err) {
+      throw new StorageError({ cause: err as Error, requestName })
+    }
+    if (!metadata) {
+      throw new ResourceNotFoundError({ requestName })
+    }
+
+    // Set the payload headers a GET would send, but send no body. Fastify keeps
+    // a manually-set `Content-Length` on a bodyless send (it is not recomputed
+    // to 0).
+    return reply
+      .status(200)
+      .type(metadata.contentType)
+      .header('content-length', metadata.size)
+      .send()
+  }
+
+  /**
    * GET /space/:spaceId/:collectionId/:resourceId/meta
    * Request handler for "Read Resource Metadata" request. Returns the REQUIRED
    * server-managed fields (`contentType`, `size`), the OPTIONAL `createdAt` /

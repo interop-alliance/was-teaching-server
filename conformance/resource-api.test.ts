@@ -285,6 +285,93 @@ describe('Resource API', () => {
     )
   })
 
+  describe('HEAD Resource', () => {
+    it('[root] HEAD a binary resource returns its content-type + content-length, no body', async () => {
+      // 'line 1\nline2\n' is exactly 13 bytes.
+      const body = new Blob(['line 1\nline2\n'], { type: 'text/plain' })
+      const postResponse = await alice.rootClient.request({
+        url: new URL(
+          `/space/${alice.space1.id}/credentials/`,
+          serverUrl
+        ).toString(),
+        method: 'POST',
+        body
+      })
+      assert.equal(postResponse.status, 201)
+      const resourceUrl = postResponse.headers.get('location')
+
+      const headResponse = await alice.rootClient.request({
+        url: resourceUrl,
+        method: 'HEAD'
+      })
+      assert.equal(headResponse.status, 200)
+      assert.match(headResponse.headers.get('content-type'), /text\/plain/)
+      assert.equal(headResponse.headers.get('content-length'), '13')
+      // HEAD carries no body.
+      assert.equal(await headResponse.text(), '')
+    })
+
+    it('anonymous HEAD of a private resource is denied (404, no leak)', async () => {
+      const resourceId = generateId()
+      const resourceUrl = new URL(
+        `/space/${alice.space1.id}/credentials/${resourceId}`,
+        serverUrl
+      ).toString()
+      await alice.rootClient.request({
+        url: resourceUrl,
+        method: 'PUT',
+        json: { id: resourceId, name: 'Private HEAD Resource' }
+      })
+
+      const response = await fetch(new URL(resourceUrl), { method: 'HEAD' })
+      assert.equal(response.status, 404)
+    })
+
+    it('anonymous HEAD of a PublicCanRead resource returns headers matching a GET', async () => {
+      const resourceId = generateId()
+      const resourceUrl = new URL(
+        `/space/${alice.space1.id}/credentials/${resourceId}`,
+        serverUrl
+      ).toString()
+      await alice.rootClient.request({
+        url: resourceUrl,
+        method: 'PUT',
+        json: { id: resourceId, name: 'Public HEAD Resource' }
+      })
+      // Grant public read at the resource level.
+      await alice.rootClient.request({
+        url: `${resourceUrl}/policy`,
+        method: 'PUT',
+        json: { type: 'PublicCanRead' }
+      })
+
+      // The HEAD Content-Type/Content-Length must match what a GET returns
+      // (spec "Content Types and Representations": both correspond to the
+      // Metadata `contentType`/`size`).
+      const getResponse = await fetch(new URL(resourceUrl))
+      assert.equal(getResponse.status, 200)
+      const getBytes = await getResponse.arrayBuffer()
+
+      const headResponse = await fetch(new URL(resourceUrl), { method: 'HEAD' })
+      assert.equal(headResponse.status, 200)
+      assert.equal(
+        headResponse.headers.get('content-type'),
+        getResponse.headers.get('content-type')
+      )
+      assert.equal(
+        headResponse.headers.get('content-length'),
+        String(getBytes.byteLength)
+      )
+      assert.equal(await headResponse.text(), '')
+
+      // Cleanup: revoke the resource policy.
+      await alice.rootClient.request({
+        url: `${resourceUrl}/policy`,
+        method: 'DELETE'
+      })
+    })
+  })
+
   it('[root] POST and DELETE Resource with proper authorization', async () => {
     const body = { id: 'sample-resource-to-delete', name: 'Sample Delete' }
     const response = await alice.rootClient.request({

@@ -57,6 +57,10 @@ for more details.
   - both JSON objects and binary blobs
 - [Get Resource by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#read-resource-operation)
   (`GET /space/:spaceId/:collectionId/:resourceId`)
+- [Head Resource by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#content-types-and-representations)
+  (`HEAD /space/:spaceId/:collectionId/:resourceId`)
+  - same headers as `GET` with no body; `Content-Type`/`Content-Length` from the
+    Resource's Metadata
 - [Update Resource (or Create Resource by Id)](https://digitalcredentials.github.io/wallet-attached-storage-spec/#update-or-create-by-id-resource-operation)
   (`PUT /space/:spaceId/:collectionId/:resourceId`)
 - [Delete Resource by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#delete-resource-operation)

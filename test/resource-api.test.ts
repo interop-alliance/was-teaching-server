@@ -198,6 +198,62 @@ describe('Resource API', () => {
     await publicCollection.delete()
   })
 
+  describe('HEAD Resource', () => {
+    it('[signed] HEAD a binary resource returns its content-type + content-length, no body', async () => {
+      // 'line 1\nline2\n' is exactly 13 bytes.
+      const blob = new Blob(['line 1\nline2\n'], { type: 'text/plain' })
+      const result = await aliceCredentials.add(blob)
+
+      const response = await alice.was.request({
+        url: result.url,
+        method: 'HEAD'
+      })
+      assert.equal(response.status, 200)
+      assert.match(response.headers.get('content-type')!, /text\/plain/)
+      assert.equal(response.headers.get('content-length'), '13')
+      // HEAD carries no body.
+      assert.equal(await response.text(), '')
+    })
+
+    it('anonymous HEAD of a private resource 404s (conflation, no leak)', async () => {
+      const resourceId = 'head-private'
+      await aliceCredentials.put(resourceId, { id: resourceId, name: 'Private' })
+
+      const resourceUrl = `${serverUrl}/space/${alice.space1.id}/credentials/${resourceId}`
+      const response = await fetch(new URL(resourceUrl), { method: 'HEAD' })
+      assert.equal(response.status, 404)
+    })
+
+    it('anonymous HEAD in a PublicCanRead collection returns headers matching a GET', async () => {
+      const publicCollection = await aliceSpace.createCollection({
+        id: 'head-public',
+        name: 'Head Public Collection'
+      })
+      await publicCollection.put('readme', { id: 'readme', name: 'Read Me' })
+      await publicCollection.setPublic()
+
+      const resourceUrl = `${serverUrl}/space/${alice.space1.id}/head-public/readme`
+
+      // The HEAD Content-Length must equal the exact byte length a GET returns,
+      // and the Content-Type must equal the GET's (spec "Content Types and
+      // Representations": both correspond to the Metadata `size`/`contentType`).
+      const getResponse = await fetch(new URL(resourceUrl))
+      const getBytes = await getResponse.arrayBuffer()
+
+      const headResponse = await fetch(new URL(resourceUrl), { method: 'HEAD' })
+      assert.equal(headResponse.status, 200)
+      assert.equal(
+        headResponse.headers.get('content-type'),
+        getResponse.headers.get('content-type')
+      )
+      assert.equal(
+        headResponse.headers.get('content-length'),
+        String(getBytes.byteLength)
+      )
+      assert.equal(await headResponse.text(), '')
+    })
+  })
+
   describe('Resource Metadata (/meta)', () => {
     // Build the absolute `/meta` URL for a credentials-collection resource.
     const metaUrl = (resourceId: string) =>

@@ -4,6 +4,15 @@
 
 ### Added
 
+- `HEAD /space/{id}/{cid}/{rid}` (Head Resource). Returns the same headers a
+  `GET` would, with no body: a bodyless 200 whose `Content-Type` and
+  `Content-Length` are set from the Resource Metadata's `contentType`/`size`
+  (spec "Content Types and Representations"). Authorized as a read
+  (capability-or-policy, the same decision as `GET`), and reads only the
+  Metadata so it never opens the resource byte stream. Registered explicitly
+  ahead of the `GET` route to override Fastify's auto-exposed HEAD, which would
+  share the streaming GET handler and yield no `Content-Length`.
+
 - Space and Collection Description objects now carry a relative `url` property
   (`/space/{id}` and `/space/{id}/{cid}`) in their `GET` responses, alongside
   the existing `linkset` (spec: the server populates the description `url`),
