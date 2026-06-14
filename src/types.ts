@@ -176,6 +176,14 @@ export interface StorageBackend {
   logger?: FastifyBaseLogger
 
   /**
+   * The per-upload size cap in bytes (spec "Quotas", `maxUploadBytes`), or
+   * `undefined` for no cap. Enforced by `writeResource`; also read by the
+   * request layer to bound the in-memory buffer of a multipart file part (so an
+   * oversize multipart upload is rejected before it is fully buffered).
+   */
+  maxUploadBytes?: number
+
+  /**
    * The backend's self-description, as advertised at
    * `GET /space/:spaceId/backends`. Synchronous: a backend knows its own
    * characteristics without any I/O.

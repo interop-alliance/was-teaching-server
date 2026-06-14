@@ -62,6 +62,17 @@ for more details.
 - [Delete Resource by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#delete-resource-operation)
   (`DELETE /space/:spaceId/:collectionId/:resourceId`)
 
+**Uploading binary resources (and large files).** Send the file as the **raw
+request body** with its own `Content-Type` (e.g. `image/png`) -- not wrapped in a
+form. The server streams a raw-body upload straight to storage (enforcing the
+upload cap as it goes), so this is the path for large files. The write must still
+be zCap-signed, and because the signature covers the `Digest` header, the client
+hashes the whole body before sending (a plain browser `<form>` cannot do this --
+uploads are made programmatically by a signing client). The OPTIONAL
+`multipart/form-data` upload is supported as a convenience for the HTML-form
+workflow: it MUST carry exactly one file part, and the server buffers that part
+in memory bounded by `MAX_UPLOAD_BYTES`, so it is best suited to smaller uploads.
+
 #### Access Control Policy (public read)
 
 By default every operation requires a capability invocation. A **policy**

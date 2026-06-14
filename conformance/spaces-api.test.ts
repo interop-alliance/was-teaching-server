@@ -246,6 +246,7 @@ describe('Spaces', () => {
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
         controller: alice.did,
+        url: `/space/${alice.space1.id}`,
         linkset: `/space/${alice.space1.id}/linkset`
       })
     })
@@ -279,6 +280,7 @@ describe('Spaces', () => {
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
         controller: alice.did,
+        url: `/space/${alice.space1.id}`,
         linkset: `/space/${alice.space1.id}/linkset`
       })
     })

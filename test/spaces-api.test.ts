@@ -76,6 +76,7 @@ describe('Spaces', () => {
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
         controller: alice.did,
+        url: `/space/${alice.space1.id}`,
         linkset: `/space/${alice.space1.id}/linkset`
       })
     })
@@ -199,6 +200,7 @@ describe('Spaces', () => {
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
         controller: alice.did,
+        url: `/space/${alice.space1.id}`,
         linkset: `/space/${alice.space1.id}/linkset`
       })
     })
@@ -226,6 +228,7 @@ describe('Spaces', () => {
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
         controller: alice.did,
+        url: `/space/${alice.space1.id}`,
         linkset: `/space/${alice.space1.id}/linkset`
       })
     })
@@ -388,6 +391,29 @@ describe('Spaces', () => {
         expectedError.data.type,
         'https://wallet.storage/spec#controller-mismatch'
       )
+      assert.equal(await alice.was.space(spaceId).describe(), null)
+    })
+
+    it('[root] PUT whose body id does not match the URL space id yields invalid-request-body (400)', async () => {
+      // The Space `id` is immutable: a PUT body that carries a non-matching
+      // `id` is rejected before any controller/capability check.
+      const spaceId = crypto.randomUUID()
+      const expectedError = await requestError({
+        client: alice.was,
+        request: {
+          url: new URL(`/space/${spaceId}`, serverUrl).toString(),
+          method: 'PUT',
+          json: { id: crypto.randomUUID(), controller: alice.did }
+        }
+      })
+      assert.equal(expectedError.response.status, 400)
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#invalid-request-body'
+      )
+      assert.equal(expectedError.data.errors[0].pointer, '#/id')
+
+      // The Space was not created.
       assert.equal(await alice.was.space(spaceId).describe(), null)
     })
 

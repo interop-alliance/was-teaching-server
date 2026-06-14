@@ -80,6 +80,7 @@ describe('Collections API', () => {
       name: 'Verifiable Credentials',
       type: ['Collection'],
       backend: { id: 'default' },
+      url: `/space/${alice.space1.id}/credentials`,
       linkset: `/space/${alice.space1.id}/credentials/linkset`
     })
   })
@@ -134,6 +135,7 @@ describe('Collections API', () => {
         name: 'Verifiable Credentials',
         type: ['Collection'],
         backend: { id: 'default' },
+        url: `/space/${alice.space1.id}/credentials`,
         linkset: `/space/${alice.space1.id}/credentials/linkset`
       }
     )
@@ -153,6 +155,33 @@ describe('Collections API', () => {
 
     // Ensure it was deleted (reads return null on 404).
     assert.equal(await collection.describe(), null)
+  })
+
+  it('PUT whose body id does not match the URL collection id yields invalid-request-body (400)', async () => {
+    const collectionId = crypto.randomUUID()
+    let expectedError: any
+    try {
+      await alice.was.request({
+        url: new URL(
+          `/space/${alice.space1.id}/${collectionId}`,
+          serverUrl
+        ).toString(),
+        method: 'PUT',
+        json: { id: crypto.randomUUID(), name: 'Mismatch' }
+      })
+    } catch (error) {
+      expectedError = error
+    }
+    assert.ok(expectedError, 'expected the id-mismatch PUT to be rejected')
+    assert.equal(expectedError.response.status, 400)
+    assert.equal(
+      expectedError.data.type,
+      'https://wallet.storage/spec#invalid-request-body'
+    )
+    assert.equal(expectedError.data.errors[0].pointer, '#/id')
+
+    // The Collection was not created.
+    assert.equal(await aliceSpace.collection(collectionId).describe(), null)
   })
 
   describe('Collection backend selection', () => {

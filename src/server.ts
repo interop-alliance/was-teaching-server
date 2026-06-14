@@ -134,10 +134,25 @@ export function createApp({
     viewExt: 'hbs'
   })
 
-  // Multipart file uploading
+  // Multipart file uploading. The cap is `files: 2`, not `1`: a write MUST carry
+  // exactly one file part, and `resolveResourceInput` enforces that by iterating
+  // the parts and rejecting a second one with `invalid-request-body` (400). With
+  // a `files: 1` limit busboy would instead silently drop the second part and
+  // raise its own `FST_FILES_LIMIT` (413), so the second part must be allowed
+  // through to the iterator to be caught and rejected with the correct error.
+  //
+  // `fileSize` bounds the in-memory buffer of the single permitted part to the
+  // backend's per-upload cap (`throwFileSizeLimit` makes `toBuffer()` throw at
+  // the boundary, which the request layer maps to `payload-too-large` (413)) --
+  // so an oversize multipart upload is rejected before it is fully buffered.
+  // Large binaries should use the streaming raw-body path, not multipart.
   fastify.register(Multipart, {
+    throwFileSizeLimit: true,
     limits: {
-      files: 1
+      files: 2,
+      ...(storage.maxUploadBytes !== undefined && {
+        fileSize: storage.maxUploadBytes
+      })
     }
   })
 

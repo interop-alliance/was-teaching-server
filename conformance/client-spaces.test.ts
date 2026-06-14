@@ -55,6 +55,7 @@ describe('WasClient — Spaces & Collections', () => {
         type: ['Space'],
         name: 'Home',
         controller: alice.did,
+        url: `/space/${space.id}`,
         linkset: `/space/${space.id}/linkset`
       })
     })
@@ -112,6 +113,7 @@ describe('WasClient — Spaces & Collections', () => {
         type: ['Collection'],
         name: 'Verifiable Credentials',
         backend: { id: 'default' },
+        url: `/space/${space.id}/credentials`,
         linkset: `/space/${space.id}/credentials/linkset`
       })
     })

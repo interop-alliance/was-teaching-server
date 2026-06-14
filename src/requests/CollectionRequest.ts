@@ -25,6 +25,7 @@ import {
 import {
   CollectionNotFoundError,
   InvalidCollectionError,
+  InvalidRequestBodyError,
   StorageError,
   UnsupportedOperationError,
   rethrowOrWrapStorageError
@@ -120,7 +121,7 @@ export class CollectionRequest {
   static async put(
     request: FastifyRequest<{
       Params: { spaceId: string; collectionId: string }
-      Body: { name?: string; backend?: unknown }
+      Body: { id?: string; name?: string; backend?: unknown }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
@@ -136,6 +137,17 @@ export class CollectionRequest {
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId, collectionId }, { requestName })
+
+    // The Collection `id` is immutable: when the PUT body carries one, it must
+    // match the `{collection_id}` in the URL (spec spells this out for Update
+    // Space; applied here for parity). `invalid-request-body` (400).
+    if (body.id !== undefined && body.id !== collectionId) {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail: `Collection Description "id" (${body.id}) does not match the URL Collection id (${collectionId}).`,
+        pointer: '#/id'
+      })
+    }
     // Validate a supplied backend against the Space's backends-available (bad
     // shape 400, unknown id 409). An absent `backend` resolves to undefined here
     // so an update leaves the existing selection untouched; a create defaults it
@@ -240,8 +252,10 @@ export class CollectionRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
-    // Advertise the Collection's linkset (policy discovery) on the description;
-    // a relative URL, consistent with the other URL fields the API returns.
+    // Advertise the Collection's self `url` and linkset (policy discovery) on
+    // the description; both relative, consistent with the other URL fields the
+    // API returns.
+    const url = collectionPath({ spaceId, collectionId })
     const linkset = linksetPath({ spaceId, collectionId })
 
     // Report the selected backend, default-filled for Collections created before
@@ -254,7 +268,9 @@ export class CollectionRequest {
       .send(
         JSON.stringify({
           ...collectionDescription,
+          type: [...collectionDescription.type].sort(),
           backend,
+          url,
           linkset
         } satisfies CollectionDescription)
       )

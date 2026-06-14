@@ -150,6 +150,7 @@ describe('Collections API', () => {
       name: 'Verifiable Credentials',
       type: ['Collection'],
       backend: { id: 'default' },
+      url: `/space/${alice.space1.id}/credentials`,
       linkset: `/space/${alice.space1.id}/credentials/linkset`
     })
   })

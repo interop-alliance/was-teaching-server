@@ -85,12 +85,17 @@ export class SpaceRequest {
       requestName
     })
 
-    // authorized, continue. Advertise the Space's linkset (policy discovery);
-    // a relative URL, consistent with the other URL fields the API returns.
+    // authorized, continue. Advertise the Space's self `url` and linkset (policy
+    // discovery); both relative, consistent with the other URL fields the API
+    // returns. `type` is served lexically sorted (spec SHOULD).
+    const url = spacePath({ spaceId })
     const linkset = linksetPath({ spaceId })
-    return reply
-      .status(200)
-      .send({ ...spaceDescription, linkset } satisfies SpaceDescription)
+    return reply.status(200).send({
+      ...spaceDescription,
+      type: [...spaceDescription.type].sort(),
+      url,
+      linkset
+    } satisfies SpaceDescription)
   }
 
   /**
@@ -146,7 +151,7 @@ export class SpaceRequest {
   static async put(
     request: FastifyRequest<{
       Params: { spaceId: string }
-      Body: { name?: string; controller: IDID }
+      Body: { id?: string; name?: string; controller: IDID }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
@@ -164,6 +169,16 @@ export class SpaceRequest {
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId }, { requestName: 'Update Space' })
+
+    // The Space `id` is immutable: when the PUT body carries one, it must match
+    // the `{space_id}` in the URL (spec: Update Space `invalid-request-body`).
+    if (body?.id !== undefined && body.id !== spaceId) {
+      throw new InvalidRequestBodyError({
+        requestName: 'Update Space',
+        detail: `Space Description "id" (${body.id}) does not match the URL Space id (${spaceId}).`,
+        pointer: '#/id'
+      })
+    }
 
     // The Space Description body must carry a controller DID. The `name`
     // property is optional (see spec: Space Description object).

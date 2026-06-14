@@ -1,5 +1,39 @@
 # History
 
+## 0.5.0 - TBD
+
+### Added
+
+- Space and Collection Description objects now carry a relative `url` property
+  (`/space/{id}` and `/space/{id}/{cid}`) in their `GET` responses, alongside
+  the existing `linkset` (spec: the server populates the description `url`),
+  consistent with the `url` already present on List Spaces / List Collections
+  items.
+
+- Reject a multipart write that does not carry exactly one file part with
+  `invalid-request-body` (400) (spec "Content Types and Representations").
+  `resolveResourceInput` now iterates `request.parts()` rather than taking the
+  first file part and silently ignoring extras, so both zero file parts and more
+  than one are rejected. The multipart `files` limit was raised from 1 to 2 so a
+  disallowed second part reaches the handler to be rejected with this 400 (a
+  `files: 1` limit instead has busboy silently drop it and raise its own
+  `FST_FILES_LIMIT` 413). The single permitted part is buffered in memory bounded
+  by the backend's `maxUploadBytes` (a multipart `fileSize` limit), so an
+  oversize multipart upload is rejected with `payload-too-large` (413) before it
+  is fully buffered. Large binaries should use the streaming raw-body upload
+  path; multipart is a convenience for the HTML-form workflow (see the README).
+
+### Changed
+
+- The Space and Collection `id` is now immutable on update: a `PUT /space/{id}`
+  (resp. `PUT /space/{id}/{cid}`) whose body carries an `id` that does not match
+  the id in the URL is rejected with `invalid-request-body` (400, pointer
+  `#/id`), before any controller/capability check. (The spec spells this out for
+  Update Space; it is applied to Update Collection for parity.)
+
+- Space and Collection Description `type` arrays are served lexically sorted
+  (spec SHOULD).
+
 ## 0.4.0 - 2026-06-13
 
 ### Added
