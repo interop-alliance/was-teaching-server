@@ -48,8 +48,8 @@ importers:
         specifier: ^9.3.1
         version: 9.3.1
       '@interop/storage-core':
-        specifier: ^0.2.1
-        version: 0.2.1
+        specifier: ^0.2.2
+        version: 0.2.2
       fastify:
         specifier: ^5.8.5
         version: 5.8.5
@@ -526,10 +526,6 @@ packages:
     resolution: {integrity: sha512-17wz7nQbj2CtG/IFmGKDbBM2InL9MPLKbn35JOHUPbEQYhA0TjjsJpodDMolvqxLXXAHAx+Z1aTkDxuaSTDjXw==}
     engines: {node: '>=24.0'}
 
-  '@interop/data-integrity-core@8.0.0':
-    resolution: {integrity: sha512-yXeF0JIeKf6VPqEEUCI9o2Rzh6+UMuOJeGdy+HClpwXxYIvlyOVJ7EfERqCjKwiMU7tm+rgWIbGLAi6swsRIgg==}
-    engines: {node: '>=24.0'}
-
   '@interop/data-integrity-core@8.1.0':
     resolution: {integrity: sha512-85NyTH7UhFtFfgnK0J6d/Y/LIMXY8TzE2rMwkOugfrzbgaxVO6YFTkmaNUqnpM4EolJR1t4FN3Xvu69OgXRf/g==}
     engines: {node: '>=24.0'}
@@ -643,8 +639,8 @@ packages:
     resolution: {integrity: sha512-jdJl1TXqKamBq/J47QJ5sQq1n27t8iRcXmaWZKkRqfV6czxd8LEwxWFH/N4BK6LRWeAU0fdGEdNlLIWjxnecHA==}
     engines: {node: '>=22.0'}
 
-  '@interop/storage-core@0.2.1':
-    resolution: {integrity: sha512-SWNaFPIc2iBWLomTENOZHgbvp9zigb8KW/+YOqtmgMh3oVKsN6BZMpueapYVwao54UcnBD4LxoTKrq3A+t69Uw==}
+  '@interop/storage-core@0.2.2':
+    resolution: {integrity: sha512-hZOARSDuQjCoiXT/pwTxkJhVOcMLtLv+lPz8MYUmGhdeqEDmmYltAL5kHCJDWRWYcoKLgGUW0xvpAKOlbmRhBg==}
     engines: {node: '>=22.0'}
 
   '@interop/was-client@0.6.0':
@@ -3028,26 +3024,24 @@ snapshots:
 
   '@interop/data-integrity-core@7.0.0': {}
 
-  '@interop/data-integrity-core@8.0.0': {}
-
   '@interop/data-integrity-core@8.1.0': {}
 
   '@interop/data-integrity-proof@3.4.0':
     dependencies:
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@interop/jsonld-signatures': 11.8.1
       '@noble/hashes': 2.2.0
       '@scure/base': 2.2.0
 
   '@interop/did-io@4.0.5':
     dependencies:
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@interop/lru-memoize': 4.0.3
 
   '@interop/did-method-key@7.3.2':
     dependencies:
       '@digitalbazaar/x25519-key-agreement-key-2020': 3.0.1
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@interop/did-io': 4.0.5
       '@interop/ed25519-verification-key': 8.0.0
     transitivePeerDependencies:
@@ -3056,7 +3050,7 @@ snapshots:
   '@interop/did-web-resolver@6.2.2':
     dependencies:
       '@interop/bnid': 6.0.1
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@interop/did-io': 4.0.5
       '@interop/http-client': 1.0.3
       did-context: 3.1.1
@@ -3065,7 +3059,7 @@ snapshots:
 
   '@interop/ecdsa-multikey@2.3.1':
     dependencies:
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@scure/base': 2.2.0
 
   '@interop/ecdsa-signature@2.0.3(@interop/jsonld-signatures@11.8.1)':
@@ -3079,7 +3073,7 @@ snapshots:
 
   '@interop/ed25519-signature@7.1.2(@interop/jsonld-signatures@11.8.1)':
     dependencies:
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@interop/data-integrity-proof': 3.4.0
       '@interop/ed25519-verification-key': 8.0.0
       '@interop/jsonld': 9.0.2
@@ -3100,7 +3094,7 @@ snapshots:
 
   '@interop/edv-client@17.2.0':
     dependencies:
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@interop/http-client': 1.0.3
       '@interop/http-signature-zcap-invoke': 6.2.3
       '@interop/lru-memoize': 4.0.3
@@ -3114,7 +3108,7 @@ snapshots:
 
   '@interop/ezcap@7.2.1':
     dependencies:
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@interop/data-integrity-proof': 3.4.0
       '@interop/ecdsa-signature': 2.0.3(@interop/jsonld-signatures@11.8.1)
       '@interop/http-client': 1.0.3
@@ -3136,7 +3130,7 @@ snapshots:
 
   '@interop/http-signature-zcap-invoke@6.2.3':
     dependencies:
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@interop/http-digest-header': 3.0.0
       '@interop/http-signature-header': 5.0.2
       pako: 2.1.0
@@ -3145,7 +3139,7 @@ snapshots:
 
   '@interop/http-signature-zcap-verify@12.0.4':
     dependencies:
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@interop/http-signature-header': 5.0.2
       '@interop/zcap': 11.0.3
       '@scure/base': 2.2.0
@@ -3154,7 +3148,7 @@ snapshots:
   '@interop/jsonld-signatures@11.8.1':
     dependencies:
       '@digitalbazaar/security-context': 1.0.1
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@interop/jsonld': 9.0.2
       fast-text-encoding: 1.0.6
       rdf-canonize: 5.0.0
@@ -3173,7 +3167,7 @@ snapshots:
 
   '@interop/minimal-cipher@7.4.0':
     dependencies:
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@interop/ecdsa-multikey': 2.3.1
       '@noble/curves': 2.2.0
       '@scure/base': 2.2.0
@@ -3189,7 +3183,7 @@ snapshots:
       '@digitalbazaar/zcap-context': 2.0.1
       '@digitalcredentials/credentials-v2-context': 1.0.0
       '@digitalcredentials/open-badges-context': 3.0.0
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@interop/did-io': 4.0.5
       '@interop/did-method-key': 7.3.2
       '@interop/did-web-resolver': 6.2.2
@@ -3209,15 +3203,15 @@ snapshots:
 
   '@interop/storage-core@0.1.0':
     dependencies:
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
 
-  '@interop/storage-core@0.2.1':
+  '@interop/storage-core@0.2.2':
     dependencies:
       '@interop/data-integrity-core': 8.1.0
 
   '@interop/was-client@0.6.0(@interop/jsonld-signatures@11.8.1)':
     dependencies:
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@interop/ed25519-signature': 7.1.2(@interop/jsonld-signatures@11.8.1)
       '@interop/edv-client': 17.2.0
       '@interop/ezcap': 7.2.1
@@ -3231,7 +3225,7 @@ snapshots:
   '@interop/zcap@11.0.3':
     dependencies:
       '@digitalbazaar/zcap-context': 2.0.1
-      '@interop/data-integrity-core': 8.0.0
+      '@interop/data-integrity-core': 8.1.0
       '@interop/jsonld-signatures': 11.8.1
 
   '@isaacs/ttlcache@1.4.1': {}
