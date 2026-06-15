@@ -189,6 +189,36 @@ export class UnsupportedBackendError extends ProblemError {
 }
 
 /**
+ * 412 — a conditional write's `If-Match` / `If-None-Match` precondition
+ * evaluated false: the Resource's current `ETag` did not match, or a
+ * create-if-absent (`If-None-Match: *`) target already exists. Header-driven
+ * and deliberately distinct from the 409 conflict kinds (`id-conflict`,
+ * `reserved-id`, `unsupported-backend`). A `412` is only ever observable by a
+ * caller already authorized to write the target -- the request layer checks
+ * authorization before the backend evaluates the precondition.
+ * @param options {object}
+ * @param [options.detail] {string}   a specific explanation of the mismatch
+ * @param [options.requestName] {string}   request name used in the error title
+ */
+export class PreconditionFailedError extends ProblemError {
+  constructor({
+    detail,
+    requestName
+  }: { detail?: string; requestName?: string } = {}) {
+    const message = detail ?? 'A conditional request precondition was not met.'
+    super({
+      type: ProblemTypes.PRECONDITION_FAILED,
+      title: requestName
+        ? `Precondition Failed (${requestName})`
+        : 'Precondition Failed',
+      detail: message,
+      statusCode: 412,
+      problems: [{ detail: message }]
+    })
+  }
+}
+
+/**
  * 400 — the Collection Description request body is missing or invalid.
  */
 export class InvalidCollectionError extends ProblemError {

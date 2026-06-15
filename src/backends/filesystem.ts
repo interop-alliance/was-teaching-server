@@ -19,7 +19,8 @@ import {
   ResourceNotFoundError,
   SpaceNotFoundError,
   QuotaExceededError,
-  PayloadTooLargeError
+  PayloadTooLargeError,
+  PreconditionFailedError
 } from '../errors.js'
 import * as mime from 'mime-types'
 import * as tar from 'tar-stream'
@@ -35,6 +36,8 @@ import {
 } from '../config.default.js'
 import { extractTarEntries, buildImportPlan } from '../lib/importTar.js'
 import { collectionPath, resourcePath } from '../lib/paths.js'
+import { KeyedMutex } from '../lib/keyedMutex.js'
+import { formatEtag } from '../lib/etag.js'
 import type {
   SpaceDescription,
   CollectionDescription,
@@ -68,13 +71,21 @@ const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
 
 /**
  * The on-disk shape of a Resource's metadata sidecar (`.meta.<resourceId>.json`,
- * see `metaSidecarFileName`). Only the server-managed timestamps and the
- * user-writable `custom` object are persisted; `contentType` / `size` are always
- * derived from the stored representation, never duplicated here.
+ * see `metaSidecarFileName`). Only the server-managed timestamps, the monotonic
+ * `version`, and the user-writable `custom` object are persisted; `contentType`
+ * / `size` are always derived from the stored representation, never duplicated
+ * here.
+ *
+ * `version` is the per-Resource monotonic counter that backs the HTTP `ETag`
+ * strong validator (see `formatEtag`): it starts at 1 on first content write and
+ * increments on each subsequent content write. It is `undefined` only for a
+ * Resource written before versioning existed (a legacy sidecar), in which case
+ * the backend treats the current version as 0.
  */
 interface MetaSidecar {
   createdAt: string
   updatedAt: string
+  version?: number
   custom?: ResourceMetadataCustom
 }
 
@@ -177,6 +188,15 @@ export class FileSystemBackend implements StorageBackend {
    */
   maxUploadBytes?: number
 
+  /**
+   * Per-Resource write serialization (the `conditional-writes` feature). A
+   * content write or delete that carries a precondition reads the current
+   * `version`, evaluates `If-Match` / `If-None-Match`, and writes -- all under
+   * this lock, keyed per Resource -- so two concurrent writers cannot both
+   * observe the same prior version and both succeed. Single-instance only.
+   */
+  private _writeMutex = new KeyedMutex()
+
   constructor({
     dataDir,
     logger,
@@ -199,12 +219,14 @@ export class FileSystemBackend implements StorageBackend {
    * filesystem backend is the single server-configured default: it stores both
    * JSON documents and binary blobs on disk, so its data survives restarts.
    *
-   * It advertises no `features` yet: the `features` vocabulary names optional
-   * _server affordances_ (`conditional-writes`, `blinded-index-query`,
-   * `chunked-streams`), none of which this backend implements so far -- they are
-   * added as each lands. (Client-side encryption is deliberately not a backend
-   * feature: encrypted documents are opaque client-encrypted JSON this backend
-   * already stores faithfully, with no server cooperation.)
+   * It advertises the `conditional-writes` affordance: it exposes a per-Resource
+   * `version` as an HTTP `ETag` validator and honors `If-Match` / `If-None-Match`
+   * write preconditions atomically (returning `412 precondition-failed` on a
+   * mismatch). The remaining `features` vocabulary tokens (`blinded-index-query`,
+   * `chunked-streams`) are not implemented yet and are added as each lands.
+   * (Client-side encryption is deliberately not a backend feature: encrypted
+   * documents are opaque client-encrypted JSON this backend already stores
+   * faithfully, with no server cooperation.)
    * @returns {Required<BackendDescriptor>}
    */
   describe(): Required<BackendDescriptor> {
@@ -217,7 +239,7 @@ export class FileSystemBackend implements StorageBackend {
       managedBy: 'server',
       storageMode: ['document', 'blob'],
       persistence: 'durable',
-      features: []
+      features: ['conditional-writes']
     }
   }
 
@@ -1093,29 +1115,98 @@ export class FileSystemBackend implements StorageBackend {
   // Resources
 
   /**
-   * Writes a resource representation (JSON value or byte stream) to disk.
+   * Writes a resource representation (JSON value or byte stream) to disk, under
+   * the per-Resource write lock (the `conditional-writes` feature), and bumps
+   * the Resource's monotonic `version`. The new version is returned so the
+   * request layer can surface it as the response `ETag`.
+   *
+   * When a conditional-write precondition is supplied it is evaluated against
+   * the Resource's current state atomically with the write (under the lock),
+   * throwing `PreconditionFailedError` (412) on a mismatch:
+   * - `ifNoneMatch` (a create-if-absent `If-None-Match: *`) fails if the
+   *   Resource already exists.
+   * - `ifMatch` (an update-if-unchanged `If-Match: "<etag>"`) fails if the
+   *   Resource is absent or its current `ETag` does not equal `ifMatch`.
+   * `ifNoneMatch` takes precedence when both are supplied (RFC9110).
+   *
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param options.input {ResourceInput}
-   * @returns {Promise<void>}
+   * @param [options.ifMatch] {string}   `If-Match` precondition (a quoted ETag)
+   * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *` (create-if-absent)
+   * @returns {Promise<{ version: number }>}   the Resource's new version
    */
   async writeResource({
     spaceId,
     collectionId,
     resourceId,
-    input
+    input,
+    ifMatch,
+    ifNoneMatch
   }: {
     spaceId: string
     collectionId: string
     resourceId: string
     input: ResourceInput
-  }): Promise<void> {
+    ifMatch?: string
+    ifNoneMatch?: boolean
+  }): Promise<{ version: number }> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const lockKey = this._resourceLockKey({
+      spaceId,
+      collectionId,
+      resourceId
+    })
+    return this._writeMutex.run(lockKey, () =>
+      this._writeResourceLocked({
+        spaceId,
+        collectionDir,
+        resourceId,
+        input,
+        ifMatch,
+        ifNoneMatch
+      })
+    )
+  }
+
+  /**
+   * The critical section of `writeResource`, run under the per-Resource lock:
+   * evaluates any precondition, writes the representation, prunes a stale
+   * representation under a different content-type, and persists the bumped
+   * `version` in the sidecar. See `writeResource` for the parameters.
+   * @returns {Promise<{ version: number }>}
+   */
+  private async _writeResourceLocked({
+    spaceId,
+    collectionDir,
+    resourceId,
+    input,
+    ifMatch,
+    ifNoneMatch
+  }: {
+    spaceId: string
+    collectionDir: string
+    resourceId: string
+    input: ResourceInput
+    ifMatch?: string
+    ifNoneMatch?: boolean
+  }): Promise<{ version: number }> {
     const filename = fileNameFor({ resourceId, contentType: input.contentType })
     const filePath = path.join(collectionDir, filename)
     this._assertContained(filePath)
+
+    // Evaluate any conditional-write precondition against the current state
+    // before writing (still inside the lock, so the check and write are atomic).
+    if (ifMatch !== undefined || ifNoneMatch) {
+      await this._assertWritePrecondition({
+        collectionDir,
+        resourceId,
+        ifMatch,
+        ifNoneMatch
+      })
+    }
 
     const { capacityBytes, maxUploadBytes } = this
 
@@ -1199,20 +1290,99 @@ export class FileSystemBackend implements StorageBackend {
         .map(name => rm(name))
     )
 
-    // Maintain the server-managed timestamps: a content write sets `createdAt`
-    // on first write and bumps `updatedAt`, preserving any user-writable
-    // `custom` already stored in the sidecar.
+    // Maintain the server-managed timestamps and the monotonic `version`: a
+    // content write sets `createdAt` on first write, bumps `updatedAt`, and
+    // increments `version` (the ETag validator) from its prior value, preserving
+    // any user-writable `custom` already stored in the sidecar.
     const now = new Date().toISOString()
     const prior = await this._readMetaSidecar({ collectionDir, resourceId })
+    const version = (prior?.version ?? 0) + 1
     await this._writeMetaSidecar({
       collectionDir,
       resourceId,
       sidecar: {
         createdAt: prior?.createdAt ?? now,
         updatedAt: now,
+        version,
         ...(prior?.custom && { custom: prior.custom })
       }
     })
+    return { version }
+  }
+
+  /**
+   * Builds the per-Resource serialization key for `_writeMutex`
+   * (`<spaceId>/<collectionId>/<resourceId>`), so conditional writes to distinct
+   * Resources run concurrently while writes to the same Resource are ordered.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @returns {string}
+   */
+  _resourceLockKey({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+  }): string {
+    return `${spaceId}/${collectionId}/${resourceId}`
+  }
+
+  /**
+   * Evaluates a conditional-write precondition against a Resource's current
+   * on-disk state. MUST be called inside the per-Resource write lock so the
+   * check is atomic with the write that follows. Throws
+   * `PreconditionFailedError` (412) when the precondition is not met.
+   * @param options {object}
+   * @param options.collectionDir {string}
+   * @param options.resourceId {string}
+   * @param [options.ifMatch] {string}   a quoted ETag (`If-Match`)
+   * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *` (create-if-absent)
+   * @returns {Promise<void>}
+   */
+  async _assertWritePrecondition({
+    collectionDir,
+    resourceId,
+    ifMatch,
+    ifNoneMatch
+  }: {
+    collectionDir: string
+    resourceId: string
+    ifMatch?: string
+    ifNoneMatch?: boolean
+  }): Promise<void> {
+    const exists =
+      (await this._findFile({ collectionDir, resourceId })) !== undefined
+
+    // `If-None-Match: *` (create-if-absent) takes precedence over `If-Match`
+    // when both are present (RFC9110): the write proceeds only if absent.
+    if (ifNoneMatch) {
+      if (exists) {
+        throw new PreconditionFailedError({
+          detail: `Resource '${resourceId}' already exists (If-None-Match: *).`
+        })
+      }
+      return
+    }
+
+    // `If-Match` (update-if-unchanged): the Resource must exist and its current
+    // ETag must equal the supplied validator.
+    if (!exists) {
+      throw new PreconditionFailedError({
+        detail: `Resource '${resourceId}' does not exist; If-Match cannot be satisfied.`
+      })
+    }
+    const prior = await this._readMetaSidecar({ collectionDir, resourceId })
+    const currentEtag = formatEtag(prior?.version ?? 0)
+    if (currentEtag !== ifMatch) {
+      throw new PreconditionFailedError({
+        detail: `Resource '${resourceId}' ETag ${currentEtag} does not match If-Match ${ifMatch}.`
+      })
+    }
   }
 
   /**
@@ -1221,7 +1391,8 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param [options.contentType] {string}
-   * @returns {Promise<ResourceResult>}
+   * @returns {Promise<ResourceResult>}   includes the Resource's current
+   *   `version` (the ETag validator) when one is recorded in its sidecar.
    */
   async getResource({
     spaceId,
@@ -1257,9 +1428,14 @@ export class FileSystemBackend implements StorageBackend {
       path.basename(filePath)
     )
 
+    // Surface the ETag validator: the per-Resource `version` from the sidecar
+    // (absent only for a legacy Resource written before versioning).
+    const sidecar = await this._readMetaSidecar({ collectionDir, resourceId })
+
     return {
       resourceStream: await openFileStream(filePath, this.logger),
-      storedResourceType
+      storedResourceType,
+      ...(sidecar?.version !== undefined && { version: sidecar.version })
     }
   }
 
@@ -1335,11 +1511,17 @@ export class FileSystemBackend implements StorageBackend {
    * before sidecars existed, the timestamps fall back to the file's birth/modify
    * times and `custom` is omitted. Resolves `undefined` when the Resource is
    * absent (including a delete race on `stat`).
+   *
+   * Also surfaces the Resource's `version` (the ETag validator) when one is
+   * recorded in its sidecar, so the request layer can set the `ETag` header on
+   * the metadata / HEAD responses. `version` is an out-of-band field the request
+   * layer reads for the header; it is not part of the Resource Metadata wire
+   * body.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
-   * @returns {Promise<ResourceMetadata|undefined>}
+   * @returns {Promise<(ResourceMetadata & { version?: number }) | undefined>}
    */
   async getResourceMetadata({
     spaceId,
@@ -1349,7 +1531,7 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
     resourceId: string
-  }): Promise<ResourceMetadata | undefined> {
+  }): Promise<(ResourceMetadata & { version?: number }) | undefined> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
     const filePath = await this._findFile({ collectionDir, resourceId })
     if (!filePath) {
@@ -1380,7 +1562,8 @@ export class FileSystemBackend implements StorageBackend {
       size: stats.size,
       createdAt,
       updatedAt,
-      ...(hasCustom && { custom: sidecar!.custom })
+      ...(hasCustom && { custom: sidecar!.custom }),
+      ...(sidecar?.version !== undefined && { version: sidecar.version })
     }
   }
 
@@ -1433,6 +1616,9 @@ export class FileSystemBackend implements StorageBackend {
       sidecar: {
         createdAt,
         updatedAt: now,
+        // A metadata-only write does not change the stored representation, so it
+        // preserves the content `version` (ETag) rather than bumping it.
+        ...(prior?.version !== undefined && { version: prior.version }),
         ...(hasCustom && { custom })
       }
     })
@@ -1440,37 +1626,64 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Deletes a given resource from storage.
+   * Deletes a given resource from storage. When `ifMatch` is supplied (the
+   * `conditional-writes` feature), the delete proceeds only if the Resource
+   * exists and its current `ETag` matches -- evaluated under the per-Resource
+   * write lock, atomically with the removal -- else `PreconditionFailedError`
+   * (412). Without `ifMatch` the delete is the prior unconditional, idempotent
+   * removal.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
+   * @param [options.ifMatch] {string}   `If-Match` precondition (a quoted ETag)
    * @returns {Promise<void>}
    */
   async deleteResource({
     spaceId,
     collectionId,
-    resourceId
+    resourceId,
+    ifMatch
   }: {
     spaceId: string
     collectionId: string
     resourceId: string
+    ifMatch?: string
   }): Promise<void> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
-    // A Resource has a single current representation, so this normally matches
-    // one file. The glob-all delete remains as defensive cleanup (idempotent,
-    // and would sweep up any stray prior-representation file). The trailing `.`
-    // anchors to the filename's segment boundary so a resourceId that is a
-    // prefix of another (e.g. `note` vs `notebook`) is not swept up too.
-    const filesForResource = await glob(
-      path.join(collectionDir, `r.${resourceId}.*`)
-    )
-    await Promise.all(filesForResource.map(filename => rm(filename)))
-    // The Metadata object is deleted together with the Resource (spec "Resource
-    // Metadata Data Model"); sweep its sidecar too.
-    await rm(this._metaSidecarPath({ collectionDir, resourceId }), {
-      force: true
-    })
+    const remove = async (): Promise<void> => {
+      if (ifMatch !== undefined) {
+        await this._assertWritePrecondition({
+          collectionDir,
+          resourceId,
+          ifMatch
+        })
+      }
+      // A Resource has a single current representation, so this normally matches
+      // one file. The glob-all delete remains as defensive cleanup (idempotent,
+      // and would sweep up any stray prior-representation file). The trailing `.`
+      // anchors to the filename's segment boundary so a resourceId that is a
+      // prefix of another (e.g. `note` vs `notebook`) is not swept up too.
+      const filesForResource = await glob(
+        path.join(collectionDir, `r.${resourceId}.*`)
+      )
+      await Promise.all(filesForResource.map(filename => rm(filename)))
+      // The Metadata object is deleted together with the Resource (spec
+      // "Resource Metadata Data Model"); sweep its sidecar too.
+      await rm(this._metaSidecarPath({ collectionDir, resourceId }), {
+        force: true
+      })
+    }
+    // A conditional delete must serialize with concurrent writes (the
+    // check-then-remove is atomic under the lock); an unconditional delete is
+    // idempotent and needs no lock.
+    if (ifMatch !== undefined) {
+      return this._writeMutex.run(
+        this._resourceLockKey({ spaceId, collectionId, resourceId }),
+        remove
+      )
+    }
+    return remove()
   }
 
   // Policies

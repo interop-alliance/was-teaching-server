@@ -550,4 +550,227 @@ describe('Resource API', () => {
       assert.equal(thrown.response.status, 404)
     })
   })
+
+  describe('Conditional Writes (ETag / If-Match)', () => {
+    // Build the absolute resource URL for a credentials-collection resource.
+    const resourceUrl = (resourceId: string) =>
+      `${serverUrl}/space/${alice.space1.id}/credentials/${resourceId}`
+
+    it('surfaces an ETag on write and GET that advances on each write', async () => {
+      const resourceId = 'cond-etag-roundtrip'
+      const created = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 1 }
+      })
+      assert.equal(created.status, 204)
+      assert.equal(created.headers.get('etag'), '"1"')
+
+      // GET echoes the same validator.
+      const got = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'GET'
+      })
+      assert.equal(got.headers.get('etag'), '"1"')
+
+      // A second (unconditional) write advances the version.
+      const updated = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 2 }
+      })
+      assert.equal(updated.headers.get('etag'), '"2"')
+    })
+
+    it('surfaces the ETag header on a HEAD response', async () => {
+      // Use a text/plain resource: the http client auto-JSON-parses a body, and
+      // a HEAD carries none, so a JSON content-type would make it choke on the
+      // empty body. The ETag header path is identical to GET / `/meta`.
+      const resourceId = 'cond-etag-head'
+      const created = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        body: new Blob(['hello'], { type: 'text/plain' })
+      })
+      const etag = created.headers.get('etag')!
+      const head = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'HEAD'
+      })
+      assert.equal(head.status, 200)
+      assert.equal(head.headers.get('etag'), etag)
+    })
+
+    it('a matching If-Match succeeds and advances the ETag', async () => {
+      const resourceId = 'cond-ifmatch-ok'
+      const created = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 1 }
+      })
+      const etag = created.headers.get('etag')!
+
+      const updated = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 2 },
+        headers: { 'if-match': etag }
+      })
+      assert.equal(updated.status, 204)
+      assert.equal(updated.headers.get('etag'), '"2"')
+    })
+
+    it('a stale If-Match is rejected with 412 precondition-failed', async () => {
+      const resourceId = 'cond-ifmatch-stale'
+      await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 1 }
+      })
+      // Advance the version so the original `"1"` is now stale.
+      await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 2 }
+      })
+
+      let thrown: any
+      try {
+        await alice.was.request({
+          url: resourceUrl(resourceId),
+          method: 'PUT',
+          json: { id: resourceId, n: 3 },
+          headers: { 'if-match': '"1"' }
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown, 'expected a stale If-Match to be rejected')
+      assert.equal(thrown.response.status, 412)
+    })
+
+    it('If-None-Match: * creates when absent and 412s when the target exists', async () => {
+      const resourceId = 'cond-ifnonematch'
+      const created = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 1 },
+        headers: { 'if-none-match': '*' }
+      })
+      assert.equal(created.status, 204)
+      assert.equal(created.headers.get('etag'), '"1"')
+
+      // A second create-if-absent against the now-existing resource fails.
+      let thrown: any
+      try {
+        await alice.was.request({
+          url: resourceUrl(resourceId),
+          method: 'PUT',
+          json: { id: resourceId, n: 2 },
+          headers: { 'if-none-match': '*' }
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(
+        thrown,
+        'expected create-if-absent on an existing resource to be rejected'
+      )
+      assert.equal(thrown.response.status, 412)
+    })
+
+    it('serializes concurrent If-Match writers: exactly one wins, the other 412s', async () => {
+      const resourceId = 'cond-concurrent'
+      const created = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 0 }
+      })
+      const etag = created.headers.get('etag')!
+
+      // Two writers race with the same prior ETag; the per-resource lock lets
+      // only one observe the matching version, so the other gets a 412.
+      const results = await Promise.allSettled([
+        alice.was.request({
+          url: resourceUrl(resourceId),
+          method: 'PUT',
+          json: { id: resourceId, n: 1 },
+          headers: { 'if-match': etag }
+        }),
+        alice.was.request({
+          url: resourceUrl(resourceId),
+          method: 'PUT',
+          json: { id: resourceId, n: 2 },
+          headers: { 'if-match': etag }
+        })
+      ])
+      const fulfilled = results.filter(result => result.status === 'fulfilled')
+      const rejected = results.filter(result => result.status === 'rejected')
+      assert.equal(fulfilled.length, 1, 'exactly one writer should win')
+      assert.equal(rejected.length, 1, 'exactly one writer should be rejected')
+      assert.equal(
+        (rejected[0] as PromiseRejectedResult).reason.response.status,
+        412
+      )
+    })
+
+    it('checks authorization before the precondition: Bob gets 404, not 412', async () => {
+      const resourceId = 'cond-authz-first'
+      await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 1 }
+      })
+
+      // Bob cannot write Alice's resource. Even with a bogus precondition he must
+      // get the privacy-merged 404, never a 412 (a 412 would leak existence).
+      let thrown: any
+      try {
+        await bob.was.request({
+          url: resourceUrl(resourceId),
+          method: 'PUT',
+          json: { id: resourceId, n: 2 },
+          headers: { 'if-match': '"999"' }
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown, "expected Bob's conditional write to be rejected")
+      assert.equal(thrown.response.status, 404)
+    })
+
+    it('DELETE honors If-Match: a stale validator 412s, the matching one succeeds', async () => {
+      const resourceId = 'cond-delete'
+      const created = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 1 }
+      })
+      const etag = created.headers.get('etag')!
+
+      // A stale If-Match delete is rejected...
+      let thrown: any
+      try {
+        await alice.was.request({
+          url: resourceUrl(resourceId),
+          method: 'DELETE',
+          headers: { 'if-match': '"999"' }
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown, 'expected a stale If-Match delete to be rejected')
+      assert.equal(thrown.response.status, 412)
+
+      // ...and the matching one succeeds, removing the resource.
+      const deleted = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'DELETE',
+        headers: { 'if-match': etag }
+      })
+      assert.equal(deleted.status, 204)
+      const gone = await aliceCredentials.get(resourceId)
+      assert.equal(gone, null)
+    })
+  })
 })

@@ -273,11 +273,11 @@ describe('Collections API', () => {
         managedBy: 'server',
         storageMode: ['document', 'blob'],
         persistence: 'durable',
-        features: []
+        features: ['conditional-writes']
       })
     })
 
-    it('GET :collectionId/backend surfaces a (currently empty) features array', async () => {
+    it('GET :collectionId/backend surfaces the conditional-writes features array', async () => {
       const response = await alice.was.request({
         url: new URL(
           `/space/${alice.space1.id}/credentials/backend`,
@@ -286,11 +286,10 @@ describe('Collections API', () => {
         method: 'GET'
       })
       assert.equal(response.status, 200)
-      // The filesystem backend implements none of the optional server
-      // affordances yet, so it advertises no features (client-side encryption
-      // is deliberately not among them).
+      // The filesystem backend implements the conditional-writes affordance
+      // (ETag / If-Match optimistic concurrency); it advertises that token.
       assert.ok(Array.isArray(response.data.features))
-      assert.deepStrictEqual(response.data.features, [])
+      assert.deepStrictEqual(response.data.features, ['conditional-writes'])
     })
 
     it('GET :collectionId/backend on a missing collection yields 404', async () => {

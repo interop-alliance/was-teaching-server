@@ -149,7 +149,7 @@ describe('WasClient — Spaces & Collections', () => {
         managedBy: 'server',
         storageMode: ['document', 'blob'],
         persistence: 'durable',
-        features: []
+        features: ['conditional-writes']
       })
     })
 
@@ -198,7 +198,7 @@ describe('WasClient — Spaces & Collections', () => {
           managedBy: 'server',
           storageMode: ['document', 'blob'],
           persistence: 'durable',
-          features: []
+          features: ['conditional-writes']
         }
       ])
     })

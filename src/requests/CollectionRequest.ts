@@ -22,6 +22,7 @@ import {
   backendPath,
   quotaPath
 } from '../lib/paths.js'
+import { formatEtag } from '../lib/etag.js'
 import {
   CollectionNotFoundError,
   InvalidCollectionError,
@@ -84,10 +85,16 @@ export class CollectionRequest {
     // zCap checks out, continue
     const resourceId = uuidv4()
     let response: { id: string; 'content-type'?: string; url?: string }
+    let written: { version: number }
 
     const input = await resolveResourceInput(request)
     try {
-      await storage.writeResource({ spaceId, collectionId, resourceId, input })
+      written = await storage.writeResource({
+        spaceId,
+        collectionId,
+        resourceId,
+        input
+      })
       response = {
         id: resourceId,
         'content-type': request.headers['content-type']
@@ -101,6 +108,9 @@ export class CollectionRequest {
       serverUrl
     ).toString()
     reply.header('Location', createdUrl)
+    // Surface the created Resource's ETag so a client can chain a conditional
+    // write (the conditional-writes feature).
+    reply.header('etag', formatEtag(written.version))
     response.url = createdUrl
 
     return reply.status(201).send(response)

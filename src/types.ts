@@ -102,6 +102,12 @@ export interface ResourceResult {
   resourceStream: Readable
   /** resolved content-type of the stored bytes */
   storedResourceType: string
+  /**
+   * The Resource's current monotonic `version` -- the value behind its HTTP
+   * `ETag` strong validator (`conditional-writes` feature). Absent only for a
+   * legacy Resource written before versioning.
+   */
+  version?: number
 }
 
 /**
@@ -256,12 +262,22 @@ export interface StorageBackend {
     collectionId: string
   }): Promise<CollectionResourcesList>
 
+  /**
+   * Writes a Resource representation, bumping its monotonic `version` (the ETag
+   * validator), and returns the new version. When a conditional-write
+   * precondition is supplied (`conditional-writes` feature) it is evaluated
+   * atomically with the write: `ifMatch` is an update-if-unchanged (the current
+   * ETag must equal it), `ifNoneMatch` is a create-if-absent (`If-None-Match:
+   * *`); a mismatch rejects with `precondition-failed` (412).
+   */
   writeResource(options: {
     spaceId: string
     collectionId: string
     resourceId: string
     input: ResourceInput
-  }): Promise<void>
+    ifMatch?: string
+    ifNoneMatch?: boolean
+  }): Promise<{ version: number }>
   getResource(options: {
     spaceId: string
     collectionId: string
@@ -269,16 +285,23 @@ export interface StorageBackend {
     /** advisory hint only; single-representation backends ignore it for lookup */
     contentType?: string
   }): Promise<ResourceResult>
+  /**
+   * Deletes a Resource. When `ifMatch` is supplied (`conditional-writes`), the
+   * delete proceeds only if the Resource's current ETag matches, evaluated
+   * atomically with the removal; a mismatch rejects with `precondition-failed`
+   * (412). Without it, the delete is unconditional and idempotent.
+   */
   deleteResource(options: {
     spaceId: string
     collectionId: string
     resourceId: string
+    ifMatch?: string
   }): Promise<void>
   getResourceMetadata(options: {
     spaceId: string
     collectionId: string
     resourceId: string
-  }): Promise<ResourceMetadata | undefined>
+  }): Promise<(ResourceMetadata & { version?: number }) | undefined>
   /**
    * Replaces the user-writable `custom` object of a Resource's Metadata (full
    * replacement; pass `{}` to clear). Resolves `false` when the Resource does

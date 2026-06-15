@@ -4,12 +4,31 @@
 
 ### Added
 
+- **Conditional writes (`conditional-writes` feature).** The filesystem backend
+  now exposes each Resource's monotonic `version` as an HTTP `ETag` strong
+  validator (returned on `GET` / `HEAD` / `GET .../meta` and on the `PUT` /
+  `POST` write responses) and honors the RFC9110 write preconditions:
+  - `If-Match: "<etag>"` -- update-if-unchanged: the write proceeds only if the
+    Resource's current ETag matches, else `412 precondition-failed`.
+  - `If-None-Match: *` -- create-if-absent: the write proceeds only if the
+    Resource does not yet exist, else `412 precondition-failed`. `DELETE` honors
+    `If-Match` the same way. The precondition is evaluated atomically with the
+    write under a per-Resource in-process mutex (ported from
+    `@interop/edv-server`), so two concurrent writers cannot both observe the
+    same prior version and both succeed -- the lost-update guard. Authorization
+    is checked _before_ the precondition, so a `412` is only ever observable by
+    a caller already authorized to write the target (an under-authorized caller
+    gets the privacy-merged `404`). This is single-instance write locking only;
+    horizontally-scaled locking is out of scope. Uses the new
+    `precondition-failed` (412) problem type from
+    `@interop/storage-core@^0.2.2`.
+
 - The default filesystem backend descriptor now carries a `features` array
   (surfaced at `GET /space/{id}/backends` and `GET /space/{id}/{cid}/backend`),
-  using the `features` field added in `@interop/storage-core@^0.2.0`. It is
-  currently empty: `features` advertises optional _server affordances_
-  (`conditional-writes`, `blinded-index-query`, `chunked-streams`), none of which
-  this backend implements yet -- each is added as it lands.
+  using the `features` field added in `@interop/storage-core@^0.2.0`. It
+  advertises `['conditional-writes']` (above); the remaining _server
+  affordances_ (`blinded-index-query`, `chunked-streams`) are added as each
+  lands.
 
 - Accept `application/<suffix>+json` request bodies (e.g. `application/edv+json`
   for EDV-over-WAS encrypted documents, `application/ld+json`) by parsing them

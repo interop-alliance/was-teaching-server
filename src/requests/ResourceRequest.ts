@@ -7,6 +7,7 @@ import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { resourcePath, metaPath } from '../lib/paths.js'
+import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
 import {
   CollectionNotFoundError,
   InvalidRequestBodyError,
@@ -131,12 +132,23 @@ export class ResourceRequest {
       throw new CollectionNotFoundError({ requestName })
     }
     const input = await resolveResourceInput(request)
+    // Surface any `If-Match` / `If-None-Match` write precondition to the storage
+    // layer, which evaluates it atomically with the write (returning 412
+    // `precondition-failed` on a mismatch -- rethrown unchanged below).
+    let written: { version: number }
     try {
-      await storage.writeResource({ spaceId, collectionId, resourceId, input })
+      written = await storage.writeResource({
+        spaceId,
+        collectionId,
+        resourceId,
+        input,
+        ...parseWritePreconditions(request.headers)
+      })
     } catch (err) {
       rethrowOrWrapStorageError({ err, requestName })
     }
-    return reply.status(204).send()
+    // Return the new ETag so a client can chain a subsequent conditional write.
+    return reply.status(204).header('etag', formatEtag(written.version)).send()
   }
 
   /**
@@ -208,10 +220,13 @@ export class ResourceRequest {
       throw new StorageError({ cause: err as Error, requestName })
     }
 
-    return reply
-      .status(200)
-      .type(result.storedResourceType)
-      .send(result.resourceStream)
+    const getReply = reply.status(200).type(result.storedResourceType)
+    // Surface the ETag validator (the conditional-writes feature) when the
+    // backend tracks a version for this Resource.
+    if (result.version !== undefined) {
+      getReply.header('etag', formatEtag(result.version))
+    }
+    return getReply.send(result.resourceStream)
   }
 
   /**
@@ -286,11 +301,14 @@ export class ResourceRequest {
     // Set the payload headers a GET would send, but send no body. Fastify keeps
     // a manually-set `Content-Length` on a bodyless send (it is not recomputed
     // to 0).
-    return reply
+    const headReply = reply
       .status(200)
       .type(metadata.contentType)
       .header('content-length', metadata.size)
-      .send()
+    if (metadata.version !== undefined) {
+      headReply.header('etag', formatEtag(metadata.version))
+    }
+    return headReply.send()
   }
 
   /**
@@ -359,10 +377,14 @@ export class ResourceRequest {
       throw new ResourceNotFoundError({ requestName })
     }
 
-    return reply
-      .status(200)
-      .type('application/json')
-      .send(JSON.stringify(metadata))
+    // `version` is the ETag validator, surfaced as the `ETag` header -- not part
+    // of the Resource Metadata wire body, so strip it before serializing.
+    const { version, ...metadataBody } = metadata
+    const metaReply = reply.status(200).type('application/json')
+    if (version !== undefined) {
+      metaReply.header('etag', formatEtag(version))
+    }
+    return metaReply.send(JSON.stringify(metadataBody))
   }
 
   /**
@@ -485,11 +507,19 @@ export class ResourceRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
-    // zCap checks out, continue
+    // zCap checks out, continue. An `If-Match` precondition is evaluated by the
+    // storage layer atomically with the removal; a mismatch surfaces as 412
+    // `precondition-failed` (rethrown unchanged below).
+    const { ifMatch } = parseWritePreconditions(request.headers)
     try {
-      await storage.deleteResource({ spaceId, collectionId, resourceId })
+      await storage.deleteResource({
+        spaceId,
+        collectionId,
+        resourceId,
+        ifMatch
+      })
     } catch (err) {
-      throw new StorageError({ cause: err as Error, requestName })
+      rethrowOrWrapStorageError({ err, requestName })
     }
 
     return reply.status(204).send()
