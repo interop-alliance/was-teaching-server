@@ -461,13 +461,19 @@ describe('Storage API', () => {
         assert.ok(usage.usageBytes > 0)
         assert.deepStrictEqual(usage.limit, { isUnlimited: true })
         assert.deepStrictEqual(usage.restrictedActions, [])
-        // The per-Collection breakdown is always included (see reportUsage).
-        assert.ok(usage.usageByCollection)
+        // The per-Collection breakdown is opt-in (spec `?include=collections`),
+        // so it is omitted by default and included only when requested.
+        assert.equal(usage.usageByCollection, undefined)
+        const detailed = await backend.reportUsage({
+          spaceId,
+          includeCollections: true
+        })
+        assert.ok(detailed.usageByCollection)
         assert.deepStrictEqual(
-          usage.usageByCollection!.map(collection => collection.id),
+          detailed.usageByCollection!.map(collection => collection.id),
           [collectionId]
         )
-        assert.ok(usage.usageByCollection![0].usageBytes > 0)
+        assert.ok(detailed.usageByCollection![0].usageBytes > 0)
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }

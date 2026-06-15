@@ -223,7 +223,17 @@ describe('WasClient — Spaces & Collections', () => {
       assert.deepStrictEqual(entry.limit, { isUnlimited: true })
       assert.deepStrictEqual(entry.restrictedActions, [])
       assert.match(entry.measuredAt, /^\d{4}-\d{2}-\d{2}T/)
-      // The space-level report carries a per-collection breakdown.
+      // The per-Collection breakdown is opt-in (spec `?include=collections`), so
+      // a bare report omits it.
+      assert.equal(entry.usageByCollection, undefined)
+    })
+
+    it('reads the per-collection breakdown with includeCollections', async () => {
+      const report = await space.quotas({ includeCollections: true })
+      assert.ok(report)
+      const entry = report.backends[0]
+      assert.ok(entry)
+      // With the opt-in, the space-level report carries a per-collection breakdown.
       const breakdown = entry.usageByCollection
       assert.ok(breakdown, 'expected a usageByCollection breakdown')
       assert.ok(

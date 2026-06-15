@@ -103,7 +103,10 @@ describe('List Collection pagination', () => {
     while (url) {
       const { data }: any = await aliceGet(url)
       pages++
-      assert.ok(data.items.length <= 2, 'page never exceeds the requested limit')
+      assert.ok(
+        data.items.length <= 2,
+        'page never exceeds the requested limit'
+      )
       seen.push(...data.items.map((item: any) => item.id))
       url = data.next
     }

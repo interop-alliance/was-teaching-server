@@ -203,14 +203,7 @@ describe('Collections API', () => {
 
     // 6 items at limit 2 -> 3 pages; the last omits `next` (end-of-list signal).
     assert.equal(pages, 3)
-    assert.deepStrictEqual(seen, [
-      'g00',
-      'g01',
-      'g02',
-      'g03',
-      'g04',
-      'g05'
-    ])
+    assert.deepStrictEqual(seen, ['g00', 'g01', 'g02', 'g03', 'g04', 'g05'])
   })
 
   it('[root] a malformed cursor yields invalid-cursor (400)', async () => {

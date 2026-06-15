@@ -95,7 +95,23 @@ describe('Quotas API', () => {
     assert.deepStrictEqual(entry.restrictedActions, [])
     assert.match(entry.measuredAt, ISO_8601)
 
-    // The per-Collection breakdown is always included for now (see handler).
+    // The per-Collection breakdown is opt-in (spec `?include=collections`), so a
+    // bare report omits it. See the `?include=collections` test below.
+    assert.equal(entry.usageByCollection, undefined)
+  })
+
+  it('[root] ?include=collections returns the per-Collection breakdown', async () => {
+    // A query string on a capability-signed request: the `allowTargetQuery` ZCap
+    // path authorizes it against the bare `/quotas` target (the query selects a
+    // representation, not a different target).
+    const response = await alice.was.request({
+      path: `/space/${spaceId}/quotas?include=collections`,
+      method: 'GET'
+    })
+    assert.equal(response.status, 200)
+
+    const report = response.data as QuotaReportBody
+    const [entry] = report.backends
     assert.ok(entry.usageByCollection, 'expected usageByCollection')
     const credentials = entry.usageByCollection!.find(
       collection => collection.id === collectionId

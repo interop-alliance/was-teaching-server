@@ -4,8 +4,21 @@
 
 ### Added
 
-- **Cursor (keyset) pagination for List Collection** (`GET
-  /space/{id}/{cid}/`), per the spec's "Pagination" section. The operation now
+- **`GET /space/{id}/quotas?include=collections` opt-in.** The Space Quota
+  report now omits the per-Collection `usageByCollection` breakdown by default
+  and includes it only when `?include=collections` is requested (spec "Quotas"),
+  keeping the hot-path payload lean. Previously the breakdown was returned
+  unconditionally because a query string broke ZCap `invocationTarget` matching;
+  the handler now threads the scoped `allowTargetQuery` flag (introduced for
+  pagination) so the signed request authorizes against the bare `/quotas` target
+  despite the query. The high-level client requests the breakdown via
+  `space.quotas({ includeCollections: true })` (`@interop/was-client@^0.7.1`).
+
+### Changed
+
+- The `StorageBackend.reportUsage` contract gains an `includeCollections?`
+  option; the breakdown is computed/returned only when set.
+
   accepts optional `?limit` and `?cursor` query parameters and returns a `next`
   link (a ready-to-follow URL with the opaque cursor and limit baked in) when a
   further page may follow; the absence of `next` is the authoritative

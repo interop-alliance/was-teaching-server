@@ -598,30 +598,33 @@ export class SpaceRequest {
    * server-configured backend, so the `backends` array has one entry, measured
    * from the active backend's `reportUsage()`.
    *
-   * Each entry always carries the per-Collection `usageByCollection` breakdown.
-   * The spec makes that breakdown opt-in via `?include=collections`, but a query
-   * string in the request URL currently breaks ZCap invocationTarget matching
-   * (the signed root capability target would include the query and no longer
-   * match the bare `/quotas` path), so for now the breakdown is returned
-   * unconditionally and the query parameter is not consulted. This is expected
-   * to be revisited once the upstream ezcap client supports invocation targets
-   * that ignore the query string.
+   * The per-Collection `usageByCollection` breakdown is opt-in via the spec's
+   * `?include=collections` query parameter (omitted otherwise, to keep the
+   * hot-path payload lean). Reading that query string on a capability-signed
+   * request requires `allowTargetQuery` on the authorization call -- the spec's
+   * "Quotas" / "Pagination parameters and authorization" rule that a query
+   * parameter selecting a representation does not change the target a capability
+   * must match (see `verifyZcap`).
    *
    * Authorization is capability-or-policy, the same as List Collections and the
    * backends list: a caller not authorized to read the report receives a 404
    * (the spec's maximum-privacy invariant), and a public-readable Space may read
-   * its quota report.
+   * its quota report. Authorization runs before the query is consulted.
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
    * @returns {Promise<FastifyReply>}
    */
   static async quotas(
-    request: FastifyRequest<{ Params: { spaceId: string } }>,
+    request: FastifyRequest<{
+      Params: { spaceId: string }
+      Querystring: { include?: string }
+    }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
-      params: { spaceId }
+      params: { spaceId },
+      query: { include }
     } = request
     const { storage } = request.server
     const requestName = 'Get Quotas'
@@ -631,14 +634,25 @@ export class SpaceRequest {
 
     // Authorize (capability-or-policy): capability invocation first, then the
     // Space's access-control policy as a fallback (a public-readable Space).
+    // `allowTargetQuery` lets the signed-request path tolerate the
+    // `?include=collections` query parameter without it changing the capability
+    // target.
     await fetchSpaceAndAuthorize({
       request,
       spaceId,
       targetPath: quotasPath({ spaceId }),
-      requestName
+      requestName,
+      allowTargetQuery: true
     })
 
-    const usage = await storage.reportUsage({ spaceId })
+    // The per-Collection breakdown is opt-in via `?include=collections` (spec
+    // "Quotas"); `include` is a comma-separated list of optional sections.
+    const includeCollections = (include ?? '')
+      .split(',')
+      .map(section => section.trim())
+      .includes('collections')
+
+    const usage = await storage.reportUsage({ spaceId, includeCollections })
 
     return reply
       .status(200)

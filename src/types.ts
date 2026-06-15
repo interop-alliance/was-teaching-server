@@ -199,12 +199,17 @@ export interface StorageBackend {
   /**
    * Measures the storage the given Space consumes on this backend, for the
    * Space Quota report (spec "Quotas"). Resolves a `BackendUsage` entry: the
-   * backend's identity plus measured `usageBytes`, derived `state`, the
-   * configured `limit`, and a per-Collection `usageByCollection` breakdown. The
-   * Space is guaranteed to exist by the request layer before this is called; an
-   * absent Space dir reports zero usage.
+   * backend's identity plus measured `usageBytes`, derived `state`, and the
+   * configured `limit`. The per-Collection `usageByCollection` breakdown is
+   * included only when `includeCollections` is set (the spec's opt-in
+   * `?include=collections`), so a backend for which the breakdown is expensive
+   * computes it only on request. The Space is guaranteed to exist by the request
+   * layer before this is called; an absent Space dir reports zero usage.
    */
-  reportUsage(options: { spaceId: string }): Promise<BackendUsage>
+  reportUsage(options: {
+    spaceId: string
+    includeCollections?: boolean
+  }): Promise<BackendUsage>
 
   /**
    * Measures the storage a single Collection consumes on this backend, for the

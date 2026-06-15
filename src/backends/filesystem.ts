@@ -315,11 +315,12 @@ export class FileSystemBackend implements StorageBackend {
    * per-Collection totals out (they sum to slightly less than `usageBytes`,
    * since the Space-level files belong to no Collection).
    *
-   * The per-Collection breakdown is always included for now. The spec makes it
-   * opt-in via `?include=collections`, but a query string in the request URL
-   * currently breaks ZCap invocationTarget matching (the signed root capability
-   * target would include the query), so the breakdown is returned unconditionally
-   * pending an upstream fix; see the `quotas` handler.
+   * The per-Collection `usageByCollection` breakdown is included only when
+   * `includeCollections` is set -- the spec's `?include=collections` opt-in (see
+   * the `quotas` handler, which now tolerates the query string via the
+   * `allowTargetQuery` ZCap path). On the filesystem the breakdown is free (the
+   * one `du -d 1` pass yields it alongside the total), but it is still omitted by
+   * default to keep the hot-path payload lean and match the wire contract.
    *
    * `state` / `restrictedActions` derive from usage vs `capacityBytes`: an
    * unlimited backend is always `ok`; a finite capacity yields `near-limit` at
@@ -327,9 +328,17 @@ export class FileSystemBackend implements StorageBackend {
    * still allowed, but `POST`/`PUT` restricted) at or above full.
    * @param options {object}
    * @param options.spaceId {string}
+   * @param [options.includeCollections] {boolean}   include the per-Collection
+   *   breakdown (spec `?include=collections`)
    * @returns {Promise<BackendUsage>}
    */
-  async reportUsage({ spaceId }: { spaceId: string }): Promise<BackendUsage> {
+  async reportUsage({
+    spaceId,
+    includeCollections = false
+  }: {
+    spaceId: string
+    includeCollections?: boolean
+  }): Promise<BackendUsage> {
     const spaceDir = this._spaceDir(spaceId)
     const measuredAt = new Date().toISOString()
 
@@ -339,7 +348,7 @@ export class FileSystemBackend implements StorageBackend {
     return {
       ...this._backendUsageFields({ usageBytes, spaceTotalBytes: usageBytes }),
       measuredAt,
-      usageByCollection
+      ...(includeCollections && { usageByCollection })
     }
   }
 
@@ -1219,7 +1228,11 @@ export class FileSystemBackend implements StorageBackend {
     let next: string | undefined
     if (hasMore) {
       const lastId = pageEntries[pageEntries.length - 1]!.resourceId
-      const base = collectionPath({ spaceId, collectionId, trailingSlash: true })
+      const base = collectionPath({
+        spaceId,
+        collectionId,
+        trailingSlash: true
+      })
       next = `${base}?limit=${pageSize}&cursor=${encodeCursor(lastId)}`
     }
 
