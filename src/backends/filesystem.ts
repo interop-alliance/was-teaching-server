@@ -198,6 +198,13 @@ export class FileSystemBackend implements StorageBackend {
    * Self-description advertised at `GET /space/:spaceId/backends`. The
    * filesystem backend is the single server-configured default: it stores both
    * JSON documents and binary blobs on disk, so its data survives restarts.
+   *
+   * It advertises no `features` yet: the `features` vocabulary names optional
+   * _server affordances_ (`conditional-writes`, `blinded-index-query`,
+   * `chunked-streams`), none of which this backend implements so far -- they are
+   * added as each lands. (Client-side encryption is deliberately not a backend
+   * feature: encrypted documents are opaque client-encrypted JSON this backend
+   * already stores faithfully, with no server cooperation.)
    * @returns {Required<BackendDescriptor>}
    */
   describe(): Required<BackendDescriptor> {
@@ -209,7 +216,8 @@ export class FileSystemBackend implements StorageBackend {
       name: 'Server Filesystem',
       managedBy: 'server',
       storageMode: ['document', 'blob'],
-      persistence: 'durable'
+      persistence: 'durable',
+      features: []
     }
   }
 

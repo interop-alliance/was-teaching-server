@@ -272,8 +272,25 @@ describe('Collections API', () => {
         name: 'Server Filesystem',
         managedBy: 'server',
         storageMode: ['document', 'blob'],
-        persistence: 'durable'
+        persistence: 'durable',
+        features: []
       })
+    })
+
+    it('GET :collectionId/backend surfaces a (currently empty) features array', async () => {
+      const response = await alice.was.request({
+        url: new URL(
+          `/space/${alice.space1.id}/credentials/backend`,
+          serverUrl
+        ).toString(),
+        method: 'GET'
+      })
+      assert.equal(response.status, 200)
+      // The filesystem backend implements none of the optional server
+      // affordances yet, so it advertises no features (client-side encryption
+      // is deliberately not among them).
+      assert.ok(Array.isArray(response.data.features))
+      assert.deepStrictEqual(response.data.features, [])
     })
 
     it('GET :collectionId/backend on a missing collection yields 404', async () => {

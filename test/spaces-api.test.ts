@@ -589,7 +589,8 @@ describe('Spaces', () => {
       name: 'Server Filesystem',
       managedBy: 'server',
       storageMode: ['document', 'blob'],
-      persistence: 'durable'
+      persistence: 'durable',
+      features: []
     }
 
     it('[signed] GET /backends lists the default backend descriptor', async () => {
@@ -607,6 +608,25 @@ describe('Spaces', () => {
       assert.equal(response.status, 200)
       assert.match(response.headers.get('content-type')!, /application\/json/)
       assert.deepStrictEqual(response.data, [defaultBackendDescriptor])
+    })
+
+    it('[signed] GET /backends surfaces a (currently empty) features array', async () => {
+      const spaceId = crypto.randomUUID()
+      await alice.was.createSpace({
+        id: spaceId,
+        name: 'Backends Feature Space',
+        controller: alice.did
+      })
+
+      const response = await alice.was.request({
+        url: `${serverUrl}/space/${spaceId}/backends`,
+        method: 'GET'
+      })
+      assert.equal(response.status, 200)
+      // The filesystem backend implements none of the optional server
+      // affordances yet, so it advertises an empty features array.
+      assert.ok(Array.isArray(response.data[0].features))
+      assert.deepStrictEqual(response.data[0].features, [])
     })
 
     it('anonymous GET /backends of a private space 404s (no leak)', async () => {

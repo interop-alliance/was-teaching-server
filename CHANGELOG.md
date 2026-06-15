@@ -4,6 +4,13 @@
 
 ### Added
 
+- The default filesystem backend descriptor now carries a `features` array
+  (surfaced at `GET /space/{id}/backends` and `GET /space/{id}/{cid}/backend`),
+  using the `features` field added in `@interop/storage-core@^0.2.0`. It is
+  currently empty: `features` advertises optional _server affordances_
+  (`conditional-writes`, `blinded-index-query`, `chunked-streams`), none of which
+  this backend implements yet -- each is added as it lands.
+
 - Accept `application/<suffix>+json` request bodies (e.g. `application/edv+json`
   for EDV-over-WAS encrypted documents, `application/ld+json`) by parsing them
   as JSON. Fastify's built-in parser only matches `application/json` exactly, so

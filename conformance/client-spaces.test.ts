@@ -148,7 +148,8 @@ describe('WasClient — Spaces & Collections', () => {
         name: 'Server Filesystem',
         managedBy: 'server',
         storageMode: ['document', 'blob'],
-        persistence: 'durable'
+        persistence: 'durable',
+        features: []
       })
     })
 
@@ -196,7 +197,8 @@ describe('WasClient — Spaces & Collections', () => {
           name: 'Server Filesystem',
           managedBy: 'server',
           storageMode: ['document', 'blob'],
-          persistence: 'durable'
+          persistence: 'durable',
+          features: []
         }
       ])
     })
