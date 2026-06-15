@@ -5,4 +5,4 @@ minimumReleaseAgeExclude:
   - '@interop/edv-client@17.2.0'
   - '@interop/minimal-cipher@7.4.0'
   - '@interop/storage-core@0.2.2'
-  - '@interop/was-client@0.6.0'
+  - '@interop/was-client@0.7.0'
