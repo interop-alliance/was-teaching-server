@@ -219,6 +219,33 @@ export class PreconditionFailedError extends ProblemError {
 }
 
 /**
+ * 400 — a pagination `cursor` query parameter is malformed or can no longer be
+ * honored (not valid base64url, not JSON, or missing its keyset position; spec
+ * `invalid-cursor`). Like `precondition-failed`, it is only ever observable by a
+ * caller already authorized to list the target -- the request layer checks
+ * authorization before the backend validates the cursor, so an under-authorized
+ * caller receives the privacy-merged `not-found` (404) instead.
+ * @param options {object}
+ * @param [options.detail] {string}   a specific explanation of the failure
+ * @param [options.cause] {Error}   the underlying parse error, when wrapping one
+ */
+export class InvalidCursorError extends ProblemError {
+  constructor({ detail, cause }: { detail?: string; cause?: Error } = {}) {
+    const message =
+      detail ??
+      'The pagination cursor is malformed or can no longer be honored.'
+    super({
+      type: ProblemTypes.INVALID_CURSOR,
+      title: 'Invalid pagination cursor',
+      detail: message,
+      statusCode: 400,
+      problems: [{ detail: message }],
+      cause
+    })
+  }
+}
+
+/**
  * 400 — the Collection Description request body is missing or invalid.
  */
 export class InvalidCollectionError extends ProblemError {

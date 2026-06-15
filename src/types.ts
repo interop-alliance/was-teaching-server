@@ -257,9 +257,21 @@ export interface StorageBackend {
     spaceId: string
     collectionId: string
   }): Promise<void>
+  /**
+   * Lists a Collection's Resources, OPTIONALLY paginated (spec "Pagination").
+   * `limit` bounds the page (a backend MAY clamp an oversized value to its own
+   * maximum); `cursor` is the opaque token from a prior page's `next`, naming
+   * the keyset position to resume from. With neither, the first (or only) page
+   * is returned. The result carries `next` -- a ready-to-follow URL with the
+   * cursor and limit baked in -- if and only if a further page may follow; its
+   * absence marks the last page. A malformed/un-honorable `cursor` rejects with
+   * `InvalidCursorError` (400 `invalid-cursor`).
+   */
   listCollectionItems(options: {
     spaceId: string
     collectionId: string
+    limit?: number
+    cursor?: string
   }): Promise<CollectionResourcesList>
 
   /**

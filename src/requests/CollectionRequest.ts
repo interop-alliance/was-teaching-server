@@ -499,11 +499,13 @@ export class CollectionRequest {
   static async list(
     request: FastifyRequest<{
       Params: { spaceId: string; collectionId: string }
+      Querystring: { limit?: string; cursor?: string }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
-      params: { spaceId, collectionId }
+      params: { spaceId, collectionId },
+      query: { limit, cursor }
     } = request
     const { storage } = request.server
     const requestName = 'List Collection'
@@ -513,6 +515,11 @@ export class CollectionRequest {
 
     // Authorize (capability-or-policy): capability invocation first, then the
     // effective access-control policy as a fallback (a public-readable Collection).
+    // `allowTargetQuery` lets the signed-request path tolerate the `?limit`/
+    // `cursor` pagination query parameters: per the spec they select a page
+    // within an already-authorized target and do not change the capability
+    // target. Authorization still runs before any cursor validation below, so an
+    // under-authorized caller gets the merged 404 -- never an `invalid-cursor`.
     await fetchSpaceAndAuthorize({
       request,
       spaceId,
@@ -522,7 +529,8 @@ export class CollectionRequest {
         collectionId,
         trailingSlash: true
       }),
-      requestName
+      requestName,
+      allowTargetQuery: true
     })
 
     // Fetch collection by id
@@ -534,9 +542,18 @@ export class CollectionRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
+    // Coerce `limit` (a query string) to a positive integer; a non-numeric or
+    // `< 1` value is ignored so the backend applies its own default. `cursor` is
+    // opaque and passed through verbatim -- the backend validates it and rejects
+    // a malformed one with `invalid-cursor` (400).
+    const parsedLimit = limit !== undefined ? Number(limit) : NaN
     const collectionItems = await storage.listCollectionItems({
       spaceId,
-      collectionId
+      collectionId,
+      ...(Number.isFinite(parsedLimit) && parsedLimit >= 1
+        ? { limit: parsedLimit }
+        : {}),
+      ...(cursor !== undefined && { cursor })
     })
 
     return reply

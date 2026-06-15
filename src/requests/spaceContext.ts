@@ -174,7 +174,8 @@ export async function fetchSpaceAndAuthorize({
   collectionId,
   resourceId,
   targetPath,
-  requestName
+  requestName,
+  allowTargetQuery = false
 }: {
   request: FastifyRequest
   spaceId: string
@@ -182,6 +183,11 @@ export async function fetchSpaceAndAuthorize({
   resourceId?: string
   targetPath: string
   requestName: string
+  // When set, the capability-invocation path tolerates query parameters on the
+  // request URL that extend `targetPath` (e.g. List Collection's `?limit`/
+  // `cursor`), treating them as a RESTful attenuation of the same target rather
+  // than a different one. See `verifyZcap`.
+  allowTargetQuery?: boolean
 }): Promise<VerifiedSpaceContext> {
   const context = await fetchSpaceContext({
     request,
@@ -196,7 +202,8 @@ export async function fetchSpaceAndAuthorize({
     collectionId,
     resourceId,
     spaceController: context.spaceController,
-    requestName
+    requestName,
+    allowTargetQuery
   })
   return context
 }

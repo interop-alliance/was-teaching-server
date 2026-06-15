@@ -48,17 +48,14 @@ importers:
         specifier: ^9.3.1
         version: 9.3.1
       '@interop/storage-core':
-        specifier: ^0.2.2
-        version: 0.2.2
+        specifier: ^0.2.3
+        version: 0.2.3
       fastify:
         specifier: ^5.8.5
         version: 5.8.5
       fs-json-store:
         specifier: ^8.0.1
         version: 8.0.1
-      glob:
-        specifier: ^13.0.6
-        version: 13.0.6
       handlebars:
         specifier: ^4.7.9
         version: 4.7.9
@@ -639,8 +636,8 @@ packages:
     resolution: {integrity: sha512-Tv3r4A6zotZX3JOP5BxYDnFWzluqctUZnauzNKlXImE+eB2dKU6aJxKn1Hp+YCzgYEjtUCZt8V/3Nrp3B6DwXw==}
     engines: {node: '>=24.0'}
 
-  '@interop/storage-core@0.2.2':
-    resolution: {integrity: sha512-hZOARSDuQjCoiXT/pwTxkJhVOcMLtLv+lPz8MYUmGhdeqEDmmYltAL5kHCJDWRWYcoKLgGUW0xvpAKOlbmRhBg==}
+  '@interop/storage-core@0.2.3':
+    resolution: {integrity: sha512-bDvel8oGHZ6xXccLKEwtJZJQc/Y+MsQ48T9h1X16Y+Y2DnSwa5fv2WRd2yZ8J8vhBg2Dni7ogyf1uGIu0db4gA==}
     engines: {node: '>=22.0'}
 
   '@interop/was-client@0.7.0':
@@ -3203,7 +3200,7 @@ snapshots:
     transitivePeerDependencies:
       - react-native-get-random-values
 
-  '@interop/storage-core@0.2.2':
+  '@interop/storage-core@0.2.3':
     dependencies:
       '@interop/data-integrity-core': 8.1.0
 
@@ -3214,7 +3211,7 @@ snapshots:
       '@interop/edv-client': 17.2.0
       '@interop/ezcap': 7.2.1
       '@interop/http-client': 1.0.3
-      '@interop/storage-core': 0.2.2
+      '@interop/storage-core': 0.2.3
     transitivePeerDependencies:
       - '@interop/jsonld-signatures'
       - expo-crypto

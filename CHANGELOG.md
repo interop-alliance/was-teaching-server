@@ -4,6 +4,28 @@
 
 ### Added
 
+- **Cursor (keyset) pagination for List Collection** (`GET
+  /space/{id}/{cid}/`), per the spec's "Pagination" section. The operation now
+  accepts optional `?limit` and `?cursor` query parameters and returns a `next`
+  link (a ready-to-follow URL with the opaque cursor and limit baked in) when a
+  further page may follow; the absence of `next` is the authoritative
+  end-of-list signal. Items are returned in a stable total order (ascending
+  `resourceId`, which also fixes the prior nondeterministic listing order, since
+  glob v13 does not sort). The filesystem backend reads `.meta` sidecars only
+  for the items on the page (previously one per Resource on every list). A
+  malformed or un-honorable cursor yields the new `invalid-cursor` (400) problem
+  type; authorization is checked before cursor validation, so an
+  under-authorized caller still gets the privacy-merged `404`. Pagination is
+  OPTIONAL: a request with neither parameter returns the first page (or
+  everything, if it fits). The opaque cursor codec lives in `src/lib/cursor.ts`.
+  ZCap verification gained a scoped `allowTargetQuery` flag (List Collection
+  only) so a capability for the bare Collection authorizes the query-bearing
+  `next` URL, honoring the spec's "Pagination parameters and authorization" rule
+  (the `limit`/`cursor` parameters select a page within an already-authorized
+  target and do not change the target a capability must match). Uses the new
+  `invalid-cursor` problem type and `CollectionResourcesList.next` field from
+  `@interop/storage-core@^0.2.3`.
+
 - **Conditional writes (`conditional-writes` feature).** The filesystem backend
   now exposes each Resource's monotonic `version` as an HTTP `ETag` strong
   validator (returned on `GET` / `HEAD` / `GET .../meta` and on the `PUT` /

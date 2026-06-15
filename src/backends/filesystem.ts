@@ -11,7 +11,6 @@ import { promisify } from 'node:util'
 import { Transform, type Readable } from 'node:stream'
 import fs from 'node:fs'
 import jsonfs from 'fs-json-store'
-import { glob } from 'glob'
 import pino from 'pino'
 import type { FastifyBaseLogger } from 'fastify'
 import {
@@ -36,6 +35,7 @@ import {
 } from '../config.default.js'
 import { extractTarEntries, buildImportPlan } from '../lib/importTar.js'
 import { collectionPath, resourcePath } from '../lib/paths.js'
+import { encodeCursor, decodeCursor } from '../lib/cursor.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
 import { formatEtag } from '../lib/etag.js'
 import type {
@@ -61,6 +61,15 @@ import type {
 const { Store: MetadataJsonStore } = jsonfs
 
 const execFileAsync = promisify(execFile)
+
+/**
+ * Page sizing for the List Collection operation's cursor-based pagination (spec
+ * "Pagination"). `DEFAULT_PAGE_SIZE` applies when a request omits `limit`;
+ * `MAX_PAGE_SIZE` is the server maximum an oversized `limit` is clamped down to
+ * (rather than rejected).
+ */
+const DEFAULT_PAGE_SIZE = 100
+const MAX_PAGE_SIZE = 1000
 
 /**
  * Silent logger used when no logger is injected into the backend, so the backend
@@ -607,6 +616,45 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * Lists every on-disk file belonging to a single Resource: the
+   * representation(s) whose name starts with `r.<resourceId>.` in the Collection
+   * dir. The trailing `.` anchors to the filename's segment boundary
+   * (`r.<resourceId>.<encodedType>.<ext>`) so a resourceId that is a prefix of
+   * another (e.g. `note` vs `notebook`) does not match the longer one. A Resource
+   * normally has a single current representation, so this usually returns one
+   * path; it returns more only transiently while a prior representation under a
+   * different content-type is being pruned. An absent Collection dir resolves an
+   * empty list (it holds no such files).
+   * @param options {object}
+   * @param options.collectionDir {string}
+   * @param options.resourceId {string}
+   * @returns {Promise<string[]>}   full paths, in directory order
+   */
+  async _resourceFilesFor({
+    collectionDir,
+    resourceId
+  }: {
+    collectionDir: string
+    resourceId: string
+  }): Promise<string[]> {
+    const prefix = `r.${resourceId}.`
+    let entries: fs.Dirent[]
+    try {
+      entries = await fs.promises.readdir(collectionDir, {
+        withFileTypes: true
+      })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return []
+      }
+      throw err
+    }
+    return entries
+      .filter(entry => entry.isFile() && entry.name.startsWith(prefix))
+      .map(entry => path.join(collectionDir, entry.name))
+  }
+
+  /**
    * @param options {object}
    * @param options.collectionDir {string}
    * @param options.resourceId {string}
@@ -619,10 +667,10 @@ export class FileSystemBackend implements StorageBackend {
     collectionDir: string
     resourceId: string
   }): Promise<string | undefined> {
-    // The trailing `.` anchors to the filename's segment boundary
-    // (`r.<resourceId>.<encodedType>.<ext>`) so a resourceId that is a prefix of
-    // another (e.g. `note` vs `notebook`) does not match the longer one.
-    const [filePath] = await glob(path.join(collectionDir, `r.${resourceId}.*`))
+    const [filePath] = await this._resourceFilesFor({
+      collectionDir,
+      resourceId
+    })
     return filePath
   }
 
@@ -1058,37 +1106,98 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * Lists a Collection's Resources, OPTIONALLY cursor-paginated (spec
+   * "Pagination"). Items are returned in a stable total order -- ascending by
+   * `resourceId`, read straight from the `r.<resourceId>.<type>.<ext>` filename
+   * (the keyset). A `cursor` resumes the scan at the first id strictly greater
+   * than the cursor's anchor, so paging stays correct even if the anchor id was
+   * deleted between pages; `limit` bounds the page (clamped to
+   * `[1, MAX_PAGE_SIZE]`, default `DEFAULT_PAGE_SIZE`). `next` is built (and
+   * present) only when a further page may follow.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
+   * @param [options.limit] {number}   requested page size
+   * @param [options.cursor] {string}   opaque cursor from a prior page's `next`
    * @returns {Promise<CollectionResourcesList>}
    */
   async listCollectionItems({
     spaceId,
-    collectionId
+    collectionId,
+    limit,
+    cursor
   }: {
     spaceId: string
     collectionId: string
+    limit?: number
+    cursor?: string
   }): Promise<CollectionResourcesList> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
     const collectionDescription = await this.getCollectionDescription({
       spaceId,
       collectionId
     })
-    let keys: string[] = []
+
+    // Enumerate the Collection dir directly rather than globbing: glob v13 does
+    // not sort, so its order is nondeterministic -- pagination needs a stable
+    // keyset. Keep only resource representations (`r.<id>.<type>.<ext>`), which
+    // drops the `.meta.` / `.collection.` / `.policy.` dot-files.
+    let entries: fs.Dirent[] = []
     try {
-      // Array of filename keys (see fileNameFor() for details)
-      keys = await glob(path.join(collectionDir, '*'))
+      entries = await fs.promises.readdir(collectionDir, {
+        withFileTypes: true
+      })
     } catch (err) {
-      this.logger.error({ err })
+      this.logger.error({ err }, 'Error reading collection directory')
     }
+    const resources = entries
+      .filter(entry => entry.isFile() && entry.name.startsWith('r.'))
+      .map(entry => parseResourceFileName(entry.name))
+      // Sort by `resourceId` ascending in code-unit order -- the SAME ordering
+      // the cursor seek (`resourceId > after`) uses, so the keyset is consistent
+      // (localeCompare could disagree with the `>` operator and break paging).
+      .sort((left, right) =>
+        left.resourceId < right.resourceId
+          ? -1
+          : left.resourceId > right.resourceId
+            ? 1
+            : 0
+      )
+
+    // The full count is free here (we enumerated the whole dir), so keep
+    // returning `totalItems` -- the count of the entire Collection, not the page.
+    const totalItems = resources.length
+
+    // Seek to the first entry strictly after the cursor's anchor id. Keyset
+    // stability: a missing anchor (deleted between pages) does not break the
+    // scan, since we resume at the first id greater than it.
+    let startIndex = 0
+    if (cursor !== undefined) {
+      const { after } = decodeCursor(cursor)
+      const found = resources.findIndex(({ resourceId }) => resourceId > after)
+      startIndex = found === -1 ? resources.length : found
+    }
+
+    // Clamp `limit` to `[1, MAX_PAGE_SIZE]`, defaulting when absent.
+    const pageSize =
+      limit === undefined
+        ? DEFAULT_PAGE_SIZE
+        : Math.min(Math.max(Math.trunc(limit), 1), MAX_PAGE_SIZE)
+
+    // Take `pageSize + 1` from the seek point to detect a further page without a
+    // second pass; the page is the first `pageSize`, and `hasMore` is whether we
+    // got the extra one (so a page that exactly fills the Collection has no
+    // spurious empty trailing page).
+    const window = resources.slice(startIndex, startIndex + pageSize + 1)
+    const hasMore = window.length > pageSize
+    const pageEntries = hasMore ? window.slice(0, pageSize) : window
+
+    // Read `.meta` sidecars ONLY for the items on this page (the previous
+    // implementation read a sidecar for every resource on every list). Surface
+    // the user-writable `custom.name` (spec: updating it updates the name shown
+    // in Collection listings).
     const items = await Promise.all(
-      keys.map(async fullFilepath => {
-        const { resourceId, contentType } = parseResourceFileName(
-          path.basename(fullFilepath)
-        )
-        // Surface the user-writable `custom.name` (spec: updating it updates the
-        // name shown in Collection listings) from the Resource's sidecar.
+      pageEntries.map(async ({ resourceId, contentType }) => {
         const sidecar = await this._readMetaSidecar({
           collectionDir,
           resourceId
@@ -1102,13 +1211,26 @@ export class FileSystemBackend implements StorageBackend {
         }
       })
     )
+
+    // `next` is present iff a further page may follow; its absence marks the last
+    // page (the authoritative end-of-list signal). The cursor (the last id on
+    // this page) and the page size are baked into the URL so the client follows
+    // it verbatim without constructing query parameters.
+    let next: string | undefined
+    if (hasMore) {
+      const lastId = pageEntries[pageEntries.length - 1]!.resourceId
+      const base = collectionPath({ spaceId, collectionId, trailingSlash: true })
+      next = `${base}?limit=${pageSize}&cursor=${encodeCursor(lastId)}`
+    }
+
     return {
       id: collectionId,
       url: collectionPath({ spaceId, collectionId }),
       name: collectionDescription!.name,
       type: collectionDescription!.type || ['Collection'],
-      totalItems: items.length,
-      items
+      totalItems,
+      items,
+      ...(next !== undefined && { next })
     }
   }
 
@@ -1283,7 +1405,7 @@ export class FileSystemBackend implements StorageBackend {
     // representation stored under a different content-type (its filename
     // differs). Write-new-then-prune (not delete-then-write) so the resource is
     // never momentarily absent.
-    const existing = await glob(path.join(collectionDir, `r.${resourceId}.*`))
+    const existing = await this._resourceFilesFor({ collectionDir, resourceId })
     await Promise.all(
       existing
         .filter(name => path.resolve(name) !== path.resolve(filePath))
@@ -1660,13 +1782,14 @@ export class FileSystemBackend implements StorageBackend {
         })
       }
       // A Resource has a single current representation, so this normally matches
-      // one file. The glob-all delete remains as defensive cleanup (idempotent,
-      // and would sweep up any stray prior-representation file). The trailing `.`
-      // anchors to the filename's segment boundary so a resourceId that is a
-      // prefix of another (e.g. `note` vs `notebook`) is not swept up too.
-      const filesForResource = await glob(
-        path.join(collectionDir, `r.${resourceId}.*`)
-      )
+      // one file. The sweep-all delete remains as defensive cleanup (idempotent,
+      // and would sweep up any stray prior-representation file); the segment-
+      // anchored match in `_resourceFilesFor` keeps a prefix id (e.g. `note` vs
+      // `notebook`) from being swept up too.
+      const filesForResource = await this._resourceFilesFor({
+        collectionDir,
+        resourceId
+      })
       await Promise.all(filesForResource.map(filename => rm(filename)))
       // The Metadata object is deleted together with the Resource (spec
       // "Resource Metadata Data Model"); sweep its sidecar too.

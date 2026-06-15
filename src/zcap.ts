@@ -66,6 +66,8 @@ export function isRootInvocation({
  *   error titles
  * @param [options.logger] {ZcapLogger}   logger for verification errors;
  *   defaults to `console`
+ * @param [options.allowTargetQuery] {boolean}   tolerate query parameters that
+ *   extend `allowedTarget` on the request URL (see `verifyZcap`)
  * @returns {Promise<void>}
  */
 export async function handleZcapVerify({
@@ -77,7 +79,8 @@ export async function handleZcapVerify({
   serverUrl,
   spaceController,
   requestName = '',
-  logger = console
+  logger = console,
+  allowTargetQuery = false
 }: {
   url: string
   allowedTarget: string
@@ -88,6 +91,7 @@ export async function handleZcapVerify({
   spaceController: IDID
   requestName?: string
   logger?: ZcapLogger
+  allowTargetQuery?: boolean
 }): Promise<void> {
   // logger.info(`Performing zCap verification for url: ${url}`)
   let zcapVerifyResult: VerifyCapabilityInvocationResult
@@ -99,7 +103,8 @@ export async function handleZcapVerify({
       method,
       headers,
       serverUrl,
-      spaceController
+      spaceController,
+      allowTargetQuery
     })
   } catch (err) {
     logger.error('ZCAP verification failed:', err)
@@ -125,6 +130,20 @@ export async function handleZcapVerify({
  * @param options.headers {IncomingHttpHeaders}   the request headers
  * @param options.serverUrl {string}   this server's base URL
  * @param options.spaceController {IDID}   the did:key that controls the Space
+ * @param [options.allowTargetQuery] {boolean}   when set, accept a request URL
+ *   that adds query parameters to `allowedTarget` (e.g. List Collection's
+ *   `?limit`/`cursor`) as authorized by a capability for the bare target. The
+ *   spec requires that pagination parameters select a page within an
+ *   already-authorized target without changing the target a capability must
+ *   match. The zcap library otherwise requires the capability's
+ *   `invocationTarget` to equal the full request URL exactly, so this enables
+ *   target attenuation (the library treats a `?`-query suffix as a valid RESTful
+ *   attenuation) and admits both the bare-target root capability (a delegate
+ *   following `next`) and the query-bearing one (a controller invoking the URL
+ *   directly). The actual gate -- the bare-target root capability -- is
+ *   unchanged. (TODO: the `/quotas` endpoint should adopt this too, so its
+ *   per-Collection breakdown can return to the spec's `?include=collections`
+ *   opt-in.)
  * @returns {Promise<VerifyCapabilityInvocationResult>}
  */
 export async function verifyZcap({
@@ -134,7 +153,8 @@ export async function verifyZcap({
   method,
   headers,
   serverUrl,
-  spaceController
+  spaceController,
+  allowTargetQuery = false
 }: {
   url: string
   allowedTarget: string
@@ -143,15 +163,34 @@ export async function verifyZcap({
   headers: IncomingHttpHeaders
   serverUrl: string
   spaceController: IDID
+  allowTargetQuery?: boolean
 }): Promise<VerifyCapabilityInvocationResult> {
   const fullRequestUrl = new URL(url, serverUrl).toString()
-  const expected = {
-    expectedAction: allowedAction,
-    expectedHost: new URL(serverUrl).host,
-    rootInvocationTarget: allowedTarget,
-    expectedRootCapability: `urn:zcap:root:${encodeURIComponent(allowedTarget)}`,
-    expectedTarget: allowedTarget
-  }
+  const rootCapabilityId = (target: string): string =>
+    `urn:zcap:root:${encodeURIComponent(target)}`
+  const expected = allowTargetQuery
+    ? {
+        expectedAction: allowedAction,
+        expectedHost: new URL(serverUrl).host,
+        // `expectedTarget` must equal the proof's invocationTarget (the full
+        // request URL incl. query); accept either root capability id so both a
+        // bare-target delegate and a controller invoking the query URL verify.
+        expectedRootCapability: [
+          ...new Set([
+            rootCapabilityId(allowedTarget),
+            rootCapabilityId(fullRequestUrl)
+          ])
+        ],
+        expectedTarget: fullRequestUrl,
+        allowTargetAttenuation: true
+      }
+    : {
+        expectedAction: allowedAction,
+        expectedHost: new URL(serverUrl).host,
+        rootInvocationTarget: allowedTarget,
+        expectedRootCapability: rootCapabilityId(allowedTarget),
+        expectedTarget: allowedTarget
+      }
 
   const loader = securityLoader()
   loader.setProtocolHandler({

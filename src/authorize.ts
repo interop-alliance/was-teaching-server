@@ -32,6 +32,8 @@ import type { IDID } from './types.js'
  * @param options.spaceController {IDID}   the did:key that controls the Space
  * @param [options.requestName] {string}   human-readable request name, used in
  *   error titles
+ * @param [options.allowTargetQuery] {boolean}   tolerate query parameters that
+ *   extend `allowedTarget` on the capability-invocation path (see `verifyZcap`)
  * @returns {Promise<void>}   resolves when authorized; throws otherwise
  */
 export async function authorize({
@@ -41,7 +43,8 @@ export async function authorize({
   collectionId,
   resourceId,
   spaceController,
-  requestName = ''
+  requestName = '',
+  allowTargetQuery = false
 }: {
   request: FastifyRequest
   allowedTarget: string
@@ -50,6 +53,7 @@ export async function authorize({
   resourceId?: string
   spaceController: IDID
   requestName?: string
+  allowTargetQuery?: boolean
 }): Promise<void> {
   const { url, method, headers } = request
   const { serverUrl, storage } = request.server
@@ -71,7 +75,8 @@ export async function authorize({
         serverUrl,
         spaceController,
         requestName,
-        logger: request.log
+        logger: request.log,
+        allowTargetQuery
       })
       return
     } catch (err) {

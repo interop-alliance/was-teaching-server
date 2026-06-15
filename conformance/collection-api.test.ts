@@ -155,6 +155,85 @@ describe('Collections API', () => {
     })
   })
 
+  it('[root] paginates List Collection via ?limit and follows next (spec Pagination)', async () => {
+    // Fresh Collection seeded with > one page of Resources, inserted out of order
+    // to prove the listing order is by id, not insertion.
+    const collectionId = generateId()
+    // WAS does not auto-create parent Collections, so provision it first.
+    await alice.rootClient.request({
+      url: new URL(
+        `/space/${alice.space1.id}/${collectionId}`,
+        serverUrl
+      ).toString(),
+      method: 'PUT',
+      json: { id: collectionId, name: 'Paginated Collection' }
+    })
+    const ids = ['g05', 'g01', 'g04', 'g02', 'g00', 'g03']
+    for (const id of ids) {
+      await alice.rootClient.request({
+        url: new URL(
+          `/space/${alice.space1.id}/${collectionId}/${id}`,
+          serverUrl
+        ).toString(),
+        method: 'PUT',
+        json: { value: id }
+      })
+    }
+
+    const seen: string[] = []
+    let nextUrl: string | undefined = new URL(
+      `/space/${alice.space1.id}/${collectionId}/?limit=2`,
+      serverUrl
+    ).toString()
+    let pages = 0
+    while (nextUrl) {
+      const response: any = await alice.rootClient.request({
+        url: nextUrl,
+        method: 'GET'
+      })
+      assert.equal(response.status, 200)
+      pages++
+      assert.ok(response.data.items.length <= 2, 'page respects the limit')
+      seen.push(...response.data.items.map((item: any) => item.id))
+      // `next` is server-relative; follow it verbatim, resolved against serverUrl.
+      nextUrl = response.data.next
+        ? new URL(response.data.next, serverUrl).toString()
+        : undefined
+    }
+
+    // 6 items at limit 2 -> 3 pages; the last omits `next` (end-of-list signal).
+    assert.equal(pages, 3)
+    assert.deepStrictEqual(seen, [
+      'g00',
+      'g01',
+      'g02',
+      'g03',
+      'g04',
+      'g05'
+    ])
+  })
+
+  it('[root] a malformed cursor yields invalid-cursor (400)', async () => {
+    let expectedError: any
+    try {
+      await alice.rootClient.request({
+        url: new URL(
+          `/space/${alice.space1.id}/credentials/?cursor=not-valid-%%%`,
+          serverUrl
+        ).toString(),
+        method: 'GET'
+      })
+    } catch (err) {
+      expectedError = err
+    }
+    assert.ok(expectedError, 'expected the malformed cursor to be rejected')
+    assert.equal(expectedError.response.status, 400)
+    assert.equal(
+      expectedError.data.type,
+      'https://wallet.storage/spec#invalid-cursor'
+    )
+  })
+
   it('[root] create and delete a collection by id', async () => {
     const collectionId = 'new-collection'
     const collectionUrl = new URL(
