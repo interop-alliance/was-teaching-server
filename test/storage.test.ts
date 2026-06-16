@@ -313,6 +313,90 @@ describe('Storage API', () => {
         await rm(tempDir, { recursive: true, force: true })
       }
     })
+
+    it('carries tombstones across an export/import roundtrip', async () => {
+      const tempDir = await mkdtemp(
+        path.join(os.tmpdir(), 'was-tombstone-roundtrip-')
+      )
+      await mkdir(path.join(tempDir, 'spaces'))
+      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const src = 'source-space'
+      const dst = 'target-space'
+      const collectionId = 'notes'
+
+      try {
+        await backend.writeSpace({
+          spaceId: src,
+          spaceDescription: {
+            id: src,
+            type: ['Space'],
+            name: 'Source',
+            controller: 'did:key:test-controller'
+          }
+        })
+        await backend.writeCollection({
+          spaceId: src,
+          collectionId,
+          collectionDescription: { id: collectionId, type: ['Collection'], name: 'Notes' }
+        })
+        // A live resource and a soft-deleted one (a tombstone), in the same
+        // Collection.
+        await backend.writeResource({
+          spaceId: src,
+          collectionId,
+          resourceId: 'live',
+          input: { kind: 'json', contentType: 'application/json', data: { v: 1 } }
+        })
+        await backend.writeResource({
+          spaceId: src,
+          collectionId,
+          resourceId: 'gone',
+          input: { kind: 'json', contentType: 'application/json', data: { v: 1 } }
+        })
+        await backend.deleteResource({ spaceId: src, collectionId, resourceId: 'gone' })
+        const srcTombstone = await backend._readMetaSidecar({
+          collectionDir: path.join(tempDir, 'spaces', src, collectionId),
+          resourceId: 'gone'
+        })
+
+        const pack = await backend.exportSpace({ spaceId: src })
+        await backend.writeSpace({
+          spaceId: dst,
+          spaceDescription: {
+            id: dst,
+            type: ['Space'],
+            name: 'Target',
+            controller: 'did:key:test-controller'
+          }
+        })
+        await backend.importSpace({ spaceId: dst, tarStream: pack })
+
+        // The tombstone survives: no content file, a `deleted` sidecar carried
+        // verbatim, and it stays invisible to normal reads on the target.
+        const dstCollectionDir = path.join(tempDir, 'spaces', dst, collectionId)
+        const dstTombstone = await backend._readMetaSidecar({
+          collectionDir: dstCollectionDir,
+          resourceId: 'gone'
+        })
+        assert.deepEqual(dstTombstone, srcTombstone, 'tombstone sidecar carried verbatim')
+        const dstFiles = (await readdir(dstCollectionDir)).filter(name =>
+          name.startsWith('r.gone.')
+        )
+        assert.deepEqual(dstFiles, [], 'no content file for the carried tombstone')
+
+        const listing = await backend.listCollectionItems({
+          spaceId: dst,
+          collectionId
+        })
+        assert.deepEqual(
+          listing.items.map(item => item.id),
+          ['live'],
+          'listing shows the live resource but not the tombstone'
+        )
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
   })
 
   describe('FileSystemBackend resourceId prefix collisions', () => {
@@ -399,6 +483,151 @@ describe('Storage API', () => {
           JSON.parse(await streamToString(notebookResult.resourceStream)),
           { which: 'notebook' }
         )
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+  })
+
+  describe('FileSystemBackend tombstone soft-delete', () => {
+    /**
+     * Provisions a Space + Collection holding one JSON Resource, and returns the
+     * backend, the temp dir, and the Collection dir path.
+     */
+    async function provisionResource() {
+      const tempDir = await mkdtemp(path.join(os.tmpdir(), 'was-tombstone-'))
+      await mkdir(path.join(tempDir, 'spaces'))
+      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const spaceId = 'test-space'
+      const collectionId = 'notes'
+      await backend.writeSpace({
+        spaceId,
+        spaceDescription: {
+          id: spaceId,
+          type: ['Space'],
+          name: 'Tombstone Test Space',
+          controller: 'did:key:test-controller'
+        }
+      })
+      await backend.writeCollection({
+        spaceId,
+        collectionId,
+        collectionDescription: { id: collectionId, type: ['Collection'], name: 'Notes' }
+      })
+      await backend.writeResource({
+        spaceId,
+        collectionId,
+        resourceId: 'note',
+        input: { kind: 'json', contentType: 'application/json', data: { v: 1 } }
+      })
+      const collectionDir = path.join(tempDir, 'spaces', spaceId, collectionId)
+      return { backend, tempDir, spaceId, collectionId, collectionDir }
+    }
+
+    it('drops the content file but keeps the sidecar as a tombstone', async () => {
+      const { backend, tempDir, spaceId, collectionId, collectionDir } =
+        await provisionResource()
+      try {
+        await backend.deleteResource({ spaceId, collectionId, resourceId: 'note' })
+
+        // No content representation remains, but the sidecar lingers.
+        const entries = await readdir(collectionDir)
+        assert.deepEqual(
+          entries.filter(name => name.startsWith('r.')),
+          [],
+          'content file should be gone'
+        )
+        assert.ok(
+          entries.includes('.meta.note.json'),
+          'sidecar should remain as the tombstone'
+        )
+
+        // The tombstone records `deleted`, a bumped `version`, and the
+        // last-known content-type (the content filename no longer carries it).
+        const sidecar = await backend._readMetaSidecar({
+          collectionDir,
+          resourceId: 'note'
+        })
+        assert.equal(sidecar?.deleted, true)
+        assert.equal(sidecar?.version, 2, 'version bumped from 1 to 2 on delete')
+        assert.equal(sidecar?.contentType, 'application/json')
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it('is invisible to getResource / getResourceMetadata after deletion', async () => {
+      const { backend, tempDir, spaceId, collectionId } = await provisionResource()
+      try {
+        await backend.deleteResource({ spaceId, collectionId, resourceId: 'note' })
+
+        await assert.rejects(
+          backend.getResource({ spaceId, collectionId, resourceId: 'note' }),
+          'getResource 404s on a tombstone'
+        )
+        const meta = await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId: 'note'
+        })
+        assert.equal(meta, undefined, 'getResourceMetadata 404s on a tombstone')
+
+        const listing = await backend.listCollectionItems({ spaceId, collectionId })
+        assert.deepEqual(listing.items, [], 'listing skips the tombstone')
+        assert.equal(listing.totalItems, 0)
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it('continues the monotonic version when a tombstoned id is re-created', async () => {
+      const { backend, tempDir, spaceId, collectionId, collectionDir } =
+        await provisionResource()
+      try {
+        await backend.deleteResource({ spaceId, collectionId, resourceId: 'note' })
+        const { version } = await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'note',
+          input: { kind: 'json', contentType: 'application/json', data: { v: 2 } }
+        })
+        assert.equal(version, 3, 're-create continues 1 -> 2 (tombstone) -> 3')
+
+        // The revived Resource is readable and no longer a tombstone.
+        const result = await backend.getResource({
+          spaceId,
+          collectionId,
+          resourceId: 'note'
+        })
+        assert.deepEqual(JSON.parse(await streamToString(result.resourceStream)), {
+          v: 2
+        })
+        const sidecar = await backend._readMetaSidecar({
+          collectionDir,
+          resourceId: 'note'
+        })
+        assert.equal(sidecar?.deleted, undefined, 'tombstone flag cleared on revive')
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it('is idempotent: re-deleting a tombstone does not churn its version', async () => {
+      const { backend, tempDir, spaceId, collectionId, collectionDir } =
+        await provisionResource()
+      try {
+        await backend.deleteResource({ spaceId, collectionId, resourceId: 'note' })
+        const first = await backend._readMetaSidecar({
+          collectionDir,
+          resourceId: 'note'
+        })
+        await backend.deleteResource({ spaceId, collectionId, resourceId: 'note' })
+        const second = await backend._readMetaSidecar({
+          collectionDir,
+          resourceId: 'note'
+        })
+        assert.equal(second?.version, first?.version, 'version unchanged')
+        assert.equal(second?.updatedAt, first?.updatedAt, 'updatedAt unchanged')
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }

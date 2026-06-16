@@ -1,11 +1,26 @@
 # History
 
+## Unreleased - TBD
+
+### Changed
+
+- **Resource deletes are now soft deletes (tombstones).** Deleting a Resource
+  drops its content representation but keeps its metadata sidecar as a tombstone
+  (`deleted: true`, a bumped `version` and `updatedAt`, the last-known
+  `contentType` retained), so the change feed (replication; see
+  `_spec/rxdb-sync-roadmap.md`) can surface the delete until clients catch up.
+  With no content file left, a tombstone is invisible to every normal read path
+  (`GET` / metadata / List Collection all 404 or skip it), so the change is
+  transparent to the existing API. Re-creating a deleted id continues its
+  monotonic `version`, and an export/import roundtrip carries tombstones across.
+  Garbage-collection of old tombstones is future work.
+
 ## 0.5.0 - 2026-06-15
 
 ### Added
 
 - **`GET /space/{id}/quotas?include=collections` opt-in.** The Space Quota
-  report now omits the per-Collection `usageByCollection` breakdown by default
+  report now omits the  per-Collection `usageByCollection` breakdown by default
   and includes it only when `?include=collections` is requested (spec "Quotas"),
   keeping the hot-path payload lean. Previously the breakdown was returned
   unconditionally because a query string broke ZCap `invocationTarget` matching;

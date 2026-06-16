@@ -90,12 +90,24 @@ const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
  * increments on each subsequent content write. It is `undefined` only for a
  * Resource written before versioning existed (a legacy sidecar), in which case
  * the backend treats the current version as 0.
+ *
+ * `deleted` marks a **tombstone**: a soft delete that drops the content
+ * representation but keeps the sidecar so the change feed (replication) still
+ * surfaces it (see `deleteResource` and `_spec/rxdb-sync-roadmap.md`). A
+ * tombstone has no `r.<id>...` content file, so it is invisible to every normal
+ * read path (which gates on the content file via `_findFile`); only the
+ * (future) change feed reads it. `contentType` records the representation's
+ * last-known content-type, which the content filename no longer carries once it
+ * is gone -- present only on a tombstone (a live Resource derives its
+ * content-type from the filename).
  */
 interface MetaSidecar {
   createdAt: string
   updatedAt: string
   version?: number
   custom?: ResourceMetadataCustom
+  deleted?: boolean
+  contentType?: string
 }
 
 /**
@@ -1040,6 +1052,42 @@ export class FileSystemBackend implements StorageBackend {
           stats.policiesCreated++
         }
       }
+
+      // Carry tombstones: a soft-deleted Resource (see `deleteResource`) exports
+      // as a `.meta.` sidecar with no paired `r.` content file, so it never
+      // appears in `resources` above. Restore each such ORPHAN sidecar that is a
+      // tombstone (`deleted: true`) -- writing only the sidecar re-creates the
+      // tombstone. A non-tombstone orphan sidecar is anomalous (a Resource with
+      // no representation) and is skipped. Merge semantics match resources:
+      // anything the destination already has for that id (a live Resource or an
+      // existing tombstone) is left untouched.
+      const importedResourceIds = new Set(resources.map(r => r.resourceId))
+      for (const [resourceId, metadataBytes] of resourceMetadata) {
+        if (importedResourceIds.has(resourceId)) {
+          continue
+        }
+        let sidecar: MetaSidecar | undefined
+        try {
+          sidecar = JSON.parse(metadataBytes.toString('utf8'))
+        } catch {
+          continue
+        }
+        if (sidecar?.deleted !== true) {
+          continue
+        }
+        const exists =
+          Boolean(await this._findFile({ collectionDir, resourceId })) ||
+          Boolean(await this._readMetaSidecar({ collectionDir, resourceId }))
+        if (exists) {
+          stats.resourcesSkipped++
+          continue
+        }
+        await fs.promises.writeFile(
+          this._metaSidecarPath({ collectionDir, resourceId }),
+          metadataBytes
+        )
+        stats.resourcesCreated++
+      }
     }
 
     return stats
@@ -1761,12 +1809,22 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Deletes a given resource from storage. When `ifMatch` is supplied (the
-   * `conditional-writes` feature), the delete proceeds only if the Resource
-   * exists and its current `ETag` matches -- evaluated under the per-Resource
-   * write lock, atomically with the removal -- else `PreconditionFailedError`
-   * (412). Without `ifMatch` the delete is the prior unconditional, idempotent
-   * removal.
+   * Soft-deletes a Resource: drops its content representation but keeps the
+   * sidecar as a **tombstone** (`deleted: true`, a bumped `version` and
+   * `updatedAt`, the last-known `contentType` retained) so the change feed
+   * (replication) still surfaces it until clients catch up (spec
+   * `_spec/rxdb-sync-roadmap.md`; GC of tombstones is future work). With no
+   * content file left, the tombstone is invisible to every normal read path
+   * (`getResource` / `getResourceMetadata` / `listCollectionItems` all gate on
+   * the content file via `_findFile`, so they 404 / skip it), making soft delete
+   * transparent to the existing API.
+   *
+   * When `ifMatch` is supplied (the `conditional-writes` feature), the delete
+   * proceeds only if the Resource exists and its current `ETag` matches, else
+   * `PreconditionFailedError` (412). The whole read-modify-write runs under the
+   * per-Resource write lock so it serializes with concurrent writes. The delete
+   * is idempotent: an already-absent Resource (never created, or an existing
+   * tombstone) is a no-op, leaving any tombstone's change-feed entry stable.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -1786,7 +1844,7 @@ export class FileSystemBackend implements StorageBackend {
     ifMatch?: string
   }): Promise<void> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
-    const remove = async (): Promise<void> => {
+    const softDelete = async (): Promise<void> => {
       if (ifMatch !== undefined) {
         await this._assertWritePrecondition({
           collectionDir,
@@ -1795,31 +1853,51 @@ export class FileSystemBackend implements StorageBackend {
         })
       }
       // A Resource has a single current representation, so this normally matches
-      // one file. The sweep-all delete remains as defensive cleanup (idempotent,
-      // and would sweep up any stray prior-representation file); the segment-
-      // anchored match in `_resourceFilesFor` keeps a prefix id (e.g. `note` vs
-      // `notebook`) from being swept up too.
+      // one file. The segment-anchored match in `_resourceFilesFor` keeps a
+      // prefix id (e.g. `note` vs `notebook`) from being swept up too.
       const filesForResource = await this._resourceFilesFor({
         collectionDir,
         resourceId
       })
+      if (filesForResource.length === 0) {
+        // Already absent (never existed, or already a tombstone): idempotent
+        // no-op. Leaving an existing tombstone untouched keeps its change-feed
+        // entry (its `updatedAt` / `version`) stable.
+        return
+      }
+      // Capture the representation's last-known content-type from its filename
+      // before removing it: once the content file is gone the tombstone sidecar
+      // is the only record of it, and the change feed reports it.
+      const { contentType } = parseResourceFileName(
+        path.basename(filesForResource[0]!)
+      )
+      // Drop the content representation(s) but KEEP the sidecar as the tombstone.
       await Promise.all(filesForResource.map(filename => rm(filename)))
-      // The Metadata object is deleted together with the Resource (spec
-      // "Resource Metadata Data Model"); sweep its sidecar too.
-      await rm(this._metaSidecarPath({ collectionDir, resourceId }), {
-        force: true
+      // Bump `version` / `updatedAt` so the tombstone sorts after the Resource's
+      // prior state in the change feed, and continues the monotonic version (a
+      // later re-create reads this sidecar and keeps counting up). `custom` is
+      // dropped: the user Metadata goes with the deleted Resource.
+      const now = new Date().toISOString()
+      const prior = await this._readMetaSidecar({ collectionDir, resourceId })
+      await this._writeMetaSidecar({
+        collectionDir,
+        resourceId,
+        sidecar: {
+          createdAt: prior?.createdAt ?? now,
+          updatedAt: now,
+          version: (prior?.version ?? 0) + 1,
+          deleted: true,
+          contentType
+        }
       })
     }
-    // A conditional delete must serialize with concurrent writes (the
-    // check-then-remove is atomic under the lock); an unconditional delete is
-    // idempotent and needs no lock.
-    if (ifMatch !== undefined) {
-      return this._writeMutex.run(
-        this._resourceLockKey({ spaceId, collectionId, resourceId }),
-        remove
-      )
-    }
-    return remove()
+    // The soft delete is a read-modify-write on the sidecar, so it always
+    // serializes with concurrent writes under the per-Resource lock (not only
+    // for a conditional delete, as the old unconditional removal did).
+    return this._writeMutex.run(
+      this._resourceLockKey({ spaceId, collectionId, resourceId }),
+      softDelete
+    )
   }
 
   // Policies

@@ -267,9 +267,11 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
         continue
       }
 
-      // Metadata sidecar (`.meta.<resourceId>.json`): carried as raw bytes and
-      // written alongside a newly-created resource (preserving its timestamps
-      // and user-writable `custom`).
+      // Metadata sidecar (`.meta.<resourceId>.json`): carried as raw bytes,
+      // keyed by resourceId. Written alongside a newly-created resource
+      // (preserving its timestamps and user-writable `custom`), or -- for a
+      // tombstone, whose content file is gone -- on its own as an orphan sidecar
+      // (see `importSpace`).
       const metaId = metaSidecarFileId(fileName)
       if (metaId !== undefined) {
         assertValidId(metaId, { kind: 'resource', requestName: 'Import Space' })
