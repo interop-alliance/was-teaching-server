@@ -30,8 +30,8 @@ importers:
         specifier: ^7.1.2
         version: 7.1.2(@interop/jsonld-signatures@11.8.1)
       '@interop/ed25519-verification-key':
-        specifier: ^8.0.0
-        version: 8.0.0
+        specifier: ^8.0.2
+        version: 8.0.2
       '@interop/http-digest-header':
         specifier: ^3.0.0
         version: 3.0.0
@@ -567,6 +567,15 @@ packages:
 
   '@interop/ed25519-verification-key@8.0.0':
     resolution: {integrity: sha512-19YKl1ghpuJ4iTD2RH+DViB9uCLVCW9u5cQ5vzhoPDU7TIAAv2Clpz1owJ4JPHKvP6e62jkiNADuUf6kNTRwyg==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      react-native-get-random-values: '>=1.8.0'
+    peerDependenciesMeta:
+      react-native-get-random-values:
+        optional: true
+
+  '@interop/ed25519-verification-key@8.0.2':
+    resolution: {integrity: sha512-80RBllTPPlLAWp5K+ZE7QJRoeGXZ8i861scWmoO0a0nFqwDPijm5BRuEpK5md/+NDpc9c6TQHfPZAZYyK24Ypg==}
     engines: {node: '>=20'}
     peerDependencies:
       react-native-get-random-values: '>=1.8.0'
@@ -3081,6 +3090,13 @@ snapshots:
   '@interop/ed25519-verification-key@8.0.0':
     dependencies:
       '@interop/data-integrity-core': 7.0.0
+      '@noble/ed25519': 3.1.0
+      '@noble/hashes': 2.2.0
+      '@scure/base': 2.2.0
+
+  '@interop/ed25519-verification-key@8.0.2':
+    dependencies:
+      '@interop/data-integrity-core': 8.1.0
       '@noble/ed25519': 3.1.0
       '@noble/hashes': 2.2.0
       '@scure/base': 2.2.0

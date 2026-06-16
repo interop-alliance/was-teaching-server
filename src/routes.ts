@@ -177,6 +177,13 @@ export async function initCollectionRoutes(
   // routing keeps this ahead of the `:resourceId` parameter in Resource routes).
   app.get('/space/:spaceId/:collectionId/quota', CollectionRequest.getQuota)
 
+  // Collection query (reserved segment; spec "Collection-level reserved
+  // endpoints"). The WAS server serves the replication change feed as the
+  // `changes` profile; params ride the signed
+  // POST body. Static-beats-parametric routing keeps this ahead of the
+  // `:resourceId` parameter in Resource routes.
+  app.post('/space/:spaceId/:collectionId/query', CollectionRequest.query)
+
   // Add Resource to a Collection
   app.post('/space/:spaceId/:collectionId', async (request, reply) =>
     reply.redirect('/space/:spaceId/:collectionId/')

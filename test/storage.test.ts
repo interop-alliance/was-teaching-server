@@ -6,7 +6,7 @@ import assert from 'node:assert'
 import os from 'node:os'
 import path from 'node:path'
 import { mkdtemp, mkdir, rm, readdir } from 'node:fs/promises'
-import type { Readable } from 'node:stream'
+import { Readable } from 'node:stream'
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
 import { FileSystemBackend, fileNameFor } from '../src/backends/filesystem.js'
@@ -337,7 +337,11 @@ describe('Storage API', () => {
         await backend.writeCollection({
           spaceId: src,
           collectionId,
-          collectionDescription: { id: collectionId, type: ['Collection'], name: 'Notes' }
+          collectionDescription: {
+            id: collectionId,
+            type: ['Collection'],
+            name: 'Notes'
+          }
         })
         // A live resource and a soft-deleted one (a tombstone), in the same
         // Collection.
@@ -345,15 +349,27 @@ describe('Storage API', () => {
           spaceId: src,
           collectionId,
           resourceId: 'live',
-          input: { kind: 'json', contentType: 'application/json', data: { v: 1 } }
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { v: 1 }
+          }
         })
         await backend.writeResource({
           spaceId: src,
           collectionId,
           resourceId: 'gone',
-          input: { kind: 'json', contentType: 'application/json', data: { v: 1 } }
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { v: 1 }
+          }
         })
-        await backend.deleteResource({ spaceId: src, collectionId, resourceId: 'gone' })
+        await backend.deleteResource({
+          spaceId: src,
+          collectionId,
+          resourceId: 'gone'
+        })
         const srcTombstone = await backend._readMetaSidecar({
           collectionDir: path.join(tempDir, 'spaces', src, collectionId),
           resourceId: 'gone'
@@ -378,11 +394,19 @@ describe('Storage API', () => {
           collectionDir: dstCollectionDir,
           resourceId: 'gone'
         })
-        assert.deepEqual(dstTombstone, srcTombstone, 'tombstone sidecar carried verbatim')
+        assert.deepEqual(
+          dstTombstone,
+          srcTombstone,
+          'tombstone sidecar carried verbatim'
+        )
         const dstFiles = (await readdir(dstCollectionDir)).filter(name =>
           name.startsWith('r.gone.')
         )
-        assert.deepEqual(dstFiles, [], 'no content file for the carried tombstone')
+        assert.deepEqual(
+          dstFiles,
+          [],
+          'no content file for the carried tombstone'
+        )
 
         const listing = await backend.listCollectionItems({
           spaceId: dst,
@@ -512,7 +536,11 @@ describe('Storage API', () => {
       await backend.writeCollection({
         spaceId,
         collectionId,
-        collectionDescription: { id: collectionId, type: ['Collection'], name: 'Notes' }
+        collectionDescription: {
+          id: collectionId,
+          type: ['Collection'],
+          name: 'Notes'
+        }
       })
       await backend.writeResource({
         spaceId,
@@ -528,7 +556,11 @@ describe('Storage API', () => {
       const { backend, tempDir, spaceId, collectionId, collectionDir } =
         await provisionResource()
       try {
-        await backend.deleteResource({ spaceId, collectionId, resourceId: 'note' })
+        await backend.deleteResource({
+          spaceId,
+          collectionId,
+          resourceId: 'note'
+        })
 
         // No content representation remains, but the sidecar lingers.
         const entries = await readdir(collectionDir)
@@ -549,7 +581,11 @@ describe('Storage API', () => {
           resourceId: 'note'
         })
         assert.equal(sidecar?.deleted, true)
-        assert.equal(sidecar?.version, 2, 'version bumped from 1 to 2 on delete')
+        assert.equal(
+          sidecar?.version,
+          2,
+          'version bumped from 1 to 2 on delete'
+        )
         assert.equal(sidecar?.contentType, 'application/json')
       } finally {
         await rm(tempDir, { recursive: true, force: true })
@@ -557,9 +593,14 @@ describe('Storage API', () => {
     })
 
     it('is invisible to getResource / getResourceMetadata after deletion', async () => {
-      const { backend, tempDir, spaceId, collectionId } = await provisionResource()
+      const { backend, tempDir, spaceId, collectionId } =
+        await provisionResource()
       try {
-        await backend.deleteResource({ spaceId, collectionId, resourceId: 'note' })
+        await backend.deleteResource({
+          spaceId,
+          collectionId,
+          resourceId: 'note'
+        })
 
         await assert.rejects(
           backend.getResource({ spaceId, collectionId, resourceId: 'note' }),
@@ -572,7 +613,10 @@ describe('Storage API', () => {
         })
         assert.equal(meta, undefined, 'getResourceMetadata 404s on a tombstone')
 
-        const listing = await backend.listCollectionItems({ spaceId, collectionId })
+        const listing = await backend.listCollectionItems({
+          spaceId,
+          collectionId
+        })
         assert.deepEqual(listing.items, [], 'listing skips the tombstone')
         assert.equal(listing.totalItems, 0)
       } finally {
@@ -584,12 +628,20 @@ describe('Storage API', () => {
       const { backend, tempDir, spaceId, collectionId, collectionDir } =
         await provisionResource()
       try {
-        await backend.deleteResource({ spaceId, collectionId, resourceId: 'note' })
+        await backend.deleteResource({
+          spaceId,
+          collectionId,
+          resourceId: 'note'
+        })
         const { version } = await backend.writeResource({
           spaceId,
           collectionId,
           resourceId: 'note',
-          input: { kind: 'json', contentType: 'application/json', data: { v: 2 } }
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { v: 2 }
+          }
         })
         assert.equal(version, 3, 're-create continues 1 -> 2 (tombstone) -> 3')
 
@@ -599,14 +651,21 @@ describe('Storage API', () => {
           collectionId,
           resourceId: 'note'
         })
-        assert.deepEqual(JSON.parse(await streamToString(result.resourceStream)), {
-          v: 2
-        })
+        assert.deepEqual(
+          JSON.parse(await streamToString(result.resourceStream)),
+          {
+            v: 2
+          }
+        )
         const sidecar = await backend._readMetaSidecar({
           collectionDir,
           resourceId: 'note'
         })
-        assert.equal(sidecar?.deleted, undefined, 'tombstone flag cleared on revive')
+        assert.equal(
+          sidecar?.deleted,
+          undefined,
+          'tombstone flag cleared on revive'
+        )
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }
@@ -616,18 +675,259 @@ describe('Storage API', () => {
       const { backend, tempDir, spaceId, collectionId, collectionDir } =
         await provisionResource()
       try {
-        await backend.deleteResource({ spaceId, collectionId, resourceId: 'note' })
+        await backend.deleteResource({
+          spaceId,
+          collectionId,
+          resourceId: 'note'
+        })
         const first = await backend._readMetaSidecar({
           collectionDir,
           resourceId: 'note'
         })
-        await backend.deleteResource({ spaceId, collectionId, resourceId: 'note' })
+        await backend.deleteResource({
+          spaceId,
+          collectionId,
+          resourceId: 'note'
+        })
         const second = await backend._readMetaSidecar({
           collectionDir,
           resourceId: 'note'
         })
         assert.equal(second?.version, first?.version, 'version unchanged')
         assert.equal(second?.updatedAt, first?.updatedAt, 'updatedAt unchanged')
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+  })
+
+  describe('FileSystemBackend.changesSince()', () => {
+    /**
+     * Provisions an empty Space + Collection and returns the backend, temp dir,
+     * and ids. Each test writes its own Resources.
+     */
+    async function provisionCollection() {
+      const tempDir = await mkdtemp(path.join(os.tmpdir(), 'was-changes-'))
+      await mkdir(path.join(tempDir, 'spaces'))
+      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const spaceId = 'test-space'
+      const collectionId = 'notes'
+      await backend.writeSpace({
+        spaceId,
+        spaceDescription: {
+          id: spaceId,
+          type: ['Space'],
+          name: 'Changes Test Space',
+          controller: 'did:key:test-controller'
+        }
+      })
+      await backend.writeCollection({
+        spaceId,
+        collectionId,
+        collectionDescription: {
+          id: collectionId,
+          type: ['Collection'],
+          name: 'Notes'
+        }
+      })
+      return { backend, tempDir, spaceId, collectionId }
+    }
+
+    /** True if `documents` are non-decreasing by (updatedAt, resourceId). */
+    function isSorted(
+      documents: Array<{ resourceId: string; updatedAt: string }>
+    ): boolean {
+      for (let i = 1; i < documents.length; i++) {
+        const prev = documents[i - 1]!
+        const curr = documents[i]!
+        const ordered =
+          prev.updatedAt < curr.updatedAt ||
+          (prev.updatedAt === curr.updatedAt &&
+            prev.resourceId <= curr.resourceId)
+        if (!ordered) {
+          return false
+        }
+      }
+      return true
+    }
+
+    it('returns JSON documents with data + version, ordered, plus a checkpoint', async () => {
+      const { backend, tempDir, spaceId, collectionId } =
+        await provisionCollection()
+      try {
+        for (const id of ['b', 'a', 'c']) {
+          await backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId: id,
+            input: {
+              kind: 'json',
+              contentType: 'application/json',
+              data: { id }
+            }
+          })
+        }
+        const { documents, checkpoint } = await backend.changesSince({
+          spaceId,
+          collectionId,
+          limit: 10
+        })
+        assert.deepEqual(documents.map(doc => doc.resourceId).sort(), [
+          'a',
+          'b',
+          'c'
+        ])
+        assert.ok(
+          isSorted(documents),
+          'documents ordered by (updatedAt, resourceId)'
+        )
+        for (const doc of documents) {
+          assert.equal(doc.deleted, false)
+          assert.equal(doc.version, 1)
+          assert.deepEqual(doc.data, { id: doc.resourceId })
+        }
+        const lastDoc = documents[documents.length - 1]!
+        assert.deepEqual(checkpoint, {
+          id: lastDoc.resourceId,
+          updatedAt: lastDoc.updatedAt
+        })
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it('iterates by checkpoint: each page is newer, ending empty with a null checkpoint', async () => {
+      const { backend, tempDir, spaceId, collectionId } =
+        await provisionCollection()
+      try {
+        for (const id of ['a', 'b', 'c', 'd', 'e']) {
+          await backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId: id,
+            input: {
+              kind: 'json',
+              contentType: 'application/json',
+              data: { id }
+            }
+          })
+        }
+        const seen: string[] = []
+        let checkpoint: { id: string; updatedAt: string } | undefined
+        // Pull two at a time until a page comes back short (catch-up complete).
+        for (let guard = 0; guard < 10; guard++) {
+          const page = await backend.changesSince({
+            spaceId,
+            collectionId,
+            checkpoint,
+            limit: 2
+          })
+          seen.push(...page.documents.map(doc => doc.resourceId))
+          if (page.documents.length < 2) {
+            // Final short page: the next pull is empty with a null checkpoint.
+            const tail = await backend.changesSince({
+              spaceId,
+              collectionId,
+              checkpoint: page.checkpoint ?? undefined,
+              limit: 2
+            })
+            assert.deepEqual(tail.documents, [])
+            assert.equal(tail.checkpoint, null)
+            break
+          }
+          checkpoint = page.checkpoint ?? undefined
+        }
+        assert.deepEqual(
+          seen.sort(),
+          ['a', 'b', 'c', 'd', 'e'],
+          'every change seen once'
+        )
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it('surfaces tombstones with deleted:true and no data', async () => {
+      const { backend, tempDir, spaceId, collectionId } =
+        await provisionCollection()
+      try {
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'live',
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { v: 1 }
+          }
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'gone',
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { v: 1 }
+          }
+        })
+        await backend.deleteResource({
+          spaceId,
+          collectionId,
+          resourceId: 'gone'
+        })
+
+        const { documents } = await backend.changesSince({
+          spaceId,
+          collectionId,
+          limit: 10
+        })
+        const byId = new Map(documents.map(doc => [doc.resourceId, doc]))
+        assert.equal(byId.get('live')!.deleted, false)
+        assert.deepEqual(byId.get('live')!.data, { v: 1 })
+        const tombstone = byId.get('gone')!
+        assert.equal(tombstone.deleted, true)
+        assert.equal(tombstone.data, undefined, 'tombstone carries no data')
+        assert.equal(tombstone.version, 2, 'delete bumped the version')
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it('excludes binary (non-JSON) Resources from the feed', async () => {
+      const { backend, tempDir, spaceId, collectionId } =
+        await provisionCollection()
+      try {
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { v: 1 }
+          }
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'pic',
+          input: {
+            kind: 'binary',
+            contentType: 'image/png',
+            stream: Readable.from(Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+          }
+        })
+        const { documents } = await backend.changesSince({
+          spaceId,
+          collectionId,
+          limit: 10
+        })
+        assert.deepEqual(
+          documents.map(doc => doc.resourceId),
+          ['doc'],
+          'only the JSON document appears'
+        )
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }

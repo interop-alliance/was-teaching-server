@@ -226,6 +226,25 @@ export function quotaPath({
 }
 
 /**
+ * `/space/:spaceId/:collectionId/query` -- the reserved `query` endpoint for a
+ * Collection (spec "Collection-level reserved endpoints"). The WAS server serves
+ * the replication change feed as the `changes` profile of this endpoint.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @returns {string}
+ */
+export function queryPath({
+  spaceId,
+  collectionId
+}: {
+  spaceId: string
+  collectionId: string
+}): string {
+  return `${collectionPath({ spaceId, collectionId })}/query`
+}
+
+/**
  * The `linkset` discovery resource path for a Space (`spaceId`) or Collection
  * (`+ collectionId`).
  * @param options {object}

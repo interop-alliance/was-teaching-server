@@ -273,7 +273,7 @@ describe('Collections API', () => {
         managedBy: 'server',
         storageMode: ['document', 'blob'],
         persistence: 'durable',
-        features: ['conditional-writes']
+        features: ['conditional-writes', 'changes-query']
       })
     })
 
@@ -287,9 +287,13 @@ describe('Collections API', () => {
       })
       assert.equal(response.status, 200)
       // The filesystem backend implements the conditional-writes affordance
-      // (ETag / If-Match optimistic concurrency); it advertises that token.
+      // (ETag / If-Match optimistic concurrency) and the `changes-query`
+      // replication change feed; it advertises both tokens.
       assert.ok(Array.isArray(response.data.features))
-      assert.deepStrictEqual(response.data.features, ['conditional-writes'])
+      assert.deepStrictEqual(response.data.features, [
+        'conditional-writes',
+        'changes-query'
+      ])
     })
 
     it('GET :collectionId/backend on a missing collection yields 404', async () => {

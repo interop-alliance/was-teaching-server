@@ -2,25 +2,41 @@
 
 ## Unreleased - TBD
 
+### Added
+
+- **Replication change feed: the `changes` query profile.** The reserved
+  Collection query endpoint `POST /space/{id}/{cid}/query` now serves a
+  `changes` profile -- the basis for replicating a WAS Collection into a
+  local-first in-browser database such as RxDB. The signed JSON body carries
+  `{ profile: "changes", checkpoint?, limit? }`; the response is the
+  Collection's JSON documents and tombstones changed strictly after
+  `checkpoint`, in change order (`(updatedAt, resourceId)`), each as
+  `{ id, _deleted, updatedAt, version, data? }`, plus the next `checkpoint`
+  (`null` when nothing changed). A tombstone is surfaced as `_deleted: true`
+  with no `data`; binary (non-JSON) Resources are excluded. The default
+  filesystem backend advertises the new `changes-query` feature token; a backend
+  without the change feed (or any other profile) yields `unsupported-operation`
+  (501). The `StorageBackend` contract gains an optional `changesSince` method.
+
 ### Changed
 
 - **Resource deletes are now soft deletes (tombstones).** Deleting a Resource
   drops its content representation but keeps its metadata sidecar as a tombstone
   (`deleted: true`, a bumped `version` and `updatedAt`, the last-known
-  `contentType` retained), so the change feed (replication; see
-  `_spec/rxdb-sync-roadmap.md`) can surface the delete until clients catch up.
-  With no content file left, a tombstone is invisible to every normal read path
-  (`GET` / metadata / List Collection all 404 or skip it), so the change is
-  transparent to the existing API. Re-creating a deleted id continues its
-  monotonic `version`, and an export/import roundtrip carries tombstones across.
-  Garbage-collection of old tombstones is future work.
+  `contentType` retained), so the change feed (for replication) can surface the
+  delete until clients catch up. With no content file left, a tombstone is
+  invisible to every normal read path (`GET` / metadata / List Collection all
+  404 or skip it), so the change is transparent to the existing API. Re-creating
+  a deleted id continues its monotonic `version`, and an export/import roundtrip
+  carries tombstones across. Garbage-collection of old tombstones is future
+  work.
 
 ## 0.5.0 - 2026-06-15
 
 ### Added
 
 - **`GET /space/{id}/quotas?include=collections` opt-in.** The Space Quota
-  report now omits the  per-Collection `usageByCollection` breakdown by default
+  report now omits the per-Collection `usageByCollection` breakdown by default
   and includes it only when `?include=collections` is requested (spec "Quotas"),
   keeping the hot-path payload lean. Previously the breakdown was returned
   unconditionally because a query string broke ZCap `invocationTarget` matching;

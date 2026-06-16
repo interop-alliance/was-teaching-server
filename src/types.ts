@@ -331,6 +331,42 @@ export interface StorageBackend {
     custom: ResourceMetadataCustom
   }): Promise<boolean>
 
+  /**
+   * OPTIONAL replication change feed (the `changes` query profile.
+   * Returns the Collection's JSON-document
+   * Resources and tombstones changed strictly after `checkpoint`, in change
+   * order (`(updatedAt, resourceId)` ascending), capped at `limit` (a backend
+   * MAY clamp an oversized value to its own maximum). With no `checkpoint`, the
+   * feed starts from the beginning.
+   *
+   * Each document carries its monotonic `version` and `updatedAt`. A tombstone
+   * (soft-deleted Resource) is surfaced with `deleted: true` and no `data` so
+   * the delete replicates until clients catch up. Binary (non-JSON) Resources
+   * are excluded -- attachment replication is future work. The result's
+   * `checkpoint` is the `{ id, updatedAt }` of the last returned document (the
+   * keyset position a follow-up call resumes after), or `null` when nothing
+   * changed since `checkpoint`.
+   *
+   * OPTIONAL: a backend that omits this method does not serve the change feed,
+   * and the request layer returns `unsupported-operation` (501). The Space and
+   * Collection are guaranteed to exist by the request layer.
+   */
+  changesSince?(options: {
+    spaceId: string
+    collectionId: string
+    checkpoint?: { id: string; updatedAt: string }
+    limit: number
+  }): Promise<{
+    documents: Array<{
+      resourceId: string
+      version: number
+      updatedAt: string
+      deleted: boolean
+      data?: unknown
+    }>
+    checkpoint: { id: string; updatedAt: string } | null
+  }>
+
   // Access-control policy documents. The level is selected by which ids are
   // present: Space (`spaceId`), Collection (`+ collectionId`), or Resource
   // (`+ collectionId + resourceId`). Getters resolve falsy when absent.

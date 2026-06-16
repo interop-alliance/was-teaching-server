@@ -44,7 +44,7 @@ function policyFileId(fileName: string): string | undefined {
  * @param fileName {string}
  * @returns {string | undefined}
  */
-function metaSidecarFileId(fileName: string): string | undefined {
+export function metaSidecarFileId(fileName: string): string | undefined {
   return dotFileId(fileName, META_PREFIX)
 }
 

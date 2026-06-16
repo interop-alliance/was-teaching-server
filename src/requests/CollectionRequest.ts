@@ -20,7 +20,8 @@ import {
   resourcePath,
   linksetPath,
   backendPath,
-  quotaPath
+  quotaPath,
+  queryPath
 } from '../lib/paths.js'
 import { formatEtag } from '../lib/etag.js'
 import {
@@ -440,6 +441,120 @@ export class CollectionRequest {
 
     const usage = await storage.reportCollectionUsage({ spaceId, collectionId })
     return reply.status(200).type('application/json').send(usage)
+  }
+
+  /**
+   * POST /space/:spaceId/:collectionId/query
+   * The reserved Collection `query` endpoint (spec "Collection-level reserved
+   * endpoints"). This server serves a single profile, `changes` -- the
+   * replication change feed: the Collection's
+   * JSON documents and tombstones changed strictly after `checkpoint`, in change
+   * order, capped at `limit`. The query parameters ride the signed JSON POST body
+   * (covered by the `Digest`), so no `allowTargetQuery` is needed.
+   *
+   * A backend that does not serve the change feed (no `changesSince`), or a body
+   * naming any profile other than `changes`, yields `unsupported-operation`
+   * (501). Authorization is capability-or-policy, the same read semantics as List
+   * Collection: an under-authorized caller receives a 404.
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async query(
+    request: FastifyRequest<{
+      Params: { spaceId: string; collectionId: string }
+      Body: {
+        profile?: string
+        checkpoint?: { id?: unknown; updatedAt?: unknown }
+        limit?: unknown
+      }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId, collectionId },
+      body
+    } = request
+    const { storage } = request.server
+    const requestName = 'Collection Query'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId, collectionId }, { requestName })
+
+    // Authorize (capability-or-policy): readable by whoever may read the
+    // Collection (capability invocation, else the effective policy). The signed
+    // body is covered by the Digest, so the bare `/query` target authorizes it.
+    await fetchSpaceAndAuthorize({
+      request,
+      spaceId,
+      collectionId,
+      targetPath: queryPath({ spaceId, collectionId }),
+      requestName
+    })
+
+    // Fetch collection by id
+    const collectionDescription = await storage.getCollectionDescription({
+      spaceId,
+      collectionId
+    })
+    if (!collectionDescription) {
+      throw new CollectionNotFoundError({ requestName })
+    }
+
+    // This server serves only the `changes` profile; any other (or a backend
+    // without the change feed) is an unsupported operation (501).
+    if (body?.profile !== 'changes' || !storage.changesSince) {
+      throw new UnsupportedOperationError({ requestName })
+    }
+
+    // Parse the optional checkpoint: when present it must carry both string
+    // fields (a malformed one is a client error, 400). Absent = start of feed.
+    let checkpoint: { id: string; updatedAt: string } | undefined
+    if (body.checkpoint !== undefined) {
+      const { id, updatedAt } = body.checkpoint
+      if (typeof id !== 'string' || typeof updatedAt !== 'string') {
+        throw new InvalidRequestBodyError({
+          requestName,
+          detail: 'checkpoint must have string "id" and "updatedAt" fields.',
+          pointer: '#/checkpoint'
+        })
+      }
+      checkpoint = { id, updatedAt }
+    }
+
+    // Coerce `limit` (the requested batch size) to a positive integer, else
+    // default; the backend clamps an oversized value to its own maximum.
+    const DEFAULT_BATCH = 100
+    const parsedLimit = Number(body.limit)
+    const limit =
+      Number.isFinite(parsedLimit) && parsedLimit >= 1
+        ? parsedLimit
+        : DEFAULT_BATCH
+
+    const result = await storage.changesSince({
+      spaceId,
+      collectionId,
+      ...(checkpoint !== undefined && { checkpoint }),
+      limit
+    })
+
+    // Project the change feed to the wire shape: a tombstone's `deleted` becomes
+    // RxDB's `_deleted`, and the document body stays under `data` (kept out of
+    // the user JSON so arbitrary bodies -- not only objects -- round-trip). The
+    // RxDB browser adapter does the final reshape into RxDB documents.
+    const documents = result.documents.map(doc => ({
+      id: doc.resourceId,
+      _deleted: doc.deleted,
+      updatedAt: doc.updatedAt,
+      version: doc.version,
+      ...(doc.data !== undefined && { data: doc.data })
+    }))
+
+    return reply
+      .status(200)
+      .type('application/json')
+      .send(JSON.stringify({ documents, checkpoint: result.checkpoint }))
   }
 
   /**

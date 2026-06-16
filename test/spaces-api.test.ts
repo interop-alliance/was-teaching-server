@@ -590,7 +590,7 @@ describe('Spaces', () => {
       managedBy: 'server',
       storageMode: ['document', 'blob'],
       persistence: 'durable',
-      features: ['conditional-writes']
+      features: ['conditional-writes', 'changes-query']
     }
 
     it('[signed] GET /backends lists the default backend descriptor', async () => {
@@ -624,9 +624,13 @@ describe('Spaces', () => {
       })
       assert.equal(response.status, 200)
       // The filesystem backend implements the conditional-writes affordance
-      // (ETag / If-Match optimistic concurrency); it advertises that token.
+      // (ETag / If-Match optimistic concurrency) and the `changes-query`
+      // replication change feed; it advertises both tokens.
       assert.ok(Array.isArray(response.data[0].features))
-      assert.deepStrictEqual(response.data[0].features, ['conditional-writes'])
+      assert.deepStrictEqual(response.data[0].features, [
+        'conditional-writes',
+        'changes-query'
+      ])
     })
 
     it('anonymous GET /backends of a private space 404s (no leak)', async () => {

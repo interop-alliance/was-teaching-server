@@ -33,11 +33,16 @@ import {
   META_URL,
   QUOTA_NEAR_LIMIT_FRACTION
 } from '../config.default.js'
-import { extractTarEntries, buildImportPlan } from '../lib/importTar.js'
+import {
+  extractTarEntries,
+  buildImportPlan,
+  metaSidecarFileId
+} from '../lib/importTar.js'
 import { collectionPath, resourcePath } from '../lib/paths.js'
 import { encodeCursor, decodeCursor } from '../lib/cursor.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
 import { formatEtag } from '../lib/etag.js'
+import { isJson } from '../lib/isJson.js'
 import type {
   SpaceDescription,
   CollectionDescription,
@@ -71,6 +76,20 @@ const execFileAsync = promisify(execFile)
 const DEFAULT_PAGE_SIZE = 100
 const MAX_PAGE_SIZE = 1000
 
+/** Clamps a requested `limit` to `[1, MAX_PAGE_SIZE]`. */
+function clampPageSize(limit: number): number {
+  return Math.min(Math.max(Math.trunc(limit), 1), MAX_PAGE_SIZE)
+}
+
+/**
+ * Compares two strings in code-unit order (the order the `<` / `>` operators
+ * use), returning -1 / 0 / 1. Keyset pagination sorts and seeks with the same
+ * operator, so the comparator must agree with `>` -- `localeCompare` can not.
+ */
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
 /**
  * Silent logger used when no logger is injected into the backend, so the backend
  * stays quiet by default (e.g. in `defaultBackend()` before `createApp` wires
@@ -93,7 +112,7 @@ const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
  *
  * `deleted` marks a **tombstone**: a soft delete that drops the content
  * representation but keeps the sidecar so the change feed (replication) still
- * surfaces it (see `deleteResource` and `_spec/rxdb-sync-roadmap.md`). A
+ * surfaces it. A
  * tombstone has no `r.<id>...` content file, so it is invisible to every normal
  * read path (which gates on the content file via `_findFile`); only the
  * (future) change feed reads it. `contentType` records the representation's
@@ -260,7 +279,9 @@ export class FileSystemBackend implements StorageBackend {
       managedBy: 'server',
       storageMode: ['document', 'blob'],
       persistence: 'durable',
-      features: ['conditional-writes']
+      // `changes-query`: serves the `changes` profile of the reserved `query`
+      // endpoint -- the replication change feed (`changesSince`).
+      features: ['conditional-writes', 'changes-query']
     }
   }
 
@@ -1214,11 +1235,7 @@ export class FileSystemBackend implements StorageBackend {
       // the cursor seek (`resourceId > after`) uses, so the keyset is consistent
       // (localeCompare could disagree with the `>` operator and break paging).
       .sort((left, right) =>
-        left.resourceId < right.resourceId
-          ? -1
-          : left.resourceId > right.resourceId
-            ? 1
-            : 0
+        compareCodeUnits(left.resourceId, right.resourceId)
       )
 
     // The full count is free here (we enumerated the whole dir), so keep
@@ -1237,9 +1254,7 @@ export class FileSystemBackend implements StorageBackend {
 
     // Clamp `limit` to `[1, MAX_PAGE_SIZE]`, defaulting when absent.
     const pageSize =
-      limit === undefined
-        ? DEFAULT_PAGE_SIZE
-        : Math.min(Math.max(Math.trunc(limit), 1), MAX_PAGE_SIZE)
+      limit === undefined ? DEFAULT_PAGE_SIZE : clampPageSize(limit)
 
     // Take `pageSize + 1` from the seek point to detect a further page without a
     // second pass; the page is the first `pageSize`, and `hasMore` is whether we
@@ -1812,9 +1827,9 @@ export class FileSystemBackend implements StorageBackend {
    * Soft-deletes a Resource: drops its content representation but keeps the
    * sidecar as a **tombstone** (`deleted: true`, a bumped `version` and
    * `updatedAt`, the last-known `contentType` retained) so the change feed
-   * (replication) still surfaces it until clients catch up (spec
-   * `_spec/rxdb-sync-roadmap.md`; GC of tombstones is future work). With no
-   * content file left, the tombstone is invisible to every normal read path
+   * (replication) still surfaces it until clients catch up (GC of tombstones is
+   * future work). With no content file left, the tombstone is invisible to
+   * every normal read path
    * (`getResource` / `getResourceMetadata` / `listCollectionItems` all gate on
    * the content file via `_findFile`, so they 404 / skip it), making soft delete
    * transparent to the existing API.
@@ -1898,6 +1913,220 @@ export class FileSystemBackend implements StorageBackend {
       this._resourceLockKey({ spaceId, collectionId, resourceId }),
       softDelete
     )
+  }
+
+  /**
+   * Replication change feed (the `changes` query profile; see the
+   * `StorageBackend.changesSince` contract.
+   * Enumerates the Collection once, builds a lightweight descriptor for every
+   * JSON-document Resource (live) and JSON tombstone, orders them by
+   * `(updatedAt, resourceId)`, seeks strictly past `checkpoint`, takes a page of
+   * `limit`, and reads JSON bodies ONLY for that page. O(n) over the Collection
+   * per call (it must read every sidecar to order by `updatedAt`) -- acceptable
+   * for this teaching backend; an indexed backend would answer it from an
+   * `updatedAt` index.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param [options.checkpoint] {{ id: string, updatedAt: string }}   resume position
+   * @param options.limit {number}   page cap (clamped to the backend maximum)
+   * @returns {Promise<{ documents: Array<object>, checkpoint: object | null }>}
+   */
+  async changesSince({
+    spaceId,
+    collectionId,
+    checkpoint,
+    limit
+  }: {
+    spaceId: string
+    collectionId: string
+    checkpoint?: { id: string; updatedAt: string }
+    limit: number
+  }): Promise<{
+    documents: Array<{
+      resourceId: string
+      version: number
+      updatedAt: string
+      deleted: boolean
+      data?: unknown
+    }>
+    checkpoint: { id: string; updatedAt: string } | null
+  }> {
+    const collectionDir = this._collectionDir({ spaceId, collectionId })
+
+    let entries: fs.Dirent[] = []
+    try {
+      entries = await fs.promises.readdir(collectionDir, {
+        withFileTypes: true
+      })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw err
+      }
+    }
+
+    // Index the dir: live content files by id, and the set of ids that have a
+    // `.meta.` sidecar (a sidecar with no live file is a tombstone candidate).
+    const liveFileById = new Map<
+      string,
+      { fileName: string; contentType: string }
+    >()
+    const sidecarIds = new Set<string>()
+    for (const entry of entries) {
+      if (!entry.isFile()) {
+        continue
+      }
+      if (entry.name.startsWith('r.')) {
+        const { resourceId, contentType } = parseResourceFileName(entry.name)
+        liveFileById.set(resourceId, { fileName: entry.name, contentType })
+      } else {
+        const sidecarId = metaSidecarFileId(entry.name)
+        if (sidecarId !== undefined) {
+          sidecarIds.add(sidecarId)
+        }
+      }
+    }
+
+    // Build descriptors (no body reads yet): one per JSON-document Resource
+    // (live) or JSON tombstone. Binary Resources and anomalous orphan sidecars
+    // (sidecar present but not a tombstone) are excluded. Each sidecar read is
+    // an independent file read, so the whole pass runs in parallel. A live
+    // descriptor carries the `fileName` to read its body from; a tombstone has
+    // none -- the discriminated union ties that to `deleted`.
+    type Descriptor =
+      | {
+          resourceId: string
+          version: number
+          updatedAt: string
+          deleted: false
+          fileName: string
+        }
+      | {
+          resourceId: string
+          version: number
+          updatedAt: string
+          deleted: true
+        }
+    const liveDescriptors = [...liveFileById].map(
+      async ([resourceId, live]): Promise<Descriptor | undefined> => {
+        if (!isJson({ contentType: live.contentType })) {
+          return undefined
+        }
+        const sidecar = await this._readMetaSidecar({
+          collectionDir,
+          resourceId
+        })
+        // `updatedAt` / `version` come from the sidecar; fall back to the file's
+        // mtime for a legacy Resource written before sidecars existed.
+        let updatedAt = sidecar?.updatedAt
+        if (!updatedAt) {
+          try {
+            updatedAt = (
+              await fsStat(path.join(collectionDir, live.fileName))
+            ).mtime.toISOString()
+          } catch {
+            return undefined
+          }
+        }
+        return {
+          resourceId,
+          version: sidecar?.version ?? 0,
+          updatedAt,
+          deleted: false,
+          fileName: live.fileName
+        }
+      }
+    )
+    // A sidecar with no live file is a tombstone candidate; keep only the ones
+    // that are actually tombstones (`deleted: true`) and JSON.
+    const tombstoneDescriptors = [...sidecarIds]
+      .filter(resourceId => !liveFileById.has(resourceId))
+      .map(async (resourceId): Promise<Descriptor | undefined> => {
+        const sidecar = await this._readMetaSidecar({
+          collectionDir,
+          resourceId
+        })
+        if (
+          sidecar?.deleted !== true ||
+          !isJson({ contentType: sidecar.contentType })
+        ) {
+          return undefined
+        }
+        return {
+          resourceId,
+          version: sidecar.version ?? 0,
+          updatedAt: sidecar.updatedAt,
+          deleted: true
+        }
+      })
+    const descriptors = (
+      await Promise.all([...liveDescriptors, ...tombstoneDescriptors])
+    ).filter((desc): desc is Descriptor => desc !== undefined)
+
+    // Order by `(updatedAt, resourceId)` ascending -- the SAME total order the
+    // checkpoint seek uses (ISO-8601 `updatedAt` sorts chronologically as a
+    // string; `resourceId` breaks same-instant ties), so the keyset is stable.
+    descriptors.sort(
+      (left, right) =>
+        compareCodeUnits(left.updatedAt, right.updatedAt) ||
+        compareCodeUnits(left.resourceId, right.resourceId)
+    )
+
+    // Seek to the first descriptor strictly after the checkpoint's position.
+    let startIndex = 0
+    if (checkpoint !== undefined) {
+      const found = descriptors.findIndex(
+        desc =>
+          desc.updatedAt > checkpoint.updatedAt ||
+          (desc.updatedAt === checkpoint.updatedAt &&
+            desc.resourceId > checkpoint.id)
+      )
+      startIndex = found === -1 ? descriptors.length : found
+    }
+
+    const pageSize = clampPageSize(limit)
+    const pageDescriptors = descriptors.slice(startIndex, startIndex + pageSize)
+
+    // Read JSON bodies only for this page. A tombstone carries no `data` (the
+    // delete replicates on `deleted: true` alone).
+    const documents = await Promise.all(
+      pageDescriptors.map(async desc => {
+        if (desc.deleted) {
+          return {
+            resourceId: desc.resourceId,
+            version: desc.version,
+            updatedAt: desc.updatedAt,
+            deleted: true
+          }
+        }
+        let data: unknown
+        try {
+          data = JSON.parse(
+            await fs.promises.readFile(
+              path.join(collectionDir, desc.fileName),
+              'utf8'
+            )
+          )
+        } catch {
+          data = undefined
+        }
+        return {
+          resourceId: desc.resourceId,
+          version: desc.version,
+          updatedAt: desc.updatedAt,
+          deleted: false,
+          data
+        }
+      })
+    )
+
+    const last = documents[documents.length - 1]
+    return {
+      documents,
+      checkpoint: last
+        ? { id: last.resourceId, updatedAt: last.updatedAt }
+        : null
+    }
   }
 
   // Policies
