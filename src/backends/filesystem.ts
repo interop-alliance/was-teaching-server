@@ -2343,19 +2343,16 @@ export class FileSystemBackend implements StorageBackend {
       throw err
     }
     const backendFile = /^\.backend\.(.+)\.json$/
-    const records: StoredBackendRecord[] = []
-    for (const entry of entries) {
-      if (!entry.isFile() || !backendFile.test(entry.name)) {
-        continue
-      }
-      const metaStore = new MetadataJsonStore<StoredBackendRecord>({
-        file: path.join(spaceDir, entry.name)
-      })
-      const record = await metaStore.read()
-      if (record) {
-        records.push(record)
-      }
-    }
+    const reads = entries
+      .filter(entry => entry.isFile() && backendFile.test(entry.name))
+      .map(entry =>
+        new MetadataJsonStore<StoredBackendRecord>({
+          file: path.join(spaceDir, entry.name)
+        }).read()
+      )
+    const records = (await Promise.all(reads)).filter(
+      (record): record is StoredBackendRecord => Boolean(record)
+    )
     records.sort((a, b) => a.id.localeCompare(b.id))
     return records.map(sanitizeBackendRecord)
   }

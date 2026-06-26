@@ -169,21 +169,39 @@ export class ReservedIdError extends ProblemError {
 }
 
 /**
- * 409 — a Collection create/update names a `backend` id that is not in the
- * Space's backends-available list (spec `unsupported-backend`).
+ * 409 — a backend reference cannot be honored. Three occurrences, distinguished
+ * by `detail` / `pointer`: a Collection create/update names a `backend` id not in
+ * the Space's backends-available list (the default `#/backend` detail); a
+ * registration names a `provider` the server does not permit (the allowlist gate,
+ * `#/provider`); or a selected backend is registered but has no live adapter yet
+ * (the resolver's data-plane backstop). Spec `unsupported-backend`.
  * @param options {object}
- * @param options.backendId {string}   the unrecognized backend id
+ * @param options.backendId {string}   the unrecognized backend (or provider) id
+ * @param [options.detail] {string}   a specific explanation; defaults to the
+ *   backends-available message
+ * @param [options.pointer] {string}   RFC 6901 JSON Pointer to the offending
+ *   field; defaults to `#/backend`
  */
 export class UnsupportedBackendError extends ProblemError {
-  constructor({ backendId }: { backendId: string }) {
-    const detail = `Backend '${backendId}' is not in this Space's backends-available list.`
+  constructor({
+    backendId,
+    detail,
+    pointer = '#/backend'
+  }: {
+    backendId: string
+    detail?: string
+    pointer?: string
+  }) {
+    const resolvedDetail =
+      detail ??
+      `Backend '${backendId}' is not in this Space's backends-available list.`
     super({
       type: ProblemTypes.UNSUPPORTED_BACKEND,
       title:
         "Unsupported backend id, check the space's 'backends available' list.",
-      detail,
+      detail: resolvedDetail,
       statusCode: 409,
-      problems: [{ detail, pointer: '#/backend' }]
+      problems: [{ detail: resolvedDetail, pointer }]
     })
   }
 }

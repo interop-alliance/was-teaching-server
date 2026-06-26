@@ -5,6 +5,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { resolveResourceInput } from './resourceInput.js'
+import { resolveBackend } from '../lib/backendRegistry.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { resourcePath, metaPath } from '../lib/paths.js'
 import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
@@ -131,13 +132,20 @@ export class ResourceRequest {
     if (!collectionDescription) {
       throw new CollectionNotFoundError({ requestName })
     }
-    const input = await resolveResourceInput(request)
+    // Route resource bytes to the Collection's selected (data-plane) backend.
+    const dataBackend = await resolveBackend({
+      request,
+      spaceId,
+      collectionId,
+      collectionDescription
+    })
+    const input = await resolveResourceInput(request, dataBackend)
     // Surface any `If-Match` / `If-None-Match` write precondition to the storage
     // layer, which evaluates it atomically with the write (returning 412
     // `precondition-failed` on a mismatch -- rethrown unchanged below).
     let written: { version: number }
     try {
-      written = await storage.writeResource({
+      written = await dataBackend.writeResource({
         spaceId,
         collectionId,
         resourceId,
@@ -201,10 +209,17 @@ export class ResourceRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
+    // Read the bytes from the Collection's selected (data-plane) backend.
+    const dataBackend = await resolveBackend({
+      request,
+      spaceId,
+      collectionId,
+      collectionDescription
+    })
     const contentType = request.headers['content-type']
     let result
     try {
-      result = await storage.getResource({
+      result = await dataBackend.getResource({
         spaceId,
         collectionId,
         resourceId,
@@ -284,9 +299,16 @@ export class ResourceRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
+    // Read Metadata from the Collection's selected (data-plane) backend.
+    const dataBackend = await resolveBackend({
+      request,
+      spaceId,
+      collectionId,
+      collectionDescription
+    })
     let metadata
     try {
-      metadata = await storage.getResourceMetadata({
+      metadata = await dataBackend.getResourceMetadata({
         spaceId,
         collectionId,
         resourceId
@@ -363,9 +385,16 @@ export class ResourceRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
+    // Read Metadata from the Collection's selected (data-plane) backend.
+    const dataBackend = await resolveBackend({
+      request,
+      spaceId,
+      collectionId,
+      collectionDescription
+    })
     let metadata
     try {
-      metadata = await storage.getResourceMetadata({
+      metadata = await dataBackend.getResourceMetadata({
         spaceId,
         collectionId,
         resourceId
@@ -442,9 +471,16 @@ export class ResourceRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
+    // Write Metadata to the Collection's selected (data-plane) backend.
+    const dataBackend = await resolveBackend({
+      request,
+      spaceId,
+      collectionId,
+      collectionDescription
+    })
     let written
     try {
-      written = await storage.writeResourceMetadata({
+      written = await dataBackend.writeResourceMetadata({
         spaceId,
         collectionId,
         resourceId,
@@ -511,8 +547,15 @@ export class ResourceRequest {
     // storage layer atomically with the removal; a mismatch surfaces as 412
     // `precondition-failed` (rethrown unchanged below).
     const { ifMatch } = parseWritePreconditions(request.headers)
+    // Delete from the Collection's selected (data-plane) backend.
+    const dataBackend = await resolveBackend({
+      request,
+      spaceId,
+      collectionId,
+      collectionDescription
+    })
     try {
-      await storage.deleteResource({
+      await dataBackend.deleteResource({
         spaceId,
         collectionId,
         resourceId,

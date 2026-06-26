@@ -328,8 +328,9 @@ export class SpaceRequest {
     }
     // Validate (and default-fill) the selected backend against the Space's
     // backends-available: a bad shape is 400, an unknown id is 409.
-    const backend = assertSupportedBackend({
+    const backend = await assertSupportedBackend({
       storage,
+      spaceId,
       backend: body?.backend,
       requestName
     })

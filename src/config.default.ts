@@ -26,6 +26,15 @@ export const SPACE_DESCRIPTION_CACHE_TTL = 5_000 // milliseconds
 export const SPACE_DESCRIPTION_CACHE_MAX = 1_000
 
 /**
+ * Max number of resolved external-backend adapters held per provider-registry
+ * cache (see src/lib/backendRegistry.ts), LRU-bounded. One adapter instance is
+ * memoized per selected `{spaceId}/{backendId}` and reused across requests;
+ * record changes bust the entry explicitly (no TTL backstop is needed because
+ * the provider registry itself is fixed for an instance's lifetime).
+ */
+export const RESOLVED_BACKEND_CACHE_MAX = 1_000
+
+/**
  * Linkset relation URI for the access-control `policy` auxiliary resource
  * (RFC9264 linkset discovery; see src/policy.ts and the linkset handlers).
  */
@@ -111,6 +120,30 @@ export function parseMaxUploadBytes(
     )
   }
   return value
+}
+
+/**
+ * Parses the `WAS_ENABLED_BACKENDS` env value into the server-wide registration
+ * allowlist: the backend `provider` names a client may register (spec
+ * "Backends"). A comma-separated list (e.g. `gdrive,s3`); surrounding whitespace
+ * and empty entries are ignored. An unset or empty value returns `undefined`,
+ * meaning no allowlist is configured -- any provider may be registered (the
+ * permissive default, preserving prior behavior). When set, a registration whose
+ * `provider` is not listed is rejected with `unsupported-backend` (409).
+ * @param raw {string|undefined}   the raw env value
+ * @returns {string[]|undefined}   the allowed provider names, or `undefined`
+ */
+export function parseEnabledBackends(
+  raw: string | undefined
+): string[] | undefined {
+  if (raw === undefined) {
+    return undefined
+  }
+  const providers = raw
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(entry => entry.length > 0)
+  return providers.length > 0 ? providers : undefined
 }
 
 export const SPEC_URL =

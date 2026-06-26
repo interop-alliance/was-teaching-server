@@ -16,11 +16,13 @@ import { fetchSpaceAndVerify } from './spaceContext.js'
 import { assertValidIds } from '../lib/validateId.js'
 import {
   DEFAULT_BACKEND_ID,
+  assertProviderAllowed,
   assertValidBackendId,
   buildBackendRecord,
   parseBackendRegistration,
   sanitizeBackendRecord
 } from '../lib/backends.js'
+import { invalidateResolvedBackend } from '../lib/backendRegistry.js'
 import { backendsPath, registeredBackendPath } from '../lib/paths.js'
 import { InvalidRequestBodyError, IdConflictError } from '../errors.js'
 
@@ -51,6 +53,12 @@ export class BackendRequest {
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId }, { requestName })
     const registration = parseBackendRegistration(body, { requestName })
+    // Fail fast if the server's registration allowlist excludes this provider
+    // (permissive when no allowlist is configured).
+    assertProviderAllowed({
+      provider: registration.provider,
+      enabledProviders: request.server.enabledBackendProviders
+    })
     assertValidBackendId(registration.id, { requestName })
 
     // Verify (capability-only): registering a backend requires a valid
@@ -114,6 +122,12 @@ export class BackendRequest {
     assertValidIds({ spaceId }, { requestName })
     assertValidBackendId(backendId, { requestName })
     const registration = parseBackendRegistration(body, { requestName })
+    // Fail fast if the server's registration allowlist excludes this provider
+    // (permissive when no allowlist is configured).
+    assertProviderAllowed({
+      provider: registration.provider,
+      enabledProviders: request.server.enabledBackendProviders
+    })
 
     // The backend `id` is immutable: a body `id`, when present, must match the
     // URL id; and `default` is the reserved server backend id.
@@ -143,6 +157,13 @@ export class BackendRequest {
     const existing = await storage.getBackend({ spaceId, backendId })
     const record = buildBackendRecord(registration)
     await storage.writeBackend({ spaceId, backendId, record })
+    // Bust any memoized adapter so the next resolve rebuilds it from the new
+    // connection material.
+    invalidateResolvedBackend({
+      providers: request.server.backendProviders,
+      spaceId,
+      backendId
+    })
 
     if (existing) {
       return reply.status(204).send()
@@ -187,6 +208,12 @@ export class BackendRequest {
     })
 
     await storage.deleteBackend({ spaceId, backendId })
+    // Bust any memoized adapter for the now-removed record.
+    invalidateResolvedBackend({
+      providers: request.server.backendProviders,
+      spaceId,
+      backendId
+    })
     return reply.status(204).send()
   }
 }

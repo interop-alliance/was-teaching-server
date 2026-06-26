@@ -21,7 +21,7 @@ import {
   initSpacesRepositoryRoutes
 } from './routes.js'
 import { defaultBackend } from './storage.js'
-import type { StorageBackend } from './types.js'
+import type { StorageBackend, BackendProviderRegistry } from './types.js'
 import { SPEC_URL, SERVER_VERSION } from './config.default.js'
 
 // TODO: https://github.com/fastify/fastify-helmet
@@ -82,18 +82,27 @@ const contentTypeStrategy: ContentTypeConstraint = {
  * @param [options.maxUploadBytes] {number}   per-upload size cap in bytes (spec
  *   "Quotas", `maxUploadBytes`); applied only to the default backend (an
  *   injected `backend` carries its own). `undefined` means no per-upload cap.
+ * @param [options.providers] {BackendProviderRegistry}   the provider-adapter
+ *   registry the resolver uses to build a Collection's selected external
+ *   backend; defaults to an empty map (no external backend is operable).
+ * @param [options.enabledBackendProviders] {string[]}   the registration
+ *   allowlist of backend `provider` names; `undefined` means permissive.
  * @returns {import('fastify').FastifyInstance}
  */
 export function createApp({
   serverUrl,
   backend,
   storageLimitPerSpace,
-  maxUploadBytes
+  maxUploadBytes,
+  providers,
+  enabledBackendProviders
 }: {
   serverUrl?: string
   backend?: StorageBackend
   storageLimitPerSpace?: number
   maxUploadBytes?: number
+  providers?: BackendProviderRegistry
+  enabledBackendProviders?: string[]
 } = {}): FastifyInstance {
   // By default uses 'pino' logger
   const fastify = Fastify({
@@ -113,6 +122,15 @@ export function createApp({
     defaultBackend({ capacityBytes: storageLimitPerSpace, maxUploadBytes })
   storage.logger = fastify.log
   fastify.decorate('storage', storage)
+
+  // The provider-adapter registry the resolver (lib/backendRegistry.ts) consults
+  // to build a Collection's selected external backend. Injected (rather than a
+  // module-global mutable registry) so parallel test suites stay isolated -- the
+  // same rationale as the injected `storage`. Empty in production this stage.
+  fastify.decorate('backendProviders', providers ?? new Map())
+  // The optional registration allowlist (config `WAS_ENABLED_BACKENDS`);
+  // `undefined` = permissive (any provider may be registered).
+  fastify.decorate('enabledBackendProviders', enabledBackendProviders)
 
   // Disable CORS
   fastify.register(cors, {

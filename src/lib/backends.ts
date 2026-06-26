@@ -24,6 +24,12 @@ import { isUrlSafeSegment } from './validateId.js'
 /** The conventional id of the server-assigned default backend (spec). */
 export const DEFAULT_BACKEND_ID = 'default'
 
+// `listRegisteredBackends` (defined below, with the registration helpers) is the
+// single source of a Space's selectable backends -- the server `default` plus
+// its registered `external` records -- used by both the selection-validation
+// (`assertSupportedBackend`) and descriptor-resolution (`resolveBackendDescriptor`)
+// paths below.
+
 /** The public (secret-free) subset of a connection a sanitized read may carry. */
 const PUBLIC_CONNECTION_FIELDS = [
   'account',
@@ -33,39 +39,33 @@ const PUBLIC_CONNECTION_FIELDS = [
 ] as const
 
 /**
- * The backends registered for a Space, as advertised at
- * `GET /space/:spaceId/backends`. Currently the single active backend.
- * @param storage {StorageBackend}   the request's storage backend
- * @returns {BackendDescriptor[]}
- */
-export function listAvailableBackends(
-  storage: StorageBackend
-): BackendDescriptor[] {
-  return [storage.describe()]
-}
-
-/**
  * Validates a client-supplied Collection `backend` value and returns the
  * normalized `{ id }` to persist. An absent value defaults to the server's
  * default backend. A present-but-malformed value (not an object, or no string
  * `id`) is `invalid-request-body` (400); a well-formed value whose `id` is not
- * in the Space's backends-available is `unsupported-backend` (409).
+ * in the Space's backends-available (the server `default` plus its registered
+ * `external` backends) is `unsupported-backend` (409). A registered `external`
+ * backend is now selectable here -- routing its data plane to the resolved
+ * adapter is the resolver's job (lib/backendRegistry.ts).
  *
  * @param options {object}
  * @param options.storage {StorageBackend}   the request's storage backend
+ * @param options.spaceId {string}   the Space whose backends-available is checked
  * @param [options.backend] {unknown}   the request body's `backend` value
  * @param [options.requestName] {string}   request name for the 400 error title
- * @returns {{ id: string }}   the normalized backend reference to store
+ * @returns {Promise<{ id: string }>}   the normalized backend reference to store
  */
-export function assertSupportedBackend({
+export async function assertSupportedBackend({
   storage,
+  spaceId,
   backend,
   requestName
 }: {
   storage: StorageBackend
+  spaceId: string
   backend?: unknown
   requestName?: string
-}): { id: string } {
+}): Promise<{ id: string }> {
   if (backend === undefined) {
     return { id: DEFAULT_BACKEND_ID }
   }
@@ -81,7 +81,8 @@ export function assertSupportedBackend({
     })
   }
   const { id } = backend as { id: string }
-  if (!listAvailableBackends(storage).some(available => available.id === id)) {
+  const available = await listRegisteredBackends({ storage, spaceId })
+  if (!available.some(entry => entry.id === id)) {
     throw new UnsupportedBackendError({ backendId: id })
   }
   return { id }
@@ -89,26 +90,29 @@ export function assertSupportedBackend({
 
 /**
  * Resolves a Collection's selected backend to its full descriptor, for the
- * `GET .../backend` ("Collection Backend Selected") response. A stored
- * description without a `backend` (created before the property existed)
- * defaults to the server's default backend.
+ * `GET .../backend` ("Collection Backend Selected") response, consulting the
+ * Space's backends-available (server `default` plus registered `external`
+ * records). A stored description without a `backend` (created before the property
+ * existed) defaults to the server's default backend.
  *
  * @param options {object}
  * @param options.storage {StorageBackend}   the request's storage backend
+ * @param options.spaceId {string}   the Space whose backends-available is checked
  * @param options.collectionDescription {CollectionDescription}
- * @returns {BackendDescriptor}
+ * @returns {Promise<BackendDescriptor>}
  */
-export function resolveBackendDescriptor({
+export async function resolveBackendDescriptor({
   storage,
+  spaceId,
   collectionDescription
 }: {
   storage: StorageBackend
+  spaceId: string
   collectionDescription: CollectionDescription
-}): BackendDescriptor {
+}): Promise<BackendDescriptor> {
   const id = collectionDescription.backend?.id ?? DEFAULT_BACKEND_ID
-  const descriptor = listAvailableBackends(storage).find(
-    available => available.id === id
-  )
+  const available = await listRegisteredBackends({ storage, spaceId })
+  const descriptor = available.find(entry => entry.id === id)
   // A stored backend id should always resolve (it was validated on write); fall
   // back to the default descriptor defensively rather than returning undefined.
   return descriptor ?? storage.describe()
@@ -116,11 +120,12 @@ export function resolveBackendDescriptor({
 
 // --- External backend registration (spec "Backends") ---
 //
-// NOTE: a registered `external` backend is *listed* (below) but not yet
-// *selectable* as a Collection's `backend`. `assertSupportedBackend` /
-// `resolveBackendDescriptor` above are intentionally unchanged this increment,
-// so Collection create/select still resolves only `default`. The live provider
-// adapter that makes a registered backend selectable is future work.
+// A registered `external` backend is both listed (below) and now *selectable* as
+// a Collection's `backend` (`assertSupportedBackend` / `resolveBackendDescriptor`
+// above consult `listRegisteredBackends`). Routing the selected Collection's data
+// plane to the live provider adapter is the resolver's job
+// (lib/backendRegistry.ts); a selected backend with no registered provider
+// adapter fails closed there.
 
 /**
  * Projects a full (secret-bearing) `StoredBackendRecord` down to the sanitized
@@ -166,9 +171,8 @@ export function sanitizeBackendRecord(
 /**
  * The backends advertised at `GET /space/:spaceId/backends`: the server's
  * `default` backend first, followed by the Space's sanitized registered
- * `external` backends. (Distinct from `listAvailableBackends`, which lists only
- * the synchronous server default -- still used by the `default`-only Collection
- * backend-selection path.)
+ * `external` backends. Also the single source of a Space's selectable backends
+ * for `assertSupportedBackend` / `resolveBackendDescriptor`.
  * @param options {object}
  * @param options.storage {StorageBackend}
  * @param options.spaceId {string}
@@ -215,7 +219,10 @@ export function parseBackendRegistration(
       pointer: '#/id'
     })
   }
-  if (typeof candidate.provider !== 'string' || candidate.provider.length === 0) {
+  if (
+    typeof candidate.provider !== 'string' ||
+    candidate.provider.length === 0
+  ) {
     throw new InvalidRequestBodyError({
       requestName,
       detail: 'Backend registration requires a non-empty string "provider".',
@@ -254,6 +261,41 @@ export function parseBackendRegistration(
       features: candidate.features as string[]
     }),
     connection: connection as BackendRegistration['connection']
+  }
+}
+
+/**
+ * Enforces the optional server-wide registration allowlist (config
+ * `WAS_ENABLED_BACKENDS`): the set of backend `provider` names a client may
+ * register. An `undefined` allowlist is **permissive** -- any provider passes,
+ * preserving the prior behavior where any provider could be registered. When the
+ * allowlist is configured, a `provider` outside it is rejected with
+ * `unsupported-backend` (409) pointing at `#/provider`. This is the fail-fast
+ * registration gate; the resolver's data-plane factory check
+ * (lib/backendRegistry.ts) remains the backstop for a provider with no live
+ * adapter.
+ * @param options {object}
+ * @param options.provider {string}   the registration's `provider`
+ * @param [options.enabledProviders] {string[]}   the configured allowlist, or
+ *   `undefined` for permissive
+ * @returns {void}
+ */
+export function assertProviderAllowed({
+  provider,
+  enabledProviders
+}: {
+  provider: string
+  enabledProviders?: string[]
+}): void {
+  if (enabledProviders === undefined) {
+    return
+  }
+  if (!enabledProviders.includes(provider)) {
+    throw new UnsupportedBackendError({
+      backendId: provider,
+      detail: `Backend provider '${provider}' is not enabled on this server.`,
+      pointer: '#/provider'
+    })
   }
 }
 

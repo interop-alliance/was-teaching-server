@@ -15,6 +15,7 @@ import {
   resolveBackendDescriptor,
   DEFAULT_BACKEND_ID
 } from '../lib/backends.js'
+import { resolveBackend } from '../lib/backendRegistry.js'
 import {
   collectionPath,
   resourcePath,
@@ -88,9 +89,16 @@ export class CollectionRequest {
     let response: { id: string; 'content-type'?: string; url?: string }
     let written: { version: number }
 
-    const input = await resolveResourceInput(request)
+    // Route resource bytes to the Collection's selected (data-plane) backend.
+    const dataBackend = await resolveBackend({
+      request,
+      spaceId,
+      collectionId,
+      collectionDescription
+    })
+    const input = await resolveResourceInput(request, dataBackend)
     try {
-      written = await storage.writeResource({
+      written = await dataBackend.writeResource({
         spaceId,
         collectionId,
         resourceId,
@@ -165,8 +173,9 @@ export class CollectionRequest {
     // to the server default below.
     const suppliedBackend =
       body.backend !== undefined
-        ? assertSupportedBackend({
+        ? await assertSupportedBackend({
             storage,
+            spaceId,
             backend: body.backend,
             requestName
           })
@@ -379,7 +388,11 @@ export class CollectionRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
-    const backend = resolveBackendDescriptor({ storage, collectionDescription })
+    const backend = await resolveBackendDescriptor({
+      storage,
+      spaceId,
+      collectionDescription
+    })
     return reply.status(200).type('application/json').send(backend)
   }
 
@@ -433,13 +446,23 @@ export class CollectionRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
-    // A backend that cannot account per-Collection omits `reportCollectionUsage`;
-    // the spec sanctions a 501 there.
-    if (!storage.reportCollectionUsage) {
+    // Report against the Collection's selected (data-plane) backend. A backend
+    // that cannot account per-Collection omits `reportCollectionUsage`; the spec
+    // sanctions a 501 there.
+    const dataBackend = await resolveBackend({
+      request,
+      spaceId,
+      collectionId,
+      collectionDescription
+    })
+    if (!dataBackend.reportCollectionUsage) {
       throw new UnsupportedOperationError({ requestName })
     }
 
-    const usage = await storage.reportCollectionUsage({ spaceId, collectionId })
+    const usage = await dataBackend.reportCollectionUsage({
+      spaceId,
+      collectionId
+    })
     return reply.status(200).type('application/json').send(usage)
   }
 
@@ -502,9 +525,16 @@ export class CollectionRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
+    // Serve the change feed from the Collection's selected (data-plane) backend.
     // This server serves only the `changes` profile; any other (or a backend
     // without the change feed) is an unsupported operation (501).
-    if (body?.profile !== 'changes' || !storage.changesSince) {
+    const dataBackend = await resolveBackend({
+      request,
+      spaceId,
+      collectionId,
+      collectionDescription
+    })
+    if (body?.profile !== 'changes' || !dataBackend.changesSince) {
       throw new UnsupportedOperationError({ requestName })
     }
 
@@ -532,7 +562,7 @@ export class CollectionRequest {
         ? parsedLimit
         : DEFAULT_BATCH
 
-    const result = await storage.changesSince({
+    const result = await dataBackend.changesSince({
       spaceId,
       collectionId,
       ...(checkpoint !== undefined && { checkpoint }),
@@ -661,8 +691,15 @@ export class CollectionRequest {
     // `< 1` value is ignored so the backend applies its own default. `cursor` is
     // opaque and passed through verbatim -- the backend validates it and rejects
     // a malformed one with `invalid-cursor` (400).
+    // List from the Collection's selected (data-plane) backend.
+    const dataBackend = await resolveBackend({
+      request,
+      spaceId,
+      collectionId,
+      collectionDescription
+    })
     const parsedLimit = limit !== undefined ? Number(limit) : NaN
-    const collectionItems = await storage.listCollectionItems({
+    const collectionItems = await dataBackend.listCollectionItems({
       spaceId,
       collectionId,
       ...(Number.isFinite(parsedLimit) && parsedLimit >= 1

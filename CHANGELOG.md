@@ -4,6 +4,27 @@
 
 ### Added
 
+- **Per-Collection backend resolver (registered backends are now selectable).**
+  A Collection may now **select** a registered `external` backend as its
+  `backend`, and its **data plane** (resource bytes, metadata, listings, change
+  feed) is routed to that backend's adapter, while the server `default` backend
+  keeps the **control plane** (Space/Collection descriptions, policies, backend
+  registry records). A new resolver (`src/lib/backendRegistry.ts`) maps a
+  Collection's selected `backend.id` to a memoized `StorageBackend` adapter
+  built from an injected **provider registry** (`createApp({ providers })`); for
+  the `default` selection it short-circuits to the server backend, so existing
+  behavior is unchanged. The production provider registry ships **empty**, so a
+  Collection that selects an `external` backend with no registered provider
+  adapter fails closed with `unsupported-backend` (409) on its data-plane
+  operations until a provider is wired (stages 4-5: Google OAuth, Drive adapter,
+  at-rest secret encryption). Still provider-agnostic plumbing -- no Google
+  dependency.
+- **Backend registration allowlist (`WAS_ENABLED_BACKENDS`).** An operator may
+  restrict which backend `provider`s a wallet can register via a comma-separated
+  env list; a registration whose `provider` is not listed is rejected fast with
+  `unsupported-backend` (409). Unset means **permissive** (any provider may be
+  registered), preserving prior behavior.
+
 - **Backend registration write endpoints.** A wallet can now register an
   `external` ("Bring Your Own Storage") backend against a Space via
   `POST /space/{id}/backends`, replace it with
@@ -11,18 +32,19 @@
   `DELETE /space/{id}/backends/{backendId}`. Authorization is the Space
   controller's capability (capability-only, like Create Collection / Delete
   Space). The write body is secret-bearing (a generic `provider` + `connection`
-  envelope), but every response and the `GET /space/{id}/backends` listing return
-  a **sanitized** descriptor whose `connection` is reduced to public fields
-  (`kind` / `status` / ...) -- the secret connection material is reachable only
-  via the internal `getBackend` storage method. The `StorageBackend` contract
-  gains `writeBackend` / `getBackend` / `listBackends` / `deleteBackend`.
+  envelope), but every response and the `GET /space/{id}/backends` listing
+  return a **sanitized** descriptor whose `connection` is reduced to public
+  fields (`kind` / `status` / ...) -- the secret connection material is
+  reachable only via the internal `getBackend` storage method. The
+  `StorageBackend` contract gains `writeBackend` / `getBackend` / `listBackends`
+  / `deleteBackend`.
 
   This increment is provider-agnostic **plumbing**: a registered backend is
   listed but **not yet selectable** as a Collection's `backend` (Collection
   create/select still resolves only `default`), at-rest secret encryption is
   deferred, and registration records do **not** travel in a Space export (after
-  import the user re-registers). The live token exchange and provider adapter are
-  future work.
+  import the user re-registers). The live token exchange and provider adapter
+  are future work.
 
 ## 0.6.0 - 2026-06-15
 

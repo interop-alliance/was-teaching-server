@@ -195,11 +195,14 @@ describe('Space backend registration (/backends)', () => {
 
   it('POST without auth headers is unauthorized (401)', async () => {
     const spaceId = await freshSpace('Unauthenticated Space')
-    const response = await fetch(new URL(`/space/${spaceId}/backends`, serverUrl), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(sampleRegistration())
-    })
+    const response = await fetch(
+      new URL(`/space/${spaceId}/backends`, serverUrl),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(sampleRegistration())
+      }
+    )
     assert.equal(response.status, 401)
   })
 

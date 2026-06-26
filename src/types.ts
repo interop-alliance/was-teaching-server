@@ -169,6 +169,21 @@ export type StoredBackendRecord = BackendDescriptor & {
 }
 
 /**
+ * A backend-adapter factory: given a registered (secret-bearing)
+ * `StoredBackendRecord` and a logger, returns the live `StorageBackend` that
+ * speaks to that provider. The teaching server's adapter strategy is Layer 3
+ * (not spec), so this type is server-local. Keyed by `record.provider` in the
+ * `BackendProviderRegistry`.
+ */
+export type BackendProvider = (
+  record: StoredBackendRecord,
+  options: { logger: FastifyBaseLogger }
+) => StorageBackend
+
+/** The injected provider-adapter registry, keyed by `record.provider`. */
+export type BackendProviderRegistry = Map<string, BackendProvider>
+
+/**
  * The persistence contract a storage backend implements (currently
  * `FileSystemBackend`; the port is designed to admit additional adapters). The
  * active backend is injected into the Fastify instance via
@@ -432,6 +447,15 @@ declare module 'fastify' {
   interface FastifyInstance {
     serverUrl: string
     storage: StorageBackend
+    // The provider-adapter registry: maps a registered backend's `provider` to
+    // the factory that builds its live `StorageBackend` adapter. Read by the
+    // resolver (lib/backendRegistry.ts). Empty in production this stage (no real
+    // adapter yet); injected in tests. Set by `fastify.decorate` in server.ts.
+    backendProviders: BackendProviderRegistry
+    // The optional server-wide registration allowlist: the backend `provider`
+    // names a client may register (config `WAS_ENABLED_BACKENDS`). `undefined`
+    // means no allowlist -- any provider may be registered (permissive default).
+    enabledBackendProviders?: string[]
   }
   interface FastifyRequest {
     // Set by the `parseAuthHeaders` hook when auth headers are present. Absent

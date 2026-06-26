@@ -4,7 +4,11 @@
  */
 import type { FastifyInstance } from 'fastify'
 import { createApp } from './server.js'
-import { parseStorageLimit, parseMaxUploadBytes } from './config.default.js'
+import {
+  parseStorageLimit,
+  parseMaxUploadBytes,
+  parseEnabledBackends
+} from './config.default.js'
 
 /**
  * Reads SERVER_URL / PORT from env, builds the app via createApp(), and starts
@@ -19,7 +23,10 @@ export async function startServer(): Promise<void> {
       storageLimitPerSpace: parseStorageLimit(
         process.env.STORAGE_LIMIT_PER_SPACE
       ),
-      maxUploadBytes: parseMaxUploadBytes(process.env.MAX_UPLOAD_BYTES)
+      maxUploadBytes: parseMaxUploadBytes(process.env.MAX_UPLOAD_BYTES),
+      enabledBackendProviders: parseEnabledBackends(
+        process.env.WAS_ENABLED_BACKENDS
+      )
     })
     await fastify.listen({
       port: Number(process.env.PORT ?? 3002),

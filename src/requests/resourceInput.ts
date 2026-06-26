@@ -12,14 +12,20 @@ import {
   InvalidRequestBodyError,
   PayloadTooLargeError
 } from '../errors.js'
-import type { ResourceInput } from '../types.js'
+import type { ResourceInput, StorageBackend } from '../types.js'
 
 /**
  * @param request {import('fastify').FastifyRequest}
+ * @param [dataBackend] {StorageBackend}   the resolved data-plane backend the
+ *   write targets (the Collection's selected backend); its `maxUploadBytes` and
+ *   `describe().id` size and label the `payload-too-large` (413) for a multipart
+ *   upload. Defaults to the server `storage` backend, read lazily only on the
+ *   multipart path so non-multipart callers need not supply it.
  * @returns {Promise<ResourceInput>}
  */
 export async function resolveResourceInput(
-  request: FastifyRequest
+  request: FastifyRequest,
+  dataBackend?: StorageBackend
 ): Promise<ResourceInput> {
   const contentType = request.headers['content-type']
   if (!contentType) {
@@ -42,7 +48,7 @@ export async function resolveResourceInput(
     // bounded by the backend's `maxUploadBytes` (the multipart `fileSize` limit
     // set in `server.ts`): `toBuffer()` throws `FST_REQ_FILE_TOO_LARGE` at the
     // boundary, mapped here to `payload-too-large` (413).
-    const { storage } = request.server
+    const backend = dataBackend ?? request.server.storage
     let file: { mimetype: string; bytes: Buffer } | undefined
     for await (const part of request.parts()) {
       if (part.type !== 'file') {
@@ -59,8 +65,8 @@ export async function resolveResourceInput(
       } catch (err) {
         if ((err as { code?: string }).code === 'FST_REQ_FILE_TOO_LARGE') {
           throw new PayloadTooLargeError({
-            maxUploadBytes: storage.maxUploadBytes!,
-            backendId: storage.describe().id
+            maxUploadBytes: backend.maxUploadBytes!,
+            backendId: backend.describe().id
           })
         }
         throw err
