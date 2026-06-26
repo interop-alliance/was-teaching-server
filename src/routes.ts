@@ -10,6 +10,7 @@ import { handleError } from './errors.js'
 import { ResourceRequest } from './requests/ResourceRequest.js'
 import { CollectionRequest } from './requests/CollectionRequest.js'
 import { PolicyRequest } from './requests/PolicyRequest.js'
+import { BackendRequest } from './requests/BackendRequest.js'
 import {
   parseAuthHeaders,
   requireAuthHeadersOrPublicRead
@@ -108,9 +109,17 @@ export async function initSpaceRoutes(
   // keeps this ahead of the `:collectionId` parameter in the Collection routes).
   app.get('/space/:spaceId/backends', SpaceRequest.listBackends)
 
+  // Register / replace / deregister an `external` backend record. Static
+  // `backends` beats the parametric `:collectionId` / `:resourceId` of the
+  // Collection/Resource route groups, so these resolve correctly (the same
+  // mechanism that keeps the GET above and the singular `/backend` working).
+  app.post('/space/:spaceId/backends', BackendRequest.post)
+  app.put('/space/:spaceId/backends/:backendId', BackendRequest.put)
+  app.delete('/space/:spaceId/backends/:backendId', BackendRequest.delete)
+
   // Space Quota report (reserved segment; static-beats-parametric routing keeps
   // this ahead of the `:collectionId` parameter). The per-Collection breakdown
-  // (spec's `?include=collections`) is always included for now -- see the
+  // (spec's `?include=collections`) is opt-in via that query string -- see the
   // handler note on the ZCap query-string limitation.
   app.get('/space/:spaceId/quotas', SpaceRequest.quotas)
 

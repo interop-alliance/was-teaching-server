@@ -48,8 +48,8 @@ importers:
         specifier: ^9.4.0
         version: 9.4.0
       '@interop/storage-core':
-        specifier: ^0.2.3
-        version: 0.2.3
+        specifier: ^0.2.5
+        version: 0.2.5
       fastify:
         specifier: ^5.8.5
         version: 5.8.5
@@ -634,6 +634,10 @@ packages:
 
   '@interop/storage-core@0.2.3':
     resolution: {integrity: sha512-bDvel8oGHZ6xXccLKEwtJZJQc/Y+MsQ48T9h1X16Y+Y2DnSwa5fv2WRd2yZ8J8vhBg2Dni7ogyf1uGIu0db4gA==}
+    engines: {node: '>=22.0'}
+
+  '@interop/storage-core@0.2.5':
+    resolution: {integrity: sha512-sseHlvFfFVDx9oLx69gfkNV80tgTGs/1WjmPpZ1i1XnOK3NEfNPdSNQAJE3TV6iUl9bv6hJP6kSINg9Nq97YVQ==}
     engines: {node: '>=22.0'}
 
   '@interop/was-client@0.7.1':
@@ -3205,6 +3209,10 @@ snapshots:
       - react-native-get-random-values
 
   '@interop/storage-core@0.2.3':
+    dependencies:
+      '@interop/data-integrity-core': 8.1.0
+
+  '@interop/storage-core@0.2.5':
     dependencies:
       '@interop/data-integrity-core': 8.1.0
 

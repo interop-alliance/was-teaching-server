@@ -16,7 +16,7 @@ import { assertValidIds, assertValidId } from '../lib/validateId.js'
 import { assertValidController } from '../lib/validateDid.js'
 import {
   assertSupportedBackend,
-  listAvailableBackends
+  listRegisteredBackends
 } from '../lib/backends.js'
 import {
   spacePath,
@@ -588,7 +588,7 @@ export class SpaceRequest {
     return reply
       .status(200)
       .type('application/json')
-      .send(listAvailableBackends(storage))
+      .send(await listRegisteredBackends({ storage, spaceId }))
   }
 
   /**

@@ -49,6 +49,7 @@ import type {
   ResourceMetadata,
   ResourceMetadataCustom,
   BackendDescriptor,
+  BackendConnectionInput,
   BackendUsage,
   ImportStats,
   PolicyDocument
@@ -84,6 +85,9 @@ export type {
   ResourceMetadata,
   ResourceMetadataCustom,
   BackendDescriptor,
+  BackendConnectionPublic,
+  BackendConnectionInput,
+  BackendRegistration,
   BackendState,
   StorageLimit,
   CollectionUsage,
@@ -147,6 +151,21 @@ export interface ParsedZcap {
   invocation: string
   /** the raw `Digest` header value (absent on bodyless requests) */
   digest?: string
+}
+
+/**
+ * The full persisted record for a registered `external` backend (spec
+ * "Backends"). Secret-bearing -- its `connection` carries the write-side grant
+ * material -- so it is **never** serialized to a client: only the sanitized
+ * `BackendDescriptor` projection (`sanitizeBackendRecord` in `lib/backends.ts`)
+ * is. Held in usable (plaintext, this increment) form because the server is the
+ * token custodian; the read/write split is enforced by `getBackend` being the
+ * one storage method that returns this shape.
+ */
+export type StoredBackendRecord = BackendDescriptor & {
+  managedBy: 'external'
+  provider: string
+  connection: BackendConnectionInput
 }
 
 /**
@@ -386,6 +405,27 @@ export interface StorageBackend {
     collectionId?: string
     resourceId?: string
   }): Promise<void>
+
+  // Registered `external` backend records (spec "Backends"). The read/write
+  // asymmetry is the secret boundary: `getBackend` is the only method that
+  // returns the secret-bearing `StoredBackendRecord`; `listBackends` returns
+  // sanitized `BackendDescriptor`s. A registered backend is listed but not yet
+  // selectable as a Collection's `backend` this increment (the live adapter is
+  // future work).
+  writeBackend(options: {
+    spaceId: string
+    backendId: string
+    record: StoredBackendRecord
+  }): Promise<void>
+  /** The full (secret-bearing) record, or `undefined` when absent. Internal use. */
+  getBackend(options: {
+    spaceId: string
+    backendId: string
+  }): Promise<StoredBackendRecord | undefined>
+  /** The Space's registered external backends, **sanitized** (no secrets). */
+  listBackends(options: { spaceId: string }): Promise<BackendDescriptor[]>
+  /** Idempotent: no error when the record is absent. */
+  deleteBackend(options: { spaceId: string; backendId: string }): Promise<void>
 }
 
 declare module 'fastify' {

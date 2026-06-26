@@ -32,7 +32,7 @@
     "@interop/http-signature-zcap-verify": "^12.1.0",
     "@interop/lru-memoize": "^4.0.3",
     "@interop/security-document-loader": "^9.4.0",
-    "@interop/storage-core": "^0.2.3",
+    "@interop/storage-core": "^0.2.5",
     "fastify": "^5.8.5",
     "fs-json-store": "^8.0.1",
     "handlebars": "^4.7.9",

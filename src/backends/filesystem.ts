@@ -39,6 +39,7 @@ import {
   metaSidecarFileId
 } from '../lib/importTar.js'
 import { collectionPath, resourcePath } from '../lib/paths.js'
+import { sanitizeBackendRecord } from '../lib/backends.js'
 import { encodeCursor, decodeCursor } from '../lib/cursor.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
 import { formatEtag } from '../lib/etag.js'
@@ -60,7 +61,8 @@ import type {
   StorageLimit,
   CollectionUsage,
   Action,
-  StorageBackend
+  StorageBackend,
+  StoredBackendRecord
 } from '../types.js'
 
 const { Store: MetadataJsonStore } = jsonfs
@@ -267,12 +269,14 @@ export class FileSystemBackend implements StorageBackend {
    * (Client-side encryption is deliberately not a backend feature: encrypted
    * documents are opaque client-encrypted JSON this backend already stores
    * faithfully, with no server cooperation.)
-   * @returns {Required<BackendDescriptor>}
+   * @returns {Required<Omit<BackendDescriptor, 'provider' | 'connection'>>}
    */
-  describe(): Required<BackendDescriptor> {
+  describe(): Required<Omit<BackendDescriptor, 'provider' | 'connection'>> {
     // The wire type only REQUIRES `id`; this backend always populates every
-    // field, so its return is the stricter `Required<BackendDescriptor>` (which
-    // also lets `reportUsage` read a non-optional `managedBy` off `describe()`).
+    // field except the `external`-only `provider` / `connection` (the default
+    // backend is server-managed), so its return is the stricter
+    // `Required<Omit<..., 'provider' | 'connection'>>` (which also lets
+    // `reportUsage` read a non-optional `managedBy` off `describe()`).
     return {
       id: 'default',
       name: 'Server Filesystem',
@@ -848,9 +852,15 @@ export class FileSystemBackend implements StorageBackend {
     }
 
     const sourceSpaceDir = this._spaceDir(spaceId)
-    const spaceEntries = await fs.promises.readdir(sourceSpaceDir, {
-      withFileTypes: true
-    })
+    const spaceEntries = (
+      await fs.promises.readdir(sourceSpaceDir, { withFileTypes: true })
+    ).filter(
+      // Backend registration records (.backend.<id>.json) hold plaintext
+      // connection material and do NOT travel in a Space export; after import
+      // the user re-registers (re-runs consent + POST /backends). importSpace
+      // ignores unrecognized space-level files, so this is symmetric.
+      entry => !(entry.isFile() && entry.name.startsWith('.backend.'))
+    )
     spaceEntries.sort((a, b) => a.name.localeCompare(b.name))
 
     const collectionEntriesByDir: Record<string, typeof spaceEntries> = {}
@@ -2234,5 +2244,136 @@ export class FileSystemBackend implements StorageBackend {
     await rm(this._policyFile({ spaceId, collectionId, resourceId }), {
       force: true
     })
+  }
+
+  // Registered external backends (spec "Backends")
+
+  /**
+   * Builds the on-disk path for a registered backend record: a
+   * `.backend.<backendId>.json` dot-file in the Space dir (the same per-file
+   * convention as `.policy.` / `.space.`). One file per backend id.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.backendId {string}
+   * @returns {string}
+   */
+  _backendFile({
+    spaceId,
+    backendId
+  }: {
+    spaceId: string
+    backendId: string
+  }): string {
+    const filePath = path.join(
+      this._spaceDir(spaceId),
+      `.backend.${backendId}.json`
+    )
+    this._assertContained(filePath)
+    return filePath
+  }
+
+  /**
+   * Persists a full (secret-bearing) backend-registration record. Upsert.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.backendId {string}
+   * @param options.record {StoredBackendRecord}
+   * @returns {Promise<void>}
+   */
+  async writeBackend({
+    spaceId,
+    backendId,
+    record
+  }: {
+    spaceId: string
+    backendId: string
+    record: StoredBackendRecord
+  }): Promise<void> {
+    await this._ensureSpaceDir({ spaceId })
+    const metaStore = new MetadataJsonStore<StoredBackendRecord>({
+      file: this._backendFile({ spaceId, backendId })
+    })
+    await metaStore.write(record)
+  }
+
+  /**
+   * Reads the full (secret-bearing) record for one backend, for internal use
+   * (existence checks, the future provider adapter). Resolves `undefined` when
+   * absent. The only method that exposes secret connection material.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.backendId {string}
+   * @returns {Promise<StoredBackendRecord|undefined>}
+   */
+  async getBackend({
+    spaceId,
+    backendId
+  }: {
+    spaceId: string
+    backendId: string
+  }): Promise<StoredBackendRecord | undefined> {
+    const metaStore = new MetadataJsonStore<StoredBackendRecord>({
+      file: this._backendFile({ spaceId, backendId })
+    })
+    return await metaStore.read()
+  }
+
+  /**
+   * Enumerates the Space's registered backends and returns them **sanitized**
+   * (each mapped through `sanitizeBackendRecord`, so the secret connection
+   * material never reaches the listing), sorted by id. An absent Space dir
+   * reports no registered backends rather than throwing.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @returns {Promise<BackendDescriptor[]>}
+   */
+  async listBackends({
+    spaceId
+  }: {
+    spaceId: string
+  }): Promise<BackendDescriptor[]> {
+    const spaceDir = this._spaceDir(spaceId)
+    let entries
+    try {
+      entries = await fs.promises.readdir(spaceDir, { withFileTypes: true })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return []
+      }
+      throw err
+    }
+    const backendFile = /^\.backend\.(.+)\.json$/
+    const records: StoredBackendRecord[] = []
+    for (const entry of entries) {
+      if (!entry.isFile() || !backendFile.test(entry.name)) {
+        continue
+      }
+      const metaStore = new MetadataJsonStore<StoredBackendRecord>({
+        file: path.join(spaceDir, entry.name)
+      })
+      const record = await metaStore.read()
+      if (record) {
+        records.push(record)
+      }
+    }
+    records.sort((a, b) => a.id.localeCompare(b.id))
+    return records.map(sanitizeBackendRecord)
+  }
+
+  /**
+   * Removes a registered backend record. Idempotent (no error if absent).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.backendId {string}
+   * @returns {Promise<void>}
+   */
+  async deleteBackend({
+    spaceId,
+    backendId
+  }: {
+    spaceId: string
+    backendId: string
+  }): Promise<void> {
+    await rm(this._backendFile({ spaceId, backendId }), { force: true })
   }
 }

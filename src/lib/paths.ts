@@ -158,6 +158,26 @@ export function backendsPath({ spaceId }: { spaceId: string }): string {
 }
 
 /**
+ * `/space/:spaceId/backends/:backendId` -- a single registered `external`
+ * backend record (the `POST` `Location` target, and the `PUT`/`DELETE` member
+ * path). Distinct from {@link backendPath}, which is a Collection's *selected*
+ * backend resource.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.backendId {string}
+ * @returns {string}
+ */
+export function registeredBackendPath({
+  spaceId,
+  backendId
+}: {
+  spaceId: string
+  backendId: string
+}): string {
+  return `${backendsPath({ spaceId })}/${backendId}`
+}
+
+/**
  * `/space/:spaceId/quotas` -- the Space Quota report path (spec "Quotas").
  * @param options {object}
  * @param options.spaceId {string}

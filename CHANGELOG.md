@@ -1,5 +1,29 @@
 # History
 
+## Unreleased - TBD
+
+### Added
+
+- **Backend registration write endpoints.** A wallet can now register an
+  `external` ("Bring Your Own Storage") backend against a Space via
+  `POST /space/{id}/backends`, replace it with
+  `PUT /space/{id}/backends/{backendId}` (upsert), and deregister it with
+  `DELETE /space/{id}/backends/{backendId}`. Authorization is the Space
+  controller's capability (capability-only, like Create Collection / Delete
+  Space). The write body is secret-bearing (a generic `provider` + `connection`
+  envelope), but every response and the `GET /space/{id}/backends` listing return
+  a **sanitized** descriptor whose `connection` is reduced to public fields
+  (`kind` / `status` / ...) -- the secret connection material is reachable only
+  via the internal `getBackend` storage method. The `StorageBackend` contract
+  gains `writeBackend` / `getBackend` / `listBackends` / `deleteBackend`.
+
+  This increment is provider-agnostic **plumbing**: a registered backend is
+  listed but **not yet selectable** as a Collection's `backend` (Collection
+  create/select still resolves only `default`), at-rest secret encryption is
+  deferred, and registration records do **not** travel in a Space export (after
+  import the user re-registers). The live token exchange and provider adapter are
+  future work.
+
 ## 0.6.0 - 2026-06-15
 
 ### Added

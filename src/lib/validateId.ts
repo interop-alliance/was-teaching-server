@@ -24,6 +24,27 @@ export type IdKind = 'space' | 'collection' | 'resource'
 // both as a single path segment and inside a glob pattern.
 const ID_PATTERN = /^[A-Za-z0-9._~-]+$/
 
+/**
+ * Whether `id` is a single, URL-safe path segment: non-empty, not `.` / `..`,
+ * free of path separators, and made only of the RFC 3986 "unreserved" charset
+ * ({@link ID_PATTERN}). The shared safety predicate behind `assertValidId` (and
+ * `assertValidBackendId` in `lib/backends.ts`); does **not** check the reserved
+ * path-segment registry, which is id-kind specific.
+ * @param id {string}
+ * @returns {boolean}
+ */
+export function isUrlSafeSegment(id: string): boolean {
+  return (
+    typeof id === 'string' &&
+    id.length > 0 &&
+    id !== '.' &&
+    id !== '..' &&
+    !id.includes('/') &&
+    !id.includes('\\') &&
+    ID_PATTERN.test(id)
+  )
+}
+
 // Reserved path segments from the spec's Reserved Path Segment Registry (plus
 // the server's own non-spec `import` endpoint). A client-chosen Collection or
 // Resource id matching one of these would shadow the reserved route at that
@@ -64,16 +85,7 @@ export function assertValidId(
   id: string,
   { kind, requestName }: { kind: IdKind; requestName?: string }
 ): void {
-  const urlSafe =
-    typeof id === 'string' &&
-    id.length > 0 &&
-    id !== '.' &&
-    id !== '..' &&
-    !id.includes('/') &&
-    !id.includes('\\') &&
-    ID_PATTERN.test(id)
-
-  if (!urlSafe) {
+  if (!isUrlSafeSegment(id)) {
     switch (kind) {
       case 'collection':
         throw new InvalidCollectionIdError({ requestName })
