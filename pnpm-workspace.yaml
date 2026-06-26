@@ -1,7 +1,5 @@
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
-  - '@interop/ed25519-verification-key@8.0.2'
-  - '@interop/security-document-loader@9.4.0'
-  - '@interop/storage-core@0.2.3'
-  - '@interop/was-client@0.7.1'
+  - '@interop/ezcap@7.3.0'
+  - '@interop/http-signature-zcap-verify@12.1.0'

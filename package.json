@@ -29,7 +29,7 @@
     "@interop/ed25519-verification-key": "^8.0.2",
     "@interop/http-digest-header": "^3.0.0",
     "@interop/http-signature-header": "^5.0.2",
-    "@interop/http-signature-zcap-verify": "^12.0.4",
+    "@interop/http-signature-zcap-verify": "^12.1.0",
     "@interop/lru-memoize": "^4.0.3",
     "@interop/security-document-loader": "^9.4.0",
     "@interop/storage-core": "^0.2.3",
@@ -46,7 +46,7 @@
   "devDependencies": {
     "@digitalcredentials/bnid": "^5.0.0",
     "@eslint/js": "^10.0.1",
-    "@interop/ezcap": "^7.2.1",
+    "@interop/ezcap": "^7.3.0",
     "@interop/was-client": "^0.7.1",
     "@types/mime-types": "3.0.1",
     "@types/node": "^24.0.0",
