@@ -9,7 +9,8 @@ import { mkdtemp, mkdir, rm, readdir } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
-import { FileSystemBackend, fileNameFor } from '../src/backends/filesystem.js'
+import { FileSystemBackend } from '../src/backends/filesystem.js'
+import { fileNameFor } from '../src/lib/resourceFileName.js'
 
 /**
  * Consumes a readable stream into a single string (test helper).

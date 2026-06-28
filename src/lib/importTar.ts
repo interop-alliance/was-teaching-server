@@ -2,6 +2,7 @@ import * as tar from 'tar-stream'
 import YAML from 'yaml'
 import type { Readable } from 'node:stream'
 import { assertValidId } from './validateId.js'
+import { parseResourceFileName } from './resourceFileName.js'
 import { InvalidImportError } from '../errors.js'
 import type { CollectionDescription, PolicyDocument } from '../types.js'
 
@@ -292,7 +293,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       // (e.g. `index.html`) round-trips. The `fileName` is preserved verbatim
       // (the bytes are written under their stored name); only the parsed
       // `resourceId` -- used for dedup, sidecar, and policy keying -- is decoded.
-      const resourceId = decodeURIComponent(parts[1])
+      const { resourceId } = parseResourceFileName(fileName)
 
       // Reject a path-traversal / non-URL-safe resource id parsed from the
       // archive before its bytes are written to a destination path.
