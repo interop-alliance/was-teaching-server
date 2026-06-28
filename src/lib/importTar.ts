@@ -288,13 +288,22 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
         continue
       }
 
+      // Decode the dot-escaped id segment (see `fileNameFor`) so a dotted id
+      // (e.g. `index.html`) round-trips. The `fileName` is preserved verbatim
+      // (the bytes are written under their stored name); only the parsed
+      // `resourceId` -- used for dedup, sidecar, and policy keying -- is decoded.
+      const resourceId = decodeURIComponent(parts[1])
+
       // Reject a path-traversal / non-URL-safe resource id parsed from the
       // archive before its bytes are written to a destination path.
-      assertValidId(parts[1], { kind: 'resource', requestName: 'Import Space' })
+      assertValidId(resourceId, {
+        kind: 'resource',
+        requestName: 'Import Space'
+      })
 
       resources.push({
         fileName,
-        resourceId: parts[1],
+        resourceId,
         body: entry.body
       })
     }

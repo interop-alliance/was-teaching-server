@@ -58,6 +58,31 @@
   import the user re-registers). The live token exchange and provider adapter
   are future work.
 
+### Fixed
+
+- **Raw (non-multipart) binary blob writes now work for any content-type.** A
+  `PUT`/`POST` carrying a raw body of an arbitrary media type --
+  `application/octet-stream`, `application/jsonl`, `image/png`, etc. -- was
+  rejected with `415 Unsupported Media Type` before reaching the handler,
+  because Fastify ships content-type parsers only for `application/json` and
+  `text/plain`. A catch-all parser now passes any other media type through to
+  the handler as a raw byte stream (the `kind: 'binary'` storage path), so only
+  multipart uploads were possible before. More specific parsers (the built-in
+  JSON/text parsers, the `application/*+json` parser, `@fastify/multipart`, and
+  the `application/x-tar` import parser) still take precedence.
+- **Dotted resource ids (e.g. `index.html`, `photo.png`) no longer mis-parse.**
+  The on-disk filename `r.<id>.<encodedContentType>.<ext>` was split naively on
+  `.`, so an id containing a dot was read back under the wrong id and
+  content-type (and broke Collection-listing keysets). The id and content-type
+  filename segments are now dot-escaped (`%2E`) so the separators are
+  unambiguous; dot-free ids and types are byte-identical to before.
+- **`application/jsonl` (and `json5` / `json-seq`) are no longer mistaken for
+  JSON.** The `isJson` content-type test matched any media type merely
+  containing the substring `json`, routing JSON-Lines bodies through the JSON
+  path (corrupting them). The `json` token is now anchored to the end of the
+  media type, so only `application/json` and `application/<prefix>+json` are
+  treated as JSON.
+
 ## 0.6.0 - 2026-06-15
 
 ### Added

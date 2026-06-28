@@ -189,6 +189,22 @@ export function createApp({
     fastify.getDefaultJsonParser('error', 'error')
   )
 
+  // Catch-all parser for arbitrary binary representations. The spec ("Content
+  // Types and Representations") lets a Resource be any media type, so a raw
+  // (non-multipart) blob PUT/POST -- `application/octet-stream`,
+  // `application/jsonl`, images, etc. -- must reach the handler as a byte
+  // stream. Fastify only ships parsers for `application/json` and `text/plain`
+  // and would otherwise reject every other media type with a 415 before the
+  // route runs. This bare pass-through leaves `request.body` as the raw stream,
+  // which `resolveResourceInput` normalizes to a `kind: 'binary'` input that the
+  // backend streams straight to storage. More specific parsers still win over
+  // this fallback: the built-in JSON/text parsers, the `+json` regex above,
+  // `@fastify/multipart`'s `multipart/*`, and the `application/x-tar` import
+  // parser are all matched ahead of it.
+  fastify.addContentTypeParser('*', function (_request, payload, done) {
+    done(null, payload)
+  })
+
   // Add a human-readable 'Welcome' page
   fastify.get('/', async (request, reply) => {
     return reply.view('home', { title: 'Welcome', SPEC_URL, SERVER_VERSION })

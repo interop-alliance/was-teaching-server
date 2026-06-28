@@ -144,8 +144,26 @@ export function metaSidecarFileName(resourceId: string): string {
 }
 
 /**
+ * Percent-encodes a filename segment so it carries no literal `.`, the
+ * structural delimiter of `r.<resourceId>.<encodedContentType>.<ext>`.
+ * `encodeURIComponent` leaves `.` unescaped, so escape it explicitly to `%2E`;
+ * `decodeURIComponent` reverses both. This keeps resource ids and content-types
+ * that legitimately contain dots (e.g. `index.html`, `application/vnd.api+json`)
+ * unambiguously parseable -- without it, a dotted id mis-splits and is read back
+ * under the wrong id and content-type. For dot-free segments (the common case)
+ * the result is byte-identical to the previous `encodeURIComponent`-only scheme.
+ * @param segment {string}
+ * @returns {string}
+ */
+function encodeFilenameSegment(segment: string): string {
+  return encodeURIComponent(segment).replace(/\./g, '%2E')
+}
+
+/**
  * Builds the on-disk filename for a resource representation:
- * `r.<resourceId>.<encodedContentType>.<ext>`.
+ * `r.<resourceId>.<encodedContentType>.<ext>`. Both the `resourceId` and
+ * content-type segments are dot-escaped (see {@link encodeFilenameSegment}) so
+ * the three `.` separators are the only literal dots.
  * @param options {object}
  * @param options.resourceId {string}
  * @param options.contentType {string}
@@ -158,16 +176,18 @@ export function fileNameFor({
   resourceId: string
   contentType: string
 }): string {
-  const encodedType = encodeURIComponent(contentType)
+  const encodedId = encodeFilenameSegment(resourceId)
+  const encodedType = encodeFilenameSegment(contentType)
   const extension = mime.extension(contentType) || 'blob'
-  return `r.${resourceId}.${encodedType}.${extension}`
+  return `r.${encodedId}.${encodedType}.${extension}`
 }
 
 /**
  * Parses an on-disk resource filename (`r.<resourceId>.<encodedContentType>.<ext>`)
- * back into its components. Returns the exact stored content-type (decoded from
- * the filename segment, more reliable than `mime.lookup` on the extension),
- * falling back to the spec default `application/octet-stream` if unparseable.
+ * back into its components, reversing the dot-escaping {@link fileNameFor}
+ * applies. Returns the exact stored content-type (decoded from the filename
+ * segment, more reliable than `mime.lookup` on the extension), falling back to
+ * the spec default `application/octet-stream` if unparseable.
  * @param fileName {string}   the basename of the resource file
  * @returns {{ resourceId: string, contentType: string }}
  */
@@ -175,9 +195,9 @@ export function parseResourceFileName(fileName: string): {
   resourceId: string
   contentType: string
 } {
-  const [, resourceId, encodedType] = fileName.split('.')
+  const [, encodedId, encodedType] = fileName.split('.')
   return {
-    resourceId: resourceId!,
+    resourceId: encodedId ? decodeURIComponent(encodedId) : '',
     contentType: encodedType
       ? decodeURIComponent(encodedType)
       : 'application/octet-stream'
@@ -663,10 +683,11 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Lists every on-disk file belonging to a single Resource: the
-   * representation(s) whose name starts with `r.<resourceId>.` in the Collection
-   * dir. The trailing `.` anchors to the filename's segment boundary
-   * (`r.<resourceId>.<encodedType>.<ext>`) so a resourceId that is a prefix of
-   * another (e.g. `note` vs `notebook`) does not match the longer one. A Resource
+   * representation(s) whose name starts with `r.<encodedResourceId>.` in the
+   * Collection dir. The trailing `.` anchors to the filename's segment boundary
+   * (`r.<encodedResourceId>.<encodedType>.<ext>`) so a resourceId that is a
+   * prefix of another (e.g. `note` vs `notebook`) does not match the longer one;
+   * the id is dot-escaped to match the stored name (see `fileNameFor`). A Resource
    * normally has a single current representation, so this usually returns one
    * path; it returns more only transiently while a prior representation under a
    * different content-type is being pruned. An absent Collection dir resolves an
@@ -683,7 +704,7 @@ export class FileSystemBackend implements StorageBackend {
     collectionDir: string
     resourceId: string
   }): Promise<string[]> {
-    const prefix = `r.${resourceId}.`
+    const prefix = `r.${encodeFilenameSegment(resourceId)}.`
     let entries: fs.Dirent[]
     try {
       entries = await fs.promises.readdir(collectionDir, {

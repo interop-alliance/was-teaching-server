@@ -773,4 +773,65 @@ describe('Resource API', () => {
       assert.equal(gone, null)
     })
   })
+
+  describe('Binary / non-JSON content types (raw PUT)', () => {
+    it('[signed] PUT a raw application/octet-stream blob round-trips', async () => {
+      const bytes = new Uint8Array([0, 1, 2, 253, 254, 255])
+      await aliceCredentials.put(
+        'raw-octet',
+        new Blob([bytes], { type: 'application/octet-stream' })
+      )
+      const got = (await aliceCredentials.get('raw-octet')) as Blob
+      assert.deepEqual(new Uint8Array(await got.arrayBuffer()), bytes)
+      const meta = await aliceCredentials.resource('raw-octet').meta()
+      assert.equal(meta.contentType, 'application/octet-stream')
+      assert.equal(meta.size, bytes.length)
+    })
+
+    it('[signed] a binary resource under a dotted id preserves its id and content-type', async () => {
+      const bytes = new Uint8Array([10, 20, 30])
+      await aliceCredentials.put(
+        'photo.png',
+        new Blob([bytes], { type: 'image/png' })
+      )
+      const got = (await aliceCredentials.get('photo.png')) as Blob
+      assert.deepEqual(new Uint8Array(await got.arrayBuffer()), bytes)
+      const meta = await aliceCredentials.resource('photo.png').meta()
+      assert.equal(meta.contentType, 'image/png')
+
+      // The dotted id and its content-type must survive the on-disk filename
+      // round-trip (the keyset is parsed back from the filename).
+      const listing = await aliceCredentials.list()
+      const entry = listing.items.find(item => item.id === 'photo.png')
+      assert.ok(entry, 'dotted id should appear in the Collection listing')
+      assert.equal(entry!.contentType, 'image/png')
+    })
+
+    it('[signed] application/jsonl is stored as raw bytes, not parsed as JSON', async () => {
+      // A JSON-Lines body is several JSON values, not one -- it must NOT be
+      // routed through the JSON path (which would corrupt it).
+      const body = '{"a":1}\n{"a":2}\n'
+      const collection = await aliceSpace.createCollection({
+        id: 'jsonl-public',
+        name: 'Public JSONL'
+      })
+      await collection.put(
+        'data.jsonl',
+        new Blob([body], { type: 'application/jsonl' })
+      )
+      const meta = await collection.resource('data.jsonl').meta()
+      assert.equal(meta.contentType, 'application/jsonl')
+      assert.equal(meta.size, Buffer.byteLength(body))
+
+      // Read the raw bytes back via a public read + plain fetch (a signed read
+      // through the client would JSON-parse any "json"-bearing content-type).
+      await collection.setPublic()
+      const response = await fetch(
+        new URL(`/space/${alice.space1.id}/jsonl-public/data.jsonl`, serverUrl)
+      )
+      assert.equal(response.status, 200)
+      assert.match(response.headers.get('content-type')!, /application\/jsonl/)
+      assert.equal(await response.text(), body)
+    })
+  })
 })
