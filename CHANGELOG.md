@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Collection client-side encryption marker (spec "Encrypted Collections").** A
+  Collection may now carry a non-secret `encryption` marker (e.g.
+  `{ "scheme": "edv" }`) declaring its Resources client-side encrypted. The
+  server stores it opaquely (it never decrypts), validates only its shape
+  (`invalid-request-body` 400 on a malformed marker), and enforces **set-once**
+  immutability: declaring a marker on a Collection that lacks one is allowed,
+  but changing its `scheme` or clearing it on an existing Collection is rejected
+  with the new `encryption-immutable` (409) error. Accepted on Create Collection
+  (`POST`) and Update Collection (`PUT`) and echoed in the Collection
+  Description, so any authorized reader -- including a delegated consumer -- can
+  discover it. New helper `src/lib/encryption.ts` (mirrors the `backend`
+  validate/resolve pattern).
 - **Per-Collection backend resolver (registered backends are now selectable).**
   A Collection may now **select** a registered `external` backend as its
   `backend`, and its **data plane** (resource bytes, metadata, listings, change
@@ -585,9 +597,7 @@
   built by `buildZcapClients()` now carry a high-level `was` client alongside
   the raw `rootClient`, a new `wasClient({ signer })` helper mirrors
   `zcapClient({ signer })`, and `createSpace()`'s ZCap path goes through
-  `WasClient.request()`. The exported helper surface is unchanged. (Requires the
-  unpublished `@interop/was-client` dependency to be added once it ships to
-  npm.)
+  `WasClient.request()`. The exported helper surface is unchanged.
 
 ### Security
 

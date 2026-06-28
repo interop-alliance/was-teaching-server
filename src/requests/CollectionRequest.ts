@@ -15,6 +15,10 @@ import {
   resolveBackendDescriptor,
   DEFAULT_BACKEND_ID
 } from '../lib/backends.js'
+import {
+  assertSupportedEncryption,
+  assertEncryptionTransition
+} from '../lib/encryption.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import {
   collectionPath,
@@ -140,7 +144,12 @@ export class CollectionRequest {
   static async put(
     request: FastifyRequest<{
       Params: { spaceId: string; collectionId: string }
-      Body: { id?: string; name?: string; backend?: unknown }
+      Body: {
+        id?: string
+        name?: string
+        backend?: unknown
+        encryption?: unknown
+      }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
@@ -180,6 +189,15 @@ export class CollectionRequest {
             requestName
           })
         : undefined
+    // Validate the optional encryption marker (shape only); an absent
+    // `encryption` validates to `undefined` and leaves the existing marker
+    // untouched. The set-once immutability transition is enforced below, after
+    // the existing Collection is fetched (so an unauthorized caller cannot probe
+    // encryption state).
+    const suppliedEncryption = assertSupportedEncryption({
+      encryption: body.encryption,
+      requestName
+    })
 
     // Verify (capability-only): updating a Collection requires a valid
     // capability invocation; no access-control-policy fallback.
@@ -195,23 +213,39 @@ export class CollectionRequest {
       spaceId,
       collectionId
     })
-    // `name` and `backend` are optional. On update, only overwrite each when
-    // supplied (otherwise keep the existing value); on create, default `name` to
-    // the Collection id and `backend` to the server default (spec).
+    // The encryption marker is set-once: an update may declare one on a
+    // Collection that lacks it, but may not change/clear an existing one
+    // (`encryption-immutable` 409). Checked here, after verification.
+    if (suppliedEncryption !== undefined) {
+      assertEncryptionTransition({
+        existing: existingCollection?.encryption,
+        incoming: suppliedEncryption
+      })
+    }
+    // `name`, `backend`, and `encryption` are optional. On update, only
+    // overwrite each when supplied (otherwise keep the existing value); on
+    // create, default `name` to the Collection id and `backend` to the server
+    // default (spec).
     const collectionDescription = existingCollection
       ? // Existing: Update only the allowed fields
         {
           ...existingCollection,
           id: collectionId,
           ...(body.name !== undefined && { name: body.name }),
-          ...(suppliedBackend !== undefined && { backend: suppliedBackend })
+          ...(suppliedBackend !== undefined && { backend: suppliedBackend }),
+          ...(suppliedEncryption !== undefined && {
+            encryption: suppliedEncryption
+          })
         }
       : // New Collection
         {
           id: collectionId,
           type: ['Collection'],
           name: body.name ?? collectionId,
-          backend: suppliedBackend ?? { id: DEFAULT_BACKEND_ID }
+          backend: suppliedBackend ?? { id: DEFAULT_BACKEND_ID },
+          ...(suppliedEncryption !== undefined && {
+            encryption: suppliedEncryption
+          })
         }
 
     try {

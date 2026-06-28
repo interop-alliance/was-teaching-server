@@ -75,6 +75,7 @@ export type {
 export type {
   SpaceDescription,
   CollectionDescription,
+  CollectionEncryption,
   BackendReference,
   SpaceSummary,
   SpaceListing,

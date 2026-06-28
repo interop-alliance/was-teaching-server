@@ -1,7 +1,5 @@
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
-  - '@interop/ezcap@7.3.0'
-  - '@interop/http-signature-zcap-verify@12.1.0'
-  - '@interop/storage-core@0.2.5'
-  - '@interop/was-client@0.8.0'
+  - '@interop/storage-core@0.3.0'
+  - '@interop/was-client@0.9.0'

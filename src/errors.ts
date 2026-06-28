@@ -207,6 +207,29 @@ export class UnsupportedBackendError extends ProblemError {
 }
 
 /**
+ * 409 — a Collection update tried to change or clear an existing client-side
+ * `encryption` marker. The marker is set-once (spec): declaring it on a
+ * Collection that lacks one is allowed, but changing its scheme (or clearing
+ * it) on a populated Collection would corrupt the stored, client-encrypted
+ * Resources. Like the other state-conflict 409s (`id-conflict`,
+ * `unsupported-backend`), it is only observable by a caller already authorized
+ * to update the Collection -- it is checked after capability verification.
+ */
+export class EncryptionImmutableError extends ProblemError {
+  constructor() {
+    const detail =
+      "A Collection's 'encryption' marker is set-once and cannot be changed or cleared."
+    super({
+      type: ProblemTypes.ENCRYPTION_IMMUTABLE,
+      title: 'Collection encryption marker is immutable.',
+      detail,
+      statusCode: 409,
+      problems: [{ detail, pointer: '#/encryption' }]
+    })
+  }
+}
+
+/**
  * 412 — a conditional write's `If-Match` / `If-None-Match` precondition
  * evaluated false: the Resource's current `ETag` did not match, or a
  * create-if-absent (`If-None-Match: *`) target already exists. Header-driven

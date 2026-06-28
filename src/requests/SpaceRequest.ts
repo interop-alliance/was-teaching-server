@@ -18,6 +18,7 @@ import {
   assertSupportedBackend,
   listRegisteredBackends
 } from '../lib/backends.js'
+import { assertSupportedEncryption } from '../lib/encryption.js'
 import {
   spacePath,
   collectionPath,
@@ -310,7 +311,12 @@ export class SpaceRequest {
   static async post(
     request: FastifyRequest<{
       Params: { spaceId: string }
-      Body: { id?: string; name?: string; backend?: unknown }
+      Body: {
+        id?: string
+        name?: string
+        backend?: unknown
+        encryption?: unknown
+      }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
@@ -332,6 +338,12 @@ export class SpaceRequest {
       storage,
       spaceId,
       backend: body?.backend,
+      requestName
+    })
+    // Validate the optional client-side encryption marker (shape only; the
+    // server stores it opaquely and never decrypts). Absent => plaintext.
+    const encryption = assertSupportedEncryption({
+      encryption: body?.encryption,
       requestName
     })
 
@@ -366,7 +378,8 @@ export class SpaceRequest {
       id: collectionId,
       type: ['Collection'],
       name,
-      backend
+      backend,
+      ...(encryption !== undefined && { encryption })
     }
 
     await storage.writeCollection({
