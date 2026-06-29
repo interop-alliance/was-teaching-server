@@ -20,6 +20,7 @@ import {
   initSpaceRoutes,
   initSpacesRepositoryRoutes
 } from './routes.js'
+import { initCorsProxyRoutes as initApiCorsProxyRoutes } from './corsProxy.js'
 import { defaultBackend } from './storage.js'
 import type { StorageBackend, BackendProviderRegistry } from './types.js'
 import { SPEC_URL, SERVER_VERSION } from './config.default.js'
@@ -210,6 +211,7 @@ export function createApp({
     return reply.view('home', { title: 'Welcome', SPEC_URL, SERVER_VERSION })
   })
 
+  fastify.register(initApiCorsProxyRoutes)
   fastify.register(initSpacesRepositoryRoutes)
   fastify.register(initSpaceRoutes)
   fastify.register(initCollectionRoutes)
