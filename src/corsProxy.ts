@@ -9,6 +9,15 @@ interface CorsProxyQuery {
   url?: string
 }
 
+/**
+ * Registers a server-side CORS proxy at `/api/cors`.
+ *
+ * Example:
+ * `/api/cors?url=https%3A%2F%2Fregistry.dcconsortium.org%2F.well-known%2Fopenid-federation`
+ * 
+ * @param app - Fastify instance
+ * @param _options - Fastify plugin options
+ */
 export async function initCorsProxyRoutes(
   app: FastifyInstance,
   _options: FastifyPluginOptions
