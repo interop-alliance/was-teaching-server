@@ -1,6 +1,3 @@
-/**
- * CORS proxy route
- */
 import type { FastifyInstance, FastifyPluginOptions } from 'fastify'
 
 const PROXY_TIMEOUT_MS = 10_000
