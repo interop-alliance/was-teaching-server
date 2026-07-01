@@ -85,6 +85,7 @@ describe('Quotas API', () => {
     assert.equal(report.backends.length, 1)
 
     const [entry] = report.backends
+    assert.ok(entry)
     assert.equal(entry.id, 'default')
     assert.equal(entry.name, 'Server Filesystem')
     assert.equal(entry.managedBy, 'server')
@@ -112,6 +113,7 @@ describe('Quotas API', () => {
 
     const report = response.data as QuotaReportBody
     const [entry] = report.backends
+    assert.ok(entry)
     assert.ok(entry.usageByCollection, 'expected usageByCollection')
     const credentials = entry.usageByCollection!.find(
       collection => collection.id === collectionId

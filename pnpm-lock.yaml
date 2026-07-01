@@ -88,8 +88,8 @@ importers:
         specifier: ^7.3.2
         version: 7.3.2
       '@interop/was-client':
-        specifier: ^0.10.0
-        version: 0.10.0(@interop/jsonld-signatures@11.8.2)
+        specifier: ^0.11.0
+        version: 0.11.0(@interop/jsonld-signatures@11.8.2)
       '@types/mime-types':
         specifier: 3.0.1
         version: 3.0.1
@@ -628,16 +628,12 @@ packages:
     resolution: {integrity: sha512-AilGgeLYER/6SP9jxKp5wCT2SLP1YYhahsRFkCJT8gxf8WiaI53Vz8BpfKuIvwaYa+rIicT9wn/+nWUhc+jWMA==}
     engines: {node: '>=24.0'}
 
-  '@interop/storage-core@0.3.0':
-    resolution: {integrity: sha512-XTsLMRRPXoMDIbwwJM/Vx5m1iGn7RG0CJ3N6hX7xUR4bCuy+QcNfrQgsFQaPP3GYgb1vNdE/YI5lH7yp1KTT3w==}
-    engines: {node: '>=22.0'}
-
   '@interop/storage-core@0.3.1':
     resolution: {integrity: sha512-CFVIjqOQQP+LZ8+RS1zQpPhJH5D9zS9NHz5+UBXH7VEmdeXK3mvjYQScnqiwBv/r5ODZ7XqSfR84ihZVPND4Dw==}
     engines: {node: '>=22.0'}
 
-  '@interop/was-client@0.10.0':
-    resolution: {integrity: sha512-fFQg6QxK34V0QsIz6+SJ1DNL10JLvxvT1ZFpJTK8qvhjn3sIv2R1p9RSCFEmvFhX01/v0iSzZNuWux5FyqQq3A==}
+  '@interop/was-client@0.11.0':
+    resolution: {integrity: sha512-tc37r4m+doBThdaAL5XfgSCtRjHBi6xeyf/K2DOiW7cKkwtxFhqseviVsuwQn00Z3Jnnm9DN5YaN3ByF597n0g==}
     engines: {node: '>=24.0'}
 
   '@interop/zcap@11.0.4':
@@ -3191,22 +3187,18 @@ snapshots:
     transitivePeerDependencies:
       - react-native-get-random-values
 
-  '@interop/storage-core@0.3.0':
-    dependencies:
-      '@interop/data-integrity-core': 8.1.0
-
   '@interop/storage-core@0.3.1':
     dependencies:
       '@interop/data-integrity-core': 8.1.0
 
-  '@interop/was-client@0.10.0(@interop/jsonld-signatures@11.8.2)':
+  '@interop/was-client@0.11.0(@interop/jsonld-signatures@11.8.2)':
     dependencies:
       '@interop/data-integrity-core': 8.1.0
       '@interop/ed25519-signature': 7.1.3(@interop/jsonld-signatures@11.8.2)
       '@interop/edv-client': 17.3.1
       '@interop/ezcap': 7.3.2
       '@interop/http-client': 1.0.4
-      '@interop/storage-core': 0.3.0
+      '@interop/storage-core': 0.3.1
     transitivePeerDependencies:
       - '@interop/jsonld-signatures'
       - expo-crypto

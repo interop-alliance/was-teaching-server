@@ -784,8 +784,8 @@ describe('Resource API', () => {
       const got = (await aliceCredentials.get('raw-octet')) as Blob
       assert.deepEqual(new Uint8Array(await got.arrayBuffer()), bytes)
       const meta = await aliceCredentials.resource('raw-octet').meta()
-      assert.equal(meta.contentType, 'application/octet-stream')
-      assert.equal(meta.size, bytes.length)
+      assert.equal(meta!.contentType, 'application/octet-stream')
+      assert.equal(meta!.size, bytes.length)
     })
 
     it('[signed] a binary resource under a dotted id preserves its id and content-type', async () => {
@@ -797,12 +797,12 @@ describe('Resource API', () => {
       const got = (await aliceCredentials.get('photo.png')) as Blob
       assert.deepEqual(new Uint8Array(await got.arrayBuffer()), bytes)
       const meta = await aliceCredentials.resource('photo.png').meta()
-      assert.equal(meta.contentType, 'image/png')
+      assert.equal(meta!.contentType, 'image/png')
 
       // The dotted id and its content-type must survive the on-disk filename
       // round-trip (the keyset is parsed back from the filename).
       const listing = await aliceCredentials.list()
-      const entry = listing.items.find(item => item.id === 'photo.png')
+      const entry = listing!.items.find(item => item.id === 'photo.png')
       assert.ok(entry, 'dotted id should appear in the Collection listing')
       assert.equal(entry!.contentType, 'image/png')
     })
@@ -820,8 +820,8 @@ describe('Resource API', () => {
         new Blob([body], { type: 'application/jsonl' })
       )
       const meta = await collection.resource('data.jsonl').meta()
-      assert.equal(meta.contentType, 'application/jsonl')
-      assert.equal(meta.size, Buffer.byteLength(body))
+      assert.equal(meta!.contentType, 'application/jsonl')
+      assert.equal(meta!.size, Buffer.byteLength(body))
 
       // Read the raw bytes back via a public read + plain fetch (a signed read
       // through the client would JSON-parse any "json"-bearing content-type).

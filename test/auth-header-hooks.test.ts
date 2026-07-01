@@ -29,7 +29,7 @@ const VALID_AUTHORIZATION =
 
 /** Builds a mock FastifyRequest carrying the given headers and method. */
 function mockRequest(
-  headers: Record<string, string>,
+  headers: Record<string, string | undefined>,
   method = 'GET'
 ): FastifyRequest {
   return { headers, method } as unknown as FastifyRequest

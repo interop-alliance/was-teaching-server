@@ -11,6 +11,8 @@ import * as tar from 'tar-stream'
 import YAML from 'yaml'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { fileNameFor } from '../src/lib/resourceFileName.js'
+import { formatEtag } from '../src/lib/etag.js'
+import { PreconditionFailedError } from '../src/errors.js'
 
 /**
  * Consumes a readable stream into a single string (test helper).
@@ -933,6 +935,219 @@ describe('Storage API', () => {
         await rm(tempDir, { recursive: true, force: true })
       }
     })
+
+    it('replicates a metadata-only edit: bumped metaVersion + custom, unchanged version/data', async () => {
+      const { backend, tempDir, spaceId, collectionId } =
+        await provisionCollection()
+      try {
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { v: 1 }
+          }
+        })
+        // A metadata-only edit: content `version` stays 1, `metaVersion` starts
+        // at 1, and the edit re-surfaces the resource in the feed carrying
+        // `custom` with `data` unchanged.
+        const written = await backend.writeResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          custom: { name: 'labeled', tags: { s: 'draft' } }
+        })
+        assert.deepEqual(written, { metaVersion: 1 })
+
+        const meta = await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId: 'doc'
+        })
+        assert.equal(
+          meta!.version,
+          1,
+          'content version preserved by a meta write'
+        )
+        assert.equal(meta!.metaVersion, 1)
+
+        const { documents } = await backend.changesSince({
+          spaceId,
+          collectionId,
+          limit: 10
+        })
+        const doc = documents.find(entry => entry.resourceId === 'doc')!
+        assert.equal(doc.version, 1)
+        assert.equal(doc.metaVersion, 1)
+        assert.deepEqual(doc.data, { v: 1 })
+        assert.deepEqual(doc.custom, { name: 'labeled', tags: { s: 'draft' } })
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it('a content write preserves an existing metaVersion', async () => {
+      const { backend, tempDir, spaceId, collectionId } =
+        await provisionCollection()
+      try {
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { v: 1 }
+          }
+        })
+        await backend.writeResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          custom: { name: 'first' }
+        })
+        // A second content write bumps `version` but must not disturb metaVersion.
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { v: 2 }
+          }
+        })
+        const meta = await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId: 'doc'
+        })
+        assert.equal(meta!.version, 2, 'content version bumped')
+        assert.equal(
+          meta!.metaVersion,
+          1,
+          'metaVersion preserved by a content write'
+        )
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it('honors an If-Match / If-None-Match precondition on metaVersion', async () => {
+      const { backend, tempDir, spaceId, collectionId } =
+        await provisionCollection()
+      try {
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { v: 1 }
+          }
+        })
+        // If-None-Match: * succeeds on the first metadata write (none exists yet).
+        const first = await backend.writeResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          custom: { name: 'first' },
+          ifNoneMatch: true
+        })
+        assert.deepEqual(first, { metaVersion: 1 })
+        // A second If-None-Match: * now fails (metadata already exists).
+        await assert.rejects(
+          backend.writeResourceMetadata({
+            spaceId,
+            collectionId,
+            resourceId: 'doc',
+            custom: { name: 'again' },
+            ifNoneMatch: true
+          }),
+          PreconditionFailedError
+        )
+        // If-Match on the current metaVersion succeeds; a stale one fails.
+        await backend.writeResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          custom: { name: 'second' },
+          ifMatch: formatEtag(1)
+        })
+        await assert.rejects(
+          backend.writeResourceMetadata({
+            spaceId,
+            collectionId,
+            resourceId: 'doc',
+            custom: { name: 'third' },
+            ifMatch: formatEtag(1)
+          }),
+          PreconditionFailedError
+        )
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it('omits `name` from an encrypted-Collection listing, keeps it for plaintext', async () => {
+      const { backend, tempDir, spaceId } = await provisionCollection()
+      try {
+        // A plaintext Collection surfaces `custom.name`; an encrypted one omits it
+        // (its `custom` is an opaque envelope the server cannot project).
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'enc',
+          collectionDescription: {
+            id: 'enc',
+            type: ['Collection'],
+            name: 'Encrypted',
+            encryption: { scheme: 'edv' }
+          }
+        })
+        for (const collectionId of ['notes', 'enc']) {
+          await backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId: 'doc',
+            input: {
+              kind: 'json',
+              contentType: 'application/json',
+              data: { v: 1 }
+            }
+          })
+          await backend.writeResourceMetadata({
+            spaceId,
+            collectionId,
+            resourceId: 'doc',
+            // On the encrypted Collection this stands in for the opaque envelope
+            // (an object with no `name` the server could project anyway).
+            custom:
+              collectionId === 'enc'
+                ? { jwe: { protected: 'p', ciphertext: 'c' } }
+                : { name: 'Visible Name' }
+          })
+        }
+        const plain = await backend.listCollectionItems({
+          spaceId,
+          collectionId: 'notes'
+        })
+        const enc = await backend.listCollectionItems({
+          spaceId,
+          collectionId: 'enc'
+        })
+        assert.equal(plain.items[0]!.name, 'Visible Name')
+        assert.equal(
+          enc.items[0]!.name,
+          undefined,
+          'no name on encrypted listing'
+        )
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
   })
 
   describe('FileSystemBackend.reportUsage()', () => {
@@ -1003,7 +1218,7 @@ describe('Storage API', () => {
           detailed.usageByCollection!.map(collection => collection.id),
           [collectionId]
         )
-        assert.ok(detailed.usageByCollection![0].usageBytes > 0)
+        assert.ok(detailed.usageByCollection![0]!.usageBytes > 0)
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }

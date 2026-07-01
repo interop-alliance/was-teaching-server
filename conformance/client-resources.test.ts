@@ -115,8 +115,8 @@ describe('WasClient — Resources', () => {
       const handle = binaryCollection.resource('raw.bin')
       assert.deepStrictEqual(await handle.getBytes(), bytes)
       const meta = await handle.meta()
-      assert.equal(meta.contentType, 'application/octet-stream')
-      assert.equal(meta.size, bytes.length)
+      assert.equal(meta!.contentType, 'application/octet-stream')
+      assert.equal(meta!.size, bytes.length)
     })
 
     it('preserves a dotted resource id and its content-type in listings', async () => {
@@ -130,12 +130,12 @@ describe('WasClient — Resources', () => {
         bytes
       )
       assert.equal(
-        (await binaryCollection.resource('photo.png').meta()).contentType,
+        (await binaryCollection.resource('photo.png').meta())!.contentType,
         'image/png'
       )
 
       const listing = await binaryCollection.list()
-      const entry = listing.items.find(item => item.id === 'photo.png')
+      const entry = listing!.items.find(item => item.id === 'photo.png')
       assert.ok(entry, 'dotted id should appear in the listing')
       assert.equal(entry.contentType, 'image/png')
     })
@@ -155,8 +155,8 @@ describe('WasClient — Resources', () => {
       const handle = binaryCollection.resource('data.jsonl')
       assert.equal(await handle.getText(), body)
       const meta = await handle.meta()
-      assert.equal(meta.contentType, 'application/jsonl')
-      assert.equal(meta.size, new TextEncoder().encode(body).length)
+      assert.equal(meta!.contentType, 'application/jsonl')
+      assert.equal(meta!.size, new TextEncoder().encode(body).length)
 
       // get() returns a Blob (not a parsed object) for the json-substring type.
       const fetched = await binaryCollection.get('data.jsonl')

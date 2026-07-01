@@ -37,7 +37,7 @@ describe('Server', () => {
 
   it('should GET /health without authentication', async () => {
     const response = await fetch(serverUrl + '/health')
-    const body = await response.json()
+    const body = (await response.json()) as { status: string; version: string }
 
     assert.equal(response.status, 200)
     assert.match(

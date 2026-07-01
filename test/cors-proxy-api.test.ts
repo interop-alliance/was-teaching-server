@@ -17,7 +17,7 @@ describe('CORS proxy API', () => {
 
   it('fetches the target URL and passes through response details', async () => {
     const fetchMock = vi.fn(
-      async (_url: URL | RequestInfo, _options?: RequestInit) => {
+      async (_url: string | URL | Request, _options?: RequestInit) => {
         return new Response('{"ok":true}', {
           status: 203,
           headers: {

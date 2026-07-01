@@ -114,6 +114,21 @@ describe('Collection changes query profile', () => {
     assert.equal(tombstone.version, 2, 'delete bumped the version')
   })
 
+  it('carries metaVersion and custom so a metadata edit replicates', async () => {
+    const collection = await seedCollection('meta-feed', ['a'])
+    // A metadata-only edit: the resource re-surfaces in the feed carrying its
+    // `custom` and `metaVersion`, with `version`/`data` unchanged (Decision 6).
+    await collection.resource('a').setMeta({ custom: { name: 'labeled' } })
+
+    const { data } = await queryChanges(alice, 'meta-feed', { limit: 10 })
+    const doc = data.documents.find((entry: any) => entry.id === 'a')
+    assert.ok(doc, 'expected the edited resource in the feed')
+    assert.deepEqual(doc.custom, { name: 'labeled' })
+    assert.equal(typeof doc.metaVersion, 'number')
+    assert.equal(doc.version, 1, 'content version unchanged by a meta edit')
+    assert.deepEqual(doc.data, { n: 'a' })
+  })
+
   it('iterates by checkpoint, returning only newer changes', async () => {
     await seedCollection('iter', ['a', 'b', 'c', 'd', 'e'])
     const seen: string[] = []

@@ -89,7 +89,7 @@ describe('WasClient — Spaces & Collections', () => {
       assert.equal(listing.url, '/spaces/')
       assert.equal(listing.totalItems, listing.items.length)
       assert.deepStrictEqual(
-        listing.items.find(item => item.id === space.id),
+        listing.items.find((item: { id: string }) => item.id === space.id),
         { id: space.id, name: 'Listed Space', url: `/space/${space.id}` }
       )
     })

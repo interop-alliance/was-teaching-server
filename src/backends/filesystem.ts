@@ -116,6 +116,13 @@ const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
  * Resource written before versioning existed (a legacy sidecar), in which case
  * the backend treats the current version as 0.
  *
+ * `metaVersion` is the independent monotonic counter for the `/meta`
+ * sub-resource (spec V2 metadata versioning): it starts at 1 on first metadata
+ * write and increments on each subsequent one, backing the `/meta` ETag. It is
+ * kept separate from `version` so a metadata-only edit does not bump the content
+ * ETag (preserving the content-ETag contract), and is `undefined` until the
+ * first metadata write. A content write preserves it unchanged.
+ *
  * `deleted` marks a **tombstone**: a soft delete that drops the content
  * representation but keeps the sidecar so the change feed (replication) still
  * surfaces it. A
@@ -130,7 +137,11 @@ interface MetaSidecar {
   createdAt: string
   updatedAt: string
   version?: number
-  custom?: ResourceMetadataCustom
+  metaVersion?: number
+  // On a plaintext Collection `custom` is `{ name, tags }`; on an encrypted
+  // Collection it is the opaque encryption envelope (an arbitrary JSON object),
+  // stored verbatim -- the server never decrypts it.
+  custom?: ResourceMetadataCustom | Record<string, unknown>
   deleted?: boolean
   contentType?: string
 }
@@ -1241,14 +1252,21 @@ export class FileSystemBackend implements StorageBackend {
     // Read `.meta` sidecars ONLY for the items on this page (the previous
     // implementation read a sidecar for every resource on every list). Surface
     // the user-writable `custom.name` (spec: updating it updates the name shown
-    // in Collection listings).
+    // in Collection listings) -- but only for a plaintext Collection. On an
+    // encrypted Collection `custom` is the opaque encryption envelope, so the
+    // server cannot project a `name`; the listing omits it (spec "List
+    // Collection", encrypted-Collection note). (A bare `custom?.name` on a JWE
+    // envelope already yields `undefined`; the guard makes that explicit.)
+    const encrypted = collectionDescription?.encryption !== undefined
     const items = await Promise.all(
       pageEntries.map(async ({ resourceId, contentType }) => {
         const sidecar = await this._readMetaSidecar({
           collectionDir,
           resourceId
         })
-        const name = sidecar?.custom?.name
+        const name = encrypted
+          ? undefined
+          : (sidecar?.custom as ResourceMetadataCustom | undefined)?.name
         return {
           id: resourceId,
           url: resourcePath({ spaceId, collectionId, resourceId }),
@@ -1473,7 +1491,8 @@ export class FileSystemBackend implements StorageBackend {
     // Maintain the server-managed timestamps and the monotonic `version`: a
     // content write sets `createdAt` on first write, bumps `updatedAt`, and
     // increments `version` (the ETag validator) from its prior value, preserving
-    // any user-writable `custom` already stored in the sidecar.
+    // any user-writable `custom` and the independent `metaVersion` already stored
+    // in the sidecar (a content write does not touch the metadata sub-resource).
     const now = new Date().toISOString()
     const prior = await this._readMetaSidecar({ collectionDir, resourceId })
     const version = (prior?.version ?? 0) + 1
@@ -1484,6 +1503,9 @@ export class FileSystemBackend implements StorageBackend {
         createdAt: prior?.createdAt ?? now,
         updatedAt: now,
         version,
+        ...(prior?.metaVersion !== undefined && {
+          metaVersion: prior.metaVersion
+        }),
         ...(prior?.custom && { custom: prior.custom })
       }
     })
@@ -1692,16 +1714,18 @@ export class FileSystemBackend implements StorageBackend {
    * times and `custom` is omitted. Resolves `undefined` when the Resource is
    * absent (including a delete race on `stat`).
    *
-   * Also surfaces the Resource's `version` (the ETag validator) when one is
-   * recorded in its sidecar, so the request layer can set the `ETag` header on
-   * the metadata / HEAD responses. `version` is an out-of-band field the request
-   * layer reads for the header; it is not part of the Resource Metadata wire
+   * Also surfaces the Resource's content `version` and its `metaVersion` (the
+   * two ETag validators) when recorded in the sidecar, so the request layer can
+   * set the `ETag` header: HEAD / the resource itself use the content `version`,
+   * while `GET /meta` uses `metaVersion`. Both are out-of-band fields the request
+   * layer reads for the header; neither is part of the Resource Metadata wire
    * body.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
-   * @returns {Promise<(ResourceMetadata & { version?: number }) | undefined>}
+   * @returns {Promise<(ResourceMetadata & { version?: number; metaVersion?:
+   *   number }) | undefined>}
    */
   async getResourceMetadata({
     spaceId,
@@ -1711,7 +1735,9 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
     resourceId: string
-  }): Promise<(ResourceMetadata & { version?: number }) | undefined> {
+  }): Promise<
+    (ResourceMetadata & { version?: number; metaVersion?: number }) | undefined
+  > {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
     const filePath = await this._findFile({ collectionDir, resourceId })
     if (!filePath) {
@@ -1742,67 +1768,117 @@ export class FileSystemBackend implements StorageBackend {
       size: stats.size,
       createdAt,
       updatedAt,
-      ...(hasCustom && { custom: sidecar!.custom }),
-      ...(sidecar?.version !== undefined && { version: sidecar.version })
+      // `custom` is returned verbatim -- `{ name, tags }` on a plaintext
+      // Collection, the opaque encryption envelope on an encrypted one.
+      ...(hasCustom && { custom: sidecar!.custom as ResourceMetadataCustom }),
+      ...(sidecar?.version !== undefined && { version: sidecar.version }),
+      ...(sidecar?.metaVersion !== undefined && {
+        metaVersion: sidecar.metaVersion
+      })
     }
   }
 
   /**
    * Replaces the user-writable `custom` object of a Resource's metadata sidecar
-   * (full replacement; `{}` clears it), bumping `updatedAt`. Does not create a
-   * Resource: resolves `false` when the Resource is absent so the handler can
-   * 404. The two REQUIRED server-managed fields are untouched (they are derived
-   * from the stored representation, never written here).
+   * (full replacement; `{}` clears it), bumping `updatedAt` and the independent
+   * `metaVersion` (the `/meta` ETag). Does not create a Resource: resolves
+   * `undefined` when the Resource is absent so the handler can 404. The content
+   * `version` and the two REQUIRED server-managed fields are untouched (a
+   * metadata write does not change the stored representation, preserving the
+   * content ETag contract). On an encrypted Collection `custom` is the opaque
+   * encryption envelope, stored verbatim.
+   *
+   * Runs under the per-Resource write lock -- the same lock content writes take
+   * -- so an `If-Match` / `If-None-Match` precondition (evaluated on
+   * `metaVersion`) is atomic with the write and serializes with concurrent
+   * content/metadata writes to the same Resource. A precondition mismatch throws
+   * `PreconditionFailedError` (412).
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
-   * @param options.custom {ResourceMetadataCustom}
-   * @returns {Promise<boolean>}   `false` when the Resource does not exist
+   * @param options.custom {ResourceMetadataCustom | Record<string, unknown>}
+   * @param [options.ifMatch] {string}   `If-Match` on the current `metaVersion`
+   * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *` -- write only if
+   *   no metadata has been written yet (`metaVersion` unset)
+   * @returns {Promise<{ metaVersion: number } | undefined>}   the new
+   *   `metaVersion`, or `undefined` when the Resource does not exist
    */
   async writeResourceMetadata({
     spaceId,
     collectionId,
     resourceId,
-    custom
+    custom,
+    ifMatch,
+    ifNoneMatch
   }: {
     spaceId: string
     collectionId: string
     resourceId: string
-    custom: ResourceMetadataCustom
-  }): Promise<boolean> {
+    custom: ResourceMetadataCustom | Record<string, unknown>
+    ifMatch?: string
+    ifNoneMatch?: boolean
+  }): Promise<{ metaVersion: number } | undefined> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
-    const filePath = await this._findFile({ collectionDir, resourceId })
-    if (!filePath) {
-      return false
-    }
+    const writeMeta = async (): Promise<
+      { metaVersion: number } | undefined
+    > => {
+      const filePath = await this._findFile({ collectionDir, resourceId })
+      if (!filePath) {
+        return undefined
+      }
+      const prior = await this._readMetaSidecar({ collectionDir, resourceId })
+      // Evaluate the `/meta` precondition against the current `metaVersion`
+      // atomically under the lock, before writing. `If-None-Match: *` means
+      // "only if no metadata has been written yet"; `If-Match` pins the current
+      // `metaVersion` ETag.
+      if (ifNoneMatch) {
+        if (prior?.metaVersion !== undefined) {
+          throw new PreconditionFailedError({
+            detail: `Resource '${resourceId}' metadata already exists (If-None-Match: *).`
+          })
+        }
+      } else if (ifMatch !== undefined) {
+        const currentEtag = formatEtag(prior?.metaVersion ?? 0)
+        if (currentEtag !== ifMatch) {
+          throw new PreconditionFailedError({
+            detail: `Resource '${resourceId}' metadata ETag ${currentEtag} does not match If-Match ${ifMatch}.`
+          })
+        }
+      }
 
-    const now = new Date().toISOString()
-    const prior = await this._readMetaSidecar({ collectionDir, resourceId })
-    // Fall back to the file's birth time for `createdAt` if the Resource
-    // predates sidecars (so a meta write does not lose its creation time).
-    let createdAt = prior?.createdAt
-    if (!createdAt) {
-      try {
-        createdAt = (await fsStat(filePath)).birthtime.toISOString()
-      } catch {
-        createdAt = now
+      const now = new Date().toISOString()
+      // Fall back to the file's birth time for `createdAt` if the Resource
+      // predates sidecars (so a meta write does not lose its creation time).
+      let createdAt = prior?.createdAt
+      if (!createdAt) {
+        try {
+          createdAt = (await fsStat(filePath)).birthtime.toISOString()
+        } catch {
+          createdAt = now
+        }
       }
+      const metaVersion = (prior?.metaVersion ?? 0) + 1
+      const hasCustom = Object.keys(custom).length > 0
+      await this._writeMetaSidecar({
+        collectionDir,
+        resourceId,
+        sidecar: {
+          createdAt,
+          updatedAt: now,
+          // Preserve the content `version` (ETag) -- a metadata write does not
+          // change the stored representation.
+          ...(prior?.version !== undefined && { version: prior.version }),
+          metaVersion,
+          ...(hasCustom && { custom })
+        }
+      })
+      return { metaVersion }
     }
-    const hasCustom = Object.keys(custom).length > 0
-    await this._writeMetaSidecar({
-      collectionDir,
-      resourceId,
-      sidecar: {
-        createdAt,
-        updatedAt: now,
-        // A metadata-only write does not change the stored representation, so it
-        // preserves the content `version` (ETag) rather than bumping it.
-        ...(prior?.version !== undefined && { version: prior.version }),
-        ...(hasCustom && { custom })
-      }
-    })
-    return true
+    return this._writeMutex.run(
+      this._resourceLockKey({ spaceId, collectionId, resourceId }),
+      writeMeta
+    )
   }
 
   /**
@@ -1928,9 +2004,11 @@ export class FileSystemBackend implements StorageBackend {
     documents: Array<{
       resourceId: string
       version: number
+      metaVersion?: number
       updatedAt: string
       deleted: boolean
       data?: unknown
+      custom?: unknown
     }>
     checkpoint: { id: string; updatedAt: string } | null
   }> {
@@ -1979,13 +2057,16 @@ export class FileSystemBackend implements StorageBackend {
       | {
           resourceId: string
           version: number
+          metaVersion?: number
           updatedAt: string
           deleted: false
           fileName: string
+          custom?: unknown
         }
       | {
           resourceId: string
           version: number
+          metaVersion?: number
           updatedAt: string
           deleted: true
         }
@@ -2013,9 +2094,16 @@ export class FileSystemBackend implements StorageBackend {
         return {
           resourceId,
           version: sidecar?.version ?? 0,
+          ...(sidecar?.metaVersion !== undefined && {
+            metaVersion: sidecar.metaVersion
+          }),
           updatedAt,
           deleted: false,
-          fileName: live.fileName
+          fileName: live.fileName,
+          // The user-writable `custom` (the opaque encryption envelope on an
+          // encrypted Collection) rides the feed so metadata replicates
+          // alongside content; read from the sidecar already loaded here.
+          ...(sidecar?.custom !== undefined && { custom: sidecar.custom })
         }
       }
     )
@@ -2037,6 +2125,9 @@ export class FileSystemBackend implements StorageBackend {
         return {
           resourceId,
           version: sidecar.version ?? 0,
+          ...(sidecar.metaVersion !== undefined && {
+            metaVersion: sidecar.metaVersion
+          }),
           updatedAt: sidecar.updatedAt,
           deleted: true
         }
@@ -2077,6 +2168,9 @@ export class FileSystemBackend implements StorageBackend {
           return {
             resourceId: desc.resourceId,
             version: desc.version,
+            ...(desc.metaVersion !== undefined && {
+              metaVersion: desc.metaVersion
+            }),
             updatedAt: desc.updatedAt,
             deleted: true
           }
@@ -2095,9 +2189,15 @@ export class FileSystemBackend implements StorageBackend {
         return {
           resourceId: desc.resourceId,
           version: desc.version,
+          ...(desc.metaVersion !== undefined && {
+            metaVersion: desc.metaVersion
+          }),
           updatedAt: desc.updatedAt,
           deleted: false,
-          data
+          data,
+          // Surface the user-writable `custom` (opaque envelope on an encrypted
+          // Collection) so a metadata-only edit replicates.
+          ...(desc.custom !== undefined && { custom: desc.custom })
         }
       })
     )

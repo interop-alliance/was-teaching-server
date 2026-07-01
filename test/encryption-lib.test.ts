@@ -1,21 +1,27 @@
 /**
  * Unit tests for the encryption-scheme library helpers (spec "Encryption Scheme
- * Registry"): the `edv` envelope structural validator (`isValidEdvEnvelope`),
- * the fail-closed scheme gate (`assertSupportedEncryption`), the set-once
- * transition check (`assertEncryptionTransition`), and the Resource-write
- * conformance gate (`assertEncryptedWriteConforms`). These cover the pure logic
- * directly, complementing the over-the-wire suites; in particular
+ * Registry"): the `edv` JWE structural validator (`isValidEdvEnvelope`), the EDV
+ * Encrypted Document validator (`isValidEdvDocument`), the fail-closed scheme
+ * gate (`assertSupportedEncryption`), the set-once transition check
+ * (`assertEncryptionTransition`), the Resource-content-write conformance gate
+ * (`assertEncryptedWriteConforms`), and the Resource-metadata conformance gate
+ * (`assertEncryptedMetaConforms`). These cover the pure logic directly,
+ * complementing the over-the-wire suites; in particular
  * `assertEncryptionTransition` still exercises the `encryption-immutable` (409)
  * scheme-change path, which the wire suite can no longer reach in v1 (a second
  * recognized scheme is not expressible).
  */
 import { it, describe } from 'vitest'
 import assert from 'node:assert'
-import { isValidEdvEnvelope } from '../src/lib/edvEnvelope.js'
+import {
+  isValidEdvEnvelope,
+  isValidEdvDocument
+} from '../src/lib/edvEnvelope.js'
 import {
   assertSupportedEncryption,
   assertEncryptionTransition,
-  assertEncryptedWriteConforms
+  assertEncryptedWriteConforms,
+  assertEncryptedMetaConforms
 } from '../src/lib/encryption.js'
 import {
   EncryptionImmutableError,
@@ -25,6 +31,13 @@ import {
 
 /** A minimal valid flattened JWE-JSON envelope. */
 const flattened = { protected: 'eyJhbGciOiJkaXIifQ', ciphertext: 'c1' }
+
+/**
+ * A minimal valid EDV Encrypted Document: the JWE nested under `jwe`, alongside
+ * the opaque EDV bookkeeping members the codec emits. This is the actual stored
+ * representation (`application/json`), not a bare JWE.
+ */
+const edvDocument = { id: 'z1', sequence: 0, indexed: [], jwe: flattened }
 
 describe('isValidEdvEnvelope', () => {
   const valid: [string, unknown][] = [
@@ -71,6 +84,29 @@ describe('isValidEdvEnvelope', () => {
   for (const [label, body] of invalid) {
     it(`rejects ${label}`, () => {
       assert.equal(isValidEdvEnvelope(body), false)
+    })
+  }
+})
+
+describe('isValidEdvDocument', () => {
+  it('accepts an EDV Document with a valid `jwe` member', () => {
+    assert.equal(isValidEdvDocument(edvDocument), true)
+  })
+  it('accepts a `jwe`-only object (no bookkeeping members)', () => {
+    assert.equal(isValidEdvDocument({ jwe: flattened }), true)
+  })
+  const invalid: [string, unknown][] = [
+    ['a non-object', 'not-an-object'],
+    ['null', null],
+    ['an array', [edvDocument]],
+    ['a bare JWE (no `jwe` wrapper)', flattened],
+    ['a plaintext JSON document', { hello: 'world' }],
+    ['a `jwe` that is not a valid envelope', { jwe: { hello: 'world' } }],
+    ['a non-object `jwe`', { jwe: 'nope' }]
+  ]
+  for (const [label, body] of invalid) {
+    it(`rejects ${label}`, () => {
+      assert.equal(isValidEdvDocument(body), false)
     })
   }
 })
@@ -146,12 +182,12 @@ describe('assertEncryptedWriteConforms', () => {
       })
     )
   })
-  it('accepts a conforming jose+json envelope', () => {
+  it('accepts a conforming EDV Document under application/json', () => {
     assert.doesNotThrow(() =>
       assertEncryptedWriteConforms({
         collectionDescription: edv,
-        contentType: 'application/jose+json',
-        body: flattened
+        contentType: 'application/json',
+        body: edvDocument
       })
     )
   })
@@ -159,8 +195,8 @@ describe('assertEncryptedWriteConforms', () => {
     assert.doesNotThrow(() =>
       assertEncryptedWriteConforms({
         collectionDescription: edv,
-        contentType: 'application/JOSE+JSON; charset=utf-8',
-        body: flattened
+        contentType: 'application/JSON; charset=utf-8',
+        body: edvDocument
       })
     )
   })
@@ -169,8 +205,8 @@ describe('assertEncryptedWriteConforms', () => {
       () =>
         assertEncryptedWriteConforms({
           collectionDescription: edv,
-          contentType: 'application/json',
-          body: flattened
+          contentType: 'application/octet-stream',
+          body: edvDocument
         }),
       EncryptionSchemeMismatchError
     )
@@ -181,18 +217,80 @@ describe('assertEncryptedWriteConforms', () => {
         assertEncryptedWriteConforms({
           collectionDescription: edv,
           contentType: undefined,
+          body: edvDocument
+        }),
+      EncryptionSchemeMismatchError
+    )
+  })
+  it('rejects a right content type but plaintext body (422)', () => {
+    assert.throws(
+      () =>
+        assertEncryptedWriteConforms({
+          collectionDescription: edv,
+          contentType: 'application/json',
+          body: { hello: 'world' }
+        }),
+      EncryptionSchemeMismatchError
+    )
+  })
+  it('rejects a bare JWE (no `jwe` wrapper) as non-conforming (422)', () => {
+    assert.throws(
+      () =>
+        assertEncryptedWriteConforms({
+          collectionDescription: edv,
+          contentType: 'application/json',
           body: flattened
         }),
       EncryptionSchemeMismatchError
     )
   })
-  it('rejects a right content type but non-envelope body (422)', () => {
+})
+
+describe('assertEncryptedMetaConforms', () => {
+  const edv = { encryption: { scheme: 'edv' as const } }
+
+  it('is a no-op for a plaintext Collection (any custom)', () => {
+    assert.doesNotThrow(() =>
+      assertEncryptedMetaConforms({
+        collectionDescription: {},
+        custom: { name: 'Hello', tags: { x: 'y' } }
+      })
+    )
+  })
+  it('accepts a conforming EDV Document `custom` (no media-type gate)', () => {
+    assert.doesNotThrow(() =>
+      assertEncryptedMetaConforms({
+        collectionDescription: edv,
+        custom: edvDocument
+      })
+    )
+  })
+  it('rejects a plaintext `{ name, tags }` custom (422)', () => {
     assert.throws(
       () =>
-        assertEncryptedWriteConforms({
+        assertEncryptedMetaConforms({
           collectionDescription: edv,
-          contentType: 'application/jose+json',
-          body: { hello: 'world' }
+          custom: { name: 'Hello', tags: { x: 'y' } }
+        }),
+      EncryptionSchemeMismatchError
+    )
+  })
+  it('rejects an undefined/absent custom (422)', () => {
+    assert.throws(
+      () =>
+        assertEncryptedMetaConforms({
+          collectionDescription: edv,
+          custom: undefined
+        }),
+      EncryptionSchemeMismatchError
+    )
+  })
+  it('rejects a bare JWE (no `jwe` wrapper) custom (422)', () => {
+    assert.throws(
+      () =>
+        assertEncryptedMetaConforms({
+          collectionDescription: edv,
+          custom: flattened
         }),
       EncryptionSchemeMismatchError
     )

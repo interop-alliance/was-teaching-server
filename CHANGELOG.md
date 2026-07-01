@@ -18,19 +18,46 @@
   can never land in a Collection marked encrypted with a recognized scheme:
   - A Collection `encryption` marker is gated against a recognized-scheme
     registry (`SUPPORTED_ENCRYPTION_SCHEMES`; v1 has `edv` ->
-    `application/jose+json`). An unrecognized `scheme` is now rejected with the
-    new `unsupported-encryption-scheme` (400) error rather than stored opaquely.
+    `application/json`). An unrecognized `scheme` is now rejected with the new
+    `unsupported-encryption-scheme` (400) error rather than stored opaquely.
   - A Resource **content** write into a recognized-scheme Collection is
     structurally validated (`Create Resource` `POST`, `Put Resource` `PUT`): the
     request `Content-Type` MUST be the scheme's registered media type and the
-    body MUST be a structurally valid envelope (a JWE in JSON serialization for
-    `edv`, validated by `src/lib/edvEnvelope.ts` -- shape only, never
-    decrypted), else the new `encryption-scheme-mismatch` (422) error. Checked
-    after capability verification, so an under-authorized caller still receives
-    the privacy-merged `not-found` (404). Server-managed API documents
-    (Collection Descriptions, Resource Metadata, policies, linksets) are
-    unaffected and stay `application/json`.
+    body MUST be a structurally valid envelope. For `edv` that is an **EDV
+    Encrypted Document** -- a JSON object whose `jwe` member is a JWE in JSON
+    serialization (`isValidEdvDocument` wrapping `isValidEdvEnvelope`, shape
+    only, never decrypted) -- carried as `application/json`, matching what the
+    EDV codec actually stores (the earlier bare-`application/jose+json` JWE
+    profile was corrected to this before release). A non-conforming body (a
+    plaintext object, or a bare JWE with no `jwe` wrapper) is the new
+    `encryption-scheme-mismatch` (422). Checked after capability verification,
+    so an under-authorized caller still receives the privacy-merged `not-found`
+    (404).
   - Requires `@interop/storage-core` ^0.3.1 (adds the two new problem types).
+
+- **Encrypted Resource Metadata profile (spec "Encrypted Collections").** On a
+  Collection with a recognized `encryption` marker, a Resource's user-writable
+  `custom` metadata is now stored as an encryption **envelope** (the same
+  EDV-Document profile as content), symmetric with how content is stored:
+  - `PUT .../meta` on an encrypted Collection validates `custom` structurally as
+    a conforming envelope (`assertEncryptedMetaConforms`), rejecting a plaintext
+    `{ name, tags }` (or any non-envelope) with `encryption-scheme-mismatch`
+    (422), checked after auth + 404. The metadata document itself stays
+    `application/json`; only its `custom` sub-value is the envelope. The server
+    stores it opaquely and never decrypts. Plaintext Collections are unaffected
+    (`{ name, tags }` validated as before).
+  - The `/meta` sub-resource now carries its **own** monotonic `metaVersion`
+    ETag (V2 metadata versioning), independent of the content `version`: a
+    metadata-only write bumps `metaVersion` (and `updatedAt`) but leaves the
+    content ETag untouched, and honors `If-Match` / `If-None-Match` on
+    `metaVersion` (412 on mismatch), evaluated atomically under the per-Resource
+    write lock. `GET .../meta` returns the `metaVersion` as its `ETag`.
+  - The replication change feed (`changesSince`) now carries `metaVersion` and
+    the `custom` envelope, so a metadata-only edit replicates alongside content
+    (re-surfacing the Resource with a bumped `updatedAt` / `metaVersion` but
+    unchanged `version` / `data`).
+  - List Collection omits `name` from item summaries on an encrypted Collection
+    (the server cannot project a name out of an opaque envelope).
 
 ### Fixed
 

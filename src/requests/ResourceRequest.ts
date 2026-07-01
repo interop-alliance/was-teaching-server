@@ -6,7 +6,10 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
-import { assertEncryptedWriteConforms } from '../lib/encryption.js'
+import {
+  assertEncryptedWriteConforms,
+  assertEncryptedMetaConforms
+} from '../lib/encryption.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { resourcePath, metaPath } from '../lib/paths.js'
 import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
@@ -21,11 +24,16 @@ import type { ResourceMetadataCustom } from '../types.js'
 
 /**
  * Validates and extracts the user-writable `custom` object from an Update
- * Resource Metadata request body. The body MUST be a JSON object; any top-level
- * property other than `custom` is ignored (so a client may GET-modify-PUT the
- * whole Metadata object). A missing `custom` clears all user-writable properties
- * (returns `{}`). Throws `InvalidRequestBodyError` (400) when the body or
- * `custom` shape is wrong.
+ * Resource Metadata request body on a **plaintext** Collection. The body MUST be
+ * a JSON object; any top-level property other than `custom` is ignored (so a
+ * client may GET-modify-PUT the whole Metadata object). A missing `custom`
+ * clears all user-writable properties (returns `{}`). Throws
+ * `InvalidRequestBodyError` (400) when the body or `custom` shape is wrong.
+ *
+ * On an **encrypted** Collection this shape check does not apply -- `custom` is
+ * the opaque encryption envelope, validated structurally by
+ * {@link assertEncryptedMetaConforms} instead (a `422` on non-conformance).
+ * `putMeta` branches on the Collection's `encryption` marker after authorization.
  * @param body {unknown}   the parsed request body
  * @returns {ResourceMetadataCustom}
  */
@@ -420,12 +428,15 @@ export class ResourceRequest {
       throw new ResourceNotFoundError({ requestName })
     }
 
-    // `version` is the ETag validator, surfaced as the `ETag` header -- not part
-    // of the Resource Metadata wire body, so strip it before serializing.
-    const { version, ...metadataBody } = metadata
+    // `version` (content) and `metaVersion` (metadata) are out-of-band ETag
+    // validators, not part of the Resource Metadata wire body, so strip both
+    // before serializing. The `/meta` sub-resource carries its OWN ETag
+    // (`metaVersion`, V2) so a metadata-only edit does not disturb the content
+    // ETag; it is present only once metadata has been written.
+    const { version: _version, metaVersion, ...metadataBody } = metadata
     const metaReply = reply.status(200).type('application/json')
-    if (version !== undefined) {
-      metaReply.header('etag', formatEtag(version))
+    if (metaVersion !== undefined) {
+      metaReply.header('etag', formatEtag(metaVersion))
     }
     return metaReply.send(JSON.stringify(metadataBody))
   }
@@ -461,9 +472,23 @@ export class ResourceRequest {
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
 
-    // Validate the body shape (400) before authorization; body validity does not
-    // reveal whether the Resource exists.
-    const custom = parseCustomMetadata(request.body)
+    // Pre-auth body shape (400): the body MUST be a JSON object. The deeper
+    // `custom` shape check is deferred until after authorization, where the
+    // Collection's `encryption` marker decides whether `custom` is a plaintext
+    // `{ name, tags }` (validated by `parseCustomMetadata`) or an opaque envelope
+    // (validated structurally by `assertEncryptedMetaConforms`) -- neither is
+    // knowable before reading the Collection Description, and gating the check on
+    // auth keeps a 422/400 observable only to a caller authorized to write here.
+    if (
+      typeof request.body !== 'object' ||
+      request.body === null ||
+      Array.isArray(request.body)
+    ) {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail: 'Request body must be a JSON object.'
+      })
+    }
 
     // Verify (capability-only): writing metadata requires a valid capability
     // invocation (the `PUT` action); no access-control-policy fallback.
@@ -485,7 +510,23 @@ export class ResourceRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
-    // Write Metadata to the Collection's selected (data-plane) backend.
+    // Branch on the Collection's encryption marker. On an encrypted Collection
+    // the `custom` value MUST be a conforming envelope of the scheme (stored
+    // opaquely, `422` on a plaintext/malformed value); on a plaintext Collection
+    // it MUST be a well-formed `{ name, tags }` object (`400` otherwise).
+    let custom: ResourceMetadataCustom | Record<string, unknown>
+    if (collectionDescription.encryption?.scheme !== undefined) {
+      const rawCustom = (request.body as Record<string, unknown>).custom
+      assertEncryptedMetaConforms({ collectionDescription, custom: rawCustom })
+      custom = rawCustom as Record<string, unknown>
+    } else {
+      custom = parseCustomMetadata(request.body)
+    }
+
+    // Write Metadata to the Collection's selected (data-plane) backend. An
+    // `If-Match` / `If-None-Match` precondition (the `conditional-writes`
+    // feature) is evaluated on the `/meta` `metaVersion` atomically with the
+    // write; a mismatch surfaces as 412 `precondition-failed` (rethrown unchanged).
     const dataBackend = await resolveBackend({
       request,
       spaceId,
@@ -498,10 +539,11 @@ export class ResourceRequest {
         spaceId,
         collectionId,
         resourceId,
-        custom
+        custom,
+        ...parseWritePreconditions(request.headers)
       })
     } catch (err) {
-      throw new StorageError({ cause: err as Error, requestName })
+      rethrowOrWrapStorageError({ err, requestName })
     }
     // A Metadata object cannot exist apart from its Resource: a PUT to the
     // `/meta` of a nonexistent Resource is a 404 (this operation does not create).
@@ -509,7 +551,12 @@ export class ResourceRequest {
       throw new ResourceNotFoundError({ requestName })
     }
 
-    return reply.status(204).send()
+    // Return the new `/meta` ETag (`metaVersion`) so a client can chain a
+    // subsequent conditional metadata write.
+    return reply
+      .status(204)
+      .header('etag', formatEtag(written.metaVersion))
+      .send()
   }
 
   /**

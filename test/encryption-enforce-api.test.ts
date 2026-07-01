@@ -1,13 +1,15 @@
 /**
  * Encryption-enforcement API tests (Vitest): the server's fail-closed structural
- * validation of content writes into an encrypted Collection (spec "Encryption
- * Scheme Registry"). When a Collection declares a recognized `encryption` scheme
- * (`edv`), a Resource write MUST be a conforming envelope of that scheme -- the
- * right media type (`application/jose+json`) carrying a structurally valid JWE.
- * A non-conforming write is rejected with `encryption-scheme-mismatch` (422), so
- * neither a buggy client nor a foreign writer can ever land server-visible
- * plaintext in an encrypted Collection. The server validates structure only and
- * never decrypts.
+ * validation of content AND metadata writes into an encrypted Collection (spec
+ * "Encryption Scheme Registry" + "Encrypted Collections"). When a Collection
+ * declares a recognized `encryption` scheme (`edv`), a Resource content write
+ * MUST be a conforming envelope of that scheme -- media type `application/json`
+ * carrying an EDV Encrypted Document (a JSON object whose `jwe` member is a
+ * structurally valid JWE) -- and a `PUT /meta` write's `custom` value MUST be
+ * the same envelope. A non-conforming write is rejected with
+ * `encryption-scheme-mismatch` (422), so neither a buggy client nor a foreign
+ * writer can ever land server-visible plaintext in an encrypted Collection. The
+ * server validates structure only and never decrypts.
  *
  * These drive the wire contract directly via the signed `was.request()` escape
  * hatch (raw `HttpResponse` / raw errors), mirroring `encryption-marker-api`.
@@ -23,9 +25,11 @@ import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { zcapClients } from './helpers.js'
 
-const JOSE = 'application/jose+json'
-/** A minimal structurally-valid flattened JWE-JSON envelope. */
-const envelope = { protected: 'eyJhbGciOiJkaXI', ciphertext: 'c1phertext' }
+const JSON_TYPE = 'application/json'
+/** A minimal structurally-valid flattened JWE-JSON envelope (the inner `jwe`). */
+const jwe = { protected: 'eyJhbGciOiJkaXI', ciphertext: 'c1phertext' }
+/** The stored representation: an EDV Encrypted Document wrapping the `jwe`. */
+const envelope = { id: 'z1', sequence: 0, indexed: [], jwe }
 
 describe('Encryption enforcement API', () => {
   let fastify: FastifyInstance,
@@ -99,22 +103,22 @@ describe('Encryption enforcement API', () => {
     }
   }
 
-  it('accepts a conforming jose+json envelope on POST (create) into an edv Collection', async () => {
+  it('accepts a conforming EDV Document on POST (create) into an edv Collection', async () => {
     const response = await alice.was.request({
       path: `/space/${spaceId}/${edvCollection}/`,
       method: 'POST',
       body: new TextEncoder().encode(JSON.stringify(envelope)),
-      headers: { 'content-type': JOSE }
+      headers: { 'content-type': JSON_TYPE }
     })
     assert.equal(response.status, 201)
   })
 
-  it('accepts a conforming jose+json envelope on PUT (by id) into an edv Collection', async () => {
+  it('accepts a conforming EDV Document on PUT (by id) into an edv Collection', async () => {
     const response = await putRaw({
       collectionId: edvCollection,
       resourceId: 'doc-put',
       body: envelope,
-      contentType: JOSE
+      contentType: JSON_TYPE
     })
     assert.equal(response.status, 204)
   })
@@ -125,6 +129,21 @@ describe('Encryption enforcement API', () => {
         path: `/space/${spaceId}/${edvCollection}/doc-plain`,
         method: 'PUT',
         json: { hello: 'world' }
+      })
+    )
+    assert.equal(err.response.status, 422)
+    assert.match(err.data.type, /#encryption-scheme-mismatch/)
+  })
+
+  it('rejects a bare JWE (no `jwe` wrapper) into an edv Collection (422)', async () => {
+    // The B0 fail-closed shape gate: a bare JWE under application/json passes the
+    // media-type gate but is not an EDV Document (no `jwe` member) -- 422.
+    const err = await rejection(
+      putRaw({
+        collectionId: edvCollection,
+        resourceId: 'doc-bare-jwe',
+        body: jwe,
+        contentType: JSON_TYPE
       })
     )
     assert.equal(err.response.status, 422)
@@ -150,7 +169,7 @@ describe('Encryption enforcement API', () => {
         collectionId: edvCollection,
         resourceId: 'doc-malformed',
         body: { not: 'an envelope' },
-        contentType: JOSE
+        contentType: JSON_TYPE
       })
     )
     assert.equal(err.response.status, 422)
@@ -182,17 +201,77 @@ describe('Encryption enforcement API', () => {
     assert.equal(err.response.status, 404)
   })
 
-  it('scope: PUT .../meta on an edv Collection still accepts application/json', async () => {
-    // Seed a Resource, then update its Metadata (a server-managed API document,
-    // not a Resource content write) -- the encryption gate must not apply.
+  it('PUT .../meta on an edv Collection rejects a plaintext custom (422)', async () => {
+    // Seed a Resource, then attempt a plaintext metadata write -- on an encrypted
+    // Collection the `custom` value MUST be an envelope, so a `{ name }` is a 422.
     await putRaw({
       collectionId: edvCollection,
       resourceId: 'doc-meta',
       body: envelope,
-      contentType: JOSE
+      contentType: JSON_TYPE
+    })
+    const err = await rejection(
+      alice.was.request({
+        path: `/space/${spaceId}/${edvCollection}/doc-meta/meta`,
+        method: 'PUT',
+        json: { custom: { name: 'labeled' } }
+      })
+    )
+    assert.equal(err.response.status, 422)
+    assert.match(err.data.type, /#encryption-scheme-mismatch/)
+  })
+
+  it('PUT .../meta on an edv Collection accepts an envelope custom and versions it', async () => {
+    // A conforming envelope custom is accepted (204) and carries its own `/meta`
+    // ETag (`metaVersion`), independent of the content ETag. GET /meta returns
+    // the opaque envelope verbatim (no plaintext name leaked).
+    const put1 = await alice.was.request({
+      path: `/space/${spaceId}/${edvCollection}/doc-meta/meta`,
+      method: 'PUT',
+      json: { custom: envelope }
+    })
+    assert.equal(put1.status, 204)
+    const metaEtag1 = put1.headers.get('etag')
+    assert.ok(metaEtag1, 'PUT /meta returns a metaVersion ETag')
+
+    const read = await alice.was.request({
+      path: `/space/${spaceId}/${edvCollection}/doc-meta/meta`,
+      method: 'GET'
+    })
+    assert.equal(read.status, 200)
+    assert.deepEqual(read.data.custom, envelope)
+    assert.equal(read.headers.get('etag'), metaEtag1)
+
+    // A second meta write bumps the metaVersion ETag.
+    const put2 = await alice.was.request({
+      path: `/space/${spaceId}/${edvCollection}/doc-meta/meta`,
+      method: 'PUT',
+      json: { custom: envelope }
+    })
+    assert.equal(put2.status, 204)
+    assert.notEqual(put2.headers.get('etag'), metaEtag1)
+  })
+
+  it('PUT .../meta honors If-Match on the metaVersion (412 on mismatch)', async () => {
+    const err = await rejection(
+      alice.was.request({
+        path: `/space/${spaceId}/${edvCollection}/doc-meta/meta`,
+        method: 'PUT',
+        json: { custom: envelope },
+        headers: { 'if-match': '"999"' }
+      })
+    )
+    assert.equal(err.response.status, 412)
+  })
+
+  it('a plaintext Collection still accepts a plaintext /meta custom', async () => {
+    await alice.was.request({
+      path: `/space/${spaceId}/${plainCollection}/plain-meta`,
+      method: 'PUT',
+      json: { hello: 'world' }
     })
     const response = await alice.was.request({
-      path: `/space/${spaceId}/${edvCollection}/doc-meta/meta`,
+      path: `/space/${spaceId}/${plainCollection}/plain-meta/meta`,
       method: 'PUT',
       json: { custom: { name: 'labeled' } }
     })

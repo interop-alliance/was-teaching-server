@@ -619,13 +619,18 @@ export class CollectionRequest {
     // Project the change feed to the wire shape: a tombstone's `deleted` becomes
     // RxDB's `_deleted`, and the document body stays under `data` (kept out of
     // the user JSON so arbitrary bodies -- not only objects -- round-trip). The
-    // RxDB browser adapter does the final reshape into RxDB documents.
+    // user-writable `custom` (the opaque encryption envelope on an encrypted
+    // Collection) and its independent `metaVersion` ride along so a metadata-only
+    // edit replicates alongside content. The RxDB browser adapter does the final
+    // reshape into RxDB documents.
     const documents = result.documents.map(doc => ({
       id: doc.resourceId,
       _deleted: doc.deleted,
       updatedAt: doc.updatedAt,
       version: doc.version,
-      ...(doc.data !== undefined && { data: doc.data })
+      ...(doc.metaVersion !== undefined && { metaVersion: doc.metaVersion }),
+      ...(doc.data !== undefined && { data: doc.data }),
+      ...(doc.custom !== undefined && { custom: doc.custom })
     }))
 
     return reply

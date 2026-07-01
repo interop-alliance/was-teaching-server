@@ -16,25 +16,30 @@ import {
   UnsupportedEncryptionSchemeError,
   EncryptionSchemeMismatchError
 } from '../errors.js'
-import { isValidEdvEnvelope } from './edvEnvelope.js'
+import { isValidEdvDocument } from './edvEnvelope.js'
 
 /**
  * The encryption schemes this server recognizes and can enforce on write (spec
  * "Encryption Scheme Registry"). Each entry pins the scheme token to its
  * required stored-representation media type and the structural validator for its
- * envelope profile. v1 has exactly one entry: `edv` (EDV-over-WAS), a JWE in JSON
- * serialization carried as `application/jose+json`. "Marked with a recognized
- * scheme" structurally implies "non-conforming writes rejected here" -- the
- * fail-closed guarantee. Extending the registry (a new scheme, or a new media
- * type for an existing one) is the only place a scheme becomes acceptable.
+ * envelope profile. v1 has exactly one entry: `edv` (EDV-over-WAS), an EDV
+ * **Encrypted Document** (a JSON object whose `jwe` member is a JWE in JSON
+ * serialization) carried as `application/json` -- matching what the EDV codec
+ * actually stores and how a native EDV server serves an Encrypted Document.
+ * "Marked with a recognized scheme" structurally implies "non-conforming writes
+ * rejected here" -- the fail-closed guarantee: a plaintext object under
+ * `application/json` passes the media-type gate but fails the structural
+ * `jwe` gate, so it is still rejected. Extending the registry (a new scheme, or
+ * a new media type for an existing one) is the only place a scheme becomes
+ * acceptable.
  */
 export const SUPPORTED_ENCRYPTION_SCHEMES: Record<
   string,
   { mediaType: string; validateEnvelope: (body: unknown) => boolean }
 > = {
   edv: {
-    mediaType: 'application/jose+json',
-    validateEnvelope: isValidEdvEnvelope
+    mediaType: 'application/json',
+    validateEnvelope: isValidEdvDocument
   }
 }
 
@@ -178,6 +183,50 @@ export function assertEncryptedWriteConforms({
   if (!profile.validateEnvelope(body)) {
     throw new EncryptionSchemeMismatchError({
       detail: `Resource body is not a structurally valid '${scheme}' encryption envelope.`
+    })
+  }
+}
+
+/**
+ * Fail-closed structural validation of a Resource **metadata** write (`PUT
+ * /meta`) into an encrypted Collection (spec "Encrypted Collections"). When the
+ * target Collection declares a recognized `encryption` scheme, the user-writable
+ * `custom` object MUST be a conforming envelope of that scheme -- the same
+ * structural profile used for content -- so a plaintext `{ name, tags }` cannot
+ * be stored server-visibly. Unlike {@link assertEncryptedWriteConforms} there is
+ * **no media-type gate**: the metadata document itself stays `application/json`
+ * (its server-managed top-level fields are plaintext); only the `custom`
+ * sub-value is the envelope. A non-conforming `custom` is
+ * `encryption-scheme-mismatch` (422). No-op when the Collection has no marker
+ * (plaintext) or -- defensively -- an unrecognized scheme. The server validates
+ * structure only; it never decrypts. Call this **after** capability verification
+ * and the 404-if-missing check, before the write, so a 422 is observable only to
+ * a caller already authorized to write the target.
+ *
+ * @param options {object}
+ * @param options.collectionDescription {{ encryption?: CollectionEncryption }}
+ *   the target Collection's stored description
+ * @param options.custom {unknown}   the request body's `custom` value
+ * @returns {void}
+ */
+export function assertEncryptedMetaConforms({
+  collectionDescription,
+  custom
+}: {
+  collectionDescription: { encryption?: CollectionEncryption }
+  custom: unknown
+}): void {
+  const scheme = collectionDescription.encryption?.scheme
+  if (scheme === undefined) {
+    return
+  }
+  const profile = SUPPORTED_ENCRYPTION_SCHEMES[scheme]
+  if (!profile) {
+    return
+  }
+  if (!profile.validateEnvelope(custom)) {
+    throw new EncryptionSchemeMismatchError({
+      detail: `Resource metadata "custom" is not a structurally valid '${scheme}' encryption envelope.`
     })
   }
 }

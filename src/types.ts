@@ -353,18 +353,30 @@ export interface StorageBackend {
     spaceId: string
     collectionId: string
     resourceId: string
-  }): Promise<(ResourceMetadata & { version?: number }) | undefined>
+  }): Promise<
+    (ResourceMetadata & { version?: number; metaVersion?: number }) | undefined
+  >
   /**
    * Replaces the user-writable `custom` object of a Resource's Metadata (full
-   * replacement; pass `{}` to clear). Resolves `false` when the Resource does
-   * not exist (this operation does not create one) so the handler can 404.
+   * replacement; pass `{}` to clear). Resolves `undefined` when the Resource
+   * does not exist (this operation does not create one) so the handler can 404,
+   * else the Resource's new `metaVersion` (the `/meta` ETag validator, bumped
+   * on each metadata write independently of the content `version`).
+   *
+   * On an encrypted Collection `custom` is the opaque encryption envelope (an
+   * arbitrary JSON object) rather than a `{ name, tags }` object; the backend
+   * stores it verbatim. When `ifMatch` / `ifNoneMatch` is supplied
+   * (`conditional-writes`), the write is gated on the current `metaVersion`
+   * atomically, rejecting a mismatch with `precondition-failed` (412).
    */
   writeResourceMetadata(options: {
     spaceId: string
     collectionId: string
     resourceId: string
-    custom: ResourceMetadataCustom
-  }): Promise<boolean>
+    custom: ResourceMetadataCustom | Record<string, unknown>
+    ifMatch?: string
+    ifNoneMatch?: boolean
+  }): Promise<{ metaVersion: number } | undefined>
 
   /**
    * OPTIONAL replication change feed (the `changes` query profile.
@@ -374,10 +386,15 @@ export interface StorageBackend {
    * MAY clamp an oversized value to its own maximum). With no `checkpoint`, the
    * feed starts from the beginning.
    *
-   * Each document carries its monotonic `version` and `updatedAt`. A tombstone
-   * (soft-deleted Resource) is surfaced with `deleted: true` and no `data` so
-   * the delete replicates until clients catch up. Binary (non-JSON) Resources
-   * are excluded -- attachment replication is future work. The result's
+   * Each document carries its monotonic content `version`, its `metaVersion`
+   * (when a metadata write has occurred), `updatedAt`, and -- so metadata
+   * replicates alongside content -- the user-writable `custom` object (the
+   * opaque encryption envelope on an encrypted Collection). A metadata-only edit
+   * re-surfaces the Resource with a bumped `updatedAt` / `metaVersion` but its
+   * `version` / `data` unchanged. A tombstone (soft-deleted Resource) is
+   * surfaced with `deleted: true` and no `data` so the delete replicates until
+   * clients catch up. Binary (non-JSON) Resources are excluded -- attachment
+   * replication is future work. The result's
    * `checkpoint` is the `{ id, updatedAt }` of the last returned document (the
    * keyset position a follow-up call resumes after), or `null` when nothing
    * changed since `checkpoint`.
@@ -395,9 +412,11 @@ export interface StorageBackend {
     documents: Array<{
       resourceId: string
       version: number
+      metaVersion?: number
       updatedAt: string
       deleted: boolean
       data?: unknown
+      custom?: unknown
     }>
     checkpoint: { id: string; updatedAt: string } | null
   }>

@@ -5,10 +5,13 @@
  *
  * Wire-contract coverage for the non-secret `encryption` marker (spec
  * "Encrypted Collections"): the server persists and echoes it, validates its
- * shape, enforces set-once immutability, and -- crucially -- a delegated
- * consumer that did not create the Collection discovers the marker by reading
- * its Description. Raw `rootClient.request()` is used to send/inspect the marker
- * (the published high-level client does not yet forward `encryption`).
+ * shape, enforces set-once immutability, a delegated consumer that did not
+ * create the Collection discovers the marker by reading its Description, and the
+ * fail-closed content/metadata envelope profile is enforced -- including the
+ * encrypted-metadata profile (an opaque `custom` envelope on `/meta`, its own
+ * `metaVersion` ETag, and replication of a metadata edit through the changes
+ * feed). Raw `rootClient.request()` is used to send/inspect the marker (the
+ * published high-level client does not yet forward `encryption`).
  */
 import { it, describe, before, after } from 'node:test'
 import assert from 'node:assert'
@@ -21,6 +24,18 @@ import {
   generateId,
   serverUrl
 } from './helpers.js'
+
+/**
+ * A minimal conforming EDV Encrypted Document: the stored representation for an
+ * `edv` Collection (a JSON object whose `jwe` member is a JWE-JSON envelope),
+ * reused for both a content write and a `/meta` `custom` envelope.
+ */
+const edvDocument = {
+  id: 'z1',
+  sequence: 0,
+  indexed: [],
+  jwe: { protected: 'eyJhbGciOiJkaXI', ciphertext: 'c1phertext' }
+}
 
 describe('Encryption marker API', () => {
   let alice: any, bob: any
@@ -159,8 +174,9 @@ describe('Encryption marker API', () => {
     )
   })
 
-  it('[root] accepts a conforming jose+json envelope into an encrypted Collection', async () => {
-    const envelope = { protected: 'eyJhbGciOiJkaXI', ciphertext: 'c1phertext' }
+  it('[root] accepts a conforming EDV Document into an encrypted Collection', async () => {
+    // The stored representation is an EDV Encrypted Document (`{ jwe, ... }`)
+    // under `application/json` -- what the EDV codec actually produces.
     const response = await alice.rootClient.request({
       url: new URL(
         `/space/${alice.space1.id}/vault/envelope-doc`,
@@ -168,9 +184,86 @@ describe('Encryption marker API', () => {
       ).toString(),
       method: 'PUT',
       action: 'PUT',
-      body: new TextEncoder().encode(JSON.stringify(envelope)),
-      headers: { 'content-type': 'application/jose+json' }
+      body: new TextEncoder().encode(JSON.stringify(edvDocument)),
+      headers: { 'content-type': 'application/json' }
     })
     assert.equal(response.status, 204)
+  })
+
+  it('[root] rejects a plaintext `custom` on PUT /meta of an encrypted Collection (422)', async () => {
+    // Spec "Encrypted Collections": on an encrypted Collection a resource's
+    // user-writable `custom` metadata MUST be a conforming envelope, so a
+    // plaintext `{ name }` is fail-closed rejected -- server-visible plaintext
+    // name/tags can never land in an encrypted Collection.
+    let expectedError: any
+    try {
+      await alice.rootClient.request({
+        url: new URL(
+          `/space/${alice.space1.id}/vault/envelope-doc/meta`,
+          serverUrl
+        ).toString(),
+        method: 'PUT',
+        action: 'PUT',
+        json: { custom: { name: 'leaked' } }
+      })
+    } catch (err) {
+      expectedError = err
+    }
+    assert.ok(
+      expectedError,
+      'expected the plaintext /meta write to be rejected'
+    )
+    assert.equal(expectedError.response.status, 422)
+    assert.equal(
+      expectedError.data.type,
+      'https://wallet.storage/spec#encryption-scheme-mismatch'
+    )
+  })
+
+  it('[root] accepts an envelope `custom` on PUT /meta and returns its metaVersion ETag', async () => {
+    const response = await alice.rootClient.request({
+      url: new URL(
+        `/space/${alice.space1.id}/vault/envelope-doc/meta`,
+        serverUrl
+      ).toString(),
+      method: 'PUT',
+      action: 'PUT',
+      json: { custom: edvDocument }
+    })
+    assert.equal(response.status, 204)
+    // The `/meta` sub-resource carries its own ETag (`metaVersion`).
+    assert.ok(response.headers.get('etag'), 'expected a /meta ETag')
+
+    // GET /meta returns the opaque envelope verbatim (no plaintext name leaked).
+    const read = await alice.rootClient.request({
+      url: new URL(
+        `/space/${alice.space1.id}/vault/envelope-doc/meta`,
+        serverUrl
+      ).toString(),
+      method: 'GET'
+    })
+    assert.deepStrictEqual(read.data.custom, edvDocument)
+  })
+
+  it('[root] replicates the encrypted metadata edit in the changes feed', async () => {
+    // Decision 6: a metadata-only edit rides the change feed -- the resource
+    // re-surfaces carrying the opaque `custom` envelope and a `metaVersion`, so a
+    // replicating client picks up the metadata change without decryption.
+    const response = await alice.rootClient.request({
+      url: new URL(
+        `/space/${alice.space1.id}/vault/query`,
+        serverUrl
+      ).toString(),
+      method: 'POST',
+      action: 'POST',
+      json: { profile: 'changes', limit: 100 }
+    })
+    assert.equal(response.status, 200)
+    const doc = response.data.documents.find(
+      (entry: any) => entry.id === 'envelope-doc'
+    )
+    assert.ok(doc, 'expected the edited resource in the feed')
+    assert.deepStrictEqual(doc.custom, edvDocument)
+    assert.equal(typeof doc.metaVersion, 'number')
   })
 })

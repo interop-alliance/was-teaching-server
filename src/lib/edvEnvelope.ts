@@ -1,11 +1,12 @@
 /**
  * Structural validator for the `edv` encryption scheme's envelope profile (spec
- * "Encryption Scheme Registry"). An `edv`-encrypted Resource is a JWE in JSON
- * serialization (general or flattened, RFC7516); this checks only its *shape* so
+ * "Encryption Scheme Registry"). An `edv`-encrypted Resource is stored as an EDV
+ * **Encrypted Document** -- a JSON object whose `jwe` member is a JWE in JSON
+ * serialization (general or flattened, RFC7516). This checks only its *shape* so
  * the server can fail closed on a non-envelope write into an encrypted
  * Collection. The server MUST NOT attempt decryption and MUST NOT interpret the
- * ciphertext or key values -- it validates that the object could be a JWE, not
- * that it decrypts.
+ * ciphertext or key values -- it validates that the document carries a
+ * plausible JWE, not that it decrypts.
  */
 
 /**
@@ -78,4 +79,24 @@ export function isValidEdvEnvelope(body: unknown): boolean {
     typeof envelope.encrypted_key === 'string' ||
     typeof envelope.protected === 'string'
   )
+}
+
+/**
+ * True if `body` is a structurally valid EDV **Encrypted Document**: a JSON
+ * object whose `jwe` member is a valid JWE-JSON envelope ({@link
+ * isValidEdvEnvelope}). This is the actual stored representation the EDV codec
+ * produces -- `documentCipher.encrypt` nests the JWE under `jwe` alongside EDV
+ * bookkeeping members (`id`, `sequence`, `indexed`), which are opaque to the
+ * server and not checked. A bare JWE (top-level `ciphertext`, no `jwe`) or a
+ * plaintext object fails this check, so an enforcing server fails closed on a
+ * non-envelope write. Purely structural: values are never decoded or decrypted.
+ *
+ * @param body {unknown}   the parsed request body (or `custom` sub-value) to check
+ * @returns {boolean}
+ */
+export function isValidEdvDocument(body: unknown): boolean {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return false
+  }
+  return isValidEdvEnvelope((body as { jwe?: unknown }).jwe)
 }

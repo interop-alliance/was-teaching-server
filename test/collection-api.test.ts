@@ -112,7 +112,7 @@ describe('Collections API', () => {
 
     // The description is untouched.
     const description = await aliceSpace.collection(collectionId).describe()
-    assert.equal(description.name, 'Conflict Test Collection')
+    assert.equal(description!.name, 'Conflict Test Collection')
   })
 
   it('[root] list collection items via GET :collectionId/', async () => {
@@ -201,7 +201,7 @@ describe('Collections API', () => {
 
       // And it is reflected in the Collection description.
       const description = await aliceSpace.collection(collectionId).describe()
-      assert.deepStrictEqual(description.backend, { id: 'default' })
+      assert.deepStrictEqual(description!.backend, { id: 'default' })
     })
 
     it('POST with an unknown backend id yields unsupported-backend (409)', async () => {
@@ -317,7 +317,7 @@ describe('Collections API', () => {
       const collection = aliceSpace.collection(crypto.randomUUID())
       await collection.configure({ name: 'PUT Default Backend' })
       const description = await collection.describe()
-      assert.deepStrictEqual(description.backend, { id: 'default' })
+      assert.deepStrictEqual(description!.backend, { id: 'default' })
     })
 
     it('Collection linkset advertises the backend and quota relations', async () => {
