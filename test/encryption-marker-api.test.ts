@@ -128,6 +128,19 @@ describe('Encryption marker API', () => {
     assert.equal(err.response.status, 400)
   })
 
+  it('rejects an unrecognized scheme on create (400 unsupported-encryption-scheme)', async () => {
+    const err = await rejection(
+      alice.was.request({
+        path: `/space/${spaceId}/`,
+        method: 'POST',
+        json: { id: 'bad-scheme', encryption: { scheme: 'aes-gcm-siv' } }
+      })
+    )
+    assert.equal(err.response.status, 400)
+    assert.match(err.data.type, /#unsupported-encryption-scheme/)
+    assert.equal(err.data.errors?.[0]?.pointer, '#/encryption/scheme')
+  })
+
   it('allows declaring a marker on an existing plaintext collection (absent -> present)', async () => {
     const collectionId = 'late-declare'
     await alice.was.request({
@@ -161,7 +174,12 @@ describe('Encryption marker API', () => {
     assert.equal(put.status, 204)
   })
 
-  it('rejects changing an existing marker scheme (409 encryption-immutable)', async () => {
+  it('rejects changing to an unrecognized scheme (400 unsupported-encryption-scheme, marker unchanged)', async () => {
+    // With v1 recognizing only `edv`, a scheme *change* names a scheme the
+    // server cannot enforce, so the fail-closed `unsupported-encryption-scheme`
+    // gate fires first -- before the set-once `encryption-immutable` (409) check,
+    // which the direct-transition unit test below still exercises. Either way the
+    // stored marker cannot be corrupted.
     const collectionId = 'immutable'
     await alice.was.request({
       path: `/space/${spaceId}/`,
@@ -175,8 +193,8 @@ describe('Encryption marker API', () => {
         json: { id: collectionId, encryption: { scheme: 'other' } }
       })
     )
-    assert.equal(err.response.status, 409)
-    assert.match(err.data.type, /#encryption-immutable/)
+    assert.equal(err.response.status, 400)
+    assert.match(err.data.type, /#unsupported-encryption-scheme/)
     // The stored marker is unchanged.
     assert.deepStrictEqual((await describe(collectionId)).encryption, {
       scheme: 'edv'
@@ -190,12 +208,14 @@ describe('Encryption marker API', () => {
       method: 'POST',
       json: { id: collectionId, encryption: { scheme: 'edv' } }
     })
-    // A name-only update must not clear the marker.
-    await alice.was.request({
+    // A name-only update must not clear the marker (client #8: merge, not
+    // replace) -- and it must succeed (204), not trip `encryption-immutable`.
+    const put = await alice.was.request({
       path: `/space/${spaceId}/${collectionId}`,
       method: 'PUT',
       json: { id: collectionId, name: 'Renamed' }
     })
+    assert.equal(put.status, 204)
     const desc = await describe(collectionId)
     assert.equal(desc.name, 'Renamed')
     assert.deepStrictEqual(desc.encryption, { scheme: 'edv' })

@@ -175,7 +175,7 @@ export function createApp({
     }
   })
 
-  // Parse `application/<suffix>+json` bodies (e.g. `application/edv+json` for
+  // Parse `application/<suffix>+json` bodies (e.g. `application/jose+json` for
   // EDV-over-WAS encrypted documents, `application/ld+json`, etc.) as JSON, the
   // same as plain `application/json`. Fastify's built-in JSON parser only
   // matches `application/json` exactly, so structured-suffix JSON media types

@@ -10,17 +10,48 @@
  * per-Collection client concern, not a backend capability.
  */
 import type { CollectionEncryption } from '../types.js'
-import { InvalidRequestBodyError, EncryptionImmutableError } from '../errors.js'
+import {
+  InvalidRequestBodyError,
+  EncryptionImmutableError,
+  UnsupportedEncryptionSchemeError,
+  EncryptionSchemeMismatchError
+} from '../errors.js'
+import { isValidEdvEnvelope } from './edvEnvelope.js'
+
+/**
+ * The encryption schemes this server recognizes and can enforce on write (spec
+ * "Encryption Scheme Registry"). Each entry pins the scheme token to its
+ * required stored-representation media type and the structural validator for its
+ * envelope profile. v1 has exactly one entry: `edv` (EDV-over-WAS), a JWE in JSON
+ * serialization carried as `application/jose+json`. "Marked with a recognized
+ * scheme" structurally implies "non-conforming writes rejected here" -- the
+ * fail-closed guarantee. Extending the registry (a new scheme, or a new media
+ * type for an existing one) is the only place a scheme becomes acceptable.
+ */
+export const SUPPORTED_ENCRYPTION_SCHEMES: Record<
+  string,
+  { mediaType: string; validateEnvelope: (body: unknown) => boolean }
+> = {
+  edv: {
+    mediaType: 'application/jose+json',
+    validateEnvelope: isValidEdvEnvelope
+  }
+}
 
 /**
  * Validates a client-supplied Collection `encryption` marker and returns the
- * normalized value to persist, or `undefined` when absent (plaintext). Shape
- * only: a present value must be an object with a non-empty string `scheme`;
- * anything else is `invalid-request-body` (400, pointer `#/encryption`). The
- * server never decrypts, so it does **not** gate on the `scheme` value -- an
- * unknown future scheme still round-trips. The whole marker object is preserved
- * (not reduced to `{ scheme }`) so future public-reference fields a newer client
- * may add (e.g. recipient key references) survive an older server unchanged.
+ * normalized value to persist, or `undefined` when absent (plaintext). Two
+ * gates: (1) shape -- a present value must be an object with a non-empty string
+ * `scheme`, else `invalid-request-body` (400, pointer `#/encryption`); (2)
+ * fail-closed scheme gate -- the `scheme` MUST name one this server recognizes
+ * and can enforce on write (`SUPPORTED_ENCRYPTION_SCHEMES`), else
+ * `unsupported-encryption-scheme` (400, pointer `#/encryption/scheme`). Taking
+ * the spec's SHOULD path, the reference server refuses to store a marker it
+ * cannot back with write-time validation, rather than storing an unknown scheme
+ * opaquely. Unknown **extra fields** on an otherwise-recognized marker are still
+ * preserved (the whole object is returned, not reduced to `{ scheme }`) so
+ * future public-reference fields a newer client adds (e.g. recipient key
+ * references) survive an older server unchanged.
  *
  * @param options {object}
  * @param [options.encryption] {unknown}   the request body's `encryption` value
@@ -51,7 +82,13 @@ export function assertSupportedEncryption({
       pointer: '#/encryption'
     })
   }
-  // Store opaquely (only `scheme` is typed today; preserve any extra fields).
+  // Fail closed: only a recognized scheme (one the server validates on write) is
+  // accepted; an unknown scheme is rejected rather than stored opaquely.
+  if (!Object.hasOwn(SUPPORTED_ENCRYPTION_SCHEMES, scheme)) {
+    throw new UnsupportedEncryptionSchemeError({ scheme })
+  }
+  // Preserve the whole marker (only `scheme` is typed today; keep any extra
+  // forward-compat fields on a recognized scheme).
   return encryption as CollectionEncryption
 }
 
@@ -83,5 +120,64 @@ export function assertEncryptionTransition({
 }): void {
   if (existing !== undefined && existing.scheme !== incoming.scheme) {
     throw new EncryptionImmutableError()
+  }
+}
+
+/**
+ * Fail-closed structural validation of a Resource **content** write into an
+ * encrypted Collection (spec "Encryption Scheme Registry"). When the target
+ * Collection declares a recognized `encryption` scheme, a write MUST be a
+ * conforming envelope of that scheme -- two gates: (1) the request `Content-Type`
+ * MUST be the scheme's registered media type (so a binary/`octet-stream`,
+ * `multipart`, or plain `application/json` upload is rejected outright), and (2)
+ * the parsed body MUST satisfy the scheme's structural envelope profile. A
+ * failure of either is `encryption-scheme-mismatch` (422). No-op when the
+ * Collection has no marker (plaintext) or -- defensively -- an unrecognized
+ * scheme (which `assertSupportedEncryption` prevents from ever being stored), so
+ * plaintext Collections and API documents are unaffected. The server validates
+ * structure only; it never decrypts. Call this **after** capability verification
+ * and the 404-if-missing check, and before resolving the body stream, so a wrong
+ * content type is rejected without consuming the upload and a 422 is observable
+ * only to a caller already authorized to write the target.
+ *
+ * @param options {object}
+ * @param options.collectionDescription {{ encryption?: CollectionEncryption }}
+ *   the target Collection's stored description
+ * @param [options.contentType] {string}   the request `Content-Type` header
+ * @param options.body {unknown}   the parsed request body (an object for the
+ *   `application/<suffix>+json` media types the scheme registry uses)
+ * @returns {void}
+ */
+export function assertEncryptedWriteConforms({
+  collectionDescription,
+  contentType,
+  body
+}: {
+  collectionDescription: { encryption?: CollectionEncryption }
+  contentType?: string
+  body: unknown
+}): void {
+  const scheme = collectionDescription.encryption?.scheme
+  if (scheme === undefined) {
+    return
+  }
+  const profile = SUPPORTED_ENCRYPTION_SCHEMES[scheme]
+  if (!profile) {
+    return
+  }
+  // Gate 1: the stored representation's media type. Compare the bare media type
+  // (parameters like `; charset=utf-8` stripped), case-insensitively.
+  const mediaType = (contentType ?? '').split(';')[0]!.trim().toLowerCase()
+  if (mediaType !== profile.mediaType) {
+    throw new EncryptionSchemeMismatchError({
+      detail: `A write into a Collection encrypted with the '${scheme}' scheme must use Content-Type '${profile.mediaType}'.`
+    })
+  }
+  // Gate 2: the envelope's structural profile (server validates shape, not
+  // contents -- it never decrypts).
+  if (!profile.validateEnvelope(body)) {
+    throw new EncryptionSchemeMismatchError({
+      detail: `Resource body is not a structurally valid '${scheme}' encryption envelope.`
+    })
   }
 }

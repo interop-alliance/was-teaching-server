@@ -230,6 +230,58 @@ export class EncryptionImmutableError extends ProblemError {
 }
 
 /**
+ * 400 — a Collection create/update supplied an `encryption` marker naming a
+ * `scheme` this server does not recognize and therefore cannot enforce on write.
+ * Taking the spec's fail-closed SHOULD path ("Encryption Scheme Registry"), the
+ * reference server rejects such a marker rather than storing it opaquely, so
+ * every accepted marker is one whose non-conforming (e.g. plaintext) writes it
+ * will reject. A pure body-shape rejection, checked before capability
+ * verification like the other `invalid`-shaped 400s.
+ * @param options {object}
+ * @param options.scheme {string}   the unrecognized scheme token
+ */
+export class UnsupportedEncryptionSchemeError extends ProblemError {
+  constructor({ scheme }: { scheme: string }) {
+    const detail = `This server does not support the '${scheme}' encryption scheme.`
+    super({
+      type: ProblemTypes.UNSUPPORTED_ENCRYPTION_SCHEME,
+      title: 'Unsupported encryption scheme.',
+      detail,
+      statusCode: 400,
+      problems: [{ detail, pointer: '#/encryption/scheme' }]
+    })
+  }
+}
+
+/**
+ * 422 — a content write into a Collection whose `encryption` marker declares a
+ * recognized scheme did not conform to that scheme's envelope profile: the
+ * request `Content-Type` was not the scheme's registered media type, or the body
+ * was not a structurally valid envelope (spec "Encryption Scheme Registry"). The
+ * server validates structure only and never decrypts. Like the write-time 409s
+ * (`id-conflict`, `encryption-immutable`), it is only ever observable by a caller
+ * already authorized to write the target -- it is checked after capability
+ * verification, so an under-authorized caller receives the privacy-merged
+ * `not-found` (404) instead.
+ * @param options {object}
+ * @param [options.detail] {string}   which gate failed (media type vs envelope shape)
+ */
+export class EncryptionSchemeMismatchError extends ProblemError {
+  constructor({ detail }: { detail?: string } = {}) {
+    const message =
+      detail ??
+      "Resource body does not conform to the Collection's declared encryption scheme."
+    super({
+      type: ProblemTypes.ENCRYPTION_SCHEME_MISMATCH,
+      title: 'Encrypted Collection write does not conform to its scheme.',
+      detail: message,
+      statusCode: 422,
+      problems: [{ detail: message }]
+    })
+  }
+}
+
+/**
  * 412 — a conditional write's `If-Match` / `If-None-Match` precondition
  * evaluated false: the Resource's current `ETag` did not match, or a
  * create-if-absent (`If-None-Match: *`) target already exists. Header-driven

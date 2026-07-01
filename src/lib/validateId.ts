@@ -52,7 +52,15 @@ export function isUrlSafeSegment(id: string): boolean {
 // `/space/{id}/export`), so the spec requires rejecting it with 409
 // `reserved-id`. Space ids have no reserved siblings (`/space/{id}` has no
 // static neighbors), so no set exists for the `space` kind.
-const RESERVED_COLLECTION_IDS = new Set([
+//
+// Exported as the server's authoritative per-kind sets so a client can mirror
+// them rather than hand-maintaining a copy (client #13). NOTE the one known
+// divergence from the pure spec registry: `import` is this server's non-spec
+// tar-import endpoint, so a client mirroring the *spec* registry should omit it.
+// Kept byte-identical to `@interop/storage-core`'s exported registry (locked by
+// a drift-guard test); the local definition keeps the id-safety logic
+// self-contained.
+export const RESERVED_COLLECTION_IDS = new Set([
   'backends',
   'collections',
   'export',
@@ -62,7 +70,7 @@ const RESERVED_COLLECTION_IDS = new Set([
   'query',
   'quotas'
 ])
-const RESERVED_RESOURCE_IDS = new Set([
+export const RESERVED_RESOURCE_IDS = new Set([
   'backend',
   'linkset',
   'policy',

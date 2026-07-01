@@ -1,5 +1,39 @@
 # History
 
+## Unreleased - TBD
+
+### Added
+
+- **Encryption Scheme Registry enforcement (spec "Encryption Scheme
+  Registry").** The server now provides the fail-closed guarantee that plaintext
+  can never land in a Collection marked encrypted with a recognized scheme:
+  - A Collection `encryption` marker is gated against a recognized-scheme
+    registry (`SUPPORTED_ENCRYPTION_SCHEMES`; v1 has `edv` ->
+    `application/jose+json`). An unrecognized `scheme` is now rejected with the
+    new `unsupported-encryption-scheme` (400) error rather than stored opaquely.
+  - A Resource **content** write into a recognized-scheme Collection is
+    structurally validated (`Create Resource` `POST`, `Put Resource` `PUT`): the
+    request `Content-Type` MUST be the scheme's registered media type and the
+    body MUST be a structurally valid envelope (a JWE in JSON serialization for
+    `edv`, validated by `src/lib/edvEnvelope.ts` -- shape only, never
+    decrypted), else the new `encryption-scheme-mismatch` (422) error. Checked
+    after capability verification, so an under-authorized caller still receives
+    the privacy-merged `not-found` (404). Server-managed API documents
+    (Collection Descriptions, Resource Metadata, policies, linksets) are
+    unaffected and stay `application/json`.
+  - Requires `@interop/storage-core` ^0.3.1 (adds the two new problem types).
+
+### Fixed
+
+- **Top-level falsy JSON Resources no longer 500.** Storing a bare top-level
+  JSON `null` (and likewise `false`, `0`, `""`) into a plaintext Collection
+  failed with a 500: the filesystem backend wrote JSON via `fs-json-store`,
+  whose `write` re-reads through `readExisting`, which treats a falsy
+  round-tripped value as "file does not exist". The backend now serializes and
+  writes JSON Resource bodies directly (creating the Collection dir as needed),
+  so any top-level JSON value -- object, array, or bare primitive -- round-trips
+  intact.
+
 ## 0.7.0 - 2026-06-28
 
 ### Added

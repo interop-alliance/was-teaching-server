@@ -17,7 +17,8 @@ import {
 } from '../lib/backends.js'
 import {
   assertSupportedEncryption,
-  assertEncryptionTransition
+  assertEncryptionTransition,
+  assertEncryptedWriteConforms
 } from '../lib/encryption.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import {
@@ -87,6 +88,18 @@ export class CollectionRequest {
     if (!collectionDescription) {
       throw new CollectionNotFoundError({ requestName })
     }
+
+    // Fail-closed encryption enforcement: if the Collection declares a recognized
+    // `encryption` scheme, the content write MUST be a conforming envelope of it
+    // (right media type + envelope shape), else `encryption-scheme-mismatch`
+    // (422). Runs after auth (above) and the 404, before the body is resolved --
+    // so a wrong content type is rejected without consuming the upload, and the
+    // 422 is only observable by a caller already authorized to write here.
+    assertEncryptedWriteConforms({
+      collectionDescription,
+      contentType: request.headers['content-type'],
+      body: request.body
+    })
 
     // zCap checks out, continue
     const resourceId = uuidv4()

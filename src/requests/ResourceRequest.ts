@@ -6,6 +6,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
+import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { resourcePath, metaPath } from '../lib/paths.js'
 import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
@@ -132,6 +133,19 @@ export class ResourceRequest {
     if (!collectionDescription) {
       throw new CollectionNotFoundError({ requestName })
     }
+
+    // Fail-closed encryption enforcement: if the Collection declares a recognized
+    // `encryption` scheme, the content write MUST be a conforming envelope of it
+    // (right media type + envelope shape), else `encryption-scheme-mismatch`
+    // (422). Runs after auth (above) and the 404, before the body is resolved --
+    // so a wrong content type is rejected without consuming the upload, and the
+    // 422 is only observable by a caller already authorized to write here.
+    assertEncryptedWriteConforms({
+      collectionDescription,
+      contentType: request.headers['content-type'],
+      body: request.body
+    })
+
     // Route resource bytes to the Collection's selected (data-plane) backend.
     const dataBackend = await resolveBackend({
       request,

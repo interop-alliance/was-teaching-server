@@ -146,4 +146,59 @@ describe('Wire-contract smoke (status codes)', () => {
       /application\/problem\+json/
     )
   })
+
+  // Client #4 (stored `null` crashes read) / #6 (top-level JSON primitives
+  // rejected) are client bugs; these lock the server contract they depend on. A
+  // *plaintext* Collection stores and returns a bare top-level JSON value
+  // intact. (In an *encrypted* Collection these would be rejected 422, since the
+  // stored representation must be a JWE envelope -- see encryption-enforce-api.)
+  // Includes the *falsy* values (`null`, `false`, `0`, `""`) that a naive store
+  // conflates with "absent" -- these are the regression the server fix guards.
+  const primitives: [string, string, unknown][] = [
+    ['null', 'null', null],
+    ['false', 'false', false],
+    ['zero', '0', 0],
+    ['empty string', '""', ''],
+    ['a string', '"hello"', 'hello'],
+    ['a number', '42', 42],
+    ['a boolean true', 'true', true]
+  ]
+  for (const [label, raw, expected] of primitives) {
+    it(`round-trips a top-level JSON ${label} in a plaintext Collection`, async () => {
+      const resourcePath = `/space/${spaceId}/${collectionId}/primitive-${label.replace(/\s+/g, '-')}`
+      const putResponse = await alice.was.request({
+        path: resourcePath,
+        method: 'PUT',
+        body: new TextEncoder().encode(raw),
+        headers: { 'content-type': 'application/json' }
+      })
+      assert.equal(putResponse.status, 204)
+      const getResponse = await alice.was.request({
+        path: resourcePath,
+        method: 'GET'
+      })
+      assert.equal(getResponse.status, 200)
+      assert.deepStrictEqual(getResponse.data, expected)
+    })
+  }
+
+  // Client #2 (reserved-segment routing): a reserved collection-level segment
+  // (`policy`) addresses the dedicated Policy endpoint (static-beats-parametric),
+  // never a Resource named `policy`. Confirm the reserved route wins end to end.
+  it('reserved `policy` segment routes to the collection Policy endpoint', async () => {
+    const policyPath = `/space/${spaceId}/${collectionId}/policy`
+    const put = await alice.was.request({
+      path: policyPath,
+      method: 'PUT',
+      json: { type: 'PublicCanRead' }
+    })
+    assert.equal([200, 201, 204].includes(put.status), true)
+    // Read it back: proves the PUT hit the Policy handler (a Resource write would
+    // not be retrievable at this path as a policy document).
+    const get = await alice.was.request({ path: policyPath, method: 'GET' })
+    assert.equal(get.status, 200)
+    assert.equal(get.data.type, 'PublicCanRead')
+    const del = await alice.was.request({ path: policyPath, method: 'DELETE' })
+    assert.equal(del.status, 204)
+  })
 })

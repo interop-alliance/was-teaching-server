@@ -4,7 +4,7 @@
  * adapter implementing the StorageBackend contract documented in types.ts.
  */
 import path from 'node:path'
-import { mkdir, rm, stat as fsStat } from 'node:fs/promises'
+import { mkdir, rm, stat as fsStat, writeFile } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -1401,9 +1401,17 @@ export class FileSystemBackend implements StorageBackend {
           incomingBytes
         })
       }
-      const resourceJsonStore = new MetadataJsonStore({ file: filePath })
+      // Write the serialized JSON directly rather than through fs-json-store,
+      // whose `write` verifies the result via `readExisting` and treats a falsy
+      // round-tripped value (`null`, `false`, `0`, `""`) as "file does not
+      // exist" -- which would 500 a legitimate top-level primitive Resource. The
+      // read path (`getResource`) streams the bytes back verbatim, so any
+      // top-level JSON value -- object, array, or bare primitive -- round-trips.
+      // Ensure the Collection dir exists first (fs-json-store used to create it
+      // on the fly; a data-plane backend may not have seen this Collection yet).
       this.logger.info('Creating JSON resource')
-      await resourceJsonStore.write(input.data)
+      await mkdir(path.dirname(filePath), { recursive: true })
+      await writeFile(filePath, JSON.stringify(input.data))
     } else {
       this.logger.info('Writing blob')
       // Pre-flight the declared size (when present) against the per-upload cap,

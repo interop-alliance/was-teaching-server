@@ -8,7 +8,16 @@ import { it, describe } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyRequest } from 'fastify'
 
-import { assertValidId, assertValidIds } from '../src/lib/validateId.js'
+import {
+  RESERVED_COLLECTION_IDS as storageCoreCollectionIds,
+  RESERVED_RESOURCE_IDS as storageCoreResourceIds
+} from '@interop/storage-core'
+import {
+  assertValidId,
+  assertValidIds,
+  RESERVED_COLLECTION_IDS,
+  RESERVED_RESOURCE_IDS
+} from '../src/lib/validateId.js'
 import { resolveResourceInput } from '../src/requests/resourceInput.js'
 import {
   InvalidSpaceIdError,
@@ -129,6 +138,30 @@ describe('assertValidId', () => {
       () => assertValidId('../x', { kind: 'resource' }),
       (err: Error) => err instanceof InvalidResourceIdError
     )
+  })
+})
+
+describe('reserved-id registry (client #13)', () => {
+  it('the server per-kind sets stay byte-identical to @interop/storage-core', () => {
+    // The server is the authority for the Reserved Path Segment Registry and
+    // exports its per-kind sets so the client can mirror them. storage-core
+    // carries the shared copy; lock the two together so they cannot drift.
+    assert.deepStrictEqual(
+      [...RESERVED_COLLECTION_IDS].sort(),
+      [...storageCoreCollectionIds].sort()
+    )
+    assert.deepStrictEqual(
+      [...RESERVED_RESOURCE_IDS].sort(),
+      [...storageCoreResourceIds].sort()
+    )
+  })
+
+  it('documents the one known divergence from the spec registry: `import`', () => {
+    // `import` is this server's non-spec tar-import endpoint; a client mirroring
+    // the *spec* registry omits it. It must be reserved as a collection id (so it
+    // cannot shadow the endpoint) but is not a reserved resource id.
+    assert.ok(RESERVED_COLLECTION_IDS.has('import'))
+    assert.ok(!RESERVED_RESOURCE_IDS.has('import'))
   })
 })
 

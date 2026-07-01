@@ -108,7 +108,11 @@ describe('Encryption marker API', () => {
     )
   })
 
-  it('[root] rejects changing an existing marker (409 encryption-immutable)', async () => {
+  it('[root] rejects an unrecognized scheme (400 unsupported-encryption-scheme)', async () => {
+    // With v1 recognizing only `edv`, naming any other scheme -- whether on a
+    // fresh Collection or as a change to `vault` -- is rejected by the
+    // fail-closed scheme gate before the set-once `encryption-immutable` check
+    // could apply, so the stored marker cannot be corrupted either way.
     let expectedError: any
     try {
       await alice.rootClient.request({
@@ -120,11 +124,53 @@ describe('Encryption marker API', () => {
     } catch (err) {
       expectedError = err
     }
-    assert.ok(expectedError, 'expected the marker change to be rejected')
-    assert.equal(expectedError.response.status, 409)
+    assert.ok(expectedError, 'expected the unrecognized scheme to be rejected')
+    assert.equal(expectedError.response.status, 400)
     assert.equal(
       expectedError.data.type,
-      'https://wallet.storage/spec#encryption-immutable'
+      'https://wallet.storage/spec#unsupported-encryption-scheme'
     )
+  })
+
+  it('[root] rejects a non-envelope write into an encrypted Collection (422 scheme-mismatch)', async () => {
+    // The fail-closed guarantee (spec "Encryption Scheme Registry"): the `vault`
+    // Collection is `edv`, so a plaintext JSON write is structurally rejected --
+    // server-visible plaintext can never land in an encrypted Collection, even
+    // from a writer that forgets (or refuses) to encrypt.
+    let expectedError: any
+    try {
+      await alice.rootClient.request({
+        url: new URL(
+          `/space/${alice.space1.id}/vault/plaintext-doc`,
+          serverUrl
+        ).toString(),
+        method: 'PUT',
+        action: 'PUT',
+        json: { hello: 'world' }
+      })
+    } catch (err) {
+      expectedError = err
+    }
+    assert.ok(expectedError, 'expected the plaintext write to be rejected')
+    assert.equal(expectedError.response.status, 422)
+    assert.equal(
+      expectedError.data.type,
+      'https://wallet.storage/spec#encryption-scheme-mismatch'
+    )
+  })
+
+  it('[root] accepts a conforming jose+json envelope into an encrypted Collection', async () => {
+    const envelope = { protected: 'eyJhbGciOiJkaXI', ciphertext: 'c1phertext' }
+    const response = await alice.rootClient.request({
+      url: new URL(
+        `/space/${alice.space1.id}/vault/envelope-doc`,
+        serverUrl
+      ).toString(),
+      method: 'PUT',
+      action: 'PUT',
+      body: new TextEncoder().encode(JSON.stringify(envelope)),
+      headers: { 'content-type': 'application/jose+json' }
+    })
+    assert.equal(response.status, 204)
   })
 })
