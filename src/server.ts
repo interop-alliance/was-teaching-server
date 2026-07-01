@@ -211,6 +211,17 @@ export function createApp({
     return reply.view('home', { title: 'Welcome', SPEC_URL, SERVER_VERSION })
   })
 
+  // Operational liveness probe (not a WAS protocol feature). Public,
+  // unauthenticated, and side-effect-free so load balancers, uptime monitors,
+  // and orchestrators can poll it cheaply. Body follows the
+  // `application/health+json` shape from the IETF `draft-inadarei-api-health-check`
+  // draft; Fastify's implicit HEAD route serves bodyless probes for free.
+  fastify.get('/health', async (request, reply) => {
+    return reply
+      .type('application/health+json')
+      .send({ status: 'pass', version: SERVER_VERSION })
+  })
+
   fastify.register(initApiCorsProxyRoutes)
   fastify.register(initSpacesRepositoryRoutes)
   fastify.register(initSpaceRoutes)

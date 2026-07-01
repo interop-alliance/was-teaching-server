@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Operational `/health` liveness endpoint.** A public, unauthenticated,
+  side-effect-free `GET /health` returns `200` with an `application/health+json`
+  body (`{ "status": "pass", "version": ... }`, following the IETF
+  `draft-inadarei-api-health-check` shape) so load balancers, uptime monitors,
+  and orchestrators can poll cheaply; `HEAD /health` serves a bodyless `200` for
+  probes that don't want a body. This is an operational affordance, not a WAS
+  protocol feature. `scripts/conformance-local.ts` now polls `/health` for
+  startup readiness instead of the HTML welcome page.
+
 - **Encryption Scheme Registry enforcement (spec "Encryption Scheme
   Registry").** The server now provides the fail-closed guarantee that plaintext
   can never land in a Collection marked encrypted with a recognized scheme:

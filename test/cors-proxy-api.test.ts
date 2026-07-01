@@ -16,16 +16,18 @@ describe('CORS proxy API', () => {
   })
 
   it('fetches the target URL and passes through response details', async () => {
-    const fetchMock = vi.fn(async (_url: URL | RequestInfo, _options?: RequestInit) => {
-      return new Response('{"ok":true}', {
-        status: 203,
-        headers: {
-          'cache-control': 'max-age=60',
-          'content-type': 'application/json',
-          etag: '"abc123"'
-        }
-      })
-    })
+    const fetchMock = vi.fn(
+      async (_url: URL | RequestInfo, _options?: RequestInit) => {
+        return new Response('{"ok":true}', {
+          status: 203,
+          headers: {
+            'cache-control': 'max-age=60',
+            'content-type': 'application/json',
+            etag: '"abc123"'
+          }
+        })
+      }
+    )
     vi.stubGlobal('fetch', fetchMock)
 
     const app = createApp()

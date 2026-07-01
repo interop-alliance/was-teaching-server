@@ -11,7 +11,7 @@ interface CorsProxyQuery {
  *
  * Example:
  * `/api/cors?url=https%3A%2F%2Fregistry.dcconsortium.org%2F.well-known%2Fopenid-federation`
- * 
+ *
  * @param app - Fastify instance
  * @param _options - Fastify plugin options
  */

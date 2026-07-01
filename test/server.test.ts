@@ -34,4 +34,25 @@ describe('Server', () => {
     assert.equal(response.status, 200)
     assert.match(body, /Welcome/)
   })
+
+  it('should GET /health without authentication', async () => {
+    const response = await fetch(serverUrl + '/health')
+    const body = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.match(
+      response.headers.get('content-type') ?? '',
+      /^application\/health\+json/
+    )
+    assert.equal(body.status, 'pass')
+    assert.equal(typeof body.version, 'string')
+  })
+
+  it('should HEAD /health with an empty body', async () => {
+    const response = await fetch(serverUrl + '/health', { method: 'HEAD' })
+    const body = await response.text()
+
+    assert.equal(response.status, 200)
+    assert.equal(body, '')
+  })
 })

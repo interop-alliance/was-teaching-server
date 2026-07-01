@@ -88,7 +88,7 @@ async function main(): Promise<void> {
 
   let exitCode = 1
   try {
-    await waitForHealth(serverUrl)
+    await waitForHealth(`${serverUrl}/health`)
     exitCode = await runConformance()
   } catch (err) {
     console.error((err as Error).message)
