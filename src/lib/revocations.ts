@@ -1,7 +1,6 @@
 /**
- * The zcap revocation chain-inspection hook (the `/kms` facet, Track C of
- * `_spec/web-kms-roadmap.md`; the analogue of bedrock-zcap-storage's
- * `helpers.inspectCapabilityChain`). Wired into every keystore-rooted
+ * The zcap revocation chain-inspection hook (the `/kms` facet). Wired into
+ * every keystore-rooted
  * verification as the zcap library's `inspectCapabilityChain` extension
  * point, it fails a verification whose dereferenced chain contains any
  * capability with a stored revocation. Written route-family-agnostic over the
@@ -19,8 +18,7 @@ import type { CapabilitySummary, StorageBackend } from '../types.js'
  * Extracts the `(capabilityId, delegator)` lookup pairs from a verified,
  * dereferenced capability chain. The root capability is skipped -- root zcaps
  * cannot be revoked -- and so is any link whose verify result carries no
- * delegator (nothing to key a revocation record on), mirroring
- * bedrock-zcap-storage's `inspectCapabilityChain` helper.
+ * delegator (nothing to key a revocation record on).
  *
  * @param options {object}
  * @param options.capabilityChain {object[]}   the dereferenced chain (root to

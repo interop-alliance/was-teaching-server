@@ -4,11 +4,28 @@
 
 ### Added
 
-- **WebKMS `/kms` facet: zcap revocations + delegation policy (Track C of
-  `_spec/web-kms-roadmap.md`).** Delegated capabilities on the `/kms` facet can
-  now be revoked, and every keystore-rooted verification enforces a unified
-  delegation policy; driven end-to-end by `@interop/webkms-client`'s
-  `revokeCapability` in the new `test/kms-revocation-api.test.ts` suite:
+- **Space-rooted delegated capabilities on the space-family routes.** Every
+  `/space/:spaceId/...` route now also accepts a delegated capability chain
+  rooted at the _Space's_ root capability with RESTful target attenuation -- the
+  same shape the WebKMS keystore routes already allowed. A controller can
+  delegate one capability for the whole Space (or, by attenuating the
+  `invocationTarget` at delegation time, for a single Collection under it) and
+  the delegate can invoke it against any URL underneath: resources, listings,
+  `/meta`, the changes-query endpoint, `/quotas` (composing with the existing
+  query-parameter attenuation). Root invocations of the exact target's own root
+  capability verify unchanged, so this only widens what the Space controller can
+  delegate, never who can access. Implemented as `verifyZcap`'s new
+  `attenuatedRootTarget` option, threaded through `authorize()` and the
+  `spaceContext` preludes; exercised by the new `test/session-zcaps.test.ts`
+  suite (the browser-session-key shape: space-wide read + per-collection
+  read/write, negative cases included -- notably that a collection-scoped
+  capability cannot PUT the Space Description, and that only the Space root is
+  accepted as a chain root).
+- **WebKMS `/kms` facet: zcap revocations + delegation policy.** Delegated
+  capabilities on the `/kms` facet can now be revoked, and every keystore-rooted
+  verification enforces a unified delegation policy; driven end-to-end by
+  `@interop/webkms-client`'s `revokeCapability` in the new
+  `test/kms-revocation-api.test.ts` suite:
   - `POST /kms/keystores/:keystoreId/zcaps/revocations/:revocationId`
     (`:revocationId` = the URL-encoded id of the capability being revoked, which
     is also the request body; 204 on success). Authorization follows
@@ -19,24 +36,19 @@
     without holding a separate capability. The submitted chain must root in the
     keystore being posted to; root zcaps cannot be revoked (400); a chain
     containing an already-revoked link (resubmissions included) is a 400, with
-    the 409 duplicate reserved for a write race (bedrock parity).
+    the 409 duplicate reserved for a write race.
   - Revocations are checked on every subsequent keystore-rooted invocation via
-    the zcap library's `inspectCapabilityChain` hook (`src/lib/revocations.ts`,
-    the analogue of bedrock-zcap-storage's chain inspector; written
-    route-family-agnostic so a later WAS-side store can reuse it). Storage is
-    the new insert-once `StorageBackend` pair `insertRevocation` / `isRevoked`,
-    unique on `(delegator, capability.id)` per keystore under
+    the zcap library's `inspectCapabilityChain` hook (`src/lib/revocations.ts`;
+    written route-family-agnostic so a later WAS-side store can reuse it).
+    Storage is the new insert-once `StorageBackend` pair `insertRevocation` /
+    `isRevoked`, unique on `(delegator, capability.id)` per keystore under
     `data/keystores/<localId>/revocations/`; records lapse one day past the
-    capability's own `expires` (the filesystem analogue of bedrock's TTL index,
-    pruned lazily on read).
+    capability's own `expires` (the filesystem analogue of a TTL index, pruned
+    lazily on read).
   - Unified delegation policy on all `/kms` verifications: max chain length 10
     (`KMS_MAX_CHAIN_LENGTH`) and a single 90-day max delegation TTL
-    (`KMS_MAX_DELEGATION_TTL`) -- deliberately replacing bedrock's inconsistent
-    per-family TTLs, since revocation plus the (already mandatory) `expires` is
-    the real control. The per-key `maxCapabilityChainLength` stored at generate
-    time is now enforced at operation time (bedrock-kms-module-core's
-    `_checkZcapInvocationRules`; the chain includes the root, so `1` means
-    controller-only), completing the Track B leftover.
+    (`KMS_MAX_DELEGATION_TTL`). The per-key `maxCapabilityChainLength` stored at
+    generate time is now enforced at operation time.
   - `handleZcapVerify` now returns the verification result (the dereferenced
     chain feeds the per-key gate), and `verifyZcap` grew optional
     `inspectCapabilityChain` / `maxChainLength` / `maxDelegationTtl`
@@ -45,49 +57,44 @@
     `@interop/jsonld-signatures` (both already in the tree transitively) power
     the revocation route's standalone `CapabilityDelegation` chain verification.
 
-- **WebKMS `/kms` facet: local KMS module + key operations (Track B of
-  `_spec/web-kms-roadmap.md`).** The `/kms` facet now generates and uses
-  server-held keys, driven end-to-end by `@interop/webkms-client`'s
-  `KeystoreAgent` and all four key classes (`AsymmetricKey`, `KeyAgreementKey`,
-  `Hmac`, `Kek`) in the new `test/kms-key-api.test.ts` suite:
+- **WebKMS `/kms` facet: local KMS module + key operations.** The `/kms` facet
+  now generates and uses server-held keys, driven end-to-end by
+  `@interop/webkms-client`'s `KeystoreAgent` and all four key classes
+  (`AsymmetricKey`, `KeyAgreementKey`, `Hmac`, `Kek`) in the new
+  `test/kms-key-api.test.ts` suite:
   - `POST /kms/keystores/:keystoreId/keys` (`GenerateKeyOperation`, responding
     200 + `Location` + `{ keyId, keyDescription }` per webkms-switch),
     `POST .../keys/:keyId` (operation dispatch by envelope `type`), and
     `GET .../keys/:keyId` (public key description; capability-verified with the
-    `read` action -- a deliberate delta from bedrock, which serves that route
-    without authorization). Every key route roots its capability in the
-    **keystore** URL with the key URL accepted as an attenuated target (a new
+    `read` action). Every key route roots its capability in the **keystore** URL
+    with the key URL accepted as an attenuated target (a new
     `allowTargetAttenuation` mode in `verifyZcap`); the expected zcap action is
     the decapitalized operation name (`generateKey`, `sign`, ...).
-  - The single in-process `local-v1` module (`src/lib/kmsModule.ts`) mirrors
-    bedrock-kms-module-core: Ed25519 sign (via
-    `@interop/ed25519-verification-key`), X25519 `deriveSecret` (via
+  - The single in-process `local-v1` module (`src/lib/kmsModule.ts`): Ed25519
+    sign (via `@interop/ed25519-verification-key`), X25519 `deriveSecret` (via
     `@interop/x25519-key-agreement-key`, a new runtime dependency; raw ECDH, no
     KDF), HMAC-SHA-256 sign/verify and AES-256-KW wrap/unwrap (node crypto).
     Custody draws the line on what is served: asymmetric verify is client-local
-    by design and requesting it is a clean 400 not-supported (bedrock 500s).
-    `publicAlias` / `publicAliasTemplate` are applied to the description `id` at
-    generate time and re-applied stably on every read.
-  - The two bedrock rough edges are fixed rather than copied: a wrong-length
-    HMAC `signatureValue` is an ordinary `{ verified: false }` (not an uncaught
-    `timingSafeEqual` throw), and a failed AES-KW unwrap resolves
-    `{ unwrappedKey: null }` -- the client's documented contract that no bedrock
-    layer actually implements. A mismatched `deriveSecret` `publicKey.type` is
-    likewise a clean 400.
-  - Key records are stored per the roadmap's tension 1: bedrock's
-    `{ keystoreId, localId, meta, key }` shape (secret material included,
-    plaintext this increment; `controller` deliberately not stored -- it is read
-    live from the keystore config), as opaque units behind new insert-once
-    `StorageBackend` methods (`insertKey` / `getKey`, with the protocol's 409
-    duplicate conflict) under `data/keystores/<localId>/keys/<keyLocalId>.json`.
-    Wire projections never include secret fields.
+    by design and requesting it is a clean 400 not-supported. `publicAlias` /
+    `publicAliasTemplate` are applied to the description `id` at generate time
+    and re-applied stably on every read.
+  - Fixed: a wrong-length HMAC `signatureValue` is an ordinary
+    `{ verified: false }` (not an uncaught `timingSafeEqual` throw), and a
+    failed AES-KW unwrap resolves `{ unwrappedKey: null }`. A mismatched
+    `deriveSecret` `publicKey.type` is likewise a clean 400.
+  - Key records are stored using the `{ keystoreId, localId, meta, key }` shape
+    (secret material included, plaintext this increment; `controller`
+    deliberately not stored -- it is read live from the keystore config), as
+    opaque units behind new insert-once `StorageBackend` methods (`insertKey` /
+    `getKey`, with the protocol's 409 duplicate conflict) under
+    `data/keystores/<localId>/keys/<keyLocalId>.json`. Wire projections never
+    include secret fields.
 
-- **WebKMS `/kms` facet: keystore lifecycle (Track A of
-  `_spec/web-kms-roadmap.md`).** The server now hosts the first slice of the
-  Interop TypeScript analogue of Digital Bazaar's WebKMS system, interoperating
-  with `@interop/webkms-client@14.4.2` (whose `KmsClient` drives the new test
-  suite, `test/kms-keystore-api.test.ts` -- the client is the conformance suite
-  for this wire contract):
+- **WebKMS `/kms` facet: keystore lifecycle.** The server now hosts the first
+  slice of the Interop TypeScript analogue of Digital Bazaar's WebKMS system,
+  interoperating with `@interop/webkms-client@14.4.2` (whose `KmsClient` drives
+  the new test suite, `test/kms-keystore-api.test.ts` -- the client is the
+  conformance suite for this wire contract):
   - `POST /kms/keystores` (Create Keystore, 201 + `Location` + bare config;
     authorization is the chain-to-body-controller bootstrap rule, mirroring
     Create Space), `GET /kms/keystores?controller=<did>` (list-by-controller,
@@ -103,17 +110,11 @@
     hook: every webkms route -- GETs included -- is zcap-invoked, with `read` /
     `write` zcap actions (not HTTP verbs); the protocol has no public reads.
     Unknown keystores and failed authorization stay masked as `not-found` (404),
-    the server-wide convention (bedrock-kms uses 403; the client only
-    distinguishes status codes, so interop is unaffected). Bedrock's `meterId` /
-    `ipAllowList` are deliberately dropped and rejected (the schemas'
-    `additionalProperties: false` behavior, preserved).
+    the server-wide convention.
   - Storage grows a keystore tree (`data/keystores/<localId>/config.json`, a
     sibling of `spaces/` -- the facet is deliberately separable) behind new
     `StorageBackend` methods (`writeKeystore` / `getKeystore` / `updateKeystore`
     / `listKeystoresByController`).
-  - Track A's spike is answered: `@interop/http-signature-zcap-verify` already
-    supports the `inspectCapabilityChain` hook Track C (revocations) needs, so
-    no fork change is required there.
 
 - **Operational `/health` liveness endpoint.** A public, unauthenticated,
   side-effect-free `GET /health` returns `200` with an `application/health+json`

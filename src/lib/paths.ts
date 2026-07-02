@@ -288,10 +288,10 @@ export function linksetPath({
 
 /**
  * `/kms/keystores` -- the WebKMS keystores collection (create/list target; the
- * `/kms` facet, `_spec/web-kms-roadmap.md`) or one of its member keystores
+ * `/kms` facet) or one of its member keystores
  * (`/kms/keystores/:keystoreId`). Unlike the WAS builders there is no
- * trailing-slash container form: the webkms protocol (bedrock-kms-http /
- * `@interop/webkms-client`) posts to the bare collection path.
+ * trailing-slash container form: the webkms protocol
+ * (`@interop/webkms-client`) posts to the bare collection path.
  * @param options {object}
  * @param [options.keystoreId] {string}   the keystore's server-generated local
  *   id; when present, the member path, otherwise the collection path

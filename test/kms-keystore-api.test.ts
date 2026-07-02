@@ -1,7 +1,6 @@
 /**
  * WebKMS keystore lifecycle tests (Vitest): POST / GET `/kms/keystores`,
- * GET / POST `/kms/keystores/:keystoreId` (Track A of
- * `_spec/web-kms-roadmap.md`). Driven through `@interop/webkms-client`
+ * GET / POST `/kms/keystores/:keystoreId`. Driven through `@interop/webkms-client`
  * wherever it has a method for the operation -- the client IS the conformance
  * suite for the webkms wire contract -- with raw `@interop/ezcap` invocations
  * for the parts it does not cover (list-by-controller, delegated creation,
@@ -69,7 +68,7 @@ describe('WebKMS keystore lifecycle (/kms/keystores)', () => {
       // Server-generated id: the keystores URL plus a multibase (`z...`)
       // base58 local id.
       assert.match(
-        config.id,
+        config.id!,
         new RegExp(`^${keystoresUrl}/z[1-9A-HJ-NP-Za-km-z]+$`)
       )
       assert.equal(config.controller, alice.did)
@@ -162,7 +161,7 @@ describe('WebKMS keystore lifecycle (/kms/keystores)', () => {
       assert.equal(err.data.errors[0].pointer, '#/sequence')
     })
 
-    it('dropped bedrock fields are rejected (meterId, 400)', async () => {
+    it('unknown fields are rejected (meterId, 400)', async () => {
       const err = await requestError(
         createKeystore(alice, { meterId: 'urn:uuid:some-meter' })
       )
@@ -365,7 +364,7 @@ describe('WebKMS keystore lifecycle (/kms/keystores)', () => {
 
     it('anonymous reads are 401 too (unlike WAS public reads)', async () => {
       const created = await createKeystore(alice)
-      const getResponse = await fetch(created.id)
+      const getResponse = await fetch(created.id!)
       assert.equal(getResponse.status, 401)
       const listResponse = await fetch(
         `${keystoresUrl}?controller=${encodeURIComponent(alice.did)}`

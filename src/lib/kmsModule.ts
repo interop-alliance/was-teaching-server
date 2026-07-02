@@ -1,8 +1,7 @@
 /**
- * The single in-process WebKMS module this server hard-wires (`local-v1`;
- * Track B of `_spec/web-kms-roadmap.md`), mirroring bedrock's module split
- * (`bedrock-kms-module-core`) in one file: a pure-crypto core per key type, an
- * operation dispatch table keyed by `(key type, operation type)`, and the
+ * The single in-process WebKMS module this server hard-wires (`local-v1`),
+ * collecting the module's parts in one file: a pure-crypto core per key type,
+ * an operation dispatch table keyed by `(key type, operation type)`, and the
  * generate/describe orchestration (record assembly, `publicAlias` /
  * `publicAliasTemplate` expansion). The module never touches storage -- the
  * request layer loads/inserts `KmsKeyRecord`s through the storage backend and
@@ -12,7 +11,7 @@
  * every operation here requires the custodial secret -- Ed25519 sign, X25519
  * deriveSecret, HMAC sign/verify, AES-KW wrap/unwrap. Asymmetric verify needs
  * only the public key and is deliberately not served (client-local instead);
- * requesting it is a clean 400, where bedrock surfaces an uncaught 500.
+ * requesting it is a clean 400.
  */
 import {
   createCipheriv,
@@ -39,10 +38,10 @@ const KEY_TYPE_CONTEXTS: Record<string, string> = {
 }
 
 /**
- * AES Key Wrap (RFC 3394) parameters, per bedrock-kms-module-core `aeskw.js`:
- * AES-256 in key-wrap mode with the RFC's default initial value. The IV is the
- * integrity check -- `decipher.final()` throws when the unwrapped output would
- * not reproduce it (i.e. the wrong KEK or corrupted ciphertext).
+ * AES Key Wrap (RFC 3394) parameters: AES-256 in key-wrap mode with the RFC's
+ * default initial value. The IV is the integrity check -- `decipher.final()`
+ * throws when the unwrapped output would not reproduce it (i.e. the wrong KEK
+ * or corrupted ciphertext).
  */
 const AES_KW_ALGORITHM = 'id-aes256-wrap'
 const AES_KW_DEFAULT_IV = Buffer.alloc(8, 0xa6)
@@ -68,10 +67,10 @@ function decodeBase64url({
 }
 
 /**
- * Expands a `publicAliasTemplate` against the key description, per bedrock's
- * use of the `url-template` package (RFC 6570): `{var}` substitutes the
- * percent-encoded description field, `{+var}` substitutes it raw (bedrock's
- * own test template is `{+controller}#{publicKeyMultibase}`). An unknown
+ * Expands a `publicAliasTemplate` against the key description, using the
+ * `url-template` package (RFC 6570): `{var}` substitutes the
+ * percent-encoded description field, `{+var}` substitutes it raw (a typical
+ * template is `{+controller}#{publicKeyMultibase}`). An unknown
  * variable expands to the empty string, as in RFC 6570.
  *
  * @param options {object}
@@ -141,7 +140,7 @@ export function describeKmsKey({
  * key (full serialized form, secret material included) plus its public
  * description. Field names are protocol-fixed: the asymmetric pairs carry
  * `publicKeyMultibase` / `privateKeyMultibase`; the symmetric keys carry a
- * base64url 256-bit `secret` (bedrock-kms-module-core's per-type generators).
+ * base64url 256-bit `secret` (the webkms per-type key generators).
  *
  * @param options {object}
  * @param options.keyId {string}   the full key URL (`<keystoreId>/keys/<localId>`)
@@ -226,9 +225,8 @@ async function ed25519Sign({
 /**
  * DeriveSecretOperation on an X25519 key: raw ECDH against the submitted peer
  * public key -- no KDF is applied; the caller runs the shared secret through
- * one (bedrock parity). A peer whose `type` does not match the key's is a
- * clean 400 (bedrock throws an uncaught 500; the client pre-checks, so only
- * non-client callers hit this).
+ * one. A peer whose `type` does not match the key's is a clean 400 (the client
+ * pre-checks, so only non-client callers hit this).
  */
 async function x25519DeriveSecret({
   key,
@@ -306,8 +304,7 @@ async function hmacSign({
  * VerifyOperation on an HMAC key -- the one served verify (a client cannot
  * check an HMAC without the symmetric secret). A wrong-*length*
  * `signatureValue` is an ordinary `verified: false`, checked before
- * `timingSafeEqual` (which throws on mismatched lengths -- the bedrock rough
- * edge that surfaces as a 500 there).
+ * `timingSafeEqual` (which throws on mismatched lengths).
  */
 async function hmacVerify({
   key,
@@ -352,8 +349,7 @@ async function aesWrapKey({
  * RFC 3394 integrity check rejecting the ciphertext (wrong KEK, corrupted
  * `wrappedKey`) -- resolves `unwrappedKey: null` rather than erroring: that is
  * the client's documented contract (`Kek.unwrapKey` resolves null when the key
- * does not match), which no bedrock layer actually implements (there the
- * `decipher.final()` throw surfaces as a 500).
+ * does not match).
  */
 async function aesUnwrapKey({
   key,
@@ -414,8 +410,7 @@ const KEY_OPERATIONS: Record<
  * Runs a key operation envelope against a stored key, dispatching on
  * `(key.type, operation.type)`. An operation this module does not serve for
  * the key's type -- or does not recognize at all -- is a clean 400
- * `UnsupportedKeyOperationError` (where bedrock's dispatch throws an uncaught
- * "Unsupported operation" that surfaces as a 500).
+ * `UnsupportedKeyOperationError`.
  *
  * @param options {object}
  * @param options.key {KmsStoredKey}   the stored (secret-bearing) key

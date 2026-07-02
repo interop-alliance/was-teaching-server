@@ -1,7 +1,6 @@
 /**
  * Unit tests for the access-control policy core (`src/policy.ts`,
- * `src/authorize.ts`): the `policyGrants` decision table and the diagnostic
- * logging added in the Phase 5 hardening -- an info line when a policy grants
+ * `src/authorize.ts`): an info line when a policy grants
  * public access, and a warn when an unrecognized policy type is fail-closed.
  * These run against lightweight mocks (a recording logger and a stub storage),
  * with no HTTP round-trip; the `policy-api` suite covers end-to-end behavior.

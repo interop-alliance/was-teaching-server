@@ -1,8 +1,7 @@
 /**
  * WebKMS zcap revocation + delegation policy tests (Vitest):
  * POST `/kms/keystores/:keystoreId/zcaps/revocations/:revocationId` and the
- * chain-inspection / policy gates it feeds -- Track C of
- * `_spec/web-kms-roadmap.md`. Happy paths drive `@interop/webkms-client`'s
+ * chain-inspection / policy gates it feeds. Happy paths drive `@interop/webkms-client`'s
  * `KmsClient.revokeCapability` (the client IS the conformance suite for the
  * webkms wire contract); negative assertions use raw `@interop/ezcap`
  * invocations, per the house pattern of the other `/kms` suites.
@@ -53,7 +52,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
       config: { sequence: 0, controller: alice.did },
       invocationSigner: alice.signer
     })
-    keystoreId = config.id
+    keystoreId = config.id!
     keystoreLocalId = keystoreId.slice(keystoreId.lastIndexOf('/') + 1)
     kmsClient = new KmsClient({ keystoreId })
     keystoreAgent = new KeystoreAgent({
@@ -287,8 +286,8 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
         invocationSigner: alice.signer
       })
       const foreignZcap = await delegate({
-        target: otherConfig.id,
-        parent: rootZcap(otherConfig.id)
+        target: otherConfig.id!,
+        parent: rootZcap(otherConfig.id!)
       })
 
       const err = await requestError(

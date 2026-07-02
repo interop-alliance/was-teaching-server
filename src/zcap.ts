@@ -2,7 +2,7 @@
  * ZCap verification: handleZcapVerify() checks the capability-invocation
  * signature against the Space controller's Ed25519 key, synthesizing the root
  * capability via the document loader. Also home to the zcap *revocation*
- * verification pair (the `/kms` facet, Track C of `_spec/web-kms-roadmap.md`):
+ * verification pair (the `/kms` facet):
  * verifyRevocationChain() validates a to-be-revoked capability's delegation
  * chain, and handleRevocationInvocationVerify() authorizes the submission
  * under the dual-root rule (keystore root, or the revocation URL's own root
@@ -154,6 +154,9 @@ export function isRootInvocation({
  * @param [options.allowTargetAttenuation] {boolean}   accept a request URL
  *   that path-extends `allowedTarget` under a capability rooted at
  *   `allowedTarget` (see `verifyZcap`)
+ * @param [options.attenuatedRootTarget] {string}   an ancestor target (e.g.
+ *   the Space URL) whose root capability is also accepted as the root of a
+ *   delegated chain that attenuates down to the request URL (see `verifyZcap`)
  * @param [options.inspectCapabilityChain] {InspectCapabilityChain}   hook run
  *   against the dereferenced chain after signature verification (the
  *   revocation-check extension point; see `verifyZcap`)
@@ -177,6 +180,7 @@ export async function handleZcapVerify({
   logger = console,
   allowTargetQuery = false,
   allowTargetAttenuation = false,
+  attenuatedRootTarget,
   inspectCapabilityChain,
   maxChainLength,
   maxDelegationTtl
@@ -192,6 +196,7 @@ export async function handleZcapVerify({
   logger?: ZcapLogger
   allowTargetQuery?: boolean
   allowTargetAttenuation?: boolean
+  attenuatedRootTarget?: string
   inspectCapabilityChain?: InspectCapabilityChain
   maxChainLength?: number
   maxDelegationTtl?: number
@@ -209,6 +214,7 @@ export async function handleZcapVerify({
       spaceController,
       allowTargetQuery,
       allowTargetAttenuation,
+      attenuatedRootTarget,
       inspectCapabilityChain,
       maxChainLength,
       maxDelegationTtl
@@ -259,8 +265,20 @@ export async function handleZcapVerify({
  *   `allowTargetQuery`, the extended URL is never itself an acceptable root --
  *   so both a root invocation by the controller and a delegated zcap whose
  *   `invocationTarget` narrows down to the request URL verify against the
- *   `allowedTarget` root (the webkms authorization model; bedrock's
- *   `rootInvocationTarget: keystore.id`).
+ *   `allowedTarget` root (the webkms authorization model, which roots the
+ *   invocation target at the keystore id).
+ * @param [options.attenuatedRootTarget] {string}   when set, an *ancestor*
+ *   invocation target (the Space URL for the WAS route families) whose root
+ *   capability is accepted -- in addition to `allowedTarget`'s own -- as the
+ *   root of the invocation. This is what lets a controller delegate one
+ *   capability for a whole Space (or a Collection under it, by attenuating
+ *   the `invocationTarget` down at delegation time) and have the delegate
+ *   invoke it against any URL underneath: the chain roots at the ancestor's
+ *   root capability and narrows toward the request URL (RESTful attenuation,
+ *   the same shape `allowTargetAttenuation` gives the WebKMS keystore).
+ *   Root invocations of `allowedTarget`'s own root capability verify
+ *   unchanged, so this only widens what the Space controller can delegate,
+ *   never who can access.
  * @param [options.inspectCapabilityChain] {InspectCapabilityChain}   hook run
  *   against the dereferenced chain after signature verification -- the
  *   revocation-check extension point (a stored revocation of any capability
@@ -284,6 +302,7 @@ export async function verifyZcap({
   spaceController,
   allowTargetQuery = false,
   allowTargetAttenuation = false,
+  attenuatedRootTarget,
   inspectCapabilityChain,
   maxChainLength,
   maxDelegationTtl
@@ -297,50 +316,62 @@ export async function verifyZcap({
   spaceController: IDID
   allowTargetQuery?: boolean
   allowTargetAttenuation?: boolean
+  attenuatedRootTarget?: string
   inspectCapabilityChain?: InspectCapabilityChain
   maxChainLength?: number
   maxDelegationTtl?: number
 }): Promise<VerifyCapabilityInvocationResult> {
   const fullRequestUrl = new URL(url, serverUrl).toString()
-  const expected = allowTargetQuery
-    ? {
-        expectedAction: allowedAction,
-        expectedHost: new URL(serverUrl).host,
-        // `expectedTarget` must equal the proof's invocationTarget (the full
-        // request URL incl. query); accept either root capability id so both a
-        // bare-target delegate and a controller invoking the query URL verify.
-        expectedRootCapability: [
-          ...new Set([
-            rootCapabilityId(allowedTarget),
-            rootCapabilityId(fullRequestUrl)
-          ])
-        ],
-        expectedTarget: fullRequestUrl,
-        allowTargetAttenuation: true
-      }
-    : allowTargetAttenuation
-      ? {
-          expectedAction: allowedAction,
-          expectedHost: new URL(serverUrl).host,
-          // The proof's invocationTarget is the invoked URL: `allowedTarget`
-          // itself, or a path under it (accepted as a RESTful attenuation).
-          // The only acceptable root capability is `allowedTarget`'s. The
-          // array form is narrowed to `string` by the verify fork's option
-          // type, but the underlying `@interop/zcap` CapabilityInvocation
-          // accepts `string | string[]` -- hence the cast.
-          expectedRootCapability: rootCapabilityId(allowedTarget),
-          expectedTarget: [
-            ...new Set([allowedTarget, fullRequestUrl])
-          ] as unknown as string,
-          allowTargetAttenuation: true
-        }
-      : {
-          expectedAction: allowedAction,
-          expectedHost: new URL(serverUrl).host,
-          rootInvocationTarget: allowedTarget,
-          expectedRootCapability: rootCapabilityId(allowedTarget),
-          expectedTarget: allowedTarget
-        }
+  let expected
+  if (allowTargetQuery || attenuatedRootTarget) {
+    // The acceptable roots: the ancestor's root capability (a delegated chain
+    // rooted at e.g. the Space URL, narrowing to the request URL), the
+    // `allowedTarget`'s own (a root invocation, or a delegated chain for the
+    // exact target -- the pre-existing shapes, unchanged), and, under
+    // `allowTargetQuery`, the query-bearing request URL's own (a controller
+    // invoking the query URL directly).
+    const rootTargets = [
+      ...(attenuatedRootTarget ? [attenuatedRootTarget] : []),
+      allowedTarget,
+      ...(allowTargetQuery ? [fullRequestUrl] : [])
+    ]
+    expected = {
+      expectedAction: allowedAction,
+      expectedHost: new URL(serverUrl).host,
+      expectedRootCapability: [...new Set(rootTargets.map(rootCapabilityId))],
+      // The proof's invocationTarget is the invoked URL: `allowedTarget`
+      // itself, or (under `allowTargetQuery`) the query-bearing request URL.
+      // The array form is narrowed to `string` by the verify fork's option
+      // type, but the underlying `@interop/zcap` CapabilityInvocation
+      // accepts `string | string[]` -- hence the cast.
+      expectedTarget: [
+        ...new Set([allowedTarget, fullRequestUrl])
+      ] as unknown as string,
+      allowTargetAttenuation: true
+    }
+  } else if (allowTargetAttenuation) {
+    expected = {
+      expectedAction: allowedAction,
+      expectedHost: new URL(serverUrl).host,
+      // The proof's invocationTarget is the invoked URL: `allowedTarget`
+      // itself, or a path under it (accepted as a RESTful attenuation).
+      // The only acceptable root capability is `allowedTarget`'s. (Same
+      // array-form cast as above.)
+      expectedRootCapability: rootCapabilityId(allowedTarget),
+      expectedTarget: [
+        ...new Set([allowedTarget, fullRequestUrl])
+      ] as unknown as string,
+      allowTargetAttenuation: true
+    }
+  } else {
+    expected = {
+      expectedAction: allowedAction,
+      expectedHost: new URL(serverUrl).host,
+      rootInvocationTarget: allowedTarget,
+      expectedRootCapability: rootCapabilityId(allowedTarget),
+      expectedTarget: allowedTarget
+    }
+  }
 
   const documentLoader = rootCapabilityLoader({
     controllerFor: () => spaceController

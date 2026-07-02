@@ -170,12 +170,11 @@ export type StoredBackendRecord = BackendDescriptor & {
 }
 
 /**
- * A WebKMS keystore configuration (the `/kms` facet; see
- * `_spec/web-kms-roadmap.md`). The wire shape is protocol-fixed by
- * `bedrock-kms-http` / `@interop/webkms-client`, minus the deliberately-dropped
- * bedrock fields (`meterId`, `ipAllowList`). Stored verbatim, full-URL `id`
- * included, so the sequence-gated update can round-trip the config unchanged
- * (bedrock parity); the storage key is the id's last URL segment (the
+ * A WebKMS keystore configuration (the `/kms` facet).
+ * The wire shape is protocol-fixed by `@interop/webkms-client`, minus the
+ * deliberately-dropped `meterId` / `ipAllowList` fields. Stored verbatim,
+ * full-URL `id` included, so the sequence-gated update can round-trip the
+ * config unchanged; the storage key is the id's last URL segment (the
  * server-generated local id).
  */
 export interface KeystoreConfig {
@@ -193,7 +192,7 @@ export interface KeystoreConfig {
  * The full serialized form of a WebKMS-held key, INCLUDING its secret material
  * (`privateKeyMultibase` for the asymmetric pairs, `secret` for the symmetric
  * keys) -- the `key` unit of a {@link KmsKeyRecord}. Field names are
- * protocol-fixed by `bedrock-kms-module-core`'s per-type generators. The
+ * protocol-fixed by the webkms per-type key generators. The
  * `controller` is deliberately NOT part of it: it is always read from the live
  * keystore config at description time, so a controller change takes effect
  * immediately.
@@ -217,9 +216,9 @@ export interface KmsStoredKey {
 }
 
 /**
- * A stored WebKMS key record (the `/kms` facet; `_spec/web-kms-roadmap.md`),
- * mirroring bedrock-kms-module-key-storage's `{keystoreId, localId, meta, key}`
- * shape, unique on `(keystoreId, localId)`. Secret-bearing -- `key` carries the
+ * A stored WebKMS key record (the `/kms` facet), a
+ * `{keystoreId, localId, meta, key}` shape unique on `(keystoreId, localId)`.
+ * Secret-bearing -- `key` carries the
  * full serialized key material, held plaintext this increment (the record-KEK
  * envelope is a later, schema-compatible upgrade) -- so a record is **never**
  * serialized to a client: only the sanitized key-description projection built
@@ -250,9 +249,8 @@ export interface KmsKeyDescription {
 }
 
 /**
- * A stored zcap revocation (the `/kms` facet, Track C of
- * `_spec/web-kms-roadmap.md`), mirroring bedrock-zcap-storage's
- * `{capability, meta}` record. Unique on `(delegator, capability.id)` within
+ * A stored zcap revocation (the `/kms` facet), a `{capability, meta}` record.
+ * Unique on `(delegator, capability.id)` within
  * its scope (the keystore tree it is stored under); `meta.expires` is the
  * record's own garbage-collection horizon -- one day past the capability's
  * `expires`, after which the capability is rejected on expiry alone and the
@@ -275,8 +273,7 @@ export interface RevocationRecord {
 
 /**
  * The `(capabilityId, delegator)` pair identifying one delegated capability in
- * a chain for a revocation-store lookup (bedrock-zcap-storage's
- * `CapabilitySummary`).
+ * a chain for a revocation-store lookup.
  */
 export interface CapabilitySummary {
   capabilityId: string
@@ -320,7 +317,7 @@ export type BackendProviderRegistry = Map<string, BackendProvider>
  *   map-value field / future SQL column).
  *
  * Note: `exportSpace` resolves a tar-stream `Pack` at runtime, typed here as the
- * `Readable` it extends (tar-stream ships no types; see Phase 5 audit).
+ * `Readable` it extends (tar-stream ships no types).
  */
 export interface StorageBackend {
   /**
@@ -535,9 +532,11 @@ export interface StorageBackend {
     checkpoint: { id: string; updatedAt: string } | null
   }>
 
-  // Access-control policy documents. The level is selected by which ids are
-  // present: Space (`spaceId`), Collection (`+ collectionId`), or Resource
-  // (`+ collectionId + resourceId`). Getters resolve falsy when absent.
+  /**
+   * Access-control policy documents. The level is selected by which ids are
+   * present: Space (`spaceId`), Collection (`+ collectionId`), or Resource
+   * (`+ collectionId + resourceId`). Getters resolve falsy when absent.
+   */
   getPolicy(options: {
     spaceId: string
     collectionId?: string
@@ -555,12 +554,14 @@ export interface StorageBackend {
     resourceId?: string
   }): Promise<void>
 
-  // Registered `external` backend records (spec "Backends"). The read/write
-  // asymmetry is the secret boundary: `getBackend` is the only method that
-  // returns the secret-bearing `StoredBackendRecord`; `listBackends` returns
-  // sanitized `BackendDescriptor`s. A registered backend is listed but not yet
-  // selectable as a Collection's `backend` this increment (the live adapter is
-  // future work).
+  /**
+   * Registered `external` backend records (spec "Backends"). The read/write
+   * asymmetry is the secret boundary: `getBackend` is the only method that
+   * returns the secret-bearing `StoredBackendRecord`; `listBackends` returns
+   * sanitized `BackendDescriptor`s. A registered backend is listed but not yet
+   * selectable as a Collection's `backend` this increment (the live adapter is
+   * future work).
+   */
   writeBackend(options: {
     spaceId: string
     backendId: string
@@ -576,11 +577,13 @@ export interface StorageBackend {
   /** Idempotent: no error when the record is absent. */
   deleteBackend(options: { spaceId: string; backendId: string }): Promise<void>
 
-  // WebKMS keystore configs (the `/kms` facet; `_spec/web-kms-roadmap.md`).
-  // Keystores are a sibling tree to Spaces (`data/keystores/<localId>/`), keyed
-  // by `keystoreId` -- the server-generated *local* id, i.e. the last segment
-  // of the config's full-URL `id`. The protocol defines no keystore delete.
   /**
+   * WebKMS keystore configs (the `/kms` facet).
+   * Keystores are a sibling tree to Spaces (`data/keystores/<localId>/`),
+   * keyed by `keystoreId` -- the server-generated *local* id, i.e. the last
+   * segment of the config's full-URL `id`. The protocol defines no keystore
+   * delete.
+   *
    * Writes a keystore config unconditionally (the create path; local ids are
    * server-generated 128-bit random values, so create never collides). The
    * sequence-gated update path is `updateKeystore`.
@@ -597,8 +600,7 @@ export interface StorageBackend {
    * the keystore exists, `config.sequence` is exactly the stored sequence + 1,
    * and `config.kmsModule` matches the stored one (the module is immutable).
    * Otherwise rejects with the protocol's 409 state conflict
-   * (`KeystoreStateConflictError`) -- one merged conflict kind, per
-   * bedrock-kms's `keystores.update`.
+   * (`KeystoreStateConflictError`) -- one merged conflict kind.
    */
   updateKeystore(options: {
     keystoreId: string
@@ -613,17 +615,17 @@ export interface StorageBackend {
     controller: IDID
   }): Promise<KeystoreConfig[]>
 
-  // WebKMS key records, stored under their keystore
-  // (`data/keystores/<keystoreId>/keys/<localId>.json`), unique on
-  // `(keystoreId, localId)`. The record is opaque to the storage layer
-  // (tension 1 of the roadmap: a phase-2 record cipher slots in without a
-  // schema change). The protocol defines no key delete or update -- a record
-  // is immutable once inserted.
   /**
+   * WebKMS key records, stored under their keystore
+   * (`data/keystores/<keystoreId>/keys/<localId>.json`), unique on
+   * `(keystoreId, localId)`. The record is opaque to the storage layer
+   * (tension 1 of the roadmap: a phase-2 record cipher slots in without a
+   * schema change). The protocol defines no key delete or update -- a record
+   * is immutable once inserted.
+   *
    * Inserts a key record, create-only: rejects with the protocol's 409
    * duplicate conflict (`KeyIdConflictError`) when a record already exists at
-   * `(keystoreId, localId)`, atomically with the write (per
-   * bedrock-kms-module-key-storage's unique-index insert).
+   * `(keystoreId, localId)`, atomically with the write.
    */
   insertKey(options: {
     keystoreId: string
@@ -635,14 +637,14 @@ export interface StorageBackend {
     localId: string
   }): Promise<KmsKeyRecord | undefined>
 
-  // WebKMS zcap revocations, stored under their keystore
-  // (`data/keystores/<keystoreId>/revocations/`), unique on
-  // `(delegator, capability.id)` within the keystore (per
-  // bedrock-zcap-storage's revocations collection). The protocol defines no
-  // revocation read or delete: records exist only to be consulted by the
-  // chain-inspection hook, and lapse via `meta.expires` (the capability is
-  // rejected on its own expiry from then on).
   /**
+   * WebKMS zcap revocations, stored under their keystore
+   * (`data/keystores/<keystoreId>/revocations/`), unique on
+   * `(delegator, capability.id)` within the keystore. The protocol defines no
+   * revocation read or delete: records exist only to be consulted by the
+   * chain-inspection hook, and lapse via `meta.expires` (the capability is
+   * rejected on its own expiry from then on).
+   *
    * Inserts a revocation record, create-only: rejects with the protocol's 409
    * duplicate (`DuplicateRevocationError`) when a record already exists at
    * `(meta.delegator, capability.id)`, atomically with the write.
@@ -667,26 +669,36 @@ declare module 'fastify' {
   interface FastifyInstance {
     serverUrl: string
     storage: StorageBackend
-    // The provider-adapter registry: maps a registered backend's `provider` to
-    // the factory that builds its live `StorageBackend` adapter. Read by the
-    // resolver (lib/backendRegistry.ts). Empty in production this stage (no real
-    // adapter yet); injected in tests. Set by `fastify.decorate` in server.ts.
+    /**
+     * The provider-adapter registry: maps a registered backend's `provider` to
+     * the factory that builds its live `StorageBackend` adapter. Read by the
+     * resolver (lib/backendRegistry.ts). Empty in production this stage (no
+     * real adapter yet); injected in tests. Set by `fastify.decorate` in
+     * server.ts.
+     */
     backendProviders: BackendProviderRegistry
-    // The optional server-wide registration allowlist: the backend `provider`
-    // names a client may register (config `WAS_ENABLED_BACKENDS`). `undefined`
-    // means no allowlist -- any provider may be registered (permissive default).
+    /**
+     * The optional server-wide registration allowlist: the backend `provider`
+     * names a client may register (config `WAS_ENABLED_BACKENDS`). `undefined`
+     * means no allowlist -- any provider may be registered (permissive
+     * default).
+     */
     enabledBackendProviders?: string[]
   }
   interface FastifyRequest {
-    // Set by the `parseAuthHeaders` hook when auth headers are present. Absent
-    // for anonymous reads (the `requireAuthHeaders` hook lets safe methods
-    // through without auth so a fallback policy can grant access).
+    /**
+     * Set by the `parseAuthHeaders` hook when auth headers are present. Absent
+     * for anonymous reads (the `requireAuthHeaders` hook lets safe methods
+     * through without auth so a fallback policy can grant access).
+     */
     zcap?: ParsedZcap
-    // The exact request body bytes, captured by the `captureRawBody` preParsing
-    // hook for JSON/text bodies so `verifyBodyDigest` can recompute the `Digest`
-    // header against what the client signed (re-serializing the parsed body is
-    // not guaranteed byte-identical). Absent for streamed (multipart / tar)
-    // bodies, which are left unbuffered.
+    /**
+     * The exact request body bytes, captured by the `captureRawBody`
+     * preParsing hook for JSON/text bodies so `verifyBodyDigest` can recompute
+     * the `Digest` header against what the client signed (re-serializing the
+     * parsed body is not guaranteed byte-identical). Absent for streamed
+     * (multipart / tar) bodies, which are left unbuffered.
+     */
     rawBody?: Buffer
   }
 }

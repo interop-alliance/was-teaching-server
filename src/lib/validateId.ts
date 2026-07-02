@@ -18,10 +18,12 @@ import {
 /** Which kind of id is being validated (selects the thrown error class). */
 export type IdKind = 'space' | 'collection' | 'resource'
 
-// URL-safe id charset: the RFC 3986 "unreserved" characters
-// (ALPHA / DIGIT / `-` / `.` / `_` / `~`). This excludes path separators
-// (`/`, `\`) and every glob metacharacter, so a validated id is safe to use
-// both as a single path segment and inside a glob pattern.
+/**
+ * URL-safe id charset: the RFC 3986 "unreserved" characters
+ * (ALPHA / DIGIT / `-` / `.` / `_` / `~`). This excludes path separators
+ * (`/`, `\`) and every glob metacharacter, so a validated id is safe to use
+ * both as a single path segment and inside a glob pattern.
+ */
 const ID_PATTERN = /^[A-Za-z0-9._~-]+$/
 
 /**
@@ -45,21 +47,23 @@ export function isUrlSafeSegment(id: string): boolean {
   )
 }
 
-// Reserved path segments from the spec's Reserved Path Segment Registry (plus
-// the server's own non-spec `import` endpoint). A client-chosen Collection or
-// Resource id matching one of these would shadow the reserved route at that
-// position (e.g. a Collection named `export` would shadow
-// `/space/{id}/export`), so the spec requires rejecting it with 409
-// `reserved-id`. Space ids have no reserved siblings (`/space/{id}` has no
-// static neighbors), so no set exists for the `space` kind.
-//
-// Exported as the server's authoritative per-kind sets so a client can mirror
-// them rather than hand-maintaining a copy (client #13). NOTE the one known
-// divergence from the pure spec registry: `import` is this server's non-spec
-// tar-import endpoint, so a client mirroring the *spec* registry should omit it.
-// Kept byte-identical to `@interop/storage-core`'s exported registry (locked by
-// a drift-guard test); the local definition keeps the id-safety logic
-// self-contained.
+/**
+ * Reserved path segments from the spec's Reserved Path Segment Registry (plus
+ * the server's own non-spec `import` endpoint). A client-chosen Collection or
+ * Resource id matching one of these would shadow the reserved route at that
+ * position (e.g. a Collection named `export` would shadow
+ * `/space/{id}/export`), so the spec requires rejecting it with 409
+ * `reserved-id`. Space ids have no reserved siblings (`/space/{id}` has no
+ * static neighbors), so no set exists for the `space` kind.
+ *
+ * Exported as the server's authoritative per-kind sets so a client can mirror
+ * them rather than hand-maintaining a copy (client #13). NOTE the one known
+ * divergence from the pure spec registry: `import` is this server's non-spec
+ * tar-import endpoint, so a client mirroring the *spec* registry should omit
+ * it. Kept byte-identical to `@interop/storage-core`'s exported registry
+ * (locked by a drift-guard test); the local definition keeps the id-safety
+ * logic self-contained.
+ */
 export const RESERVED_COLLECTION_IDS = new Set([
   'backends',
   'collections',

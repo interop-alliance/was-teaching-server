@@ -74,16 +74,14 @@ export const QUOTAS_LINK_RELATION = 'https://wallet.storage/spec#quotas'
 export const QUOTA_NEAR_LIMIT_FRACTION = 0.9
 
 /**
- * The single in-process KMS module this server hard-wires (the `/kms` facet;
- * `_spec/web-kms-roadmap.md`). `kmsModule` stays an opaque field on the wire
- * for bedrock parity, but there is no module-manager indirection: a keystore
- * created without one gets this alias, and it is immutable thereafter.
+ * The single in-process KMS module this server hard-wires.
+ * A keystore created without one gets this alias, and it is immutable thereafter.
  */
 export const DEFAULT_KMS_MODULE = 'local-v1'
 
 /**
  * Max keystore configs returned by `GET /kms/keystores?controller=...` (the
- * webkms protocol's list cap; bedrock-kms-http caps its query at 100).
+ * webkms protocol's list cap).
  */
 export const KEYSTORE_LIST_LIMIT = 100
 
@@ -99,8 +97,7 @@ export const KMS_MAX_CHAIN_LENGTH = 10
  * Max time-to-live of a delegated capability accepted on `/kms` invocations,
  * measured `expires` minus the delegation proof's `created`, in milliseconds
  * (90 days -- webkms-switch's `maxDelegationTtl` default). One unified bound
- * for every `/kms` route family, deliberately replacing bedrock's inconsistent
- * per-family TTLs (~1000 years for key operations, 90 days for config routes):
+ * for every `/kms` route family:
  * revocation plus the mandatory `expires` is the real control.
  */
 export const KMS_MAX_DELEGATION_TTL = 90 * 24 * 60 * 60 * 1000

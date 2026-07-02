@@ -1,18 +1,17 @@
 /**
- * Request handlers for the WebKMS keystore lifecycle (the `/kms` facet; see
- * `_spec/web-kms-roadmap.md`):
+ * Request handlers for the WebKMS keystore lifecycle (the `/kms` facet):
  * - POST /kms/keystores (Create Keystore)
  * - GET /kms/keystores?controller=<did> (List Keystores by controller)
  * - GET /kms/keystores/:keystoreId (Get Keystore config)
  * - POST /kms/keystores/:keystoreId (Update Keystore config)
  *
- * The wire contract is protocol-fixed by bedrock-kms-http /
- * `@interop/webkms-client` (which is also the conformance suite for it): all
- * routes are zcap-invoked with `read` / `write` actions (not HTTP verbs), the
- * create response is the bare config (201 + `Location`), list wraps in
- * `{ results }`, and update wraps in `{ config }`. Bedrock's `meterId` /
- * `ipAllowList` are deliberately dropped; the body schemas remain
- * `additionalProperties: false`, so supplying them is rejected.
+ * The wire contract is protocol-fixed by `@interop/webkms-client` (which is
+ * also the conformance suite for it): all routes are zcap-invoked with
+ * `read` / `write` actions (not HTTP verbs), the create response is the bare
+ * config (201 + `Location`), list wraps in `{ results }`, and update wraps in
+ * `{ config }`. The `meterId` / `ipAllowList` fields are deliberately dropped;
+ * the body schemas remain `additionalProperties: false`, so supplying them is
+ * rejected.
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { generateId } from '@digitalcredentials/bnid'
@@ -42,12 +41,11 @@ interface KeystoreConfigBody {
 
 /**
  * Validates a keystore config request body against the webkms schema shape
- * (bedrock-kms-http `postKeystoreBody` / `updateKeystoreConfigBody`, minus the
- * dropped `meterId` / `ipAllowList`): required fields present, no unknown
- * fields (`additionalProperties: false`), `controller` a valid did:key,
- * `sequence` a non-negative integer -- exactly 0 on create (bedrock-kms
- * `keystores.insert`; the update path's previous+1 gate is the storage
- * layer's, where it is atomic). Throws `InvalidRequestBodyError` (400).
+ * (minus the dropped `meterId` / `ipAllowList`): required fields present, no
+ * unknown fields (`additionalProperties: false`), `controller` a valid
+ * did:key, `sequence` a non-negative integer -- exactly 0 on create; the
+ * update path's previous+1 gate is the storage layer's, where it is atomic.
+ * Throws `InvalidRequestBodyError` (400).
  *
  * @param options {object}
  * @param options.body {unknown}   the parsed request body
@@ -131,7 +129,6 @@ export class KeystoreRequest {
    * must be *authorized by* the `controller` DID in the request body -- signed
    * directly by it, or via a delegation chain rooted in it -- so anyone can
    * create their own keystore by proving control of the DID they name.
-   * (Bedrock roots creation in its meter's controller; meters are dropped.)
    * Responds 201 with `Location` and the bare config -- the client asserts a
    * string `id` on it.
    *
@@ -235,8 +232,8 @@ export class KeystoreRequest {
     const { url, method, headers, query } = request
     const { serverUrl, storage } = request.server
 
-    // bedrock's `getConfigsQuery` schema: `controller` required, no other
-    // parameters. The controller names whose keystores are being asked for
+    // The list query schema: `controller` required, no other parameters.
+    // The controller names whose keystores are being asked for
     // (and thereby the root controller the invocation must verify against).
     for (const key of Object.keys(query)) {
       if (key !== 'controller') {
@@ -299,7 +296,7 @@ export class KeystoreRequest {
    * keystore URL (400); the storage layer applies the update atomically iff
    * `sequence` is exactly previous+1 and `kmsModule` is unchanged (409
    * `KeystoreStateConflictError` otherwise; an omitted `kmsModule` defaults to
-   * the stored one, per bedrock-kms-http). Responds `{ config }` -- note the
+   * the stored one). Responds `{ config }` -- note the
    * wrapper, unlike get/create.
    *
    * @param request {import('fastify').FastifyRequest}
@@ -327,7 +324,7 @@ export class KeystoreRequest {
       requestName
     })
     // The stored `id` is the keystore's full URL; the submitted config must
-    // name the same keystore it is posted to (bedrock's URLMismatchError).
+    // name the same keystore it is posted to.
     if (body.id !== existing.id) {
       throw new InvalidRequestBodyError({
         requestName,

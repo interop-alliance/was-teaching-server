@@ -197,7 +197,7 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Root of the WebKMS keystore tree (`data/keystores/<localId>/`), a sibling
    * of `spacesDir` -- the `/kms` facet is deliberately separable from Spaces
-   * (own route family, own storage tree; see `_spec/web-kms-roadmap.md`).
+   * (own route family, own storage tree).
    */
   keystoresDir: string
   logger: FastifyBaseLogger
@@ -1623,8 +1623,10 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
     resourceId: string
-    // `contentType` is advisory and ignored for lookup: a Resource has a single
-    // current representation, resolved by `resourceId` alone.
+    /**
+     * `contentType` is advisory and ignored for lookup: a Resource has a
+     * single current representation, resolved by `resourceId` alone.
+     */
     contentType?: string
   }): Promise<ResourceResult> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
@@ -2465,12 +2467,12 @@ export class FileSystemBackend implements StorageBackend {
     await rm(this._backendFile({ spaceId, backendId }), { force: true })
   }
 
-  // WebKMS keystores (the `/kms` facet; `_spec/web-kms-roadmap.md`). A sibling
-  // tree to Spaces: `keystores/<localId>/` holds a keystore's `config.json`
-  // now, and its key records / revocations in later tracks -- hence a
-  // directory per keystore rather than a flat file.
-
   /**
+   * WebKMS keystores (the `/kms` facet). A sibling tree to Spaces:
+   * `keystores/<localId>/` holds a keystore's `config.json` now, and its key
+   * records / revocations in later tracks -- hence a directory per keystore
+   * rather than a flat file.
+   *
    * The directory holding one keystore's records, contained in `keystoresDir`.
    * @param keystoreId {string}   the keystore's server-generated local id
    * @returns {string}
@@ -2530,7 +2532,7 @@ export class FileSystemBackend implements StorageBackend {
    * mutex) on: the keystore existing, `config.sequence` being exactly the
    * stored sequence + 1, and `config.kmsModule` matching the stored one (the
    * module is immutable). Any other state rejects with the protocol's single
-   * merged 409 conflict, per bedrock-kms's `keystores.update`.
+   * merged 409 conflict.
    * @param options {object}
    * @param options.keystoreId {string}   the keystore's local id
    * @param options.config {KeystoreConfig}
@@ -2623,8 +2625,7 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Inserts a key record, create-only: the exclusive-create write (`wx`)
    * enforces the `(keystoreId, localId)` uniqueness atomically, rejecting a
-   * duplicate with the protocol's 409 (`KeyIdConflictError`), per
-   * bedrock-kms-module-key-storage's unique-index insert.
+   * duplicate with the protocol's 409 (`KeyIdConflictError`).
    * @param options {object}
    * @param options.keystoreId {string}   the owning keystore's local id
    * @param options.localId {string}   the key's local id
@@ -2715,8 +2716,7 @@ export class FileSystemBackend implements StorageBackend {
    * Inserts a revocation record, create-only: the exclusive-create write
    * (`wx`) enforces the `(delegator, capability.id)` uniqueness atomically,
    * rejecting a duplicate with the protocol's 409
-   * (`DuplicateRevocationError`), per bedrock-zcap-storage's unique-index
-   * insert.
+   * (`DuplicateRevocationError`).
    * @param options {object}
    * @param options.keystoreId {string}   the owning keystore's local id
    * @param options.record {RevocationRecord}   the revocation to store
@@ -2752,8 +2752,7 @@ export class FileSystemBackend implements StorageBackend {
    * revocation under the keystore. A record past its `meta.expires` GC
    * horizon is pruned on the way through and counts as not revoked -- the
    * capability itself has expired, so verification already rejects it on
-   * expiry (this is the filesystem analogue of bedrock-zcap-storage's
-   * TTL index).
+   * expiry (this is the filesystem analogue of a TTL index).
    * @param options {object}
    * @param options.keystoreId {string}   the owning keystore's local id
    * @param options.capabilities {CapabilitySummary[]}   the

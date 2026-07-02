@@ -1,6 +1,6 @@
 /**
- * Shared WebKMS keystore context helper (the `/kms` facet;
- * `_spec/web-kms-roadmap.md`): the keystore analogue of `fetchSpaceAndVerify`
+ * Shared WebKMS keystore context helper (the `/kms` facet): the keystore
+ * analogue of `fetchSpaceAndVerify`
  * (spaceContext.ts), used by the keystore-lifecycle, key-operation, and
  * revocation request handlers.
  */

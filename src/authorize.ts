@@ -34,6 +34,9 @@ import type { IDID } from './types.js'
  *   error titles
  * @param [options.allowTargetQuery] {boolean}   tolerate query parameters that
  *   extend `allowedTarget` on the capability-invocation path (see `verifyZcap`)
+ * @param [options.attenuatedRootTarget] {string}   ancestor target (the Space
+ *   URL) whose root capability is also accepted as the root of a delegated
+ *   chain attenuating down to the request URL (see `verifyZcap`)
  * @returns {Promise<void>}   resolves when authorized; throws otherwise
  */
 export async function authorize({
@@ -44,7 +47,8 @@ export async function authorize({
   resourceId,
   spaceController,
   requestName = '',
-  allowTargetQuery = false
+  allowTargetQuery = false,
+  attenuatedRootTarget
 }: {
   request: FastifyRequest
   allowedTarget: string
@@ -54,6 +58,7 @@ export async function authorize({
   spaceController: IDID
   requestName?: string
   allowTargetQuery?: boolean
+  attenuatedRootTarget?: string
 }): Promise<void> {
   const { url, method, headers } = request
   const { serverUrl, storage } = request.server
@@ -76,7 +81,8 @@ export async function authorize({
         spaceController,
         requestName,
         logger: request.log,
-        allowTargetQuery
+        allowTargetQuery,
+        attenuatedRootTarget
       })
       return
     } catch (err) {

@@ -1,9 +1,8 @@
 /**
- * Request handler for WebKMS zcap revocation (the `/kms` facet, Track C of
- * `_spec/web-kms-roadmap.md`):
+ * Request handler for WebKMS zcap revocation (the `/kms` facet):
  * - POST /kms/keystores/:keystoreId/zcaps/revocations/:revocationId
  *
- * The wire contract is protocol-fixed by bedrock-kms-http / ezcap-express's
+ * The wire contract is protocol-fixed by ezcap-express's
  * `authorizeZcapRevocation` / `@interop/webkms-client` (the conformance
  * suite): `:revocationId` is the to-be-revoked capability's id, URL-encoded;
  * the body is that capability, verbatim; success is 204 with no body. The
@@ -41,8 +40,8 @@ export class RevocationRequest {
    * `InvalidRevocationError`, per ezcap-express), which yields the chain's
    * controllers for the dual-root invocation check. The stored record expires
    * one day after the capability itself does (from then on the capability is
-   * rejected on expiry alone; the margin covers clock-skew grace periods, per
-   * bedrock-zcap-storage). Responds 204, no body; a concurrent duplicate
+   * rejected on expiry alone; the margin covers clock-skew grace periods).
+   * Responds 204, no body; a concurrent duplicate
    * insert is the 409 `DuplicateRevocationError`.
    *
    * @param request {import('fastify').FastifyRequest}

@@ -290,12 +290,12 @@ export async function initResourceRoutes(
 }
 
 /**
- * Registers the WebKMS keystore and key routes (the `/kms` facet; see
- * `_spec/web-kms-roadmap.md`). Installs the same hook chain as the WAS groups
+ * Registers the WebKMS keystore and key routes (the `/kms` facet).
+ * Installs the same hook chain as the WAS groups
  * except that the auth requirement is the strict `requireAuthHeaders`: every
  * webkms route, GETs included, is zcap-invoked -- the protocol has no public
- * reads. No slash-redirect variants either; the protocol's URLs are exact
- * (bedrock-kms-http registers only these shapes).
+ * reads. No slash-redirect variants either; the protocol's URLs are exact --
+ * only these shapes are registered.
  * @param app {import('fastify').FastifyInstance}
  * @param options {object}   Fastify plugin options
  * @returns {Promise<void>}

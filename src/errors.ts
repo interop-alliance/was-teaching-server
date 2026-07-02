@@ -763,7 +763,7 @@ export class InvalidImportError extends ProblemError {
   }
 }
 
-// WebKMS facet errors (`/kms`; `_spec/web-kms-roadmap.md`). The webkms
+// WebKMS facet errors (`/kms`). The webkms
 // protocol is status-code driven -- `@interop/webkms-client` distinguishes
 // only 404 and 409 -- so these reuse the nearest WAS problem-kind URIs rather
 // than minting a parallel registry for a non-WAS route family.
@@ -771,7 +771,7 @@ export class InvalidImportError extends ProblemError {
 /**
  * 404 — the requested keystore does not exist, or the caller is not
  * authorized (the WAS existence-masking convention, kept for consistency
- * within this server; bedrock-kms returns 403 for authz failures instead).
+ * within this server).
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
@@ -790,8 +790,7 @@ export class KeystoreNotFoundError extends ProblemError {
  * 400 — the capability invocation on a Create Keystore request is not
  * *authorized by* the `controller` in the request body: it is neither signed
  * directly by that DID nor accompanied by a delegation chain rooted in it.
- * The keystore-creation bootstrap rule, mirroring Create Space (bedrock roots
- * creation in its meter's controller instead; meters are dropped here).
+ * The keystore-creation bootstrap rule, mirroring Create Space.
  * @param options {object}
  * @param options.zcapSigningDid {string}   DID that signed the invocation
  * @param options.controller {string}   controller DID supplied in the body
@@ -826,8 +825,8 @@ export class KeystoreControllerMismatchError extends ProblemError {
 /**
  * 409 — a keystore config update could not be applied: the supplied `sequence`
  * is not exactly the stored sequence + 1, or the immutable `kmsModule` does
- * not match. One merged conflict kind, per bedrock-kms's `keystores.update`
- * (its `InvalidStateError`); the client distinguishes only the 409 status.
+ * not match. One merged conflict kind; the client distinguishes only the 409
+ * status.
  * `ID_CONFLICT` is the nearest WAS problem kind (a 409 state conflict on an
  * identified record) -- the webkms protocol has no type registry of its own.
  */
@@ -867,7 +866,7 @@ export class KeyNotFoundError extends ProblemError {
  * 409 — a key record already exists at `(keystoreId, localId)`. Key local ids
  * are server-generated 128-bit random values, so this is effectively
  * unreachable through the API; the storage layer still enforces insert-once
- * semantics (per bedrock-kms-module-key-storage's unique index), and
+ * semantics (a unique-index insert), and
  * `@interop/webkms-client` maps a 409 on generate to its `DuplicateError`.
  */
 export class KeyIdConflictError extends ProblemError {
@@ -888,7 +887,7 @@ export class KeyIdConflictError extends ProblemError {
  * for the key's type (e.g. `VerifyOperation` on an asymmetric key -- custody
  * is the criterion: asymmetric verify needs only the public key and is
  * client-local), or an operation type it does not recognize at all. A clean
- * 400 where bedrock surfaces the same condition as an uncaught 500.
+ * 400.
  * @param options {object}
  * @param options.operationType {string}   the operation envelope's `type`
  * @param [options.keyType] {string}   the target key's type, when known
@@ -940,8 +939,8 @@ export class InvalidRevocationError extends ProblemError {
 
 /**
  * 409 — a revocation record already exists at `(delegator, capabilityId)`
- * (bedrock-zcap-storage's `DuplicateError`; `@interop/webkms-client` maps a
- * 409 to its `DuplicateError`). Reached only on a concurrent-submission race:
+ * (`@interop/webkms-client` maps a 409 to its `DuplicateError`). Reached only
+ * on a concurrent-submission race:
  * a sequential resubmission fails the chain verification first (the chain now
  * contains a revoked capability) and is the 400 `InvalidRevocationError`.
  */

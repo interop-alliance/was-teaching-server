@@ -18,6 +18,7 @@ import type { FastifyRequest } from 'fastify'
 import { LruCache } from '@interop/lru-memoize'
 import { handleZcapVerify } from '../zcap.js'
 import { authorize } from '../authorize.js'
+import { spacePath } from '../lib/paths.js'
 import { SpaceNotFoundError } from '../errors.js'
 import {
   SPACE_DESCRIPTION_CACHE_MAX,
@@ -110,6 +111,12 @@ export interface VerifiedSpaceContext {
   spaceController: IDID
   /** the resolved invocationTarget URL the request was authorized against */
   allowedTarget: string
+  /**
+   * the Space's own URL -- the ancestor root target every space-family route
+   * also accepts for a delegated chain that attenuates down to the request
+   * URL (a Space- or Collection-scoped capability delegated by the controller)
+   */
+  spaceRootTarget: string
 }
 
 /**
@@ -145,7 +152,8 @@ async function fetchSpaceContext({
   })
   const spaceController = spaceDescription.controller
   const allowedTarget = new URL(targetPath, serverUrl).toString()
-  return { spaceDescription, spaceController, allowedTarget }
+  const spaceRootTarget = new URL(spacePath({ spaceId }), serverUrl).toString()
+  return { spaceDescription, spaceController, allowedTarget, spaceRootTarget }
 }
 
 /**
@@ -183,10 +191,12 @@ export async function fetchSpaceAndAuthorize({
   resourceId?: string
   targetPath: string
   requestName: string
-  // When set, the capability-invocation path tolerates query parameters on the
-  // request URL that extend `targetPath` (e.g. List Collection's `?limit`/
-  // `cursor`), treating them as a RESTful attenuation of the same target rather
-  // than a different one. See `verifyZcap`.
+  /**
+   * When set, the capability-invocation path tolerates query parameters on
+   * the request URL that extend `targetPath` (e.g. List Collection's
+   * `?limit`/`cursor`), treating them as a RESTful attenuation of the same
+   * target rather than a different one. See `verifyZcap`.
+   */
   allowTargetQuery?: boolean
 }): Promise<VerifiedSpaceContext> {
   const context = await fetchSpaceContext({
@@ -203,7 +213,8 @@ export async function fetchSpaceAndAuthorize({
     resourceId,
     spaceController: context.spaceController,
     requestName,
-    allowTargetQuery
+    allowTargetQuery,
+    attenuatedRootTarget: context.spaceRootTarget
   })
   return context
 }
@@ -252,7 +263,8 @@ export async function fetchSpaceAndVerify({
     serverUrl,
     spaceController: context.spaceController,
     requestName,
-    logger: request.log
+    logger: request.log,
+    attenuatedRootTarget: context.spaceRootTarget
   })
   return context
 }

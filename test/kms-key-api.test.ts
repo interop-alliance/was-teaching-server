@@ -1,7 +1,7 @@
 /**
  * WebKMS key operation tests (Vitest): POST `/kms/keystores/:keystoreId/keys`
  * (generate), POST / GET `/kms/keystores/:keystoreId/keys/:keyId` (operation
- * dispatch / public key description) -- Track B of `_spec/web-kms-roadmap.md`.
+ * dispatch / public key description).
  * Driven through `@interop/webkms-client`'s `KeystoreAgent` and all four key
  * classes wherever the client covers the operation (the client IS the
  * conformance suite for the webkms wire contract), with raw `@interop/ezcap`
@@ -66,7 +66,7 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
       config: { sequence: 0, controller: alice.did },
       invocationSigner: alice.signer
     })
-    keystoreId = config.id
+    keystoreId = config.id!
     keystoreAgent = new KeystoreAgent({
       capabilityAgent: { getSigner: () => alice.signer } as any,
       keystoreId,
@@ -361,7 +361,7 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
 
     it('a wrong-length signatureValue is verified:false, not an error', async () => {
       const hmac = (await keystoreAgent.generateKey({ type: 'hmac' })) as Hmac
-      // 3 bytes -- bedrock's uncaught `timingSafeEqual` RangeError case.
+      // 3 bytes -- the mismatched-length `timingSafeEqual` RangeError case.
       const response = await client({ signer: alice.signer }).request({
         url: hmac.id!,
         method: 'POST',
@@ -505,7 +505,7 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
     })
 
     it('the webkms-client signs via a delegated zcap (fromCapability, http loopback)', async () => {
-      // The full Track E client path: the delegee holds only the delegated
+      // The delegee holds only the delegated
       // zcap and drives the key through the client's own class -- possible
       // against an http://localhost server since webkms-client@14.5.0.
       const key = (await keystoreAgent.generateKey({

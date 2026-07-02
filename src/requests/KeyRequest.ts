@@ -1,12 +1,11 @@
 /**
- * Request handlers for WebKMS key operations (the `/kms` facet, Track B of
- * `_spec/web-kms-roadmap.md`):
+ * Request handlers for WebKMS key operations (the `/kms` facet):
  * - POST /kms/keystores/:keystoreId/keys (GenerateKeyOperation)
  * - POST /kms/keystores/:keystoreId/keys/:keyId (Sign / Verify / DeriveSecret /
  *   WrapKey / UnwrapKey operation, dispatched by envelope `type`)
  * - GET /kms/keystores/:keystoreId/keys/:keyId (public key description)
  *
- * The wire contract is protocol-fixed by bedrock-kms-http / webkms-switch /
+ * The wire contract is protocol-fixed by webkms-switch /
  * `@interop/webkms-client` (the conformance suite): operation envelopes carry
  * an optional `@context`, generate responds 200 (not 201) with a `Location`
  * header and a `{ keyId, keyDescription }` body, every other operation
@@ -15,8 +14,8 @@
  * root zcap by stripping the key URL at the last `/keys/`), with the key URL
  * accepted as an attenuated target; the expected zcap action is the operation
  * name, decapitalized, minus `Operation` (`generateKey`, `sign`, ...), and
- * `read` for the description GET (a deliberate delta: bedrock leaves that
- * route entirely unauthorized).
+ * `read` for the description GET (which this server authorizes rather than
+ * leaving open).
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { generateId } from '@digitalcredentials/bnid'
@@ -403,8 +402,8 @@ export class KeyRequest {
       requestName
     })
     // Per-key invocation chain bound, set at generate time and enforced at
-    // operation time (bedrock-kms-module-core `_checkZcapInvocationRules`).
-    // The chain includes the root, so a bound of 1 means controller-only. An
+    // operation time. The chain includes the root, so a bound of 1 means
+    // controller-only. An
     // over-long chain is an authorization failure: masked 404, per the
     // server-wide convention.
     if (
@@ -424,9 +423,9 @@ export class KeyRequest {
   /**
    * GET /kms/keystores/:keystoreId/keys/:keyId
    * Public key description: capability-verified against the keystore's
-   * controller (`read`, with the key URL as an attenuated target -- a
-   * deliberate delta from bedrock, which serves this route without any
-   * authorization). The description's `controller` is the keystore's *live*
+   * controller (`read`, with the key URL as an attenuated target -- this
+   * server authorizes the route rather than serving it open). The
+   * description's `controller` is the keystore's *live*
    * controller, and the `publicAlias` / `publicAliasTemplate` override is
    * re-applied on every read, so descriptions are stable (the client caches
    * them for five minutes).
