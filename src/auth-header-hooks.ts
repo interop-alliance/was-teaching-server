@@ -80,9 +80,10 @@ export async function parseAuthHeaders(
  * onRequest hook that enforces presence of the auth-related headers. Throws
  * MissingAuthError (401) when `Authorization` or `Capability-Invocation` is
  * absent. For route groups where every operation, reads included, is
- * privileged. (No current group qualifies -- even the SpacesRepository group
- * lets anonymous List Spaces reads through, answered with the spec's
- * empty-items 200 -- so this is kept as the strict building block.)
+ * privileged: the WebKMS `/kms` group uses it (every webkms route is
+ * zcap-invoked; the protocol has no public reads). No WAS group qualifies --
+ * even the SpacesRepository group lets anonymous List Spaces reads through,
+ * answered with the spec's empty-items 200.
  * @param request {import('fastify').FastifyRequest}
  * @param reply {import('fastify').FastifyReply}
  * @returns {Promise<void>}

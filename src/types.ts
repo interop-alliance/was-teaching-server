@@ -170,6 +170,120 @@ export type StoredBackendRecord = BackendDescriptor & {
 }
 
 /**
+ * A WebKMS keystore configuration (the `/kms` facet; see
+ * `_spec/web-kms-roadmap.md`). The wire shape is protocol-fixed by
+ * `bedrock-kms-http` / `@interop/webkms-client`, minus the deliberately-dropped
+ * bedrock fields (`meterId`, `ipAllowList`). Stored verbatim, full-URL `id`
+ * included, so the sequence-gated update can round-trip the config unchanged
+ * (bedrock parity); the storage key is the id's last URL segment (the
+ * server-generated local id).
+ */
+export interface KeystoreConfig {
+  /** full keystore URL (`<serverUrl>/kms/keystores/<localId>`), server-assigned on create */
+  id: string
+  /** the DID that controls the keystore (authorizes every invocation on it) */
+  controller: IDID
+  /** config revision: must be 0 on create, exactly previous+1 on update */
+  sequence: number
+  /** opaque KMS module alias, echoed back; this server hard-wires 'local-v1' */
+  kmsModule: string
+}
+
+/**
+ * The full serialized form of a WebKMS-held key, INCLUDING its secret material
+ * (`privateKeyMultibase` for the asymmetric pairs, `secret` for the symmetric
+ * keys) -- the `key` unit of a {@link KmsKeyRecord}. Field names are
+ * protocol-fixed by `bedrock-kms-module-core`'s per-type generators. The
+ * `controller` is deliberately NOT part of it: it is always read from the live
+ * keystore config at description time, so a controller change takes effect
+ * immediately.
+ */
+export interface KmsStoredKey {
+  '@context': string
+  /** full key URL (`<keystoreId>/keys/<localId>`), server-assigned on generate */
+  id: string
+  /** the webkms key type (e.g. `Ed25519VerificationKey2020`) */
+  type: string
+  publicKeyMultibase?: string
+  privateKeyMultibase?: string
+  /** symmetric key material (HMAC / AES-KW), base64url */
+  secret?: string
+  /** per-key invocation chain bound, enforced at operation time */
+  maxCapabilityChainLength?: number
+  /** verbatim description `id` override (e.g. a did:key or did:web URL) */
+  publicAlias?: string
+  /** description `id` template, expanded against the key description */
+  publicAliasTemplate?: string
+}
+
+/**
+ * A stored WebKMS key record (the `/kms` facet; `_spec/web-kms-roadmap.md`),
+ * mirroring bedrock-kms-module-key-storage's `{keystoreId, localId, meta, key}`
+ * shape, unique on `(keystoreId, localId)`. Secret-bearing -- `key` carries the
+ * full serialized key material, held plaintext this increment (the record-KEK
+ * envelope is a later, schema-compatible upgrade) -- so a record is **never**
+ * serialized to a client: only the sanitized key-description projection built
+ * by the KMS module is. The storage layer treats the record as an opaque unit.
+ */
+export interface KmsKeyRecord {
+  /** the owning keystore's local id */
+  keystoreId: string
+  /** the key's server-generated local id (the last segment of `key.id`) */
+  localId: string
+  /** server-managed timestamps (ISO 8601) */
+  meta: { created: string; updated: string }
+  key: KmsStoredKey
+}
+
+/**
+ * The public key-description projection of a KMS-held key, as returned by
+ * `GenerateKeyOperation` and `GET <keyId>` (never any secret field). Its `id`
+ * is the key URL, or the `publicAlias` / expanded `publicAliasTemplate` when
+ * one was set at generate time; `controller` is the live keystore controller.
+ */
+export interface KmsKeyDescription {
+  '@context': string
+  id: string
+  type: string
+  publicKeyMultibase?: string
+  controller: IDID
+}
+
+/**
+ * A stored zcap revocation (the `/kms` facet, Track C of
+ * `_spec/web-kms-roadmap.md`), mirroring bedrock-zcap-storage's
+ * `{capability, meta}` record. Unique on `(delegator, capability.id)` within
+ * its scope (the keystore tree it is stored under); `meta.expires` is the
+ * record's own garbage-collection horizon -- one day past the capability's
+ * `expires`, after which the capability is rejected on expiry alone and the
+ * record is prunable (the one-day margin covers clock-skew grace periods).
+ */
+export interface RevocationRecord {
+  /** the full revoked capability, stored verbatim */
+  capability: { id: string; expires?: string; [key: string]: unknown }
+  meta: {
+    /** the party that delegated the revoked capability (its proof creator) */
+    delegator: string
+    /** the root object the revocation aggregates under (the keystore URL) */
+    rootTarget: string
+    /** server-managed creation timestamp (ISO 8601) */
+    created: string
+    /** GC horizon (ISO 8601); absent when the capability never expires */
+    expires?: string
+  }
+}
+
+/**
+ * The `(capabilityId, delegator)` pair identifying one delegated capability in
+ * a chain for a revocation-store lookup (bedrock-zcap-storage's
+ * `CapabilitySummary`).
+ */
+export interface CapabilitySummary {
+  capabilityId: string
+  delegator: string
+}
+
+/**
  * A backend-adapter factory: given a registered (secret-bearing)
  * `StoredBackendRecord` and a logger, returns the live `StorageBackend` that
  * speaks to that provider. The teaching server's adapter strategy is Layer 3
@@ -461,6 +575,92 @@ export interface StorageBackend {
   listBackends(options: { spaceId: string }): Promise<BackendDescriptor[]>
   /** Idempotent: no error when the record is absent. */
   deleteBackend(options: { spaceId: string; backendId: string }): Promise<void>
+
+  // WebKMS keystore configs (the `/kms` facet; `_spec/web-kms-roadmap.md`).
+  // Keystores are a sibling tree to Spaces (`data/keystores/<localId>/`), keyed
+  // by `keystoreId` -- the server-generated *local* id, i.e. the last segment
+  // of the config's full-URL `id`. The protocol defines no keystore delete.
+  /**
+   * Writes a keystore config unconditionally (the create path; local ids are
+   * server-generated 128-bit random values, so create never collides). The
+   * sequence-gated update path is `updateKeystore`.
+   */
+  writeKeystore(options: {
+    keystoreId: string
+    config: KeystoreConfig
+  }): Promise<void>
+  getKeystore(options: {
+    keystoreId: string
+  }): Promise<KeystoreConfig | undefined>
+  /**
+   * Replaces a keystore config if and only if, atomically with the write:
+   * the keystore exists, `config.sequence` is exactly the stored sequence + 1,
+   * and `config.kmsModule` matches the stored one (the module is immutable).
+   * Otherwise rejects with the protocol's 409 state conflict
+   * (`KeystoreStateConflictError`) -- one merged conflict kind, per
+   * bedrock-kms's `keystores.update`.
+   */
+  updateKeystore(options: {
+    keystoreId: string
+    config: KeystoreConfig
+  }): Promise<void>
+  /**
+   * Every stored keystore config whose `controller` matches, sorted by local
+   * id (the request layer caps the wire result). Resolves an empty array when
+   * nothing is stored yet (must not throw on an absent storage root).
+   */
+  listKeystoresByController(options: {
+    controller: IDID
+  }): Promise<KeystoreConfig[]>
+
+  // WebKMS key records, stored under their keystore
+  // (`data/keystores/<keystoreId>/keys/<localId>.json`), unique on
+  // `(keystoreId, localId)`. The record is opaque to the storage layer
+  // (tension 1 of the roadmap: a phase-2 record cipher slots in without a
+  // schema change). The protocol defines no key delete or update -- a record
+  // is immutable once inserted.
+  /**
+   * Inserts a key record, create-only: rejects with the protocol's 409
+   * duplicate conflict (`KeyIdConflictError`) when a record already exists at
+   * `(keystoreId, localId)`, atomically with the write (per
+   * bedrock-kms-module-key-storage's unique-index insert).
+   */
+  insertKey(options: {
+    keystoreId: string
+    localId: string
+    record: KmsKeyRecord
+  }): Promise<void>
+  getKey(options: {
+    keystoreId: string
+    localId: string
+  }): Promise<KmsKeyRecord | undefined>
+
+  // WebKMS zcap revocations, stored under their keystore
+  // (`data/keystores/<keystoreId>/revocations/`), unique on
+  // `(delegator, capability.id)` within the keystore (per
+  // bedrock-zcap-storage's revocations collection). The protocol defines no
+  // revocation read or delete: records exist only to be consulted by the
+  // chain-inspection hook, and lapse via `meta.expires` (the capability is
+  // rejected on its own expiry from then on).
+  /**
+   * Inserts a revocation record, create-only: rejects with the protocol's 409
+   * duplicate (`DuplicateRevocationError`) when a record already exists at
+   * `(meta.delegator, capability.id)`, atomically with the write.
+   */
+  insertRevocation(options: {
+    keystoreId: string
+    record: RevocationRecord
+  }): Promise<void>
+  /**
+   * True when any of the given capabilities has a stored, unexpired
+   * revocation under the keystore. Records past their `meta.expires` GC
+   * horizon count as not revoked (the capability itself has expired) and may
+   * be pruned on the way through.
+   */
+  isRevoked(options: {
+    keystoreId: string
+    capabilities: CapabilitySummary[]
+  }): Promise<boolean>
 }
 
 declare module 'fastify' {

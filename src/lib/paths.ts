@@ -285,3 +285,71 @@ export function linksetPath({
       : spacePath({ spaceId })
   return `${anchor}/linkset`
 }
+
+/**
+ * `/kms/keystores` -- the WebKMS keystores collection (create/list target; the
+ * `/kms` facet, `_spec/web-kms-roadmap.md`) or one of its member keystores
+ * (`/kms/keystores/:keystoreId`). Unlike the WAS builders there is no
+ * trailing-slash container form: the webkms protocol (bedrock-kms-http /
+ * `@interop/webkms-client`) posts to the bare collection path.
+ * @param options {object}
+ * @param [options.keystoreId] {string}   the keystore's server-generated local
+ *   id; when present, the member path, otherwise the collection path
+ * @returns {string}
+ */
+export function kmsKeystoresPath({
+  keystoreId
+}: { keystoreId?: string } = {}): string {
+  return keystoreId !== undefined
+    ? `/kms/keystores/${keystoreId}`
+    : '/kms/keystores'
+}
+
+/**
+ * `/kms/keystores/:keystoreId/keys` -- a keystore's keys collection (the
+ * `GenerateKeyOperation` target) or one of its member keys
+ * (`/kms/keystores/:keystoreId/keys/:keyId`, the key-operation / description
+ * target). Like `kmsKeystoresPath`, no trailing-slash form exists: the webkms
+ * protocol's URLs are exact.
+ * @param options {object}
+ * @param options.keystoreId {string}   the keystore's local id
+ * @param [options.keyId] {string}   the key's server-generated local id; when
+ *   present, the member path, otherwise the collection path
+ * @returns {string}
+ */
+export function kmsKeysPath({
+  keystoreId,
+  keyId
+}: {
+  keystoreId: string
+  keyId?: string
+}): string {
+  const keysPath = `${kmsKeystoresPath({ keystoreId })}/keys`
+  return keyId !== undefined ? `${keysPath}/${keyId}` : keysPath
+}
+
+/**
+ * `/kms/keystores/:keystoreId/zcaps/revocations/:revocationId` -- a keystore's
+ * zcap revocation submission target (POST; the ezcap-express
+ * `/zcaps/revocations/` convention). `revocationId` is the *to-be-revoked
+ * capability's id*, URL-encoded into the single path segment the route
+ * expects -- the same `encodeURIComponent` framing `@interop/webkms-client`'s
+ * `revokeCapability` puts on the wire.
+ * @param options {object}
+ * @param options.keystoreId {string}   the keystore's local id
+ * @param options.revocationId {string}   the to-be-revoked capability's id
+ *   (raw, un-encoded)
+ * @returns {string}
+ */
+export function kmsRevocationsPath({
+  keystoreId,
+  revocationId
+}: {
+  keystoreId: string
+  revocationId: string
+}): string {
+  return (
+    `${kmsKeystoresPath({ keystoreId })}/zcaps/revocations/` +
+    encodeURIComponent(revocationId)
+  )
+}

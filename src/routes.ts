@@ -2,6 +2,9 @@
  * Route layer: maps URL patterns to *Request handler methods. Each group first
  * installs the `requireAuthHeadersOrPublicRead` then `parseAuthHeaders`
  * onRequest hooks, and redirects slash/no-slash variants to the canonical form.
+ * (The WebKMS `/kms` group is the exception on both counts: it installs the
+ * strict `requireAuthHeaders` -- the webkms protocol has no public reads --
+ * and no slash redirects, since the protocol's URLs are exact.)
  */
 import type { FastifyInstance, FastifyPluginOptions } from 'fastify'
 import { SpacesRepositoryRequest } from './requests/SpacesRepositoryRequest.js'
@@ -11,8 +14,12 @@ import { ResourceRequest } from './requests/ResourceRequest.js'
 import { CollectionRequest } from './requests/CollectionRequest.js'
 import { PolicyRequest } from './requests/PolicyRequest.js'
 import { BackendRequest } from './requests/BackendRequest.js'
+import { KeystoreRequest } from './requests/KeystoreRequest.js'
+import { KeyRequest } from './requests/KeyRequest.js'
+import { RevocationRequest } from './requests/RevocationRequest.js'
 import {
   parseAuthHeaders,
+  requireAuthHeaders,
   requireAuthHeadersOrPublicRead
 } from './auth-header-hooks.js'
 import { captureRawBody, verifyBodyDigest } from './digest.js'
@@ -279,5 +286,63 @@ export async function initResourceRoutes(
   app.put(
     '/space/:spaceId/:collectionId/:resourceId/meta',
     ResourceRequest.putMeta
+  )
+}
+
+/**
+ * Registers the WebKMS keystore and key routes (the `/kms` facet; see
+ * `_spec/web-kms-roadmap.md`). Installs the same hook chain as the WAS groups
+ * except that the auth requirement is the strict `requireAuthHeaders`: every
+ * webkms route, GETs included, is zcap-invoked -- the protocol has no public
+ * reads. No slash-redirect variants either; the protocol's URLs are exact
+ * (bedrock-kms-http registers only these shapes).
+ * @param app {import('fastify').FastifyInstance}
+ * @param options {object}   Fastify plugin options
+ * @returns {Promise<void>}
+ */
+export async function initKmsRoutes(
+  app: FastifyInstance,
+  _options: FastifyPluginOptions
+): Promise<void> {
+  app.setErrorHandler(handleError)
+
+  // Every operation is privileged: 401 when auth headers are absent.
+  app.addHook('onRequest', requireAuthHeaders)
+  // Parse the relevant request headers, set the request.zcap parameter
+  app.addHook('onRequest', parseAuthHeaders)
+  // Capture raw body bytes (JSON/text) so the digest can be recomputed against
+  // exactly what the client signed (spec "Request Body Integrity").
+  app.addHook('preParsing', captureRawBody)
+  // Enforce the Digest header binding: require it covered by the signature and,
+  // when the raw body is available, recompute and compare it.
+  app.addHook('preValidation', verifyBodyDigest)
+
+  // Create Keystore
+  app.post('/kms/keystores', KeystoreRequest.post)
+
+  // List Keystores by controller (`?controller=<did>`)
+  app.get('/kms/keystores', KeystoreRequest.list)
+
+  // Get Keystore config
+  app.get('/kms/keystores/:keystoreId', KeystoreRequest.get)
+
+  // Update Keystore config
+  app.post('/kms/keystores/:keystoreId', KeystoreRequest.update)
+
+  // Generate Key (GenerateKeyOperation)
+  app.post('/kms/keystores/:keystoreId/keys', KeyRequest.generate)
+
+  // Key operation dispatch by envelope type (Sign / Verify / DeriveSecret /
+  // WrapKey / UnwrapKey)
+  app.post('/kms/keystores/:keystoreId/keys/:keyId', KeyRequest.operation)
+
+  // Public key description
+  app.get('/kms/keystores/:keystoreId/keys/:keyId', KeyRequest.get)
+
+  // Revoke a delegated zcap (`:revocationId` = the URL-encoded id of the
+  // capability being revoked, which is also the request body)
+  app.post(
+    '/kms/keystores/:keystoreId/zcaps/revocations/:revocationId',
+    RevocationRequest.post
   )
 }

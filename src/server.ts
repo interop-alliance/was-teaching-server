@@ -1,7 +1,7 @@
 /**
  * App factory: createApp() builds the Fastify instance, registers plugins
- * (cors, static, view, multipart), decorates `serverUrl`, and mounts the four
- * route groups.
+ * (cors, static, view, multipart), decorates `serverUrl`, and mounts the route
+ * groups (the four WAS groups plus the WebKMS `/kms` facet).
  */
 import Fastify, {
   type FastifyInstance,
@@ -16,6 +16,7 @@ import path from 'node:path'
 
 import {
   initCollectionRoutes,
+  initKmsRoutes,
   initResourceRoutes,
   initSpaceRoutes,
   initSpacesRepositoryRoutes
@@ -70,7 +71,8 @@ const contentTypeStrategy: ContentTypeConstraint = {
 
 /**
  * Builds the Fastify instance: registers plugins (cors, static, view,
- * multipart), decorates `serverUrl`, and mounts the four route groups.
+ * multipart), decorates `serverUrl`, and mounts the route groups (the four
+ * WAS groups plus the WebKMS `/kms` facet).
  * @param options {object}
  * @param [options.serverUrl] {string}   this server's base URL; used to build
  *   and match ZCap invocationTarget URLs (host and port must match exactly)
@@ -227,6 +229,7 @@ export function createApp({
   fastify.register(initSpaceRoutes)
   fastify.register(initCollectionRoutes)
   fastify.register(initResourceRoutes)
+  fastify.register(initKmsRoutes)
 
   return fastify
 }

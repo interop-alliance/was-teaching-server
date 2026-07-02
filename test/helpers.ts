@@ -107,6 +107,9 @@ export async function zcapClients({ serverUrl }: { serverUrl: string }) {
     alice: {
       // did:key:z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD
       did: aliceRootDid,
+      // the raw invocation signer, for clients that take one directly (e.g.
+      // `@interop/webkms-client`) rather than wrapping a ZcapClient
+      signer: aliceRootSigner,
       was: wasClient({ signer: aliceRootSigner, serverUrl }),
       space1: {
         id: '426e7db8-26b5-4fdc-8068-9dcb948fd291'
@@ -118,11 +121,13 @@ export async function zcapClients({ serverUrl }: { serverUrl: string }) {
     aliceDelegatedApp: {
       // did:key:z6MksgunmKuHjE2GvC3DYLBC3p7i1QkMRyhWxT4rNNnKxZar
       did: aliceDelegatedAppDid,
+      signer: aliceDelegatedAppSigner,
       was: wasClient({ signer: aliceDelegatedAppSigner, serverUrl })
     },
     bob: {
       // did:key:z6MkgpJp9jpAsqFCKqKMvHsAL5VEnkcd8FhhZdwnX33BFDgs
       did: bobRootDid,
+      signer: bobRootSigner,
       was: wasClient({ signer: bobRootSigner, serverUrl }),
       space2: {
         id: '94f03216-5ab4-4723-853c-cf837c171323'

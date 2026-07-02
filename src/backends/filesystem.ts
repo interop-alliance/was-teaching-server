@@ -1,9 +1,11 @@
 /**
  * Filesystem persistence backend: stores Spaces, Collections, and Resources as
- * directories and files under `data/spaces/`. The default (and currently only)
- * adapter implementing the StorageBackend contract documented in types.ts.
+ * directories and files under `data/spaces/`, and WebKMS keystores under the
+ * sibling `data/keystores/` tree. The default (and currently only) adapter
+ * implementing the StorageBackend contract documented in types.ts.
  */
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { mkdir, rm, stat as fsStat, writeFile } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import { execFile } from 'node:child_process'
@@ -19,7 +21,10 @@ import {
   SpaceNotFoundError,
   QuotaExceededError,
   PayloadTooLargeError,
-  PreconditionFailedError
+  PreconditionFailedError,
+  KeystoreStateConflictError,
+  KeyIdConflictError,
+  DuplicateRevocationError
 } from '../errors.js'
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
@@ -66,7 +71,12 @@ import type {
   CollectionUsage,
   Action,
   StorageBackend,
-  StoredBackendRecord
+  StoredBackendRecord,
+  KeystoreConfig,
+  KmsKeyRecord,
+  RevocationRecord,
+  CapabilitySummary,
+  IDID
 } from '../types.js'
 
 const { Store: MetadataJsonStore } = jsonfs
@@ -184,6 +194,12 @@ async function openFileStream(
 
 export class FileSystemBackend implements StorageBackend {
   spacesDir: string
+  /**
+   * Root of the WebKMS keystore tree (`data/keystores/<localId>/`), a sibling
+   * of `spacesDir` -- the `/kms` facet is deliberately separable from Spaces
+   * (own route family, own storage tree; see `_spec/web-kms-roadmap.md`).
+   */
+  keystoresDir: string
   logger: FastifyBaseLogger
   /**
    * Per-Space storage capacity, in bytes (spec "Quotas"). `undefined` means no
@@ -225,6 +241,7 @@ export class FileSystemBackend implements StorageBackend {
     maxUploadBytes?: number
   }) {
     this.spacesDir = path.join(dataDir, 'spaces')
+    this.keystoresDir = path.join(dataDir, 'keystores')
     this.logger = logger ?? silentLogger
     this.capacityBytes = capacityBytes
     this.maxUploadBytes = maxUploadBytes
@@ -546,15 +563,17 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Defense in depth: asserts that a built path stays within the storage root,
-   * so a malformed id that somehow slips past request-layer validation can
-   * never escape `spacesDir` (path traversal). The request and tar-import
-   * layers reject such ids first; this is the last line of defense.
+   * Defense in depth: asserts that a built path stays within the given storage
+   * root (`spacesDir` by default; `keystoresDir` for the keystore tree), so a
+   * malformed id that somehow slips past request-layer validation can never
+   * escape it (path traversal). The request and tar-import layers reject such
+   * ids first; this is the last line of defense.
    * @param targetPath {string}
+   * @param [rootDir] {string}   the containing root; defaults to `spacesDir`
    * @returns {void}
    */
-  _assertContained(targetPath: string): void {
-    const root = path.resolve(this.spacesDir)
+  _assertContained(targetPath: string, rootDir: string = this.spacesDir): void {
+    const root = path.resolve(rootDir)
     const resolved = path.resolve(targetPath)
     if (resolved !== root && !resolved.startsWith(root + path.sep)) {
       throw new StorageError({
@@ -2444,5 +2463,333 @@ export class FileSystemBackend implements StorageBackend {
     backendId: string
   }): Promise<void> {
     await rm(this._backendFile({ spaceId, backendId }), { force: true })
+  }
+
+  // WebKMS keystores (the `/kms` facet; `_spec/web-kms-roadmap.md`). A sibling
+  // tree to Spaces: `keystores/<localId>/` holds a keystore's `config.json`
+  // now, and its key records / revocations in later tracks -- hence a
+  // directory per keystore rather than a flat file.
+
+  /**
+   * The directory holding one keystore's records, contained in `keystoresDir`.
+   * @param keystoreId {string}   the keystore's server-generated local id
+   * @returns {string}
+   */
+  _keystoreDir(keystoreId: string): string {
+    const keystoreDir = path.join(this.keystoresDir, keystoreId)
+    this._assertContained(keystoreDir, this.keystoresDir)
+    return keystoreDir
+  }
+
+  _keystoreConfigFile(keystoreId: string): string {
+    return path.join(this._keystoreDir(keystoreId), 'config.json')
+  }
+
+  /**
+   * Persists a keystore config unconditionally (the create path -- local ids
+   * are server-generated random values, so create never collides). The
+   * sequence-gated update path is `updateKeystore`.
+   * @param options {object}
+   * @param options.keystoreId {string}   the keystore's local id
+   * @param options.config {KeystoreConfig}
+   * @returns {Promise<void>}
+   */
+  async writeKeystore({
+    keystoreId,
+    config
+  }: {
+    keystoreId: string
+    config: KeystoreConfig
+  }): Promise<void> {
+    await mkdir(this._keystoreDir(keystoreId), { recursive: true })
+    const metaStore = new MetadataJsonStore<KeystoreConfig>({
+      file: this._keystoreConfigFile(keystoreId)
+    })
+    await metaStore.write(config)
+  }
+
+  /**
+   * @param options {object}
+   * @param options.keystoreId {string}   the keystore's local id
+   * @returns {Promise<KeystoreConfig|undefined>}
+   *   Resolves falsy when the keystore does not exist (must not throw).
+   */
+  async getKeystore({
+    keystoreId
+  }: {
+    keystoreId: string
+  }): Promise<KeystoreConfig | undefined> {
+    const metaStore = new MetadataJsonStore<KeystoreConfig>({
+      file: this._keystoreConfigFile(keystoreId)
+    })
+    return await metaStore.read()
+  }
+
+  /**
+   * Replaces a keystore config, gated atomically (under the per-keystore write
+   * mutex) on: the keystore existing, `config.sequence` being exactly the
+   * stored sequence + 1, and `config.kmsModule` matching the stored one (the
+   * module is immutable). Any other state rejects with the protocol's single
+   * merged 409 conflict, per bedrock-kms's `keystores.update`.
+   * @param options {object}
+   * @param options.keystoreId {string}   the keystore's local id
+   * @param options.config {KeystoreConfig}
+   * @returns {Promise<void>}
+   */
+  async updateKeystore({
+    keystoreId,
+    config
+  }: {
+    keystoreId: string
+    config: KeystoreConfig
+  }): Promise<void> {
+    await this._writeMutex.run(`keystore:${keystoreId}`, async () => {
+      const existing = await this.getKeystore({ keystoreId })
+      if (
+        !existing ||
+        config.sequence !== existing.sequence + 1 ||
+        config.kmsModule !== existing.kmsModule
+      ) {
+        throw new KeystoreStateConflictError()
+      }
+      const metaStore = new MetadataJsonStore<KeystoreConfig>({
+        file: this._keystoreConfigFile(keystoreId)
+      })
+      await metaStore.write(config)
+    })
+  }
+
+  /**
+   * Every stored keystore config whose `controller` matches, sorted by local
+   * id (the request layer caps the wire result). An absent keystores root
+   * (nothing stored yet) resolves an empty list; a directory without a
+   * readable config file is skipped.
+   * @param options {object}
+   * @param options.controller {IDID}
+   * @returns {Promise<KeystoreConfig[]>}
+   */
+  async listKeystoresByController({
+    controller
+  }: {
+    controller: IDID
+  }): Promise<KeystoreConfig[]> {
+    let rootEntries: fs.Dirent[]
+    try {
+      rootEntries = await fs.promises.readdir(this.keystoresDir, {
+        withFileTypes: true
+      })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return []
+      }
+      throw new StorageError({ cause: err as Error })
+    }
+    const keystoreEntries = rootEntries
+      .filter(entry => entry.isDirectory())
+      .sort((a, b) => a.name.localeCompare(b.name))
+    const configs: KeystoreConfig[] = []
+    for (const entry of keystoreEntries) {
+      const config = await this.getKeystore({ keystoreId: entry.name })
+      if (config && config.controller === controller) {
+        configs.push(config)
+      }
+    }
+    return configs
+  }
+
+  /**
+   * The file holding one key record, contained in its keystore's `keys/`
+   * subdirectory. The record is a plain JSON file (not a metadata store):
+   * records are immutable once inserted, so there is no read-modify-write to
+   * protect.
+   * @param options {object}
+   * @param options.keystoreId {string}   the owning keystore's local id
+   * @param options.localId {string}   the key's local id
+   * @returns {string}
+   */
+  _keyFile({
+    keystoreId,
+    localId
+  }: {
+    keystoreId: string
+    localId: string
+  }): string {
+    const keysDir = path.join(this._keystoreDir(keystoreId), 'keys')
+    const keyFile = path.join(keysDir, `${localId}.json`)
+    this._assertContained(keyFile, keysDir)
+    return keyFile
+  }
+
+  /**
+   * Inserts a key record, create-only: the exclusive-create write (`wx`)
+   * enforces the `(keystoreId, localId)` uniqueness atomically, rejecting a
+   * duplicate with the protocol's 409 (`KeyIdConflictError`), per
+   * bedrock-kms-module-key-storage's unique-index insert.
+   * @param options {object}
+   * @param options.keystoreId {string}   the owning keystore's local id
+   * @param options.localId {string}   the key's local id
+   * @param options.record {KmsKeyRecord}   the full (secret-bearing) record
+   * @returns {Promise<void>}
+   */
+  async insertKey({
+    keystoreId,
+    localId,
+    record
+  }: {
+    keystoreId: string
+    localId: string
+    record: KmsKeyRecord
+  }): Promise<void> {
+    const keyFile = this._keyFile({ keystoreId, localId })
+    await mkdir(path.dirname(keyFile), { recursive: true })
+    try {
+      await writeFile(keyFile, JSON.stringify(record, null, 2), { flag: 'wx' })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new KeyIdConflictError()
+      }
+      throw new StorageError({ cause: err as Error })
+    }
+  }
+
+  /**
+   * @param options {object}
+   * @param options.keystoreId {string}   the owning keystore's local id
+   * @param options.localId {string}   the key's local id
+   * @returns {Promise<KmsKeyRecord|undefined>}
+   *   Resolves falsy when the key does not exist (must not throw).
+   */
+  async getKey({
+    keystoreId,
+    localId
+  }: {
+    keystoreId: string
+    localId: string
+  }): Promise<KmsKeyRecord | undefined> {
+    try {
+      const raw = await fs.promises.readFile(
+        this._keyFile({ keystoreId, localId }),
+        'utf8'
+      )
+      return JSON.parse(raw) as KmsKeyRecord
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return undefined
+      }
+      throw new StorageError({ cause: err as Error })
+    }
+  }
+
+  /**
+   * The file holding one zcap revocation record, contained in its keystore's
+   * `revocations/` subdirectory. The `(delegator, capabilityId)` unique key
+   * is folded into the file name as a SHA-256 digest -- both parts are
+   * arbitrary-length URIs, so hashing (rather than encoding) keeps the name
+   * fixed-width and filesystem-safe.
+   * @param options {object}
+   * @param options.keystoreId {string}   the owning keystore's local id
+   * @param options.delegator {string}   the revoked capability's delegator
+   * @param options.capabilityId {string}   the revoked capability's id
+   * @returns {string}
+   */
+  _revocationFile({
+    keystoreId,
+    delegator,
+    capabilityId
+  }: {
+    keystoreId: string
+    delegator: string
+    capabilityId: string
+  }): string {
+    const digest = createHash('sha256')
+      .update(`${delegator}\n${capabilityId}`)
+      .digest('hex')
+    return path.join(
+      this._keystoreDir(keystoreId),
+      'revocations',
+      `${digest}.json`
+    )
+  }
+
+  /**
+   * Inserts a revocation record, create-only: the exclusive-create write
+   * (`wx`) enforces the `(delegator, capability.id)` uniqueness atomically,
+   * rejecting a duplicate with the protocol's 409
+   * (`DuplicateRevocationError`), per bedrock-zcap-storage's unique-index
+   * insert.
+   * @param options {object}
+   * @param options.keystoreId {string}   the owning keystore's local id
+   * @param options.record {RevocationRecord}   the revocation to store
+   * @returns {Promise<void>}
+   */
+  async insertRevocation({
+    keystoreId,
+    record
+  }: {
+    keystoreId: string
+    record: RevocationRecord
+  }): Promise<void> {
+    const revocationFile = this._revocationFile({
+      keystoreId,
+      delegator: record.meta.delegator,
+      capabilityId: record.capability.id
+    })
+    await mkdir(path.dirname(revocationFile), { recursive: true })
+    try {
+      await writeFile(revocationFile, JSON.stringify(record, null, 2), {
+        flag: 'wx'
+      })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new DuplicateRevocationError()
+      }
+      throw new StorageError({ cause: err as Error })
+    }
+  }
+
+  /**
+   * True when any of the given capabilities has a stored, unexpired
+   * revocation under the keystore. A record past its `meta.expires` GC
+   * horizon is pruned on the way through and counts as not revoked -- the
+   * capability itself has expired, so verification already rejects it on
+   * expiry (this is the filesystem analogue of bedrock-zcap-storage's
+   * TTL index).
+   * @param options {object}
+   * @param options.keystoreId {string}   the owning keystore's local id
+   * @param options.capabilities {CapabilitySummary[]}   the
+   *   `(capabilityId, delegator)` pairs to check
+   * @returns {Promise<boolean>}
+   */
+  async isRevoked({
+    keystoreId,
+    capabilities
+  }: {
+    keystoreId: string
+    capabilities: CapabilitySummary[]
+  }): Promise<boolean> {
+    const now = Date.now()
+    for (const { capabilityId, delegator } of capabilities) {
+      const revocationFile = this._revocationFile({
+        keystoreId,
+        delegator,
+        capabilityId
+      })
+      let raw: string
+      try {
+        raw = await fs.promises.readFile(revocationFile, 'utf8')
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          continue
+        }
+        throw new StorageError({ cause: err as Error })
+      }
+      const record = JSON.parse(raw) as RevocationRecord
+      if (record.meta.expires && Date.parse(record.meta.expires) <= now) {
+        await rm(revocationFile, { force: true })
+        continue
+      }
+      return true
+    }
+    return false
   }
 }

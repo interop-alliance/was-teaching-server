@@ -763,6 +763,201 @@ export class InvalidImportError extends ProblemError {
   }
 }
 
+// WebKMS facet errors (`/kms`; `_spec/web-kms-roadmap.md`). The webkms
+// protocol is status-code driven -- `@interop/webkms-client` distinguishes
+// only 404 and 409 -- so these reuse the nearest WAS problem-kind URIs rather
+// than minting a parallel registry for a non-WAS route family.
+
+/**
+ * 404 — the requested keystore does not exist, or the caller is not
+ * authorized (the WAS existence-masking convention, kept for consistency
+ * within this server; bedrock-kms returns 403 for authz failures instead).
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ */
+export class KeystoreNotFoundError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({
+      type: ProblemTypes.NOT_FOUND,
+      title: `Invalid ${requestName || 'Keystore'} request`,
+      detail: 'Keystore not found or invalid authorization.',
+      statusCode: 404
+    })
+  }
+}
+
+/**
+ * 400 — the capability invocation on a Create Keystore request is not
+ * *authorized by* the `controller` in the request body: it is neither signed
+ * directly by that DID nor accompanied by a delegation chain rooted in it.
+ * The keystore-creation bootstrap rule, mirroring Create Space (bedrock roots
+ * creation in its meter's controller instead; meters are dropped here).
+ * @param options {object}
+ * @param options.zcapSigningDid {string}   DID that signed the invocation
+ * @param options.controller {string}   controller DID supplied in the body
+ * @param [options.cause] {Error}   the underlying chain-verification failure,
+ *   for a delegated invocation rejected at verification time
+ */
+export class KeystoreControllerMismatchError extends ProblemError {
+  constructor({
+    zcapSigningDid,
+    controller,
+    cause
+  }: {
+    zcapSigningDid: string
+    controller: string
+    cause?: Error
+  }) {
+    const detail =
+      `The invocation must be authorized by the 'controller' DID in the` +
+      ` request body ("${controller}"): signed by it, or via a delegation` +
+      ` chain rooted in it (invocation signed by "${zcapSigningDid}").`
+    super({
+      type: ProblemTypes.CONTROLLER_MISMATCH,
+      title: 'Invalid Create Keystore request',
+      detail,
+      statusCode: 400,
+      problems: [{ detail, pointer: '#/controller' }],
+      cause
+    })
+  }
+}
+
+/**
+ * 409 — a keystore config update could not be applied: the supplied `sequence`
+ * is not exactly the stored sequence + 1, or the immutable `kmsModule` does
+ * not match. One merged conflict kind, per bedrock-kms's `keystores.update`
+ * (its `InvalidStateError`); the client distinguishes only the 409 status.
+ * `ID_CONFLICT` is the nearest WAS problem kind (a 409 state conflict on an
+ * identified record) -- the webkms protocol has no type registry of its own.
+ */
+export class KeystoreStateConflictError extends ProblemError {
+  constructor() {
+    const detail =
+      'Could not update keystore configuration: sequence must be exactly the' +
+      ' stored sequence + 1 and "kmsModule" cannot change.'
+    super({
+      type: ProblemTypes.ID_CONFLICT,
+      title: 'Keystore configuration state conflict.',
+      detail,
+      statusCode: 409,
+      problems: [{ detail, pointer: '#/sequence' }]
+    })
+  }
+}
+
+/**
+ * 404 — the requested KMS-held key does not exist, or the caller is not
+ * authorized (the same existence-masking as `KeystoreNotFoundError`).
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ */
+export class KeyNotFoundError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({
+      type: ProblemTypes.NOT_FOUND,
+      title: `Invalid ${requestName || 'Key'} request`,
+      detail: 'Key not found or invalid authorization.',
+      statusCode: 404
+    })
+  }
+}
+
+/**
+ * 409 — a key record already exists at `(keystoreId, localId)`. Key local ids
+ * are server-generated 128-bit random values, so this is effectively
+ * unreachable through the API; the storage layer still enforces insert-once
+ * semantics (per bedrock-kms-module-key-storage's unique index), and
+ * `@interop/webkms-client` maps a 409 on generate to its `DuplicateError`.
+ */
+export class KeyIdConflictError extends ProblemError {
+  constructor() {
+    const detail = 'Duplicate key identifier.'
+    super({
+      type: ProblemTypes.ID_CONFLICT,
+      title: 'A key with this id already exists.',
+      detail,
+      statusCode: 409,
+      problems: [{ detail, pointer: '#/id' }]
+    })
+  }
+}
+
+/**
+ * 400 — a well-formed key operation names an operation this KMS does not serve
+ * for the key's type (e.g. `VerifyOperation` on an asymmetric key -- custody
+ * is the criterion: asymmetric verify needs only the public key and is
+ * client-local), or an operation type it does not recognize at all. A clean
+ * 400 where bedrock surfaces the same condition as an uncaught 500.
+ * @param options {object}
+ * @param options.operationType {string}   the operation envelope's `type`
+ * @param [options.keyType] {string}   the target key's type, when known
+ */
+export class UnsupportedKeyOperationError extends ProblemError {
+  constructor({
+    operationType,
+    keyType
+  }: {
+    operationType: string
+    keyType?: string
+  }) {
+    const detail = keyType
+      ? `Unsupported operation "${operationType}" for key type "${keyType}".`
+      : `Unknown operation type "${operationType}".`
+    super({
+      type: ProblemTypes.INVALID_REQUEST_BODY,
+      title: 'Unsupported key operation.',
+      detail,
+      statusCode: 400,
+      problems: [{ detail, pointer: '#/type' }]
+    })
+  }
+}
+
+/**
+ * 400 — a submitted zcap revocation cannot be accepted: the body is not a
+ * revocable delegated capability (root zcaps cannot be revoked), its id does
+ * not match the revocation URL, its chain does not root in the keystore being
+ * posted to, or its delegation chain fails verification (a chain containing
+ * an already-revoked capability included -- resubmitting a stored revocation
+ * therefore lands here, per ezcap-express's `authorizeZcapRevocation`; the
+ * 409 duplicate is reserved for a write race at the store).
+ * @param options {object}
+ * @param options.detail {string}   which of the revocation conditions failed
+ * @param [options.cause] {Error}   the underlying chain-verification failure
+ */
+export class InvalidRevocationError extends ProblemError {
+  constructor({ detail, cause }: { detail: string; cause?: Error }) {
+    super({
+      type: ProblemTypes.INVALID_REQUEST_BODY,
+      title: 'Invalid Revoke Capability request',
+      detail,
+      statusCode: 400,
+      cause
+    })
+  }
+}
+
+/**
+ * 409 — a revocation record already exists at `(delegator, capabilityId)`
+ * (bedrock-zcap-storage's `DuplicateError`; `@interop/webkms-client` maps a
+ * 409 to its `DuplicateError`). Reached only on a concurrent-submission race:
+ * a sequential resubmission fails the chain verification first (the chain now
+ * contains a revoked capability) and is the 400 `InvalidRevocationError`.
+ */
+export class DuplicateRevocationError extends ProblemError {
+  constructor() {
+    const detail = 'Duplicate revocation.'
+    super({
+      type: ProblemTypes.ID_CONFLICT,
+      title: 'This capability is already revoked.',
+      detail,
+      statusCode: 409,
+      problems: [{ detail, pointer: '#/id' }]
+    })
+  }
+}
+
 /**
  * Fastify error handler installed by each route group. Serializes the error to
  * an `application/problem+json` response using its `type` / `title` / `detail`
