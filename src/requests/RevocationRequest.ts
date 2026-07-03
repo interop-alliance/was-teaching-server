@@ -118,16 +118,19 @@ export class RevocationRequest {
     })
 
     const capability = body as RevocationRecord['capability']
+    // Compute the record's GC expiry only from a parseable `expires`; an
+    // unparseable one yields `NaN`, and `new Date(NaN).toISOString()` would
+    // throw a `RangeError` (500). Omitting `expires` here just drops the GC
+    // margin -- the capability is still rejected on its own expiry.
+    const expiresMs = capability.expires ? Date.parse(capability.expires) : NaN
     const record: RevocationRecord = {
       capability,
       meta: {
         delegator,
         rootTarget: keystoreUrl,
         created: new Date().toISOString(),
-        ...(capability.expires && {
-          expires: new Date(
-            Date.parse(capability.expires) + ONE_DAY
-          ).toISOString()
+        ...(Number.isFinite(expiresMs) && {
+          expires: new Date(expiresMs + ONE_DAY).toISOString()
         })
       }
     }

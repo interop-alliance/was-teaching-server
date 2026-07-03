@@ -417,12 +417,19 @@ export interface StorageBackend {
    * cursor and limit baked in -- if and only if a further page may follow; its
    * absence marks the last page. A malformed/un-honorable `cursor` rejects with
    * `InvalidCursorError` (400 `invalid-cursor`).
+   *
+   * `collectionDescription` (the caller's already-fetched control-plane
+   * description) supplies the listing's `name` / `type` and encryption flag; a
+   * data-plane backend selected by a Collection never holds the description
+   * itself (it lives on the control plane), so it MUST be passed in for such a
+   * backend.
    */
   listCollectionItems(options: {
     spaceId: string
     collectionId: string
     limit?: number
     cursor?: string
+    collectionDescription?: CollectionDescription
   }): Promise<CollectionResourcesList>
 
   /**

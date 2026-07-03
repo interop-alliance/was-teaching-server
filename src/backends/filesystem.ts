@@ -49,6 +49,7 @@ import {
   parseResourceFileName
 } from '../lib/resourceFileName.js'
 import { sanitizeBackendRecord } from '../lib/backends.js'
+import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { encodeCursor, decodeCursor } from '../lib/cursor.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
 import { formatEtag } from '../lib/etag.js'
@@ -825,9 +826,12 @@ export class FileSystemBackend implements StorageBackend {
       collections.push({
         id: entry.name,
         url: collectionPath({ spaceId, collectionId: entry.name }),
-        // `name` is optional on the wire type; a stored Collection always has
-        // one (create defaults it to the id), so fall back to the id defensively.
-        name: collectionDescription!.name ?? entry.name
+        // `name` is optional on the wire type; a stored Collection normally has
+        // one (create defaults it to the id). Fall back to the dir name for a
+        // description-less directory too (e.g. one left by a policy write to a
+        // never-created Collection) -- reading `.name` off `undefined` here would
+        // 500 the entire Space listing.
+        name: collectionDescription?.name ?? entry.name
       })
     }
 
@@ -963,20 +967,61 @@ export class FileSystemBackend implements StorageBackend {
     const entries = await extractTarEntries(tarStream)
     const { spacePolicy, collections } = buildImportPlan(entries)
 
-    // Quota pre-flight (spec "Quotas"): reject a bulk import that would not fit
-    // in the Space's remaining headroom before writing anything. Sums every
-    // staged resource body; duplicates the merge below skips are counted too, so
-    // this is a conservative (early-rejecting) estimate.
-    if (this.capacityBytes !== undefined) {
-      let incomingBytes = 0
-      for (const { resources } of collections) {
-        for (const { body } of resources) {
-          incomingBytes += body.length
+    // Pre-flight pass over every staged resource, before writing anything, so a
+    // rejected import leaves the Space untouched. Three checks, each of which the
+    // PUT/POST write routes already enforce and which import MUST inherit too:
+    //  - per-upload size cap (413): reject any single body over `maxUploadBytes`;
+    //  - fail-closed encryption (422): when the target Collection declares a
+    //    recognized `encryption` scheme, every incoming resource body MUST be a
+    //    conforming envelope of it (a plaintext body under an encrypted
+    //    Collection would otherwise store server-visible plaintext);
+    //  - cumulative quota (507): sum bodies and check remaining Space headroom.
+    // The effective encryption marker is the merged-into Collection's existing
+    // one, else the import's own Collection description (a new Collection). Skips
+    // (existing ids) are counted conservatively, as for the quota estimate.
+    const { capacityBytes, maxUploadBytes } = this
+    let incomingBytes = 0
+    for (const {
+      collectionId,
+      collectionDescription,
+      resources
+    } of collections) {
+      const existing = await this.getCollectionDescription({
+        spaceId,
+        collectionId
+      })
+      const effectiveEncryption = existing
+        ? existing.encryption
+        : collectionDescription.encryption
+      for (const { fileName, body } of resources) {
+        if (maxUploadBytes !== undefined && body.length > maxUploadBytes) {
+          throw new PayloadTooLargeError({
+            maxUploadBytes,
+            backendId: this.describe().id,
+            uploadBytes: body.length
+          })
         }
+        if (effectiveEncryption?.scheme !== undefined) {
+          const { contentType } = parseResourceFileName(fileName)
+          let parsedBody: unknown
+          try {
+            parsedBody = JSON.parse(body.toString('utf8'))
+          } catch {
+            parsedBody = undefined
+          }
+          assertEncryptedWriteConforms({
+            collectionDescription: { encryption: effectiveEncryption },
+            contentType,
+            body: parsedBody
+          })
+        }
+        incomingBytes += body.length
       }
+    }
+    if (capacityBytes !== undefined) {
       await this._assertSpaceHeadroom({
         spaceId,
-        capacityBytes: this.capacityBytes,
+        capacityBytes,
         incomingBytes
       })
     }
@@ -1043,7 +1088,16 @@ export class FileSystemBackend implements StorageBackend {
       const collectionDir = this._collectionDir({ spaceId, collectionId })
 
       for (const { fileName, resourceId, body } of resources) {
-        if (await this._findFile({ collectionDir, resourceId })) {
+        // Skip anything the destination already has for this id: a live
+        // representation (`_findFile`) OR a sidecar (`_readMetaSidecar`, which
+        // includes a `deleted:true` tombstone). Checking only `_findFile` would
+        // let an import write content back over a soft-deleted (tombstoned)
+        // resource -- resurrecting it while its `deleted:true` sidecar remains,
+        // yielding a served-but-tombstoned resource and an inconsistent feed.
+        const resourceExists =
+          Boolean(await this._findFile({ collectionDir, resourceId })) ||
+          Boolean(await this._readMetaSidecar({ collectionDir, resourceId }))
+        if (resourceExists) {
           stats.resourcesSkipped++
           // A resource-level policy travels with a newly-created resource only.
           if (resourcePolicies.has(resourceId)) {
@@ -1182,8 +1236,12 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
   }): Promise<void> {
+    // `force: true` keeps delete idempotent (spec / `StorageBackend` contract):
+    // removing an absent (or already-deleted) Collection resolves rather than
+    // rejecting with `ENOENT` (which the request layer would wrap as a 500).
     return await rm(this._collectionDir({ spaceId, collectionId }), {
-      recursive: true
+      recursive: true,
+      force: true
     })
   }
 
@@ -1207,18 +1265,23 @@ export class FileSystemBackend implements StorageBackend {
     spaceId,
     collectionId,
     limit,
-    cursor
+    cursor,
+    collectionDescription: providedDescription
   }: {
     spaceId: string
     collectionId: string
     limit?: number
     cursor?: string
+    collectionDescription?: CollectionDescription
   }): Promise<CollectionResourcesList> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
-    const collectionDescription = await this.getCollectionDescription({
-      spaceId,
-      collectionId
-    })
+    // Prefer the caller's control-plane description. When this backend serves a
+    // Collection's data plane (an external backend), it does NOT hold the
+    // description locally, so its own `getCollectionDescription` would resolve
+    // `undefined` and reading `.name`/`.type` off it would 500.
+    const collectionDescription =
+      providedDescription ??
+      (await this.getCollectionDescription({ spaceId, collectionId }))
 
     // Enumerate the Collection dir directly rather than globbing: glob v13 does
     // not sort, so its order is nondeterministic -- pagination needs a stable
@@ -1313,8 +1376,8 @@ export class FileSystemBackend implements StorageBackend {
     return {
       id: collectionId,
       url: collectionPath({ spaceId, collectionId }),
-      name: collectionDescription!.name,
-      type: collectionDescription!.type || ['Collection'],
+      name: collectionDescription?.name ?? collectionId,
+      type: collectionDescription?.type || ['Collection'],
       totalItems,
       items,
       ...(next !== undefined && { next })
@@ -1423,7 +1486,9 @@ export class FileSystemBackend implements StorageBackend {
       // JSON bodies are fully in memory, so their serialized size is known up
       // front and the pre-flight checks alone suffice (no streaming guard). The
       // per-upload cap (413) is checked before the cumulative quota (507).
-      const incomingBytes = Buffer.byteLength(JSON.stringify(input.data))
+      // Serialize once and reuse for both the size pre-flight and the write.
+      const serialized = JSON.stringify(input.data)
+      const incomingBytes = Buffer.byteLength(serialized)
       if (maxUploadBytes !== undefined && incomingBytes > maxUploadBytes) {
         throw new PayloadTooLargeError({
           maxUploadBytes,
@@ -1448,7 +1513,7 @@ export class FileSystemBackend implements StorageBackend {
       // on the fly; a data-plane backend may not have seen this Collection yet).
       this.logger.info('Creating JSON resource')
       await mkdir(path.dirname(filePath), { recursive: true })
-      await writeFile(filePath, JSON.stringify(input.data))
+      await writeFile(filePath, serialized)
     } else {
       this.logger.info('Writing blob')
       // Pre-flight the declared size (when present) against the per-upload cap,
@@ -1486,12 +1551,11 @@ export class FileSystemBackend implements StorageBackend {
           fs.createWriteStream(filePath)
         ])
       } catch (err) {
-        if (
-          err instanceof QuotaExceededError ||
-          err instanceof PayloadTooLargeError
-        ) {
-          await rm(filePath, { force: true })
-        }
+        // Remove the partial file on ANY failure: a guard rejection (413/507),
+        // an aborted upload, or a streamed `Digest` mismatch (the request layer
+        // verifies the body's digest as it flows). A failed write must not leave
+        // a truncated or unverified representation behind.
+        await rm(filePath, { force: true })
         throw err
       }
     }

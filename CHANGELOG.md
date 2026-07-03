@@ -1,5 +1,69 @@
 # History
 
+## Unreleased - TBD
+
+### Security
+
+- **`/api/cors` proxy is no longer an open SSRF vector.** The proxy now only
+  fetches `http`/`https` URLs and refuses any host that resolves to a private,
+  loopback, or link-local address (RFC 1918, `127.0.0.0/8`, `169.254.0.0/16`
+  cloud-metadata, CGNAT, IPv6 ULA/link-local, and IPv4-mapped forms), so a
+  request like `?url=http://169.254.169.254/...` is rejected before any fetch.
+  (Adding a lightweight auth gate remains a reasonable follow-up.)
+- **Streamed and binary request bodies are now bound to their signed `Digest`.**
+  Previously only JSON/text bodies were recomputed and compared; an
+  `application/octet-stream`, image, multipart, or tar body could be swapped
+  under a valid signed `Digest`. Such bodies now pass through a hashing
+  transform that verifies the digest incrementally at end-of-stream, failing the
+  write on a mismatch (the partial file is removed).
+- **KMS "unsupported key type / operation" gate is no longer bypassable via
+  prototype-chain names.** `generateKmsKey` and `runKeyOperation` now guard with
+  `Object.hasOwn`, so a client-supplied `type`/operation of `constructor`,
+  `toString`, etc. is rejected as unsupported rather than resolving to an
+  inherited `Object` member.
+- **Backend-id enumeration is closed on Collection create/update.** The
+  backends-available check now runs after capability verification (like the
+  `id-conflict` / `encryption-immutable` conflicts), so an unauthorized caller
+  can no longer probe a Space's registered backend ids by distinguishing a `409`
+  from the masked `404`.
+
+### Fixed
+
+- **Slash/no-slash redirects now send a followable `Location`.** The
+  canonicalization redirects emitted the literal route template (e.g.
+  `Location: /space/:spaceId`) with a `302`; they now build the concrete request
+  path (trailing slash toggled, query string preserved) and use `308` so a
+  redirected POST/PUT replays its method and body. The List-Collections no-slash
+  redirect is also registered as `GET` (it was mistakenly a `PUT`, so
+  `GET /space/:id/collections` fell through to a `409`).
+- **A description-less Collection directory no longer 500s the whole Space
+  listing.** `listCollections` / `listCollectionItems` fall back to the
+  directory name instead of dereferencing an undefined description.
+- **`text/plain` (and other string-parsed) resource bodies are stored
+  byte-for-byte.** A string body is written as its UTF-8 bytes rather than
+  iterated per character, so multi-byte / astral-plane content is no longer
+  corrupted.
+- **Collection delete is idempotent.** Deleting an absent (or already-deleted)
+  Collection resolves `204` instead of surfacing an `ENOENT` as a `500`.
+- **Space import inherits the write-path guards.** Import now enforces the
+  per-upload size cap (413) and fail-closed encryption conformance (422) on
+  every staged resource, and no longer resurrects a tombstoned resource (it
+  checks the metadata sidecar, not only the content file, before writing).
+- **External-backend Collection listing no longer 500s.** `listCollectionItems`
+  accepts the caller's control-plane Collection description, which a selected
+  data-plane backend does not hold.
+- **Malformed `Authorization` (missing `headers="..."`) is a clean `400`**
+  rather than an unhandled `500`.
+- **Repeated `?include=` on `/quotas` no longer 500s** (an unauthenticated-
+  reachable fault on a public-readable Space); the value is normalized when the
+  query parser yields an array.
+- Typed backend errors are no longer flattened to `500` (or double-logged) by
+  the Collection/Resource read/delete handlers; a memoized external-backend
+  adapter logs with the stable instance logger rather than the first request's;
+  a revocation with an unparseable `expires` no longer throws a `RangeError`;
+  and zcap verification failures log the underlying error (object-first) instead
+  of dropping it.
+
 ## 0.8.0 - 2026-07-02
 
 ### Added

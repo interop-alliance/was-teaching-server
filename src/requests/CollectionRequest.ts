@@ -34,7 +34,6 @@ import {
   CollectionNotFoundError,
   InvalidCollectionError,
   InvalidRequestBodyError,
-  StorageError,
   UnsupportedOperationError,
   rethrowOrWrapStorageError
 } from '../errors.js'
@@ -189,19 +188,6 @@ export class CollectionRequest {
         pointer: '#/id'
       })
     }
-    // Validate a supplied backend against the Space's backends-available (bad
-    // shape 400, unknown id 409). An absent `backend` resolves to undefined here
-    // so an update leaves the existing selection untouched; a create defaults it
-    // to the server default below.
-    const suppliedBackend =
-      body.backend !== undefined
-        ? await assertSupportedBackend({
-            storage,
-            spaceId,
-            backend: body.backend,
-            requestName
-          })
-        : undefined
     // Validate the optional encryption marker (shape only); an absent
     // `encryption` validates to `undefined` and leaves the existing marker
     // untouched. The set-once immutability transition is enforced below, after
@@ -221,7 +207,24 @@ export class CollectionRequest {
       requestName
     })
 
-    // zCap checks out, continue
+    // zCap checks out, continue.
+    // Validate a supplied backend against the Space's backends-available (bad
+    // shape 400, unknown id 409). Checked AFTER verification (it reads the
+    // Space's registered backend ids) so an unauthorized caller cannot probe
+    // which ids are registered by distinguishing a 409 from the masked 404 --
+    // like the `id-conflict` / `encryption-immutable` conflict checks. An absent
+    // `backend` resolves to undefined so an update leaves the existing selection
+    // untouched; a create defaults it to the server default below.
+    const suppliedBackend =
+      body.backend !== undefined
+        ? await assertSupportedBackend({
+            storage,
+            spaceId,
+            backend: body.backend,
+            requestName
+          })
+        : undefined
+
     const existingCollection = await storage.getCollectionDescription({
       spaceId,
       collectionId
@@ -268,8 +271,10 @@ export class CollectionRequest {
         collectionDescription
       })
     } catch (err) {
-      request.log.error(err)
-      throw new StorageError({ cause: err as Error, requestName })
+      // Rethrow a typed ProblemError from the data-plane backend unchanged
+      // (e.g. a 507 quota / 412 precondition) rather than flattening it to a
+      // 500; wrap anything genuinely unexpected. `handleError` logs the 5xx once.
+      rethrowOrWrapStorageError({ err, requestName })
     }
 
     reply.header('Location', collectionUrl)
@@ -678,8 +683,10 @@ export class CollectionRequest {
     try {
       await storage.deleteCollection({ spaceId, collectionId })
     } catch (err) {
-      request.log.error(err)
-      throw new StorageError({ cause: err as Error, requestName })
+      // Rethrow a typed ProblemError from the data-plane backend unchanged
+      // (e.g. a 507 quota / 412 precondition) rather than flattening it to a
+      // 500; wrap anything genuinely unexpected. `handleError` logs the 5xx once.
+      rethrowOrWrapStorageError({ err, requestName })
     }
 
     return reply.status(204).send()
@@ -754,6 +761,9 @@ export class CollectionRequest {
     const collectionItems = await dataBackend.listCollectionItems({
       spaceId,
       collectionId,
+      // Pass the control-plane description: a data-plane (external) backend does
+      // not hold it, and the listing's `name`/`type`/encryption flag come from it.
+      collectionDescription,
       ...(Number.isFinite(parsedLimit) && parsedLimit >= 1
         ? { limit: parsedLimit }
         : {}),

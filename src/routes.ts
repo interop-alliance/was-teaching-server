@@ -6,7 +6,12 @@
  * strict `requireAuthHeaders` -- the webkms protocol has no public reads --
  * and no slash redirects, since the protocol's URLs are exact.)
  */
-import type { FastifyInstance, FastifyPluginOptions } from 'fastify'
+import type {
+  FastifyInstance,
+  FastifyPluginOptions,
+  FastifyReply,
+  FastifyRequest
+} from 'fastify'
 import { SpacesRepositoryRequest } from './requests/SpacesRepositoryRequest.js'
 import { SpaceRequest } from './requests/SpaceRequest.js'
 import { handleError } from './errors.js'
@@ -23,6 +28,60 @@ import {
   requireAuthHeadersOrPublicRead
 } from './auth-header-hooks.js'
 import { captureRawBody, verifyBodyDigest } from './digest.js'
+
+/**
+ * Toggles the trailing slash on the request's actual path (preserving any query
+ * string), returning the canonical target for a slash/no-slash redirect. Built
+ * from `request.url` rather than the route template so the `Location` carries
+ * the concrete ids (`/space/abc123`), not the literal `/space/:spaceId` -- which
+ * a client cannot follow.
+ * @param url {string}   the request URL (path plus optional query string)
+ * @param addSlash {boolean}   append (true) or strip (false) the trailing slash
+ * @returns {string}
+ */
+function toggleTrailingSlash(url: string, addSlash: boolean): string {
+  const queryIndex = url.indexOf('?')
+  const pathPart = queryIndex === -1 ? url : url.slice(0, queryIndex)
+  const query = queryIndex === -1 ? '' : url.slice(queryIndex)
+  const canonical = addSlash
+    ? pathPart.endsWith('/')
+      ? pathPart
+      : `${pathPart}/`
+    : pathPart.endsWith('/')
+      ? pathPart.slice(0, -1)
+      : pathPart
+  return `${canonical}${query}`
+}
+
+/**
+ * Redirects to the trailing-slash canonical form of the request URL with a
+ * `308` (Permanent Redirect), which -- unlike the default `302` -- requires the
+ * client to replay the same method and body, so a redirected POST/PUT is not
+ * silently downgraded to GET.
+ * @param request {import('fastify').FastifyRequest}
+ * @param reply {import('fastify').FastifyReply}
+ * @returns {FastifyReply}
+ */
+function redirectAddSlash(
+  request: FastifyRequest,
+  reply: FastifyReply
+): FastifyReply {
+  return reply.redirect(toggleTrailingSlash(request.url, true), 308)
+}
+
+/**
+ * Redirects to the no-trailing-slash canonical form of the request URL (see
+ * {@link redirectAddSlash} for the `308` rationale).
+ * @param request {import('fastify').FastifyRequest}
+ * @param reply {import('fastify').FastifyReply}
+ * @returns {FastifyReply}
+ */
+function redirectStripSlash(
+  request: FastifyRequest,
+  reply: FastifyReply
+): FastifyReply {
+  return reply.redirect(toggleTrailingSlash(request.url, false), 308)
+}
 
 /**
  * Registers SpacesRepository routes (POST/GET /spaces). Installs the
@@ -52,11 +111,11 @@ export async function initSpacesRepositoryRoutes(
   app.addHook('preValidation', verifyBodyDigest)
 
   // Add a Space to a SpacesRepository (Create Space)
-  app.post('/spaces', async (request, reply) => reply.redirect('/spaces/'))
+  app.post('/spaces', redirectAddSlash)
   app.post('/spaces/', SpacesRepositoryRequest.post)
 
   // List Spaces
-  app.get('/spaces', async (request, reply) => reply.redirect('/spaces/'))
+  app.get('/spaces', redirectAddSlash)
   app.get('/spaces/', SpacesRepositoryRequest.get)
 }
 
@@ -89,18 +148,16 @@ export async function initSpaceRoutes(
   app.get('/space/:spaceId', SpaceRequest.get)
 
   // Update or Create Space by Id (only "no trailing slash" is valid)
-  app.put('/space/:spaceId/', async (request, reply) =>
-    reply.redirect('/space/:spaceId')
-  )
+  app.put('/space/:spaceId/', redirectStripSlash)
   app.put('/space/:spaceId', SpaceRequest.put)
 
   // Delete Space
   app.delete('/space/:spaceId', SpaceRequest.delete)
 
-  // List Collections for a space
-  app.put('/space/:spaceId/collections', async (request, reply) =>
-    reply.redirect('/space/:spaceId/collections/')
-  )
+  // List Collections for a space (the canonical form has a trailing slash;
+  // registered as GET so `GET /space/:spaceId/collections` redirects there
+  // rather than falling through to the Collection GET route).
+  app.get('/space/:spaceId/collections', redirectAddSlash)
   app.get('/space/:spaceId/collections/', SpaceRequest.listCollections)
 
   // Space access-control policy (reserved segment; Fastify routes static
@@ -131,9 +188,7 @@ export async function initSpaceRoutes(
   app.get('/space/:spaceId/quotas', SpaceRequest.quotas)
 
   // Add Collection to a Space
-  app.post('/space/:spaceId', async (request, reply) =>
-    reply.redirect('/space/:spaceId/')
-  )
+  app.post('/space/:spaceId', redirectAddSlash)
   app.post('/space/:spaceId/', SpaceRequest.post)
 
   // POST /space/12345/export
@@ -201,22 +256,20 @@ export async function initCollectionRoutes(
   app.post('/space/:spaceId/:collectionId/query', CollectionRequest.query)
 
   // Add Resource to a Collection
-  app.post('/space/:spaceId/:collectionId', async (request, reply) =>
-    reply.redirect('/space/:spaceId/:collectionId/')
-  )
+  app.post('/space/:spaceId/:collectionId', redirectAddSlash)
   app.post('/space/:spaceId/:collectionId/', CollectionRequest.post)
 
   // Create a Collection by Id
   app.put(
     '/space/:spaceId/:collectionId/', // no trailing slash allowed
-    async (request, reply) => reply.redirect('/space/:spaceId/:collectionId')
+    redirectStripSlash
   )
   app.put('/space/:spaceId/:collectionId', CollectionRequest.put)
 
   // Delete Collection by Id
   app.delete(
     '/space/:spaceId/:collectionId/', // no trailing slash allowed
-    async (request, reply) => reply.redirect('/space/:spaceId/:collectionId')
+    redirectStripSlash
   )
   app.delete('/space/:spaceId/:collectionId', CollectionRequest.delete)
 }
@@ -249,8 +302,7 @@ export async function initResourceRoutes(
   // Create a Resource by Id
   app.put(
     '/space/:spaceId/:collectionId/:resourceId/', // no trailing slash allowed
-    async (request, reply) =>
-      reply.redirect('/space/:spaceId/:collectionId/:resourceId')
+    redirectStripSlash
   )
   app.put('/space/:spaceId/:collectionId/:resourceId', ResourceRequest.put)
 

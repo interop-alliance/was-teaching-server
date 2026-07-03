@@ -1,10 +1,20 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createApp } from '../src/server.js'
 
+// Mock DNS resolution so the SSRF guard is deterministic (no real network): by
+// default the target host resolves to a public IP (allowed); a test overrides
+// it to a private/loopback address to exercise the block.
+const { lookupMock } = vi.hoisted(() => ({ lookupMock: vi.fn() }))
+vi.mock('node:dns/promises', () => ({ lookup: lookupMock }))
+
 describe('CORS proxy API', () => {
+  beforeEach(() => {
+    lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }])
+  })
   afterEach(() => {
     vi.unstubAllGlobals()
+    lookupMock.mockReset()
   })
 
   it('requires a url query parameter', async () => {
@@ -13,6 +23,43 @@ describe('CORS proxy API', () => {
 
     expect(response.statusCode).toBe(400)
     expect(response.json()).toEqual({ error: 'Missing url query parameter' })
+  })
+
+  it('rejects a non-http(s) scheme', async () => {
+    const app = createApp()
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/cors?url=' + encodeURIComponent('file:///etc/passwd')
+    })
+
+    expect(response.statusCode).toBe(400)
+    expect(response.json()).toEqual({
+      error: 'Only http and https URLs may be proxied.'
+    })
+  })
+
+  it('refuses a host that resolves to a private / loopback address (SSRF)', async () => {
+    // e.g. the cloud-metadata endpoint, or an internal service.
+    lookupMock.mockResolvedValue([{ address: '169.254.169.254', family: 4 }])
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const app = createApp()
+    const response = await app.inject({
+      method: 'GET',
+      url:
+        '/api/cors?url=' +
+        encodeURIComponent(
+          'http://169.254.169.254/latest/meta-data/iam/security-credentials/'
+        )
+    })
+
+    expect(response.statusCode).toBe(403)
+    expect(response.json()).toEqual({
+      error: 'Proxying to this host is not allowed.'
+    })
+    // The upstream fetch is never reached.
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('fetches the target URL and passes through response details', async () => {

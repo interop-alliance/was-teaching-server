@@ -167,14 +167,18 @@ export async function generateKmsKey({
   publicAlias?: string
   publicAliasTemplate?: string
 }): Promise<{ key: KmsStoredKey; keyDescription: KmsKeyDescription }> {
-  const context = KEY_TYPE_CONTEXTS[type]
-  if (context === undefined) {
+  // `Object.hasOwn`, not `KEY_TYPE_CONTEXTS[type] === undefined`: `type` is
+  // client-supplied, so a prototype-chain name (`constructor`, `toString`,
+  // `hasOwnProperty`, ...) would otherwise resolve to an inherited `Object`
+  // member and slip past the fail-closed rejection into a stored key record.
+  if (!Object.hasOwn(KEY_TYPE_CONTEXTS, type)) {
     throw new InvalidRequestBodyError({
       requestName: 'Generate Key',
       detail: `Unsupported key type "${type}".`,
       pointer: '#/invocationTarget/type'
     })
   }
+  const context = KEY_TYPE_CONTEXTS[type]!
   const key: KmsStoredKey = { '@context': context, id: keyId, type }
   if (type === 'Ed25519VerificationKey2020') {
     const keyPair = await Ed25519VerificationKey.generate()
@@ -426,7 +430,17 @@ export async function runKeyOperation({
   operation: Record<string, unknown>
 }): Promise<object> {
   const operationType = operation.type as string
-  const runOperation = KEY_OPERATIONS[key.type]?.[operationType]
+  // `Object.hasOwn` at both levels: `key.type` and `operationType` are both
+  // client-influenced, so plain-object indexing could otherwise resolve an
+  // inherited `Object` member (`constructor`, `toString`, ...) to a truthy
+  // function and bypass this fail-closed gate.
+  const operations = Object.hasOwn(KEY_OPERATIONS, key.type)
+    ? KEY_OPERATIONS[key.type]
+    : undefined
+  const runOperation =
+    operations && Object.hasOwn(operations, operationType)
+      ? operations[operationType]
+      : undefined
   if (runOperation === undefined) {
     throw new UnsupportedKeyOperationError({
       operationType,

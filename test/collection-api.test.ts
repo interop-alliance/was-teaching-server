@@ -155,6 +155,17 @@ describe('Collections API', () => {
 
     // Ensure it was deleted (reads return null on 404).
     assert.equal(await collection.describe(), null)
+
+    // Delete is idempotent: deleting an already-gone Collection resolves (204),
+    // it does not 500 with an underlying ENOENT.
+    await collection.delete()
+    assert.equal(await collection.describe(), null)
+  })
+
+  it('[root] DELETE a never-created collection is idempotent (204, not 500)', async () => {
+    const collection = aliceSpace.collection('never-existed-collection')
+    await collection.delete()
+    assert.equal(await collection.describe(), null)
   })
 
   it('PUT whose body id does not match the URL collection id yields invalid-request-body (400)', async () => {

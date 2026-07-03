@@ -332,14 +332,6 @@ export class SpaceRequest {
     if (body?.id !== undefined) {
       assertValidId(body.id, { kind: 'collection', requestName })
     }
-    // Validate (and default-fill) the selected backend against the Space's
-    // backends-available: a bad shape is 400, an unknown id is 409.
-    const backend = await assertSupportedBackend({
-      storage,
-      spaceId,
-      backend: body?.backend,
-      requestName
-    })
     // Validate the optional client-side encryption marker (shape only; the
     // server stores it opaquely and never decrypts). Absent => plaintext.
     const encryption = assertSupportedEncryption({
@@ -356,7 +348,18 @@ export class SpaceRequest {
       requestName
     })
 
-    // zCap checks out, continue
+    // zCap checks out, continue.
+    // Validate (and default-fill) the selected backend against the Space's
+    // backends-available: a bad shape is 400, an unknown id is 409. Checked
+    // AFTER verification (it reads the Space's registered backend ids) so an
+    // unauthorized caller cannot enumerate registered ids by distinguishing a
+    // 409 from the masked 404 -- like the `id-conflict` check below.
+    const backend = await assertSupportedBackend({
+      storage,
+      spaceId,
+      backend: body?.backend,
+      requestName
+    })
     // POST must not replace an existing Collection: spec `id-conflict` (409);
     // create-or-replace by id is PUT's job. Checked after the capability
     // verification so an unauthorized caller cannot probe Collection ids.
@@ -632,7 +635,7 @@ export class SpaceRequest {
   static async quotas(
     request: FastifyRequest<{
       Params: { spaceId: string }
-      Querystring: { include?: string }
+      Querystring: { include?: string | string[] }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
@@ -660,9 +663,17 @@ export class SpaceRequest {
     })
 
     // The per-Collection breakdown is opt-in via `?include=collections` (spec
-    // "Quotas"); `include` is a comma-separated list of optional sections.
-    const includeCollections = (include ?? '')
-      .split(',')
+    // "Quotas"); `include` is a comma-separated list of optional sections. A
+    // repeated `?include=` makes Fastify's default parser yield a string array,
+    // so normalize to an array first -- calling `.split` on the array would 500
+    // (unauthenticated-reachable on a public-readable Space).
+    const includeValues = Array.isArray(include)
+      ? include
+      : include !== undefined
+        ? [include]
+        : []
+    const includeCollections = includeValues
+      .flatMap(value => value.split(','))
       .map(section => section.trim())
       .includes('collections')
 

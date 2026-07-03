@@ -59,8 +59,8 @@ function adapterCacheFor(providers: BackendProviderRegistry): LruCache {
  *
  * @param options {object}
  * @param options.request {FastifyRequest}   supplies `request.server` (the
- *   control-plane `storage` and the `backendProviders` registry) and
- *   `request.log` (passed to the adapter factory)
+ *   control-plane `storage`, the `backendProviders` registry, and the
+ *   non-request instance `log` passed to the memoized adapter factory)
  * @param options.spaceId {string}
  * @param options.collectionId {string}
  * @param [options.collectionDescription] {CollectionDescription}   the
@@ -106,7 +106,11 @@ export async function resolveBackend({
           detail: `Backend '${backendId}' is registered but not connected/operable yet.`
         })
       }
-      return factory(record, { logger: request.log })
+      // Wire the non-request instance logger (as `createApp` does for the
+      // primary backend), NOT `request.log`: the adapter is memoized and reused
+      // across requests, so capturing the first request's per-request child
+      // logger would mis-tag every later log line with that first request's id.
+      return factory(record, { logger: request.server.log })
     }
   })
 }

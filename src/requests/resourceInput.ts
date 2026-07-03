@@ -85,6 +85,23 @@ export async function resolveResourceInput(
       declaredBytes: file.bytes.length
     }
   }
+  // A `text/plain` body arrives already parsed as a **string** (Fastify's
+  // built-in text parser, which the `*` catch-all does not shadow); other
+  // `text/*` and binary media types arrive as a raw stream. Wrap a string (or
+  // Buffer) as a byte stream so it is written verbatim -- piping a string into
+  // the backend's `stream.pipeline` would iterate it by UTF-16 code unit (one
+  // write per character, splitting astral-plane characters into lone
+  // surrogates), corrupting the stored bytes.
+  const body = request.body
+  if (typeof body === 'string' || Buffer.isBuffer(body)) {
+    const bytes = Buffer.from(body as string | Buffer)
+    return {
+      kind: 'binary',
+      contentType,
+      stream: Readable.from(bytes),
+      declaredBytes: bytes.length
+    }
+  }
   // A raw (non-multipart) blob body carries its size in `Content-Length` when
   // present; expose it as `declaredBytes` so the backend can pre-flight the
   // quota check before streaming. Ignore an absent or malformed value.
@@ -92,7 +109,7 @@ export async function resolveResourceInput(
   return {
     kind: 'binary',
     contentType,
-    stream: request.body as Readable,
+    stream: body as Readable,
     declaredBytes:
       Number.isInteger(contentLength) && contentLength >= 0
         ? contentLength

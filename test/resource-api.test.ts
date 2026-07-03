@@ -107,6 +107,25 @@ describe('Resource API', () => {
     assert.equal(await fetched.text(), 'line 1\nline2\n')
   })
 
+  it('[root] a text/plain body with multi-byte / astral characters round-trips byte-for-byte', async () => {
+    // A `text/plain` body arrives at the server parsed as a string. It must be
+    // written as its UTF-8 bytes, not iterated per UTF-16 code unit (which would
+    // split astral-plane characters into lone surrogates and corrupt the bytes).
+    const text = 'café — 𐐷 — 😀 ✅'
+    const result = await aliceCredentials.add(
+      new Blob([text], { type: 'text/plain' })
+    )
+
+    const fetched = await aliceCredentials.get(result.id)
+    assert.ok(fetched instanceof Blob)
+    assert.equal(await fetched.text(), text)
+    // The stored size is the UTF-8 byte length, not the string length.
+    assert.equal(
+      (await fetched.arrayBuffer()).byteLength,
+      new TextEncoder().encode(text).length
+    )
+  })
+
   it('[root] PUT and GET Resource', async () => {
     const resourceId = 'put-resource'
     await aliceCredentials.put(resourceId, {

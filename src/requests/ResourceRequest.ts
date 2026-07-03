@@ -17,7 +17,6 @@ import {
   CollectionNotFoundError,
   InvalidRequestBodyError,
   ResourceNotFoundError,
-  StorageError,
   rethrowOrWrapStorageError
 } from '../errors.js'
 import type { ResourceMetadataCustom } from '../types.js'
@@ -248,13 +247,10 @@ export class ResourceRequest {
         contentType
       })
     } catch (err) {
-      // `getResource` throws ResourceNotFoundError for an absent resource;
-      // surface that as a 404. Any other failure is a real storage fault, not a
-      // missing resource, so wrap it as a 500 rather than masking it as 404.
-      if (err instanceof ResourceNotFoundError) {
-        throw err
-      }
-      throw new StorageError({ cause: err as Error, requestName })
+      // Rethrow a typed ProblemError unchanged -- `getResource`'s
+      // ResourceNotFoundError (404) for an absent resource, or a typed fault a
+      // data-plane backend raises -- and wrap anything unexpected as a 500.
+      rethrowOrWrapStorageError({ err, requestName })
     }
 
     const getReply = reply.status(200).type(result.storedResourceType)
@@ -336,7 +332,9 @@ export class ResourceRequest {
         resourceId
       })
     } catch (err) {
-      throw new StorageError({ cause: err as Error, requestName })
+      // Rethrow a typed ProblemError from the data-plane backend unchanged;
+      // wrap anything unexpected as a 500.
+      rethrowOrWrapStorageError({ err, requestName })
     }
     if (!metadata) {
       throw new ResourceNotFoundError({ requestName })
@@ -422,7 +420,9 @@ export class ResourceRequest {
         resourceId
       })
     } catch (err) {
-      throw new StorageError({ cause: err as Error, requestName })
+      // Rethrow a typed ProblemError from the data-plane backend unchanged;
+      // wrap anything unexpected as a 500.
+      rethrowOrWrapStorageError({ err, requestName })
     }
     if (!metadata) {
       throw new ResourceNotFoundError({ requestName })

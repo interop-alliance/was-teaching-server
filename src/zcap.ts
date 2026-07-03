@@ -220,7 +220,7 @@ export async function handleZcapVerify({
       maxDelegationTtl
     })
   } catch (err) {
-    logger.error('ZCAP verification failed:', err)
+    logger.error({ err }, 'ZCAP verification failed')
     throw new AuthVerificationError({ requestName, cause: err as Error })
   }
 
@@ -614,7 +614,7 @@ export async function handleRevocationInvocationVerify({
       suite: new Ed25519Signature2020()
     })
   } catch (err) {
-    logger.error('ZCAP revocation invocation verification failed:', err)
+    logger.error({ err }, 'ZCAP revocation invocation verification failed')
     throw new AuthVerificationError({ requestName, cause: err as Error })
   }
 
