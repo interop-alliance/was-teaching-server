@@ -3,6 +3,7 @@ import net from 'node:net'
 import { lookup as dnsLookup } from 'node:dns/promises'
 
 const PROXY_TIMEOUT_MS = 10_000
+const MAX_REDIRECTS = 5
 
 interface CorsProxyQuery {
   url?: string
@@ -82,6 +83,50 @@ function isBlockedIp(ip: string): boolean {
 }
 
 /**
+ * Parses and validates a single proxy target: `http`/`https` scheme only, and
+ * the host must not resolve to a blocked (private / loopback / link-local)
+ * address. Runs once for the client-supplied URL and again for every redirect
+ * hop, so an allowed public host cannot bounce the proxy to an internal one.
+ * @param target {string}
+ * @returns {Promise<{url: URL} | {status: number, error: string}>} the parsed
+ *   URL when allowed, or the HTTP status + message to reject with.
+ */
+async function checkProxyTarget(
+  target: string
+): Promise<{ url: URL } | { status: number; error: string }> {
+  let parsed: URL
+  try {
+    parsed = new URL(target)
+  } catch {
+    return { status: 400, error: 'Invalid url query parameter' }
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return {
+      status: 400,
+      error: 'Only http and https URLs may be proxied.'
+    }
+  }
+
+  // Resolve the host and refuse private / loopback / link-local destinations
+  // (SSRF). `dns.lookup` returns the literal itself for an IP host, so
+  // IP-literal targets are covered too.
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '')
+  let addresses: { address: string }[]
+  try {
+    addresses = await dnsLookup(hostname, { all: true })
+  } catch {
+    return { status: 502, error: 'Unable to resolve proxied host.' }
+  }
+  if (
+    addresses.length === 0 ||
+    addresses.some(({ address }) => isBlockedIp(address))
+  ) {
+    return { status: 403, error: 'Proxying to this host is not allowed.' }
+  }
+  return { url: parsed }
+}
+
+/**
  * Registers a server-side CORS proxy at `/api/cors`.
  *
  * Example:
@@ -90,9 +135,12 @@ function isBlockedIp(ip: string): boolean {
  * SSRF guard: only `http`/`https` URLs are proxied, and the target host is
  * resolved and rejected when it maps to a private, loopback, or link-local
  * address (e.g. `http://169.254.169.254/...` cloud-metadata, or an internal
- * service). This is an unauthenticated open endpoint; adding a lightweight
- * auth gate (a shared secret header, an allowlist of caller origins, or the
- * server's own capability-invocation check) is a reasonable follow-up.
+ * service). Redirects are followed manually (up to `MAX_REDIRECTS` hops) and
+ * every hop is re-validated the same way, so a public host cannot 3xx the
+ * proxy into an internal one. This is an unauthenticated open endpoint; adding
+ * a lightweight auth gate (a shared secret header, an allowlist of caller
+ * origins, or the server's own capability-invocation check) is a reasonable
+ * follow-up.
  *
  * @param app - Fastify instance
  * @param _options - Fastify plugin options
@@ -110,38 +158,11 @@ export async function initCorsProxyRoutes(
         return reply.code(400).send({ error: 'Missing url query parameter' })
       }
 
-      let parsed: URL
-      try {
-        parsed = new URL(target)
-      } catch {
-        return reply.code(400).send({ error: 'Invalid url query parameter' })
+      const checked = await checkProxyTarget(target)
+      if (!('url' in checked)) {
+        return reply.code(checked.status).send({ error: checked.error })
       }
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        return reply
-          .code(400)
-          .send({ error: 'Only http and https URLs may be proxied.' })
-      }
-
-      // Resolve the host and refuse private / loopback / link-local
-      // destinations (SSRF). `dns.lookup` returns the literal itself for an IP
-      // host, so IP-literal targets are covered too.
-      const hostname = parsed.hostname.replace(/^\[|\]$/g, '')
-      let addresses: { address: string }[]
-      try {
-        addresses = await dnsLookup(hostname, { all: true })
-      } catch {
-        return reply
-          .code(502)
-          .send({ error: 'Unable to resolve proxied host.' })
-      }
-      if (
-        addresses.length === 0 ||
-        addresses.some(({ address }) => isBlockedIp(address))
-      ) {
-        return reply
-          .code(403)
-          .send({ error: 'Proxying to this host is not allowed.' })
-      }
+      let current = checked.url
 
       const headers: Record<string, string> = {}
       if (typeof request.headers.accept === 'string') {
@@ -149,15 +170,43 @@ export async function initCorsProxyRoutes(
       }
 
       try {
-        const upstream = await fetch(target, {
-          headers,
-          signal: AbortSignal.timeout(PROXY_TIMEOUT_MS)
-        })
+        for (let hop = 0; ; hop++) {
+          const upstream = await fetch(current.href, {
+            headers,
+            redirect: 'manual',
+            signal: AbortSignal.timeout(PROXY_TIMEOUT_MS)
+          })
 
-        upstream.headers.forEach((value, name) => reply.header(name, value))
+          const location = upstream.headers.get('location')
+          if (upstream.status >= 300 && upstream.status < 400 && location) {
+            if (hop >= MAX_REDIRECTS) {
+              return reply
+                .code(502)
+                .send({ error: 'Too many proxied redirects.' })
+            }
+            let next: URL
+            try {
+              next = new URL(location, current)
+            } catch {
+              return reply
+                .code(502)
+                .send({ error: 'Invalid redirect from proxied URL.' })
+            }
+            const nextChecked = await checkProxyTarget(next.toString())
+            if (!('url' in nextChecked)) {
+              return reply
+                .code(nextChecked.status)
+                .send({ error: nextChecked.error })
+            }
+            current = nextChecked.url
+            continue
+          }
 
-        const body = Buffer.from(await upstream.arrayBuffer())
-        return reply.code(upstream.status).send(body)
+          upstream.headers.forEach((value, name) => reply.header(name, value))
+
+          const body = Buffer.from(await upstream.arrayBuffer())
+          return reply.code(upstream.status).send(body)
+        }
       } catch (error) {
         request.log.warn({ error, target }, 'CORS proxy fetch failed')
         return reply.code(502).send({ error: 'Unable to fetch proxied URL' })

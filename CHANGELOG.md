@@ -9,7 +9,10 @@
   loopback, or link-local address (RFC 1918, `127.0.0.0/8`, `169.254.0.0/16`
   cloud-metadata, CGNAT, IPv6 ULA/link-local, and IPv4-mapped forms), so a
   request like `?url=http://169.254.169.254/...` is rejected before any fetch.
-  (Adding a lightweight auth gate remains a reasonable follow-up.)
+  Redirects are now followed manually (capped at 5 hops) with every hop
+  re-validated the same way, closing the bypass where an allowed public URL
+  302s the proxy to an internal address. (Adding a lightweight auth gate
+  remains a reasonable follow-up.)
 - **Streamed and binary request bodies are now bound to their signed `Digest`.**
   Previously only JSON/text bodies were recomputed and compared; an
   `application/octet-stream`, image, multipart, or tar body could be swapped

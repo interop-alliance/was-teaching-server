@@ -62,6 +62,91 @@ describe('CORS proxy API', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('refuses a redirect that lands on a private / loopback address (SSRF)', async () => {
+    // First lookup (the public start host) is allowed; the redirect target
+    // resolves to the cloud-metadata address and must be blocked.
+    lookupMock
+      .mockResolvedValueOnce([{ address: '93.184.216.34', family: 4 }])
+      .mockResolvedValueOnce([{ address: '169.254.169.254', family: 4 }])
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: 'http://169.254.169.254/latest/meta-data/' }
+        })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const app = createApp()
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/cors?url=' + encodeURIComponent('https://public.example/start')
+    })
+
+    expect(response.statusCode).toBe(403)
+    expect(response.json()).toEqual({
+      error: 'Proxying to this host is not allowed.'
+    })
+    // Only the first (public) hop was fetched.
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('follows an allowed redirect, re-validating each hop', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 302,
+          headers: { location: '/registry.json' }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response('{"ok":true}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const app = createApp()
+    const response = await app.inject({
+      method: 'GET',
+      url:
+        '/api/cors?url=' + encodeURIComponent('https://registry.example/start')
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    // The relative Location is resolved against the previous hop.
+    expect(fetchMock.mock.calls[1]?.[0]).toEqual(
+      'https://registry.example/registry.json'
+    )
+    expect(response.statusCode).toBe(200)
+    expect(response.body).toBe('{"ok":true}')
+  })
+
+  it('gives up after too many redirects', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: 'https://registry.example/loop' }
+        })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const app = createApp()
+    const response = await app.inject({
+      method: 'GET',
+      url:
+        '/api/cors?url=' + encodeURIComponent('https://registry.example/loop')
+    })
+
+    expect(response.statusCode).toBe(502)
+    expect(response.json()).toEqual({ error: 'Too many proxied redirects.' })
+    // The initial request plus MAX_REDIRECTS followed hops.
+    expect(fetchMock).toHaveBeenCalledTimes(6)
+  })
+
   it('fetches the target URL and passes through response details', async () => {
     const fetchMock = vi.fn(
       async (_url: string | URL | Request, _options?: RequestInit) => {
