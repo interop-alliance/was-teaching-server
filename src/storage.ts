@@ -5,7 +5,7 @@
  * This module only supplies the default backend for production / `start.ts`,
  * where `createApp()` is called without an explicit backend.
  * The active backend is injected into the Fastify instance via
- * `createApp({ backend })` (see server.ts) and read in handlers as
+ * `createApp({ backend })` (see plugin.ts) and read in handlers as
  * `request.server.storage`.
  *
  * The StorageBackend contract — including its invariants (getters resolve falsy

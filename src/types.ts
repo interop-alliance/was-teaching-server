@@ -9,7 +9,7 @@
  * plus the `StorageBackend` contract.
  *
  * Also augments Fastify's types: `FastifyInstance.serverUrl` (set by
- * `fastify.decorate` in server.ts, read in handlers via `request.server`) and
+ * `fastify.decorate` in plugin.ts, read in handlers via `request.server`) and
  * `FastifyRequest.zcap` (set by the `parseAuthHeaders` hook).
  */
 // Pull in @fastify/multipart's `FastifyRequest.file()` augmentation program-wide
@@ -681,7 +681,7 @@ declare module 'fastify' {
      * the factory that builds its live `StorageBackend` adapter. Read by the
      * resolver (lib/backendRegistry.ts). Empty in production this stage (no
      * real adapter yet); injected in tests. Set by `fastify.decorate` in
-     * server.ts.
+     * plugin.ts.
      */
     backendProviders: BackendProviderRegistry
     /**

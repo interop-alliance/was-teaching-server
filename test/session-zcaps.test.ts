@@ -61,7 +61,9 @@ describe('Space-rooted session capabilities', () => {
     // Alice provisions a Space and a Collection...
     const space = alice.was.space(spaceId)
     await space.configure({ name: 'Session Space', controller: alice.did })
-    await space.collection(collectionId).configure({ name: 'Credentials' })
+    await space
+      .collection(collectionId)
+      .configure({ name: 'Credentials', force: true })
 
     // ...then delegates the session pair to her app's did:key. Both chains
     // root at the *Space's* root capability: the read capability targets the
@@ -180,7 +182,7 @@ describe('Space-rooted session capabilities', () => {
       await alice.was
         .space(spaceId)
         .collection('wallet-activity')
-        .configure({ name: 'Activity' })
+        .configure({ name: 'Activity', force: true })
 
       // Rejected either client-side (the invocation URL is not under the
       // capability's target) or server-side; the write must not land.

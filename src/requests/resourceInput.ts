@@ -46,7 +46,7 @@ export async function resolveResourceInput(
     // acceptable for this multipart convenience path (the HTML form workflow) --
     // large binaries should use the streaming raw-body path. The buffer is
     // bounded by the backend's `maxUploadBytes` (the multipart `fileSize` limit
-    // set in `server.ts`): `toBuffer()` throws `FST_REQ_FILE_TOO_LARGE` at the
+    // set in `plugin.ts`): `toBuffer()` throws `FST_REQ_FILE_TOO_LARGE` at the
     // boundary, mapped here to `payload-too-large` (413).
     const backend = dataBackend ?? request.server.storage
     let file: { mimetype: string; bytes: Buffer } | undefined

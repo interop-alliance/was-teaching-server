@@ -232,7 +232,7 @@ describe('Resource API', () => {
   it('[un-authorized!] Read a public Resource by acl policy', async () => {
     // Create new public collection by id (upsert via configure -> PUT).
     const publicCollection = aliceSpace.collection('public-collection')
-    await publicCollection.configure({ name: 'Public Collection' })
+    await publicCollection.configure({ name: 'Public Collection', force: true })
 
     // Check it was created
     assert.notEqual(await publicCollection.describe(), null)

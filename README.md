@@ -147,6 +147,13 @@ pnpm build
 SERVER_URL='http://localhost:3002' PORT=3002 pnpm start
 ```
 
+### Using as a Library
+
+The WAS protocol surface is also exported as a registerable Fastify plugin,
+`fastifyWas`, so a downstream server can compose it with its own persistence
+backend and security plugins. See
+[Consuming the Server as a Library](docs/consuming-server-as-library.md).
+
 ### Environment Variables
 
 | Variable                  | Default             | Description                                                                                                                                                                                                                                                             |

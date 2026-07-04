@@ -2,6 +2,21 @@
   "name": "was-teaching-server",
   "description": "A basic Wallet Attached Storage server used to demonstrate the WAS specification.",
   "version": "0.8.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "common",
+    "src",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "dev": "tsx watch src/start.js",
     "start": "node dist/start.js | pino-pretty",
@@ -39,6 +54,7 @@
     "@interop/x25519-key-agreement-key": "^5.1.1",
     "@interop/zcap": "^11.0.4",
     "fastify": "^5.8.5",
+    "fastify-plugin": "^6.0.0",
     "fs-json-store": "^8.0.1",
     "handlebars": "^4.7.9",
     "mime-types": "^3.0.2",
@@ -52,8 +68,8 @@
     "@eslint/js": "^10.0.1",
     "@interop/ezcap": "^7.3.2",
     "@interop/http-signature-zcap-invoke": "^6.2.3",
-    "@interop/was-client": "^0.12.0",
-    "@interop/webkms-client": "^14.5.0",
+    "@interop/was-client": "^0.13.0",
+    "@interop/webkms-client": "^14.6.0",
     "@types/mime-types": "3.0.1",
     "@types/node": "^24.0.0",
     "@types/tar-stream": "3.1.4",

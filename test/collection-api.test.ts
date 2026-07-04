@@ -145,7 +145,7 @@ describe('Collections API', () => {
     const collection = aliceSpace.collection('new-collection')
 
     // Create new collection by id (upsert via configure -> PUT).
-    await collection.configure({ name: 'New Collection' })
+    await collection.configure({ name: 'New Collection', force: true })
 
     // Check it was created
     assert.notEqual(await collection.describe(), null)
@@ -326,7 +326,7 @@ describe('Collections API', () => {
 
     it('PUT create-by-id default-fills the backend', async () => {
       const collection = aliceSpace.collection(crypto.randomUUID())
-      await collection.configure({ name: 'PUT Default Backend' })
+      await collection.configure({ name: 'PUT Default Backend', force: true })
       const description = await collection.describe()
       assert.deepStrictEqual(description!.backend, { id: 'default' })
     })

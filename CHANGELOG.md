@@ -2,6 +2,21 @@
 
 ## Unreleased - TBD
 
+### Added
+
+- **Library entry point (`src/index.ts`) and package `exports` map.** The
+  package is now consumable as a dependency, not only runnable standalone:
+  `import { fastifyWas, createApp, FileSystemBackend, defaultBackend } from 'was-teaching-server'`,
+  plus the `StorageBackend` contract (and the rest of the domain types) and the
+  typed protocol errors. The entry point also loads the Fastify module
+  augmentation, so a consumer sees the decorated `FastifyInstance` typed. `tsc`
+  now emits declarations (`declaration` / `declarationMap`), and `package.json`
+  gains `main` / `types` / `exports` pointing at `dist/`, plus a `files`
+  allowlist (`dist`, `common`, `src` -- so the emitted source/declaration maps
+  resolve -- and `CHANGELOG.md`) so the published tarball excludes the test
+  suites and `_spec`. Usage (including composing a minimal or hardened server
+  from the plugin) is documented in `docs/consuming-server-as-library.md`.
+
 ### Security
 
 - **`/api/cors` proxy is no longer an open SSRF vector.** The proxy now only
@@ -10,9 +25,9 @@
   cloud-metadata, CGNAT, IPv6 ULA/link-local, and IPv4-mapped forms), so a
   request like `?url=http://169.254.169.254/...` is rejected before any fetch.
   Redirects are now followed manually (capped at 5 hops) with every hop
-  re-validated the same way, closing the bypass where an allowed public URL
-  302s the proxy to an internal address. (Adding a lightweight auth gate
-  remains a reasonable follow-up.)
+  re-validated the same way, closing the bypass where an allowed public URL 302s
+  the proxy to an internal address. (Adding a lightweight auth gate remains a
+  reasonable follow-up.)
 - **Streamed and binary request bodies are now bound to their signed `Digest`.**
   Previously only JSON/text bodies were recomputed and compared; an
   `application/octet-stream`, image, multipart, or tar body could be swapped
@@ -66,6 +81,22 @@
   a revocation with an unparseable `expires` no longer throws a `RangeError`;
   and zcap verification failures log the underlying error (object-first) instead
   of dropping it.
+
+### Changed
+
+- **The WAS protocol surface is now a registerable Fastify plugin, `fastifyWas`
+  (`src/plugin.ts`).** The plugin owns the `serverUrl` / `storage` /
+  backend-provider decorations, CORS, multipart, the content-type parsers, and
+  the route groups (the four WAS groups plus the WebKMS `/kms` facet) --
+  everything from `routes.ts` down, including the per-group auth/digest hook
+  chains and error handler. `createApp()` (`src/server.ts`) is now the thin
+  community-edition composition: it registers `fastifyWas` (passing its options
+  through unchanged) plus the teaching-server extras (static assets, welcome
+  page, `/health`, the CORS proxy). No wire-behavior change; this is the
+  enabling refactor for the two-codebase strategy in `_spec/prod-roadmap.md` --
+  a hardened downstream server can register the same plugin around its own
+  persistence and policy plugins. Adds `fastify-plugin` as a dependency (the
+  decorations/parsers land on the root instance, as before).
 
 ## 0.8.0 - 2026-07-02
 
