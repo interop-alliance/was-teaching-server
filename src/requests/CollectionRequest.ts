@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid'
 
 import { buildLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
+import { getCollectionOrThrow } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
 import type { CollectionDescription } from '../types.js'
@@ -31,7 +32,6 @@ import {
 } from '../lib/paths.js'
 import { formatEtag } from '../lib/etag.js'
 import {
-  CollectionNotFoundError,
   InvalidCollectionError,
   InvalidRequestBodyError,
   UnsupportedOperationError,
@@ -80,13 +80,12 @@ export class CollectionRequest {
     })
 
     // Fetch collection by id
-    const collectionDescription = await storage.getCollectionDescription({
+    const collectionDescription = await getCollectionOrThrow({
+      storage,
       spaceId,
-      collectionId
+      collectionId,
+      requestName
     })
-    if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName })
-    }
 
     // Fail-closed encryption enforcement: if the Collection declares a recognized
     // `encryption` scheme, the content write MUST be a conforming envelope of it
@@ -316,13 +315,12 @@ export class CollectionRequest {
     })
 
     // Fetch collection by id
-    const collectionDescription = await storage.getCollectionDescription({
+    const collectionDescription = await getCollectionOrThrow({
+      storage,
       spaceId,
-      collectionId
+      collectionId,
+      requestName
     })
-    if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName })
-    }
 
     // Advertise the Collection's self `url` and linkset (policy discovery) on
     // the description; both relative, consistent with the other URL fields the
@@ -432,13 +430,12 @@ export class CollectionRequest {
     })
 
     // Fetch collection by id
-    const collectionDescription = await storage.getCollectionDescription({
+    const collectionDescription = await getCollectionOrThrow({
+      storage,
       spaceId,
-      collectionId
+      collectionId,
+      requestName
     })
-    if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName })
-    }
 
     const backend = await resolveBackendDescriptor({
       storage,
@@ -490,13 +487,12 @@ export class CollectionRequest {
     })
 
     // Fetch collection by id
-    const collectionDescription = await storage.getCollectionDescription({
+    const collectionDescription = await getCollectionOrThrow({
+      storage,
       spaceId,
-      collectionId
+      collectionId,
+      requestName
     })
-    if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName })
-    }
 
     // Report against the Collection's selected (data-plane) backend. A backend
     // that cannot account per-Collection omits `reportCollectionUsage`; the spec
@@ -569,13 +565,12 @@ export class CollectionRequest {
     })
 
     // Fetch collection by id
-    const collectionDescription = await storage.getCollectionDescription({
+    const collectionDescription = await getCollectionOrThrow({
+      storage,
       spaceId,
-      collectionId
+      collectionId,
+      requestName
     })
-    if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName })
-    }
 
     // Serve the change feed from the Collection's selected (data-plane) backend.
     // This server serves only the `changes` profile; any other (or a backend
@@ -738,13 +733,12 @@ export class CollectionRequest {
     })
 
     // Fetch collection by id
-    const collectionDescription = await storage.getCollectionDescription({
+    const collectionDescription = await getCollectionOrThrow({
+      storage,
       spaceId,
-      collectionId
+      collectionId,
+      requestName
     })
-    if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName })
-    }
 
     // Coerce `limit` (a query string) to a positive integer; a non-numeric or
     // `< 1` value is ignored so the backend applies its own default. `cursor` is

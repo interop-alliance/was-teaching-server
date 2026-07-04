@@ -35,7 +35,8 @@ import {
   RESOURCE_URL,
   POLICY_URL,
   META_URL,
-  QUOTA_NEAR_LIMIT_FRACTION
+  QUOTA_NEAR_LIMIT_FRACTION,
+  QUOTA_USAGE_CACHE_TTL
 } from '../config.default.js'
 import {
   extractTarEntries,
@@ -229,6 +230,19 @@ export class FileSystemBackend implements StorageBackend {
    * observe the same prior version and both succeed. Single-instance only.
    */
   private _writeMutex = new KeyedMutex()
+
+  /**
+   * Per-Space usage totals for the write-path quota pre-flight, so
+   * `_assertSpaceHeadroom` does not spawn `du` (a whole-Space tree walk) on
+   * every resource write. Entries live `QUOTA_USAGE_CACHE_TTL` ms; each
+   * accepted write adds its incoming bytes to the cached total, and deletes
+   * invalidate the Space's entry. Quota reports (`reportUsage`) always
+   * re-measure. Single-instance only, like `_writeMutex`.
+   */
+  private _usageCache = new Map<
+    string,
+    { usageBytes: number; expiresAt: number }
+  >()
 
   constructor({
     dataDir,
@@ -481,6 +495,11 @@ export class FileSystemBackend implements StorageBackend {
    * This is a soft limit under concurrency: two simultaneous writes can each pass
    * against the same usage snapshot and jointly overshoot. The per-write
    * streaming guard (`_quotaGuard`) still bounds each individual write.
+   *
+   * The `du` measurement (a whole-Space tree walk) is cached per Space for
+   * `QUOTA_USAGE_CACHE_TTL` ms (see `_usageCache`): between re-measurements
+   * each accepted write's `incomingBytes` is added to the cached total, so a
+   * burst of writes costs one tree walk, not one per write.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.capacityBytes {number}   the configured per-Space limit
@@ -496,11 +515,22 @@ export class FileSystemBackend implements StorageBackend {
     capacityBytes: number
     incomingBytes?: number
   }): Promise<number> {
-    const { total: usageBytes } = await this._diskUsage(this._spaceDir(spaceId))
-    const headroom = capacityBytes - usageBytes
+    let cached = this._usageCache.get(spaceId)
+    if (!cached || cached.expiresAt <= Date.now()) {
+      const { total } = await this._diskUsage(this._spaceDir(spaceId))
+      cached = {
+        usageBytes: total,
+        expiresAt: Date.now() + QUOTA_USAGE_CACHE_TTL
+      }
+      this._usageCache.set(spaceId, cached)
+    }
+    const headroom = capacityBytes - cached.usageBytes
     if (headroom <= 0 || incomingBytes > headroom) {
       throw new QuotaExceededError({ spaceId, capacityBytes })
     }
+    // Count the accepted write against the cached total so writes within the
+    // TTL accumulate rather than each re-admitting against the same snapshot.
+    cached.usageBytes += incomingBytes
     return headroom
   }
 
@@ -763,6 +793,8 @@ export class FileSystemBackend implements StorageBackend {
    * @returns {Promise<void>}
    */
   async deleteSpace({ spaceId }: { spaceId: string }): Promise<void> {
+    // Freed bytes: drop the cached quota usage so the next write re-measures.
+    this._usageCache.delete(spaceId)
     return await rm(this._spaceDir(spaceId), { recursive: true })
   }
 
@@ -1236,6 +1268,8 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
   }): Promise<void> {
+    // Freed bytes: drop the cached quota usage so the next write re-measures.
+    this._usageCache.delete(spaceId)
     // `force: true` keeps delete idempotent (spec / `StorageBackend` contract):
     // removing an absent (or already-deleted) Collection resolves rather than
     // rejecting with `ENOENT` (which the request layer would wrap as a 500).
@@ -2002,6 +2036,8 @@ export class FileSystemBackend implements StorageBackend {
     ifMatch?: string
   }): Promise<void> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
+    // Freed bytes: drop the cached quota usage so the next write re-measures.
+    this._usageCache.delete(spaceId)
     const softDelete = async (): Promise<void> => {
       if (ifMatch !== undefined) {
         await this._assertWritePrecondition({

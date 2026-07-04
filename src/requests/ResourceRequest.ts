@@ -4,6 +4,7 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
+import { getCollectionOrThrow } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import {
@@ -14,7 +15,6 @@ import { assertValidIds } from '../lib/validateId.js'
 import { resourcePath, metaPath } from '../lib/paths.js'
 import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
 import {
-  CollectionNotFoundError,
   InvalidRequestBodyError,
   ResourceNotFoundError,
   rethrowOrWrapStorageError
@@ -133,13 +133,12 @@ export class ResourceRequest {
     // zCap checks out, continue
 
     // Fetch collection by id
-    const collectionDescription = await storage.getCollectionDescription({
+    const collectionDescription = await getCollectionOrThrow({
+      storage,
       spaceId,
-      collectionId
+      collectionId,
+      requestName
     })
-    if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName })
-    }
 
     // Fail-closed encryption enforcement: if the Collection declares a recognized
     // `encryption` scheme, the content write MUST be a conforming envelope of it
@@ -222,13 +221,12 @@ export class ResourceRequest {
     // authorized, continue
 
     // Fetch collection by id
-    const collectionDescription = await storage.getCollectionDescription({
+    const collectionDescription = await getCollectionOrThrow({
+      storage,
       spaceId,
-      collectionId
+      collectionId,
+      requestName
     })
-    if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName })
-    }
 
     // Read the bytes from the Collection's selected (data-plane) backend.
     const dataBackend = await resolveBackend({
@@ -309,13 +307,12 @@ export class ResourceRequest {
     // authorized, continue
 
     // Fetch collection by id
-    const collectionDescription = await storage.getCollectionDescription({
+    const collectionDescription = await getCollectionOrThrow({
+      storage,
       spaceId,
-      collectionId
+      collectionId,
+      requestName
     })
-    if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName })
-    }
 
     // Read Metadata from the Collection's selected (data-plane) backend.
     const dataBackend = await resolveBackend({
@@ -397,13 +394,12 @@ export class ResourceRequest {
     // authorized, continue
 
     // Fetch collection by id
-    const collectionDescription = await storage.getCollectionDescription({
+    const collectionDescription = await getCollectionOrThrow({
+      storage,
       spaceId,
-      collectionId
+      collectionId,
+      requestName
     })
-    if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName })
-    }
 
     // Read Metadata from the Collection's selected (data-plane) backend.
     const dataBackend = await resolveBackend({
@@ -502,13 +498,12 @@ export class ResourceRequest {
     // zCap checks out, continue
 
     // Fetch collection by id
-    const collectionDescription = await storage.getCollectionDescription({
+    const collectionDescription = await getCollectionOrThrow({
+      storage,
       spaceId,
-      collectionId
+      collectionId,
+      requestName
     })
-    if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName })
-    }
 
     // Branch on the Collection's encryption marker. On an encrypted Collection
     // the `custom` value MUST be a conforming envelope of the scheme (stored
@@ -596,13 +591,12 @@ export class ResourceRequest {
     })
 
     // Fetch collection by id
-    const collectionDescription = await storage.getCollectionDescription({
+    const collectionDescription = await getCollectionOrThrow({
+      storage,
       spaceId,
-      collectionId
+      collectionId,
+      requestName
     })
-    if (!collectionDescription) {
-      throw new CollectionNotFoundError({ requestName })
-    }
 
     // zCap checks out, continue. An `If-Match` precondition is evaluated by the
     // storage layer atomically with the removal; a mismatch surfaces as 412

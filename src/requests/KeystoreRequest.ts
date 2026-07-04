@@ -15,10 +15,11 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { generateId } from '@digitalcredentials/bnid'
-import { handleZcapVerify, isRootInvocation } from '../zcap.js'
+import { handleZcapVerify } from '../zcap.js'
 import { assertValidController } from '../lib/validateDid.js'
 import { kmsKeystoresPath } from '../lib/paths.js'
 import { fetchKeystoreAndVerify } from './keystoreContext.js'
+import { verifyBodyControllerConsent } from './controllerConsent.js'
 import {
   DEFAULT_KMS_MODULE,
   KEYSTORE_LIST_LIMIT,
@@ -141,55 +142,23 @@ export class KeystoreRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const requestName = 'Create Keystore'
-    const { body, url, method, headers } = request
+    const { body } = request
     const { serverUrl, storage } = request.server
-    // The strict `requireAuthHeaders` hook guarantees auth headers were present
-    // and `parseAuthHeaders` set `request.zcap` before this handler.
-    const { keyId, invocation } = request.zcap!
 
     assertKeystoreConfigBody({ body, requestName })
 
-    // For the bare-root form the signer *is* the invoker, so a mismatch is
-    // rejected here, before any signature work. The delegated form instead
-    // carries a capability chain, judged by the verification below (which
-    // synthesizes the root capability with body.controller as its controller).
-    const [zcapSigningDid] = keyId.split('#')
-    const rootInvocation = isRootInvocation({ invocation })
-    if (rootInvocation && zcapSigningDid !== body.controller) {
-      throw new KeystoreControllerMismatchError({
-        zcapSigningDid: zcapSigningDid!,
-        controller: body.controller
-      })
-    }
-
-    const allowedTarget = new URL(kmsKeystoresPath(), serverUrl).toString()
-    try {
-      await handleZcapVerify({
-        url,
-        allowedTarget,
-        allowedAction: 'write',
-        method,
-        headers,
-        serverUrl,
-        spaceController: body.controller,
-        requestName,
-        logger: request.log,
-        maxChainLength: KMS_MAX_CHAIN_LENGTH,
-        maxDelegationTtl: KMS_MAX_DELEGATION_TTL
-      })
-    } catch (err) {
-      // A delegated invocation that fails to verify is a chain not rooted in
-      // the body's controller. (Root-form failures keep their generic
-      // verification errors -- the signer already matched the controller.)
-      if (!rootInvocation) {
-        throw new KeystoreControllerMismatchError({
-          zcapSigningDid: zcapSigningDid!,
-          controller: body.controller,
-          cause: err as Error
-        })
-      }
-      throw err
-    }
+    // The invocation must be *authorized by* the body's controller (see
+    // `verifyBodyControllerConsent`).
+    await verifyBodyControllerConsent({
+      request,
+      controller: body.controller,
+      allowedTarget: new URL(kmsKeystoresPath(), serverUrl).toString(),
+      allowedAction: 'write',
+      MismatchError: KeystoreControllerMismatchError,
+      requestName,
+      maxChainLength: KMS_MAX_CHAIN_LENGTH,
+      maxDelegationTtl: KMS_MAX_DELEGATION_TTL
+    })
 
     // Server-generated local id, per webkms-switch `generateRandom`: multibase
     // base58btc of a multihash-framed (identity, 16-byte) 128-bit random value.

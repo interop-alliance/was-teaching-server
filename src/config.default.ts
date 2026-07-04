@@ -74,6 +74,19 @@ export const QUOTAS_LINK_RELATION = 'https://wallet.storage/spec#quotas'
 export const QUOTA_NEAR_LIMIT_FRACTION = 0.9
 
 /**
+ * Write-path quota usage cache TTL (see
+ * `FileSystemBackend._assertSpaceHeadroom`). The quota pre-flight measures a
+ * Space's on-disk usage with `du`, which walks the whole Space tree -- too
+ * costly to repeat on every resource write. The measured total is cached per
+ * Space for this long, with each accepted write's incoming bytes added to the
+ * cached figure; deletes invalidate the entry. The TTL bounds the drift of
+ * that optimistic accounting (overwrites that replaced rather than added
+ * bytes, streamed bodies of undeclared size) -- the quota is a documented
+ * soft limit, and the TTL bounds the re-measurement window.
+ */
+export const QUOTA_USAGE_CACHE_TTL = 5_000 // milliseconds
+
+/**
  * The single in-process KMS module this server hard-wires.
  * A keystore created without one gets this alias, and it is immutable thereafter.
  */

@@ -5,8 +5,9 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
-import { handleZcapVerify, isRootInvocation, verifyZcap } from '../zcap.js'
+import { isRootInvocation, verifyZcap } from '../zcap.js'
 import { invalidateSpaceDescription } from './spaceContext.js'
+import { verifyBodyControllerConsent } from './controllerConsent.js'
 import { assertValidId } from '../lib/validateId.js'
 import { spacePath, spacesPath } from '../lib/paths.js'
 import { assertValidController } from '../lib/validateDid.js'
@@ -125,11 +126,8 @@ export class SpacesRepositoryRequest {
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
-    const { body, url, method, headers } = request
+    const { body } = request
     const { serverUrl, storage } = request.server
-    // POST is a non-safe method, so `requireAuthHeaders` guarantees auth headers
-    // were present and `parseAuthHeaders` set `request.zcap` before this handler.
-    const { keyId } = request.zcap!
 
     // The Space Description body must carry a controller DID. The `name`
     // property is optional (see spec: Space Description object).
@@ -154,54 +152,20 @@ export class SpacesRepositoryRequest {
       }
     }
 
-    // The invocation must be *authorized by* the body's controller (spec:
-    // Create Space): signed directly by it, or via a delegation chain rooted
-    // in it. For the bare-root form the signer *is* the invoker, so a mismatch
-    // is rejected here, before any signature work. The delegated form instead
-    // carries a capability chain, judged by the verification below (which
-    // synthesizes the root capability with body.controller as its controller).
-    const [zcapSigningDid] = keyId.split('#')
-    const rootInvocation = isRootInvocation({
-      invocation: request.zcap!.invocation
-    })
-    if (rootInvocation && zcapSigningDid !== body.controller) {
-      throw new SpaceControllerMismatchError({
-        zcapSigningDid: zcapSigningDid!,
-        controller: body.controller
-      })
-    }
-
     const spaceId = body.id || uuidv4()
     const spaceDescription = { ...body, id: spaceId, type: ['Space'] }
 
-    // Perform zCap signature verification (throws appropriate errors)
-    const allowedTarget = new URL(spacesPath(), serverUrl).toString()
-    try {
-      await handleZcapVerify({
-        url,
-        allowedTarget,
-        allowedAction: 'POST',
-        method,
-        headers,
-        serverUrl,
-        spaceController: body.controller,
-        requestName: 'Create Space',
-        logger: request.log
-      })
-    } catch (err) {
-      // A delegated invocation that fails to verify is a chain not rooted in
-      // the body's controller: spec `controller-mismatch` (400). (Root-form
-      // failures keep their generic verification errors -- the signer already
-      // matched the controller above.)
-      if (!rootInvocation) {
-        throw new SpaceControllerMismatchError({
-          zcapSigningDid: zcapSigningDid!,
-          controller: body.controller,
-          cause: err as Error
-        })
-      }
-      throw err
-    }
+    // The invocation must be *authorized by* the body's controller (spec:
+    // Create Space): signed directly by it, or via a delegation chain rooted
+    // in it (see `verifyBodyControllerConsent`).
+    await verifyBodyControllerConsent({
+      request,
+      controller: body.controller,
+      allowedTarget: new URL(spacesPath(), serverUrl).toString(),
+      allowedAction: 'POST',
+      MismatchError: SpaceControllerMismatchError,
+      requestName: 'Create Space'
+    })
 
     // zCap checks out, continue
     await storage.writeSpace({ spaceId, spaceDescription })

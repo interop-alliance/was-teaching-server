@@ -5,13 +5,14 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { Readable } from 'node:stream'
 import { v4 as uuidv4 } from 'uuid'
-import { handleZcapVerify, isRootInvocation } from '../zcap.js'
+import { handleZcapVerify } from '../zcap.js'
 import { buildLinkset } from '../policy.js'
 import {
   fetchSpaceAndAuthorize,
   fetchSpaceAndVerify,
   invalidateSpaceDescription
 } from './spaceContext.js'
+import { verifyBodyControllerConsent } from './controllerConsent.js'
 import { assertValidIds, assertValidId } from '../lib/validateId.js'
 import { assertValidController } from '../lib/validateDid.js'
 import {
@@ -197,35 +198,12 @@ export class SpaceRequest {
     const existingSpaceDescription = await storage.getSpaceDescription({
       spaceId
     })
-    const existingController = existingSpaceDescription?.controller
 
     const [zcapSigningDid] = keyId.split('#')
 
     request.log.info(
       `Handling PUT request for spaceId: ${spaceId}, zcapSigningDid: ${zcapSigningDid}, existingSpaceDescription: ${existingSpaceDescription ? 'exists' : 'does not exist'}`
     )
-
-    // Important. For existing Spaces, the request must carry authorization
-    // matching the *stored* controller (the body's controller is just the
-    // proposed new value). On create there is no stored controller yet, so --
-    // as with Create Space via POST -- the invocation must be authorized by
-    // the *body's* controller: signed directly by it, or via a delegation
-    // chain rooted in it. Verifying a create against the signer instead would
-    // let anyone install an unrelated, non-consenting DID as controller.
-    const authorizedController = existingController ?? body.controller
-    const rootInvocation = isRootInvocation({
-      invocation: request.zcap!.invocation
-    })
-    if (
-      !existingSpaceDescription &&
-      rootInvocation &&
-      zcapSigningDid !== body.controller
-    ) {
-      throw new SpaceControllerMismatchError({
-        zcapSigningDid: zcapSigningDid!,
-        controller: body.controller
-      })
-    }
 
     // Perform zCap signature verification (throws appropriate errors)
     let spaceUrl
@@ -239,7 +217,13 @@ export class SpaceRequest {
     }
 
     request.log.info(`spaceUrl: ${spaceUrl}, serverUrl: ${serverUrl}`)
-    try {
+    // Important. For existing Spaces, the request must carry authorization
+    // matching the *stored* controller (the body's controller is just the
+    // proposed new value). On create there is no stored controller yet, so --
+    // as with Create Space via POST -- the invocation must be authorized by
+    // the *body's* controller: signed directly by it, or via a delegation
+    // chain rooted in it (see `verifyBodyControllerConsent`).
+    if (existingSpaceDescription) {
       await handleZcapVerify({
         url,
         allowedTarget: spaceUrl,
@@ -247,22 +231,17 @@ export class SpaceRequest {
         method,
         headers,
         serverUrl,
-        spaceController: authorizedController,
+        spaceController: existingSpaceDescription.controller,
         logger: request.log
       })
-    } catch (err) {
-      // A delegated *create* that fails to verify is a chain not rooted in
-      // the body's controller: spec `controller-mismatch` (400). Updates (and
-      // root-form creates, whose signer already matched the controller above)
-      // keep their generic verification errors.
-      if (!existingSpaceDescription && !rootInvocation) {
-        throw new SpaceControllerMismatchError({
-          zcapSigningDid: zcapSigningDid!,
-          controller: body.controller,
-          cause: err as Error
-        })
-      }
-      throw err
+    } else {
+      await verifyBodyControllerConsent({
+        request,
+        controller: body.controller,
+        allowedTarget: spaceUrl,
+        allowedAction: 'PUT',
+        MismatchError: SpaceControllerMismatchError
+      })
     }
 
     request.log.info('zCap verified')
