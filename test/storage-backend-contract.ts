@@ -1418,6 +1418,35 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         ).rejects.toBeInstanceOf(KeyIdConflictError)
       })
 
+      it('listKeys resolves empty for an empty keystore and sorts by local id', async () => {
+        const { backend } = harness
+        await backend.writeKeystore({
+          keystoreId: 'ks-list',
+          config: keystoreConfig('ks-list')
+        })
+        // No keys yet (nor any keys/ directory): an empty list, not a throw.
+        assert.deepEqual(await backend.listKeys({ keystoreId: 'ks-list' }), [])
+        // Insert out of order; listKeys returns them sorted by local id with
+        // the opaque record round-tripped verbatim.
+        const inserted = new Map<string, KmsKeyRecord>()
+        for (const localId of ['key3', 'key1', 'key2']) {
+          const record = keyRecord('ks-list', localId)
+          inserted.set(localId, record)
+          await backend.insertKey({ keystoreId: 'ks-list', localId, record })
+        }
+        const listed = await backend.listKeys({ keystoreId: 'ks-list' })
+        assert.deepEqual(
+          listed.map(entry => entry.localId),
+          ['key1', 'key2', 'key3']
+        )
+        assert.deepEqual(listed[0]!.record, inserted.get('key1'))
+      })
+
+      it('listKeys on an unknown keystore resolves empty (no keys directory)', async () => {
+        const { backend } = harness
+        assert.deepEqual(await backend.listKeys({ keystoreId: 'nope' }), [])
+      })
+
       it('insertRevocation is create-only and isRevoked consults unexpired records', async () => {
         const { backend } = harness
         const record = revocationRecord({

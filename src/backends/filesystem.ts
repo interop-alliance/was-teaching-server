@@ -2685,6 +2685,46 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * Every stored key record under the keystore (`keys/*.json`), sorted by local
+   * id (the file name's stem). An absent keystore or `keys/` directory (no keys
+   * yet) resolves an empty list; a non-`.json` entry is skipped. The record is
+   * returned verbatim -- the at-rest cipher applies above the backend.
+   * @param options {object}
+   * @param options.keystoreId {string}   the owning keystore's local id
+   * @returns {Promise<Array<{ localId: string, record: KmsKeyRecord }>>}
+   */
+  async listKeys({
+    keystoreId
+  }: {
+    keystoreId: string
+  }): Promise<Array<{ localId: string; record: KmsKeyRecord }>> {
+    const keysDir = path.join(this._keystoreDir(keystoreId), 'keys')
+    let entries: fs.Dirent[]
+    try {
+      entries = await fs.promises.readdir(keysDir, { withFileTypes: true })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return []
+      }
+      throw new StorageError({ cause: err as Error })
+    }
+    const localIds = entries
+      .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+      .map(entry => entry.name.slice(0, -'.json'.length))
+      .sort((a, b) => a.localeCompare(b))
+    const keys: Array<{ localId: string; record: KmsKeyRecord }> = []
+    for (const localId of localIds) {
+      const record = await this.getKey({ keystoreId, localId })
+      // A record readable at readdir time but gone by getKey (a concurrent
+      // prune) is simply skipped; the listing is a snapshot, not a lock.
+      if (record) {
+        keys.push({ localId, record })
+      }
+    }
+    return keys
+  }
+
+  /**
    * The file holding one zcap revocation record, contained in its keystore's
    * `revocations/` subdirectory. The `(delegator, capabilityId)` unique key
    * is folded into the file name as a SHA-256 digest -- both parts are

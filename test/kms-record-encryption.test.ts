@@ -30,8 +30,12 @@ import { IdEncoder } from '@digitalcredentials/bnid'
 import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { parseKekMultibase } from '../src/lib/kmsRecordCipher.js'
-import type { KmsRecordKekRegistry, RecordKek } from '../src/types.js'
-import { zcapClients } from './helpers.js'
+import type {
+  IRootZcap,
+  KmsRecordKekRegistry,
+  RecordKek
+} from '../src/types.js'
+import { client, zcapClients } from './helpers.js'
 
 /** A base58btc Multikey `secretKeyMultibase` for a raw 32-byte AES-256 key. */
 function kekMultibase(key: Buffer): string {
@@ -227,6 +231,150 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
       assert.equal(record.key.encrypted, undefined)
       // ...yet the server reads it and signs.
       assert.equal(await signVerifies(key), true)
+    } finally {
+      await fastify.close()
+      await rm(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  it('list keys under a KEK returns the same public descriptions as Get Key (no envelope leak)', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'was-kek-'))
+    const kek = parseKekMultibase(kekMultibase(randomBytes(32)))
+    const { fastify, keystoreAgent, keystoreId } = await bootServer({
+      dataDir,
+      kmsRecordKek: singleKekRegistry(kek)
+    })
+    // The keystore's root capability, in object form (the http-loopback escape
+    // hatch the ezcap client requires for a non-https target).
+    const rootZcap: IRootZcap = {
+      '@context': 'https://w3id.org/zcap/v1',
+      id: `urn:zcap:root:${encodeURIComponent(keystoreId)}`,
+      invocationTarget: keystoreId,
+      controller: alice.did
+    }
+    try {
+      // Generate two asymmetric keys -- each stored as an encrypted envelope.
+      const keys = [
+        (await keystoreAgent.generateKey({
+          type: 'asymmetric'
+        })) as AsymmetricKey,
+        (await keystoreAgent.generateKey({
+          type: 'asymmetric'
+        })) as AsymmetricKey
+      ]
+      // Both records are on disk in encrypted form (guard for the premise).
+      for (const key of keys) {
+        assert.ok((await readRecord(dataDir, key.kmsId!)).key.encrypted)
+      }
+
+      // List through the KEK-configured server.
+      const { results } = (
+        await client({ signer: alice.signer }).request({
+          url: `${keystoreId}/keys`,
+          method: 'GET',
+          action: 'read',
+          capability: rootZcap
+        })
+      ).data as any
+
+      // Every listed description equals the per-key Get Key description (the
+      // canonical projection) and carries no envelope or secret field -- so the
+      // at-rest cipher is invisible on the wire, exactly as list-without-a-KEK.
+      for (const key of keys) {
+        const expected = (
+          await client({ signer: alice.signer }).request({
+            url: key.kmsId!,
+            method: 'GET',
+            action: 'read',
+            capability: rootZcap
+          })
+        ).data as any
+        const listed = results.find((entry: any) => entry.id === expected.id)
+        assert.ok(listed, `listing is missing ${key.kmsId}`)
+        assert.deepEqual(listed, expected)
+        assert.ok(!('encrypted' in listed))
+        assert.ok(!('privateKeyMultibase' in listed))
+        assert.ok(!('secret' in listed))
+      }
+    } finally {
+      await fastify.close()
+      await rm(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  it('list keys enumerates public descriptions even when the KEK is gone; secret reads fail (recovery path)', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'was-kek-'))
+    const kek = parseKekMultibase(kekMultibase(randomBytes(32)))
+
+    // Phase 1: generate two keys wrapped under `kek`, then shut down.
+    const first = await bootServer({
+      dataDir,
+      kmsRecordKek: singleKekRegistry(kek)
+    })
+    let keystoreId: string
+    let kmsIds: string[]
+    try {
+      const keyA = (await first.keystoreAgent.generateKey({
+        type: 'asymmetric'
+      })) as AsymmetricKey
+      const keyB = (await first.keystoreAgent.generateKey({
+        type: 'asymmetric'
+      })) as AsymmetricKey
+      keystoreId = first.keystoreId
+      kmsIds = [keyA.kmsId!, keyB.kmsId!]
+      assert.ok((await readRecord(dataDir, keyA.kmsId!)).key.encrypted)
+    } finally {
+      await first.fastify.close()
+    }
+
+    // Phase 2: boot over the SAME data tree with NO KEK configured -- the KEK
+    // that wrapped these records is lost (the recovery scenario this endpoint
+    // exists for: a frozen did:webvh log whose key id must be rediscovered).
+    const backend = new FileSystemBackend({ dataDir })
+    const fastify = createApp({ serverUrl, backend })
+    await fastify.listen({ port: PORT })
+    const rootZcap: IRootZcap = {
+      '@context': 'https://w3id.org/zcap/v1',
+      id: `urn:zcap:root:${encodeURIComponent(keystoreId)}`,
+      invocationTarget: keystoreId,
+      controller: alice.did
+    }
+    try {
+      // List still enumerates the public descriptions -- decrypt-free, so a
+      // missing KEK does not block it (nor does one poison record deny the rest).
+      const { results } = (
+        await client({ signer: alice.signer }).request({
+          url: `${keystoreId}/keys`,
+          method: 'GET',
+          action: 'read',
+          capability: rootZcap
+        })
+      ).data as any
+      assert.deepEqual(
+        results.map((entry: any) => entry.id).sort(),
+        [...kmsIds].sort()
+      )
+      for (const entry of results) {
+        assert.ok(entry.publicKeyMultibase, 'public key material is present')
+        assert.ok(!('privateKeyMultibase' in entry))
+        assert.ok(!('encrypted' in entry))
+      }
+
+      // ...but a read that needs the secret (Get Key decrypts through the seam)
+      // fails loudly without the KEK -- the contrast that proves list is not
+      // silently reading ciphertext as key material.
+      let getStatus: number | undefined
+      try {
+        await client({ signer: alice.signer }).request({
+          url: kmsIds[0]!,
+          method: 'GET',
+          action: 'read',
+          capability: rootZcap
+        })
+      } catch (err) {
+        getStatus = (err as { status?: number }).status
+      }
+      assert.equal(getStatus, 500)
     } finally {
       await fastify.close()
       await rm(dataDir, { recursive: true, force: true })

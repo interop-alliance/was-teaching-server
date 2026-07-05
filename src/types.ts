@@ -726,6 +726,17 @@ export interface StorageBackend {
     keystoreId: string
     localId: string
   }): Promise<KmsKeyRecord | undefined>
+  /**
+   * Every stored key record under the keystore, sorted by local id (the
+   * request layer caps and paginates the wire result). The record is opaque to
+   * storage -- the at-rest cipher applies above the backend (as for `getKey`),
+   * so records come back exactly as stored. Resolves an empty array when the
+   * keystore has no keys yet (must not throw on an absent keys directory /
+   * table).
+   */
+  listKeys(options: {
+    keystoreId: string
+  }): Promise<Array<{ localId: string; record: KmsKeyRecord }>>
 
   /**
    * WebKMS zcap revocations, stored under their keystore

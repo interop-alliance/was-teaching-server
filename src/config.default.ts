@@ -101,6 +101,14 @@ export const DEFAULT_KMS_MODULE = 'local-v1'
 export const KEYSTORE_LIST_LIMIT = 100
 
 /**
+ * Max key descriptions returned per page by
+ * `GET /kms/keystores/:keystoreId/keys` (the List Keys fork extension). A
+ * further page is signalled by the response's `next` cursor URL; realistic
+ * keystores hold a handful of keys, so one page is the steady state.
+ */
+export const KEY_LIST_LIMIT = 100
+
+/**
  * Max capability delegation chain length accepted on `/kms` invocations, the
  * root capability included (webkms-switch's `maxChainLength` default). A
  * per-key `maxCapabilityChainLength` (1-10, set at generate time) may narrow

@@ -4,6 +4,18 @@
 
 ### Added
 
+- **WebKMS List Keys (`GET /kms/keystores/:keystoreId/keys`).** A fork extension
+  beyond upstream webkms-switch (which has no key list): enumerates a keystore's
+  public key descriptions — exactly the Get Key Description projection per key
+  (`describeKmsKey`, never a secret field), sorted by local id and paginated
+  with the standard opaque cursor (`KEY_LIST_LIMIT` per page; an empty keystore
+  returns `{ results: [] }`, not 404). Capability-verified as `read` against the
+  keystore controller with `<keystoreId>/keys` accepted as an attenuated target,
+  so a `sign`-scoped delegation on one key URL still cannot enumerate the
+  keystore. Adds `listKeys` to the `StorageBackend` contract (both backends) and
+  `KeyRequest.list`. Motivation and design:
+  [`_spec/kms-list-keys-plan.md`](./_spec/kms-list-keys-plan.md).
+
 - **PostgreSQL storage backend (`DATABASE_URL`).** A second first-party
   `StorageBackend` (`src/backends/postgres.ts`, schema in
   `src/backends/postgresSchema.ts`), implementing the full WAS + WebKMS surface

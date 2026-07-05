@@ -384,6 +384,11 @@ export async function initKmsRoutes(
   // Generate Key (GenerateKeyOperation)
   app.post('/kms/keystores/:keystoreId/keys', KeyRequest.generate)
 
+  // List Keys (fork extension: enumerate the keystore's public key
+  // descriptions). Static `/keys` beats the parametric `/keys/:keyId` below,
+  // so this never collides with the key-description GET.
+  app.get('/kms/keystores/:keystoreId/keys', KeyRequest.list)
+
   // Key operation dispatch by envelope type (Sign / Verify / DeriveSecret /
   // WrapKey / UnwrapKey)
   app.post('/kms/keystores/:keystoreId/keys/:keyId', KeyRequest.operation)

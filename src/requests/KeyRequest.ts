@@ -1,6 +1,8 @@
 /**
  * Request handlers for WebKMS key operations (the `/kms` facet):
  * - POST /kms/keystores/:keystoreId/keys (GenerateKeyOperation)
+ * - GET /kms/keystores/:keystoreId/keys (List Keys -- a fork extension beyond
+ *   upstream webkms-switch; enumerate the keystore's public key descriptions)
  * - POST /kms/keystores/:keystoreId/keys/:keyId (Sign / Verify / DeriveSecret /
  *   WrapKey / UnwrapKey operation, dispatched by envelope `type`)
  * - GET /kms/keystores/:keystoreId/keys/:keyId (public key description)
@@ -33,6 +35,8 @@ import {
 } from '../lib/kmsRecordCipher.js'
 import { isUrlSafeSegment } from '../lib/validateId.js'
 import { kmsKeysPath } from '../lib/paths.js'
+import { encodeCursor, decodeCursor } from '../lib/cursor.js'
+import { KEY_LIST_LIMIT } from '../config.default.js'
 import {
   InvalidRequestBodyError,
   KeyNotFoundError,
@@ -40,7 +44,7 @@ import {
   UnauthorizedError,
   UnsupportedKeyOperationError
 } from '../errors.js'
-import type { KmsKeyRecord } from '../types.js'
+import type { KmsKeyRecord, KmsRecordKekRegistry } from '../types.js'
 
 /**
  * The operation-specific body fields of each dispatchable (non-generate)
@@ -111,16 +115,47 @@ function assertOperationEnvelope({
 }
 
 /**
+ * Decrypts a stored key record through the at-rest cipher seam
+ * (`KMS_RECORD_KEK`): a plaintext record passes through untouched; an encrypted
+ * one is unwrapped under its stored `kekId` (a failure -- missing KEK / bad
+ * ciphertext -- is a 500 `KmsRecordCipherError`, a server misconfiguration).
+ * The single funnel every path that needs the *secret* (operation dispatch,
+ * description GET) goes through, so no operation can read a ciphertext envelope
+ * as key material. List Keys deliberately does NOT use it: it projects only
+ * public fields, which stay plaintext at rest, so it never unwraps a secret.
+ *
+ * @param options {object}
+ * @param options.record {KmsKeyRecord}   the record as stored (maybe encrypted)
+ * @param [options.kmsRecordKek] {KmsRecordKekRegistry}   the configured KEK
+ *   registry (`request.server.kmsRecordKek`), or `undefined` when disabled
+ * @param options.requestName {string}   request name used in error titles
+ * @returns {KmsKeyRecord}   the decrypted (secret-bearing) record
+ */
+function decryptStoredKeyRecord({
+  record,
+  kmsRecordKek,
+  requestName
+}: {
+  record: KmsKeyRecord
+  kmsRecordKek?: KmsRecordKekRegistry
+  requestName: string
+}): KmsKeyRecord {
+  try {
+    return decryptKeyRecord({
+      record,
+      kekLoader: recordKekLoader(kmsRecordKek)
+    })
+  } catch (err) {
+    throw new KmsRecordCipherError({ cause: err as Error, requestName })
+  }
+}
+
+/**
  * Loads a key record by its URL params, masking an unknown (or non-URL-safe)
  * key id as the 404 `KeyNotFoundError`. Call after capability verification,
- * so an under-authorized caller cannot distinguish absent from forbidden.
- *
- * This is the single decrypt funnel for the at-rest cipher (`KMS_RECORD_KEK`):
- * every key-load path (operation dispatch and description GET) goes through
- * here, so no operation can accidentally read a ciphertext envelope as key
- * material. A plaintext record passes through untouched; an encrypted one is
- * unwrapped under its stored `kekId` (a failure -- missing KEK / bad ciphertext
- * -- is a 500 `KmsRecordCipherError`, a server misconfiguration).
+ * so an under-authorized caller cannot distinguish absent from forbidden. The
+ * record is decrypted through the cipher seam (see `decryptStoredKeyRecord`)
+ * before it is returned.
  *
  * @param options {object}
  * @param options.request {FastifyRequest}   supplies `request.server.storage`
@@ -150,14 +185,11 @@ async function fetchKeyRecord({
   if (!record) {
     throw new KeyNotFoundError({ requestName })
   }
-  try {
-    return decryptKeyRecord({
-      record,
-      kekLoader: recordKekLoader(request.server.kmsRecordKek)
-    })
-  } catch (err) {
-    throw new KmsRecordCipherError({ cause: err as Error, requestName })
-  }
+  return decryptStoredKeyRecord({
+    record,
+    kmsRecordKek: request.server.kmsRecordKek,
+    requestName
+  })
 }
 
 /**
@@ -490,5 +522,86 @@ export class KeyRequest {
     return reply.send(
       describeKmsKey({ key: record.key, controller: config.controller })
     )
+  }
+
+  /**
+   * GET /kms/keystores/:keystoreId/keys
+   * List Keys (a fork extension beyond upstream webkms-switch). Enumerates the
+   * keystore's public key descriptions -- exactly the Get Key Description
+   * projection per key (`describeKmsKey`: allowlisted public fields, the
+   * keystore's live controller, alias re-applied; never a secret field) --
+   * sorted by local id and paginated (`KEY_LIST_LIMIT` per page, an opaque
+   * `cursor` following the standard convention). Capability-verified against the
+   * keystore's controller (`read`), with the `<keystoreId>/keys` URL accepted as
+   * an attenuated target (the same treatment Get Key gives the key URL). An
+   * empty keystore returns `{ results: [] }`, not a 404. Responds `{ results }`,
+   * plus a `next` cursor URL when a further page follows.
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async list(
+    request: FastifyRequest<{
+      Params: { keystoreId: string }
+      Querystring: { cursor?: string }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const requestName = 'List Keys'
+    const { keystoreId } = request.params
+    const { cursor } = request.query
+    const { storage } = request.server
+
+    // The `?cursor` pagination parameter rides the signed request URL, so
+    // verification runs in target-query mode (as List Keystores / List
+    // Collection do). Authorization runs before any cursor validation below, so
+    // an under-authorized caller gets the merged 404 -- never `invalid-cursor`.
+    const { config } = await fetchKeystoreAndVerify({
+      request,
+      keystoreId,
+      allowedAction: 'read',
+      requestName,
+      allowTargetAttenuation: true,
+      allowTargetQuery: true
+    })
+
+    // The backend returns every record sorted by local id; key records are
+    // insert-once and immutable, so the cursor's `after` names a stable
+    // position -- resume from just past it (falling back to a keyset compare
+    // should the id somehow be absent). The cursor is opaque and validated
+    // here (400 `invalid-cursor` on a malformed token).
+    const keys = await storage.listKeys({ keystoreId })
+    let remaining = keys
+    if (cursor !== undefined) {
+      const { after } = decodeCursor(cursor)
+      const index = keys.findIndex(entry => entry.localId === after)
+      remaining =
+        index === -1
+          ? keys.filter(entry => entry.localId > after)
+          : keys.slice(index + 1)
+    }
+
+    const hasMore = remaining.length > KEY_LIST_LIMIT
+    const page = remaining.slice(0, KEY_LIST_LIMIT)
+    // Project directly from the stored record -- NO decrypt. The description
+    // reads only public fields, which stay plaintext at rest even under the
+    // record cipher (the `encrypted` envelope replaces only the secret subset).
+    // So listing never unwraps a key: it does not bulk-materialize private
+    // material in memory, and it still enumerates keys whose KEK is rotated out
+    // or whose envelope is corrupt -- the recovery-path robustness this endpoint
+    // exists for. (Contrast `fetchKeyRecord`, which must decrypt: get/operation
+    // need the secret.)
+    const results = page.map(({ record }) =>
+      describeKmsKey({ key: record.key, controller: config.controller })
+    )
+
+    let next: string | undefined
+    if (hasMore) {
+      const lastId = page[page.length - 1]!.localId
+      next = `${kmsKeysPath({ keystoreId })}?cursor=${encodeCursor(lastId)}`
+    }
+
+    return reply.send({ results, ...(next !== undefined && { next }) })
   }
 }

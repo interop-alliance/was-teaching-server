@@ -33,6 +33,7 @@ import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 
 import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import { KEY_LIST_LIMIT } from '../src/config.default.js'
 import type { IRootZcap } from '../src/types.js'
 import { client, zcapClients } from './helpers.js'
 
@@ -95,15 +96,91 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
     }
   }
 
-  /** Fetches a key description via a raw root-zcap GET (action `read`). */
+  /**
+   * Fetches a key description via a raw root-zcap GET (action `read`). The root
+   * capability is derived from the key URL's own keystore, so it works for keys
+   * in any Alice-owned keystore (the shared one and the per-test fresh ones).
+   */
   async function getDescription(keyUrl: string, signer = alice.signer) {
     const response = await client({ signer }).request({
       url: keyUrl,
       method: 'GET',
       action: 'read',
-      capability: rootZcap(keystoreId)
+      capability: rootZcap(keyUrl.replace(/\/keys\/[^/]+$/, ''))
     })
     return response.data as any
+  }
+
+  /**
+   * Lists a keystore's keys via a raw zcap GET (action `read`). Defaults to
+   * the controller's root capability for the keystore being listed; a delegated
+   * capability / different signer can be supplied for the authorization tests.
+   */
+  async function listKeys(
+    keysUrl: string,
+    {
+      signer = alice.signer,
+      capability
+    }: { signer?: any; capability?: any } = {}
+  ) {
+    const response = await client({ signer }).request({
+      url: keysUrl,
+      method: 'GET',
+      action: 'read',
+      capability: capability ?? rootZcap(keysUrl.replace(/\/keys(\?.*)?$/, ''))
+    })
+    return response.data as any
+  }
+
+  /** Creates a fresh Alice-owned keystore, returning its full URL + local id. */
+  async function createKeystore(): Promise<{ url: string; localId: string }> {
+    const config = await KmsClient.createKeystore({
+      url: keystoresUrl,
+      config: { sequence: 0, controller: alice.did },
+      invocationSigner: alice.signer
+    })
+    const url = config.id!
+    return { url, localId: url.split('/').pop()! }
+  }
+
+  /**
+   * Generates a key in a keystore via a raw root-zcap invocation (the proven
+   * generate path in this file), returning the `{ keyId, keyDescription }` body.
+   */
+  async function generateKeyIn(
+    keystoreUrl: string,
+    invocationTarget: Record<string, unknown> = {
+      type: 'Ed25519VerificationKey2020'
+    }
+  ): Promise<{ keyId: string; keyDescription: any }> {
+    const response = await client({ signer: alice.signer }).request({
+      url: `${keystoreUrl}/keys`,
+      method: 'POST',
+      action: 'generateKey',
+      capability: rootZcap(keystoreUrl),
+      json: { type: 'GenerateKeyOperation', invocationTarget }
+    })
+    return response.data as any
+  }
+
+  /**
+   * A minimal stored HMAC key record for direct-backend insertion (bypassing
+   * the crypto-heavy generate path when a test needs many keys). Its `key.id`
+   * encodes the local id so a listed description maps back to it.
+   */
+  function rawKeyRecord(keystoreLocalId: string, localId: string) {
+    const now = new Date().toISOString()
+    return {
+      keystoreId: keystoreLocalId,
+      localId,
+      meta: { created: now, updated: now },
+      key: {
+        '@context': 'https://w3id.org/security/suites/hmac-2019/v1',
+        id: `${keystoresUrl}/${keystoreLocalId}/keys/${localId}`,
+        type: 'Sha256HmacKey2019',
+        secret: randomBytes(32).toString('base64url')
+      }
+    }
   }
 
   /** Awaits a request expected to fail, returning the thrown error. */
@@ -759,6 +836,169 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
     })
   })
 
+  describe('list keys (fork extension)', () => {
+    it('an empty keystore lists { results: [] }, not a 404', async () => {
+      const keystore = await createKeystore()
+      const data = await listKeys(`${keystore.url}/keys`)
+      assert.deepEqual(data, { results: [] })
+    })
+
+    it('lists descriptions sorted by local id, each matching Get Key, no secrets', async () => {
+      const keystore = await createKeystore()
+      const keysUrl = `${keystore.url}/keys`
+      const localIdOf = (keyId: string) => keyId.split('/keys/')[1]!
+      // A few plain keys plus a templated (aliased) key -- whose re-expanded id
+      // is not a key URL, so it exercises mapping a listed entry back by its
+      // Get Key description rather than by parsing the id.
+      const generated = [
+        await generateKeyIn(keystore.url),
+        await generateKeyIn(keystore.url, {
+          type: 'Ed25519VerificationKey2020',
+          publicAliasTemplate:
+            'did:key:{publicKeyMultibase}#{publicKeyMultibase}'
+        }),
+        await generateKeyIn(keystore.url)
+      ]
+      // Map each key's wire-description id to its (localId, full description).
+      const expectedByWireId = new Map<
+        string,
+        { localId: string; description: any }
+      >()
+      for (const key of generated) {
+        const description = await getDescription(key.keyId, alice.signer)
+        expectedByWireId.set(description.id, {
+          localId: localIdOf(key.keyId),
+          description
+        })
+      }
+
+      const { results, next } = await listKeys(keysUrl)
+      assert.equal(next, undefined)
+      assert.equal(results.length, generated.length)
+
+      const listedLocalIds = results.map((entry: any) => {
+        const match = expectedByWireId.get(entry.id)
+        assert.ok(match, `unexpected listed description id ${entry.id}`)
+        // Byte-identical to the Get Key description (alias re-expansion included).
+        assert.deepEqual(entry, match.description)
+        // Never a secret field.
+        assert.ok(!('privateKeyMultibase' in entry))
+        assert.ok(!('secret' in entry))
+        return match.localId
+      })
+      // Ascending by local id.
+      assert.deepEqual(
+        listedLocalIds,
+        [...listedLocalIds].sort((a, b) => a.localeCompare(b))
+      )
+    })
+
+    it('paginates past the page limit and the cursor round-trips the full set', async () => {
+      const keystore = await createKeystore()
+      const keysUrl = `${keystore.url}/keys`
+      const total = KEY_LIST_LIMIT + 25
+      // Insert directly through the backend (fast: no per-key crypto). Local
+      // ids are fixed-width so string order is unambiguous.
+      const expectedLocalIds: string[] = []
+      for (let index = 0; index < total; index++) {
+        const localId = `key${String(index).padStart(4, '0')}`
+        expectedLocalIds.push(localId)
+        await backend.insertKey({
+          keystoreId: keystore.localId,
+          localId,
+          record: rawKeyRecord(keystore.localId, localId)
+        })
+      }
+      expectedLocalIds.sort((a, b) => a.localeCompare(b))
+
+      const localIdOf = (entry: any) => entry.id.split('/keys/')[1]
+
+      // First page: exactly the cap, plus a follow-on cursor.
+      const first = await listKeys(keysUrl)
+      assert.equal(first.results.length, KEY_LIST_LIMIT)
+      assert.ok(first.next, 'a further page must carry a next cursor')
+
+      // Follow the (relative) next URL to exhaustion.
+      const nextUrl = new URL(first.next, serverUrl).toString()
+      const second = await listKeys(nextUrl, {
+        capability: rootZcap(keystore.url)
+      })
+      assert.equal(second.results.length, total - KEY_LIST_LIMIT)
+      assert.equal(second.next, undefined)
+
+      const seen = [...first.results, ...second.results].map(localIdOf)
+      assert.deepEqual(seen, expectedLocalIds)
+    })
+
+    it('an unknown keystore is masked (404)', async () => {
+      const unknownKeystore = `${keystoresUrl}/z1111unknownlist`
+      const err = await requestError(
+        listKeys(`${unknownKeystore}/keys`, {
+          capability: rootZcap(unknownKeystore)
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it("a non-controller's list is masked (404)", async () => {
+      const keystore = await createKeystore()
+      const err = await requestError(
+        listKeys(`${keystore.url}/keys`, {
+          signer: bob.signer,
+          capability: rootZcap(keystore.url)
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('a delegated read on the keys target lists (target attenuation)', async () => {
+      const keystore = await createKeystore()
+      const keysUrl = `${keystore.url}/keys`
+      await generateKeyIn(keystore.url)
+      // Alice delegates `read` scoped to the keys collection URL; the chain
+      // roots in the keystore's root capability, attenuated to `<keystore>/keys`.
+      const zcap = await client({ signer: alice.signer }).delegate({
+        capability: rootZcap(keystore.url),
+        invocationTarget: keysUrl,
+        controller: aliceDelegatedApp.did,
+        allowedActions: ['read']
+      })
+      const { results } = await listKeys(keysUrl, {
+        signer: aliceDelegatedApp.signer,
+        capability: zcap
+      })
+      assert.equal(results.length, 1)
+    })
+
+    it('a sign-only capability on a key URL cannot list the keystore (404)', async () => {
+      const keystore = await createKeystore()
+      const keysUrl = `${keystore.url}/keys`
+      const key = await generateKeyIn(keystore.url)
+      // A `sign` capability scoped to one key URL (freewallet's browser-session
+      // shape): it must not enumerate the keystore. The ezcap client refuses to
+      // even send this (its confused-deputy check: a key-URL target is no prefix
+      // of the keys-collection URL, and `sign` is not `read`), so hand-sign the
+      // invocation -- exactly what a buggy or malicious client would put on the
+      // wire -- and assert the server masks it as a 404.
+      const zcap = await client({ signer: alice.signer }).delegate({
+        capability: rootZcap(keystore.url),
+        invocationTarget: key.keyId,
+        controller: aliceDelegatedApp.did,
+        allowedActions: ['sign']
+      })
+      const headers = await signCapabilityInvocation({
+        url: keysUrl,
+        method: 'GET',
+        headers: {},
+        capability: zcap,
+        capabilityAction: 'read',
+        invocationSigner: aliceDelegatedApp.signer
+      })
+      const response = await fetch(keysUrl, { method: 'GET', headers })
+      assert.equal(response.status, 404)
+    })
+  })
+
   describe('authentication', () => {
     it('anonymous key requests are 401', async () => {
       const key = (await keystoreAgent.generateKey({
@@ -775,6 +1015,8 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
       assert.equal(generateResponse.status, 401)
       const getResponse = await fetch(key.kmsId!)
       assert.equal(getResponse.status, 401)
+      const listResponse = await fetch(`${keystoreId}/keys`)
+      assert.equal(listResponse.status, 401)
     })
   })
 })

@@ -1733,6 +1733,31 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
+   * Every stored key record under the keystore, sorted by local id (the request
+   * layer caps and paginates the wire result). An empty keystore resolves an
+   * empty list. The record is returned verbatim -- the at-rest cipher applies
+   * above the backend.
+   * @param options {object}
+   * @param options.keystoreId {string}
+   * @returns {Promise<Array<{ localId: string, record: KmsKeyRecord }>>}
+   */
+  async listKeys({
+    keystoreId
+  }: {
+    keystoreId: string
+  }): Promise<Array<{ localId: string; record: KmsKeyRecord }>> {
+    const { rows } = await this._pool.query<{
+      local_id: string
+      record: KmsKeyRecord
+    }>(
+      `SELECT local_id, record FROM kms_keys
+        WHERE keystore_id = $1 ORDER BY local_id`,
+      [keystoreId]
+    )
+    return rows.map(row => ({ localId: row.local_id, record: row.record }))
+  }
+
+  /**
    * Inserts a revocation record, create-only on
    * `(keystoreId, delegator, capability.id)`; a duplicate rejects with the
    * protocol's 409 (`DuplicateRevocationError`).

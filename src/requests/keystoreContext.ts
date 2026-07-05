@@ -71,6 +71,10 @@ export async function fetchKeystore({
  *   under the keystore URL (the key routes: every key operation roots in the
  *   keystore's capability, with the key URL as an attenuated target -- see
  *   `verifyZcap`)
+ * @param [options.allowTargetQuery] {boolean}   tolerate query parameters on
+ *   the request URL that are absent from the capability target (the List Keys
+ *   route's `?limit` / `?cursor` pagination parameters select a page within an
+ *   already-authorized target; the same treatment as List Keystores)
  * @returns {Promise<{ config: KeystoreConfig, dereferencedChainLength: number }>}
  *   the stored config and the verified invocation's chain length, root
  *   included (a root invocation is 1) -- the input to the per-key
@@ -81,13 +85,15 @@ export async function fetchKeystoreAndVerify({
   keystoreId,
   allowedAction,
   requestName,
-  allowTargetAttenuation = false
+  allowTargetAttenuation = false,
+  allowTargetQuery = false
 }: {
   request: FastifyRequest
   keystoreId: string
   allowedAction: string
   requestName: string
   allowTargetAttenuation?: boolean
+  allowTargetQuery?: boolean
 }): Promise<{ config: KeystoreConfig; dereferencedChainLength: number }> {
   const { serverUrl, storage } = request.server
   const config = await fetchKeystore({ request, keystoreId, requestName })
@@ -107,6 +113,7 @@ export async function fetchKeystoreAndVerify({
     requestName,
     logger: request.log,
     allowTargetAttenuation,
+    allowTargetQuery,
     inspectCapabilityChain: revocationChainInspector({ storage, keystoreId }),
     maxChainLength: KMS_MAX_CHAIN_LENGTH,
     maxDelegationTtl: KMS_MAX_DELEGATION_TTL
