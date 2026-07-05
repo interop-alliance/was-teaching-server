@@ -213,16 +213,83 @@ export interface KmsStoredKey {
   publicAlias?: string
   /** description `id` template, expanded against the key description */
   publicAliasTemplate?: string
+  /**
+   * At-rest ONLY: present in place of the secret fields (`privateKeyMultibase`
+   * / `secret`) when the record was written under a configured record KEK
+   * (`KMS_RECORD_KEK`; see `lib/kmsRecordCipher.ts`). The in-memory
+   * `KmsStoredKey` the KMS module operates on is always the DECRYPTED form --
+   * the decrypt seam (`decryptKeyRecord`) strips this envelope and restores the
+   * secret fields before any operation reads the key. A plaintext record (the
+   * default / unconfigured deployment) never carries it.
+   */
+  encrypted?: KmsEncryptedEnvelope
+}
+
+/**
+ * The at-rest envelope that replaces the secret-bearing fields of a stored
+ * key's `key` when record encryption is enabled (`KMS_RECORD_KEK`; see
+ * `lib/kmsRecordCipher.ts`). A fresh per-record content-encryption key (CEK,
+ * `A256GCM`) encrypts the serialized secret subset; the CEK is wrapped
+ * (`A256KW`) under the config-supplied KEK named by `kekId` -- the rotation
+ * seam: a record keeps the `kekId` it was written under, so a rotated-in KEK
+ * never forces a rewrite. Secrets never crossed the wire and still don't: this
+ * shape lives only on disk, never in a client projection.
+ */
+export interface KmsEncryptedEnvelope {
+  /** id of the KEK the CEK was wrapped under (`RecordKek.id`) */
+  kekId: string
+  /**
+   * General JWE (JSON serialization): `A256GCM` content encryption with the
+   * CEK wrapped `A256KW` under the KEK. The `protected` header is the JWE AAD.
+   */
+  jwe: {
+    protected: string
+    recipients: Array<{
+      header?: Record<string, unknown>
+      encrypted_key: string
+    }>
+    iv: string
+    ciphertext: string
+    tag: string
+  }
+  /** the secret-subset serialization inside the JWE (only `json` this increment) */
+  encoding: 'json'
+}
+
+/**
+ * A record-encryption key-encryption key (KEK): a raw AES-256 key plus its
+ * derived, non-secret id (`RecordKek.id`, a one-way hash of the key material,
+ * safe to store per record). Held only in process memory (config env), never in
+ * the data tree.
+ */
+export interface RecordKek {
+  id: string
+  key: Buffer
+}
+
+/**
+ * The at-rest key-record KEK registry (config `KMS_RECORD_KEK`): every KEK
+ * available to UNWRAP a record (keyed by `RecordKek.id`) plus `currentKekId`,
+ * the KEK that WRAPS new records. `currentKekId: null` disables encryption --
+ * new records are written plaintext -- while previously registered KEKs stay
+ * available for decrypt. Rotation is a config change (register a new KEK, repoint
+ * `currentKekId`), never a schema migration.
+ */
+export interface KmsRecordKekRegistry {
+  keks: Map<string, RecordKek>
+  currentKekId: string | null
 }
 
 /**
  * A stored WebKMS key record (the `/kms` facet), a
  * `{keystoreId, localId, meta, key}` shape unique on `(keystoreId, localId)`.
- * Secret-bearing -- `key` carries the
- * full serialized key material, held plaintext this increment (the record-KEK
- * envelope is a later, schema-compatible upgrade) -- so a record is **never**
- * serialized to a client: only the sanitized key-description projection built
- * by the KMS module is. The storage layer treats the record as an opaque unit.
+ * Secret-bearing -- `key` carries the full serialized key material -- so a
+ * record is **never** serialized to a client: only the sanitized key-description
+ * projection built by the KMS module is. The storage layer treats the record as
+ * an opaque unit. At rest, `key`'s secret fields are stored plaintext by default
+ * or, when `KMS_RECORD_KEK` is configured, replaced by a `key.encrypted`
+ * envelope (see `lib/kmsRecordCipher.ts`); either way the in-memory record the
+ * KMS module operates on is the decrypted form.
  */
 export interface KmsKeyRecord {
   /** the owning keystore's local id */
@@ -625,10 +692,11 @@ export interface StorageBackend {
   /**
    * WebKMS key records, stored under their keystore
    * (`data/keystores/<keystoreId>/keys/<localId>.json`), unique on
-   * `(keystoreId, localId)`. The record is opaque to the storage layer
-   * (tension 1 of the roadmap: a phase-2 record cipher slots in without a
-   * schema change). The protocol defines no key delete or update -- a record
-   * is immutable once inserted.
+   * `(keystoreId, localId)`. The record is opaque to the storage layer -- the
+   * at-rest record cipher (`KMS_RECORD_KEK`, `lib/kmsRecordCipher.ts`) applies
+   * above the backend, at the KMS orchestration seam, so no schema change is
+   * needed here. The protocol defines no key delete or update -- a record is
+   * immutable once inserted.
    *
    * Inserts a key record, create-only: rejects with the protocol's 409
    * duplicate conflict (`KeyIdConflictError`) when a record already exists at
@@ -691,6 +759,16 @@ declare module 'fastify' {
      * default).
      */
     enabledBackendProviders?: string[]
+    /**
+     * The at-rest key-record encryption registry (config `KMS_RECORD_KEK`): the
+     * KEK(s) available to unwrap stored WebKMS key records plus the
+     * `currentKekId` selecting the one that wraps NEW records. `undefined` (or
+     * `currentKekId: null`) means encryption is disabled -- records are written
+     * plaintext (the teaching default). Read at the KMS orchestration seam
+     * (`KeyRequest`), never inside a backend (records stay opaque to storage).
+     * Set by `fastify.decorate` in plugin.ts.
+     */
+    kmsRecordKek?: KmsRecordKekRegistry
   }
   interface FastifyRequest {
     /**

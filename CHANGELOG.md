@@ -4,6 +4,24 @@
 
 ### Added
 
+- **At-rest encryption of WebKMS key records (`KMS_RECORD_KEK`).** The optional,
+  schema-compatible hardening increment from `_spec/encrypted-kms-plan.md`: when
+  a record KEK is configured, the secret-bearing fields of a stored `/kms` key
+  record (`privateKeyMultibase` / `secret`, and anything not on the plaintext
+  allowlist) are envelope-encrypted -- a fresh per-record `A256GCM`
+  content-encryption key wrapped `A256KW` under a config-supplied AES-256 KEK --
+  before the record reaches storage, so a disk/database dump exposes only
+  ciphertext and a `kekId`. It is **off by default** (plaintext when unset, the
+  teaching default), needs **no schema migration** to enable (old plaintext
+  records stay readable via an unconditional decrypt pass-through, and are never
+  retroactively rewritten), and supports **KEK rotation without re-encryption**
+  (each record keeps the `kekId` it was written under). The wire projection
+  (`KmsKeyDescription`) is untouched: secrets never crossed the wire and still
+  don't. New pure, backend-agnostic cipher `src/lib/kmsRecordCipher.ts`, applied
+  at the KMS orchestration seam in `src/requests/KeyRequest.ts` (encrypt before
+  `insertKey`, single decrypt funnel after `getKey`). See the `KMS_RECORD_KEK`
+  environment variable in the README.
+
 - **Library entry point (`src/index.ts`) and package `exports` map.** The
   package is now consumable as a dependency, not only runnable standalone:
   `import { fastifyWas, createApp, FileSystemBackend, defaultBackend } from 'was-teaching-server'`,

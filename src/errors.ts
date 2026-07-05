@@ -600,6 +600,31 @@ export class StorageError extends ProblemError {
 }
 
 /**
+ * 500 — an at-rest WebKMS key record could not be decrypted (its KEK is not
+ * registered, or the ciphertext failed to authenticate). A server-side
+ * misconfiguration of `KMS_RECORD_KEK`, never a client error; `handleError`
+ * logs the underlying `cause`.
+ * @param options {object}
+ * @param options.cause {Error}   the underlying cipher error
+ * @param [options.requestName] {string}   request name used in the error title
+ */
+export class KmsRecordCipherError extends ProblemError {
+  constructor({ cause, requestName }: { cause: Error; requestName?: string }) {
+    super({
+      type: ProblemTypes.INTERNAL_ERROR,
+      title: requestName
+        ? `KMS Record Cipher Error (${requestName})`
+        : 'KMS Record Cipher Error',
+      detail:
+        'A stored key record could not be decrypted. This is a server ' +
+        'configuration error (KMS_RECORD_KEK).',
+      statusCode: 500,
+      cause
+    })
+  }
+}
+
+/**
  * Rethrows a structured failure from a storage call unchanged (any
  * `ProblemError`, e.g. a 507 quota-exceeded raised by the backend), preserving
  * its status code; wraps anything else -- a genuinely unexpected fault -- as a

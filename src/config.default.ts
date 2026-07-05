@@ -4,6 +4,8 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { parseKekMultibase } from './lib/kmsRecordCipher.js'
+import type { KmsRecordKekRegistry } from './types.js'
 
 // package.json sits a level above both src/ (dev, via tsx) and dist/ (prod),
 // so '../package.json' from import.meta.dirname resolves in either layout.
@@ -114,6 +116,29 @@ export const KMS_MAX_CHAIN_LENGTH = 10
  * revocation plus the mandatory `expires` is the real control.
  */
 export const KMS_MAX_DELEGATION_TTL = 90 * 24 * 60 * 60 * 1000
+
+/**
+ * Parses the `KMS_RECORD_KEK` env value into the at-rest key-record encryption
+ * registry (the optional hardening increment; see
+ * `_spec/encrypted-kms-plan.md`). The value is a single AES-256 key-encryption
+ * key in base58btc Multikey form (`secretKeyMultibase`, header `0xa2 0x01`);
+ * an unset or empty value returns `undefined`, meaning encryption is disabled --
+ * key records are written plaintext (the default, honest about the teaching
+ * server's threat model). When set, the KEK's id is derived from its material
+ * (`deriveKekId`) and stored per record, so multi-KEK rotation later is a config
+ * change, not a schema migration. A malformed value throws (fails startup).
+ * @param raw {string|undefined}   the raw env value
+ * @returns {KmsRecordKekRegistry|undefined}   the registry, or `undefined` when unset
+ */
+export function parseKmsRecordKek(
+  raw: string | undefined
+): KmsRecordKekRegistry | undefined {
+  if (raw === undefined || raw.trim() === '') {
+    return undefined
+  }
+  const kek = parseKekMultibase(raw.trim())
+  return { keks: new Map([[kek.id, kek]]), currentKekId: kek.id }
+}
 
 /**
  * Parses the `STORAGE_LIMIT_PER_SPACE` env value into a per-Space capacity in

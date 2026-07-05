@@ -25,7 +25,11 @@ import {
   initSpacesRepositoryRoutes
 } from './routes.js'
 import { defaultBackend } from './storage.js'
-import type { StorageBackend, BackendProviderRegistry } from './types.js'
+import type {
+  StorageBackend,
+  BackendProviderRegistry,
+  KmsRecordKekRegistry
+} from './types.js'
 
 export interface FastifyWasOptions {
   /**
@@ -62,6 +66,12 @@ export interface FastifyWasOptions {
    * permissive.
    */
   enabledBackendProviders?: string[]
+  /**
+   * The at-rest WebKMS key-record encryption registry (config `KMS_RECORD_KEK`);
+   * `undefined` (or `currentKekId: null`) disables encryption -- key records are
+   * written plaintext (the teaching default).
+   */
+  kmsRecordKek?: KmsRecordKekRegistry
 }
 
 /**
@@ -81,7 +91,8 @@ async function wasPlugin(
     storageLimitPerSpace,
     maxUploadBytes,
     providers,
-    enabledBackendProviders
+    enabledBackendProviders,
+    kmsRecordKek
   } = options
 
   fastify.decorate('serverUrl', serverUrl as string)
@@ -101,6 +112,10 @@ async function wasPlugin(
   // The optional registration allowlist (config `WAS_ENABLED_BACKENDS`);
   // `undefined` = permissive (any provider may be registered).
   fastify.decorate('enabledBackendProviders', enabledBackendProviders)
+  // The at-rest key-record encryption registry (config `KMS_RECORD_KEK`);
+  // `undefined` = disabled (records written plaintext). Read at the KMS
+  // orchestration seam (KeyRequest), never inside a backend.
+  fastify.decorate('kmsRecordKek', kmsRecordKek)
 
   // Disable CORS
   fastify.register(cors, {

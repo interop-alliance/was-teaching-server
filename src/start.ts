@@ -7,7 +7,8 @@ import { createApp } from './server.js'
 import {
   parseStorageLimit,
   parseMaxUploadBytes,
-  parseEnabledBackends
+  parseEnabledBackends,
+  parseKmsRecordKek
 } from './config.default.js'
 
 /**
@@ -26,7 +27,8 @@ export async function startServer(): Promise<void> {
       maxUploadBytes: parseMaxUploadBytes(process.env.MAX_UPLOAD_BYTES),
       enabledBackendProviders: parseEnabledBackends(
         process.env.WAS_ENABLED_BACKENDS
-      )
+      ),
+      kmsRecordKek: parseKmsRecordKek(process.env.KMS_RECORD_KEK)
     })
     await fastify.listen({
       port: Number(process.env.PORT ?? 3002),

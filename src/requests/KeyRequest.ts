@@ -25,11 +25,18 @@ import {
   describeKmsKey,
   runKeyOperation
 } from '../lib/kmsModule.js'
+import {
+  encryptKeyRecord,
+  decryptKeyRecord,
+  currentRecordKek,
+  recordKekLoader
+} from '../lib/kmsRecordCipher.js'
 import { isUrlSafeSegment } from '../lib/validateId.js'
 import { kmsKeysPath } from '../lib/paths.js'
 import {
   InvalidRequestBodyError,
   KeyNotFoundError,
+  KmsRecordCipherError,
   UnauthorizedError,
   UnsupportedKeyOperationError
 } from '../errors.js'
@@ -108,12 +115,19 @@ function assertOperationEnvelope({
  * key id as the 404 `KeyNotFoundError`. Call after capability verification,
  * so an under-authorized caller cannot distinguish absent from forbidden.
  *
+ * This is the single decrypt funnel for the at-rest cipher (`KMS_RECORD_KEK`):
+ * every key-load path (operation dispatch and description GET) goes through
+ * here, so no operation can accidentally read a ciphertext envelope as key
+ * material. A plaintext record passes through untouched; an encrypted one is
+ * unwrapped under its stored `kekId` (a failure -- missing KEK / bad ciphertext
+ * -- is a 500 `KmsRecordCipherError`, a server misconfiguration).
+ *
  * @param options {object}
  * @param options.request {FastifyRequest}   supplies `request.server.storage`
  * @param options.keystoreId {string}   the keystore's local id (URL param)
  * @param options.keyId {string}   the key's local id (URL param)
  * @param options.requestName {string}   request name used in error titles
- * @returns {Promise<KmsKeyRecord>}
+ * @returns {Promise<KmsKeyRecord>}   the decrypted (secret-bearing) record
  */
 async function fetchKeyRecord({
   request,
@@ -136,7 +150,14 @@ async function fetchKeyRecord({
   if (!record) {
     throw new KeyNotFoundError({ requestName })
   }
-  return record
+  try {
+    return decryptKeyRecord({
+      record,
+      kekLoader: recordKekLoader(request.server.kmsRecordKek)
+    })
+  } catch (err) {
+    throw new KmsRecordCipherError({ cause: err as Error, requestName })
+  }
 }
 
 /**
@@ -312,11 +333,20 @@ export class KeyRequest {
       publicAliasTemplate: target.publicAliasTemplate
     })
     const now = new Date().toISOString()
-    await storage.insertKey({
+    // At-rest cipher seam (`KMS_RECORD_KEK`): when a current KEK is configured,
+    // encrypt the record's secret fields before it reaches storage (the record
+    // stays opaque to the backend); unconfigured, it is stored plaintext.
+    let record: KmsKeyRecord = {
       keystoreId,
       localId,
-      record: { keystoreId, localId, meta: { created: now, updated: now }, key }
-    })
+      meta: { created: now, updated: now },
+      key
+    }
+    const kek = currentRecordKek(request.server.kmsRecordKek)
+    if (kek !== undefined) {
+      record = encryptKeyRecord({ record, kek })
+    }
+    await storage.insertKey({ keystoreId, localId, record })
 
     // 200 (not the keystore create's 201) with a Location header, per
     // webkms-switch `runOperationMiddleware`.
