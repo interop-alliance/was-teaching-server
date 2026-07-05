@@ -104,6 +104,18 @@ async function wasPlugin(
   storage.logger = fastify.log
   fastify.decorate('storage', storage)
 
+  // Backend lifecycle: run the optional startup hook (e.g. Postgres connect +
+  // migrations) during registration, before the server starts listening, and
+  // wire the optional shutdown hook (pool drain) to Fastify's close.
+  if (storage.init) {
+    await storage.init()
+  }
+  if (storage.close) {
+    fastify.addHook('onClose', async () => {
+      await storage.close!()
+    })
+  }
+
   // The provider-adapter registry the resolver (lib/backendRegistry.ts) consults
   // to build a Collection's selected external backend. Injected (rather than a
   // module-global mutable registry) so parallel test suites stay isolated -- the

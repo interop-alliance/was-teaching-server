@@ -21,23 +21,13 @@ import {
   SpaceNotFoundError,
   QuotaExceededError,
   PayloadTooLargeError,
-  PreconditionFailedError,
   KeystoreStateConflictError,
   KeyIdConflictError,
   DuplicateRevocationError
 } from '../errors.js'
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
-import {
-  UBC_MANIFEST_URL,
-  SPACE_URL,
-  COLLECTION_URL,
-  RESOURCE_URL,
-  POLICY_URL,
-  META_URL,
-  QUOTA_NEAR_LIMIT_FRACTION,
-  QUOTA_USAGE_CACHE_TTL
-} from '../config.default.js'
+import { QUOTA_USAGE_CACHE_TTL } from '../config.default.js'
 import {
   extractTarEntries,
   buildImportPlan,
@@ -50,11 +40,17 @@ import {
   parseResourceFileName
 } from '../lib/resourceFileName.js'
 import { sanitizeBackendRecord } from '../lib/backends.js'
+import { backendUsageFields } from '../lib/backendUsage.js'
 import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { encodeCursor, decodeCursor } from '../lib/cursor.js'
+import { buildExportManifest } from '../lib/exportManifest.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
-import { formatEtag } from '../lib/etag.js'
 import { isJson } from '../lib/isJson.js'
+import { DEFAULT_PAGE_SIZE, clampPageSize } from '../lib/pagination.js'
+import {
+  assertWritePrecondition,
+  assertMetaWritePrecondition
+} from '../lib/preconditions.js'
 import type {
   SpaceDescription,
   CollectionDescription,
@@ -68,10 +64,7 @@ import type {
   PolicyDocument,
   BackendDescriptor,
   BackendUsage,
-  BackendState,
-  StorageLimit,
   CollectionUsage,
-  Action,
   StorageBackend,
   StoredBackendRecord,
   KeystoreConfig,
@@ -84,20 +77,6 @@ import type {
 const { Store: MetadataJsonStore } = jsonfs
 
 const execFileAsync = promisify(execFile)
-
-/**
- * Page sizing for the List Collection operation's cursor-based pagination (spec
- * "Pagination"). `DEFAULT_PAGE_SIZE` applies when a request omits `limit`;
- * `MAX_PAGE_SIZE` is the server maximum an oversized `limit` is clamped down to
- * (rather than rejected).
- */
-const DEFAULT_PAGE_SIZE = 100
-const MAX_PAGE_SIZE = 1000
-
-/** Clamps a requested `limit` to `[1, MAX_PAGE_SIZE]`. */
-function clampPageSize(limit: number): number {
-  return Math.min(Math.max(Math.trunc(limit), 1), MAX_PAGE_SIZE)
-}
 
 /**
  * Compares two strings in code-unit order (the order the `<` / `>` operators
@@ -449,39 +428,16 @@ export class FileSystemBackend implements StorageBackend {
     usageBytes: number
     spaceTotalBytes: number
   }): Omit<BackendUsage, 'measuredAt' | 'usageByCollection'> {
-    const limit: StorageLimit =
-      this.capacityBytes === undefined
-        ? { isUnlimited: true }
-        : { capacityBytes: this.capacityBytes, isUnlimited: false }
-
-    let state: BackendState = 'ok'
-    let restrictedActions: Action[] = []
-    if (this.capacityBytes !== undefined) {
-      if (spaceTotalBytes >= this.capacityBytes) {
-        state = 'over-quota'
-        // The backend is full: writes are restricted, reads/deletes still work.
-        restrictedActions = ['POST', 'PUT']
-      } else if (
-        spaceTotalBytes >=
-        this.capacityBytes * QUOTA_NEAR_LIMIT_FRACTION
-      ) {
-        state = 'near-limit'
-      }
-    }
-
     const { id, name, managedBy } = this.describe()
-    return {
+    return backendUsageFields({
+      usageBytes,
+      spaceTotalBytes,
+      capacityBytes: this.capacityBytes,
+      maxUploadBytes: this.maxUploadBytes,
       id,
       name,
-      managedBy,
-      state,
-      usageBytes,
-      limit,
-      ...(this.maxUploadBytes !== undefined && {
-        constraints: { maxUploadBytes: this.maxUploadBytes }
-      }),
-      restrictedActions
-    }
+      managedBy
+    })
   }
 
   /**
@@ -795,7 +751,9 @@ export class FileSystemBackend implements StorageBackend {
   async deleteSpace({ spaceId }: { spaceId: string }): Promise<void> {
     // Freed bytes: drop the cached quota usage so the next write re-measures.
     this._usageCache.delete(spaceId)
-    return await rm(this._spaceDir(spaceId), { recursive: true })
+    // `force: true` keeps delete idempotent (the `StorageBackend` contract):
+    // removing an absent Space resolves rather than rejecting with `ENOENT`.
+    return await rm(this._spaceDir(spaceId), { recursive: true, force: true })
   }
 
   /**
@@ -907,51 +865,20 @@ export class FileSystemBackend implements StorageBackend {
         .sort((a, b) => a.name.localeCompare(b.name))
     }
 
-    const spaceContents: unknown[] = []
-    for (const entry of spaceEntries) {
-      if (!entry.isDirectory()) {
-        // top-level files in space (e.g. .space.<spaceId>.json)
-        spaceContents.push(entry.name)
-        continue
-      }
-
-      const collectionContents: unknown[] = []
-      for (const file of collectionEntriesByDir[entry.name] ?? []) {
-        if (file.name.startsWith('.collection.')) {
-          collectionContents.push({ [file.name]: { url: COLLECTION_URL } })
-        } else if (file.name.startsWith('.policy.')) {
-          collectionContents.push({ [file.name]: { url: POLICY_URL } })
-        } else if (file.name.startsWith('.meta.')) {
-          collectionContents.push({ [file.name]: { url: META_URL } })
-        } else if (file.name.startsWith('r.')) {
-          collectionContents.push({ [file.name]: { url: RESOURCE_URL } })
-        } else {
-          collectionContents.push(file.name)
-        }
-      }
-
-      spaceContents.push({
-        [entry.name]: {
-          contents: collectionContents
-        }
-      })
-    }
-
-    const manifest = {
-      'ubc-version': '0.1',
-      contents: {
-        'manifest.yml': { url: UBC_MANIFEST_URL },
-        space: {
-          url: SPACE_URL,
-          contents: {
-            [spaceId]: {
-              url: SPACE_URL,
-              contents: spaceContents
+    const manifest = buildExportManifest({
+      spaceId,
+      entries: spaceEntries.map(entry =>
+        entry.isDirectory()
+          ? {
+              name: entry.name,
+              files: (collectionEntriesByDir[entry.name] ?? []).map(
+                file => file.name
+              )
             }
-          }
-        }
-      }
-    }
+          : // top-level files in space (e.g. .space.<spaceId>.json)
+            { name: entry.name }
+      )
+    })
 
     const pack = tar.pack()
     pack.entry({ name: 'manifest.yml' }, YAML.stringify(manifest))
@@ -1676,32 +1603,16 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<void> {
     const exists =
       (await this._findFile({ collectionDir, resourceId })) !== undefined
-
-    // `If-None-Match: *` (create-if-absent) takes precedence over `If-Match`
-    // when both are present (RFC9110): the write proceeds only if absent.
-    if (ifNoneMatch) {
-      if (exists) {
-        throw new PreconditionFailedError({
-          detail: `Resource '${resourceId}' already exists (If-None-Match: *).`
-        })
-      }
-      return
-    }
-
-    // `If-Match` (update-if-unchanged): the Resource must exist and its current
-    // ETag must equal the supplied validator.
-    if (!exists) {
-      throw new PreconditionFailedError({
-        detail: `Resource '${resourceId}' does not exist; If-Match cannot be satisfied.`
-      })
-    }
-    const prior = await this._readMetaSidecar({ collectionDir, resourceId })
-    const currentEtag = formatEtag(prior?.version ?? 0)
-    if (currentEtag !== ifMatch) {
-      throw new PreconditionFailedError({
-        detail: `Resource '${resourceId}' ETag ${currentEtag} does not match If-Match ${ifMatch}.`
-      })
-    }
+    const prior = exists
+      ? await this._readMetaSidecar({ collectionDir, resourceId })
+      : undefined
+    assertWritePrecondition({
+      resourceId,
+      exists,
+      currentVersion: prior?.version ?? 0,
+      ifMatch,
+      ifNoneMatch
+    })
   }
 
   /**
@@ -1951,20 +1862,12 @@ export class FileSystemBackend implements StorageBackend {
       // atomically under the lock, before writing. `If-None-Match: *` means
       // "only if no metadata has been written yet"; `If-Match` pins the current
       // `metaVersion` ETag.
-      if (ifNoneMatch) {
-        if (prior?.metaVersion !== undefined) {
-          throw new PreconditionFailedError({
-            detail: `Resource '${resourceId}' metadata already exists (If-None-Match: *).`
-          })
-        }
-      } else if (ifMatch !== undefined) {
-        const currentEtag = formatEtag(prior?.metaVersion ?? 0)
-        if (currentEtag !== ifMatch) {
-          throw new PreconditionFailedError({
-            detail: `Resource '${resourceId}' metadata ETag ${currentEtag} does not match If-Match ${ifMatch}.`
-          })
-        }
-      }
+      assertMetaWritePrecondition({
+        resourceId,
+        metaVersion: prior?.metaVersion,
+        ifMatch,
+        ifNoneMatch
+      })
 
       const now = new Date().toISOString()
       // Fall back to the file's birth time for `createdAt` if the Resource

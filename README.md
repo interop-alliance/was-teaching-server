@@ -156,13 +156,63 @@ backend and security plugins. See
 
 ### Environment Variables
 
-| Variable                  | Default             | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SERVER_URL`              | (none)              | This server's base URL; used to build and match ZCap `invocationTarget` URLs (host and port must match the client's exactly).                                                                                                                                                                                                                                                                                                                                                       |
-| `PORT`                    | `3002`              | TCP port to listen on.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `STORAGE_LIMIT_PER_SPACE` | (unset = unlimited) | Per-Space storage quota in **bytes** (spec "Quotas"). When set, writes that would push a Space over this limit are rejected with `quota-exceeded` (507). Unset means each Space is unlimited.                                                                                                                                                                                                                                                                                       |
-| `MAX_UPLOAD_BYTES`        | (unset = no cap)    | Per-upload size cap in **bytes** (spec "Quotas", the backend's `maxUploadBytes` constraint). When set, a single upload exceeding it is rejected with `payload-too-large` (413). Unset means no per-upload cap (distinct from the cumulative `STORAGE_LIMIT_PER_SPACE`).                                                                                                                                                                                                             |
-| `KMS_RECORD_KEK`          | (unset = disabled)  | At-rest encryption key for WebKMS key records: a single AES-256 key-encryption key (KEK) in base58btc Multikey form (`secretKeyMultibase`, header `0xa2 0x01`). When set, the secret fields of newly generated `/kms` key records are envelope-encrypted under it before they reach storage; existing plaintext records stay readable. Unset means key records are stored **plaintext** (the teaching default). See [`_spec/encrypted-kms-plan.md`](./_spec/encrypted-kms-plan.md). |
+| Variable                  | Default              | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SERVER_URL`              | (none)               | This server's base URL; used to build and match ZCap `invocationTarget` URLs (host and port must match the client's exactly).                                                                                                                                                                                                                                                                                                                                                       |
+| `PORT`                    | `3002`               | TCP port to listen on.                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `DATABASE_URL`            | (unset = filesystem) | Selects the **PostgreSQL storage backend**: a `postgres://` connection string (e.g. `postgres://was:was@localhost:5433/was`). When set, all WAS + WebKMS data is stored in Postgres (schema migrations are applied automatically at startup); unset, the server uses the default filesystem backend rooted at `data/`. See [Storage Backends](#storage-backends).                                                                                                                   |
+| `STORAGE_LIMIT_PER_SPACE` | (unset = unlimited)  | Per-Space storage quota in **bytes** (spec "Quotas"). When set, writes that would push a Space over this limit are rejected with `quota-exceeded` (507). Unset means each Space is unlimited.                                                                                                                                                                                                                                                                                       |
+| `MAX_UPLOAD_BYTES`        | (unset = no cap)     | Per-upload size cap in **bytes** (spec "Quotas", the backend's `maxUploadBytes` constraint). When set, a single upload exceeding it is rejected with `payload-too-large` (413). Unset means no per-upload cap (distinct from the cumulative `STORAGE_LIMIT_PER_SPACE`).                                                                                                                                                                                                             |
+| `KMS_RECORD_KEK`          | (unset = disabled)   | At-rest encryption key for WebKMS key records: a single AES-256 key-encryption key (KEK) in base58btc Multikey form (`secretKeyMultibase`, header `0xa2 0x01`). When set, the secret fields of newly generated `/kms` key records are envelope-encrypted under it before they reach storage; existing plaintext records stay readable. Unset means key records are stored **plaintext** (the teaching default). See [`_spec/encrypted-kms-plan.md`](./_spec/encrypted-kms-plan.md). |
+
+### Storage Backends
+
+Two interchangeable first-party backends implement the same `StorageBackend`
+contract (`src/types.ts`):
+
+- **Filesystem** (default): stores everything under `data/`. Zero setup.
+- **PostgreSQL**: selected by setting `DATABASE_URL`. Quota accounting is
+  transactional (a _hard_ per-Space limit, unlike the filesystem's documented
+  soft limit), conditional writes use row locks instead of an in-process mutex
+  (so multiple server processes can share one database), and blob uploads are
+  buffered `bytea` writes bounded by `MAX_UPLOAD_BYTES` (default cap 64 MiB when
+  unset). Design details: [`_spec/postgres-plan.md`](./_spec/postgres-plan.md).
+
+To run a disposable local Postgres with Podman (substitute `docker` if you
+prefer; the commands are identical):
+
+```bash
+# One-time: pull and start Postgres 17 with a named volume for data.
+# Host port 5433 avoids colliding with any system Postgres on 5432.
+podman run -d --name was-postgres \
+  -e POSTGRES_USER=was \
+  -e POSTGRES_PASSWORD=was \
+  -e POSTGRES_DB=was \
+  -p 5433:5432 \
+  -v was-pgdata:/var/lib/postgresql/data \
+  docker.io/library/postgres:17
+
+# Verify it is accepting connections:
+podman exec was-postgres pg_isready -U was
+
+# Day-to-day lifecycle:
+podman stop was-postgres
+podman start was-postgres
+
+# Full teardown (drops all stored data):
+podman rm -f was-postgres && podman volume rm was-pgdata
+```
+
+Then start the server against it:
+
+```bash
+DATABASE_URL=postgres://was:was@localhost:5433/was pnpm dev
+```
+
+Schema migrations are embedded (`src/backends/postgresSchema.ts`) and applied
+idempotently at startup. To migrate existing data between backends, export each
+Space from one server and import it into the other — both backends speak the
+same tar archive dialect (`POST /space/:id/export` / `.../import`).
 
 ### Running Tests
 
@@ -177,6 +227,18 @@ Just the Vitest integration suite under `test/`:
 ```
 pnpm test-node
 ```
+
+The Postgres backend tests are **opt-in**: they are skipped unless
+`WAS_TEST_DATABASE_URL` points at a running (disposable) Postgres. With the
+Podman container above running:
+
+```
+pnpm test:pg
+```
+
+Each suite isolates itself in a throwaway `was_test_<hex>` schema, dropped on
+teardown, so parallel test workers never collide and the container stays
+reusable.
 
 ### Conformance Tests
 

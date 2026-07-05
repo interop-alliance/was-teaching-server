@@ -395,6 +395,21 @@ export interface StorageBackend {
   logger?: FastifyBaseLogger
 
   /**
+   * OPTIONAL startup hook for backends with a connection lifecycle (e.g. the
+   * Postgres backend connects and applies its schema migrations here).
+   * Awaited once by the plugin composition during registration, before the
+   * server starts listening. Backends without startup work omit it.
+   */
+  init?(): Promise<void>
+
+  /**
+   * OPTIONAL shutdown hook (e.g. draining a connection pool). Wired to the
+   * Fastify `onClose` hook by the plugin composition. Backends without
+   * teardown work omit it.
+   */
+  close?(): Promise<void>
+
+  /**
    * The per-upload size cap in bytes (spec "Quotas", `maxUploadBytes`), or
    * `undefined` for no cap. Enforced by `writeResource`; also read by the
    * request layer to bound the in-memory buffer of a multipart file part (so an

@@ -143,9 +143,14 @@ describe('WasClient — Spaces & Collections', () => {
 
     it('reads the backend a collection is stored on', async () => {
       const collection = await space.createCollection({ id: 'backend-probe' })
-      assert.deepStrictEqual(await collection.backend(), {
+      const backend = await collection.backend()
+      assert.ok(backend)
+      // The display name is server-specific (e.g. 'Server Filesystem' or
+      // 'Server PostgreSQL'); the suite runs against any conforming server.
+      const { name, ...rest } = backend
+      assert.ok(typeof name === 'string' && name.length > 0)
+      assert.deepStrictEqual(rest, {
         id: 'default',
-        name: 'Server Filesystem',
         managedBy: 'server',
         storageMode: ['document', 'blob'],
         persistence: 'durable',
@@ -191,16 +196,20 @@ describe('WasClient — Spaces & Collections', () => {
     })
 
     it('lists the storage backends available in the space', async () => {
-      assert.deepStrictEqual(await space.backends(), [
-        {
-          id: 'default',
-          name: 'Server Filesystem',
-          managedBy: 'server',
-          storageMode: ['document', 'blob'],
-          persistence: 'durable',
-          features: ['conditional-writes', 'changes-query']
-        }
-      ])
+      const backends = await space.backends()
+      assert.ok(backends)
+      assert.equal(backends.length, 1)
+      // The display name is server-specific (e.g. 'Server Filesystem' or
+      // 'Server PostgreSQL'); the suite runs against any conforming server.
+      const { name, ...rest } = backends[0]!
+      assert.ok(typeof name === 'string' && name.length > 0)
+      assert.deepStrictEqual(rest, {
+        id: 'default',
+        managedBy: 'server',
+        storageMode: ['document', 'blob'],
+        persistence: 'durable',
+        features: ['conditional-writes', 'changes-query']
+      })
     })
 
     it('returns null listing backends of a missing space (404 conflation)', async () => {
@@ -215,7 +224,8 @@ describe('WasClient — Spaces & Collections', () => {
       const entry = report.backends[0]
       assert.ok(entry)
       assert.equal(entry.id, 'default')
-      assert.equal(entry.name, 'Server Filesystem')
+      // Server-specific display name; just require one.
+      assert.ok(typeof entry.name === 'string' && entry.name.length > 0)
       assert.equal(entry.managedBy, 'server')
       assert.equal(entry.state, 'ok')
       assert.ok(entry.usageBytes > 0, 'expected non-zero usage')

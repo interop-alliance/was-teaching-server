@@ -4,6 +4,7 @@
  */
 import type { FastifyInstance } from 'fastify'
 import { createApp } from './server.js'
+import { PostgresBackend } from './backends/postgres.js'
 import {
   parseStorageLimit,
   parseMaxUploadBytes,
@@ -19,12 +20,26 @@ import {
 export async function startServer(): Promise<void> {
   let fastify: FastifyInstance
   try {
+    const capacityBytes = parseStorageLimit(process.env.STORAGE_LIMIT_PER_SPACE)
+    const maxUploadBytes = parseMaxUploadBytes(process.env.MAX_UPLOAD_BYTES)
+    // Backend selection: presence of DATABASE_URL selects the Postgres
+    // backend; otherwise createApp falls back to the default filesystem
+    // backend (rooted at data/). An injected backend carries its own quota
+    // configuration, so the per-Space/per-upload limits are passed to it
+    // directly rather than through the createApp options.
+    const databaseUrl = process.env.DATABASE_URL
+    const backend = databaseUrl
+      ? new PostgresBackend({
+          connectionString: databaseUrl,
+          capacityBytes,
+          maxUploadBytes
+        })
+      : undefined
     fastify = createApp({
       serverUrl: process.env.SERVER_URL,
-      storageLimitPerSpace: parseStorageLimit(
-        process.env.STORAGE_LIMIT_PER_SPACE
-      ),
-      maxUploadBytes: parseMaxUploadBytes(process.env.MAX_UPLOAD_BYTES),
+      ...(backend && { backend }),
+      storageLimitPerSpace: capacityBytes,
+      maxUploadBytes,
       enabledBackendProviders: parseEnabledBackends(
         process.env.WAS_ENABLED_BACKENDS
       ),

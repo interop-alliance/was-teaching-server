@@ -4,6 +4,37 @@
 
 ### Added
 
+- **PostgreSQL storage backend (`DATABASE_URL`).** A second first-party
+  `StorageBackend` (`src/backends/postgres.ts`, schema in
+  `src/backends/postgresSchema.ts`), implementing the full WAS + WebKMS surface
+  over rows and selected by setting `DATABASE_URL` (unset keeps the default
+  filesystem backend). Four deliberate design departures, per
+  `_spec/postgres-plan.md`: **transactional quota accounting**
+  (`spaces.usage_bytes`, maintained in the same transaction as every content
+  write/delete -- the per-Space capacity is now a _hard_ limit under
+  concurrency, closing the filesystem backend's documented soft-limit caveat);
+  **row-lock concurrency** (`SELECT ... FOR UPDATE` transactions replace the
+  single-process `KeyedMutex`, so conditional writes stay correct across
+  multiple server processes sharing one database); **buffered `bytea` blobs**
+  (bounded by `maxUploadBytes`, which defaults to a 64 MiB cap on this backend
+  rather than "unbounded"; chunked-row streaming is a planned follow-up); and
+  **cross-backend export/import** (the same tar archive dialect as the
+  filesystem backend, so a Space exported from one imports into the other -- the
+  migration path in both directions -- with the Postgres apply loop additionally
+  atomic in one transaction). Embedded idempotent migrations run at startup
+  under an advisory lock; `ORDER BY` / keyset columns are `COLLATE "C"` so
+  pagination and change-feed ordering match the filesystem's code-unit order
+  exactly. New optional `StorageBackend.init()` / `close()` lifecycle hooks
+  (wired by the plugin), `PostgresBackend` exported from the package root, and a
+  new shared backend-contract test suite (`test/storage-backend-contract.ts`)
+  run against both backends -- opt-in for Postgres via `WAS_TEST_DATABASE_URL`
+  (`pnpm test:pg`), with per-suite throwaway schemas for isolation. Shared logic
+  extracted so the two backends cannot drift: precondition evaluation
+  (`src/lib/preconditions.ts`), quota report derivation
+  (`src/lib/backendUsage.ts`), export manifest building
+  (`src/lib/exportManifest.ts`), and page-size clamping
+  (`src/lib/pagination.ts`).
+
 - **At-rest encryption of WebKMS key records (`KMS_RECORD_KEK`).** The optional,
   schema-compatible hardening increment from `_spec/encrypted-kms-plan.md`: when
   a record KEK is configured, the secret-bearing fields of a stored `/kms` key
@@ -65,6 +96,9 @@
 
 ### Fixed
 
+- **`FileSystemBackend.deleteSpace()` is idempotent.** Deleting an absent Space
+  resolves instead of rejecting with `ENOENT`, matching the documented
+  `StorageBackend` delete contract (pinned by the new backend-contract suite).
 - **Slash/no-slash redirects now send a followable `Location`.** The
   canonicalization redirects emitted the literal route template (e.g.
   `Location: /space/:spaceId`) with a `302`; they now build the concrete request
@@ -102,6 +136,10 @@
 
 ### Changed
 
+- **The `conformance/` suite no longer pins the default backend's display name**
+  (`Server Filesystem`); it asserts a non-empty `name` instead, so the suite
+  passes against any conforming WAS server -- including a Postgres-backed one
+  (`DATABASE_URL=... pnpm conformance:local`).
 - **The WAS protocol surface is now a registerable Fastify plugin, `fastifyWas`
   (`src/plugin.ts`).** The plugin owns the `serverUrl` / `storage` /
   backend-provider decorations, CORS, multipart, the content-type parsers, and
