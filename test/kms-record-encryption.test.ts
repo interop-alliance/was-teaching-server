@@ -291,7 +291,8 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
         ).data as any
         const listed = results.find((entry: any) => entry.id === expected.id)
         assert.ok(listed, `listing is missing ${key.kmsId}`)
-        assert.deepEqual(listed, expected)
+        // The Get Key projection plus the list-only `keyUrl` stamp.
+        assert.deepEqual(listed, { ...expected, keyUrl: key.kmsId })
         assert.ok(!('encrypted' in listed))
         assert.ok(!('privateKeyMultibase' in listed))
         assert.ok(!('secret' in listed))

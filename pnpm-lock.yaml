@@ -106,11 +106,11 @@ importers:
         specifier: ^6.2.3
         version: 6.2.3
       '@interop/was-client':
-        specifier: ^0.13.0
-        version: 0.13.0(@interop/jsonld-signatures@11.8.2)
+        specifier: ^0.13.1
+        version: 0.13.1(@interop/jsonld-signatures@11.8.2)
       '@interop/webkms-client':
-        specifier: ^14.6.0
-        version: 14.6.0
+        specifier: ^14.7.1
+        version: 14.7.1
       '@types/mime-types':
         specifier: 3.0.1
         version: 3.0.1
@@ -594,8 +594,8 @@ packages:
       react-native-get-random-values:
         optional: true
 
-  '@interop/edv-client@17.4.0':
-    resolution: {integrity: sha512-GVuY1gNGsl7ysrzo4iaihjoOpJCd2eB3qtC0HIgPItHUwDdREBnYCdfA7Z7couitfAaDyTHGMOcg5tv873r9/g==}
+  '@interop/edv-client@17.5.0':
+    resolution: {integrity: sha512-je6+KMxBduahv4tFY/vDa3idwvgOlOx9OaMljh7VQlrN+nDnEsuK+MlfXPT58WJjyMcUhD3phowgykeIFygo0A==}
     engines: {node: '>=24.0'}
     peerDependencies:
       react-native-get-random-values: ^2.0.0
@@ -644,8 +644,8 @@ packages:
     resolution: {integrity: sha512-6c8dnoQNIiL25Q4YovC1a44mREO1lzW3F/lmvdwbAMMbhtGGRoQeqo1H4diwNhBzaxRrUMXrAIwbM26POmI/Yg==}
     engines: {node: '>=24.0'}
 
-  '@interop/minimal-cipher@7.4.1':
-    resolution: {integrity: sha512-cYFwelF+HCH1dS48l3w0YEhU+Z/5kJEj52sNoT1ObiMX6hSEJUM0q/b7rDDJ0R7uxqWeaHzx6sKN8PLDNGWVLQ==}
+  '@interop/minimal-cipher@7.5.0':
+    resolution: {integrity: sha512-fvX0udPj3SsnE/qDe00eqmIUWvZQ4nxr+0KZW/HYBvHMM7t/AjjC+ew5NC/f2zy4f+4HDSpAfnKild7z027dBA==}
     engines: {node: '>=24.0'}
 
   '@interop/security-document-loader@9.4.1':
@@ -656,12 +656,12 @@ packages:
     resolution: {integrity: sha512-CFVIjqOQQP+LZ8+RS1zQpPhJH5D9zS9NHz5+UBXH7VEmdeXK3mvjYQScnqiwBv/r5ODZ7XqSfR84ihZVPND4Dw==}
     engines: {node: '>=22.0'}
 
-  '@interop/was-client@0.13.0':
-    resolution: {integrity: sha512-pDhebWBDWlLkWFnU/kVHzK7YFFoj3LvEtQJOKb63NH6hR7Bv0GSJKALVCwh8gcsC2Y6tyspQxVUbym0PWp2y5g==}
+  '@interop/was-client@0.13.1':
+    resolution: {integrity: sha512-h4/XYwYPgxunIot1SGYJHzdtWFykZI/SZzUmHY6ja5LiDwiR2Pnkb+GZbS+mCyhSDJsxMNI57hyWuH01um5iSQ==}
     engines: {node: '>=24.0'}
 
-  '@interop/webkms-client@14.6.0':
-    resolution: {integrity: sha512-Saj3Yprvpj9LyijN+Ilx/YAc+nIHtbQWcIILxWtbxGbtp0x4XBuoqAy60lu9GbtyA9WVIxgKqjqScMAfM1UM/w==}
+  '@interop/webkms-client@14.7.1':
+    resolution: {integrity: sha512-sEqCJcaj5wiJBNWnc3sx2QxdSfx6I1jO4eZokQvYWesj+QOcsqomq/1wQEqhL67dbaZf1Yu4ROoXEAwkLUXSYA==}
     engines: {node: '>=24.0'}
 
   '@interop/x25519-key-agreement-key@5.1.1':
@@ -712,6 +712,10 @@ packages:
     peerDependencies:
       '@emnapi/core': ^1.7.1
       '@emnapi/runtime': ^1.7.1
+
+  '@noble/ciphers@2.2.0':
+    resolution: {integrity: sha512-Z6pjIZ/8IJcCGzb2S/0Px5J81yij85xASuk1teLNeg75bfT07MV3a/O2Mtn1I2se43k3lkVEcFaR10N4cgQcZA==}
+    engines: {node: '>= 20.19.0'}
 
   '@noble/curves@2.2.0':
     resolution: {integrity: sha512-T/BoHgFXirb0ENSPBquzX0rcjXeM6Lo892a2jlYJkqk83LqZx0l1Of7DzlKJ6jkpvMrkHSnAcgb5JegL8SeIkQ==}
@@ -1202,8 +1206,8 @@ packages:
   base64-js@1.5.1:
     resolution: {integrity: sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==}
 
-  baseline-browser-mapping@2.10.41:
-    resolution: {integrity: sha512-WwS7MHhqGHHlaVsqRZnhvCEMS0owDX+SxRlve7JkuH7My1Ara3ZriTmCQupPfYjxMZ8I/tgxtJYr2t7taHaH4A==}
+  baseline-browser-mapping@2.10.42:
+    resolution: {integrity: sha512-c/jurFrDLyui7o1J86yLkRu4LMsTYcBohveus7/I2Hzdn9KIP2bdJPTue/lR1KH46enoPbD77GKeSYNdyPoD3Q==}
     engines: {node: '>=6.0.0'}
     hasBin: true
 
@@ -1366,8 +1370,8 @@ packages:
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
 
-  electron-to-chromium@1.5.385:
-    resolution: {integrity: sha512-78sa/M08MNAYHQfjoWMvOlKQqZ0ElhSm/L5HNUc96VZ3b+KvDVnngFm8sYQy0XrhTRgAhggHr5abA7yTvRdo4Q==}
+  electron-to-chromium@1.5.387:
+    resolution: {integrity: sha512-TaxwufTFDufvPEoXdhwVrA3UdFWBeWGkYoJ1K8ldF1xe6gKfth6iRNS5lTQ5JPNOHdGQm8PT1QYKUqFLCiUefQ==}
 
   emoji-regex@8.0.0:
     resolution: {integrity: sha512-MSjYzcWNOA0ewAHpz0MxpYFvwg6yjy1NG3xteoqz644VCo/RPgnr1/GGt+ic3iJTzQ8Eu3TdM14SawnVUmGE6A==}
@@ -3171,13 +3175,13 @@ snapshots:
       '@noble/hashes': 2.2.0
       '@scure/base': 2.2.0
 
-  '@interop/edv-client@17.4.0':
+  '@interop/edv-client@17.5.0':
     dependencies:
       '@interop/data-integrity-core': 8.1.0
       '@interop/http-client': 1.0.4
       '@interop/http-signature-zcap-invoke': 6.2.3
       '@interop/lru-memoize': 4.0.3
-      '@interop/minimal-cipher': 7.4.1
+      '@interop/minimal-cipher': 7.5.0
       '@noble/hashes': 2.2.0
       '@scure/base': 2.2.0
       canonicalize: 3.0.0
@@ -3243,10 +3247,11 @@ snapshots:
     dependencies:
       lru-cache: 11.5.1
 
-  '@interop/minimal-cipher@7.4.1':
+  '@interop/minimal-cipher@7.5.0':
     dependencies:
       '@interop/data-integrity-core': 8.1.0
       '@interop/ecdsa-multikey': 2.3.2
+      '@noble/ciphers': 2.2.0
       '@noble/curves': 2.2.0
       '@scure/base': 2.2.0
       '@stablelib/chacha': 2.0.1
@@ -3283,11 +3288,11 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.1.0
 
-  '@interop/was-client@0.13.0(@interop/jsonld-signatures@11.8.2)':
+  '@interop/was-client@0.13.1(@interop/jsonld-signatures@11.8.2)':
     dependencies:
       '@interop/data-integrity-core': 8.1.0
       '@interop/ed25519-signature': 7.1.3(@interop/jsonld-signatures@11.8.2)
-      '@interop/edv-client': 17.4.0
+      '@interop/edv-client': 17.5.0
       '@interop/ezcap': 7.3.2
       '@interop/http-client': 1.0.4
       '@interop/storage-core': 0.3.1
@@ -3296,7 +3301,7 @@ snapshots:
       - expo-crypto
       - react-native-get-random-values
 
-  '@interop/webkms-client@14.6.0':
+  '@interop/webkms-client@14.7.1':
     dependencies:
       '@interop/data-integrity-core': 8.1.0
       '@interop/ed25519-verification-key': 8.0.2
@@ -3367,6 +3372,8 @@ snapshots:
       '@emnapi/runtime': 1.11.1
       '@tybys/wasm-util': 0.10.3
     optional: true
+
+  '@noble/ciphers@2.2.0': {}
 
   '@noble/curves@2.2.0':
     dependencies:
@@ -3847,7 +3854,7 @@ snapshots:
 
   base64-js@1.5.1: {}
 
-  baseline-browser-mapping@2.10.41: {}
+  baseline-browser-mapping@2.10.42: {}
 
   brace-expansion@5.0.7:
     dependencies:
@@ -3859,9 +3866,9 @@ snapshots:
 
   browserslist@4.28.4:
     dependencies:
-      baseline-browser-mapping: 2.10.41
+      baseline-browser-mapping: 2.10.42
       caniuse-lite: 1.0.30001800
-      electron-to-chromium: 1.5.385
+      electron-to-chromium: 1.5.387
       node-releases: 2.0.50
       update-browserslist-db: 1.2.3(browserslist@4.28.4)
 
@@ -3985,7 +3992,7 @@ snapshots:
 
   ee-first@1.1.1: {}
 
-  electron-to-chromium@1.5.385: {}
+  electron-to-chromium@1.5.387: {}
 
   emoji-regex@8.0.0: {}
 

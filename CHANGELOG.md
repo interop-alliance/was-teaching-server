@@ -6,8 +6,11 @@
 
 - **WebKMS List Keys (`GET /kms/keystores/:keystoreId/keys`).** A fork extension
   beyond upstream webkms-switch (which has no key list): enumerates a keystore's
-  public key descriptions — exactly the Get Key Description projection per key
-  (`describeKmsKey`, never a secret field), sorted by local id and paginated
+  public key descriptions — the Get Key Description projection per key
+  (`describeKmsKey`, never a secret field) plus `keyUrl`, the key's canonical
+  invocation URL (`<keystoreId>/keys/<localId>`), which the `publicAlias` /
+  `publicAliasTemplate` override otherwise erases from `id` — exactly the
+  handle a recovery client needs to rediscover — sorted by local id and paginated
   with the standard opaque cursor (`KEY_LIST_LIMIT` per page; an empty keystore
   returns `{ results: [] }`, not 404). Capability-verified as `read` against the
   keystore controller with `<keystoreId>/keys` accepted as an attenuated target,

@@ -527,9 +527,11 @@ export class KeyRequest {
   /**
    * GET /kms/keystores/:keystoreId/keys
    * List Keys (a fork extension beyond upstream webkms-switch). Enumerates the
-   * keystore's public key descriptions -- exactly the Get Key Description
-   * projection per key (`describeKmsKey`: allowlisted public fields, the
-   * keystore's live controller, alias re-applied; never a secret field) --
+   * keystore's public key descriptions -- the Get Key Description projection
+   * per key (`describeKmsKey`: allowlisted public fields, the keystore's live
+   * controller, alias re-applied; never a secret field), plus `keyUrl`, the
+   * key's canonical invocation URL (which the alias override erases from `id`
+   * for precisely the keys a recovery client must rediscover) --
    * sorted by local id and paginated (`KEY_LIST_LIMIT` per page, an opaque
    * `cursor` following the standard convention). Capability-verified against the
    * keystore's controller (`read`), with the `<keystoreId>/keys` URL accepted as
@@ -592,9 +594,17 @@ export class KeyRequest {
     // or whose envelope is corrupt -- the recovery-path robustness this endpoint
     // exists for. (Contrast `fetchKeyRecord`, which must decrypt: get/operation
     // need the secret.)
-    const results = page.map(({ record }) =>
-      describeKmsKey({ key: record.key, controller: config.controller })
-    )
+    // Each entry additionally carries `keyUrl`, the key's canonical invocation
+    // URL. The alias override rewrites the description's `id`, erasing the one
+    // handle (`<keystoreId>/keys/<localId>`) a recovery client needs to invoke
+    // sign -- and a lister, unlike a Get Key caller, does not already hold it.
+    // Always stamped (aliased or not), so consumers need no fallback logic; it
+    // discloses only addressing an authorized lister already has, never key
+    // material.
+    const results = page.map(({ localId, record }) => ({
+      ...describeKmsKey({ key: record.key, controller: config.controller }),
+      keyUrl: `${config.id}/keys/${localId}`
+    }))
 
     let next: string | undefined
     if (hasMore) {

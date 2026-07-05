@@ -4,10 +4,13 @@
  * dispatch / public key description).
  * Driven through `@interop/webkms-client`'s `KeystoreAgent` and all four key
  * classes wherever the client covers the operation (the client IS the
- * conformance suite for the webkms wire contract), with raw `@interop/ezcap`
- * invocations for what it does not: wire-level delegated-invocation
- * assertions and key description GETs (the client's keyId-only description
- * fetch is broken in the fork). Delegated invocations are additionally
+ * conformance suite for the webkms wire contract) -- including the List Keys
+ * fork extension via `KmsClient.listKeys` as of `@interop/webkms-client@14.7.0`
+ * -- with raw `@interop/ezcap` invocations for what it does not: wire-level
+ * delegated-invocation assertions, key description GETs (the client's keyId-only
+ * description fetch is broken in the fork), and the List Keys pagination-boundary
+ * check (the client auto-follows the cursor, hiding the page envelope).
+ * Delegated invocations are additionally
  * driven through the client's `fromCapability` path, which works against
  * this http://localhost server as of `@interop/webkms-client@14.5.0` (the
  * loopback exception to its `https:`-only delegated-target check).
@@ -112,11 +115,38 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
   }
 
   /**
-   * Lists a keystore's keys via a raw zcap GET (action `read`). Defaults to
-   * the controller's root capability for the keystore being listed; a delegated
-   * capability / different signer can be supplied for the authorization tests.
+   * Lists a keystore's keys through `@interop/webkms-client`'s `KmsClient.
+   * listKeys` (the client half of the List Keys fork extension, as of
+   * `@interop/webkms-client@14.7.0`): it signs a `read` invocation, auto-follows
+   * the server's `next` cursor to exhaustion, and returns a flat
+   * `KeyDescription[]` (no envelope, never a secret field). Defaults to the
+   * keystore controller's root zcap (synthesized by the client from
+   * `keystoreId`); a delegated capability / different signer can be supplied for
+   * the authorization tests.
    */
   async function listKeys(
+    keystoreUrl: string,
+    {
+      signer = alice.signer,
+      capability
+    }: { signer?: any; capability?: any } = {}
+  ) {
+    return new KmsClient({ keystoreId: keystoreUrl }).listKeys({
+      invocationSigner: signer,
+      capability
+    })
+  }
+
+  /**
+   * Lists a keystore's keys via a raw zcap GET (action `read`), returning the
+   * server's `{ results, next }` envelope verbatim. Retained only for the
+   * wire-level pagination test, which inspects the page-size boundary and the
+   * origin-relative `next` cursor -- the exact mechanics `KmsClient.listKeys`
+   * abstracts away. Defaults to the controller's root capability for the
+   * keystore being listed; a delegated capability / different signer can be
+   * supplied.
+   */
+  async function listKeysRaw(
     keysUrl: string,
     {
       signer = alice.signer,
@@ -837,15 +867,14 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
   })
 
   describe('list keys (fork extension)', () => {
-    it('an empty keystore lists { results: [] }, not a 404', async () => {
+    it('an empty keystore lists [], not a 404', async () => {
       const keystore = await createKeystore()
-      const data = await listKeys(`${keystore.url}/keys`)
-      assert.deepEqual(data, { results: [] })
+      const keys = await listKeys(keystore.url)
+      assert.deepEqual(keys, [])
     })
 
     it('lists descriptions sorted by local id, each matching Get Key, no secrets', async () => {
       const keystore = await createKeystore()
-      const keysUrl = `${keystore.url}/keys`
       const localIdOf = (keyId: string) => keyId.split('/keys/')[1]!
       // A few plain keys plus a templated (aliased) key -- whose re-expanded id
       // is not a key URL, so it exercises mapping a listed entry back by its
@@ -872,15 +901,29 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
         })
       }
 
-      const { results, next } = await listKeys(keysUrl)
-      assert.equal(next, undefined)
+      // The client auto-follows the cursor to exhaustion and returns the flat
+      // description array (no `next` to inspect -- its absence is implied).
+      const results = await listKeys(keystore.url)
       assert.equal(results.length, generated.length)
 
       const listedLocalIds = results.map((entry: any) => {
         const match = expectedByWireId.get(entry.id)
         assert.ok(match, `unexpected listed description id ${entry.id}`)
-        // Byte-identical to the Get Key description (alias re-expansion included).
-        assert.deepEqual(entry, match.description)
+        // The Get Key description (alias re-expansion included) plus `keyUrl`,
+        // the canonical invocation URL -- a list-only addition. Get Key's own
+        // projection stays keyUrl-free (its caller fetched by that URL).
+        assert.ok(!('keyUrl' in match.description))
+        assert.deepEqual(entry, {
+          ...match.description,
+          keyUrl: `${keystore.url}/keys/${match.localId}`
+        })
+        // An aliased entry's `keyUrl` recovers the signable handle its
+        // rewritten `id` erased; an unaliased entry's duplicates its `id`.
+        if (entry.id.startsWith('did:key:')) {
+          assert.notEqual(entry.keyUrl, entry.id)
+        } else {
+          assert.equal(entry.keyUrl, entry.id)
+        }
         // Never a secret field.
         assert.ok(!('privateKeyMultibase' in entry))
         assert.ok(!('secret' in entry))
@@ -911,16 +954,23 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
       }
       expectedLocalIds.sort((a, b) => a.localeCompare(b))
 
-      const localIdOf = (entry: any) => entry.id.split('/keys/')[1]
+      // Recover local ids from `keyUrl` -- doubling as the assertion that
+      // every entry, on every page, carries the canonical invocation URL.
+      const localIdOf = (entry: any) => {
+        assert.ok(entry.keyUrl.startsWith(`${keystore.url}/keys/`))
+        return entry.keyUrl.split('/keys/')[1]
+      }
 
+      // Wire level: drive the raw envelope to assert the server's page-size
+      // boundary and origin-relative `next` cursor (mechanics the client hides).
       // First page: exactly the cap, plus a follow-on cursor.
-      const first = await listKeys(keysUrl)
+      const first = await listKeysRaw(keysUrl)
       assert.equal(first.results.length, KEY_LIST_LIMIT)
       assert.ok(first.next, 'a further page must carry a next cursor')
 
       // Follow the (relative) next URL to exhaustion.
       const nextUrl = new URL(first.next, serverUrl).toString()
-      const second = await listKeys(nextUrl, {
+      const second = await listKeysRaw(nextUrl, {
         capability: rootZcap(keystore.url)
       })
       assert.equal(second.results.length, total - KEY_LIST_LIMIT)
@@ -928,25 +978,23 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
 
       const seen = [...first.results, ...second.results].map(localIdOf)
       assert.deepEqual(seen, expectedLocalIds)
+
+      // Client level: `KmsClient.listKeys` follows the same cursor to exhaustion
+      // in one call, flattening every page into a single description array.
+      const allViaClient = await listKeys(keystore.url)
+      assert.deepEqual(allViaClient.map(localIdOf), expectedLocalIds)
     })
 
     it('an unknown keystore is masked (404)', async () => {
       const unknownKeystore = `${keystoresUrl}/z1111unknownlist`
-      const err = await requestError(
-        listKeys(`${unknownKeystore}/keys`, {
-          capability: rootZcap(unknownKeystore)
-        })
-      )
+      const err = await requestError(listKeys(unknownKeystore))
       assert.equal(err.status, 404)
     })
 
     it("a non-controller's list is masked (404)", async () => {
       const keystore = await createKeystore()
       const err = await requestError(
-        listKeys(`${keystore.url}/keys`, {
-          signer: bob.signer,
-          capability: rootZcap(keystore.url)
-        })
+        listKeys(keystore.url, { signer: bob.signer })
       )
       assert.equal(err.status, 404)
     })
@@ -957,13 +1005,15 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
       await generateKeyIn(keystore.url)
       // Alice delegates `read` scoped to the keys collection URL; the chain
       // roots in the keystore's root capability, attenuated to `<keystore>/keys`.
+      // `KmsClient.listKeys` resolves its target from this capability's
+      // `invocationTarget`, so the delegated app can list without owning the root.
       const zcap = await client({ signer: alice.signer }).delegate({
         capability: rootZcap(keystore.url),
         invocationTarget: keysUrl,
         controller: aliceDelegatedApp.did,
         allowedActions: ['read']
       })
-      const { results } = await listKeys(keysUrl, {
+      const results = await listKeys(keystore.url, {
         signer: aliceDelegatedApp.signer,
         capability: zcap
       })

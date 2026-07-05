@@ -1,4 +1,7 @@
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
-  - '@interop/was-client@0.13.0'
+  - '@interop/was-client@0.13.1'
+  - '@interop/edv-client@17.5.0'
+  - '@interop/minimal-cipher@7.5.0'
+  - '@interop/webkms-client@14.7.1'
