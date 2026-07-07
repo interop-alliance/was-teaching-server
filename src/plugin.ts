@@ -51,15 +51,42 @@ export interface FastifyWasOptions {
   /**
    * Per-Space storage limit in bytes (spec "Quotas"); applied only to the
    * default backend (an injected `backend` carries its own `capacityBytes`).
-   * `undefined` means unlimited.
+   * `undefined` means unlimited; `Infinity` (an explicit `unlimited`) is
+   * normalized by the backend to the same no-limit behavior.
    */
   storageLimitPerSpace?: number
   /**
    * Per-upload size cap in bytes (spec "Quotas", `maxUploadBytes`); applied
    * only to the default backend (an injected `backend` carries its own).
-   * `undefined` means no per-upload cap.
+   * `undefined` applies the backend's default-on cap
+   * ({@link DEFAULT_MAX_UPLOAD_BYTES}); `Infinity` (an explicit `unlimited`)
+   * disables the cap.
    */
   maxUploadBytes?: number
+  /**
+   * Max Spaces a single controller may create (spec "Quotas", a default-on
+   * count quota); applied only to the default backend (an injected `backend`
+   * carries its own). `undefined` applies the backend's default
+   * ({@link DEFAULT_MAX_SPACES_PER_CONTROLLER}); `Infinity` (an explicit
+   * `unlimited`) disables the cap.
+   */
+  maxSpacesPerController?: number
+  /**
+   * Max Collections a single Space may hold (spec "Quotas", a default-on count
+   * quota); applied only to the default backend (an injected `backend` carries
+   * its own). `undefined` applies the backend's default
+   * ({@link DEFAULT_MAX_COLLECTIONS_PER_SPACE}); `Infinity` (an explicit
+   * `unlimited`) disables the cap.
+   */
+  maxCollectionsPerSpace?: number
+  /**
+   * Max live Resources a single Space may hold across all its Collections (spec
+   * "Quotas", a default-on count quota); applied only to the default backend
+   * (an injected `backend` carries its own). `undefined` applies the backend's
+   * default ({@link DEFAULT_MAX_RESOURCES_PER_SPACE}); `Infinity` (an explicit
+   * `unlimited`) disables the cap.
+   */
+  maxResourcesPerSpace?: number
   /**
    * The provider-adapter registry the resolver uses to build a Collection's
    * selected external backend; defaults to an empty map (no external backend
@@ -111,6 +138,9 @@ async function wasPlugin(
     backend,
     storageLimitPerSpace,
     maxUploadBytes,
+    maxSpacesPerController,
+    maxCollectionsPerSpace,
+    maxResourcesPerSpace,
     providers,
     enabledBackendProviders,
     kmsRecordKek,
@@ -137,7 +167,13 @@ async function wasPlugin(
   // defaults to a silent logger until wired here).
   const storage =
     backend ??
-    defaultBackend({ capacityBytes: storageLimitPerSpace, maxUploadBytes })
+    defaultBackend({
+      capacityBytes: storageLimitPerSpace,
+      maxUploadBytes,
+      maxSpacesPerController,
+      maxCollectionsPerSpace,
+      maxResourcesPerSpace
+    })
   storage.logger = fastify.log
   fastify.decorate('storage', storage)
 
@@ -192,7 +228,11 @@ async function wasPlugin(
   // backend's per-upload cap (`throwFileSizeLimit` makes `toBuffer()` throw at
   // the boundary, which the request layer maps to `payload-too-large` (413)) --
   // so an oversize multipart upload is rejected before it is fully buffered.
-  // Large binaries should use the streaming raw-body path, not multipart.
+  // The cap is default-on (the backend applies `DEFAULT_MAX_UPLOAD_BYTES` when
+  // none is configured), so `storage.maxUploadBytes` is `undefined` here only
+  // when the operator explicitly opted out (`MAX_UPLOAD_BYTES=unlimited`); the
+  // conditional spread then leaves multipart uncapped. Large binaries should
+  // use the streaming raw-body path, not multipart.
   fastify.register(Multipart, {
     throwFileSizeLimit: true,
     limits: {

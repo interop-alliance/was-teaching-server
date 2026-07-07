@@ -91,7 +91,10 @@ Two things to get right:
 | `serverUrl`               | Base URL used to build and match zcap `invocationTarget`s (exact-match, see above)                              |
 | `backend`                 | The `StorageBackend` to use; defaults to `defaultBackend()` (see the caveat above)                              |
 | `storageLimitPerSpace`    | Per-Space byte quota, applied only to the default backend (an injected backend carries its own `capacityBytes`) |
-| `maxUploadBytes`          | Per-upload byte cap, likewise only for the default backend; also bounds the multipart buffer                    |
+| `maxUploadBytes`          | Per-upload byte cap, likewise only for the default backend; also bounds the multipart buffer. Default-on: `undefined` applies the 64 MiB default; `Infinity` disables the cap |
+| `maxSpacesPerController`  | Max Spaces one controller may create (default-on count quota, default 100), only for the default backend; `Infinity` disables the cap |
+| `maxCollectionsPerSpace`  | Max Collections per Space (default-on count quota, default 100), only for the default backend; `Infinity` disables the cap |
+| `maxResourcesPerSpace`    | Max live Resources per Space across all Collections (default-on count quota, default 10000), only for the default backend; `Infinity` disables the cap |
 | `providers`               | Provider-adapter registry for external (BYOS) Collection backends; defaults to empty                            |
 | `enabledBackendProviders` | Allowlist of registrable backend `provider` names; `undefined` = permissive                                     |
 | `authorizeProvisioning`   | Gate callback for `POST /spaces/` and `POST /kms/keystores`; returns `'verify'` / `'grant'` / `'deny'` (or throws a `ProblemError`). `undefined` = allow (the teaching default) |

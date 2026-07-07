@@ -20,6 +20,7 @@ import {
   ResourceNotFoundError,
   SpaceNotFoundError,
   QuotaExceededError,
+  CountQuotaExceededError,
   PayloadTooLargeError,
   KeystoreStateConflictError,
   KeyIdConflictError,
@@ -27,7 +28,14 @@ import {
 } from '../errors.js'
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
-import { QUOTA_USAGE_CACHE_TTL } from '../config.default.js'
+import {
+  DEFAULT_MAX_UPLOAD_BYTES,
+  DEFAULT_MAX_SPACES_PER_CONTROLLER,
+  DEFAULT_MAX_COLLECTIONS_PER_SPACE,
+  DEFAULT_MAX_RESOURCES_PER_SPACE,
+  QUOTA_USAGE_CACHE_TTL,
+  normalizeCountLimit
+} from '../config.default.js'
 import {
   extractTarEntries,
   buildImportPlan,
@@ -188,7 +196,8 @@ export class FileSystemBackend implements StorageBackend {
    * `ok`) and skips write-path enforcement. A finite value drives the
    * `near-limit` / `over-quota` state thresholds (see `reportUsage`) and is
    * enforced on the write path: `writeResource` and `importSpace` reject writes
-   * that would push a Space over capacity with `QuotaExceededError` (507).
+   * that would push a Space over capacity with `QuotaExceededError` (507). The
+   * constructor normalizes a non-finite ctor option (`Infinity`) to `undefined`.
    */
   capacityBytes?: number
   /**
@@ -198,8 +207,37 @@ export class FileSystemBackend implements StorageBackend {
    * this cap is rejected with `PayloadTooLargeError` (413) even when the Space
    * has ample headroom, while smaller writes still succeed. Advertised in quota
    * reports under `constraints.maxUploadBytes` and enforced on `writeResource`.
+   * The constructor normalizes an unset ctor option to
+   * {@link DEFAULT_MAX_UPLOAD_BYTES} (a default-on cap) and a non-finite option
+   * (`Infinity`) to `undefined` (explicitly no cap).
    */
   maxUploadBytes?: number
+  /**
+   * Max Spaces a single controller may create (spec "Quotas", a default-on
+   * count quota). `undefined` means no cap. Enforced on the Space create path
+   * (`writeSpace`): a new Space whose `controller` already owns this many
+   * Spaces is rejected with `CountQuotaExceededError` (507); overwriting an
+   * existing Space never trips it. The constructor normalizes an unset ctor
+   * option to {@link DEFAULT_MAX_SPACES_PER_CONTROLLER} and a non-finite option
+   * (`Infinity`) to `undefined` (explicitly no cap). Soft under concurrency,
+   * like the byte quota.
+   */
+  maxSpacesPerController?: number
+  /**
+   * Max Collections a single Space may hold (spec "Quotas", a default-on count
+   * quota). `undefined` means no cap. Enforced on the Collection create path
+   * (`writeCollection`); overwriting an existing Collection description never
+   * trips it. Normalized like {@link maxSpacesPerController}.
+   */
+  maxCollectionsPerSpace?: number
+  /**
+   * Max live Resources a single Space may hold across all its Collections (spec
+   * "Quotas", a default-on count quota). `undefined` means no cap. Enforced on
+   * the Resource create path (`writeResource`); a tombstone does not count, and
+   * a write over an existing live Resource never trips it. Normalized like
+   * {@link maxSpacesPerController}.
+   */
+  maxResourcesPerSpace?: number
 
   /**
    * Per-Resource write serialization (the `conditional-writes` feature). A
@@ -227,18 +265,53 @@ export class FileSystemBackend implements StorageBackend {
     dataDir,
     logger,
     capacityBytes,
-    maxUploadBytes
+    maxUploadBytes,
+    maxSpacesPerController,
+    maxCollectionsPerSpace,
+    maxResourcesPerSpace
   }: {
     dataDir: string
     logger?: FastifyBaseLogger
     capacityBytes?: number
     maxUploadBytes?: number
+    maxSpacesPerController?: number
+    maxCollectionsPerSpace?: number
+    maxResourcesPerSpace?: number
   }) {
     this.spacesDir = path.join(dataDir, 'spaces')
     this.keystoresDir = path.join(dataDir, 'keystores')
     this.logger = logger ?? silentLogger
-    this.capacityBytes = capacityBytes
-    this.maxUploadBytes = maxUploadBytes
+    // A non-finite `capacityBytes` (`Infinity` from an explicit `unlimited`)
+    // behaves exactly like unset inside the backend: no configured limit.
+    this.capacityBytes =
+      capacityBytes !== undefined && Number.isFinite(capacityBytes)
+        ? capacityBytes
+        : undefined
+    // Normalize the per-upload cap so every downstream guard keeps its plain
+    // `!== undefined` test: an unset option applies the default-on cap; a
+    // non-finite option (`Infinity`) means explicitly no cap (the streaming
+    // write path this backend uses makes an unbounded upload safe).
+    this.maxUploadBytes =
+      maxUploadBytes === undefined
+        ? DEFAULT_MAX_UPLOAD_BYTES
+        : Number.isFinite(maxUploadBytes)
+          ? maxUploadBytes
+          : undefined
+    // Count quotas normalize like `maxUploadBytes`: an unset option applies the
+    // default-on limit, a non-finite option (`Infinity`) means explicitly no
+    // cap, so every guard keeps its plain `!== undefined` test.
+    this.maxSpacesPerController = normalizeCountLimit(
+      maxSpacesPerController,
+      DEFAULT_MAX_SPACES_PER_CONTROLLER
+    )
+    this.maxCollectionsPerSpace = normalizeCountLimit(
+      maxCollectionsPerSpace,
+      DEFAULT_MAX_COLLECTIONS_PER_SPACE
+    )
+    this.maxResourcesPerSpace = normalizeCountLimit(
+      maxResourcesPerSpace,
+      DEFAULT_MAX_RESOURCES_PER_SPACE
+    )
   }
 
   /**
@@ -716,6 +789,28 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     spaceDescription: SpaceDescription
   }): Promise<void> {
+    // Count quota (create path only): a brand-new Space (no description yet)
+    // must not push its controller past `maxSpacesPerController`. Overwriting an
+    // existing Space's description never trips it. Space creation is rare, so
+    // the O(all Spaces) enumeration is acceptable; soft under concurrency, like
+    // the byte quota.
+    if (this.maxSpacesPerController !== undefined) {
+      const existing = await this.getSpaceDescription({ spaceId })
+      if (!existing) {
+        const { controller } = spaceDescription
+        const spaces = await this.listSpaces()
+        const owned = spaces.filter(
+          space => space.controller === controller
+        ).length
+        if (owned >= this.maxSpacesPerController) {
+          throw new CountQuotaExceededError({
+            scope: 'Spaces per controller',
+            limit: this.maxSpacesPerController
+          })
+        }
+      }
+    }
+
     const spaceDir = await this._ensureSpaceDir({ spaceId })
     const filename = `.space.${spaceId}.json`
     const metaStore = new MetadataJsonStore<SpaceDescription>({
@@ -788,6 +883,50 @@ export class FileSystemBackend implements StorageBackend {
       }
     }
     return spaces
+  }
+
+  /**
+   * Counts the live Resources across every Collection of a Space, for the
+   * Resource count quota (`maxResourcesPerSpace`). Enumerates each Collection
+   * dir and counts distinct Resource ids that have a live representation file
+   * (`r.<id>...`); a tombstone (a `.meta.` sidecar with no `r.` file) does not
+   * count. An absent Space dir counts zero (not yet provisioned). Soft under
+   * concurrency, like the byte quota -- measured at check time by enumeration.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @returns {Promise<number>}   the number of live Resources
+   */
+  async _countLiveResources({ spaceId }: { spaceId: string }): Promise<number> {
+    const spaceDir = this._spaceDir(spaceId)
+    let spaceEntries: fs.Dirent[]
+    try {
+      spaceEntries = await fs.promises.readdir(spaceDir, { withFileTypes: true })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return 0
+      }
+      throw new StorageError({ cause: err as Error })
+    }
+    let count = 0
+    for (const entry of spaceEntries) {
+      if (!entry.isDirectory()) {
+        continue
+      }
+      const collectionDir = path.join(spaceDir, entry.name)
+      const files = await fs.promises.readdir(collectionDir)
+      // A live Resource has one representation file; count distinct ids so a
+      // transient second representation (mid content-type swap) is not
+      // double-counted.
+      const liveIds = new Set<string>()
+      for (const fileName of files) {
+        if (!fileName.startsWith('r.')) {
+          continue
+        }
+        liveIds.add(parseResourceFileName(fileName).resourceId)
+      }
+      count += liveIds.size
+    }
+    return count
   }
 
   /**
@@ -938,7 +1077,12 @@ export class FileSystemBackend implements StorageBackend {
     // The effective encryption marker is the merged-into Collection's existing
     // one, else the import's own Collection description (a new Collection). Skips
     // (existing ids) are counted conservatively, as for the quota estimate.
-    const { capacityBytes, maxUploadBytes } = this
+    const {
+      capacityBytes,
+      maxUploadBytes,
+      maxCollectionsPerSpace,
+      maxResourcesPerSpace
+    } = this
     let incomingBytes = 0
     for (const {
       collectionId,
@@ -1006,6 +1150,20 @@ export class FileSystemBackend implements StorageBackend {
       }
     }
 
+    // Count quotas: measure the Space's existing live Collections/Resources
+    // ONCE here, then track running totals as the apply loop creates items, so
+    // an import cannot push the Space past `maxCollectionsPerSpace` /
+    // `maxResourcesPerSpace`. Only brand-new items count -- a re-imported
+    // existing id is skipped and does not -- mirroring the per-create
+    // write-path guards without re-enumerating the Space per item.
+    const collectionIds = new Set(
+      (await this.listCollections({ spaceId })).map(entry => entry.id)
+    )
+    let liveResourceCount =
+      maxResourcesPerSpace !== undefined
+        ? await this._countLiveResources({ spaceId })
+        : 0
+
     for (const {
       collectionId,
       collectionDescription,
@@ -1021,7 +1179,21 @@ export class FileSystemBackend implements StorageBackend {
       if (collectionExisted) {
         stats.collectionsSkipped++
       } else {
-        await this.writeCollection({
+        // A brand-new Collection (one whose id the Space did not already hold,
+        // even as a description-less directory) counts against the cap; filling
+        // in the description of an existing directory does not.
+        if (
+          maxCollectionsPerSpace !== undefined &&
+          !collectionIds.has(collectionId) &&
+          collectionIds.size >= maxCollectionsPerSpace
+        ) {
+          throw new CountQuotaExceededError({
+            scope: 'Collections per Space',
+            limit: maxCollectionsPerSpace
+          })
+        }
+        collectionIds.add(collectionId)
+        await this._persistCollection({
           spaceId,
           collectionId,
           collectionDescription
@@ -1063,6 +1235,17 @@ export class FileSystemBackend implements StorageBackend {
             stats.policiesSkipped++
           }
           continue
+        }
+
+        // A new live Resource counts against the per-Space cap.
+        if (maxResourcesPerSpace !== undefined) {
+          if (liveResourceCount >= maxResourcesPerSpace) {
+            throw new CountQuotaExceededError({
+              scope: 'Resources per Space',
+              limit: maxResourcesPerSpace
+            })
+          }
+          liveResourceCount++
         }
 
         await fs.promises.writeFile(path.join(collectionDir, fileName), body)
@@ -1141,6 +1324,49 @@ export class FileSystemBackend implements StorageBackend {
    * @returns {Promise<void>} Resolved value is implementation-defined and ignored.
    */
   async writeCollection({
+    spaceId,
+    collectionId,
+    collectionDescription
+  }: {
+    spaceId: string
+    collectionId: string
+    collectionDescription: CollectionDescription
+  }): Promise<void> {
+    // Count quota (create path only): a new Collection must not push its Space
+    // past `maxCollectionsPerSpace`; overwriting an existing Collection's
+    // description never trips it.
+    if (this.maxCollectionsPerSpace !== undefined) {
+      const existing = await this.getCollectionDescription({
+        spaceId,
+        collectionId
+      })
+      if (!existing) {
+        const collections = await this.listCollections({ spaceId })
+        if (collections.length >= this.maxCollectionsPerSpace) {
+          throw new CountQuotaExceededError({
+            scope: 'Collections per Space',
+            limit: this.maxCollectionsPerSpace
+          })
+        }
+      }
+    }
+
+    await this._persistCollection({ spaceId, collectionId, collectionDescription })
+  }
+
+  /**
+   * Writes a Collection's description file (creating the Collection dir if
+   * needed), with NO count-quota check. The count guard lives in the public
+   * `writeCollection`; `importSpace` tracks the Space's Collection count itself
+   * (measured once up front) and calls this directly, so it does not
+   * re-enumerate the Space per created Collection.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.collectionDescription {CollectionDescription}
+   * @returns {Promise<void>}
+   */
+  async _persistCollection({
     spaceId,
     collectionId,
     collectionDescription
@@ -1439,6 +1665,24 @@ export class FileSystemBackend implements StorageBackend {
         ifMatch,
         ifNoneMatch
       })
+    }
+
+    // Count quota (create path only): a new live Resource must not push its
+    // Space past `maxResourcesPerSpace`. A write over an existing live
+    // representation is an update (never trips it); a write over a tombstone
+    // (no `r.` file) is a create and does count. Soft under concurrency.
+    if (this.maxResourcesPerSpace !== undefined) {
+      const isLive =
+        (await this._findFile({ collectionDir, resourceId })) !== undefined
+      if (!isLive) {
+        const liveCount = await this._countLiveResources({ spaceId })
+        if (liveCount >= this.maxResourcesPerSpace) {
+          throw new CountQuotaExceededError({
+            scope: 'Resources per Space',
+            limit: this.maxResourcesPerSpace
+          })
+        }
+      }
     }
 
     const { capacityBytes, maxUploadBytes } = this

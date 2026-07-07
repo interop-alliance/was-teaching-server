@@ -32,7 +32,13 @@ import {
 const connectionString = process.env.WAS_TEST_DATABASE_URL
 
 async function makePostgresHarness(
-  options: { capacityBytes?: number; maxUploadBytes?: number } = {}
+  options: {
+    capacityBytes?: number
+    maxUploadBytes?: number
+    maxSpacesPerController?: number
+    maxCollectionsPerSpace?: number
+    maxResourcesPerSpace?: number
+  } = {}
 ): Promise<BackendHarness> {
   const schema = `was_test_${crypto.randomBytes(8).toString('hex')}`
   const backend = new PostgresBackend({

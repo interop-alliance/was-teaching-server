@@ -11,8 +11,10 @@ import {
   DEFAULT_PORT,
   assertValidServerUrl,
   loadConfigFromEnv,
+  parseMaxUploadBytes,
   parsePort,
-  parseServerUrl
+  parseServerUrl,
+  parseStorageLimit
 } from '../src/config.default.js'
 import { createApp } from '../src/server.js'
 
@@ -76,6 +78,60 @@ describe('parsePort', () => {
   })
 })
 
+describe('parseStorageLimit', () => {
+  it('returns undefined when unset or empty', () => {
+    assert.equal(parseStorageLimit(undefined), undefined)
+    assert.equal(parseStorageLimit(''), undefined)
+    assert.equal(parseStorageLimit('   '), undefined)
+  })
+
+  it('returns Infinity for "unlimited" (case-insensitive, trimmed)', () => {
+    assert.equal(parseStorageLimit('unlimited'), Infinity)
+    assert.equal(parseStorageLimit('  UNLIMITED  '), Infinity)
+  })
+
+  it('parses a non-negative integer number of bytes', () => {
+    assert.equal(parseStorageLimit('1048576'), 1048576)
+    assert.equal(parseStorageLimit('0'), 0)
+  })
+
+  it('rejects malformed values (mentioning unlimited)', () => {
+    for (const raw of ['lots', '-1', '3.14']) {
+      assert.throws(
+        () => parseStorageLimit(raw),
+        /STORAGE_LIMIT_PER_SPACE must be.*unlimited/s
+      )
+    }
+  })
+})
+
+describe('parseMaxUploadBytes', () => {
+  it('returns undefined when unset or empty', () => {
+    assert.equal(parseMaxUploadBytes(undefined), undefined)
+    assert.equal(parseMaxUploadBytes(''), undefined)
+    assert.equal(parseMaxUploadBytes('   '), undefined)
+  })
+
+  it('returns Infinity for "unlimited" (case-insensitive, trimmed)', () => {
+    assert.equal(parseMaxUploadBytes('unlimited'), Infinity)
+    assert.equal(parseMaxUploadBytes('  Unlimited  '), Infinity)
+  })
+
+  it('parses a non-negative integer number of bytes', () => {
+    assert.equal(parseMaxUploadBytes('65536'), 65536)
+    assert.equal(parseMaxUploadBytes('0'), 0)
+  })
+
+  it('rejects malformed values (mentioning unlimited)', () => {
+    for (const raw of ['huge', '-1', '2.5']) {
+      assert.throws(
+        () => parseMaxUploadBytes(raw),
+        /MAX_UPLOAD_BYTES must be.*unlimited/s
+      )
+    }
+  })
+})
+
 describe('loadConfigFromEnv', () => {
   it('fails fast when SERVER_URL is unset', () => {
     assert.throws(() => loadConfigFromEnv({}), /SERVER_URL is required/)
@@ -110,6 +166,16 @@ describe('loadConfigFromEnv', () => {
     assert.equal(config.maxUploadBytes, 65536)
     assert.deepEqual(config.enabledBackendProviders, ['gdrive', 's3'])
     assert.equal(config.onboardingToken, 'abc123')
+  })
+
+  it('resolves "unlimited" limits to Infinity', () => {
+    const config = loadConfigFromEnv({
+      SERVER_URL: 'http://localhost:3002',
+      STORAGE_LIMIT_PER_SPACE: 'unlimited',
+      MAX_UPLOAD_BYTES: 'unlimited'
+    })
+    assert.equal(config.storageLimitPerSpace, Infinity)
+    assert.equal(config.maxUploadBytes, Infinity)
   })
 
   it('propagates a malformed value with the offending variable named', () => {

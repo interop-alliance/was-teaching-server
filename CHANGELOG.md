@@ -117,6 +117,36 @@
 
 ### Security
 
+- **Default-on limits.** The server no longer runs unbounded out of the box:
+  - `MAX_UPLOAD_BYTES` now defaults to **64 MiB** on both backends (previously
+    unset meant no cap on the filesystem backend, and the catch-all binary
+    content-type parser hands the handler a raw stream that bypasses Fastify's
+    `bodyLimit` entirely -- so a raw blob PUT/POST had no size limit at all, and
+    an unbounded multipart part could buffer without limit). Set
+    `MAX_UPLOAD_BYTES=unlimited` to opt out explicitly (filesystem backend only:
+    the Postgres backend buffers each upload in memory as a single `bytea` and
+    rejects `unlimited` at startup).
+  - New **count quotas**, default-on: `MAX_SPACES_PER_CONTROLLER` (100),
+    `MAX_COLLECTIONS_PER_SPACE` (100), and `MAX_RESOURCES_PER_SPACE` (10000,
+    live Resources across a Space's Collections; tombstones don't count). A
+    create beyond a limit is rejected with a 507 `quota-exceeded` problem
+    (`CountQuotaExceededError`, exported); overwrites never trip a count check,
+    deletes free slots, and the tar import path enforces the Collection/Resource
+    counts identically on both backends. Enforcement is transactional (hard
+    under concurrency) on Postgres -- Space counts serialize on a per-controller
+    advisory lock, and the `spaces` table gains a backfilled, indexed
+    `controller` column (automatic migration) -- and soft on the filesystem
+    backend, matching the byte quota's posture. Each accepts `unlimited` to opt
+    out. Matching `fastifyWas` plugin options (`maxSpacesPerController` /
+    `maxCollectionsPerSpace` / `maxResourcesPerSpace`) apply to the default
+    backend; both backend constructors take them directly. Pinned by the shared
+    backend contract suite for both backends.
+  - `STORAGE_LIMIT_PER_SPACE` stays unlimited when unset, but startup now logs a
+    **warning** prompting an explicit choice;
+    `STORAGE_LIMIT_PER_SPACE=unlimited` acknowledges and silences it (the
+    warning lives in `start.ts` only, so library and test compositions stay
+    silent). A startup warning is also logged when the per-upload cap is
+    explicitly disabled.
 - **`StorageError` responses no longer leak internal fault details.** The 500
   `storage-error` problem+json body copied the underlying cause message into its
   `title` and `detail`, so filesystem paths, errnos, or SQL fragments from a

@@ -34,6 +34,7 @@ import {
   ResourceNotFoundError,
   SpaceNotFoundError,
   QuotaExceededError,
+  CountQuotaExceededError,
   PayloadTooLargeError,
   PreconditionFailedError,
   KeystoreStateConflictError,
@@ -51,6 +52,13 @@ import { encodeCursor, decodeCursor } from '../lib/cursor.js'
 import { buildExportManifest } from '../lib/exportManifest.js'
 import { isJson } from '../lib/isJson.js'
 import { DEFAULT_PAGE_SIZE, clampPageSize } from '../lib/pagination.js'
+import {
+  DEFAULT_MAX_UPLOAD_BYTES,
+  DEFAULT_MAX_SPACES_PER_CONTROLLER,
+  DEFAULT_MAX_COLLECTIONS_PER_SPACE,
+  DEFAULT_MAX_RESOURCES_PER_SPACE,
+  normalizeCountLimit
+} from '../config.default.js'
 import {
   assertWritePrecondition,
   assertMetaWritePrecondition
@@ -77,12 +85,6 @@ import type {
   CapabilitySummary,
   IDID
 } from '../types.js'
-
-/**
- * The per-upload cap applied when none is configured: buffered `bytea` writes
- * pass through process memory, so "no cap" would be a footgun. 64 MiB.
- */
-export const DEFAULT_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 /** Pool sizing and per-connection statement timeout (operational defaults). */
 const POOL_MAX = 10
@@ -200,6 +202,30 @@ export class PostgresBackend implements StorageBackend {
    * through memory on the single-`bytea` path.
    */
   maxUploadBytes: number
+  /**
+   * Max Spaces a single controller may create (spec "Quotas", a default-on
+   * count quota). `undefined` means no cap. Enforced transactionally on the
+   * Space create path (`writeSpace`), serialized per controller by an advisory
+   * lock -- a HARD limit under concurrency, like the byte quota. The
+   * constructor normalizes an unset option to
+   * {@link DEFAULT_MAX_SPACES_PER_CONTROLLER} and a non-finite option
+   * (`Infinity`) to `undefined`.
+   */
+  maxSpacesPerController?: number
+  /**
+   * Max Collections a single Space may hold (spec "Quotas", a default-on count
+   * quota). `undefined` means no cap. Enforced on the Collection create path,
+   * serialized per Space by the space row lock. Normalized like
+   * {@link maxSpacesPerController}.
+   */
+  maxCollectionsPerSpace?: number
+  /**
+   * Max live Resources a single Space may hold across all its Collections (spec
+   * "Quotas", a default-on count quota). `undefined` means no cap. Enforced on
+   * the Resource create path (a tombstone does not count). Normalized like
+   * {@link maxSpacesPerController}.
+   */
+  maxResourcesPerSpace?: number
 
   private _pool: pg.Pool
   private _schema?: string
@@ -211,30 +237,78 @@ export class PostgresBackend implements StorageBackend {
    *   the connection `search_path`; created by `init()` if absent). Used for
    *   test isolation; production uses the default `public`.
    * @param [options.logger] {FastifyBaseLogger}
-   * @param [options.capacityBytes] {number}   per-Space quota in bytes
-   * @param [options.maxUploadBytes] {number}   per-upload cap in bytes
-   *   (defaults to `DEFAULT_MAX_UPLOAD_BYTES`)
+   * @param [options.capacityBytes] {number}   per-Space quota in bytes; a
+   *   finite value is enforced, `undefined` or a non-finite value means no
+   *   configured limit
+   * @param [options.maxUploadBytes] {number}   per-upload cap in bytes;
+   *   `undefined` applies the `DEFAULT_MAX_UPLOAD_BYTES` default. A non-finite
+   *   value (`Infinity`, from `MAX_UPLOAD_BYTES=unlimited`) throws: this backend
+   *   buffers each upload in memory as a single `bytea`, so an unbounded cap is
+   *   not supported.
+   * @param [options.maxSpacesPerController] {number}   max Spaces per
+   *   controller (spec "Quotas"); `undefined` applies the default-on limit,
+   *   `Infinity` means no cap
+   * @param [options.maxCollectionsPerSpace] {number}   max Collections per
+   *   Space; `undefined` applies the default-on limit, `Infinity` means no cap
+   * @param [options.maxResourcesPerSpace] {number}   max live Resources per
+   *   Space; `undefined` applies the default-on limit, `Infinity` means no cap
    */
   constructor({
     connectionString,
     schema,
     logger,
     capacityBytes,
-    maxUploadBytes
+    maxUploadBytes,
+    maxSpacesPerController,
+    maxCollectionsPerSpace,
+    maxResourcesPerSpace
   }: {
     connectionString: string
     schema?: string
     logger?: FastifyBaseLogger
     capacityBytes?: number
     maxUploadBytes?: number
+    maxSpacesPerController?: number
+    maxCollectionsPerSpace?: number
+    maxResourcesPerSpace?: number
   }) {
     if (schema !== undefined && !/^[a-z_][a-z0-9_]*$/i.test(schema)) {
       throw new Error(`Invalid Postgres schema name: "${schema}".`)
     }
     this._schema = schema
     this.logger = logger ?? silentLogger
-    this.capacityBytes = capacityBytes
+    // A non-finite `capacityBytes` (`Infinity` from an explicit `unlimited`)
+    // behaves exactly like unset inside the backend: no configured limit.
+    this.capacityBytes =
+      capacityBytes !== undefined && Number.isFinite(capacityBytes)
+        ? capacityBytes
+        : undefined
+    // This backend buffers each upload in memory as a single `bytea`, so an
+    // unbounded per-upload cap is not supported -- fail fast at construction
+    // rather than risk an OOM at write time.
+    if (maxUploadBytes !== undefined && !Number.isFinite(maxUploadBytes)) {
+      throw new Error(
+        `PostgresBackend does not support an unlimited per-upload cap ` +
+          `(MAX_UPLOAD_BYTES=unlimited): each upload is buffered in memory as ` +
+          `a single bytea. Set MAX_UPLOAD_BYTES to a finite byte count.`
+      )
+    }
     this.maxUploadBytes = maxUploadBytes ?? DEFAULT_MAX_UPLOAD_BYTES
+    // Count quotas normalize like `maxUploadBytes` (unset applies the
+    // default-on limit, a non-finite `Infinity` means no cap), so every guard
+    // keeps its plain `!== undefined` test.
+    this.maxSpacesPerController = normalizeCountLimit(
+      maxSpacesPerController,
+      DEFAULT_MAX_SPACES_PER_CONTROLLER
+    )
+    this.maxCollectionsPerSpace = normalizeCountLimit(
+      maxCollectionsPerSpace,
+      DEFAULT_MAX_COLLECTIONS_PER_SPACE
+    )
+    this.maxResourcesPerSpace = normalizeCountLimit(
+      maxResourcesPerSpace,
+      DEFAULT_MAX_RESOURCES_PER_SPACE
+    )
     this._pool = new pg.Pool({
       connectionString,
       max: POOL_MAX,
@@ -545,11 +619,55 @@ export class PostgresBackend implements StorageBackend {
     spaceId: string
     spaceDescription: SpaceDescription
   }): Promise<void> {
-    await this._pool.query(
-      `INSERT INTO spaces (space_id, description) VALUES ($1, $2::jsonb)
-       ON CONFLICT (space_id) DO UPDATE SET description = EXCLUDED.description`,
-      [spaceId, JSON.stringify(spaceDescription)]
-    )
+    const { controller } = spaceDescription
+    const descriptionJson = JSON.stringify(spaceDescription)
+    // The upsert maintains the denormalized `controller` column on both insert
+    // and update -- the description's controller can change on update, and the
+    // Spaces count quota reads this column (spec "Quotas").
+    const upsert = (queryable: Queryable): Promise<unknown> =>
+      queryable.query(
+        `INSERT INTO spaces (space_id, description, controller)
+         VALUES ($1, $2::jsonb, $3)
+         ON CONFLICT (space_id) DO UPDATE SET
+           description = EXCLUDED.description,
+           controller = EXCLUDED.controller`,
+        [spaceId, descriptionJson, controller]
+      )
+
+    if (this.maxSpacesPerController === undefined) {
+      await upsert(this._pool)
+      return
+    }
+
+    // Count quota (create path only), enforced as a HARD limit: take a
+    // controller-scoped advisory lock so concurrent creates for the same
+    // controller serialize (the byte quota's posture), detect a create (no
+    // described row yet -- a NULL-description placeholder counts as a create),
+    // COUNT this controller's Spaces, and reject at the limit.
+    await this._withTransaction(async client => {
+      await client.query(
+        `SELECT pg_advisory_xact_lock(hashtext('controller-count:' || $1))`,
+        [controller]
+      )
+      const { rows } = await client.query<{ description: unknown }>(
+        'SELECT description FROM spaces WHERE space_id = $1',
+        [spaceId]
+      )
+      const isCreate = rows[0]?.description == null
+      if (isCreate) {
+        const { rows: countRows } = await client.query<{ count: number }>(
+          'SELECT COUNT(*)::int AS count FROM spaces WHERE controller = $1',
+          [controller]
+        )
+        if (countRows[0]!.count >= this.maxSpacesPerController!) {
+          throw new CountQuotaExceededError({
+            scope: 'Spaces per controller',
+            limit: this.maxSpacesPerController!
+          })
+        }
+      }
+      await upsert(client)
+    })
   }
 
   /**
@@ -618,6 +736,33 @@ export class PostgresBackend implements StorageBackend {
   }): Promise<void> {
     await this._withTransaction(async client => {
       await this._ensureSpaceRow({ client, spaceId })
+      // Count quota (create path only): lock the space row so concurrent
+      // Collection creates in this Space serialize, detect a create (no
+      // described Collection row yet), COUNT the Space's Collections, and reject
+      // at `maxCollectionsPerSpace` (spec "Quotas").
+      if (this.maxCollectionsPerSpace !== undefined) {
+        await client.query('SELECT 1 FROM spaces WHERE space_id = $1 FOR UPDATE', [
+          spaceId
+        ])
+        const { rows } = await client.query<{ description: unknown }>(
+          `SELECT description FROM collections
+            WHERE space_id = $1 AND collection_id = $2`,
+          [spaceId, collectionId]
+        )
+        const isCreate = rows[0]?.description == null
+        if (isCreate) {
+          const { rows: countRows } = await client.query<{ count: number }>(
+            'SELECT COUNT(*)::int AS count FROM collections WHERE space_id = $1',
+            [spaceId]
+          )
+          if (countRows[0]!.count >= this.maxCollectionsPerSpace) {
+            throw new CountQuotaExceededError({
+              scope: 'Collections per Space',
+              limit: this.maxCollectionsPerSpace
+            })
+          }
+        }
+      }
       await this._upsertCollection({
         queryable: client,
         spaceId,
@@ -931,6 +1076,24 @@ export class PostgresBackend implements StorageBackend {
           ifMatch,
           ifNoneMatch
         })
+      }
+
+      // Count quota (create path only): a new live Resource -- including one
+      // written over a tombstone (`exists` is false) -- must not push the Space
+      // past `maxResourcesPerSpace` (spec "Quotas"). An overwrite of a live
+      // Resource never trips it. Counted inside the write transaction.
+      if (this.maxResourcesPerSpace !== undefined && !exists) {
+        const { rows: countRows } = await client.query<{ count: number }>(
+          `SELECT COUNT(*)::int AS count FROM resources
+            WHERE space_id = $1 AND NOT deleted`,
+          [spaceId]
+        )
+        if (countRows[0]!.count >= this.maxResourcesPerSpace) {
+          throw new CountQuotaExceededError({
+            scope: 'Resources per Space',
+            limit: this.maxResourcesPerSpace
+          })
+        }
       }
 
       const now = new Date().toISOString()
@@ -2090,7 +2253,12 @@ export class PostgresBackend implements StorageBackend {
   }): Promise<ImportStats> {
     const entries = await extractTarEntries(tarStream)
     const { spacePolicy, collections } = buildImportPlan(entries)
-    const { capacityBytes, maxUploadBytes } = this
+    const {
+      capacityBytes,
+      maxUploadBytes,
+      maxCollectionsPerSpace,
+      maxResourcesPerSpace
+    } = this
 
     return this._withTransaction(async client => {
       await this._ensureSpaceRow({ client, spaceId })
@@ -2117,6 +2285,24 @@ export class PostgresBackend implements StorageBackend {
       const descriptionsById = new Map(
         descriptionRows.map(row => [row.collection_id, row.description])
       )
+
+      // Count quotas: measure the Space's existing Collection rows / live
+      // Resources ONCE here, then track running totals as the apply loop
+      // creates items, so an import cannot push the Space past
+      // `maxCollectionsPerSpace` / `maxResourcesPerSpace`. Only brand-new items
+      // count -- a re-imported existing id is skipped and does not -- mirroring
+      // the per-create write-path guards without a COUNT query per row. The
+      // transaction rolls the whole import back if a cap is exceeded mid-apply.
+      let collectionRowCount = descriptionsById.size
+      let liveResourceCount = 0
+      if (maxResourcesPerSpace !== undefined) {
+        const { rows: liveRows } = await client.query<{ count: number }>(
+          `SELECT COUNT(*)::int AS count FROM resources
+            WHERE space_id = $1 AND NOT deleted`,
+          [spaceId]
+        )
+        liveResourceCount = liveRows[0]!.count
+      }
 
       // Pre-flight pass over every staged resource, before writing anything.
       // Skips (existing ids) are counted conservatively for the quota
@@ -2204,12 +2390,29 @@ export class PostgresBackend implements StorageBackend {
         if (collectionExisted) {
           stats.collectionsSkipped++
         } else {
+          // A brand-new Collection row counts against the cap; upserting a
+          // description onto an existing NULL-description placeholder row does
+          // not add a row, so it never trips the limit.
+          const isNewRow = !descriptionsById.has(collectionId)
+          if (
+            maxCollectionsPerSpace !== undefined &&
+            isNewRow &&
+            collectionRowCount >= maxCollectionsPerSpace
+          ) {
+            throw new CountQuotaExceededError({
+              scope: 'Collections per Space',
+              limit: maxCollectionsPerSpace
+            })
+          }
           await this._upsertCollection({
             queryable: client,
             spaceId,
             collectionId,
             collectionDescription
           })
+          if (isNewRow) {
+            collectionRowCount++
+          }
           descriptionsById.set(collectionId, collectionDescription)
           stats.collectionsCreated++
         }
@@ -2254,6 +2457,16 @@ export class PostgresBackend implements StorageBackend {
               stats.policiesSkipped++
             }
             continue
+          }
+          // A new live Resource counts against the per-Space cap.
+          if (maxResourcesPerSpace !== undefined) {
+            if (liveResourceCount >= maxResourcesPerSpace) {
+              throw new CountQuotaExceededError({
+                scope: 'Resources per Space',
+                limit: maxResourcesPerSpace
+              })
+            }
+            liveResourceCount++
           }
           const { contentType } = parseResourceFileName(fileName)
           await this._insertImportedResource({

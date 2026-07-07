@@ -126,6 +126,16 @@ export const MIGRATIONS: string[] = [
     expires       text COLLATE "C",
     PRIMARY KEY (keystore_id, delegator, capability_id)
   );
+  `,
+  // v2: denormalize a Space's controller onto its own column for the Spaces
+  // count quota (spec "Quotas"). The controller also lives inside 'description'
+  // (description->>'controller'), but a dedicated, indexed column keeps the
+  // per-controller COUNT(*) cheap and lockable. Backfill from existing rows;
+  // writeSpace maintains it on every insert and update.
+  `
+  ALTER TABLE spaces ADD COLUMN controller text;
+  UPDATE spaces SET controller = description->>'controller';
+  CREATE INDEX spaces_controller_idx ON spaces (controller);
   `
 ]
 

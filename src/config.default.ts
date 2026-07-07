@@ -129,6 +129,41 @@ export const KMS_MAX_DELEGATION_TTL = 90 * 24 * 60 * 60 * 1000
 export const DEFAULT_PORT = 3002
 
 /**
+ * The default per-upload byte cap applied by BOTH backends when
+ * `MAX_UPLOAD_BYTES` is unset (a default-on limit, 64 MiB). Every blob write
+ * buffers through process memory on at least one path (the Postgres single
+ * `bytea`, multipart's in-memory `toBuffer()`), so "no cap" would be a footgun.
+ * Opt out explicitly with `MAX_UPLOAD_BYTES=unlimited`, which the backends
+ * accept only where an unbounded upload is actually safe (the filesystem
+ * streaming path; the Postgres backend rejects it at construction).
+ */
+export const DEFAULT_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+
+/**
+ * Default cap on the number of Spaces a single controller may create, applied
+ * by BOTH backends when `MAX_SPACES_PER_CONTROLLER` is unset (a default-on
+ * count quota). Chosen far above any teaching or conformance workload while
+ * still bounding runaway creation by one controller. Opt out with
+ * `MAX_SPACES_PER_CONTROLLER=unlimited`.
+ */
+export const DEFAULT_MAX_SPACES_PER_CONTROLLER = 100
+
+/**
+ * Default cap on the number of Collections a single Space may hold, applied by
+ * BOTH backends when `MAX_COLLECTIONS_PER_SPACE` is unset (a default-on count
+ * quota). Opt out with `MAX_COLLECTIONS_PER_SPACE=unlimited`.
+ */
+export const DEFAULT_MAX_COLLECTIONS_PER_SPACE = 100
+
+/**
+ * Default cap on the number of live Resources a single Space may hold across
+ * all its Collections, applied by BOTH backends when `MAX_RESOURCES_PER_SPACE`
+ * is unset (a default-on count quota). A tombstone (soft-deleted Resource) does
+ * not count against it. Opt out with `MAX_RESOURCES_PER_SPACE=unlimited`.
+ */
+export const DEFAULT_MAX_RESOURCES_PER_SPACE = 10_000
+
+/**
  * The validated env-derived server configuration returned by
  * {@link loadConfigFromEnv} and consumed by `start.ts`.
  */
@@ -139,10 +174,39 @@ export interface EnvConfig {
   port: number
   /** Postgres connection string (`DATABASE_URL`); unset selects the filesystem backend. */
   databaseUrl?: string
-  /** Per-Space storage quota in bytes (`STORAGE_LIMIT_PER_SPACE`); unset = unlimited. */
+  /**
+   * Per-Space storage quota in bytes (`STORAGE_LIMIT_PER_SPACE`). `undefined`
+   * means unset -- unlimited, but `start.ts` warns to prompt an explicit
+   * choice; `Infinity` means `unlimited` was set explicitly (no warning).
+   */
   storageLimitPerSpace?: number
-  /** Per-upload size cap in bytes (`MAX_UPLOAD_BYTES`); unset = no cap. */
+  /**
+   * Per-upload size cap in bytes (`MAX_UPLOAD_BYTES`). `undefined` means unset
+   * -- the backends apply the {@link DEFAULT_MAX_UPLOAD_BYTES} default;
+   * `Infinity` means `unlimited` was set explicitly (no per-upload cap).
+   */
   maxUploadBytes?: number
+  /**
+   * Max Spaces a single controller may create (`MAX_SPACES_PER_CONTROLLER`).
+   * `undefined` means unset -- the backends apply the
+   * {@link DEFAULT_MAX_SPACES_PER_CONTROLLER} default; `Infinity` means
+   * `unlimited` was set explicitly (no cap).
+   */
+  maxSpacesPerController?: number
+  /**
+   * Max Collections a single Space may hold (`MAX_COLLECTIONS_PER_SPACE`).
+   * `undefined` means unset -- the backends apply the
+   * {@link DEFAULT_MAX_COLLECTIONS_PER_SPACE} default; `Infinity` means
+   * `unlimited` was set explicitly (no cap).
+   */
+  maxCollectionsPerSpace?: number
+  /**
+   * Max live Resources a single Space may hold across all its Collections
+   * (`MAX_RESOURCES_PER_SPACE`). `undefined` means unset -- the backends apply
+   * the {@link DEFAULT_MAX_RESOURCES_PER_SPACE} default; `Infinity` means
+   * `unlimited` was set explicitly (no cap).
+   */
+  maxResourcesPerSpace?: number
   /** Backend registration allowlist (`WAS_ENABLED_BACKENDS`); unset = permissive. */
   enabledBackendProviders?: string[]
   /** At-rest KMS key-record encryption registry (`KMS_RECORD_KEK`); unset = plaintext. */
@@ -168,6 +232,18 @@ export function loadConfigFromEnv(
     databaseUrl: parseDatabaseUrl(env.DATABASE_URL),
     storageLimitPerSpace: parseStorageLimit(env.STORAGE_LIMIT_PER_SPACE),
     maxUploadBytes: parseMaxUploadBytes(env.MAX_UPLOAD_BYTES),
+    maxSpacesPerController: parseCountLimit(
+      env.MAX_SPACES_PER_CONTROLLER,
+      'MAX_SPACES_PER_CONTROLLER'
+    ),
+    maxCollectionsPerSpace: parseCountLimit(
+      env.MAX_COLLECTIONS_PER_SPACE,
+      'MAX_COLLECTIONS_PER_SPACE'
+    ),
+    maxResourcesPerSpace: parseCountLimit(
+      env.MAX_RESOURCES_PER_SPACE,
+      'MAX_RESOURCES_PER_SPACE'
+    ),
     enabledBackendProviders: parseEnabledBackends(env.WAS_ENABLED_BACKENDS),
     kmsRecordKek: parseKmsRecordKek(env.KMS_RECORD_KEK),
     onboardingToken: parseOnboardingToken(env.WAS_ONBOARDING_TOKEN)
@@ -289,21 +365,28 @@ export function parseKmsRecordKek(
 
 /**
  * Parses the `STORAGE_LIMIT_PER_SPACE` env value into a per-Space capacity in
- * bytes (spec "Quotas"). v1 accepts a plain non-negative integer number of
- * bytes; an unset or empty value returns `undefined`, meaning each Space has no
- * configured limit (the backend reports and enforces an unlimited quota).
+ * bytes (spec "Quotas"). Accepts a plain non-negative integer number of bytes,
+ * or the literal `unlimited` (case-insensitive, trimmed) which returns
+ * `Infinity` -- an explicitly acknowledged unlimited quota (no startup
+ * warning). An unset or empty value returns `undefined`, meaning no limit is
+ * configured (still unlimited, but `start.ts` warns to prompt an explicit
+ * choice). A malformed value throws.
  * @param raw {string|undefined}   the raw env value
- * @returns {number|undefined}   capacity in bytes, or `undefined` when unset
+ * @returns {number|undefined}   capacity in bytes, `Infinity` for `unlimited`,
+ *   or `undefined` when unset
  */
 export function parseStorageLimit(raw: string | undefined): number | undefined {
   if (raw === undefined || raw.trim() === '') {
     return undefined
   }
+  if (raw.trim().toLowerCase() === 'unlimited') {
+    return Infinity
+  }
   const value = Number(raw)
   if (!Number.isInteger(value) || value < 0) {
     throw new Error(
       `STORAGE_LIMIT_PER_SPACE must be a non-negative integer number of ` +
-        `bytes; got "${raw}".`
+        `bytes, or "unlimited"; got "${raw}".`
     )
   }
   return value
@@ -311,14 +394,17 @@ export function parseStorageLimit(raw: string | undefined): number | undefined {
 
 /**
  * Parses the `MAX_UPLOAD_BYTES` env value into a per-upload size cap in bytes
- * (spec "Quotas", the backend's `maxUploadBytes` constraint). v1 accepts a plain
- * non-negative integer number of bytes; an unset or empty value returns
- * `undefined`, meaning the backend advertises and enforces no per-upload cap
- * (distinct from the cumulative per-Space quota). A single upload exceeding the
- * cap is rejected with `payload-too-large` (413), while smaller uploads still
- * succeed.
+ * (spec "Quotas", the backend's `maxUploadBytes` constraint). Accepts a plain
+ * non-negative integer number of bytes, or the literal `unlimited`
+ * (case-insensitive, trimmed) which returns `Infinity` -- explicitly no cap.
+ * An unset or empty value returns `undefined`, meaning not configured: the
+ * backends apply the {@link DEFAULT_MAX_UPLOAD_BYTES} default (a default-on
+ * limit). A single upload exceeding the cap is rejected with
+ * `payload-too-large` (413), while smaller uploads still succeed. A malformed
+ * value throws.
  * @param raw {string|undefined}   the raw env value
- * @returns {number|undefined}   the per-upload cap in bytes, or `undefined`
+ * @returns {number|undefined}   the per-upload cap in bytes, `Infinity` for
+ *   `unlimited`, or `undefined` when unset
  */
 export function parseMaxUploadBytes(
   raw: string | undefined
@@ -326,14 +412,72 @@ export function parseMaxUploadBytes(
   if (raw === undefined || raw.trim() === '') {
     return undefined
   }
+  if (raw.trim().toLowerCase() === 'unlimited') {
+    return Infinity
+  }
   const value = Number(raw)
   if (!Number.isInteger(value) || value < 0) {
     throw new Error(
-      `MAX_UPLOAD_BYTES must be a non-negative integer number of bytes; ` +
-        `got "${raw}".`
+      `MAX_UPLOAD_BYTES must be a non-negative integer number of bytes, or ` +
+        `"unlimited"; got "${raw}".`
     )
   }
   return value
+}
+
+/**
+ * Parses one of the count-quota env values (`MAX_SPACES_PER_CONTROLLER`,
+ * `MAX_COLLECTIONS_PER_SPACE`, `MAX_RESOURCES_PER_SPACE`) into a maximum count.
+ * Accepts a plain non-negative integer, or the literal `unlimited`
+ * (case-insensitive, trimmed) which returns `Infinity` -- explicitly no cap. An
+ * unset or empty value returns `undefined`, meaning not configured: the backends
+ * apply the matching default-on limit ({@link DEFAULT_MAX_SPACES_PER_CONTROLLER}
+ * and friends). A malformed value throws, naming the variable and the
+ * `unlimited` escape hatch.
+ * @param raw {string|undefined}   the raw env value
+ * @param name {string}   the env variable name, for the error message
+ * @returns {number|undefined}   the max count, `Infinity` for `unlimited`, or
+ *   `undefined` when unset
+ */
+export function parseCountLimit(
+  raw: string | undefined,
+  name: string
+): number | undefined {
+  if (raw === undefined || raw.trim() === '') {
+    return undefined
+  }
+  if (raw.trim().toLowerCase() === 'unlimited') {
+    return Infinity
+  }
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(
+      `${name} must be a non-negative integer, or "unlimited"; got "${raw}".`
+    )
+  }
+  return value
+}
+
+/**
+ * Normalizes a count-quota constructor option to the internal instance field
+ * both backends store: an unset option (`undefined`) applies the default-on
+ * `fallback` limit; a non-finite option (`Infinity`, from an explicit
+ * `unlimited`) becomes `undefined` (no cap); a finite value passes through.
+ * Shared so the two backends cannot drift on the mapping (the same posture as
+ * the `maxUploadBytes` normalization each backend already applies), letting each
+ * count guard keep its plain `!== undefined` test.
+ * @param value {number|undefined}   the constructor option
+ * @param fallback {number}   the default-on limit applied when unset
+ * @returns {number|undefined}   the internal limit, or `undefined` for no cap
+ */
+export function normalizeCountLimit(
+  value: number | undefined,
+  fallback: number
+): number | undefined {
+  if (value === undefined) {
+    return fallback
+  }
+  return Number.isFinite(value) ? value : undefined
 }
 
 /**

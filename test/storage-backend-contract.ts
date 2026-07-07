@@ -13,6 +13,7 @@ import {
   PreconditionFailedError,
   ResourceNotFoundError,
   QuotaExceededError,
+  CountQuotaExceededError,
   PayloadTooLargeError,
   InvalidCursorError,
   KeystoreStateConflictError,
@@ -40,12 +41,16 @@ export interface ContractOptions {
   /** suite display name (e.g. 'FileSystemBackend') */
   name: string
   /**
-   * Builds a fresh, empty backend. `capacityBytes` / `maxUploadBytes`
-   * configure quotas for the quota blocks.
+   * Builds a fresh, empty backend. `capacityBytes` / `maxUploadBytes` configure
+   * the byte quotas; `maxSpacesPerController` / `maxCollectionsPerSpace` /
+   * `maxResourcesPerSpace` configure the count quotas for the count-quota block.
    */
   makeBackend(options?: {
     capacityBytes?: number
     maxUploadBytes?: number
+    maxSpacesPerController?: number
+    maxCollectionsPerSpace?: number
+    maxResourcesPerSpace?: number
   }): Promise<BackendHarness>
   /**
    * True when the backend enforces the per-Space quota as a HARD limit under
@@ -1228,6 +1233,253 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           }
         }
       )
+    })
+
+    describe('count quotas', () => {
+      // Small caps (2-3) keep these fast; both backends enforce on the create
+      // path only, reusing the `quota-exceeded` (507) problem type.
+      function assertCountQuota(error: unknown): void {
+        assert.ok(
+          error instanceof CountQuotaExceededError,
+          `expected CountQuotaExceededError, got ${error}`
+        )
+        assert.equal(error.statusCode, 507)
+        assert.ok(error.type.endsWith('#quota-exceeded'))
+      }
+
+      it('rejects a Space create beyond maxSpacesPerController; a different controller is unaffected', async () => {
+        const harness = await makeBackend({ maxSpacesPerController: 2 })
+        const alice = 'did:key:z6MkCountAlice' as IDID
+        const bob = 'did:key:z6MkCountBob' as IDID
+        const writeSpace = (spaceId: string, controller: IDID) =>
+          harness.backend.writeSpace({
+            spaceId,
+            spaceDescription: {
+              id: spaceId,
+              type: ['Space'],
+              name: spaceId,
+              controller
+            }
+          })
+        try {
+          await writeSpace('cq-a1', alice)
+          await writeSpace('cq-a2', alice)
+          let error: unknown
+          try {
+            await writeSpace('cq-a3', alice)
+          } catch (err) {
+            error = err
+          }
+          assertCountQuota(error)
+          // Overwriting an existing Space's description still succeeds at the
+          // limit (an update is not a create).
+          await writeSpace('cq-a1', alice)
+          // A different controller can still create.
+          await writeSpace('cq-b1', bob)
+        } finally {
+          await harness.cleanup()
+        }
+      })
+
+      it('rejects a Collection create beyond maxCollectionsPerSpace; overwriting an existing one still succeeds', async () => {
+        const harness = await makeBackend({ maxCollectionsPerSpace: 2 })
+        const writeCollection = (collectionId: string) =>
+          harness.backend.writeCollection({
+            spaceId: 'cq-cols',
+            collectionId,
+            collectionDescription: {
+              id: collectionId,
+              type: ['Collection'],
+              name: collectionId
+            }
+          })
+        try {
+          // provisionSpace writes the Space plus one Collection ('col'); add
+          // one more to reach the cap of 2.
+          await provisionSpace(harness.backend, 'cq-cols')
+          await writeCollection('col2')
+          let error: unknown
+          try {
+            await writeCollection('col3')
+          } catch (err) {
+            error = err
+          }
+          assertCountQuota(error)
+          // Overwriting an existing Collection description at the limit is fine.
+          await writeCollection('col2')
+        } finally {
+          await harness.cleanup()
+        }
+      })
+
+      it('rejects a Resource create beyond maxResourcesPerSpace; overwrite succeeds and a delete frees a slot', async () => {
+        const harness = await makeBackend({ maxResourcesPerSpace: 2 })
+        const writeResource = (resourceId: string) =>
+          harness.backend.writeResource({
+            spaceId: 'cq-res',
+            collectionId: 'col',
+            resourceId,
+            input: jsonInput({ id: resourceId })
+          })
+        try {
+          await provisionSpace(harness.backend, 'cq-res')
+          await writeResource('r1')
+          await writeResource('r2')
+          let error: unknown
+          try {
+            await writeResource('r3')
+          } catch (err) {
+            error = err
+          }
+          assertCountQuota(error)
+          // Overwriting an existing live Resource at the limit still succeeds.
+          await writeResource('r1')
+          // Deleting one frees a slot for a new create.
+          await harness.backend.deleteResource({
+            spaceId: 'cq-res',
+            collectionId: 'col',
+            resourceId: 'r1'
+          })
+          await writeResource('r3')
+        } finally {
+          await harness.cleanup()
+        }
+      })
+
+      it('rejects an import that would create more Collections than maxCollectionsPerSpace allows', async () => {
+        const source = await makeBackend()
+        const target = await makeBackend({ maxCollectionsPerSpace: 2 })
+        try {
+          const spaceId = 'cq-imp-cols'
+          // Source Space with three Collections (each carrying a Resource so
+          // the Collection travels in the export).
+          await provisionSpace(source.backend, spaceId) // 'col'
+          for (const collectionId of ['c2', 'c3']) {
+            await source.backend.writeCollection({
+              spaceId,
+              collectionId,
+              collectionDescription: {
+                id: collectionId,
+                type: ['Collection'],
+                name: collectionId
+              }
+            })
+          }
+          for (const collectionId of ['col', 'c2', 'c3']) {
+            await source.backend.writeResource({
+              spaceId,
+              collectionId,
+              resourceId: 'doc',
+              input: jsonInput({ id: collectionId })
+            })
+          }
+          const tarStream = await source.backend.exportSpace({ spaceId })
+          // Target already holds 'col' (1 of 2). The import creates a second
+          // Collection (reaching the cap) then a third, which exceeds it.
+          await provisionSpace(target.backend, spaceId)
+          let error: unknown
+          try {
+            await target.backend.importSpace({ spaceId, tarStream })
+          } catch (err) {
+            error = err
+          }
+          assertCountQuota(error)
+        } finally {
+          await source.cleanup()
+          await target.cleanup()
+        }
+      })
+
+      it('rejects an import that would create more Resources than maxResourcesPerSpace allows', async () => {
+        const source = await makeBackend()
+        const target = await makeBackend({ maxResourcesPerSpace: 2 })
+        try {
+          const spaceId = 'cq-imp-res'
+          await provisionSpace(source.backend, spaceId)
+          for (const resourceId of ['r1', 'r2', 'r3']) {
+            await source.backend.writeResource({
+              spaceId,
+              collectionId: 'col',
+              resourceId,
+              input: jsonInput({ id: resourceId })
+            })
+          }
+          const tarStream = await source.backend.exportSpace({ spaceId })
+          // Target starts with zero Resources; the third created Resource
+          // exceeds the cap of 2.
+          await provisionSpace(target.backend, spaceId)
+          let error: unknown
+          try {
+            await target.backend.importSpace({ spaceId, tarStream })
+          } catch (err) {
+            error = err
+          }
+          assertCountQuota(error)
+        } finally {
+          await source.cleanup()
+          await target.cleanup()
+        }
+      })
+
+      it('allows an import that only re-imports existing (skipped) items at the limit', async () => {
+        const source = await makeBackend()
+        const target = await makeBackend({
+          maxCollectionsPerSpace: 1,
+          maxResourcesPerSpace: 2
+        })
+        try {
+          const spaceId = 'cq-imp-skip'
+          await provisionSpace(source.backend, spaceId)
+          for (const resourceId of ['r1', 'r2']) {
+            await source.backend.writeResource({
+              spaceId,
+              collectionId: 'col',
+              resourceId,
+              input: jsonInput({ id: resourceId })
+            })
+          }
+          const tarStream = await source.backend.exportSpace({ spaceId })
+          // Target already holds the identical Space exactly at both caps (1
+          // Collection, 2 live Resources); re-importing the same archive skips
+          // every item, so no create is attempted and nothing is rejected.
+          await provisionSpace(target.backend, spaceId)
+          for (const resourceId of ['r1', 'r2']) {
+            await target.backend.writeResource({
+              spaceId,
+              collectionId: 'col',
+              resourceId,
+              input: jsonInput({ id: resourceId })
+            })
+          }
+          const stats = await target.backend.importSpace({ spaceId, tarStream })
+          assert.equal(stats.collectionsCreated, 0)
+          assert.equal(stats.collectionsSkipped, 1)
+          assert.equal(stats.resourcesCreated, 0)
+          assert.equal(stats.resourcesSkipped, 2)
+        } finally {
+          await source.cleanup()
+          await target.cleanup()
+        }
+      })
+
+      it('the default-on limits (100/100/10000) do not trip normal writes', async () => {
+        // A backend built with no count options still has the defaults active;
+        // provisioning and a handful of writes must not be rejected.
+        const harness = await makeBackend()
+        try {
+          await provisionSpace(harness.backend, 'cq-default')
+          for (const resourceId of ['x1', 'x2', 'x3']) {
+            await harness.backend.writeResource({
+              spaceId: 'cq-default',
+              collectionId: 'col',
+              resourceId,
+              input: jsonInput({ id: resourceId })
+            })
+          }
+        } finally {
+          await harness.cleanup()
+        }
+      })
     })
 
     describe('policies', () => {

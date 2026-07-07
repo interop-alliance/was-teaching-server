@@ -21,18 +21,40 @@ import type { StorageBackend } from './types.js'
  * directory. Used by `createApp()` when no backend is injected (production).
  * @param options {object}
  * @param [options.capacityBytes] {number}   per-Space storage limit in bytes
- *   (spec "Quotas"); `undefined` means each Space is unlimited.
+ *   (spec "Quotas"); `undefined` (or `Infinity`) means each Space is unlimited.
  * @param [options.maxUploadBytes] {number}   per-upload size cap in bytes (spec
- *   "Quotas", `maxUploadBytes`); `undefined` means no per-upload cap.
+ *   "Quotas", `maxUploadBytes`); `undefined` applies the backend's default-on
+ *   cap, `Infinity` means no per-upload cap.
+ * @param [options.maxSpacesPerController] {number}   max Spaces per controller
+ *   (spec "Quotas"); `undefined` applies the backend's default-on limit,
+ *   `Infinity` means no cap.
+ * @param [options.maxCollectionsPerSpace] {number}   max Collections per Space
+ *   (spec "Quotas"); `undefined` applies the backend's default-on limit,
+ *   `Infinity` means no cap.
+ * @param [options.maxResourcesPerSpace] {number}   max live Resources per Space
+ *   (spec "Quotas"); `undefined` applies the backend's default-on limit,
+ *   `Infinity` means no cap.
  * @returns {StorageBackend}
  */
 export function defaultBackend({
   capacityBytes,
-  maxUploadBytes
-}: { capacityBytes?: number; maxUploadBytes?: number } = {}): StorageBackend {
+  maxUploadBytes,
+  maxSpacesPerController,
+  maxCollectionsPerSpace,
+  maxResourcesPerSpace
+}: {
+  capacityBytes?: number
+  maxUploadBytes?: number
+  maxSpacesPerController?: number
+  maxCollectionsPerSpace?: number
+  maxResourcesPerSpace?: number
+} = {}): StorageBackend {
   return new FileSystemBackend({
     dataDir: path.join(import.meta.dirname, '..', 'data'),
     capacityBytes,
-    maxUploadBytes
+    maxUploadBytes,
+    maxSpacesPerController,
+    maxCollectionsPerSpace,
+    maxResourcesPerSpace
   })
 }

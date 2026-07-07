@@ -26,7 +26,10 @@ export async function startServer(): Promise<void> {
       ? new PostgresBackend({
           connectionString: config.databaseUrl,
           capacityBytes: config.storageLimitPerSpace,
-          maxUploadBytes: config.maxUploadBytes
+          maxUploadBytes: config.maxUploadBytes,
+          maxSpacesPerController: config.maxSpacesPerController,
+          maxCollectionsPerSpace: config.maxCollectionsPerSpace,
+          maxResourcesPerSpace: config.maxResourcesPerSpace
         })
       : undefined
     fastify = createApp({
@@ -34,10 +37,30 @@ export async function startServer(): Promise<void> {
       ...(backend && { backend }),
       storageLimitPerSpace: config.storageLimitPerSpace,
       maxUploadBytes: config.maxUploadBytes,
+      maxSpacesPerController: config.maxSpacesPerController,
+      maxCollectionsPerSpace: config.maxCollectionsPerSpace,
+      maxResourcesPerSpace: config.maxResourcesPerSpace,
       enabledBackendProviders: config.enabledBackendProviders,
       kmsRecordKek: config.kmsRecordKek,
       onboardingToken: config.onboardingToken
     })
+    // Warn (once, at startup, where the Fastify logger now exists) about limits
+    // left implicitly unbounded. These warnings live only here so library and
+    // test compositions of createApp() stay silent; an explicit `unlimited`
+    // (Infinity) or a finite value is a deliberate choice and warns nothing.
+    if (config.storageLimitPerSpace === undefined) {
+      fastify.log.warn(
+        'No per-Space storage quota configured; Spaces may grow without ' +
+          'bound. Set STORAGE_LIMIT_PER_SPACE (bytes), or ' +
+          'STORAGE_LIMIT_PER_SPACE=unlimited to acknowledge.'
+      )
+    }
+    if (config.maxUploadBytes === Infinity) {
+      fastify.log.warn(
+        'Per-upload size cap disabled (MAX_UPLOAD_BYTES=unlimited); a single ' +
+          'upload may consume unbounded memory on buffered write paths.'
+      )
+    }
     await fastify.listen({ port: config.port, host: '0.0.0.0' })
   } catch (err) {
     console.error('Server startup failed:', err)

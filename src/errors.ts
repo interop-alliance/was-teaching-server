@@ -727,6 +727,30 @@ export class QuotaExceededError extends ProblemError {
 }
 
 /**
+ * 507 — a create was rejected because a default-on count quota is exhausted:
+ * too many Spaces for one controller, too many Collections in a Space, or too
+ * many live Resources in a Space. Distinct from `QuotaExceededError` (also 507),
+ * which caps cumulative bytes rather than item counts; both reuse the spec's
+ * `quota-exceeded` problem type (there is no count-specific slug). Only the
+ * create path trips this -- overwriting an existing item never does.
+ * @param options {object}
+ * @param options.scope {string}   short phrase naming the exhausted count (e.g.
+ *   `'Spaces per controller'`, `'Collections per Space'`,
+ *   `'Resources per Space'`), used in the detail message
+ * @param options.limit {number}   the configured maximum count
+ */
+export class CountQuotaExceededError extends ProblemError {
+  constructor({ scope, limit }: { scope: string; limit: number }) {
+    super({
+      type: ProblemTypes.QUOTA_EXCEEDED,
+      title: 'Insufficient Storage',
+      detail: `Count quota exceeded: ${scope} limit is ${limit}.`,
+      statusCode: 507
+    })
+  }
+}
+
+/**
  * 413 — an upload exceeds the target backend's per-request `maxUploadBytes`
  * constraint. Distinct from `quota-exceeded` (507): this limit is per-request,
  * not cumulative, so smaller uploads may still succeed.

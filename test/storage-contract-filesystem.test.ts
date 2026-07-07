@@ -10,12 +10,21 @@ import { describeStorageBackendContract } from './storage-backend-contract.js'
 
 describeStorageBackendContract({
   name: 'FileSystemBackend',
-  async makeBackend({ capacityBytes, maxUploadBytes } = {}) {
+  async makeBackend({
+    capacityBytes,
+    maxUploadBytes,
+    maxSpacesPerController,
+    maxCollectionsPerSpace,
+    maxResourcesPerSpace
+  } = {}) {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), 'was-contract-fs-'))
     const backend = new FileSystemBackend({
       dataDir,
       capacityBytes,
-      maxUploadBytes
+      maxUploadBytes,
+      maxSpacesPerController,
+      maxCollectionsPerSpace,
+      maxResourcesPerSpace
     })
     return {
       backend,
