@@ -162,6 +162,19 @@
   re-validated the same way, closing the bypass where an allowed public URL 302s
   the proxy to an internal address. (Adding a lightweight auth gate remains a
   reasonable follow-up.)
+- **`/api/cors` proxy hardening: DNS-rebinding protection and a response size
+  cap.** Two remaining gaps in the CORS proxy are closed. The SSRF host check
+  validated the resolved addresses but the subsequent `fetch` re-resolved DNS
+  independently, so a rebinding attacker could pass validation with a public IP
+  and have the connection land on a private one (a TOCTOU); the proxy now pins
+  each hop's connection to exactly the addresses it validated -- a per-request
+  undici `Agent` whose `connect.lookup` resolves only from that pin map -- while
+  keeping the original hostname on the wire so TLS certificate validation and
+  SNI still work. The relayed response body is now capped at 10 MiB, enforced
+  both from a declared `content-length` (rejected before reading the body) and
+  incrementally while streaming (the upstream stream is cancelled once the cap
+  is exceeded); an oversized response is a 502. Uses undici's `fetch` so the
+  dispatcher and fetch share one build.
 - **Streamed and binary request bodies are now bound to their signed `Digest`.**
   Previously only JSON/text bodies were recomputed and compared; an
   `application/octet-stream`, image, multipart, or tar body could be swapped

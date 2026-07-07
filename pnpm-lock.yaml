@@ -89,6 +89,9 @@ importers:
       tar-stream:
         specifier: ^3.2.0
         version: 3.2.0
+      undici:
+        specifier: 7.28.0
+        version: 7.28.0
       uuid:
         specifier: ^14.0.0
         version: 14.0.1
