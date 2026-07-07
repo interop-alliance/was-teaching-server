@@ -1,8 +1,8 @@
 /**
  * Library entry point: the surface a downstream composition consumes when this
- * package is used as a dependency rather than run standalone (see
- * `_spec/prod-roadmap.md`, "Two-codebase strategy"). Exports the `fastifyWas`
- * protocol plugin, the community-edition `createApp()` composition, the
+ * package is used as a dependency rather than run standalone. Exports the
+ * `fastifyWas` protocol plugin, the community-edition `createApp()`
+ * composition, the
  * storage pieces a custom backend needs (the `StorageBackend` contract types,
  * the reference `FileSystemBackend`, and `defaultBackend()`), and the typed
  * protocol errors a backend or composition throws and handles.
@@ -16,5 +16,6 @@ export { createApp } from './server.js'
 export { defaultBackend } from './storage.js'
 export { FileSystemBackend } from './backends/filesystem.js'
 export { PostgresBackend } from './backends/postgres.js'
+export { onboardingTokenAuthorizer } from './provisioning.js'
 export type * from './types.js'
 export * from './errors.js'

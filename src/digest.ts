@@ -165,6 +165,11 @@ export async function verifyBodyDigest(
   request: FastifyRequest,
   _reply: FastifyReply
 ): Promise<void> {
+  // A provisioning-authorized request (onboarding token) is not signed, so
+  // there is no signature to cover a `Digest` header -- nothing to bind.
+  if (request.provisioningAuthorized) {
+    return
+  }
   const contentType = request.headers['content-type']
   // Bodyless requests carry no Content-Type and no Digest -- nothing to bind.
   if (!contentType) {

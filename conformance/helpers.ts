@@ -1,5 +1,6 @@
 import { ZcapClient } from '@interop/ezcap'
 import { WasClient } from '@interop/was-client'
+import type { Space } from '@interop/was-client'
 import { decodeSecretKeySeed } from '@digitalcredentials/bnid'
 import { Ed25519Signature2020 } from '@interop/ed25519-signature'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
@@ -123,6 +124,46 @@ export async function createSpace({
     headers: response.headers,
     data: response.data
   }
+}
+
+/**
+ * Provisions a Space for the high-level `WasClient` suites: with an onboarding
+ * token configured, creates it via the token path (a plain fetch with
+ * `Authorization: Bearer`, the same wire form `createSpace` above uses) and
+ * returns the client's lazy handle to the new id; otherwise delegates to the
+ * client's own signed `createSpace`. This is what lets the client suites run
+ * against a server that gates provisioning behind an onboarding token.
+ *
+ * @param options {object}
+ * @param options.was {WasClient} the suite's high-level client
+ * @param [options.name] {string} optional Space name
+ * @returns {Promise<Space>}
+ */
+export async function provisionSpace({
+  was,
+  name
+}: {
+  was: WasClient
+  name?: string
+}): Promise<Space> {
+  if (!onboardingToken) {
+    return was.createSpace({ name })
+  }
+  const id = uuidv4()
+  const response = await fetch(new URL('/spaces/', serverUrl), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${onboardingToken}`
+    },
+    body: JSON.stringify({ id, name, controller: was.controllerDid })
+  })
+  if (response.status !== 201) {
+    throw new Error(
+      `Onboarding-token Create Space failed with status ${response.status}`
+    )
+  }
+  return was.space(id)
 }
 
 export { serverUrl, onboardingToken, uuidv4 as generateId }

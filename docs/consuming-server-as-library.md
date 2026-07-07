@@ -94,6 +94,8 @@ Two things to get right:
 | `maxUploadBytes`          | Per-upload byte cap, likewise only for the default backend; also bounds the multipart buffer                    |
 | `providers`               | Provider-adapter registry for external (BYOS) Collection backends; defaults to empty                            |
 | `enabledBackendProviders` | Allowlist of registrable backend `provider` names; `undefined` = permissive                                     |
+| `authorizeProvisioning`   | Gate callback for `POST /spaces/` and `POST /kms/keystores`; returns `'verify'` / `'grant'` / `'deny'` (or throws a `ProblemError`). `undefined` = allow (the teaching default) |
+| `onboardingToken`         | Shared-secret gate for the same two endpoints: when set, they require `Authorization: Bearer <token>` (which substitutes for zcap verification). Mutually exclusive with `authorizeProvisioning` |
 
 ## What the plugin does (and does not) register
 

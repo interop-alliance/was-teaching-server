@@ -14,7 +14,7 @@ import assert from 'node:assert'
 import { NotFoundError } from '@interop/was-client'
 import type { Space } from '@interop/was-client'
 
-import { buildZcapClients } from './helpers.js'
+import { buildZcapClients, provisionSpace } from './helpers.js'
 
 describe('WasClient — Spaces & Collections', () => {
   let alice: any
@@ -41,7 +41,7 @@ describe('WasClient — Spaces & Collections', () => {
    * @returns {Promise<Space>}
    */
   async function newSpace(name: string): Promise<Space> {
-    const space = await alice.was.createSpace({ name })
+    const space = await provisionSpace({ was: alice.was, name })
     createdSpaces.push(space)
     return space
   }

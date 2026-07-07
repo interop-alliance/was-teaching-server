@@ -4,6 +4,27 @@
 
 ### Added
 
+- **Provisioning gate (`authorizeProvisioning` / `WAS_ONBOARDING_TOKEN`).** A
+  new seam that lets a deployment gate the two open provisioning endpoints
+  (`POST /spaces/` and `POST /kms/keystores`) without touching the rest of the
+  ZCap surface. The `fastifyWas` plugin gains an `authorizeProvisioning`
+  callback (`{ request }` in, `'verify'` / `'grant'` / `'deny'` out -- or a
+  thrown `ProblemError`) plus a built-in, off-by-default onboarding-token check
+  (`onboardingToken` option / `WAS_ONBOARDING_TOKEN` env), implemented as a
+  stock authorizer over that same seam (`onboardingTokenAuthorizer`, exported):
+  when a token is set, the two endpoints require an
+  `Authorization: Bearer <token>` header (timing-safe compared), which then
+  substitutes for ZCap verification on that request while every other operation
+  keeps its normal capability-invocation path. The two options are mutually
+  exclusive (rejected at startup). Default behavior (neither configured) is
+  unchanged -- provisioning stays open, authorized by proving control of the
+  body's `controller` DID (the teaching default). Adds `src/provisioning.ts`.
+  The conformance suite's high-level `WasClient` suites now provision Spaces
+  through the token path when `TEST_ONBOARDING_TOKEN` is set (a shared
+  `provisionSpace` helper), so the full suite passes against a token-gated
+  server:
+  `WAS_ONBOARDING_TOKEN=abc TEST_ONBOARDING_TOKEN=abc pnpm conformance:local`.
+
 - **WebKMS List Keys (`GET /kms/keystores/:keystoreId/keys`).** A fork extension
   beyond upstream webkms-switch (which has no key list): enumerates a keystore's
   public key descriptions — the Get Key Description projection per key
@@ -16,15 +37,14 @@
   keystore controller with `<keystoreId>/keys` accepted as an attenuated target,
   so a `sign`-scoped delegation on one key URL still cannot enumerate the
   keystore. Adds `listKeys` to the `StorageBackend` contract (both backends) and
-  `KeyRequest.list`. Motivation and design:
-  [`_spec/kms-list-keys-plan.md`](./_spec/kms-list-keys-plan.md).
+  `KeyRequest.list`.
 
 - **PostgreSQL storage backend (`DATABASE_URL`).** A second first-party
   `StorageBackend` (`src/backends/postgres.ts`, schema in
   `src/backends/postgresSchema.ts`), implementing the full WAS + WebKMS surface
   over rows and selected by setting `DATABASE_URL` (unset keeps the default
-  filesystem backend). Four deliberate design departures, per
-  `_spec/postgres-plan.md`: **transactional quota accounting**
+  filesystem backend). Four deliberate design departures:
+  **transactional quota accounting**
   (`spaces.usage_bytes`, maintained in the same transaction as every content
   write/delete -- the per-Space capacity is now a _hard_ limit under
   concurrency, closing the filesystem backend's documented soft-limit caveat);
@@ -51,7 +71,7 @@
   (`src/lib/pagination.ts`).
 
 - **At-rest encryption of WebKMS key records (`KMS_RECORD_KEK`).** The optional,
-  schema-compatible hardening increment from `_spec/encrypted-kms-plan.md`: when
+  schema-compatible hardening increment: when
   a record KEK is configured, the secret-bearing fields of a stored `/kms` key
   record (`privateKeyMultibase` / `secret`, and anything not on the plaintext
   allowlist) are envelope-encrypted -- a fresh per-record `A256GCM`
@@ -78,11 +98,18 @@
   gains `main` / `types` / `exports` pointing at `dist/`, plus a `files`
   allowlist (`dist`, `common`, `src` -- so the emitted source/declaration maps
   resolve -- and `CHANGELOG.md`) so the published tarball excludes the test
-  suites and `_spec`. Usage (including composing a minimal or hardened server
+  suites. Usage (including composing a minimal or hardened server
   from the plugin) is documented in `docs/consuming-server-as-library.md`.
 
 ### Security
 
+- **`StorageError` responses no longer leak internal fault details.** The 500
+  `storage-error` problem+json body copied the underlying cause message into
+  its `title` and `detail`, so filesystem paths, errnos, or SQL fragments from
+  a failed backend operation could reach clients. The wire body is now a
+  generic "An internal storage error occurred."; the underlying `cause` still
+  goes to the server log via `handleError`. Pinned by a no-leak regression
+  test.
 - **`/api/cors` proxy is no longer an open SSRF vector.** The proxy now only
   fetches `http`/`https` URLs and refuses any host that resolves to a private,
   loopback, or link-local address (RFC 1918, `127.0.0.0/8`, `169.254.0.0/16`
@@ -164,7 +191,7 @@
   community-edition composition: it registers `fastifyWas` (passing its options
   through unchanged) plus the teaching-server extras (static assets, welcome
   page, `/health`, the CORS proxy). No wire-behavior change; this is the
-  enabling refactor for the two-codebase strategy in `_spec/prod-roadmap.md` --
+  enabling refactor for the two-codebase strategy --
   a hardened downstream server can register the same plugin around its own
   persistence and policy plugins. Adds `fastify-plugin` as a dependency (the
   decorations/parsers land on the root instance, as before).

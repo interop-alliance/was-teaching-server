@@ -51,6 +51,12 @@ export async function parseAuthHeaders(
 ): Promise<void> {
   const { headers } = request
 
+  // A provisioning-authorized request (e.g. a valid onboarding token) carries a
+  // Bearer token, not an HTTP Signature -- there is no zcap to parse.
+  if (request.provisioningAuthorized) {
+    return
+  }
+
   // No Authorization header presented (e.g. an anonymous read that a fallback
   // policy may authorize). Leave `request.zcap` unset; the handler decides.
   if (!headers.authorization) {
@@ -92,6 +98,11 @@ export async function requireAuthHeaders(
   request: FastifyRequest,
   _reply: FastifyReply
 ): Promise<void> {
+  // A provisioning-authorized request (onboarding token) carries no capability
+  // invocation and a Bearer -- not Signature -- Authorization header.
+  if (request.provisioningAuthorized) {
+    return
+  }
   const { headers } = request
   if (!(headers.authorization && headers['capability-invocation'])) {
     throw new MissingAuthError()
@@ -113,6 +124,11 @@ export async function requireAuthHeadersOrPublicRead(
   request: FastifyRequest,
   _reply: FastifyReply
 ): Promise<void> {
+  // A provisioning-authorized request (onboarding token) carries no capability
+  // invocation and a Bearer -- not Signature -- Authorization header.
+  if (request.provisioningAuthorized) {
+    return
+  }
   const { headers, method } = request
   if (headers.authorization && headers['capability-invocation']) {
     return

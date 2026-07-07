@@ -5,8 +5,7 @@
  * backend (types.ts). Selected by configuration (`DATABASE_URL`) and injected
  * the same way (`createApp({ backend })`).
  *
- * Design departures from the filesystem backend (deliberate, documented in
- * _spec/postgres-plan.md):
+ * Design departures from the filesystem backend (deliberate):
  * - Quota accounting is transactional (`spaces.usage_bytes`, maintained in the
  *   same transaction as every write/delete), making the per-Space capacity a
  *   HARD limit under concurrency. "Usage" is exactly the stored content bytes;

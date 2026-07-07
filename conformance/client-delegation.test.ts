@@ -12,7 +12,7 @@ import assert from 'node:assert'
 
 import { Space, Resource } from '@interop/was-client'
 
-import { buildZcapClients } from './helpers.js'
+import { buildZcapClients, provisionSpace } from './helpers.js'
 
 describe('WasClient — Delegation', () => {
   let alice: any, bob: any
@@ -39,7 +39,7 @@ describe('WasClient — Delegation', () => {
    * @returns {Promise<Space>}
    */
   async function newSpace(name: string): Promise<Space> {
-    const space = await alice.was.createSpace({ name })
+    const space = await provisionSpace({ was: alice.was, name })
     createdSpaces.push(space)
     return space
   }

@@ -25,10 +25,12 @@ import {
   initSpacesRepositoryRoutes
 } from './routes.js'
 import { defaultBackend } from './storage.js'
+import { onboardingTokenAuthorizer } from './provisioning.js'
 import type {
   StorageBackend,
   BackendProviderRegistry,
-  KmsRecordKekRegistry
+  KmsRecordKekRegistry,
+  AuthorizeProvisioning
 } from './types.js'
 
 export interface FastifyWasOptions {
@@ -72,6 +74,22 @@ export interface FastifyWasOptions {
    * written plaintext (the teaching default).
    */
   kmsRecordKek?: KmsRecordKekRegistry
+  /**
+   * Custom provisioning gate for `POST /spaces/` and `POST /kms/keystores`;
+   * receives `{ request }` and returns `'verify'` (normal zcap path), `'grant'`
+   * (authorized by the callback -- skip zcap verification), or `'deny'` (403).
+   * `undefined` means allow (the teaching default). Mutually exclusive with
+   * `onboardingToken`.
+   */
+  authorizeProvisioning?: AuthorizeProvisioning
+  /**
+   * Shared-secret gate for `POST /spaces/` and `POST /kms/keystores` (config
+   * `WAS_ONBOARDING_TOKEN`); when set, those two endpoints require an
+   * `Authorization: Bearer <token>` header, which then substitutes for zcap
+   * verification on that request. `undefined` means disabled (the teaching
+   * default). Mutually exclusive with `authorizeProvisioning`.
+   */
+  onboardingToken?: string
 }
 
 /**
@@ -92,8 +110,17 @@ async function wasPlugin(
     maxUploadBytes,
     providers,
     enabledBackendProviders,
-    kmsRecordKek
+    kmsRecordKek,
+    authorizeProvisioning,
+    onboardingToken
   } = options
+
+  // The two provisioning gates are alternative ways to configure the same seam.
+  if (authorizeProvisioning && onboardingToken) {
+    throw new Error(
+      'authorizeProvisioning and onboardingToken are mutually exclusive.'
+    )
+  }
 
   fastify.decorate('serverUrl', serverUrl as string)
   // Route the backend's diagnostics through the Fastify pino logger (the backend
@@ -128,6 +155,15 @@ async function wasPlugin(
   // `undefined` = disabled (records written plaintext). Read at the KMS
   // orchestration seam (KeyRequest), never inside a backend.
   fastify.decorate('kmsRecordKek', kmsRecordKek)
+  // The provisioning gate for `POST /spaces/` and `POST /kms/keystores`: a
+  // custom callback, or the stock onboarding-token check when a token is set,
+  // or `undefined` = allow (the teaching default). Read by the `provisioningGate`
+  // onRequest hook installed by those two route groups.
+  fastify.decorate(
+    'authorizeProvisioning',
+    authorizeProvisioning ??
+      (onboardingToken ? onboardingTokenAuthorizer(onboardingToken) : undefined)
+  )
 
   // Disable CORS
   fastify.register(cors, {

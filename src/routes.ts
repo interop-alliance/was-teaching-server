@@ -28,6 +28,7 @@ import {
   requireAuthHeadersOrPublicRead
 } from './auth-header-hooks.js'
 import { captureRawBody, verifyBodyDigest } from './digest.js'
+import { provisioningGate } from './provisioning.js'
 
 /**
  * Toggles the trailing slash on the request's actual path (preserving any query
@@ -97,6 +98,9 @@ export async function initSpacesRepositoryRoutes(
 ): Promise<void> {
   app.setErrorHandler(handleError)
 
+  // Gate provisioning (Create Space): the configured policy may grant/deny, or
+  // (the default) allow -- in which case the normal zcap path below runs.
+  app.addHook('onRequest', provisioningGate)
   // Create Space (POST) requires auth-related headers (401 otherwise); a List
   // Spaces read may proceed unauthenticated -- an anonymous list is the spec's
   // empty-items 200, never an error (the exception to 404 masking).
@@ -358,6 +362,9 @@ export async function initKmsRoutes(
 ): Promise<void> {
   app.setErrorHandler(handleError)
 
+  // Gate provisioning (Create Keystore): the configured policy may grant/deny,
+  // or (the default) allow -- in which case the normal zcap path below runs.
+  app.addHook('onRequest', provisioningGate)
   // Every operation is privileged: 401 when auth headers are absent.
   app.addHook('onRequest', requireAuthHeaders)
   // Parse the relevant request headers, set the request.zcap parameter

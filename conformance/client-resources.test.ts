@@ -12,7 +12,7 @@ import assert from 'node:assert'
 
 import type { Collection, Space } from '@interop/was-client'
 
-import { buildZcapClients } from './helpers.js'
+import { buildZcapClients, provisionSpace } from './helpers.js'
 
 describe('WasClient — Resources', () => {
   let alice: any
@@ -22,7 +22,7 @@ describe('WasClient — Resources', () => {
 
   before(async () => {
     ;({ alice } = await buildZcapClients())
-    space = await alice.was.createSpace({ name: 'Resources Space' })
+    space = await provisionSpace({ was: alice.was, name: 'Resources Space' })
     jsonCollection = await space.createCollection({ id: 'docs', name: 'Docs' })
     binaryCollection = await space.createCollection({
       id: 'files',

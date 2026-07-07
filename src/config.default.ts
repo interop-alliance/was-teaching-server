@@ -127,9 +127,9 @@ export const KMS_MAX_DELEGATION_TTL = 90 * 24 * 60 * 60 * 1000
 
 /**
  * Parses the `KMS_RECORD_KEK` env value into the at-rest key-record encryption
- * registry (the optional hardening increment; see
- * `_spec/encrypted-kms-plan.md`). The value is a single AES-256 key-encryption
- * key in base58btc Multikey form (`secretKeyMultibase`, header `0xa2 0x01`);
+ * registry (the optional hardening increment). The value is a single AES-256
+ * key-encryption key in base58btc Multikey form (`secretKeyMultibase`, header
+ * `0xa2 0x01`);
  * an unset or empty value returns `undefined`, meaning encryption is disabled --
  * key records are written plaintext (the default, honest about the teaching
  * server's threat model). When set, the KEK's id is derived from its material
@@ -219,6 +219,26 @@ export function parseEnabledBackends(
     .map(entry => entry.trim())
     .filter(entry => entry.length > 0)
   return providers.length > 0 ? providers : undefined
+}
+
+/**
+ * Parses the `WAS_ONBOARDING_TOKEN` env value into the shared-secret onboarding
+ * token gating the two open provisioning endpoints (`POST /spaces/`,
+ * `POST /kms/keystores`). An unset or empty/whitespace-only value returns
+ * `undefined`, meaning the feature is off -- provisioning is authorized by
+ * proving control of the body's controller DID (the teaching default). When
+ * set, those two endpoints instead require an `Authorization: Bearer <token>`
+ * header matching this value, which then substitutes for zcap verification.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {string|undefined}   the trimmed token, or `undefined` when unset
+ */
+export function parseOnboardingToken(
+  raw: string | undefined
+): string | undefined {
+  if (raw === undefined || raw.trim() === '') {
+    return undefined
+  }
+  return raw.trim()
 }
 
 export const SPEC_URL =

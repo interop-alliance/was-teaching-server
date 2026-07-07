@@ -16,7 +16,7 @@
 // (the request layer calls `request.file()` without importing the plugin
 // directly).
 import type {} from '@fastify/multipart'
-import type { FastifyBaseLogger } from 'fastify'
+import type { FastifyBaseLogger, FastifyRequest } from 'fastify'
 import type { Readable } from 'node:stream'
 import type {
   IDID,
@@ -766,6 +766,28 @@ export interface StorageBackend {
   }): Promise<boolean>
 }
 
+/**
+ * Decision returned by an {@link AuthorizeProvisioning} callback for a
+ * provisioning request (`POST /spaces/` or `POST /kms/keystores`):
+ * - `verify` -- proceed with normal zcap capability-invocation verification;
+ * - `grant` -- the callback itself authorized the request (e.g. a valid
+ *   onboarding token); skip zcap verification for this request;
+ * - `deny` -- refuse provisioning (403).
+ */
+export type ProvisioningDecision = 'verify' | 'grant' | 'deny'
+
+/**
+ * Provisioning gate callback: decides whether a request to one of the two open
+ * provisioning endpoints (`POST /spaces/`, `POST /kms/keystores`) may proceed.
+ * May instead throw a `ProblemError` subclass to return a custom status/body.
+ * @param options {object}
+ * @param options.request {import('fastify').FastifyRequest}   the provisioning request
+ * @returns {ProvisioningDecision | Promise<ProvisioningDecision>}
+ */
+export type AuthorizeProvisioning = (options: {
+  request: FastifyRequest
+}) => ProvisioningDecision | Promise<ProvisioningDecision>
+
 declare module 'fastify' {
   interface FastifyInstance {
     serverUrl: string
@@ -795,8 +817,24 @@ declare module 'fastify' {
      * Set by `fastify.decorate` in plugin.ts.
      */
     kmsRecordKek?: KmsRecordKekRegistry
+    /**
+     * The optional provisioning gate for the two open provisioning endpoints
+     * (`POST /spaces/`, `POST /kms/keystores`). `undefined` means allow (the
+     * teaching default -- anyone may provision by proving control of the body's
+     * controller DID). Set by `fastify.decorate` in plugin.ts, either from the
+     * `authorizeProvisioning` option or the built-in onboarding-token check.
+     */
+    authorizeProvisioning?: AuthorizeProvisioning
   }
   interface FastifyRequest {
+    /**
+     * Set by the provisioning gate when a request to a provisioning endpoint
+     * was authorized by the configured provisioning policy (e.g. a valid
+     * onboarding token) instead of a capability invocation. When set, the auth
+     * and digest hooks and the handler's controller-consent check are skipped
+     * (the request carries a Bearer token, not an HTTP Signature).
+     */
+    provisioningAuthorized?: boolean
     /**
      * Set by the `parseAuthHeaders` hook when auth headers are present. Absent
      * for anonymous reads (the `requireAuthHeaders` hook lets safe methods

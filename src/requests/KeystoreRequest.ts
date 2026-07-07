@@ -148,17 +148,20 @@ export class KeystoreRequest {
     assertKeystoreConfigBody({ body, requestName })
 
     // The invocation must be *authorized by* the body's controller (see
-    // `verifyBodyControllerConsent`).
-    await verifyBodyControllerConsent({
-      request,
-      controller: body.controller,
-      allowedTarget: new URL(kmsKeystoresPath(), serverUrl).toString(),
-      allowedAction: 'write',
-      MismatchError: KeystoreControllerMismatchError,
-      requestName,
-      maxChainLength: KMS_MAX_CHAIN_LENGTH,
-      maxDelegationTtl: KMS_MAX_DELEGATION_TTL
-    })
+    // `verifyBodyControllerConsent`). Skipped when the provisioning policy
+    // already vouched for the request (e.g. a valid onboarding token).
+    if (!request.provisioningAuthorized) {
+      await verifyBodyControllerConsent({
+        request,
+        controller: body.controller,
+        allowedTarget: new URL(kmsKeystoresPath(), serverUrl).toString(),
+        allowedAction: 'write',
+        MismatchError: KeystoreControllerMismatchError,
+        requestName,
+        maxChainLength: KMS_MAX_CHAIN_LENGTH,
+        maxDelegationTtl: KMS_MAX_DELEGATION_TTL
+      })
+    }
 
     // Server-generated local id, per webkms-switch `generateRandom`: multibase
     // base58btc of a multihash-framed (identity, 16-byte) 128-bit random value.

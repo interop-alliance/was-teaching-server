@@ -1,6 +1,6 @@
 /**
  * At-rest cipher for WebKMS key records (`KMS_RECORD_KEK`, the optional
- * hardening increment; see `_spec/encrypted-kms-plan.md`). Envelope-encrypts the
+ * hardening increment). Envelope-encrypts the
  * secret-bearing fields of a stored key so a disk/database dump exposes only
  * ciphertext and a `kekId`, while the wire projection (`KmsKeyDescription`) and
  * the whole authorization model stay byte-for-byte identical.

@@ -157,15 +157,18 @@ export class SpacesRepositoryRequest {
 
     // The invocation must be *authorized by* the body's controller (spec:
     // Create Space): signed directly by it, or via a delegation chain rooted
-    // in it (see `verifyBodyControllerConsent`).
-    await verifyBodyControllerConsent({
-      request,
-      controller: body.controller,
-      allowedTarget: new URL(spacesPath(), serverUrl).toString(),
-      allowedAction: 'POST',
-      MismatchError: SpaceControllerMismatchError,
-      requestName: 'Create Space'
-    })
+    // in it (see `verifyBodyControllerConsent`). Skipped when the provisioning
+    // policy already vouched for the request (e.g. a valid onboarding token).
+    if (!request.provisioningAuthorized) {
+      await verifyBodyControllerConsent({
+        request,
+        controller: body.controller,
+        allowedTarget: new URL(spacesPath(), serverUrl).toString(),
+        allowedAction: 'POST',
+        MismatchError: SpaceControllerMismatchError,
+        requestName: 'Create Space'
+      })
+    }
 
     // zCap checks out, continue
     await storage.writeSpace({ spaceId, spaceDescription })

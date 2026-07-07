@@ -452,6 +452,55 @@ export class MissingAuthError extends ProblemError {
 }
 
 /**
+ * 403 — provisioning (creating Spaces or keystores) is refused by the server's
+ * configured provisioning policy (`authorizeProvisioning` returned `deny`).
+ * There is no dedicated `forbidden` problem type in `@interop/storage-core`, so
+ * this deliberately reuses `MISSING_AUTHORIZATION`.
+ */
+export class ProvisioningNotAuthorizedError extends ProblemError {
+  constructor() {
+    super({
+      type: ProblemTypes.MISSING_AUTHORIZATION,
+      title: 'Provisioning not authorized',
+      detail: 'Creating Spaces and keystores is not authorized on this server.',
+      statusCode: 403
+    })
+  }
+}
+
+/**
+ * 401 — the server requires an onboarding token to provision, but the request
+ * carried no `Authorization: Bearer <token>` header.
+ */
+export class MissingOnboardingTokenError extends ProblemError {
+  constructor() {
+    super({
+      type: ProblemTypes.MISSING_AUTHORIZATION,
+      title: 'Invalid request',
+      detail:
+        'An onboarding token (Authorization: Bearer) is required to create ' +
+        'Spaces and keystores on this server.',
+      statusCode: 401
+    })
+  }
+}
+
+/**
+ * 403 — the onboarding token presented in the `Authorization: Bearer` header
+ * did not match the configured token.
+ */
+export class InvalidOnboardingTokenError extends ProblemError {
+  constructor() {
+    super({
+      type: ProblemTypes.INVALID_AUTHORIZATION_HEADER,
+      title: 'Invalid request',
+      detail: 'The provided onboarding token is not valid.',
+      statusCode: 403
+    })
+  }
+}
+
+/**
  * 400 — the `Authorization` header did not include a `keyId` parameter.
  */
 export class MissingKeyIdError extends ProblemError {
@@ -580,7 +629,10 @@ export class SpaceControllerMismatchError extends ProblemError {
 }
 
 /**
- * 500 — an underlying storage operation failed.
+ * 500 — an underlying storage operation failed. The client-visible `title` /
+ * `detail` are deliberately generic: the underlying `cause` can carry
+ * server-internal specifics (filesystem paths, errnos, SQL) and is logged
+ * server-side by `handleError`, never serialized to the wire.
  * @param options {object}
  * @param options.cause {Error}   the underlying storage error
  * @param [options.requestName] {string}   request name used in the error title
@@ -589,10 +641,8 @@ export class StorageError extends ProblemError {
   constructor({ cause, requestName }: { cause: Error; requestName?: string }) {
     super({
       type: ProblemTypes.STORAGE_ERROR,
-      title: requestName
-        ? `Storage Error (${requestName}): ${cause.message}`
-        : `Storage Error: ${cause.message}`,
-      detail: cause.message,
+      title: requestName ? `Storage Error (${requestName})` : 'Storage Error',
+      detail: 'An internal storage error occurred.',
       statusCode: 500,
       cause
     })

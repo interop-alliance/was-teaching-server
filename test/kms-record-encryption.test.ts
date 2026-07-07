@@ -1,6 +1,6 @@
 /**
- * End-to-end tests for at-rest WebKMS key-record encryption (`KMS_RECORD_KEK`;
- * see `_spec/encrypted-kms-plan.md`), driving `createApp` with a record KEK and
+ * End-to-end tests for at-rest WebKMS key-record encryption
+ * (`KMS_RECORD_KEK`), driving `createApp` with a record KEK and
  * inspecting what lands on disk. Complements the pure-function coverage in
  * test/kms-record-cipher.test.ts:
  * - round-trip: a key generated under a KEK is stored encrypted (no plaintext

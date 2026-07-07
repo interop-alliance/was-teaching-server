@@ -164,6 +164,25 @@ backend and security plugins. See
 | `STORAGE_LIMIT_PER_SPACE` | (unset = unlimited)  | Per-Space storage quota in **bytes** (spec "Quotas"). When set, writes that would push a Space over this limit are rejected with `quota-exceeded` (507). Unset means each Space is unlimited.                                                                                                                                                                                                                                                                                       |
 | `MAX_UPLOAD_BYTES`        | (unset = no cap)     | Per-upload size cap in **bytes** (spec "Quotas", the backend's `maxUploadBytes` constraint). When set, a single upload exceeding it is rejected with `payload-too-large` (413). Unset means no per-upload cap (distinct from the cumulative `STORAGE_LIMIT_PER_SPACE`).                                                                                                                                                                                                             |
 | `KMS_RECORD_KEK`          | (unset = disabled)   | At-rest encryption key for WebKMS key records: a single AES-256 key-encryption key (KEK) in base58btc Multikey form (`secretKeyMultibase`, header `0xa2 0x01`). When set, the secret fields of newly generated `/kms` key records are envelope-encrypted under it before they reach storage; existing plaintext records stay readable. Unset means key records are stored **plaintext** (the teaching default). See [`_spec/encrypted-kms-plan.md`](./_spec/encrypted-kms-plan.md). |
+| `WAS_ONBOARDING_TOKEN`    | (unset = disabled)   | Shared-secret onboarding token gating the two open provisioning endpoints (`POST /spaces/` and `POST /kms/keystores`). When set, those two endpoints require an `Authorization: Bearer <token>` header, which then substitutes for ZCap verification on that request; every other operation still uses the normal capability-invocation path. Unset means provisioning is open -- anyone may create a Space or keystore by proving control of the `controller` DID in the request body (the teaching default). See [Provisioning gate](#provisioning-gate).                                                                                       |
+
+### Provisioning gate
+
+By default, anyone may create a Space (`POST /spaces/`) or a WebKMS keystore
+(`POST /kms/keystores`) by proving control of the `controller` DID named in the
+request body -- the open, teaching-server behavior. A deployment can gate those
+two endpoints in one of two mutually-exclusive ways:
+
+- **Onboarding token** -- set `WAS_ONBOARDING_TOKEN` (or pass `onboardingToken`
+  to the `fastifyWas` plugin / `createApp`). Provisioning then requires an
+  `Authorization: Bearer <token>` header matching the configured secret; a valid
+  token substitutes for ZCap verification on that request.
+- **Custom policy** -- pass an `authorizeProvisioning` callback to the plugin. It
+  receives `{ request }` and returns `'verify'` (run the normal ZCap path),
+  `'grant'` (authorize the request itself, skipping ZCap verification), or
+  `'deny'` (403); it may also throw a `ProblemError` for a custom response.
+
+Both configure the same seam; setting both at once is rejected at startup.
 
 ### Storage Backends
 
@@ -176,7 +195,8 @@ contract (`src/types.ts`):
   soft limit), conditional writes use row locks instead of an in-process mutex
   (so multiple server processes can share one database), and blob uploads are
   buffered `bytea` writes bounded by `MAX_UPLOAD_BYTES` (default cap 64 MiB when
-  unset). Design details: [`_spec/postgres-plan.md`](./_spec/postgres-plan.md).
+  unset). Design details:
+  [`_spec/historical/postgres-plan.md`](./_spec/historical/postgres-plan.md).
 
 To run a disposable local Postgres with Podman (substitute `docker` if you
 prefer; the commands are identical):

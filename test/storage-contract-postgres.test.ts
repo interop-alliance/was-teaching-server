@@ -4,7 +4,8 @@
  * migration path and back).
  *
  * OPT-IN: requires a disposable Postgres reachable via `WAS_TEST_DATABASE_URL`
- * (see _spec/postgres-plan.md, "Running Postgres locally"); skipped with a
+ * (the README's "Storage Backends" section has a Podman one-liner); skipped
+ * with a
  * visible notice when unset, so `pnpm test-node` passes without a container.
  * Isolation: each harness operates in a throwaway `was_test_<hex>` schema
  * (the Postgres analogue of the per-suite temp dir), dropped on cleanup, so

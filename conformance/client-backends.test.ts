@@ -17,7 +17,7 @@ import assert from 'node:assert'
 import { ConflictError, ValidationError } from '@interop/was-client'
 import type { Space, BackendRegistration } from '@interop/was-client'
 
-import { buildZcapClients } from './helpers.js'
+import { buildZcapClients, provisionSpace } from './helpers.js'
 
 describe('WasClient — BYOS backend registration', () => {
   let alice: any
@@ -44,7 +44,7 @@ describe('WasClient — BYOS backend registration', () => {
    * @returns {Promise<Space>}
    */
   async function newSpace(name: string): Promise<Space> {
-    const space = await alice.was.createSpace({ name })
+    const space = await provisionSpace({ was: alice.was, name })
     createdSpaces.push(space)
     return space
   }
