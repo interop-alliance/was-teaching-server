@@ -12,6 +12,7 @@ import { formatEtag } from '../src/lib/etag.js'
 import {
   PreconditionFailedError,
   ResourceNotFoundError,
+  UniqueAttributeConflictError,
   QuotaExceededError,
   CountQuotaExceededError,
   PayloadTooLargeError,
@@ -1050,6 +1051,392 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(doc.metaVersion, 1)
         assert.deepEqual(doc.data, { n: 2 })
         assert.deepEqual(doc.custom, { name: 'Two' })
+      })
+    })
+
+    describe('blinded-index query', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-blinded'
+      const HMAC_ID = 'did:key:zHmacKeyA'
+      const OTHER_HMAC_ID = 'did:key:zHmacKeyB'
+
+      /**
+       * A stored EDV encrypted-document envelope carrying one blinded
+       * `indexed` entry. The attribute names/values stand in for the client's
+       * HMAC-blinded base64url strings -- the backend matches them opaquely.
+       */
+      function envelope(
+        docId: string,
+        attributes: Array<{ name: string; value: string; unique?: boolean }>,
+        hmacId = HMAC_ID
+      ): unknown {
+        return {
+          id: docId,
+          sequence: 0,
+          indexed: [
+            {
+              hmac: { id: hmacId, type: 'Sha256HmacKey2019' },
+              sequence: 0,
+              attributes
+            }
+          ],
+          jwe: {
+            protected: 'eyJlbmMiOiJYQzIwUCJ9',
+            iv: 'aXY',
+            ciphertext: 'Y2lwaGVydGV4dA',
+            tag: 'dGFn'
+          }
+        }
+      }
+
+      /** Runs a query and asserts it resolved a documents page (not a count). */
+      async function queryPage(options: {
+        equals?: Array<Record<string, string>>
+        has?: string[]
+        index?: string
+        limit?: number
+        cursor?: string
+      }) {
+        const { index = HMAC_ID, equals, has, limit, cursor } = options
+        const result = await harness.backend.queryByBlindedIndex!({
+          spaceId,
+          collectionId: 'col',
+          query: { index, ...(equals && { equals }), ...(has && { has }) },
+          ...(limit !== undefined && { limit }),
+          ...(cursor !== undefined && { cursor })
+        })
+        assert.ok('documents' in result, 'expected a documents page')
+        return result
+      }
+
+      /** The `id`s of a page's envelope documents. */
+      function docIds(page: { documents: unknown[] }): string[] {
+        return page.documents.map(document => (document as { id: string }).id)
+      }
+
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId)
+        const { backend } = harness
+        const write = (resourceId: string, document: unknown) =>
+          backend.writeResource({
+            spaceId,
+            collectionId: 'col',
+            resourceId,
+            input: jsonInput(document)
+          })
+        await write(
+          'alpha',
+          envelope('alpha', [
+            { name: 'n1', value: 'v1' },
+            { name: 'n2', value: 'v2' }
+          ])
+        )
+        await write('beta', envelope('beta', [{ name: 'n1', value: 'v1' }]))
+        await write('gamma', envelope('gamma', [{ name: 'n1', value: 'vX' }]))
+        // Indexed under a different HMAC key: invisible to HMAC_ID queries.
+        await write(
+          'other-key',
+          envelope('other-key', [{ name: 'n1', value: 'v1' }], OTHER_HMAC_ID)
+        )
+        // A JSON document with no `indexed` at all: never matches.
+        await write('plain', { plain: true })
+        // Binary and tombstoned resources are excluded from the candidate set.
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'bin',
+          input: binaryInput(Buffer.from('x'))
+        })
+        await write('gone', envelope('gone', [{ name: 'n1', value: 'v1' }]))
+        await backend.deleteResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'gone'
+        })
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('equals matches by blinded name/value, in ascending resourceId order, documents verbatim', async () => {
+        const page = await queryPage({ equals: [{ n1: 'v1' }] })
+        // 'other-key' (different hmac id) and 'gone' (tombstone) excluded.
+        assert.deepEqual(docIds(page), ['alpha', 'beta'])
+        assert.equal(page.hasMore, false)
+        assert.equal(page.cursor, undefined)
+        // The stored envelope passes through untouched (jwe and all).
+        assert.deepEqual(
+          page.documents[0],
+          envelope('alpha', [
+            { name: 'n1', value: 'v1' },
+            { name: 'n2', value: 'v2' }
+          ])
+        )
+      })
+
+      it('equals ANDs the pairs within one element', async () => {
+        const page = await queryPage({ equals: [{ n1: 'v1', n2: 'v2' }] })
+        assert.deepEqual(docIds(page), ['alpha'])
+        const none = await queryPage({ equals: [{ n1: 'v1', n2: 'nope' }] })
+        assert.deepEqual(none.documents, [])
+      })
+
+      it('equals ORs across array elements', async () => {
+        const page = await queryPage({
+          equals: [{ n2: 'v2' }, { n1: 'vX' }]
+        })
+        assert.deepEqual(docIds(page), ['alpha', 'gamma'])
+      })
+
+      it('an empty equals element matches nothing (Mongo $all:[] parity)', async () => {
+        const page = await queryPage({ equals: [{}] })
+        assert.deepEqual(page.documents, [])
+      })
+
+      it('has requires every named attribute, value-independent', async () => {
+        const one = await queryPage({ has: ['n1'] })
+        assert.deepEqual(docIds(one), ['alpha', 'beta', 'gamma'])
+        const both = await queryPage({ has: ['n1', 'n2'] })
+        assert.deepEqual(docIds(both), ['alpha'])
+      })
+
+      it('an unknown index matches nothing', async () => {
+        const page = await queryPage({
+          index: 'did:key:zUnregistered',
+          equals: [{ n1: 'v1' }]
+        })
+        assert.deepEqual(page.documents, [])
+        assert.equal(page.hasMore, false)
+      })
+
+      it('count resolves only the match total', async () => {
+        const result = await harness.backend.queryByBlindedIndex!({
+          spaceId,
+          collectionId: 'col',
+          query: { index: HMAC_ID, equals: [{ n1: 'v1' }] },
+          count: true
+        })
+        assert.deepEqual(result, { count: 2 })
+      })
+
+      it('paginates with the opaque cursor chain', async () => {
+        const page1 = await queryPage({ has: ['n1'], limit: 2 })
+        assert.deepEqual(docIds(page1), ['alpha', 'beta'])
+        assert.equal(page1.hasMore, true)
+        assert.ok(page1.cursor, 'expected a cursor on a non-final page')
+
+        const page2 = await queryPage({
+          has: ['n1'],
+          limit: 2,
+          cursor: page1.cursor
+        })
+        assert.deepEqual(docIds(page2), ['gamma'])
+        assert.equal(page2.hasMore, false)
+        assert.equal(page2.cursor, undefined)
+      })
+
+      it('a page that exactly fills the matches has no trailing empty page', async () => {
+        const page = await queryPage({ has: ['n1'], limit: 3 })
+        assert.deepEqual(docIds(page), ['alpha', 'beta', 'gamma'])
+        assert.equal(page.hasMore, false)
+      })
+
+      it('rejects a malformed cursor with InvalidCursorError', async () => {
+        await expect(
+          harness.backend.queryByBlindedIndex!({
+            spaceId,
+            collectionId: 'col',
+            query: { index: HMAC_ID, has: ['n1'] },
+            cursor: 'not!!valid'
+          })
+        ).rejects.toBeInstanceOf(InvalidCursorError)
+      })
+
+      it('resolves empty on an absent Collection', async () => {
+        const result = await harness.backend.queryByBlindedIndex!({
+          spaceId,
+          collectionId: 'no-such-collection',
+          query: { index: HMAC_ID, has: ['n1'] }
+        })
+        assert.ok('documents' in result)
+        assert.deepEqual(result.documents, [])
+      })
+    })
+
+    describe('unique blinded attributes (write-time enforcement)', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-unique'
+      const HMAC_ID = 'did:key:zHmacKeyA'
+      const OTHER_HMAC_ID = 'did:key:zHmacKeyB'
+
+      /** An envelope with one indexed entry; attributes may carry `unique`. */
+      function envelope(
+        docId: string,
+        attributes: Array<{ name: string; value: string; unique?: boolean }>,
+        hmacId = HMAC_ID
+      ): unknown {
+        return {
+          id: docId,
+          sequence: 0,
+          indexed: [
+            {
+              hmac: { id: hmacId, type: 'Sha256HmacKey2019' },
+              sequence: 0,
+              attributes
+            }
+          ],
+          jwe: {
+            protected: 'eyJlbmMiOiJYQzIwUCJ9',
+            iv: 'aXY',
+            ciphertext: 'Y2lwaGVydGV4dA',
+            tag: 'dGFn'
+          }
+        }
+      }
+
+      function write(resourceId: string, document: unknown) {
+        return harness.backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId,
+          input: jsonInput(document)
+        })
+      }
+
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId)
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('rejects a second claim of a unique triple with UniqueAttributeConflictError (409)', async () => {
+        await write(
+          'holder',
+          envelope('holder', [{ name: 'n1', value: 'v1', unique: true }])
+        )
+        await expect(
+          write(
+            'claimant',
+            envelope('claimant', [{ name: 'n1', value: 'v1', unique: true }])
+          )
+        ).rejects.toBeInstanceOf(UniqueAttributeConflictError)
+        await expect(
+          write(
+            'claimant',
+            envelope('claimant', [{ name: 'n1', value: 'v1', unique: true }])
+          )
+        ).rejects.toMatchObject({ statusCode: 409 })
+      })
+
+      it('conflicts require unique on BOTH sides (reference-server parity)', async () => {
+        // The same (name, value) WITHOUT `unique` coexists with the holder's
+        // unique claim...
+        await write(
+          'nonunique',
+          envelope('nonunique', [{ name: 'n1', value: 'v1' }])
+        )
+        // ...and a unique claim does not conflict with an existing NON-unique
+        // holder of the same pair either (only unique-vs-unique collides).
+        await write(
+          'plain-pair',
+          envelope('plain-pair', [{ name: 'nX', value: 'vX' }])
+        )
+        await write(
+          'unique-over-plain',
+          envelope('unique-over-plain', [
+            { name: 'nX', value: 'vX', unique: true }
+          ])
+        )
+      })
+
+      it('keys on the full (hmac id, name, value) triple', async () => {
+        // The same unique (name, value) under a DIFFERENT HMAC key: no conflict.
+        await write(
+          'other-key',
+          envelope(
+            'other-key',
+            [{ name: 'n1', value: 'v1', unique: true }],
+            OTHER_HMAC_ID
+          )
+        )
+      })
+
+      it('an update keeping its own unique attribute never self-conflicts', async () => {
+        const { version } = await write(
+          'holder',
+          envelope('holder', [{ name: 'n1', value: 'v1', unique: true }])
+        )
+        assert.ok(version >= 2, 'expected the overwrite to bump the version')
+      })
+
+      it("an update claiming another live document's unique triple is rejected", async () => {
+        await write(
+          'mover',
+          envelope('mover', [{ name: 'n2', value: 'v2', unique: true }])
+        )
+        await expect(
+          write(
+            'mover',
+            envelope('mover', [{ name: 'n1', value: 'v1', unique: true }])
+          )
+        ).rejects.toBeInstanceOf(UniqueAttributeConflictError)
+      })
+
+      it('a tombstoned holder frees its unique claim', async () => {
+        await write(
+          'ghost',
+          envelope('ghost', [{ name: 'n3', value: 'v3', unique: true }])
+        )
+        await harness.backend.deleteResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'ghost'
+        })
+        await write(
+          'successor',
+          envelope('successor', [{ name: 'n3', value: 'v3', unique: true }])
+        )
+      })
+
+      it('the unique conflict (409) wins over a failing precondition (412)', async () => {
+        // Both apply: the write claims a held unique triple AND carries a
+        // stale If-Match. Both backends must agree on the precedence.
+        await expect(
+          harness.backend.writeResource({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'claimant',
+            input: jsonInput(
+              envelope('claimant', [{ name: 'n1', value: 'v1', unique: true }])
+            ),
+            ifMatch: formatEtag(999)
+          })
+        ).rejects.toBeInstanceOf(UniqueAttributeConflictError)
+      })
+
+      it('exactly one of N concurrent claimants of a unique triple wins', async () => {
+        const claimants = ['c1', 'c2', 'c3', 'c4', 'c5']
+        const results = await Promise.allSettled(
+          claimants.map(resourceId =>
+            write(
+              resourceId,
+              envelope(resourceId, [
+                { name: 'race', value: 'token', unique: true }
+              ])
+            )
+          )
+        )
+        const wins = results.filter(result => result.status === 'fulfilled')
+        const losses = results.filter(
+          result =>
+            result.status === 'rejected' &&
+            result.reason instanceof UniqueAttributeConflictError
+        )
+        assert.equal(wins.length, 1, 'exactly one claimant must win')
+        assert.equal(losses.length, claimants.length - 1)
       })
     })
 

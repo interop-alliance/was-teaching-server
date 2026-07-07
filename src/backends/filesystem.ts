@@ -6,7 +6,7 @@
  */
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { mkdir, rm, stat as fsStat, writeFile } from 'node:fs/promises'
+import { mkdir, rm, stat as fsStat } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -54,7 +54,22 @@ import { encodeCursor, decodeCursor } from '../lib/cursor.js'
 import { buildExportManifest } from '../lib/exportManifest.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
 import { isJson } from '../lib/isJson.js'
+import {
+  atomicWriteFile,
+  atomicCreateFile,
+  tempPathFor,
+  commitTempFile
+} from '../lib/atomicFile.js'
 import { DEFAULT_PAGE_SIZE, clampPageSize } from '../lib/pagination.js'
+import {
+  runBlindedIndexQuery,
+  collectUniqueBlindedTerms,
+  assertNoUniqueBlindedConflict
+} from '../lib/blindedIndex.js'
+import type {
+  BlindedIndexQuery,
+  BlindedIndexQueryPage
+} from '../lib/blindedIndex.js'
 import {
   assertWritePrecondition,
   assertMetaWritePrecondition
@@ -322,8 +337,8 @@ export class FileSystemBackend implements StorageBackend {
    * It advertises the `conditional-writes` affordance: it exposes a per-Resource
    * `version` as an HTTP `ETag` validator and honors `If-Match` / `If-None-Match`
    * write preconditions atomically (returning `412 precondition-failed` on a
-   * mismatch). The remaining `features` vocabulary tokens (`blinded-index-query`,
-   * `chunked-streams`) are not implemented yet and are added as each lands.
+   * mismatch). The remaining `features` vocabulary token (`chunked-streams`)
+   * is not implemented yet and is added when it lands.
    * (Client-side encryption is deliberately not a backend feature: encrypted
    * documents are opaque client-encrypted JSON this backend already stores
    * faithfully, with no server cooperation.)
@@ -343,7 +358,9 @@ export class FileSystemBackend implements StorageBackend {
       persistence: 'durable',
       // `changes-query`: serves the `changes` profile of the reserved `query`
       // endpoint -- the replication change feed (`changesSince`).
-      features: ['conditional-writes', 'changes-query']
+      // `blinded-index-query`: serves the `blinded-index` profile -- EDV
+      // blinded-attribute queries (`queryByBlindedIndex`).
+      features: ['conditional-writes', 'changes-query', 'blinded-index-query']
     }
   }
 
@@ -813,10 +830,12 @@ export class FileSystemBackend implements StorageBackend {
 
     const spaceDir = await this._ensureSpaceDir({ spaceId })
     const filename = `.space.${spaceId}.json`
-    const metaStore = new MetadataJsonStore<SpaceDescription>({
-      file: path.join(spaceDir, filename)
+    // Durable full replacement: `MetadataJsonStore.read` parses plain JSON, so
+    // an atomically-written JSON string round-trips through the same read path.
+    await atomicWriteFile({
+      filePath: path.join(spaceDir, filename),
+      data: JSON.stringify(spaceDescription)
     })
-    await metaStore.write(spaceDescription)
   }
 
   /**
@@ -1248,7 +1267,10 @@ export class FileSystemBackend implements StorageBackend {
           liveResourceCount++
         }
 
-        await fs.promises.writeFile(path.join(collectionDir, fileName), body)
+        await atomicWriteFile({
+          filePath: path.join(collectionDir, fileName),
+          data: body
+        })
         stats.resourcesCreated++
 
         // A metadata sidecar travels with a newly-created resource (preserving
@@ -1256,10 +1278,10 @@ export class FileSystemBackend implements StorageBackend {
         // `getResourceMetadata` to fall back to the file's stat times.
         const metadataBytes = resourceMetadata.get(resourceId)
         if (metadataBytes) {
-          await fs.promises.writeFile(
-            this._metaSidecarPath({ collectionDir, resourceId }),
-            metadataBytes
-          )
+          await atomicWriteFile({
+            filePath: this._metaSidecarPath({ collectionDir, resourceId }),
+            data: metadataBytes
+          })
         }
 
         const resourcePolicy = resourcePolicies.get(resourceId)
@@ -1303,10 +1325,10 @@ export class FileSystemBackend implements StorageBackend {
           stats.resourcesSkipped++
           continue
         }
-        await fs.promises.writeFile(
-          this._metaSidecarPath({ collectionDir, resourceId }),
-          metadataBytes
-        )
+        await atomicWriteFile({
+          filePath: this._metaSidecarPath({ collectionDir, resourceId }),
+          data: metadataBytes
+        })
         stats.resourcesCreated++
       }
     }
@@ -1380,10 +1402,10 @@ export class FileSystemBackend implements StorageBackend {
       collectionId
     })
     const filename = `.collection.${collectionId}.json`
-    const metaStore = new MetadataJsonStore<CollectionDescription>({
-      file: path.join(collectionDir, filename)
+    await atomicWriteFile({
+      filePath: path.join(collectionDir, filename),
+      data: JSON.stringify(collectionDescription)
     })
-    await metaStore.write(collectionDescription)
   }
 
   /**
@@ -1618,16 +1640,47 @@ export class FileSystemBackend implements StorageBackend {
       collectionId,
       resourceId
     })
-    return this._writeMutex.run(lockKey, () =>
-      this._writeResourceLocked({
-        spaceId,
-        collectionDir,
-        resourceId,
-        input,
-        ifMatch,
-        ifNoneMatch
-      })
-    )
+    const write = () =>
+      this._writeMutex.run(lockKey, () =>
+        this._writeResourceLocked({
+          spaceId,
+          collectionDir,
+          resourceId,
+          input,
+          ifMatch,
+          ifNoneMatch
+        })
+      )
+
+    // The EDV unique-attribute invariant (`unique: true` blinded attributes;
+    // the `blinded-index-query` feature): a write claiming a unique blinded
+    // triple must not collide with another live document's claim. Only a
+    // unique-carrying JSON write can create a new claim, so only such writes
+    // pay for it: they serialize per Collection (the outer lock, so two racing
+    // claimants cannot both pass the scan), evaluate the conflict against the
+    // Collection's other live JSON documents, then take the ordinary
+    // per-Resource lock nested inside. Distinct-key nesting cannot deadlock:
+    // plain writes never hold a Resource key while waiting on a Collection key.
+    if (
+      input.kind === 'json' &&
+      collectUniqueBlindedTerms({ document: input.data }).length > 0
+    ) {
+      return this._writeMutex.run(
+        this._collectionLockKey({ spaceId, collectionId }),
+        async () => {
+          assertNoUniqueBlindedConflict({
+            document: input.data,
+            candidates: await this._readJsonCandidates({
+              spaceId,
+              collectionId,
+              excludeResourceId: resourceId
+            })
+          })
+          return write()
+        }
+      )
+    }
+    return write()
   }
 
   /**
@@ -1718,7 +1771,9 @@ export class FileSystemBackend implements StorageBackend {
       // on the fly; a data-plane backend may not have seen this Collection yet).
       this.logger.info('Creating JSON resource')
       await mkdir(path.dirname(filePath), { recursive: true })
-      await writeFile(filePath, serialized)
+      // Durable, atomic replacement (write-temp + fsync + rename + dir fsync):
+      // the final path never observes a torn write, even across a crash.
+      await atomicWriteFile({ filePath, data: serialized })
     } else {
       this.logger.info('Writing blob')
       // Pre-flight the declared size (when present) against the per-upload cap,
@@ -1749,18 +1804,26 @@ export class FileSystemBackend implements StorageBackend {
         })
         guards.push(this._quotaGuard({ spaceId, capacityBytes, headroomBytes }))
       }
+      // Stream into a temp file in the same directory, then durably commit it
+      // (fsync + rename + dir fsync) once the whole body has been written and
+      // verified. Streaming to the final path directly would expose a truncated
+      // representation under the resource's name if the process crashed
+      // mid-stream; staging + rename makes the resource appear only whole.
+      const tempPath = tempPathFor(filePath)
       try {
         await pipeline([
           input.stream,
           ...guards,
-          fs.createWriteStream(filePath)
+          fs.createWriteStream(tempPath)
         ])
+        await commitTempFile({ tempPath, filePath })
       } catch (err) {
         // Remove the partial file on ANY failure: a guard rejection (413/507),
         // an aborted upload, or a streamed `Digest` mismatch (the request layer
         // verifies the body's digest as it flows). A failed write must not leave
-        // a truncated or unverified representation behind.
-        await rm(filePath, { force: true })
+        // a truncated or unverified representation behind. Only the temp path is
+        // ever staged into, so a failed write never touches the final path.
+        await rm(tempPath, { force: true })
         throw err
       }
     }
@@ -1820,6 +1883,25 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
   }): string {
     return `${spaceId}/${collectionId}/${resourceId}`
+  }
+
+  /**
+   * The Collection-level mutex key, held by unique-blinded-attribute writes to
+   * serialize their conflict scans. Namespaced (`unique:` prefix) so it can
+   * never collide with a per-Resource key.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {string}
+   */
+  _collectionLockKey({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): string {
+    return `unique:${spaceId}/${collectionId}`
   }
 
   /**
@@ -1973,10 +2055,10 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     sidecar: MetaSidecar
   }): Promise<void> {
-    const metaStore = new MetadataJsonStore<MetaSidecar>({
-      file: this._metaSidecarPath({ collectionDir, resourceId })
+    await atomicWriteFile({
+      filePath: this._metaSidecarPath({ collectionDir, resourceId }),
+      data: JSON.stringify(sidecar)
     })
-    await metaStore.write(sidecar)
   }
 
   /**
@@ -2479,6 +2561,113 @@ export class FileSystemBackend implements StorageBackend {
     }
   }
 
+  /**
+   * Blinded-index query (the `blinded-index` query profile; see the
+   * `StorageBackend.queryByBlindedIndex` contract). Enumerates the Collection
+   * dir, reads and parses every live JSON Resource, and hands the candidates
+   * to the shared evaluator (`lib/blindedIndex.ts`) for matching, ordering,
+   * and cursor pagination. O(n) over the Collection per call, with every JSON
+   * body read -- acceptable for this teaching backend; an indexed backend
+   * would answer from flattened attribute tokens. Tombstones are excluded
+   * naturally (no live content file); binary Resources and unparsable JSON
+   * are skipped.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.query {BlindedIndexQuery}
+   * @param [options.count] {boolean}   return only the match count
+   * @param [options.limit] {number}   requested page size
+   * @param [options.cursor] {string}   opaque cursor from a prior page
+   * @returns {Promise<{ count: number } | BlindedIndexQueryPage>}
+   */
+  async queryByBlindedIndex({
+    spaceId,
+    collectionId,
+    query,
+    count,
+    limit,
+    cursor
+  }: {
+    spaceId: string
+    collectionId: string
+    query: BlindedIndexQuery
+    count?: boolean
+    limit?: number
+    cursor?: string
+  }): Promise<{ count: number } | BlindedIndexQueryPage> {
+    const candidates = await this._readJsonCandidates({
+      spaceId,
+      collectionId
+    })
+    return runBlindedIndexQuery({ candidates, query, count, limit, cursor })
+  }
+
+  /**
+   * Reads and parses every live JSON Resource of a Collection -- the candidate
+   * set for both the blinded-index query and the unique-attribute conflict
+   * scan. Tombstones are excluded naturally (no live content file); binary
+   * Resources, unparsable JSON, and (optionally) one excluded Resource are
+   * skipped. An absent Collection dir resolves empty.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param [options.excludeResourceId] {string}   omit this Resource (the
+   *   conflict scan excludes the document being written)
+   * @returns {Promise<Array<{ resourceId: string, document: unknown }>>}
+   */
+  private async _readJsonCandidates({
+    spaceId,
+    collectionId,
+    excludeResourceId
+  }: {
+    spaceId: string
+    collectionId: string
+    excludeResourceId?: string
+  }): Promise<Array<{ resourceId: string; document: unknown }>> {
+    const collectionDir = this._collectionDir({ spaceId, collectionId })
+
+    let entries: fs.Dirent[] = []
+    try {
+      entries = await fs.promises.readdir(collectionDir, {
+        withFileTypes: true
+      })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw err
+      }
+    }
+
+    return (
+      await Promise.all(
+        entries
+          .filter(entry => entry.isFile() && entry.name.startsWith('r.'))
+          .map(entry => ({
+            fileName: entry.name,
+            ...parseResourceFileName(entry.name)
+          }))
+          .filter(
+            ({ resourceId, contentType }) =>
+              resourceId !== excludeResourceId && isJson({ contentType })
+          )
+          .map(async ({ resourceId, fileName }) => {
+            try {
+              return {
+                resourceId,
+                document: JSON.parse(
+                  await fs.promises.readFile(
+                    path.join(collectionDir, fileName),
+                    'utf8'
+                  )
+                ) as unknown
+              }
+            } catch {
+              return undefined
+            }
+          })
+      )
+    ).filter(candidate => candidate !== undefined)
+  }
+
   // Policies
 
   /**
@@ -2559,10 +2748,10 @@ export class FileSystemBackend implements StorageBackend {
     } else {
       await this._ensureSpaceDir({ spaceId })
     }
-    const metaStore = new MetadataJsonStore<PolicyDocument>({
-      file: this._policyFile({ spaceId, collectionId, resourceId })
+    await atomicWriteFile({
+      filePath: this._policyFile({ spaceId, collectionId, resourceId }),
+      data: JSON.stringify(policy)
     })
-    await metaStore.write(policy)
   }
 
   /**
@@ -2630,10 +2819,10 @@ export class FileSystemBackend implements StorageBackend {
     record: StoredBackendRecord
   }): Promise<void> {
     await this._ensureSpaceDir({ spaceId })
-    const metaStore = new MetadataJsonStore<StoredBackendRecord>({
-      file: this._backendFile({ spaceId, backendId })
+    await atomicWriteFile({
+      filePath: this._backendFile({ spaceId, backendId }),
+      data: JSON.stringify(record)
     })
-    await metaStore.write(record)
   }
 
   /**
@@ -2751,10 +2940,10 @@ export class FileSystemBackend implements StorageBackend {
     config: KeystoreConfig
   }): Promise<void> {
     await mkdir(this._keystoreDir(keystoreId), { recursive: true })
-    const metaStore = new MetadataJsonStore<KeystoreConfig>({
-      file: this._keystoreConfigFile(keystoreId)
+    await atomicWriteFile({
+      filePath: this._keystoreConfigFile(keystoreId),
+      data: JSON.stringify(config)
     })
-    await metaStore.write(config)
   }
 
   /**
@@ -2801,10 +2990,10 @@ export class FileSystemBackend implements StorageBackend {
       ) {
         throw new KeystoreStateConflictError()
       }
-      const metaStore = new MetadataJsonStore<KeystoreConfig>({
-        file: this._keystoreConfigFile(keystoreId)
+      await atomicWriteFile({
+        filePath: this._keystoreConfigFile(keystoreId),
+        data: JSON.stringify(config)
       })
-      await metaStore.write(config)
     })
   }
 
@@ -2891,7 +3080,13 @@ export class FileSystemBackend implements StorageBackend {
     const keyFile = this._keyFile({ keystoreId, localId })
     await mkdir(path.dirname(keyFile), { recursive: true })
     try {
-      await writeFile(keyFile, JSON.stringify(record, null, 2), { flag: 'wx' })
+      // Durable, atomic create-only write: `atomicCreateFile` preserves the
+      // `wx` uniqueness (an existing key file rejects with EEXIST) while also
+      // fsyncing the record and its directory.
+      await atomicCreateFile({
+        filePath: keyFile,
+        data: JSON.stringify(record, null, 2)
+      })
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
         throw new KeyIdConflictError()
@@ -3023,8 +3218,12 @@ export class FileSystemBackend implements StorageBackend {
     })
     await mkdir(path.dirname(revocationFile), { recursive: true })
     try {
-      await writeFile(revocationFile, JSON.stringify(record, null, 2), {
-        flag: 'wx'
+      // Durable, atomic create-only write: `atomicCreateFile` preserves the
+      // `wx` uniqueness (an existing revocation rejects with EEXIST) while also
+      // fsyncing the record and its directory.
+      await atomicCreateFile({
+        filePath: revocationFile,
+        data: JSON.stringify(record, null, 2)
       })
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') {

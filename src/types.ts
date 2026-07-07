@@ -37,6 +37,11 @@ import type {
   IDocumentLoader
 } from '@interop/data-integrity-core/loader'
 
+import type {
+  BlindedIndexQuery,
+  BlindedIndexQueryPage
+} from './lib/blindedIndex.js'
+
 // The shared WAS wire model now lives in `@interop/storage-core`. Import the
 // shapes referenced by the `StorageBackend` contract below, and re-export the
 // whole data-model surface so the rest of the server keeps importing it from
@@ -54,6 +59,10 @@ import type {
   ImportStats,
   PolicyDocument
 } from '@interop/storage-core'
+
+// Surface the blinded-index query shapes referenced by the `StorageBackend`
+// contract (`queryByBlindedIndex`) from this one module.
+export type { BlindedIndexQuery, BlindedIndexQueryPage }
 
 // Surface the reused @interop/data-integrity-core types from this one module.
 export type {
@@ -521,6 +530,15 @@ export interface StorageBackend {
    * atomically with the write: `ifMatch` is an update-if-unchanged (the current
    * ETag must equal it), `ifNoneMatch` is a create-if-absent (`If-None-Match:
    * *`); a mismatch rejects with `precondition-failed` (412).
+   *
+   * A backend carrying the `blinded-index-query` feature also enforces the EDV
+   * unique-attribute invariant on JSON writes: an `indexed` blinded attribute
+   * marked `unique: true` whose (HMAC key id, name, value) triple is already
+   * claimed by another live document in the same Collection rejects with
+   * `UniqueAttributeConflictError` (409), evaluated atomically with the write
+   * (see `lib/blindedIndex.ts`). Conflicts require `unique: true` on both
+   * sides, and a document keeping its own unique attribute across an update
+   * never self-conflicts.
    */
   writeResource(options: {
     spaceId: string
@@ -620,6 +638,33 @@ export interface StorageBackend {
     }>
     checkpoint: { id: string; updatedAt: string } | null
   }>
+
+  /**
+   * OPTIONAL blinded-index query (the `blinded-index` query profile; the
+   * `blinded-index-query` feature token). Evaluates an EDV query -- `equals`
+   * (OR across elements of an AND within each element's blinded `{name:
+   * value}` pairs) or `has` (every named blinded attribute present) -- against
+   * the HMAC-blinded `indexed` entries of the Collection's live JSON
+   * documents, scoped to the `query.index` HMAC key id. Matching is opaque
+   * string comparison; the backend performs no cryptography. With `count`,
+   * resolves only the match total; otherwise a page of the matching stored
+   * documents verbatim, in ascending `resourceId` order, paginated with the
+   * standard opaque cursor (`cursor` present iff `hasMore`; a malformed one
+   * rejects with `invalid-cursor` 400). Both first-party backends answer
+   * through `lib/blindedIndex.ts` so semantics cannot drift.
+   *
+   * OPTIONAL: a backend that omits this method does not serve the profile,
+   * and the request layer returns `unsupported-operation` (501). The Space and
+   * Collection are guaranteed to exist by the request layer.
+   */
+  queryByBlindedIndex?(options: {
+    spaceId: string
+    collectionId: string
+    query: BlindedIndexQuery
+    count?: boolean
+    limit?: number
+    cursor?: string
+  }): Promise<{ count: number } | BlindedIndexQueryPage>
 
   /**
    * Access-control policy documents. The level is selected by which ids are

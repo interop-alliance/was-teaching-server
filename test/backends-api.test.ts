@@ -50,7 +50,7 @@ describe('Space backend registration (/backends)', () => {
     managedBy: 'server',
     storageMode: ['document', 'blob'],
     persistence: 'durable',
-    features: ['conditional-writes', 'changes-query']
+    features: ['conditional-writes', 'changes-query', 'blinded-index-query']
   }
 
   beforeAll(async () => {

@@ -53,6 +53,15 @@ import { buildExportManifest } from '../lib/exportManifest.js'
 import { isJson } from '../lib/isJson.js'
 import { DEFAULT_PAGE_SIZE, clampPageSize } from '../lib/pagination.js'
 import {
+  runBlindedIndexQuery,
+  collectUniqueBlindedTerms,
+  assertNoUniqueBlindedConflict
+} from '../lib/blindedIndex.js'
+import type {
+  BlindedIndexQuery,
+  BlindedIndexQueryPage
+} from '../lib/blindedIndex.js'
+import {
   DEFAULT_MAX_UPLOAD_BYTES,
   DEFAULT_MAX_SPACES_PER_CONTROLLER,
   DEFAULT_MAX_COLLECTIONS_PER_SPACE,
@@ -387,7 +396,8 @@ export class PostgresBackend implements StorageBackend {
   /**
    * Self-description advertised at `GET /space/:spaceId/backends`. Same
    * affordances as the filesystem backend: conditional writes (ETag
-   * validators, row-locked preconditions) and the `changes` query profile.
+   * validators, row-locked preconditions) and the `changes` and
+   * `blinded-index` query profiles.
    * @returns {Required<Omit<BackendDescriptor, 'provider' | 'connection'>>}
    */
   describe(): Required<Omit<BackendDescriptor, 'provider' | 'connection'>> {
@@ -397,7 +407,7 @@ export class PostgresBackend implements StorageBackend {
       managedBy: 'server',
       storageMode: ['document', 'blob'],
       persistence: 'durable',
-      features: ['conditional-writes', 'changes-query']
+      features: ['conditional-writes', 'changes-query', 'blinded-index-query']
     }
   }
 
@@ -1056,6 +1066,50 @@ export class PostgresBackend implements StorageBackend {
 
     return this._withTransaction(async client => {
       await this._ensureCollectionRow({ client, spaceId, collectionId })
+
+      // The EDV unique-attribute invariant (`unique: true` blinded attributes;
+      // the `blinded-index-query` feature): a write claiming a unique blinded
+      // triple must not collide with another live document's claim. Only a
+      // unique-carrying JSON write can create a new claim, so only such writes
+      // pay for it: a per-Collection transaction-scoped advisory lock
+      // serializes the claimants (held to commit, so the loser's scan sees the
+      // winner's committed row) without entering the row-lock ordering of
+      // plain writes, then the conflict is evaluated against the Collection's
+      // other live JSON documents.
+      if (
+        input.kind === 'json' &&
+        collectUniqueBlindedTerms({ document: input.data }).length > 0
+      ) {
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+          [spaceId, collectionId]
+        )
+        const { rows: candidateRows } = await client.query<{
+          resource_id: string
+          content: Buffer | null
+        }>(
+          `SELECT resource_id, content FROM resources
+            WHERE space_id = $1 AND collection_id = $2 AND is_json
+              AND NOT deleted AND resource_id <> $3`,
+          [spaceId, collectionId, resourceId]
+        )
+        const candidates: Array<{ resourceId: string; document: unknown }> = []
+        for (const row of candidateRows) {
+          if (!row.content) {
+            continue
+          }
+          try {
+            candidates.push({
+              resourceId: row.resource_id,
+              document: JSON.parse(row.content.toString('utf8')) as unknown
+            })
+          } catch {
+            // skip an unparsable body
+          }
+        }
+        assertNoUniqueBlindedConflict({ document: input.data, candidates })
+      }
+
       // Narrow projection: the lock needs the row, not its (possibly multi-MB)
       // `content` bytea, which this path never reads.
       const { rows } = await client.query<
@@ -1479,6 +1533,68 @@ export class PostgresBackend implements StorageBackend {
         ? { id: last.resourceId, updatedAt: last.updatedAt }
         : null
     }
+  }
+
+  /**
+   * Blinded-index query (the `blinded-index` query profile; see the
+   * `StorageBackend.queryByBlindedIndex` contract). Selects the Collection's
+   * live JSON rows, parses each body, and hands the candidates to the shared
+   * evaluator (`lib/blindedIndex.ts`) for matching, ordering, and cursor
+   * pagination -- identical semantics to the filesystem backend. A full scan
+   * of the Collection per call, deliberate for this teaching backend; an
+   * indexed variant would flatten the blinded attributes into an indexed
+   * token side-table (the bedrock-edv-storage strategy). Unparsable JSON is
+   * skipped.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.query {BlindedIndexQuery}
+   * @param [options.count] {boolean}   return only the match count
+   * @param [options.limit] {number}   requested page size
+   * @param [options.cursor] {string}   opaque cursor from a prior page
+   * @returns {Promise<{ count: number } | BlindedIndexQueryPage>}
+   */
+  async queryByBlindedIndex({
+    spaceId,
+    collectionId,
+    query,
+    count,
+    limit,
+    cursor
+  }: {
+    spaceId: string
+    collectionId: string
+    query: BlindedIndexQuery
+    count?: boolean
+    limit?: number
+    cursor?: string
+  }): Promise<{ count: number } | BlindedIndexQueryPage> {
+    const { rows } = await this._pool.query<{
+      resource_id: string
+      content: Buffer | null
+    }>(
+      `SELECT resource_id, content FROM resources
+        WHERE space_id = $1 AND collection_id = $2 AND is_json AND NOT deleted
+        ORDER BY resource_id`,
+      [spaceId, collectionId]
+    )
+
+    const candidates: Array<{ resourceId: string; document: unknown }> = []
+    for (const row of rows) {
+      if (!row.content) {
+        continue
+      }
+      try {
+        candidates.push({
+          resourceId: row.resource_id,
+          document: JSON.parse(row.content.toString('utf8')) as unknown
+        })
+      } catch {
+        // skip an unparsable body
+      }
+    }
+
+    return runBlindedIndexQuery({ candidates, query, count, limit, cursor })
   }
 
   // Policies

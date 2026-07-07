@@ -146,6 +146,31 @@ export class IdConflictError extends ProblemError {
 }
 
 /**
+ * 409 — a Resource write carries an `indexed` blinded attribute marked
+ * `unique: true` whose (HMAC key id, name, value) triple is already claimed by
+ * another live Resource in the same Collection (the EDV unique-attribute
+ * invariant, enforced by backends carrying the `blinded-index-query` feature).
+ * Reuses the `id-conflict` problem type (like the WebKMS conflicts): a unique
+ * blinded attribute is a client-chosen identifier-like claim, and the registry
+ * defines no more specific kind. Only ever observable by a caller already
+ * authorized to write the target.
+ */
+export class UniqueAttributeConflictError extends ProblemError {
+  constructor() {
+    const detail =
+      'Could not write document; a unique blinded index attribute is already' +
+      ' in use by another Resource in this Collection.'
+    super({
+      type: ProblemTypes.ID_CONFLICT,
+      title: 'A unique blinded index attribute is already in use.',
+      detail,
+      statusCode: 409,
+      problems: [{ detail, pointer: '#/indexed' }]
+    })
+  }
+}
+
+/**
  * 409 — a client-supplied id collides with a segment from the spec's Reserved
  * Path Segment Registry: the id would shadow the reserved route at that
  * position (e.g. a Collection named `export` would shadow

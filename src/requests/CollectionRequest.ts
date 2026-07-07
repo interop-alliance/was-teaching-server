@@ -10,7 +10,8 @@ import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { getCollectionOrThrow } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
-import type { CollectionDescription } from '../types.js'
+import type { CollectionDescription, StorageBackend } from '../types.js'
+import { parseBlindedIndexQueryBody } from '../lib/blindedIndex.js'
 import {
   assertSupportedBackend,
   resolveBackendDescriptor,
@@ -517,16 +518,25 @@ export class CollectionRequest {
   /**
    * POST /space/:spaceId/:collectionId/query
    * The reserved Collection `query` endpoint (spec "Collection-level reserved
-   * endpoints"). This server serves a single profile, `changes` -- the
-   * replication change feed: the Collection's
-   * JSON documents and tombstones changed strictly after `checkpoint`, in change
-   * order, capped at `limit`. The query parameters ride the signed JSON POST body
-   * (covered by the `Digest`), so no `allowTargetQuery` is needed.
+   * endpoints"). This server serves two profiles, selected by the body's
+   * `profile`:
    *
-   * A backend that does not serve the change feed (no `changesSince`), or a body
-   * naming any profile other than `changes`, yields `unsupported-operation`
-   * (501). Authorization is capability-or-policy, the same read semantics as List
-   * Collection: an under-authorized caller receives a 404.
+   * - `changes` -- the replication change feed: the Collection's JSON
+   *   documents and tombstones changed strictly after `checkpoint`, in change
+   *   order, capped at `limit`.
+   * - `blinded-index` -- the EDV blinded-attribute query (the
+   *   `blinded-index-query` backend feature): `{index, equals | has, count,
+   *   limit, cursor}` evaluated against the HMAC-blinded `indexed` entries of
+   *   the Collection's stored documents, answering `{documents, hasMore,
+   *   cursor?}` (matching documents verbatim, opaque-cursor paginated) or
+   *   `{count}`.
+   *
+   * The query parameters ride the signed JSON POST body (covered by the
+   * `Digest`), so no `allowTargetQuery` is needed. A body naming any other
+   * profile, or a backend without the profile's method, yields
+   * `unsupported-operation` (501). Authorization is capability-or-policy, the
+   * same read semantics as List Collection: an under-authorized caller
+   * receives a 404.
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
@@ -539,6 +549,11 @@ export class CollectionRequest {
         profile?: string
         checkpoint?: { id?: unknown; updatedAt?: unknown }
         limit?: unknown
+        index?: unknown
+        equals?: unknown
+        has?: unknown
+        count?: unknown
+        cursor?: unknown
       }
     }>,
     reply: FastifyReply
@@ -572,19 +587,75 @@ export class CollectionRequest {
       requestName
     })
 
-    // Serve the change feed from the Collection's selected (data-plane) backend.
-    // This server serves only the `changes` profile; any other (or a backend
-    // without the change feed) is an unsupported operation (501).
+    // Serve the query from the Collection's selected (data-plane) backend.
     const dataBackend = await resolveBackend({
       request,
       spaceId,
       collectionId,
       collectionDescription
     })
-    if (body?.profile !== 'changes' || !dataBackend.changesSince) {
-      throw new UnsupportedOperationError({ requestName })
+
+    if (body?.profile === 'changes' && dataBackend.changesSince) {
+      return CollectionRequest._queryChanges({
+        reply,
+        dataBackend,
+        spaceId,
+        collectionId,
+        body,
+        requestName
+      })
+    }
+    if (body?.profile === 'blinded-index' && dataBackend.queryByBlindedIndex) {
+      // Validate/normalize the EDV query body fields (400 on a malformed
+      // query), then let the backend evaluate and paginate.
+      const parsed = parseBlindedIndexQueryBody({ body, requestName })
+      const result = await dataBackend.queryByBlindedIndex({
+        spaceId,
+        collectionId,
+        ...parsed
+      })
+      return reply
+        .status(200)
+        .type('application/json')
+        .send(JSON.stringify(result))
     }
 
+    // Any other profile, or a backend without the profile's method.
+    throw new UnsupportedOperationError({ requestName })
+  }
+
+  /**
+   * The `changes` profile of the Collection `query` endpoint (see `query`
+   * above): parses the checkpoint/limit, pulls the page from the backend's
+   * change feed, and projects it to the wire shape.
+   *
+   * @param options {object}
+   * @param options.reply {import('fastify').FastifyReply}
+   * @param options.dataBackend {StorageBackend}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.body {object}   the query POST body
+   * @param options.requestName {string}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async _queryChanges({
+    reply,
+    dataBackend,
+    spaceId,
+    collectionId,
+    body,
+    requestName
+  }: {
+    reply: FastifyReply
+    dataBackend: StorageBackend
+    spaceId: string
+    collectionId: string
+    body: {
+      checkpoint?: { id?: unknown; updatedAt?: unknown }
+      limit?: unknown
+    }
+    requestName: string
+  }): Promise<FastifyReply> {
     // Parse the optional checkpoint: when present it must carry both string
     // fields (a malformed one is a client error, 400). Absent = start of feed.
     let checkpoint: { id: string; updatedAt: string } | undefined
@@ -609,7 +680,7 @@ export class CollectionRequest {
         ? parsedLimit
         : DEFAULT_BATCH
 
-    const result = await dataBackend.changesSince({
+    const result = await dataBackend.changesSince!({
       spaceId,
       collectionId,
       ...(checkpoint !== undefined && { checkpoint }),

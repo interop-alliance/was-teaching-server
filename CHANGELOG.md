@@ -4,6 +4,66 @@
 
 ### Added
 
+- **Blinded-index EDV query (the `blinded-index` query profile /
+  `blinded-index-query` feature).** The reserved Collection
+  `POST /space/{s}/{c}/query` endpoint gains a second profile alongside
+  `changes`: the EDV blinded-attribute query. A body of
+  `{ profile: 'blinded-index', index, equals | has, count?, limit?, cursor? }`
+  is evaluated against the HMAC-blinded `indexed` entries of the Collection's
+  stored documents (the envelopes `@interop/edv-client`'s IndexHelper
+  produces): `equals` is an OR across array elements of an AND within each
+  element's blinded `{name: value}` pairs, scoped to the `index` HMAC key id;
+  `has` requires every named blinded attribute be present. Matching is opaque
+  string comparison -- the server performs no cryptography and never sees
+  plaintext attribute names or values, so it is agnostic to the client's
+  attribute-blinding version. The response is `{ documents, hasMore, cursor? }`
+  -- the matching stored documents verbatim, ascending by resource id -- or
+  `{ count }` for a count query. Pagination closes the known EDV protocol gap
+  (`limit` + `hasMore` with no way to resume) by reusing WAS's opaque cursor
+  convention: `cursor` is present iff `hasMore`, and echoing it back in the
+  next query body resumes the scan. Query parameters ride the signed JSON POST
+  body (covered by the `Digest`); authorization is capability-or-policy with
+  the same read semantics as List Collection (an under-authorized caller
+  receives a 404). A malformed query body is a 400 `invalid-request-body`; a
+  malformed cursor is a 400 `invalid-cursor`; an unknown profile, or a backend
+  without the affordance, stays 501 `unsupported-operation`.
+
+  Implemented as an optional `StorageBackend.queryByBlindedIndex` method,
+  served by both first-party backends through a shared evaluator
+  (`src/lib/blindedIndex.ts` -- validation, matching, ordering, and cursor
+  pagination in one place, so the backends cannot drift), with a full-scan
+  strategy deliberate for these teaching backends. Both backends now advertise
+  `features: [..., 'blinded-index-query']`. Covered by a new
+  backend-contract block (run against filesystem and Postgres) and a
+  `blinded-index-query-api` integration suite.
+
+- **`unique: true` blinded-attribute enforcement on write.** The other half of
+  the EDV blinded-index affordance: a Resource write whose `indexed` blinded
+  attributes include one marked `unique: true` is rejected with **409**
+  (`UniqueAttributeConflictError`, reusing the `id-conflict` problem type like
+  the WebKMS conflicts) when another live JSON document in the same Collection
+  already claims the same triple. Semantics match the EDV reference servers
+  exactly: a conflict requires `unique: true` on **both** sides (an existing
+  document carrying the same pair without `unique` does not conflict), the
+  claim is keyed on the full **(HMAC key id, name, value)** triple (the same
+  pair under a different HMAC key is no conflict), a document keeping its own
+  unique attribute across an update never self-conflicts, enforcement applies
+  to create and update alike, and a tombstoned holder frees its claim. The
+  check is atomic with the write: only unique-carrying JSON writes pay for it
+  -- the filesystem backend serializes them per Collection on its keyed mutex
+  (nested outside the ordinary per-Resource lock), and the Postgres backend
+  takes a per-Collection transaction-scoped advisory lock (held to commit, so
+  of N racing claimants exactly one wins) -- so plain writes keep their
+  existing locking. The conflict scan lives with the query evaluator in
+  `src/lib/blindedIndex.ts` (`collectUniqueBlindedTerms` /
+  `assertNoUniqueBlindedConflict`), shared by both backends. When a unique
+  conflict and a failing `If-Match` both apply, the 409 wins over the 412 (both
+  backends agree; pinned by the contract suite). Space import (tar merge)
+  bypasses `writeResource` and therefore does not enforce the invariant --
+  imports restore a controller's own export, matching the check's write-path
+  scope. Covered by a new backend-contract block (including an N-concurrent-
+  claimants race) and an API-level 409 test.
+
 - **Config validation & fail-fast startup.** The whole env surface
   (`SERVER_URL`, `PORT`, `DATABASE_URL`, `STORAGE_LIMIT_PER_SPACE`,
   `MAX_UPLOAD_BYTES`, `WAS_ENABLED_BACKENDS`, `KMS_RECORD_KEK`,
@@ -234,6 +294,21 @@
 
 ### Changed
 
+- **Atomic, durable writes in the filesystem backend.** Every write the
+  `FileSystemBackend` performs now goes through one audited helper module
+  (`src/lib/atomicFile.ts`): bytes are staged into a `.tmp-<uuid>` file in the
+  same directory, fsync'd, `rename`d (or hard-`link`ed, for the create-only
+  `wx`-style key/revocation inserts, preserving their EEXIST conflict semantics)
+  onto the final path, and the containing directory is fsync'd -- so a crash or
+  power loss mid-write can no longer leave a torn JSON document or a truncated
+  blob under a Resource's name. Previously, JSON resource bodies and
+  `importSpace` writes went directly to the final path, and blob uploads
+  streamed into it (with cleanup only on pipeline error, not crash); blobs now
+  stream into the temp file and are committed whole. Descriptions, sidecars,
+  policies, and keystore configs (previously written via fs-json-store, which
+  was atomic per-file but never fsync'd the directory) route through the same
+  helper; their read paths are unchanged. (The Postgres backend is unaffected --
+  durability there is the database's WAL.)
 - **The `conformance/` suite no longer pins the default backend's display name**
   (`Server Filesystem`); it asserts a non-empty `name` instead, so the suite
   passes against any conforming WAS server -- including a Postgres-backed one

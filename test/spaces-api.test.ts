@@ -590,7 +590,7 @@ describe('Spaces', () => {
       managedBy: 'server',
       storageMode: ['document', 'blob'],
       persistence: 'durable',
-      features: ['conditional-writes', 'changes-query']
+      features: ['conditional-writes', 'changes-query', 'blinded-index-query']
     }
 
     it('[signed] GET /backends lists the default backend descriptor', async () => {
@@ -624,12 +624,14 @@ describe('Spaces', () => {
       })
       assert.equal(response.status, 200)
       // The filesystem backend implements the conditional-writes affordance
-      // (ETag / If-Match optimistic concurrency) and the `changes-query`
-      // replication change feed; it advertises both tokens.
+      // (ETag / If-Match optimistic concurrency), the `changes-query`
+      // replication change feed, and the `blinded-index-query` EDV query
+      // profile; it advertises all three tokens.
       assert.ok(Array.isArray(response.data[0].features))
       assert.deepStrictEqual(response.data[0].features, [
         'conditional-writes',
-        'changes-query'
+        'changes-query',
+        'blinded-index-query'
       ])
     })
 

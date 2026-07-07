@@ -284,7 +284,7 @@ describe('Collections API', () => {
         managedBy: 'server',
         storageMode: ['document', 'blob'],
         persistence: 'durable',
-        features: ['conditional-writes', 'changes-query']
+        features: ['conditional-writes', 'changes-query', 'blinded-index-query']
       })
     })
 
@@ -298,12 +298,14 @@ describe('Collections API', () => {
       })
       assert.equal(response.status, 200)
       // The filesystem backend implements the conditional-writes affordance
-      // (ETag / If-Match optimistic concurrency) and the `changes-query`
-      // replication change feed; it advertises both tokens.
+      // (ETag / If-Match optimistic concurrency), the `changes-query`
+      // replication change feed, and the `blinded-index-query` EDV query
+      // profile; it advertises all three tokens.
       assert.ok(Array.isArray(response.data.features))
       assert.deepStrictEqual(response.data.features, [
         'conditional-writes',
-        'changes-query'
+        'changes-query',
+        'blinded-index-query'
       ])
     })
 
