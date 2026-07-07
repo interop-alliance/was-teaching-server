@@ -16,7 +16,6 @@ import { initCorsProxyRoutes as initApiCorsProxyRoutes } from './corsProxy.js'
 import { SPEC_URL, SERVER_VERSION } from './config.default.js'
 
 // TODO: https://github.com/fastify/fastify-helmet
-// TODO: https://github.com/fastify/fastify-env
 
 /**
  * Builds the Fastify instance: registers the `fastifyWas` protocol plugin

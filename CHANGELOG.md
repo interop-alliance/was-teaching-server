@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Config validation & fail-fast startup.** The whole env surface
+  (`SERVER_URL`, `PORT`, `DATABASE_URL`, `STORAGE_LIMIT_PER_SPACE`,
+  `MAX_UPLOAD_BYTES`, `WAS_ENABLED_BACKENDS`, `KMS_RECORD_KEK`,
+  `WAS_ONBOARDING_TOKEN`) is now read and validated in one place,
+  `loadConfigFromEnv()` (`src/config.default.ts`), consumed by `start.ts`.
+  `SERVER_URL` is required (unset previously started a server whose ZCap
+  matching silently failed on every request) and must be an absolute
+  `http:`/`https:` URL with no path, query, or fragment -- a sub-path
+  `SERVER_URL` would silently break every delegated invocation and `Location`
+  header (the URL-join sites drop a base path), so it is rejected at startup
+  instead. `PORT` is validated as an integer in 1-65535 (default 3002). The
+  `fastifyWas` plugin applies the same `serverUrl` shape check at registration
+  (`assertValidServerUrl`), so a downstream composition inherits the fail-fast
+  behavior; omitting `serverUrl` there remains allowed (test compositions).
+
 - **Provisioning gate (`authorizeProvisioning` / `WAS_ONBOARDING_TOKEN`).** A
   new seam that lets a deployment gate the two open provisioning endpoints
   (`POST /spaces/` and `POST /kms/keystores`) without touching the rest of the
@@ -30,9 +45,9 @@
   public key descriptions — the Get Key Description projection per key
   (`describeKmsKey`, never a secret field) plus `keyUrl`, the key's canonical
   invocation URL (`<keystoreId>/keys/<localId>`), which the `publicAlias` /
-  `publicAliasTemplate` override otherwise erases from `id` — exactly the
-  handle a recovery client needs to rediscover — sorted by local id and paginated
-  with the standard opaque cursor (`KEY_LIST_LIMIT` per page; an empty keystore
+  `publicAliasTemplate` override otherwise erases from `id` — exactly the handle
+  a recovery client needs to rediscover — sorted by local id and paginated with
+  the standard opaque cursor (`KEY_LIST_LIMIT` per page; an empty keystore
   returns `{ results: [] }`, not 404). Capability-verified as `read` against the
   keystore controller with `<keystoreId>/keys` accepted as an attenuated target,
   so a `sign`-scoped delegation on one key URL still cannot enumerate the
@@ -43,22 +58,21 @@
   `StorageBackend` (`src/backends/postgres.ts`, schema in
   `src/backends/postgresSchema.ts`), implementing the full WAS + WebKMS surface
   over rows and selected by setting `DATABASE_URL` (unset keeps the default
-  filesystem backend). Four deliberate design departures:
-  **transactional quota accounting**
-  (`spaces.usage_bytes`, maintained in the same transaction as every content
-  write/delete -- the per-Space capacity is now a _hard_ limit under
-  concurrency, closing the filesystem backend's documented soft-limit caveat);
-  **row-lock concurrency** (`SELECT ... FOR UPDATE` transactions replace the
-  single-process `KeyedMutex`, so conditional writes stay correct across
-  multiple server processes sharing one database); **buffered `bytea` blobs**
-  (bounded by `maxUploadBytes`, which defaults to a 64 MiB cap on this backend
-  rather than "unbounded"; chunked-row streaming is a planned follow-up); and
-  **cross-backend export/import** (the same tar archive dialect as the
-  filesystem backend, so a Space exported from one imports into the other -- the
-  migration path in both directions -- with the Postgres apply loop additionally
-  atomic in one transaction). Embedded idempotent migrations run at startup
-  under an advisory lock; `ORDER BY` / keyset columns are `COLLATE "C"` so
-  pagination and change-feed ordering match the filesystem's code-unit order
+  filesystem backend). Four deliberate design departures: **transactional quota
+  accounting** (`spaces.usage_bytes`, maintained in the same transaction as
+  every content write/delete -- the per-Space capacity is now a _hard_ limit
+  under concurrency, closing the filesystem backend's documented soft-limit
+  caveat); **row-lock concurrency** (`SELECT ... FOR UPDATE` transactions
+  replace the single-process `KeyedMutex`, so conditional writes stay correct
+  across multiple server processes sharing one database); **buffered `bytea`
+  blobs** (bounded by `maxUploadBytes`, which defaults to a 64 MiB cap on this
+  backend rather than "unbounded"; chunked-row streaming is a planned
+  follow-up); and **cross-backend export/import** (the same tar archive dialect
+  as the filesystem backend, so a Space exported from one imports into the other
+  -- the migration path in both directions -- with the Postgres apply loop
+  additionally atomic in one transaction). Embedded idempotent migrations run at
+  startup under an advisory lock; `ORDER BY` / keyset columns are `COLLATE "C"`
+  so pagination and change-feed ordering match the filesystem's code-unit order
   exactly. New optional `StorageBackend.init()` / `close()` lifecycle hooks
   (wired by the plugin), `PostgresBackend` exported from the package root, and a
   new shared backend-contract test suite (`test/storage-backend-contract.ts`)
@@ -71,20 +85,20 @@
   (`src/lib/pagination.ts`).
 
 - **At-rest encryption of WebKMS key records (`KMS_RECORD_KEK`).** The optional,
-  schema-compatible hardening increment: when
-  a record KEK is configured, the secret-bearing fields of a stored `/kms` key
-  record (`privateKeyMultibase` / `secret`, and anything not on the plaintext
-  allowlist) are envelope-encrypted -- a fresh per-record `A256GCM`
-  content-encryption key wrapped `A256KW` under a config-supplied AES-256 KEK --
-  before the record reaches storage, so a disk/database dump exposes only
-  ciphertext and a `kekId`. It is **off by default** (plaintext when unset, the
-  teaching default), needs **no schema migration** to enable (old plaintext
-  records stay readable via an unconditional decrypt pass-through, and are never
-  retroactively rewritten), and supports **KEK rotation without re-encryption**
-  (each record keeps the `kekId` it was written under). The wire projection
-  (`KmsKeyDescription`) is untouched: secrets never crossed the wire and still
-  don't. New pure, backend-agnostic cipher `src/lib/kmsRecordCipher.ts`, applied
-  at the KMS orchestration seam in `src/requests/KeyRequest.ts` (encrypt before
+  schema-compatible hardening increment: when a record KEK is configured, the
+  secret-bearing fields of a stored `/kms` key record (`privateKeyMultibase` /
+  `secret`, and anything not on the plaintext allowlist) are envelope-encrypted
+  -- a fresh per-record `A256GCM` content-encryption key wrapped `A256KW` under
+  a config-supplied AES-256 KEK -- before the record reaches storage, so a
+  disk/database dump exposes only ciphertext and a `kekId`. It is **off by
+  default** (plaintext when unset, the teaching default), needs **no schema
+  migration** to enable (old plaintext records stay readable via an
+  unconditional decrypt pass-through, and are never retroactively rewritten),
+  and supports **KEK rotation without re-encryption** (each record keeps the
+  `kekId` it was written under). The wire projection (`KmsKeyDescription`) is
+  untouched: secrets never crossed the wire and still don't. New pure,
+  backend-agnostic cipher `src/lib/kmsRecordCipher.ts`, applied at the KMS
+  orchestration seam in `src/requests/KeyRequest.ts` (encrypt before
   `insertKey`, single decrypt funnel after `getKey`). See the `KMS_RECORD_KEK`
   environment variable in the README.
 
@@ -98,18 +112,17 @@
   gains `main` / `types` / `exports` pointing at `dist/`, plus a `files`
   allowlist (`dist`, `common`, `src` -- so the emitted source/declaration maps
   resolve -- and `CHANGELOG.md`) so the published tarball excludes the test
-  suites. Usage (including composing a minimal or hardened server
-  from the plugin) is documented in `docs/consuming-server-as-library.md`.
+  suites. Usage (including composing a minimal or hardened server from the
+  plugin) is documented in `docs/consuming-server-as-library.md`.
 
 ### Security
 
 - **`StorageError` responses no longer leak internal fault details.** The 500
-  `storage-error` problem+json body copied the underlying cause message into
-  its `title` and `detail`, so filesystem paths, errnos, or SQL fragments from
-  a failed backend operation could reach clients. The wire body is now a
-  generic "An internal storage error occurred."; the underlying `cause` still
-  goes to the server log via `handleError`. Pinned by a no-leak regression
-  test.
+  `storage-error` problem+json body copied the underlying cause message into its
+  `title` and `detail`, so filesystem paths, errnos, or SQL fragments from a
+  failed backend operation could reach clients. The wire body is now a generic
+  "An internal storage error occurred."; the underlying `cause` still goes to
+  the server log via `handleError`. Pinned by a no-leak regression test.
 - **`/api/cors` proxy is no longer an open SSRF vector.** The proxy now only
   fetches `http`/`https` URLs and refuses any host that resolves to a private,
   loopback, or link-local address (RFC 1918, `127.0.0.0/8`, `169.254.0.0/16`
@@ -191,10 +204,10 @@
   community-edition composition: it registers `fastifyWas` (passing its options
   through unchanged) plus the teaching-server extras (static assets, welcome
   page, `/health`, the CORS proxy). No wire-behavior change; this is the
-  enabling refactor for the two-codebase strategy --
-  a hardened downstream server can register the same plugin around its own
-  persistence and policy plugins. Adds `fastify-plugin` as a dependency (the
-  decorations/parsers land on the root instance, as before).
+  enabling refactor for the two-codebase strategy -- a hardened downstream
+  server can register the same plugin around its own persistence and policy
+  plugins. Adds `fastify-plugin` as a dependency (the decorations/parsers land
+  on the root instance, as before).
 
 ## 0.8.0 - 2026-07-02
 

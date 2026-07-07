@@ -125,6 +125,145 @@ export const KMS_MAX_CHAIN_LENGTH = 10
  */
 export const KMS_MAX_DELEGATION_TTL = 90 * 24 * 60 * 60 * 1000
 
+/** TCP port the server listens on when `PORT` is unset. */
+export const DEFAULT_PORT = 3002
+
+/**
+ * The validated env-derived server configuration returned by
+ * {@link loadConfigFromEnv} and consumed by `start.ts`.
+ */
+export interface EnvConfig {
+  /** The server base URL (`SERVER_URL`); required, validated. */
+  serverUrl: string
+  /** TCP port to listen on (`PORT`); defaults to {@link DEFAULT_PORT}. */
+  port: number
+  /** Postgres connection string (`DATABASE_URL`); unset selects the filesystem backend. */
+  databaseUrl?: string
+  /** Per-Space storage quota in bytes (`STORAGE_LIMIT_PER_SPACE`); unset = unlimited. */
+  storageLimitPerSpace?: number
+  /** Per-upload size cap in bytes (`MAX_UPLOAD_BYTES`); unset = no cap. */
+  maxUploadBytes?: number
+  /** Backend registration allowlist (`WAS_ENABLED_BACKENDS`); unset = permissive. */
+  enabledBackendProviders?: string[]
+  /** At-rest KMS key-record encryption registry (`KMS_RECORD_KEK`); unset = plaintext. */
+  kmsRecordKek?: KmsRecordKekRegistry
+  /** Shared-secret provisioning gate (`WAS_ONBOARDING_TOKEN`); unset = open provisioning. */
+  onboardingToken?: string
+}
+
+/**
+ * Reads and validates the server's whole env config surface in one place
+ * (fail-fast startup): a missing `SERVER_URL` or any malformed value throws
+ * with the offending variable named, before the server starts listening --
+ * instead of silently breaking ZCap matching at request time.
+ * @param [env] {NodeJS.ProcessEnv}   defaults to `process.env`
+ * @returns {EnvConfig}
+ */
+export function loadConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env
+): EnvConfig {
+  return {
+    serverUrl: parseServerUrl(env.SERVER_URL),
+    port: parsePort(env.PORT),
+    databaseUrl: parseDatabaseUrl(env.DATABASE_URL),
+    storageLimitPerSpace: parseStorageLimit(env.STORAGE_LIMIT_PER_SPACE),
+    maxUploadBytes: parseMaxUploadBytes(env.MAX_UPLOAD_BYTES),
+    enabledBackendProviders: parseEnabledBackends(env.WAS_ENABLED_BACKENDS),
+    kmsRecordKek: parseKmsRecordKek(env.KMS_RECORD_KEK),
+    onboardingToken: parseOnboardingToken(env.WAS_ONBOARDING_TOKEN)
+  }
+}
+
+/**
+ * Validates a server base URL (the `serverUrl` option / `SERVER_URL` env
+ * value): it must be an absolute `http:`/`https:` URL with no path, query, or
+ * fragment. ZCap `invocationTarget` URLs and `Location` headers are built by
+ * resolving absolute paths against this base (`new URL(path, serverUrl)`),
+ * which silently drops any base path -- so a sub-path deployment would break
+ * every delegated invocation. Rejected at startup instead (fail-fast).
+ * @param serverUrl {string}   the candidate base URL
+ * @returns {void}   throws on an invalid value
+ */
+export function assertValidServerUrl(serverUrl: string): void {
+  let url: URL
+  try {
+    url = new URL(serverUrl)
+  } catch {
+    throw new Error(
+      `serverUrl (env SERVER_URL) must be an absolute URL; got "${serverUrl}".`
+    )
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(
+      `serverUrl (env SERVER_URL) must use http: or https:; got "${serverUrl}".`
+    )
+  }
+  if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+    throw new Error(
+      `serverUrl (env SERVER_URL) must not include a path, query, or ` +
+        `fragment -- deploying under a sub-path is not supported; ` +
+        `got "${serverUrl}".`
+    )
+  }
+}
+
+/**
+ * Parses the `SERVER_URL` env value: the server's base URL, used to build and
+ * match ZCap `invocationTarget` URLs (host and port must match the client's
+ * exactly). Required -- unset would silently break all ZCap matching, so
+ * startup fails instead. The value is trimmed but otherwise preserved
+ * byte-for-byte (never normalized), since capability targets compare as exact
+ * strings. Validated by {@link assertValidServerUrl}.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {string}   the trimmed, validated base URL
+ */
+export function parseServerUrl(raw: string | undefined): string {
+  if (raw === undefined || raw.trim() === '') {
+    throw new Error(
+      `SERVER_URL is required: the server base URL used to build and match ` +
+        `ZCap invocationTarget URLs (e.g. SERVER_URL='http://localhost:3002').`
+    )
+  }
+  const serverUrl = raw.trim()
+  assertValidServerUrl(serverUrl)
+  return serverUrl
+}
+
+/**
+ * Parses the `PORT` env value into the TCP port to listen on. An unset or
+ * empty value returns {@link DEFAULT_PORT}.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {number}   the port
+ */
+export function parsePort(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') {
+    return DEFAULT_PORT
+  }
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 1 || value > 65535) {
+    throw new Error(
+      `PORT must be an integer between 1 and 65535; got "${raw}".`
+    )
+  }
+  return value
+}
+
+/**
+ * Parses the `DATABASE_URL` env value: a Postgres connection string that,
+ * when set, selects the PostgreSQL storage backend (unset keeps the default
+ * filesystem backend). The string's shape is left to the `pg` driver, which
+ * accepts several connection-string forms; an unset or empty value returns
+ * `undefined`.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {string|undefined}   the trimmed connection string, or `undefined`
+ */
+export function parseDatabaseUrl(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw.trim() === '') {
+    return undefined
+  }
+  return raw.trim()
+}
+
 /**
  * Parses the `KMS_RECORD_KEK` env value into the at-rest key-record encryption
  * registry (the optional hardening increment). The value is a single AES-256

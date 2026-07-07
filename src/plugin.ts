@@ -24,6 +24,7 @@ import {
   initSpaceRoutes,
   initSpacesRepositoryRoutes
 } from './routes.js'
+import { assertValidServerUrl } from './config.default.js'
 import { defaultBackend } from './storage.js'
 import { onboardingTokenAuthorizer } from './provisioning.js'
 import type {
@@ -36,7 +37,9 @@ import type {
 export interface FastifyWasOptions {
   /**
    * This server's base URL; used to build and match ZCap invocationTarget URLs
-   * (host and port must match exactly).
+   * (host and port must match exactly). When provided, it must be an absolute
+   * `http:`/`https:` URL with no path, query, or fragment (validated at
+   * registration -- sub-path deployment is not supported).
    */
   serverUrl?: string
   /**
@@ -114,6 +117,13 @@ async function wasPlugin(
     authorizeProvisioning,
     onboardingToken
   } = options
+
+  // Fail fast on a malformed base URL: a serverUrl carrying a path, query, or
+  // fragment silently breaks every ZCap invocationTarget match and Location
+  // header (URL-joins drop the base path), so it is rejected at registration.
+  if (serverUrl !== undefined) {
+    assertValidServerUrl(serverUrl)
+  }
 
   // The two provisioning gates are alternative ways to configure the same seam.
   if (authorizeProvisioning && onboardingToken) {
