@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { isRootInvocation, verifyZcap } from '../zcap.js'
 import { invalidateSpaceDescription } from './spaceContext.js'
 import { verifyBodyControllerConsent } from './controllerConsent.js'
+import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidId } from '../lib/validateId.js'
 import { spacePath, spacesPath } from '../lib/paths.js'
 import { assertValidController } from '../lib/validateDid.js'
@@ -170,8 +171,10 @@ export class SpacesRepositoryRequest {
       })
     }
 
-    // zCap checks out, continue
-    await storage.writeSpace({ spaceId, spaceDescription })
+    // zCap checks out, continue. A token-provisioned create carries no
+    // invocation, so it records no `createdBy`.
+    const createdBy = invokerDid(request)
+    await storage.writeSpace({ spaceId, spaceDescription, createdBy })
     // Bust any cached (e.g. negatively cached) description for this id so the
     // next read sees the freshly created Space.
     invalidateSpaceDescription({ storage, spaceId })
@@ -181,6 +184,11 @@ export class SpacesRepositoryRequest {
       serverUrl
     ).toString()
     reply.header('Location', createdSpaceUrl)
-    return reply.status(201).send(spaceDescription)
+    // Echo what was persisted, `createdBy` included, so the create response and
+    // a subsequent Get Space agree. An id already in use was rejected as a 409
+    // above, so this write created the Space and its creator is this invoker.
+    return reply
+      .status(201)
+      .send({ ...spaceDescription, ...(createdBy && { createdBy }) })
   }
 }

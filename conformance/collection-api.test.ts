@@ -10,7 +10,8 @@ import {
   buildZcapClients,
   createSpace,
   generateId,
-  serverUrl
+  serverUrl,
+  withoutCreatedBy
 } from './helpers.js'
 
 describe('Collections API', () => {
@@ -82,7 +83,7 @@ describe('Collections API', () => {
       json: body
     })
     assert.equal(response.status, 201)
-    assert.deepStrictEqual(response.data, {
+    assert.deepStrictEqual(withoutCreatedBy(response.data), {
       id: 'credentials',
       name: 'Verifiable Credentials',
       type: ['Collection'],
@@ -145,7 +146,7 @@ describe('Collections API', () => {
       action: 'GET'
     })
     assert.equal(response.status, 200)
-    assert.deepStrictEqual(response.data, {
+    assert.deepStrictEqual(withoutCreatedBy(response.data), {
       id: 'credentials',
       name: 'Verifiable Credentials',
       type: ['Collection'],

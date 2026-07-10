@@ -13,6 +13,7 @@ import {
   invalidateSpaceDescription
 } from './spaceContext.js'
 import { verifyBodyControllerConsent } from './controllerConsent.js'
+import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidIds, assertValidId } from '../lib/validateId.js'
 import { assertValidController } from '../lib/validateDid.js'
 import {
@@ -265,7 +266,11 @@ export class SpaceRequest {
         }
 
     // zCap checks out, continue
-    await storage.writeSpace({ spaceId, spaceDescription })
+    await storage.writeSpace({
+      spaceId,
+      spaceDescription,
+      createdBy: invokerDid(request)
+    })
     // Bust any cached (now-stale) description so the next read sees this write.
     invalidateSpaceDescription({ storage, spaceId })
 
@@ -364,10 +369,12 @@ export class SpaceRequest {
       ...(encryption !== undefined && { encryption })
     }
 
+    const createdBy = invokerDid(request)
     await storage.writeCollection({
       spaceId,
       collectionId,
-      collectionDescription
+      collectionDescription,
+      createdBy
     })
 
     const createdUrl = new URL(
@@ -375,7 +382,12 @@ export class SpaceRequest {
       serverUrl
     ).toString()
     reply.header('Location', createdUrl)
-    return reply.status(201).send(collectionDescription)
+    // Echo what was persisted, `createdBy` included, so the create response and
+    // a subsequent Get Collection agree. An id already in use was rejected as a
+    // 409 above, so this write created the Collection.
+    return reply
+      .status(201)
+      .send({ ...collectionDescription, ...(createdBy && { createdBy }) })
   }
 
   /**

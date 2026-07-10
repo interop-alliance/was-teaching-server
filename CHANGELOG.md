@@ -4,6 +4,35 @@
 
 ### Added
 
+- **Server-managed `createdBy` provenance on Spaces, Collections, and
+  Resources.** A read-only `createdBy` (a `did:key` DID string) now records who
+  created each Space, Collection, and Resource: taken from the invoker of the
+  _first_ write (the capability's signing key, fragment stripped) and preserved
+  verbatim on every later write, so it names the creator rather than the last
+  writer. It is server-authoritative -- a `createdBy` supplied in a client's
+  request body is always dropped, never honored -- and is omitted/absent when
+  there was no resolved invoker (a token-provisioned Space create, or data
+  written before this change). Recorded only when a write _creates_ the record:
+  an object created without an invoker keeps an absent `createdBy` forever,
+  rather than a later writer being backfilled as its creator. A soft-deleted
+  Resource keeps its `createdBy` on its tombstone, so re-creating it under a
+  different invoker still reports the original creator; export/import
+  round-trips the value. Surfaced in `GET /space/:spaceId`,
+  `GET /space/:spaceId/:collectionId`, and
+  `GET /space/:spaceId/:collectionId/:resourceId/meta`, and echoed in the 201
+  body of Create Space / Create Collection so a create response and a subsequent
+  GET agree. The `changes` query profile carries it on live documents and on
+  tombstones, so a replica learns each Resource's creator from the feed rather
+  than fetching `/meta` per Resource.
+
+### Changed
+
+- The `changes` query profile's response documents are now typed by the shared
+  `ChangeDocument` / `ChangesPage` wire shapes from `@interop/storage-core`,
+  rather than an inline shape. The `StorageBackend.changesSince` port keeps its
+  own (differently named) document shape: it is the storage contract, not the
+  wire model.
+
 - **Blinded-index EDV query (the `blinded-index` query profile /
   `blinded-index-query` feature).** The reserved Collection
   `POST /space/{s}/{c}/query` endpoint gains a second profile alongside

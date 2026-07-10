@@ -12,7 +12,8 @@ import {
   MissingKeyIdError
 } from './errors.js'
 import { parseSignatureHeader } from '@interop/http-signature-header'
-import type { ParsedZcap } from './types.js'
+import { isValidController } from './lib/validateDid.js'
+import type { IDID, ParsedZcap } from './types.js'
 
 /**
  * Adds a request.zcap property, which contains the three parsed auth-related
@@ -80,6 +81,27 @@ export async function parseAuthHeaders(
   if (!keyId) {
     throw new MissingKeyIdError()
   }
+}
+
+/**
+ * The DID of the party that signed this request's capability invocation, taken
+ * from the parsed `keyId` with its verification-method fragment stripped
+ * (`did:key:z6Mk...#z6Mk...` to `did:key:z6Mk...`). Under a delegated
+ * capability this is the delegatee -- whoever actually invoked -- not the Space
+ * controller.
+ *
+ * Resolves to `undefined` when the request carries no parsed invocation (an
+ * anonymous read of a public Resource, or a provisioning-token request), or
+ * when the stripped `keyId` is not a syntactically valid `did:key`. Callers
+ * recording it as server-managed provenance therefore treat it as optional,
+ * and never persist a value that failed to narrow to a DID.
+ *
+ * @param request {import('fastify').FastifyRequest}
+ * @returns {IDID | undefined}
+ */
+export function invokerDid(request: FastifyRequest): IDID | undefined {
+  const did = request.zcap?.keyId.split('#')[0]
+  return isValidController(did) ? did : undefined
 }
 
 /**

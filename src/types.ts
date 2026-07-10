@@ -464,9 +464,19 @@ export interface StorageBackend {
     collectionId: string
   }): Promise<BackendUsage>
 
+  /**
+   * Writes a Space Description (full replacement). The server-managed
+   * `createdBy` is authoritative, never taken from `spaceDescription`: the
+   * backend drops any value carried in that (client-supplied) document and
+   * records `createdBy` from the first write's invoker, preserving it verbatim
+   * on every later write. Omitting `createdBy` on a first write leaves it
+   * unrecorded rather than letting the body supply one.
+   */
   writeSpace(options: {
     spaceId: string
     spaceDescription: SpaceDescription
+    /** DID of the invoker; recorded as `createdBy` on first write only */
+    createdBy?: IDID
   }): Promise<void>
   getSpaceDescription(options: {
     spaceId: string
@@ -486,10 +496,16 @@ export interface StorageBackend {
     tarStream: Readable
   }): Promise<ImportStats>
 
+  /**
+   * Writes a Collection Description (full replacement). `createdBy` is
+   * server-managed on the same terms as `writeSpace`'s.
+   */
   writeCollection(options: {
     spaceId: string
     collectionId: string
     collectionDescription: CollectionDescription
+    /** DID of the invoker; recorded as `createdBy` on first write only */
+    createdBy?: IDID
   }): Promise<void>
   getCollectionDescription(options: {
     spaceId: string
@@ -545,6 +561,15 @@ export interface StorageBackend {
     collectionId: string
     resourceId: string
     input: ResourceInput
+    /**
+     * DID of the party whose capability invocation authorized this write (the
+     * signing key's DID, fragment stripped). Recorded as the Resource's
+     * server-managed `createdBy` on the FIRST write and preserved verbatim by
+     * every later write, exactly as `createdAt` is -- so it names the creator,
+     * not the last writer. Omitted by callers with no resolved invoker (a
+     * direct backend call), in which case no `createdBy` is recorded.
+     */
+    createdBy?: IDID
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ version: number }>
@@ -567,6 +592,11 @@ export interface StorageBackend {
     resourceId: string
     ifMatch?: string
   }): Promise<void>
+  /**
+   * Reads a Resource's Metadata object. `version` / `metaVersion` are the
+   * out-of-band ETag validators (the handler strips them from the wire body);
+   * the Metadata's own `createdBy` rides along in it.
+   */
   getResourceMetadata(options: {
     spaceId: string
     collectionId: string
@@ -605,9 +635,13 @@ export interface StorageBackend {
    * feed starts from the beginning.
    *
    * Each document carries its monotonic content `version`, its `metaVersion`
-   * (when a metadata write has occurred), `updatedAt`, and -- so metadata
-   * replicates alongside content -- the user-writable `custom` object (the
-   * opaque encryption envelope on an encrypted Collection). A metadata-only edit
+   * (when a metadata write has occurred), `updatedAt`, the server-managed
+   * `createdBy` (the creator's DID, when one was recorded -- so provenance
+   * replicates and does not have to be fetched per Resource from `/meta`), and
+   * -- so metadata replicates alongside content -- the user-writable `custom`
+   * object (the opaque encryption envelope on an encrypted Collection). A
+   * tombstone keeps its `createdBy`, as it keeps its `createdAt`. A
+   * metadata-only edit
    * re-surfaces the Resource with a bumped `updatedAt` / `metaVersion` but its
    * `version` / `data` unchanged. A tombstone (soft-deleted Resource) is
    * surfaced with `deleted: true` and no `data` so the delete replicates until
@@ -631,10 +665,13 @@ export interface StorageBackend {
       resourceId: string
       version: number
       metaVersion?: number
+      createdBy?: IDID
       updatedAt: string
       deleted: boolean
       data?: unknown
-      custom?: unknown
+      // Omitted when unset, never `null`: the handler projects this straight
+      // onto the wire `ChangeDocument.custom`, which admits no null.
+      custom?: ResourceMetadataCustom | Record<string, unknown>
     }>
     checkpoint: { id: string; updatedAt: string } | null
   }>

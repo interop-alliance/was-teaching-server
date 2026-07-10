@@ -166,4 +166,23 @@ export async function provisionSpace({
   return was.space(id)
 }
 
+/**
+ * Strips a `createdBy` property from a Space/Collection description, if
+ * present, before an exact-shape comparison. The spec makes `createdBy`
+ * OPTIONAL ("a client MUST treat an absent `createdBy` as not recorded"), so a
+ * conforming external server may legitimately omit it -- and one that records
+ * it may report a creator this suite cannot predict. Either way the conformance
+ * suite must not assert on it.
+ *
+ * @param value {unknown}
+ * @returns {unknown}
+ */
+export function withoutCreatedBy(value: unknown): unknown {
+  if (value && typeof value === 'object' && 'createdBy' in value) {
+    const { createdBy: _createdBy, ...rest } = value as Record<string, unknown>
+    return rest
+  }
+  return value
+}
+
 export { serverUrl, onboardingToken, uuidv4 as generateId }

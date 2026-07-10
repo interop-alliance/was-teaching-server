@@ -6,6 +6,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { getCollectionOrThrow } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
+import { invokerDid } from '../auth-header-hooks.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import {
   assertEncryptedWriteConforms,
@@ -170,6 +171,7 @@ export class ResourceRequest {
         collectionId,
         resourceId,
         input,
+        createdBy: invokerDid(request),
         ...parseWritePreconditions(request.headers)
       })
     } catch (err) {

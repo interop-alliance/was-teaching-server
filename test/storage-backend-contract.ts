@@ -95,6 +95,8 @@ function binaryInput(
 }
 
 const CONTROLLER = 'did:key:z6MkContractSuiteController' as IDID
+const CREATOR_ONE = 'did:key:z6MkContractSuiteCreatorOne' as IDID
+const CREATOR_TWO = 'did:key:z6MkContractSuiteCreatorTwo' as IDID
 
 async function provisionSpace(
   backend: StorageBackend,
@@ -561,6 +563,341 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         })
         assert.equal(metadata?.custom, undefined)
         assert.equal(metadata?.metaVersion, 2)
+      })
+    })
+
+    describe('createdBy provenance', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-created-by'
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId)
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('writeResource with createdBy records it; getResourceMetadata surfaces it', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-first',
+          input: jsonInput({ v: 1 }),
+          createdBy: CREATOR_ONE
+        })
+        const metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-first'
+        })
+        assert.equal(metadata?.createdBy, CREATOR_ONE)
+      })
+
+      it('a second writeResource by a different createdBy does not change it (creator, not last writer)', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-first',
+          input: jsonInput({ v: 2 }),
+          createdBy: CREATOR_TWO
+        })
+        const metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-first'
+        })
+        assert.equal(metadata?.createdBy, CREATOR_ONE)
+      })
+
+      it('a later writeResource does not backfill createdBy onto a Resource created without one', async () => {
+        const { backend } = harness
+        // Created with no invoker: its creator is unrecorded, permanently.
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-no-backfill',
+          input: jsonInput({ v: 1 })
+        })
+        // A later writer must not be promoted to "creator" by this write.
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-no-backfill',
+          input: jsonInput({ v: 2 }),
+          createdBy: CREATOR_TWO
+        })
+        const metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-no-backfill'
+        })
+        assert.equal(metadata?.createdBy, undefined)
+      })
+
+      it('a later writeSpace does not backfill createdBy onto a Space created without one', async () => {
+        const { backend } = harness
+        const noCreatorSpaceId = 'space-created-by-none'
+        // A token-provisioned Create Space records no invoker.
+        await backend.writeSpace({
+          spaceId: noCreatorSpaceId,
+          spaceDescription: {
+            id: noCreatorSpaceId,
+            type: ['Space'],
+            controller: CONTROLLER
+          }
+        })
+        // The controller's first authenticated update must not become "creator".
+        await backend.writeSpace({
+          spaceId: noCreatorSpaceId,
+          spaceDescription: {
+            id: noCreatorSpaceId,
+            type: ['Space'],
+            name: 'Renamed',
+            controller: CONTROLLER
+          },
+          createdBy: CREATOR_TWO
+        })
+        const description = await backend.getSpaceDescription({
+          spaceId: noCreatorSpaceId
+        })
+        assert.equal(description?.name, 'Renamed')
+        assert.equal(description?.createdBy, undefined)
+      })
+
+      it('a later writeCollection does not backfill createdBy onto a Collection created without one', async () => {
+        const { backend } = harness
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'cb-no-backfill-collection',
+          collectionDescription: {
+            id: 'cb-no-backfill-collection',
+            type: ['Collection']
+          }
+        })
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'cb-no-backfill-collection',
+          collectionDescription: {
+            id: 'cb-no-backfill-collection',
+            type: ['Collection'],
+            name: 'Renamed'
+          },
+          createdBy: CREATOR_TWO
+        })
+        const description = await backend.getCollectionDescription({
+          spaceId,
+          collectionId: 'cb-no-backfill-collection'
+        })
+        assert.equal(description?.name, 'Renamed')
+        assert.equal(description?.createdBy, undefined)
+      })
+
+      it('writeResource with no createdBy records none (absent key)', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-none',
+          input: jsonInput({ v: 1 })
+        })
+        const metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-none'
+        })
+        assert.equal(metadata?.createdBy, undefined)
+        assert.ok(!Object.prototype.hasOwnProperty.call(metadata, 'createdBy'))
+      })
+
+      it('writeResourceMetadata preserves createdBy and cannot set it via custom', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-meta',
+          input: jsonInput({ v: 1 }),
+          createdBy: CREATOR_ONE
+        })
+        // A forged `createdBy` smuggled inside `custom` must land in `custom`,
+        // never at the top level -- `custom` is arbitrary client data, but
+        // `createdBy` is server-managed.
+        await backend.writeResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-meta',
+          custom: { createdBy: CREATOR_TWO }
+        })
+        const metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-meta'
+        })
+        assert.equal(metadata?.createdBy, CREATOR_ONE)
+        assert.deepEqual(metadata?.custom, { createdBy: CREATOR_TWO })
+      })
+
+      it('soft-delete then re-create under a different createdBy keeps the original creator', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-recreate',
+          input: jsonInput({ v: 1 }),
+          createdBy: CREATOR_ONE
+        })
+        await backend.deleteResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-recreate'
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-recreate',
+          input: jsonInput({ v: 2 }),
+          createdBy: CREATOR_TWO
+        })
+        const metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'cb-recreate'
+        })
+        assert.equal(metadata?.createdBy, CREATOR_ONE)
+      })
+
+      it('writeSpace records the first invoker as createdBy and preserves it on overwrite', async () => {
+        const { backend } = harness
+        const createdBySpaceId = 'space-created-by-space'
+        await backend.writeSpace({
+          spaceId: createdBySpaceId,
+          spaceDescription: {
+            id: createdBySpaceId,
+            type: ['Space'],
+            name: 'Created By Space',
+            controller: CONTROLLER
+          },
+          createdBy: CREATOR_ONE
+        })
+        let description = await backend.getSpaceDescription({
+          spaceId: createdBySpaceId
+        })
+        assert.equal(description?.createdBy, CREATOR_ONE)
+
+        // A second write by a different invoker does not change the creator.
+        await backend.writeSpace({
+          spaceId: createdBySpaceId,
+          spaceDescription: {
+            id: createdBySpaceId,
+            type: ['Space'],
+            name: 'Renamed Created By Space',
+            controller: CONTROLLER
+          },
+          createdBy: CREATOR_TWO
+        })
+        description = await backend.getSpaceDescription({
+          spaceId: createdBySpaceId
+        })
+        assert.equal(description?.createdBy, CREATOR_ONE)
+        assert.equal(description?.name, 'Renamed Created By Space')
+      })
+
+      it('writeSpace drops a client-supplied createdBy inside the description document', async () => {
+        const { backend } = harness
+        const forgedSpaceId = 'space-created-by-forged'
+        await backend.writeSpace({
+          spaceId: forgedSpaceId,
+          spaceDescription: {
+            id: forgedSpaceId,
+            type: ['Space'],
+            name: 'Forged createdBy Space',
+            controller: CONTROLLER,
+            createdBy: 'did:key:zEVIL'
+          },
+          createdBy: CREATOR_ONE
+        })
+        const description = await backend.getSpaceDescription({
+          spaceId: forgedSpaceId
+        })
+        assert.equal(description?.createdBy, CREATOR_ONE)
+      })
+
+      it('writeSpace with no invoker drops a client-supplied createdBy rather than honoring it', async () => {
+        const { backend } = harness
+        const forgedSpaceId = 'space-created-by-forged-no-invoker'
+        await backend.writeSpace({
+          spaceId: forgedSpaceId,
+          spaceDescription: {
+            id: forgedSpaceId,
+            type: ['Space'],
+            name: 'Forged createdBy Space, no invoker',
+            controller: CONTROLLER,
+            createdBy: 'did:key:zEVIL'
+          }
+        })
+        const description = await backend.getSpaceDescription({
+          spaceId: forgedSpaceId
+        })
+        // Fail closed: unrecorded, not the value the body asked for.
+        assert.equal(description?.createdBy, undefined)
+        assert.ok(!('createdBy' in description!))
+      })
+
+      it('writeCollection records the first invoker as createdBy and preserves it on overwrite', async () => {
+        const { backend } = harness
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'cb-collection',
+          collectionDescription: {
+            id: 'cb-collection',
+            type: ['Collection'],
+            name: 'Created By Collection'
+          },
+          createdBy: CREATOR_ONE
+        })
+        let description = await backend.getCollectionDescription({
+          spaceId,
+          collectionId: 'cb-collection'
+        })
+        assert.equal(description?.createdBy, CREATOR_ONE)
+
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'cb-collection',
+          collectionDescription: {
+            id: 'cb-collection',
+            type: ['Collection'],
+            name: 'Renamed Created By Collection'
+          },
+          createdBy: CREATOR_TWO
+        })
+        description = await backend.getCollectionDescription({
+          spaceId,
+          collectionId: 'cb-collection'
+        })
+        assert.equal(description?.createdBy, CREATOR_ONE)
+        assert.equal(description?.name, 'Renamed Created By Collection')
+      })
+
+      it('writeCollection drops a client-supplied createdBy inside the description document', async () => {
+        const { backend } = harness
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'cb-collection-forged',
+          collectionDescription: {
+            id: 'cb-collection-forged',
+            type: ['Collection'],
+            name: 'Forged createdBy Collection',
+            createdBy: 'did:key:zEVIL'
+          },
+          createdBy: CREATOR_ONE
+        })
+        const description = await backend.getCollectionDescription({
+          spaceId,
+          collectionId: 'cb-collection-forged'
+        })
+        assert.equal(description?.createdBy, CREATOR_ONE)
       })
     })
 
@@ -1051,6 +1388,53 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(doc.metaVersion, 1)
         assert.deepEqual(doc.data, { n: 2 })
         assert.deepEqual(doc.custom, { name: 'Two' })
+      })
+
+      it('carries createdBy on live documents and on tombstones, and omits it when unrecorded', async () => {
+        const { backend } = harness
+        const feedSpaceId = 'space-feed-created-by'
+        await provisionSpace(backend, feedSpaceId)
+        await backend.writeResource({
+          spaceId: feedSpaceId,
+          collectionId: 'col',
+          resourceId: 'live',
+          input: jsonInput({ n: 1 }),
+          createdBy: CREATOR_ONE
+        })
+        await backend.writeResource({
+          spaceId: feedSpaceId,
+          collectionId: 'col',
+          resourceId: 'gone',
+          input: jsonInput({ n: 2 }),
+          createdBy: CREATOR_TWO
+        })
+        // Created with no invoker: nothing to replicate.
+        await backend.writeResource({
+          spaceId: feedSpaceId,
+          collectionId: 'col',
+          resourceId: 'anon',
+          input: jsonInput({ n: 3 })
+        })
+        await backend.deleteResource({
+          spaceId: feedSpaceId,
+          collectionId: 'col',
+          resourceId: 'gone'
+        })
+
+        const feed = await backend.changesSince!({
+          spaceId: feedSpaceId,
+          collectionId: 'col',
+          limit: 100
+        })
+        const byId = new Map(
+          feed.documents.map(document => [document.resourceId, document])
+        )
+        assert.equal(byId.get('live')?.createdBy, CREATOR_ONE)
+        assert.equal(byId.get('live')?.deleted, false)
+        // A tombstone replicates its creator too.
+        assert.equal(byId.get('gone')?.createdBy, CREATOR_TWO)
+        assert.equal(byId.get('gone')?.deleted, true)
+        assert.equal(byId.get('anon')?.createdBy, undefined)
       })
     })
 
@@ -2163,7 +2547,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             spaceId,
             collectionId: 'col',
             resourceId: 'doc',
-            input: jsonInput({ keep: true })
+            input: jsonInput({ keep: true }),
+            createdBy: CREATOR_ONE
           })
           await source.backend.writeResourceMetadata({
             spaceId,
@@ -2238,6 +2623,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             resourceId: 'doc'
           })
           assert.deepEqual(metadata?.custom, { name: 'Doc' })
+          // `createdBy` (the resource's creator) travels with the export too.
+          assert.equal(metadata?.createdBy, CREATOR_ONE)
 
           // The tombstone carried over: invisible to reads, blocks
           // resurrection, and still replicates through the feed.

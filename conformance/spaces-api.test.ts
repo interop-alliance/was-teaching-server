@@ -11,7 +11,8 @@ import {
   createSpace,
   generateId,
   zcapClient,
-  serverUrl
+  serverUrl,
+  withoutCreatedBy
 } from './helpers.js'
 
 describe('Spaces', () => {
@@ -124,7 +125,7 @@ describe('Spaces', () => {
         rootClient: alice.rootClient
       })
       assert.equal(response.status, 201)
-      assert.deepStrictEqual(response.data, {
+      assert.deepStrictEqual(withoutCreatedBy(response.data), {
         id: freshSpaceId,
         name: 'Conformance Test Space',
         type: ['Space'],
@@ -241,7 +242,7 @@ describe('Spaces', () => {
       })
       assert.equal(response.status, 200)
       assert.match(response.headers.get('content-type'), /application\/json/)
-      assert.deepStrictEqual(response.data, {
+      assert.deepStrictEqual(withoutCreatedBy(response.data), {
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
@@ -275,7 +276,7 @@ describe('Spaces', () => {
         appResponse.headers.get('content-type')!,
         /application\/json/
       )
-      assert.deepStrictEqual(appResponse.data, {
+      assert.deepStrictEqual(withoutCreatedBy(appResponse.data), {
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
         type: ['Space'],

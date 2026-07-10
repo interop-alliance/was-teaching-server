@@ -4,11 +4,13 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
+import type { ChangeDocument } from '@interop/storage-core'
 
 import { buildLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { getCollectionOrThrow } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
+import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidIds } from '../lib/validateId.js'
 import type { CollectionDescription, StorageBackend } from '../types.js'
 import { parseBlindedIndexQueryBody } from '../lib/blindedIndex.js'
@@ -118,7 +120,8 @@ export class CollectionRequest {
         spaceId,
         collectionId,
         resourceId,
-        input
+        input,
+        createdBy: invokerDid(request)
       })
       response = {
         id: resourceId,
@@ -268,7 +271,8 @@ export class CollectionRequest {
       await storage.writeCollection({
         spaceId,
         collectionId,
-        collectionDescription
+        collectionDescription,
+        createdBy: invokerDid(request)
       })
     } catch (err) {
       // Rethrow a typed ProblemError from the data-plane backend unchanged
@@ -692,14 +696,17 @@ export class CollectionRequest {
     // the user JSON so arbitrary bodies -- not only objects -- round-trip). The
     // user-writable `custom` (the opaque encryption envelope on an encrypted
     // Collection) and its independent `metaVersion` ride along so a metadata-only
-    // edit replicates alongside content. The RxDB browser adapter does the final
-    // reshape into RxDB documents.
-    const documents = result.documents.map(doc => ({
+    // edit replicates alongside content, as does the server-managed `createdBy`
+    // so a replica learns each Resource's creator without a `/meta` fetch per
+    // Resource. The RxDB browser adapter does the final reshape into RxDB
+    // documents.
+    const documents: ChangeDocument[] = result.documents.map(doc => ({
       id: doc.resourceId,
       _deleted: doc.deleted,
       updatedAt: doc.updatedAt,
       version: doc.version,
       ...(doc.metaVersion !== undefined && { metaVersion: doc.metaVersion }),
+      ...(doc.createdBy !== undefined && { createdBy: doc.createdBy }),
       ...(doc.data !== undefined && { data: doc.data }),
       ...(doc.custom !== undefined && { custom: doc.custom })
     }))

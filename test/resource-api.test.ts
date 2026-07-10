@@ -426,6 +426,17 @@ describe('Resource API', () => {
       assert.equal(meta.custom, undefined)
     })
 
+    it('[signed] GET /meta includes createdBy, the signing DID of the creator', async () => {
+      const resourceId = 'meta-created-by'
+      await aliceCredentials.put(resourceId, { id: resourceId })
+
+      const { data: meta } = await alice.was.request({
+        url: metaUrl(resourceId),
+        method: 'GET'
+      })
+      assert.equal(meta.createdBy, alice.did)
+    })
+
     it('[signed] PUT /meta sets custom, surfaced by GET /meta and the listing', async () => {
       const resourceId = 'meta-writable'
       await aliceCredentials.put(resourceId, { id: resourceId })
@@ -512,6 +523,25 @@ describe('Resource API', () => {
       assert.equal(after.contentType, 'application/json')
       assert.notEqual(after.size, 999999)
       assert.equal(after.custom.name, 'Roundtripped')
+    })
+
+    it('[signed] PUT /meta with a custom object does not disturb createdBy', async () => {
+      const resourceId = 'meta-created-by-preserved'
+      await aliceCredentials.put(resourceId, { id: resourceId })
+
+      const putResponse = await alice.was.request({
+        url: metaUrl(resourceId),
+        method: 'PUT',
+        json: { custom: { name: 'Some Custom Data' } }
+      })
+      assert.equal(putResponse.status, 204)
+
+      const { data: meta } = await alice.was.request({
+        url: metaUrl(resourceId),
+        method: 'GET'
+      })
+      assert.equal(meta.createdBy, alice.did)
+      assert.equal(meta.custom.name, 'Some Custom Data')
     })
 
     it('[signed] PUT /meta of a nonexistent resource 404s (does not create)', async () => {

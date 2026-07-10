@@ -76,6 +76,7 @@ describe('Spaces', () => {
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
         controller: alice.did,
+        createdBy: alice.did,
         url: `/space/${alice.space1.id}`,
         linkset: `/space/${alice.space1.id}/linkset`
       })
@@ -171,6 +172,46 @@ describe('Spaces', () => {
       assert.notEqual(await space.describe(), null)
     })
 
+    it('[root] the Create Space 201 body carries the same createdBy a later GET returns', async () => {
+      const spaceId = crypto.randomUUID()
+      const response = await alice.was.request({
+        url: new URL('/spaces/', serverUrl).toString(),
+        method: 'POST',
+        json: { id: spaceId, name: 'Created Space', controller: alice.did }
+      })
+      assert.equal(response.status, 201)
+      assert.equal(
+        (response.data as { createdBy?: string }).createdBy,
+        alice.did
+      )
+
+      const description = await alice.was.space(spaceId).describe()
+      assert.equal(description?.createdBy, alice.did)
+    })
+
+    it('[root] a PUT whose body carries a forged createdBy does not change the stored value', async () => {
+      const spaceId = crypto.randomUUID()
+      await alice.was.createSpace({
+        id: spaceId,
+        name: 'Forged createdBy Space',
+        controller: alice.did
+      })
+
+      await alice.was.request({
+        url: new URL(`/space/${spaceId}`, serverUrl).toString(),
+        method: 'PUT',
+        json: {
+          name: 'Renamed',
+          controller: alice.did,
+          createdBy: 'did:key:zEVIL'
+        }
+      })
+
+      const description = await alice.was.space(spaceId).describe()
+      assert.equal(description?.createdBy, alice.did)
+      assert.equal(description?.name, 'Renamed')
+    })
+
     it('GET a space with no auth headers falls through to policy and 404s (no public policy)', async () => {
       // Reads no longer 401 at the hook: an anonymous read is allowed to attempt,
       // and is denied as 404 (no-leak) when no access-control policy grants it.
@@ -200,6 +241,7 @@ describe('Spaces', () => {
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
         controller: alice.did,
+        createdBy: alice.did,
         url: `/space/${alice.space1.id}`,
         linkset: `/space/${alice.space1.id}/linkset`
       })
@@ -228,6 +270,7 @@ describe('Spaces', () => {
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
         controller: alice.did,
+        createdBy: alice.did,
         url: `/space/${alice.space1.id}`,
         linkset: `/space/${alice.space1.id}/linkset`
       })

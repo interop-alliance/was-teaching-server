@@ -14,7 +14,11 @@ import assert from 'node:assert'
 import { NotFoundError } from '@interop/was-client'
 import type { Space } from '@interop/was-client'
 
-import { buildZcapClients, provisionSpace } from './helpers.js'
+import {
+  buildZcapClients,
+  provisionSpace,
+  withoutCreatedBy
+} from './helpers.js'
 
 describe('WasClient — Spaces & Collections', () => {
   let alice: any
@@ -50,7 +54,7 @@ describe('WasClient — Spaces & Collections', () => {
     it('creates a space and reads it back', async () => {
       const space = await newSpace('Home')
       const description = await space.describe()
-      assert.deepStrictEqual(description, {
+      assert.deepStrictEqual(withoutCreatedBy(description), {
         id: space.id,
         type: ['Space'],
         name: 'Home',
@@ -108,7 +112,7 @@ describe('WasClient — Spaces & Collections', () => {
         name: 'Verifiable Credentials'
       })
       assert.equal(collection.id, 'credentials')
-      assert.deepStrictEqual(await collection.describe(), {
+      assert.deepStrictEqual(withoutCreatedBy(await collection.describe()), {
         id: 'credentials',
         type: ['Collection'],
         name: 'Verifiable Credentials',

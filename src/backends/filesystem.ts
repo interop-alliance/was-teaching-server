@@ -124,6 +124,10 @@ const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
  * / `size` are always derived from the stored representation, never duplicated
  * here.
  *
+ * `createdBy` is the DID of whoever created the Resource (spec "Resource
+ * Metadata Data Model"): an OPTIONAL server-managed property, absent when no
+ * creator was recorded.
+ *
  * `version` is the per-Resource monotonic counter that backs the HTTP `ETag`
  * strong validator (see `formatEtag`): it starts at 1 on first content write and
  * increments on each subsequent content write. It is `undefined` only for a
@@ -150,6 +154,12 @@ const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
 interface MetaSidecar {
   createdAt: string
   updatedAt: string
+  // DID of the Resource's creator, set from the invoker of the first content
+  // write and thereafter preserved verbatim (as `createdAt` is), including
+  // across a tombstone. Server-managed: never sourced from the request body,
+  // and not reachable from the user-writable `custom`. Absent on a sidecar
+  // written before `createdBy` was recorded, or by a caller with no invoker.
+  createdBy?: IDID
   version?: number
   metaVersion?: number
   // On a plaintext Collection `custom` is `{ name, tags }`; on an encrypted
@@ -797,36 +807,51 @@ export class FileSystemBackend implements StorageBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.spaceDescription {SpaceDescription}
+   * @param [options.createdBy] {string}   DID of the invoker, recorded as the
+   *   Space's `createdBy` on first write only
    * @returns {Promise<void>} Resolved value is implementation-defined and ignored.
    */
   async writeSpace({
     spaceId,
-    spaceDescription
+    spaceDescription,
+    createdBy
   }: {
     spaceId: string
     spaceDescription: SpaceDescription
+    createdBy?: IDID
   }): Promise<void> {
+    // Prior description, read once and reused below: for the create-path quota
+    // check (a brand-new Space has none yet) and to resolve `createdBy`.
+    const prior = await this.getSpaceDescription({ spaceId })
+
     // Count quota (create path only): a brand-new Space (no description yet)
     // must not push its controller past `maxSpacesPerController`. Overwriting an
     // existing Space's description never trips it. Space creation is rare, so
     // the O(all Spaces) enumeration is acceptable; soft under concurrency, like
     // the byte quota.
-    if (this.maxSpacesPerController !== undefined) {
-      const existing = await this.getSpaceDescription({ spaceId })
-      if (!existing) {
-        const { controller } = spaceDescription
-        const spaces = await this.listSpaces()
-        const owned = spaces.filter(
-          space => space.controller === controller
-        ).length
-        if (owned >= this.maxSpacesPerController) {
-          throw new CountQuotaExceededError({
-            scope: 'Spaces per controller',
-            limit: this.maxSpacesPerController
-          })
-        }
+    if (this.maxSpacesPerController !== undefined && !prior) {
+      const { controller } = spaceDescription
+      const spaces = await this.listSpaces()
+      const owned = spaces.filter(
+        space => space.controller === controller
+      ).length
+      if (owned >= this.maxSpacesPerController) {
+        throw new CountQuotaExceededError({
+          scope: 'Spaces per controller',
+          limit: this.maxSpacesPerController
+        })
       }
     }
+
+    // `createdBy` names the Space's creator, not its last writer: taken from
+    // this write's invoker only when this write CREATES the description, and
+    // preserved verbatim afterward -- including preserved-as-absent, so a Space
+    // created with no invoker (a token-provisioned create) never has a later
+    // writer backfilled into it as its creator. The client-supplied
+    // `spaceDescription` is wire input and may carry its own `createdBy` --
+    // discard it, since the server alone is authoritative for this field.
+    const { createdBy: _suppliedCreatedBy, ...rest } = spaceDescription
+    const creator = prior ? prior.createdBy : createdBy
 
     const spaceDir = await this._ensureSpaceDir({ spaceId })
     const filename = `.space.${spaceId}.json`
@@ -834,7 +859,10 @@ export class FileSystemBackend implements StorageBackend {
     // an atomically-written JSON string round-trips through the same read path.
     await atomicWriteFile({
       filePath: path.join(spaceDir, filename),
-      data: JSON.stringify(spaceDescription)
+      data: JSON.stringify({
+        ...rest,
+        ...(creator !== undefined && { createdBy: creator })
+      })
     })
   }
 
@@ -1343,37 +1371,58 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.collectionDescription {CollectionDescription}
+   * @param [options.createdBy] {string}   DID of the invoker, recorded as the
+   *   Collection's `createdBy` on first write only
    * @returns {Promise<void>} Resolved value is implementation-defined and ignored.
    */
   async writeCollection({
     spaceId,
     collectionId,
-    collectionDescription
+    collectionDescription,
+    createdBy
   }: {
     spaceId: string
     collectionId: string
     collectionDescription: CollectionDescription
+    createdBy?: IDID
   }): Promise<void> {
+    // Prior description, read once and reused below: for the create-path quota
+    // check (a new Collection has none yet) and to resolve `createdBy`.
+    const prior = await this.getCollectionDescription({
+      spaceId,
+      collectionId
+    })
+
     // Count quota (create path only): a new Collection must not push its Space
     // past `maxCollectionsPerSpace`; overwriting an existing Collection's
     // description never trips it.
-    if (this.maxCollectionsPerSpace !== undefined) {
-      const existing = await this.getCollectionDescription({
-        spaceId,
-        collectionId
-      })
-      if (!existing) {
-        const collections = await this.listCollections({ spaceId })
-        if (collections.length >= this.maxCollectionsPerSpace) {
-          throw new CountQuotaExceededError({
-            scope: 'Collections per Space',
-            limit: this.maxCollectionsPerSpace
-          })
-        }
+    if (this.maxCollectionsPerSpace !== undefined && !prior) {
+      const collections = await this.listCollections({ spaceId })
+      if (collections.length >= this.maxCollectionsPerSpace) {
+        throw new CountQuotaExceededError({
+          scope: 'Collections per Space',
+          limit: this.maxCollectionsPerSpace
+        })
       }
     }
 
-    await this._persistCollection({ spaceId, collectionId, collectionDescription })
+    // `createdBy` names the Collection's creator, not its last writer: taken
+    // from this write's invoker only when this write CREATES the description,
+    // and preserved verbatim afterward -- including preserved-as-absent. The
+    // client-supplied `collectionDescription` is wire input and may carry its
+    // own `createdBy` -- discard it, since the server alone is authoritative
+    // for this field.
+    const { createdBy: _suppliedCreatedBy, ...rest } = collectionDescription
+    const creator = prior ? prior.createdBy : createdBy
+
+    await this._persistCollection({
+      spaceId,
+      collectionId,
+      collectionDescription: {
+        ...rest,
+        ...(creator !== undefined && { createdBy: creator })
+      }
+    })
   }
 
   /**
@@ -1615,6 +1664,8 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param options.input {ResourceInput}
+   * @param [options.createdBy] {string}   DID of the invoker, recorded as the
+   *   Resource's `createdBy` on first write only
    * @param [options.ifMatch] {string}   `If-Match` precondition (a quoted ETag)
    * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *` (create-if-absent)
    * @returns {Promise<{ version: number }>}   the Resource's new version
@@ -1624,6 +1675,7 @@ export class FileSystemBackend implements StorageBackend {
     collectionId,
     resourceId,
     input,
+    createdBy,
     ifMatch,
     ifNoneMatch
   }: {
@@ -1631,6 +1683,7 @@ export class FileSystemBackend implements StorageBackend {
     collectionId: string
     resourceId: string
     input: ResourceInput
+    createdBy?: IDID
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ version: number }> {
@@ -1647,6 +1700,7 @@ export class FileSystemBackend implements StorageBackend {
           collectionDir,
           resourceId,
           input,
+          createdBy,
           ifMatch,
           ifNoneMatch
         })
@@ -1695,6 +1749,7 @@ export class FileSystemBackend implements StorageBackend {
     collectionDir,
     resourceId,
     input,
+    createdBy,
     ifMatch,
     ifNoneMatch
   }: {
@@ -1702,6 +1757,7 @@ export class FileSystemBackend implements StorageBackend {
     collectionDir: string
     resourceId: string
     input: ResourceInput
+    createdBy?: IDID
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ version: number }> {
@@ -1844,15 +1900,25 @@ export class FileSystemBackend implements StorageBackend {
     // increments `version` (the ETag validator) from its prior value, preserving
     // any user-writable `custom` and the independent `metaVersion` already stored
     // in the sidecar (a content write does not touch the metadata sub-resource).
+    //
+    // `createdBy` pairs with `createdAt`: taken from this write's invoker only
+    // when this write creates the sidecar, so it names the creator rather than
+    // the last writer, and is preserved verbatim afterward -- including
+    // preserved-as-absent, so a Resource created with no invoker never has a
+    // later writer backfilled into it. A tombstone keeps both, so re-creating a
+    // deleted id under a different invoker preserves the original creator, as
+    // it does the original `createdAt`.
     const now = new Date().toISOString()
     const prior = await this._readMetaSidecar({ collectionDir, resourceId })
     const version = (prior?.version ?? 0) + 1
+    const creator = prior ? prior.createdBy : createdBy
     await this._writeMetaSidecar({
       collectionDir,
       resourceId,
       sidecar: {
         createdAt: prior?.createdAt ?? now,
         updatedAt: now,
+        ...(creator !== undefined && { createdBy: creator }),
         version,
         ...(prior?.metaVersion !== undefined && {
           metaVersion: prior.metaVersion
@@ -2124,6 +2190,9 @@ export class FileSystemBackend implements StorageBackend {
       size: stats.size,
       createdAt,
       updatedAt,
+      // Absent for a Resource created before `createdBy` was recorded; there is
+      // no stat-based fallback for it, as there is for the timestamps.
+      ...(sidecar?.createdBy !== undefined && { createdBy: sidecar.createdBy }),
       // `custom` is returned verbatim -- `{ name, tags }` on a plaintext
       // Collection, the opaque encryption envelope on an encrypted one.
       ...(hasCustom && { custom: sidecar!.custom as ResourceMetadataCustom }),
@@ -2214,6 +2283,11 @@ export class FileSystemBackend implements StorageBackend {
         sidecar: {
           createdAt,
           updatedAt: now,
+          // Preserve the server-managed creator: a metadata write replaces only
+          // `custom`, and `createdBy` is not user-writable.
+          ...(prior?.createdBy !== undefined && {
+            createdBy: prior.createdBy
+          }),
           // Preserve the content `version` (ETag) -- a metadata write does not
           // change the stored representation.
           ...(prior?.version !== undefined && { version: prior.version }),
@@ -2299,7 +2373,9 @@ export class FileSystemBackend implements StorageBackend {
       // Bump `version` / `updatedAt` so the tombstone sorts after the Resource's
       // prior state in the change feed, and continues the monotonic version (a
       // later re-create reads this sidecar and keeps counting up). `custom` is
-      // dropped: the user Metadata goes with the deleted Resource.
+      // dropped: the user Metadata goes with the deleted Resource. `createdAt` /
+      // `createdBy` are kept: they are the server's record of the Resource's
+      // origin, which a re-create under the same id continues.
       const now = new Date().toISOString()
       const prior = await this._readMetaSidecar({ collectionDir, resourceId })
       await this._writeMetaSidecar({
@@ -2308,6 +2384,9 @@ export class FileSystemBackend implements StorageBackend {
         sidecar: {
           createdAt: prior?.createdAt ?? now,
           updatedAt: now,
+          ...(prior?.createdBy !== undefined && {
+            createdBy: prior.createdBy
+          }),
           version: (prior?.version ?? 0) + 1,
           deleted: true,
           contentType
@@ -2355,10 +2434,11 @@ export class FileSystemBackend implements StorageBackend {
       resourceId: string
       version: number
       metaVersion?: number
+      createdBy?: IDID
       updatedAt: string
       deleted: boolean
       data?: unknown
-      custom?: unknown
+      custom?: ResourceMetadataCustom | Record<string, unknown>
     }>
     checkpoint: { id: string; updatedAt: string } | null
   }> {
@@ -2408,15 +2488,17 @@ export class FileSystemBackend implements StorageBackend {
           resourceId: string
           version: number
           metaVersion?: number
+          createdBy?: IDID
           updatedAt: string
           deleted: false
           fileName: string
-          custom?: unknown
+          custom?: ResourceMetadataCustom | Record<string, unknown>
         }
       | {
           resourceId: string
           version: number
           metaVersion?: number
+          createdBy?: IDID
           updatedAt: string
           deleted: true
         }
@@ -2446,6 +2528,11 @@ export class FileSystemBackend implements StorageBackend {
           version: sidecar?.version ?? 0,
           ...(sidecar?.metaVersion !== undefined && {
             metaVersion: sidecar.metaVersion
+          }),
+          // The creator's DID rides the feed so provenance replicates with the
+          // document, rather than needing a `/meta` fetch per Resource.
+          ...(sidecar?.createdBy !== undefined && {
+            createdBy: sidecar.createdBy
           }),
           updatedAt,
           deleted: false,
@@ -2477,6 +2564,10 @@ export class FileSystemBackend implements StorageBackend {
           version: sidecar.version ?? 0,
           ...(sidecar.metaVersion !== undefined && {
             metaVersion: sidecar.metaVersion
+          }),
+          // A tombstone keeps its creator, as it keeps its `createdAt`.
+          ...(sidecar.createdBy !== undefined && {
+            createdBy: sidecar.createdBy
           }),
           updatedAt: sidecar.updatedAt,
           deleted: true
@@ -2521,6 +2612,7 @@ export class FileSystemBackend implements StorageBackend {
             ...(desc.metaVersion !== undefined && {
               metaVersion: desc.metaVersion
             }),
+            ...(desc.createdBy !== undefined && { createdBy: desc.createdBy }),
             updatedAt: desc.updatedAt,
             deleted: true
           }
@@ -2542,6 +2634,7 @@ export class FileSystemBackend implements StorageBackend {
           ...(desc.metaVersion !== undefined && {
             metaVersion: desc.metaVersion
           }),
+          ...(desc.createdBy !== undefined && { createdBy: desc.createdBy }),
           updatedAt: desc.updatedAt,
           deleted: false,
           data,

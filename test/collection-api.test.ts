@@ -80,6 +80,7 @@ describe('Collections API', () => {
       name: 'Verifiable Credentials',
       type: ['Collection'],
       backend: { id: 'default' },
+      createdBy: alice.did,
       url: `/space/${alice.space1.id}/credentials`,
       linkset: `/space/${alice.space1.id}/credentials/linkset`
     })
@@ -135,10 +136,32 @@ describe('Collections API', () => {
         name: 'Verifiable Credentials',
         type: ['Collection'],
         backend: { id: 'default' },
+        createdBy: alice.did,
         url: `/space/${alice.space1.id}/credentials`,
         linkset: `/space/${alice.space1.id}/credentials/linkset`
       }
     )
+  })
+
+  it('[root] a PUT whose body carries a forged createdBy does not change the stored value', async () => {
+    const collectionId = crypto.randomUUID()
+    await aliceSpace.createCollection({
+      id: collectionId,
+      name: 'Forged createdBy Collection'
+    })
+
+    await alice.was.request({
+      url: new URL(
+        `/space/${alice.space1.id}/${collectionId}`,
+        serverUrl
+      ).toString(),
+      method: 'PUT',
+      json: { name: 'Renamed', createdBy: 'did:key:zEVIL' }
+    })
+
+    const description = await aliceSpace.collection(collectionId).describe()
+    assert.equal(description?.createdBy, alice.did)
+    assert.equal(description?.name, 'Renamed')
   })
 
   it('[root] create and delete a collection by id', async () => {

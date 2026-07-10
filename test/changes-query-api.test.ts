@@ -114,6 +114,18 @@ describe('Collection changes query profile', () => {
     assert.equal(tombstone.version, 2, 'delete bumped the version')
   })
 
+  it('carries createdBy on live documents and on tombstones so provenance replicates', async () => {
+    const collection = await seedCollection('creator-feed', ['keep', 'remove'])
+    await collection.resource('remove').delete()
+
+    const { data } = await queryChanges(alice, 'creator-feed', { limit: 10 })
+    const byId = new Map(data.documents.map((doc: any) => [doc.id, doc]))
+    assert.equal((byId.get('keep') as any).createdBy, alice.did)
+    const tombstone = byId.get('remove') as any
+    assert.equal(tombstone._deleted, true)
+    assert.equal(tombstone.createdBy, alice.did)
+  })
+
   it('carries metaVersion and custom so a metadata edit replicates', async () => {
     const collection = await seedCollection('meta-feed', ['a'])
     // A metadata-only edit: the resource re-surfaces in the feed carrying its

@@ -127,6 +127,7 @@ interface ResourceRow {
   deleted: boolean
   created_at: string
   updated_at: string
+  created_by: IDID | null
 }
 
 /**
@@ -137,6 +138,7 @@ interface ResourceRow {
 interface SidecarShape {
   createdAt: string
   updatedAt: string
+  createdBy?: IDID
   version?: number
   metaVersion?: number
   custom?: ResourceMetadataCustom | Record<string, unknown>
@@ -620,28 +622,64 @@ export class PostgresBackend implements StorageBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.spaceDescription {SpaceDescription}
+   * @param [options.createdBy] {string}   DID of the invoker, recorded as the
+   *   Space's `createdBy` on first write only
    * @returns {Promise<void>}
    */
   async writeSpace({
     spaceId,
-    spaceDescription
+    spaceDescription,
+    createdBy
   }: {
     spaceId: string
     spaceDescription: SpaceDescription
+    createdBy?: IDID
   }): Promise<void> {
     const { controller } = spaceDescription
-    const descriptionJson = JSON.stringify(spaceDescription)
+    // `createdBy` names the Space's creator, not its last writer: taken from
+    // this write's invoker only when there is no prior description, and
+    // preserved verbatim afterward. The client-supplied `spaceDescription` is
+    // wire input and may carry its own `createdBy` -- discard it, since the
+    // server alone is authoritative for this field.
+    const { createdBy: _suppliedCreatedBy, ...rest } = spaceDescription
+    const descriptionJson = JSON.stringify(rest)
     // The upsert maintains the denormalized `controller` column on both insert
     // and update -- the description's controller can change on update, and the
-    // Spaces count quota reads this column (spec "Quotas").
+    // Spaces count quota reads this column (spec "Quotas"). `createdBy` is
+    // resolved within this same statement, in one transaction-free round trip
+    // (no separate read-then-write race with a concurrent `writeSpace` for the
+    // same id):
+    // - `spaces.description IS NULL` means there is no prior description row
+    //   (a placeholder row created by a sub-resource write before any Space
+    //   Description was written) -- this write IS the create, so it behaves
+    //   like the insert branch: attach this write's `createdBy` when present,
+    //   otherwise omit the key entirely (never store it as JSON `null`).
+    // - Otherwise a prior description exists, and its `createdBy` -- present
+    //   or absent -- is preserved verbatim via the jsonb `?` key-existence
+    //   operator; this write's `createdBy` is ignored entirely (never
+    //   backfilled).
     const upsert = (queryable: Queryable): Promise<unknown> =>
       queryable.query(
         `INSERT INTO spaces (space_id, description, controller)
-         VALUES ($1, $2::jsonb, $3)
+         VALUES (
+           $1,
+           CASE WHEN $4::text IS NULL THEN $2::jsonb
+                ELSE ($2::jsonb) || jsonb_build_object('createdBy', $4::text) END,
+           $3
+         )
          ON CONFLICT (space_id) DO UPDATE SET
-           description = EXCLUDED.description,
+           description = CASE
+             WHEN spaces.description IS NULL THEN
+               CASE WHEN $4::text IS NULL THEN $2::jsonb
+                    ELSE ($2::jsonb) || jsonb_build_object('createdBy', $4::text) END
+             WHEN spaces.description ? 'createdBy' THEN
+               ($2::jsonb) || jsonb_build_object(
+                 'createdBy', spaces.description->>'createdBy'
+               )
+             ELSE $2::jsonb
+           END,
            controller = EXCLUDED.controller`,
-        [spaceId, descriptionJson, controller]
+        [spaceId, descriptionJson, controller, createdBy ?? null]
       )
 
     if (this.maxSpacesPerController === undefined) {
@@ -733,16 +771,20 @@ export class PostgresBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.collectionDescription {CollectionDescription}
+   * @param [options.createdBy] {string}   DID of the invoker, recorded as the
+   *   Collection's `createdBy` on first write only
    * @returns {Promise<void>}
    */
   async writeCollection({
     spaceId,
     collectionId,
-    collectionDescription
+    collectionDescription,
+    createdBy
   }: {
     spaceId: string
     collectionId: string
     collectionDescription: CollectionDescription
+    createdBy?: IDID
   }): Promise<void> {
     await this._withTransaction(async client => {
       await this._ensureSpaceRow({ client, spaceId })
@@ -777,38 +819,75 @@ export class PostgresBackend implements StorageBackend {
         queryable: client,
         spaceId,
         collectionId,
-        collectionDescription
+        collectionDescription,
+        createdBy
       })
     })
   }
 
   /**
    * The one Collection-description upsert statement, shared by
-   * `writeCollection` and the import apply loop.
+   * `writeCollection` and the import apply loop. `createdBy` is resolved
+   * within this same statement, in one round trip (no separate read-then-write
+   * race with a concurrent write for the same id):
+   * - `collections.description IS NULL` means there is no prior description
+   *   row (a placeholder row created by a sub-Resource write before any
+   *   Collection Description was written) -- this write IS the create, so it
+   *   behaves like the insert branch: attach the `createdBy` parameter when
+   *   present, otherwise omit the key entirely (never store it as JSON
+   *   `null`).
+   * - Otherwise a prior description exists, and its `createdBy` -- present or
+   *   absent -- is preserved verbatim via the jsonb `?` key-existence
+   *   operator; the `createdBy` parameter is ignored entirely (never
+   *   backfilled).
+   * Any `createdBy` embedded in `collectionDescription` itself is discarded
+   * here: `writeCollection` passes the invoker DID via the `createdBy`
+   * parameter instead, and the import apply loop passes the imported
+   * document's own `createdBy` so a restored Collection keeps its original
+   * creator (that import call is always a create -- the caller skips existing
+   * Collections -- so there is no prior row to preserve instead).
    * @param options {object}
    * @param options.queryable {Queryable}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.collectionDescription {CollectionDescription}
+   * @param [options.createdBy] {string}   resolved creator to fall back to
+   *   when there is no prior row
    * @returns {Promise<void>}
    */
   private async _upsertCollection({
     queryable,
     spaceId,
     collectionId,
-    collectionDescription
+    collectionDescription,
+    createdBy
   }: {
     queryable: Queryable
     spaceId: string
     collectionId: string
     collectionDescription: CollectionDescription
+    createdBy?: IDID
   }): Promise<void> {
+    const { createdBy: _suppliedCreatedBy, ...rest } = collectionDescription
     await queryable.query(
       `INSERT INTO collections (space_id, collection_id, description)
-       VALUES ($1, $2, $3::jsonb)
-       ON CONFLICT (space_id, collection_id)
-       DO UPDATE SET description = EXCLUDED.description`,
-      [spaceId, collectionId, JSON.stringify(collectionDescription)]
+       VALUES (
+         $1, $2,
+         CASE WHEN $4::text IS NULL THEN $3::jsonb
+              ELSE ($3::jsonb) || jsonb_build_object('createdBy', $4::text) END
+       )
+       ON CONFLICT (space_id, collection_id) DO UPDATE SET
+         description = CASE
+           WHEN collections.description IS NULL THEN
+             CASE WHEN $4::text IS NULL THEN $3::jsonb
+                  ELSE ($3::jsonb) || jsonb_build_object('createdBy', $4::text) END
+           WHEN collections.description ? 'createdBy' THEN
+             ($3::jsonb) || jsonb_build_object(
+               'createdBy', collections.description->>'createdBy'
+             )
+           ELSE $3::jsonb
+         END`,
+      [spaceId, collectionId, JSON.stringify(rest), createdBy ?? null]
     )
   }
 
@@ -1013,6 +1092,8 @@ export class PostgresBackend implements StorageBackend {
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param options.input {ResourceInput}
+   * @param [options.createdBy] {string}   DID of the invoker, recorded as the
+   *   Resource's `createdBy` on first write only
    * @param [options.ifMatch] {string}
    * @param [options.ifNoneMatch] {boolean}
    * @returns {Promise<{ version: number }>}
@@ -1022,6 +1103,7 @@ export class PostgresBackend implements StorageBackend {
     collectionId,
     resourceId,
     input,
+    createdBy,
     ifMatch,
     ifNoneMatch
   }: {
@@ -1029,6 +1111,7 @@ export class PostgresBackend implements StorageBackend {
     collectionId: string
     resourceId: string
     input: ResourceInput
+    createdBy?: IDID
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ version: number }> {
@@ -1113,9 +1196,13 @@ export class PostgresBackend implements StorageBackend {
       // Narrow projection: the lock needs the row, not its (possibly multi-MB)
       // `content` bytea, which this path never reads.
       const { rows } = await client.query<
-        Pick<ResourceRow, 'version' | 'size_bytes' | 'deleted' | 'created_at'>
+        Pick<
+          ResourceRow,
+          'version' | 'size_bytes' | 'deleted' | 'created_at' | 'created_by'
+        >
       >(
-        `SELECT version, size_bytes, deleted, created_at FROM resources
+        `SELECT version, size_bytes, deleted, created_at, created_by
+           FROM resources
           WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
           FOR UPDATE`,
         [spaceId, collectionId, resourceId]
@@ -1168,6 +1255,15 @@ export class PostgresBackend implements StorageBackend {
       // concurrent creator may have raced past the same precondition. A plain
       // INSERT (no ON CONFLICT) makes the primary key the arbiter: the loser's
       // unique violation maps to the 412 the precondition would have thrown.
+      // `createdBy` names the Resource's creator, not its last writer: taken
+      // from this write's invoker only when there is no prior row at all
+      // (`prior === undefined`), then preserved EXACTLY as the prior row has
+      // it -- including preserved-as-absent -- by every later write,
+      // regardless of who invokes it. A tombstone IS a prior row, so a
+      // re-create over one keeps the tombstone's `createdBy` (or its
+      // absence), exactly as `created_at` is preserved across it.
+      const creator =
+        prior !== undefined ? prior.created_by : (createdBy ?? null)
       const values = [
         spaceId,
         collectionId,
@@ -1177,14 +1273,15 @@ export class PostgresBackend implements StorageBackend {
         isJson({ contentType: input.contentType }),
         content.length,
         version,
-        prior?.created_at ?? now
+        prior?.created_at ?? now,
+        creator
       ]
       const insertSql = `
         INSERT INTO resources (
           space_id, collection_id, resource_id, content_type, content,
           is_json, size_bytes, version, meta_version, custom, deleted,
-          created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL, false, $9, $9)`
+          created_at, updated_at, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL, false, $9, $9, $10)`
       if (ifNoneMatch && prior === undefined) {
         try {
           await client.query(insertSql, values)
@@ -1212,7 +1309,8 @@ export class PostgresBackend implements StorageBackend {
              size_bytes = EXCLUDED.size_bytes,
              version = resources.version + 1,
              deleted = false,
-             updated_at = EXCLUDED.updated_at
+             updated_at = EXCLUDED.updated_at,
+             created_by = resources.created_by
            RETURNING version`,
           values
         )
@@ -1221,7 +1319,12 @@ export class PostgresBackend implements StorageBackend {
       // `created_at` / `meta_version` / `custom` are deliberately NOT in the
       // conflict update: an overwrite keeps the original creation time (also
       // across a tombstone, as the filesystem sidecar does) and the metadata
-      // counters as they stand on the row.
+      // counters as they stand on the row. `created_by` is likewise NOT
+      // backfilled from `EXCLUDED`: the conflict path always means a prior
+      // row already existed (including the race where a concurrent creator's
+      // INSERT landed between our lock-nothing SELECT and this statement), so
+      // `resources.created_by` -- the prior row's own value, absent or not --
+      // is authoritative and this write's `createdBy` is ignored entirely.
       return { version }
     })
   }
@@ -1338,8 +1441,8 @@ export class PostgresBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
-   * @returns {Promise<(ResourceMetadata & { version?: number; metaVersion?:
-   *   number }) | undefined>}
+   * @returns {Promise<(ResourceMetadata & { createdBy?: IDID; version?:
+   *   number; metaVersion?: number }) | undefined>}
    */
   async getResourceMetadata({
     spaceId,
@@ -1350,11 +1453,16 @@ export class PostgresBackend implements StorageBackend {
     collectionId: string
     resourceId: string
   }): Promise<
-    (ResourceMetadata & { version?: number; metaVersion?: number }) | undefined
+    | (ResourceMetadata & {
+        createdBy?: IDID
+        version?: number
+        metaVersion?: number
+      })
+    | undefined
   > {
     const { rows } = await this._pool.query<ResourceRow>(
       `SELECT content_type, size_bytes, version, meta_version, custom,
-              deleted, created_at, updated_at
+              deleted, created_at, updated_at, created_by
          FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
       [spaceId, collectionId, resourceId]
@@ -1369,6 +1477,8 @@ export class PostgresBackend implements StorageBackend {
       size: Number(row.size_bytes),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      // Absent for a Resource created before `createdBy` was recorded.
+      ...(row.created_by !== null && { createdBy: row.created_by }),
       ...(hasCustom && { custom: row.custom as ResourceMetadataCustom }),
       version: row.version,
       ...(row.meta_version !== null && { metaVersion: row.meta_version })
@@ -1470,10 +1580,11 @@ export class PostgresBackend implements StorageBackend {
       resourceId: string
       version: number
       metaVersion?: number
+      createdBy?: IDID
       updatedAt: string
       deleted: boolean
       data?: unknown
-      custom?: unknown
+      custom?: ResourceMetadataCustom | Record<string, unknown>
     }>
     checkpoint: { id: string; updatedAt: string } | null
   }> {
@@ -1482,7 +1593,7 @@ export class PostgresBackend implements StorageBackend {
       ResourceRow & { resource_id: string }
     >(
       `SELECT resource_id, content, version, meta_version, custom, deleted,
-              updated_at
+              updated_at, created_by
          FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND is_json
           AND ($3::text IS NULL OR (updated_at, resource_id) > ($3, $4))
@@ -1503,6 +1614,8 @@ export class PostgresBackend implements StorageBackend {
           resourceId: row.resource_id,
           version: row.version,
           ...(row.meta_version !== null && { metaVersion: row.meta_version }),
+          // A tombstone keeps its creator, as it keeps its `created_at`.
+          ...(row.created_by !== null && { createdBy: row.created_by }),
           updatedAt: row.updated_at,
           deleted: true
         }
@@ -1519,6 +1632,9 @@ export class PostgresBackend implements StorageBackend {
         resourceId: row.resource_id,
         version: row.version,
         ...(row.meta_version !== null && { metaVersion: row.meta_version }),
+        // The creator's DID rides the feed so provenance replicates with the
+        // document, rather than needing a `/meta` fetch per Resource.
+        ...(row.created_by !== null && { createdBy: row.created_by }),
         updatedAt: row.updated_at,
         deleted: false,
         data,
@@ -2130,6 +2246,7 @@ export class PostgresBackend implements StorageBackend {
       return {
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        ...(row.created_by !== null && { createdBy: row.created_by }),
         version: row.version,
         deleted: true,
         contentType: row.content_type
@@ -2138,6 +2255,7 @@ export class PostgresBackend implements StorageBackend {
     return {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      ...(row.created_by !== null && { createdBy: row.created_by }),
       version: row.version,
       ...(row.meta_version !== null && { metaVersion: row.meta_version }),
       ...(row.custom !== null && { custom: row.custom })
@@ -2191,7 +2309,7 @@ export class PostgresBackend implements StorageBackend {
       >(
         `SELECT collection_id, resource_id, content_type, is_json,
                 size_bytes, version, meta_version, custom, deleted,
-                created_at, updated_at
+                created_at, updated_at, created_by
            FROM resources WHERE space_id = $1`,
         [spaceId]
       )
@@ -2520,11 +2638,17 @@ export class PostgresBackend implements StorageBackend {
               limit: maxCollectionsPerSpace
             })
           }
+          // Import restores `createdBy` verbatim from the archived document
+          // (already discarded and reapplied by `_upsertCollection`, same as
+          // any other write): this is only ever a create here (the branch
+          // above skips existing Collections), so there is no prior row for
+          // COALESCE to prefer over it.
           await this._upsertCollection({
             queryable: client,
             spaceId,
             collectionId,
-            collectionDescription
+            collectionDescription,
+            createdBy: collectionDescription.createdBy
           })
           if (isNewRow) {
             collectionRowCount++
@@ -2660,9 +2784,10 @@ export class PostgresBackend implements StorageBackend {
 
   /**
    * Inserts one archived resource (or orphan tombstone) row for the import
-   * apply loop. Timestamps, versions, and `custom` come from the archive's
-   * sidecar when present; an archive resource without a sidecar is treated as
-   * a fresh first write on this backend (version 1).
+   * apply loop. Timestamps, versions, `createdBy`, and `custom` come from the
+   * archive's sidecar when present; an archive resource without a sidecar is
+   * treated as a fresh first write on this backend (version 1, no
+   * `createdBy`).
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
@@ -2696,9 +2821,9 @@ export class PostgresBackend implements StorageBackend {
       `INSERT INTO resources (
          space_id, collection_id, resource_id, content_type, content,
          is_json, size_bytes, version, meta_version, custom, deleted,
-         created_at, updated_at
+         created_at, updated_at, created_by
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11,
-                 $12, $13)`,
+                 $12, $13, $14)`,
       [
         spaceId,
         collectionId,
@@ -2712,7 +2837,8 @@ export class PostgresBackend implements StorageBackend {
         sidecar?.custom !== undefined ? JSON.stringify(sidecar.custom) : null,
         deleted,
         sidecar?.createdAt ?? now,
-        sidecar?.updatedAt ?? now
+        sidecar?.updatedAt ?? now,
+        sidecar?.createdBy ?? null
       ]
     )
   }

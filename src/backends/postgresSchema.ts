@@ -136,6 +136,15 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE spaces ADD COLUMN controller text;
   UPDATE spaces SET controller = description->>'controller';
   CREATE INDEX spaces_controller_idx ON spaces (controller);
+  `,
+  // v3: record a Resource's creator -- the DID of the invoker of its FIRST
+  // content write, set once and preserved verbatim thereafter (the spec's
+  // OPTIONAL `createdBy`). NULL for a pre-existing row and for one written by
+  // a caller with no resolved invoker. Not `COLLATE "C"`: unlike `created_at` /
+  // `updated_at`, this column never participates in an `ORDER BY` or keyset
+  // comparison.
+  `
+  ALTER TABLE resources ADD COLUMN created_by text;
   `
 ]
 
