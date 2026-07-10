@@ -11,9 +11,8 @@ import type { FastifyInstance } from 'fastify'
 import { NotFoundError } from '@interop/was-client'
 import type { Space, Collection } from '@interop/was-client'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { zcapClients } from './helpers.js'
+import { startTestServer, zcapClients } from './helpers.js'
 
 describe('Resource API', () => {
   let fastify: FastifyInstance,
@@ -23,17 +22,13 @@ describe('Resource API', () => {
     bob: any,
     aliceSpace: Space,
     aliceCredentials: Collection
-  const PORT = 7768
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}` // fastify.server.address().port
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    fastify = createApp({
-      serverUrl,
+    ;({ fastify, serverUrl } = await startTestServer({
       backend: new FileSystemBackend({ dataDir })
-    })
-    await fastify.listen({ port: PORT })
+    }))
+    ;({ alice, bob } = await zcapClients({ serverUrl }))
 
     // Provision the Space and 'credentials' Collection this suite operates on.
     // This suite uses its own temp dataDir, so these must be created here

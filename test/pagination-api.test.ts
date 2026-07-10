@@ -15,9 +15,8 @@ import type { FastifyInstance } from 'fastify'
 
 import type { Space } from '@interop/was-client'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { zcapClients } from './helpers.js'
+import { startTestServer, zcapClients } from './helpers.js'
 
 describe('List Collection pagination', () => {
   let fastify: FastifyInstance,
@@ -26,7 +25,6 @@ describe('List Collection pagination', () => {
     alice: any,
     bob: any,
     aliceSpace: Space
-  const PORT = 7795
 
   /** GETs an absolute or server-relative URL with Alice's signed capability. */
   async function aliceGet(url: string): Promise<any> {
@@ -35,14 +33,11 @@ describe('List Collection pagination', () => {
   }
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    fastify = createApp({
-      serverUrl,
+    ;({ fastify, serverUrl } = await startTestServer({
       backend: new FileSystemBackend({ dataDir })
-    })
-    await fastify.listen({ port: PORT })
+    }))
+    ;({ alice, bob } = await zcapClients({ serverUrl }))
 
     aliceSpace = await alice.was.createSpace({
       id: alice.space1.id,

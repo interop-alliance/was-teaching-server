@@ -11,9 +11,8 @@ import type { FastifyInstance } from 'fastify'
 import { NotFoundError } from '@interop/was-client'
 import type { Space } from '@interop/was-client'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { zcapClients } from './helpers.js'
+import { startTestServer, zcapClients } from './helpers.js'
 
 describe('Collections API', () => {
   let fastify: FastifyInstance,
@@ -21,17 +20,13 @@ describe('Collections API', () => {
     dataDir: string,
     alice: any,
     aliceSpace: Space
-  const PORT = 7767
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}` // fastify.server.address().port
-    ;({ alice } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    fastify = createApp({
-      serverUrl,
+    ;({ fastify, serverUrl } = await startTestServer({
       backend: new FileSystemBackend({ dataDir })
-    })
-    await fastify.listen({ port: PORT })
+    }))
+    ;({ alice } = await zcapClients({ serverUrl }))
 
     // Provision the Space this suite operates on. This suite uses its own
     // temp dataDir, so it must create the Space here rather than relying on

@@ -10,9 +10,8 @@ import type { FastifyInstance } from 'fastify'
 
 import { Space } from '@interop/was-client'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { zcapClients } from './helpers.js'
+import { startTestServer, zcapClients } from './helpers.js'
 
 describe('Spaces', () => {
   let fastify: FastifyInstance,
@@ -21,17 +20,13 @@ describe('Spaces', () => {
     alice: any,
     bob: any,
     aliceDelegatedApp: any
-  const PORT = 7766
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}` // fastify.server.address().port
-    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    fastify = createApp({
-      serverUrl,
+    ;({ fastify, serverUrl } = await startTestServer({
       backend: new FileSystemBackend({ dataDir })
-    })
-    await fastify.listen({ port: PORT })
+    }))
+    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
   })
   afterAll(async () => {
     await fastify.close()

@@ -18,9 +18,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { zcapClients } from './helpers.js'
+import { startTestServer, zcapClients } from './helpers.js'
 
 /** Alice's did:key (matches the seed in `helpers.ts`). */
 const ALICE_KEY_ID =
@@ -66,19 +65,15 @@ function digestHeaderFor(body: string): string {
 
 describe('Request Body Integrity (Digest header)', () => {
   let fastify: FastifyInstance, serverUrl: string, dataDir: string, alice: any
-  const PORT = 7781
   const spaceId = `digest-space-${crypto.randomUUID()}`
   const collectionId = 'credentials'
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    ;({ alice } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    fastify = createApp({
-      serverUrl,
+    ;({ fastify, serverUrl } = await startTestServer({
       backend: new FileSystemBackend({ dataDir })
-    })
-    await fastify.listen({ port: PORT })
+    }))
+    ;({ alice } = await zcapClients({ serverUrl }))
 
     const space = await alice.was.createSpace({
       id: spaceId,

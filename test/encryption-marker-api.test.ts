@@ -18,24 +18,19 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { zcapClients } from './helpers.js'
+import { startTestServer, zcapClients } from './helpers.js'
 
 describe('Encryption marker API', () => {
   let fastify: FastifyInstance, serverUrl: string, dataDir: string, alice: any
-  const PORT = 7773
   const spaceId = `enc-marker-space-${crypto.randomUUID()}`
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    ;({ alice } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    fastify = createApp({
-      serverUrl,
+    ;({ fastify, serverUrl } = await startTestServer({
       backend: new FileSystemBackend({ dataDir })
-    })
-    await fastify.listen({ port: PORT })
+    }))
+    ;({ alice } = await zcapClients({ serverUrl }))
 
     await alice.was.createSpace({
       id: spaceId,

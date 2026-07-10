@@ -18,10 +18,9 @@ import {
   type AsymmetricKey
 } from '@interop/webkms-client'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import type { IRootZcap } from '../src/types.js'
-import { client, zcapClients } from './helpers.js'
+import { client, startTestServer, zcapClients } from './helpers.js'
 
 describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)', () => {
   let fastify: FastifyInstance,
@@ -36,16 +35,13 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
     alice: any,
     aliceDelegatedApp: any,
     bob: any
-  const PORT = 7803
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    keystoresUrl = `${serverUrl}/kms/keystores`
-    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     backend = new FileSystemBackend({ dataDir })
-    fastify = createApp({ serverUrl, backend })
-    await fastify.listen({ port: PORT })
+    ;({ fastify, serverUrl } = await startTestServer({ backend }))
+    keystoresUrl = `${serverUrl}/kms/keystores`
+    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
 
     const config = await KmsClient.createKeystore({
       url: keystoresUrl,

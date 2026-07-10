@@ -1,9 +1,55 @@
+import type { AddressInfo } from 'node:net'
+import type { FastifyInstance } from 'fastify'
 import { ZcapClient } from '@interop/ezcap'
 import { WasClient } from '@interop/was-client'
 import { decodeSecretKeySeed } from '@digitalcredentials/bnid'
 import { Ed25519Signature2020 } from '@interop/ed25519-signature'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import type { ISigner } from '@interop/data-integrity-core'
+
+import { createApp } from '../src/server.js'
+import type { FastifyWasOptions } from '../src/plugin.js'
+
+/**
+ * Boots a test server on an OS-assigned ephemeral port and returns the
+ * `serverUrl` it is actually reachable at, so parallel Vitest workers can never
+ * collide on a port.
+ *
+ * ZCap `invocationTarget` URLs embed host and port, so `serverUrl` must match
+ * the listening port exactly. The port is not known until `listen()` resolves,
+ * so the app boots against a placeholder base URL and the `serverUrl`
+ * decoration is corrected before the first request is served. Handlers read
+ * `request.server.serverUrl` per request, so no route captures the placeholder.
+ *
+ * Callers must build their ZCap clients from the returned `serverUrl`, not from
+ * a precomputed one.
+ *
+ * A suite that tears a server down and boots a replacement over the same
+ * `dataDir` must pin the replacement to the returned `port`, so that ids minted
+ * by the first server (which embed `serverUrl`) still resolve.
+ *
+ * @param [options] {object}   `createApp()` options, minus `serverUrl`
+ * @param [options.port] {number}   pin the listening port; defaults to an
+ *   OS-assigned ephemeral port
+ * @returns {Promise<{ fastify: FastifyInstance, serverUrl: string, port: number }>}
+ */
+export async function startTestServer({
+  port = 0,
+  ...options
+}: Omit<FastifyWasOptions, 'serverUrl'> & { port?: number } = {}): Promise<{
+  fastify: FastifyInstance
+  serverUrl: string
+  port: number
+}> {
+  const fastify = createApp({ ...options, serverUrl: 'http://localhost' })
+  await fastify.listen({ port })
+  const listeningPort = (fastify.server.address() as AddressInfo).port
+  // `localhost`, not `127.0.0.1`: webkms-client only relaxes its loopback
+  // checks for a `localhost` host.
+  const serverUrl = `http://localhost:${listeningPort}`
+  fastify.serverUrl = serverUrl
+  return { fastify, serverUrl, port: listeningPort }
+}
 
 export const fixtures = {
   alice: {

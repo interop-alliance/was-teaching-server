@@ -16,11 +16,10 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import type { Space } from '@interop/was-client'
+import type { JsonObject, Space } from '@interop/was-client'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { zcapClients } from './helpers.js'
+import { startTestServer, zcapClients } from './helpers.js'
 
 const HMAC_ID = 'did:key:zHmacKeyA'
 
@@ -31,7 +30,7 @@ const HMAC_ID = 'did:key:zHmacKeyA'
 function envelope(
   docId: string,
   attributes: Array<{ name: string; value: string; unique?: boolean }>
-): Record<string, unknown> {
+): JsonObject {
   return {
     id: docId,
     sequence: 0,
@@ -58,7 +57,6 @@ describe('Collection blinded-index query profile', () => {
     alice: any,
     bob: any,
     aliceSpace: Space
-  const PORT = 7797
 
   /** POSTs a `blinded-index` query body to a Collection's `/query` with `signer`. */
   async function queryIndex(
@@ -78,14 +76,11 @@ describe('Collection blinded-index query profile', () => {
   }
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    fastify = createApp({
-      serverUrl,
+    ;({ fastify, serverUrl } = await startTestServer({
       backend: new FileSystemBackend({ dataDir })
-    })
-    await fastify.listen({ port: PORT })
+    }))
+    ;({ alice, bob } = await zcapClients({ serverUrl }))
 
     aliceSpace = await alice.was.createSpace({
       id: alice.space1.id,
@@ -99,10 +94,7 @@ describe('Collection blinded-index query profile', () => {
   })
 
   /** Creates a Collection and PUTs each envelope at its id. */
-  async function seedCollection(
-    collectionId: string,
-    documents: Array<Record<string, unknown>>
-  ) {
+  async function seedCollection(collectionId: string, documents: JsonObject[]) {
     const collection = await aliceSpace.createCollection({
       id: collectionId,
       name: collectionId

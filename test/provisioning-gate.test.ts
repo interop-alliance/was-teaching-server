@@ -7,7 +7,7 @@
  * -time mutual-exclusion guard, and the default (neither configured) zcap path
  * as a regression guard.
  */
-import { it, describe, beforeAll, afterEach } from 'vitest'
+import { it, describe, afterEach } from 'vitest'
 import assert from 'node:assert'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -17,20 +17,16 @@ import type { FastifyInstance } from 'fastify'
 import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import type { AuthorizeProvisioning } from '../src/types.js'
-import { zcapClients } from './helpers.js'
+import { startTestServer, zcapClients } from './helpers.js'
 
 describe('Provisioning gate', () => {
   let alice: any
-  const PORT = 7820
-  const serverUrl = `http://localhost:${PORT}`
+  let serverUrl: string
   const TOKEN = 'super-secret-onboarding-token'
 
   // Per-test teardown: each `boot()` registers its server + temp dir here.
   const cleanups: Array<() => Promise<void>> = []
 
-  beforeAll(async () => {
-    ;({ alice } = await zcapClients({ serverUrl }))
-  })
   afterEach(async () => {
     while (cleanups.length > 0) {
       await cleanups.pop()!()
@@ -38,8 +34,9 @@ describe('Provisioning gate', () => {
   })
 
   /**
-   * Boots a server on the fixed `serverUrl` with the given provisioning config
-   * over a fresh temp dir, and registers its teardown for `afterEach`.
+   * Boots a server on an OS-assigned ephemeral port with the given provisioning
+   * config over a fresh temp dir, sets the suite `serverUrl` and rebuilds Alice's
+   * client to match, and registers its teardown for `afterEach`.
    * @param options {object}
    * @param [options.onboardingToken] {string}
    * @param [options.authorizeProvisioning] {AuthorizeProvisioning}
@@ -54,13 +51,14 @@ describe('Provisioning gate', () => {
   } = {}): Promise<{ fastify: FastifyInstance; backend: FileSystemBackend }> {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'was-provisioning-'))
     const backend = new FileSystemBackend({ dataDir })
-    const fastify = createApp({
-      serverUrl,
+    const started = await startTestServer({
       backend,
       ...(onboardingToken !== undefined && { onboardingToken }),
       ...(authorizeProvisioning !== undefined && { authorizeProvisioning })
     })
-    await fastify.listen({ port: PORT })
+    const { fastify } = started
+    serverUrl = started.serverUrl
+    ;({ alice } = await zcapClients({ serverUrl }))
     cleanups.push(async () => {
       await fastify.close()
       await rm(dataDir, { recursive: true, force: true })
@@ -234,8 +232,10 @@ describe('Provisioning gate', () => {
 
   it('rejects on ready() when both onboardingToken and authorizeProvisioning are set', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'was-provisioning-'))
+    // Never listens -- the rejection happens at `ready()` -- so any valid base
+    // URL will do, and this test stays independent of the boots above.
     const fastify = createApp({
-      serverUrl,
+      serverUrl: 'http://localhost',
       backend: new FileSystemBackend({ dataDir }),
       onboardingToken: TOKEN,
       authorizeProvisioning: async () => 'grant' as const

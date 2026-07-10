@@ -19,9 +19,8 @@ import type { FastifyInstance } from 'fastify'
 
 import { Collection, Space } from '@interop/was-client'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { client, zcapClients } from './helpers.js'
+import { client, startTestServer, zcapClients } from './helpers.js'
 
 describe('Space-rooted session capabilities', () => {
   let fastify: FastifyInstance,
@@ -30,7 +29,6 @@ describe('Space-rooted session capabilities', () => {
     alice: any,
     aliceDelegatedApp: any,
     bob: any
-  const PORT = 7804
 
   // Fresh ids per run so re-runs against a dirty data dir cannot collide.
   const spaceId = randomUUID()
@@ -43,14 +41,11 @@ describe('Space-rooted session capabilities', () => {
   let collectionWriteCap: any
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    fastify = createApp({
-      serverUrl,
+    ;({ fastify, serverUrl } = await startTestServer({
       backend: new FileSystemBackend({ dataDir })
-    })
-    await fastify.listen({ port: PORT })
+    }))
+    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
 
     spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
     collectionUrl = new URL(

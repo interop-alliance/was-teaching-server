@@ -103,7 +103,9 @@ function isBlockedIp(ip: string): boolean {
  *   the parsed URL plus its validated addresses when allowed, or the HTTP
  *   status + message to reject with.
  */
-async function checkProxyTarget(target: string): Promise<
+async function checkProxyTarget(
+  target: string
+): Promise<
   | { url: URL; addresses: { address: string; family: number }[] }
   | { status: number; error: string }
 > {

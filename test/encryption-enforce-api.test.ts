@@ -21,9 +21,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { zcapClients } from './helpers.js'
+import { startTestServer, zcapClients } from './helpers.js'
 
 const JSON_TYPE = 'application/json'
 /** A minimal structurally-valid flattened JWE-JSON envelope (the inner `jwe`). */
@@ -37,20 +36,16 @@ describe('Encryption enforcement API', () => {
     dataDir: string,
     alice: any,
     bob: any
-  const PORT = 7774
   const spaceId = `enc-enforce-space-${crypto.randomUUID()}`
   const edvCollection = 'vault'
   const plainCollection = 'plain'
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    fastify = createApp({
-      serverUrl,
+    ;({ fastify, serverUrl } = await startTestServer({
       backend: new FileSystemBackend({ dataDir })
-    })
-    await fastify.listen({ port: PORT })
+    }))
+    ;({ alice, bob } = await zcapClients({ serverUrl }))
 
     await alice.was.createSpace({
       id: spaceId,

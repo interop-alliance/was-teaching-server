@@ -12,7 +12,7 @@
  * - rotation: a record written under one KEK still signs after `currentKekId`
  *   is repointed to a second.
  */
-import { it, describe, beforeAll } from 'vitest'
+import { it, describe } from 'vitest'
 import assert from 'node:assert'
 import { randomBytes } from 'node:crypto'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
@@ -27,7 +27,6 @@ import {
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { IdEncoder } from '@digitalcredentials/bnid'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { parseKekMultibase } from '../src/lib/kmsRecordCipher.js'
 import type {
@@ -35,7 +34,7 @@ import type {
   KmsRecordKekRegistry,
   RecordKek
 } from '../src/types.js'
-import { client, zcapClients } from './helpers.js'
+import { client, startTestServer, zcapClients } from './helpers.js'
 
 /** A base58btc Multikey `secretKeyMultibase` for a raw 32-byte AES-256 key. */
 function kekMultibase(key: Buffer): string {
@@ -50,18 +49,18 @@ function singleKekRegistry(kek: RecordKek): KmsRecordKekRegistry {
 
 describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
   let alice: any
-  const PORT = 7815
-  const serverUrl = `http://localhost:${PORT}`
-
-  beforeAll(async () => {
-    ;({ alice } = await zcapClients({ serverUrl }))
-  })
+  // Assigned by the first `bootServer()`. `boundPort` pins every later boot to
+  // the same port, so a server booted over an existing `dataDir` keeps the
+  // `serverUrl` that the keystore and key ids already embed.
+  let serverUrl: string
+  let boundPort: number | undefined
 
   /**
    * Boots a server over `dataDir` with the given (optional) record-KEK registry
-   * and hangs a KeystoreAgent off a freshly-provisioned keystore. Reuses the
-   * fixed `serverUrl` / `PORT` so a caller can tear the server down and boot a
-   * second one over the same `dataDir` (the pass-through / rotation upgrades).
+   * and hangs a KeystoreAgent off a freshly-provisioned keystore. Every boot
+   * reuses the port the first one was assigned, so a caller can tear the server
+   * down and boot a second one over the same `dataDir` (the pass-through /
+   * rotation upgrades) without invalidating the ids minted by the first.
    */
   async function bootServer({
     dataDir,
@@ -75,8 +74,15 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
     keystoreId: string
   }> {
     const backend = new FileSystemBackend({ dataDir })
-    const fastify = createApp({ serverUrl, backend, kmsRecordKek })
-    await fastify.listen({ port: PORT })
+    const started = await startTestServer({
+      backend,
+      kmsRecordKek,
+      port: boundPort
+    })
+    const { fastify } = started
+    boundPort = started.port
+    serverUrl = started.serverUrl
+    alice ??= (await zcapClients({ serverUrl })).alice
     const config = await KmsClient.createKeystore({
       url: `${serverUrl}/kms/keystores`,
       config: { sequence: 0, controller: alice.did },
@@ -208,12 +214,11 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
     // signs.
     const backend = new FileSystemBackend({ dataDir })
     const kek = parseKekMultibase(kekMultibase(randomBytes(32)))
-    const fastify = createApp({
-      serverUrl,
+    const { fastify } = await startTestServer({
       backend,
-      kmsRecordKek: singleKekRegistry(kek)
+      kmsRecordKek: singleKekRegistry(kek),
+      port: boundPort
     })
-    await fastify.listen({ port: PORT })
     try {
       const keystoreLocalId = kmsId
         .slice(`${serverUrl}/kms/keystores/`.length)
@@ -332,8 +337,7 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
     // that wrapped these records is lost (the recovery scenario this endpoint
     // exists for: a frozen did:webvh log whose key id must be rediscovered).
     const backend = new FileSystemBackend({ dataDir })
-    const fastify = createApp({ serverUrl, backend })
-    await fastify.listen({ port: PORT })
+    const { fastify } = await startTestServer({ backend, port: boundPort })
     const rootZcap: IRootZcap = {
       '@context': 'https://w3id.org/zcap/v1',
       id: `urn:zcap:root:${encodeURIComponent(keystoreId)}`,
@@ -414,8 +418,11 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
       ]),
       currentKekId: kek2.id
     }
-    const fastify = createApp({ serverUrl, backend, kmsRecordKek: rotated })
-    await fastify.listen({ port: PORT })
+    const { fastify } = await startTestServer({
+      backend,
+      kmsRecordKek: rotated,
+      port: boundPort
+    })
     try {
       const keystoreLocalId = kmsId
         .slice(`${serverUrl}/kms/keystores/`.length)

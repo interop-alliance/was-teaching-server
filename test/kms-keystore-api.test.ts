@@ -14,9 +14,8 @@ import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { KmsClient } from '@interop/webkms-client'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { client, zcapClients } from './helpers.js'
+import { client, startTestServer, zcapClients } from './helpers.js'
 
 describe('WebKMS keystore lifecycle (/kms/keystores)', () => {
   let fastify: FastifyInstance,
@@ -27,16 +26,13 @@ describe('WebKMS keystore lifecycle (/kms/keystores)', () => {
     alice: any,
     aliceDelegatedApp: any,
     bob: any
-  const PORT = 7801
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    keystoresUrl = `${serverUrl}/kms/keystores`
-    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     backend = new FileSystemBackend({ dataDir })
-    fastify = createApp({ serverUrl, backend })
-    await fastify.listen({ port: PORT })
+    ;({ fastify, serverUrl } = await startTestServer({ backend }))
+    keystoresUrl = `${serverUrl}/kms/keystores`
+    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
   })
   afterAll(async () => {
     await fastify.close()

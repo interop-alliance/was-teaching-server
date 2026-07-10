@@ -14,9 +14,8 @@ import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import type { Space } from '@interop/was-client'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { zcapClients } from './helpers.js'
+import { startTestServer, zcapClients } from './helpers.js'
 
 describe('Wire-contract smoke (status codes)', () => {
   let fastify: FastifyInstance,
@@ -24,19 +23,15 @@ describe('Wire-contract smoke (status codes)', () => {
     dataDir: string,
     alice: any,
     space: Space
-  const PORT = 7772
   const spaceId = `smoke-space-${crypto.randomUUID()}`
   const collectionId = 'credentials'
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    ;({ alice } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    fastify = createApp({
-      serverUrl,
+    ;({ fastify, serverUrl } = await startTestServer({
       backend: new FileSystemBackend({ dataDir })
-    })
-    await fastify.listen({ port: PORT })
+    }))
+    ;({ alice } = await zcapClients({ serverUrl }))
 
     // Provision the Space + Collection the read/write smoke checks operate on.
     space = await alice.was.createSpace({

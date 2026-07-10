@@ -18,14 +18,13 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
   QuotaExceededError,
   PayloadTooLargeError,
   ResourceNotFoundError
 } from '../src/errors.js'
-import { zcapClients } from './helpers.js'
+import { startTestServer, zcapClients } from './helpers.js'
 
 // 512 KiB cap; oversized payloads below exceed it outright (regardless of the
 // small baseline usage from provisioning the Space + Collection).
@@ -35,18 +34,14 @@ const OVERSIZED = 'x'.repeat(600 * 1024)
 describe('Quota enforcement (API)', () => {
   let fastify: FastifyInstance, serverUrl: string, dataDir: string
   let alice: any, aliceCredentials: any
-  const PORT = 7793
   const spaceId = `quota-enforce-${crypto.randomUUID()}`
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    ;({ alice } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    fastify = createApp({
-      serverUrl,
+    ;({ fastify, serverUrl } = await startTestServer({
       backend: new FileSystemBackend({ dataDir, capacityBytes: CAPACITY_BYTES })
-    })
-    await fastify.listen({ port: PORT })
+    }))
+    ;({ alice } = await zcapClients({ serverUrl }))
 
     const space = await alice.was.createSpace({
       id: spaceId,
@@ -242,22 +237,18 @@ const MAX_UPLOAD_BYTES = 64 * 1024
 describe('Upload cap (maxUploadBytes) (API)', () => {
   let fastify: FastifyInstance, serverUrl: string, dataDir: string
   let alice: any, aliceCredentials: any
-  const PORT = 7794
   const spaceId = `upload-cap-${crypto.randomUUID()}`
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    ;({ alice } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     // A per-upload cap but no cumulative Space quota: isolates 413 from 507.
-    fastify = createApp({
-      serverUrl,
+    ;({ fastify, serverUrl } = await startTestServer({
       backend: new FileSystemBackend({
         dataDir,
         maxUploadBytes: MAX_UPLOAD_BYTES
       })
-    })
-    await fastify.listen({ port: PORT })
+    }))
+    ;({ alice } = await zcapClients({ serverUrl }))
 
     const space = await alice.was.createSpace({
       id: spaceId,

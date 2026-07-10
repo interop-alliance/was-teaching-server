@@ -34,11 +34,10 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { KEY_LIST_LIMIT } from '../src/config.default.js'
 import type { IRootZcap } from '../src/types.js'
-import { client, zcapClients } from './helpers.js'
+import { client, startTestServer, zcapClients } from './helpers.js'
 
 describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
   let fastify: FastifyInstance,
@@ -51,16 +50,13 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
     alice: any,
     aliceDelegatedApp: any,
     bob: any
-  const PORT = 7802
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    keystoresUrl = `${serverUrl}/kms/keystores`
-    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     backend = new FileSystemBackend({ dataDir })
-    fastify = createApp({ serverUrl, backend })
-    await fastify.listen({ port: PORT })
+    ;({ fastify, serverUrl } = await startTestServer({ backend }))
+    keystoresUrl = `${serverUrl}/kms/keystores`
+    ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
 
     // Provision Alice's keystore and hang a KeystoreAgent off it, the way a
     // wallet would at login. The agent only needs a `getSigner()` capability

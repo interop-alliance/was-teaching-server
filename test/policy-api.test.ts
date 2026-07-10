@@ -12,9 +12,8 @@ import type { FastifyInstance } from 'fastify'
 
 import type { Space, Collection } from '@interop/was-client'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { zcapClients } from './helpers.js'
+import { startTestServer, zcapClients } from './helpers.js'
 
 describe('Access-control policy API', () => {
   let fastify: FastifyInstance,
@@ -24,21 +23,17 @@ describe('Access-control policy API', () => {
     bob: any,
     aliceSpace: Space,
     publicCollection: Collection
-  const PORT = 7769
 
   // Path of a JSON resource that lives inside the public collection.
   const publicResourcePath = () =>
     `/space/${alice.space1.id}/public-credentials/public-vc`
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    ;({ alice, bob } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    fastify = createApp({
-      serverUrl,
+    ;({ fastify, serverUrl } = await startTestServer({
       backend: new FileSystemBackend({ dataDir })
-    })
-    await fastify.listen({ port: PORT })
+    }))
+    ;({ alice, bob } = await zcapClients({ serverUrl }))
 
     // Provision the Space + a 'public-credentials' Collection with one resource.
     aliceSpace = await alice.was.createSpace({

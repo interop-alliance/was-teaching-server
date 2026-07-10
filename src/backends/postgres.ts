@@ -793,9 +793,10 @@ export class PostgresBackend implements StorageBackend {
       // described Collection row yet), COUNT the Space's Collections, and reject
       // at `maxCollectionsPerSpace` (spec "Quotas").
       if (this.maxCollectionsPerSpace !== undefined) {
-        await client.query('SELECT 1 FROM spaces WHERE space_id = $1 FOR UPDATE', [
-          spaceId
-        ])
+        await client.query(
+          'SELECT 1 FROM spaces WHERE space_id = $1 FOR UPDATE',
+          [spaceId]
+        )
         const { rows } = await client.query<{ description: unknown }>(
           `SELECT description FROM collections
             WHERE space_id = $1 AND collection_id = $2`,

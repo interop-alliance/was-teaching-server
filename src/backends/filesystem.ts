@@ -947,7 +947,9 @@ export class FileSystemBackend implements StorageBackend {
     const spaceDir = this._spaceDir(spaceId)
     let spaceEntries: fs.Dirent[]
     try {
-      spaceEntries = await fs.promises.readdir(spaceDir, { withFileTypes: true })
+      spaceEntries = await fs.promises.readdir(spaceDir, {
+        withFileTypes: true
+      })
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         return 0

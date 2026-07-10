@@ -16,10 +16,9 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import type { BackendProviderRegistry } from '../src/types.js'
-import { zcapClients } from './helpers.js'
+import { startTestServer, zcapClients } from './helpers.js'
 
 describe('Per-Collection backend resolver (selectable registered backends)', () => {
   let fastify: FastifyInstance,
@@ -29,11 +28,8 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     dataDir: string,
     providerDir: string,
     alice: any
-  const PORT = 7798
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    ;({ alice } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-default-'))
     providerDir = await mkdtemp(path.join(tmpdir(), 'was-test-provider-'))
     defaultBackend = new FileSystemBackend({ dataDir })
@@ -43,8 +39,11 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     const providers: BackendProviderRegistry = new Map([
       ['test-provider', () => providerBackend]
     ])
-    fastify = createApp({ serverUrl, backend: defaultBackend, providers })
-    await fastify.listen({ port: PORT })
+    ;({ fastify, serverUrl } = await startTestServer({
+      backend: defaultBackend,
+      providers
+    }))
+    ;({ alice } = await zcapClients({ serverUrl }))
   })
   afterAll(async () => {
     await fastify.close()
@@ -215,19 +214,15 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
 
 describe('Backend registration allowlist (WAS_ENABLED_BACKENDS)', () => {
   let fastify: FastifyInstance, serverUrl: string, dataDir: string, alice: any
-  const PORT = 7799
 
   beforeAll(async () => {
-    serverUrl = `http://localhost:${PORT}`
-    ;({ alice } = await zcapClients({ serverUrl }))
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-allowlist-'))
     // Only `test-provider` may be registered.
-    fastify = createApp({
-      serverUrl,
+    ;({ fastify, serverUrl } = await startTestServer({
       backend: new FileSystemBackend({ dataDir }),
       enabledBackendProviders: ['test-provider']
-    })
-    await fastify.listen({ port: PORT })
+    }))
+    ;({ alice } = await zcapClients({ serverUrl }))
   })
   afterAll(async () => {
     await fastify.close()
