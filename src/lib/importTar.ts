@@ -4,7 +4,11 @@ import type { Readable } from 'node:stream'
 import { assertValidId } from './validateId.js'
 import { parseResourceFileName } from './resourceFileName.js'
 import { InvalidImportError } from '../errors.js'
-import type { CollectionDescription, PolicyDocument } from '../types.js'
+import type {
+  CollectionDescription,
+  PolicyDocument,
+  RevocationRecord
+} from '../types.js'
 
 /** Suffix shared by the description / policy / metadata dot-files. */
 const JSON_SUFFIX = '.json'
@@ -80,6 +84,11 @@ export interface ImportPlan {
   /** Space-level access-control policy, if the archive carries one. */
   spacePolicy?: PolicyDocument
   collections: ImportPlanCollection[]
+  /**
+   * Space-scoped zcap revocation records the archive carries (top-level
+   * `revocations/` entries), restored under the destination Space's scope.
+   */
+  revocations: RevocationRecord[]
 }
 
 /**
@@ -166,6 +175,7 @@ export function validateManifest(entries: Map<string, TarEntry>): void {
  *
  * Expected archive layout (UBC v0.1, produced by exportSpace):
  * - manifest.yml
+ * - revocations/<digest>.json (Space-scoped zcap revocations; optional)
  * - space/
  * - space/<sourceSpaceId>/
  * - space/<sourceSpaceId>/.space.<sourceSpaceId>.json (space metadata; ignored on import)
@@ -319,5 +329,53 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     }
   })
 
-  return { spacePolicy, collections }
+  return { spacePolicy, collections, revocations: revocationRecords(entries) }
+}
+
+/** Prefix of the archive's Space-scoped revocation entries. */
+const REVOCATIONS_PREFIX = 'revocations/'
+
+/**
+ * Parses the archive's Space-scoped zcap revocation records (top-level
+ * `revocations/<digest>.json` entries; see `revocationFileName`). Archives
+ * from servers that predate revocation export carry none, which yields an
+ * empty list. A record that is not JSON or lacks the `(capability.id,
+ * meta.delegator)` unique key rejects the import -- the store's file names
+ * and uniqueness gate are derived from those fields.
+ * @param entries {Map<string, TarEntry>}
+ * @returns {RevocationRecord[]}
+ */
+function revocationRecords(entries: Map<string, TarEntry>): RevocationRecord[] {
+  const records: RevocationRecord[] = []
+  for (const [entryName, entry] of entries) {
+    if (
+      !entryName.startsWith(REVOCATIONS_PREFIX) ||
+      entry.type !== 'file' ||
+      !entry.body ||
+      entryName.slice(REVOCATIONS_PREFIX.length).includes('/')
+    ) {
+      continue
+    }
+    let record: RevocationRecord
+    try {
+      record = JSON.parse(entry.body.toString('utf8'))
+    } catch (err) {
+      throw new InvalidImportError({
+        message: `Archive revocation record "${entryName}" is not valid JSON.`,
+        cause: err as Error
+      })
+    }
+    if (
+      typeof record?.capability?.id !== 'string' ||
+      record.capability.id.length === 0 ||
+      typeof record?.meta?.delegator !== 'string' ||
+      record.meta.delegator.length === 0
+    ) {
+      throw new InvalidImportError({
+        message: `Archive revocation record "${entryName}" is malformed.`
+      })
+    }
+    records.push(record)
+  }
+  return records
 }

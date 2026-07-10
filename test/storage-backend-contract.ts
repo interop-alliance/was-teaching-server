@@ -12,6 +12,7 @@ import { formatEtag } from '../src/lib/etag.js'
 import {
   PreconditionFailedError,
   ResourceNotFoundError,
+  StorageError,
   UniqueAttributeConflictError,
   QuotaExceededError,
   CountQuotaExceededError,
@@ -2476,13 +2477,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           capabilityId: 'urn:zcap:revoked-1',
           delegator: 'did:key:z6MkDelegator'
         })
-        await backend.insertRevocation({ keystoreId: 'ks1', record })
+        await backend.insertRevocation({ scope: { keystoreId: 'ks1' }, record })
         await expect(
-          backend.insertRevocation({ keystoreId: 'ks1', record })
+          backend.insertRevocation({ scope: { keystoreId: 'ks1' }, record })
         ).rejects.toBeInstanceOf(DuplicateRevocationError)
         assert.equal(
           await backend.isRevoked({
-            keystoreId: 'ks1',
+            scope: { keystoreId: 'ks1' },
             capabilities: [
               {
                 capabilityId: 'urn:zcap:revoked-1',
@@ -2494,7 +2495,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         )
         assert.equal(
           await backend.isRevoked({
-            keystoreId: 'ks1',
+            scope: { keystoreId: 'ks1' },
             capabilities: [
               {
                 capabilityId: 'urn:zcap:other',
@@ -2513,10 +2514,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           delegator: 'did:key:z6MkDelegator',
           expires: new Date(Date.now() - 60_000).toISOString()
         })
-        await backend.insertRevocation({ keystoreId: 'ks1', record: expired })
+        await backend.insertRevocation({
+          scope: { keystoreId: 'ks1' },
+          record: expired
+        })
         assert.equal(
           await backend.isRevoked({
-            keystoreId: 'ks1',
+            scope: { keystoreId: 'ks1' },
             capabilities: [
               {
                 capabilityId: 'urn:zcap:expired-1',
@@ -2533,6 +2537,107 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await provisionSpace(backend, 'space-kms')
         await backend.deleteSpace({ spaceId: 'space-kms' })
         assert.ok(await backend.getKeystore({ keystoreId: 'ks1' }))
+      })
+
+      it('a revocation is scoped: the same pair revoked under a keystore is not revoked under a Space', async () => {
+        const { backend } = harness
+        await provisionSpace(backend, 'space-rev')
+        const capabilities = [
+          {
+            capabilityId: 'urn:zcap:scoped-1',
+            delegator: 'did:key:z6MkDelegator'
+          }
+        ]
+        await backend.insertRevocation({
+          scope: { keystoreId: 'ks1' },
+          record: revocationRecord({
+            capabilityId: 'urn:zcap:scoped-1',
+            delegator: 'did:key:z6MkDelegator'
+          })
+        })
+        assert.equal(
+          await backend.isRevoked({
+            scope: { spaceId: 'space-rev' },
+            capabilities
+          }),
+          false
+        )
+        // The same `(delegator, capabilityId)` inserts cleanly under the Space
+        // (the uniqueness gate is per scope), and now reads as revoked there.
+        await backend.insertRevocation({
+          scope: { spaceId: 'space-rev' },
+          record: revocationRecord({
+            capabilityId: 'urn:zcap:scoped-1',
+            delegator: 'did:key:z6MkDelegator'
+          })
+        })
+        assert.equal(
+          await backend.isRevoked({
+            scope: { spaceId: 'space-rev' },
+            capabilities
+          }),
+          true
+        )
+      })
+
+      it('deleteSpace removes the Space revocations with it', async () => {
+        const { backend } = harness
+        await provisionSpace(backend, 'space-rev-gone')
+        const capabilities = [
+          {
+            capabilityId: 'urn:zcap:cascade-1',
+            delegator: 'did:key:z6MkDelegator'
+          }
+        ]
+        await backend.insertRevocation({
+          scope: { spaceId: 'space-rev-gone' },
+          record: revocationRecord({
+            capabilityId: 'urn:zcap:cascade-1',
+            delegator: 'did:key:z6MkDelegator'
+          })
+        })
+        await backend.deleteSpace({ spaceId: 'space-rev-gone' })
+        assert.equal(
+          await backend.isRevoked({
+            scope: { spaceId: 'space-rev-gone' },
+            capabilities
+          }),
+          false
+        )
+        // Gone, not merely shadowed: re-provisioning and re-inserting the same
+        // pair does not conflict.
+        await provisionSpace(backend, 'space-rev-gone')
+        await backend.insertRevocation({
+          scope: { spaceId: 'space-rev-gone' },
+          record: revocationRecord({
+            capabilityId: 'urn:zcap:cascade-1',
+            delegator: 'did:key:z6MkDelegator'
+          })
+        })
+      })
+
+      it('insertRevocation rejects under an absent scope (no orphan records)', async () => {
+        // The request layer 404-masks unknown scopes before the store is
+        // reached; at the store, an absent-parent insert must reject the same
+        // way on every backend (postgres enforces it via foreign keys)
+        // rather than silently creating an orphan record.
+        const { backend } = harness
+        const record = revocationRecord({
+          capabilityId: 'urn:zcap:orphan-1',
+          delegator: 'did:key:z6MkDelegator'
+        })
+        await expect(
+          backend.insertRevocation({
+            scope: { spaceId: 'no-such-space' },
+            record
+          })
+        ).rejects.toBeInstanceOf(StorageError)
+        await expect(
+          backend.insertRevocation({
+            scope: { keystoreId: 'no-such-keystore' },
+            record
+          })
+        ).rejects.toBeInstanceOf(StorageError)
       })
     })
 
@@ -2649,6 +2754,72 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           assert.equal(
             await target.backend.getBackend({ spaceId, backendId: 'ext' }),
             undefined
+          )
+        } finally {
+          await source.cleanup()
+          await target.cleanup()
+        }
+      })
+
+      it('round-trips Space-scoped zcap revocations (a revoked capability stays revoked after import)', async () => {
+        const source = await makeBackend()
+        const target = await makeBackend()
+        try {
+          const spaceId = 'space-exp-rev'
+          const capabilities = [
+            {
+              capabilityId: 'urn:zcap:exp-live',
+              delegator: 'did:key:z6MkDelegator'
+            }
+          ]
+          await provisionSpace(source.backend, spaceId)
+          await source.backend.insertRevocation({
+            scope: { spaceId },
+            record: revocationRecord({
+              capabilityId: 'urn:zcap:exp-live',
+              delegator: 'did:key:z6MkDelegator'
+            })
+          })
+          // A record past its GC horizon does not come back in (the
+          // capability itself has expired).
+          await source.backend.insertRevocation({
+            scope: { spaceId },
+            record: revocationRecord({
+              capabilityId: 'urn:zcap:exp-expired',
+              delegator: 'did:key:z6MkDelegator',
+              expires: new Date(Date.now() - 60_000).toISOString()
+            })
+          })
+
+          const tarStream = await source.backend.exportSpace({ spaceId })
+          await provisionSpace(target.backend, spaceId)
+          await target.backend.importSpace({ spaceId, tarStream })
+          assert.equal(
+            await target.backend.isRevoked({ scope: { spaceId }, capabilities }),
+            true
+          )
+          assert.equal(
+            await target.backend.isRevoked({
+              scope: { spaceId },
+              capabilities: [
+                {
+                  capabilityId: 'urn:zcap:exp-expired',
+                  delegator: 'did:key:z6MkDelegator'
+                }
+              ]
+            }),
+            false
+          )
+
+          // Re-importing the same archive skips the already-stored record
+          // rather than rejecting the import as a duplicate.
+          await target.backend.importSpace({
+            spaceId,
+            tarStream: await source.backend.exportSpace({ spaceId })
+          })
+          assert.equal(
+            await target.backend.isRevoked({ scope: { spaceId }, capabilities }),
+            true
           )
         } finally {
           await source.cleanup()

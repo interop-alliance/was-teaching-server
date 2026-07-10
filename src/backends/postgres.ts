@@ -50,6 +50,7 @@ import { backendUsageFields } from '../lib/backendUsage.js'
 import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { encodeCursor, decodeCursor } from '../lib/cursor.js'
 import { buildExportManifest } from '../lib/exportManifest.js'
+import { revocationFileName } from '../lib/revocations.js'
 import { isJson } from '../lib/isJson.js'
 import { DEFAULT_PAGE_SIZE, clampPageSize } from '../lib/pagination.js'
 import {
@@ -91,6 +92,7 @@ import type {
   KeystoreConfig,
   KmsKeyRecord,
   RevocationRecord,
+  RevocationScope,
   CapabilitySummary,
   IDID
 } from '../types.js'
@@ -2153,28 +2155,63 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
+   * Resolves a revocation scope to the table it lives in, the scope column
+   * within that table, and the scope id value. The returned `table` and
+   * `column` are server-chosen constants (never user input), so callers may
+   * safely interpolate them into a SQL template; `id` remains a bound value.
+   * @param scope {RevocationScope}
+   * @returns {{ table: string, column: string, id: string }}
+   */
+  private _revocationTable(scope: RevocationScope): {
+    table: string
+    column: string
+    id: string
+  } {
+    if ('keystoreId' in scope) {
+      return {
+        table: 'revocations',
+        column: 'keystore_id',
+        id: scope.keystoreId
+      }
+    }
+    return { table: 'space_revocations', column: 'space_id', id: scope.spaceId }
+  }
+
+  /**
    * Inserts a revocation record, create-only on
-   * `(keystoreId, delegator, capability.id)`; a duplicate rejects with the
+   * `(scope id, delegator, capability.id)`; a duplicate rejects with the
    * protocol's 409 (`DuplicateRevocationError`).
    * @param options {object}
-   * @param options.keystoreId {string}
+   * @param options.scope {RevocationScope}
    * @param options.record {RevocationRecord}
    * @returns {Promise<void>}
    */
   async insertRevocation({
-    keystoreId,
+    scope,
     record
   }: {
-    keystoreId: string
+    scope: RevocationScope
     record: RevocationRecord
   }): Promise<void> {
+    // `table` / `column` are internal constants, not user input; ids are bound.
+    const { table, column, id } = this._revocationTable(scope)
     try {
+      // Prune rows past their GC horizon while on this (rare) write path, so
+      // the hot read path (`isRevoked`, consulted on every delegated-chain
+      // verification) stays a single read-only SELECT -- the SQL analogue of
+      // a TTL index. Table-wide on purpose: expired rows are dead weight
+      // whichever scope they belong to.
       await this._pool.query(
-        `INSERT INTO revocations
-           (keystore_id, delegator, capability_id, record, expires)
+        `DELETE FROM ${table}
+          WHERE expires IS NOT NULL AND expires <= $1`,
+        [new Date().toISOString()]
+      )
+      await this._pool.query(
+        `INSERT INTO ${table}
+           (${column}, delegator, capability_id, record, expires)
          VALUES ($1, $2, $3, $4::jsonb, $5)`,
         [
-          keystoreId,
+          id,
           record.meta.delegator,
           record.capability.id,
           JSON.stringify(record),
@@ -2191,44 +2228,39 @@ export class PostgresBackend implements StorageBackend {
 
   /**
    * True when any of the given capabilities has a stored, unexpired
-   * revocation under the keystore. Expired rows (past their `meta.expires` GC
-   * horizon) are pruned opportunistically on the way through, the SQL
-   * analogue of a TTL index. ISO-8601 strings compare correctly under the
-   * column's byte-order collation.
+   * revocation under the scope. A single read-only SELECT: rows past their
+   * `meta.expires` GC horizon are filtered out in the predicate rather than
+   * pruned here -- this runs on every delegated-chain verification, so it
+   * must not write; `insertRevocation` prunes on the (rare) write path
+   * instead. ISO-8601 strings compare correctly under the column's byte-order
+   * collation.
    * @param options {object}
-   * @param options.keystoreId {string}
+   * @param options.scope {RevocationScope}
    * @param options.capabilities {CapabilitySummary[]}
    * @returns {Promise<boolean>}
    */
   async isRevoked({
-    keystoreId,
+    scope,
     capabilities
   }: {
-    keystoreId: string
+    scope: RevocationScope
     capabilities: CapabilitySummary[]
   }): Promise<boolean> {
     if (capabilities.length === 0) {
       return false
     }
-    const nowIso = new Date().toISOString()
+    // `table` / `column` are internal constants, not user input; ids are bound.
+    const { table, column, id } = this._revocationTable(scope)
     const delegators = capabilities.map(entry => entry.delegator)
     const capabilityIds = capabilities.map(entry => entry.capabilityId)
-    // Prune expired records for the consulted pairs, then check what remains.
-    await this._pool.query(
-      `DELETE FROM revocations
-        WHERE keystore_id = $1
-          AND (delegator, capability_id) IN
-              (SELECT * FROM unnest($2::text[], $3::text[]))
-          AND expires IS NOT NULL AND expires <= $4`,
-      [keystoreId, delegators, capabilityIds, nowIso]
-    )
     const { rows } = await this._pool.query(
-      `SELECT 1 FROM revocations
-        WHERE keystore_id = $1
+      `SELECT 1 FROM ${table}
+        WHERE ${column} = $1
           AND (delegator, capability_id) IN
               (SELECT * FROM unnest($2::text[], $3::text[]))
+          AND (expires IS NULL OR expires > $4)
         LIMIT 1`,
-      [keystoreId, delegators, capabilityIds]
+      [id, delegators, capabilityIds, new Date().toISOString()]
     )
     return rows.length > 0
   }
@@ -2281,7 +2313,8 @@ export class PostgresBackend implements StorageBackend {
     const [
       { rows: policyRows },
       { rows: collectionRows },
-      { rows: resourceRows }
+      { rows: resourceRows },
+      { rows: revocationRows }
     ] = await Promise.all([
       this._pool.query<{
         collection_id: string
@@ -2312,6 +2345,15 @@ export class PostgresBackend implements StorageBackend {
                 size_bytes, version, meta_version, custom, deleted,
                 created_at, updated_at, created_by
            FROM resources WHERE space_id = $1`,
+        [spaceId]
+      ),
+      this._pool.query<{
+        delegator: string
+        capability_id: string
+        record: RevocationRecord
+      }>(
+        `SELECT delegator, capability_id, record FROM space_revocations
+            WHERE space_id = $1`,
         [spaceId]
       )
     ])
@@ -2406,13 +2448,28 @@ export class PostgresBackend implements StorageBackend {
       }))
     ].sort((a, b) => a.name.localeCompare(b.name))
 
+    // Space-scoped zcap revocations travel with the export, packed under a
+    // top-level `revocations/` dir and named by the shared file-name codec so
+    // both backends produce the same archive entries. Pretty-printed to match
+    // the filesystem's stored records.
+    const revocationFiles = revocationRows
+      .map(row => ({
+        name: revocationFileName({
+          delegator: row.delegator,
+          capabilityId: row.capability_id
+        }),
+        bytes: Buffer.from(JSON.stringify(row.record, null, 2))
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+
     const manifest = buildExportManifest({
       spaceId,
       entries: topLevel.map(entry =>
         entry.kind === 'collection'
           ? { name: entry.name, files: entry.files.map(file => file.name) }
           : { name: entry.name }
-      )
+      ),
+      revocationFiles: revocationFiles.map(file => file.name)
     })
 
     const pack = tar.pack()
@@ -2432,6 +2489,12 @@ export class PostgresBackend implements StorageBackend {
         }
       } else {
         pack.entry({ name: entryTarget }, entry.bytes)
+      }
+    }
+    if (revocationFiles.length > 0) {
+      pack.entry({ name: 'revocations/', type: 'directory' })
+      for (const file of revocationFiles) {
+        pack.entry({ name: `revocations/${file.name}` }, file.bytes)
       }
     }
     pack.finalize()
@@ -2487,7 +2550,7 @@ export class PostgresBackend implements StorageBackend {
     tarStream: Readable
   }): Promise<ImportStats> {
     const entries = await extractTarEntries(tarStream)
-    const { spacePolicy, collections } = buildImportPlan(entries)
+    const { spacePolicy, collections, revocations } = buildImportPlan(entries)
     const {
       capacityBytes,
       maxUploadBytes,
@@ -2777,6 +2840,33 @@ export class PostgresBackend implements StorageBackend {
           spaceId,
           delta: createdBytes
         })
+      }
+
+      // Restore the archive's Space-scoped zcap revocations under this
+      // Space's scope: a capability revoked before the export must stay
+      // revoked after an import (a backup/restore round-trip must not
+      // resurrect revoked access). `ON CONFLICT DO NOTHING` gives the
+      // skip-not-overwrite merge per record; a record past its GC horizon is
+      // dropped (the capability itself has expired; `isRevoked` would prune
+      // it). Transactional like the rest of the apply loop.
+      const now = Date.now()
+      for (const record of revocations) {
+        if (record.meta.expires && Date.parse(record.meta.expires) <= now) {
+          continue
+        }
+        await client.query(
+          `INSERT INTO space_revocations
+             (space_id, delegator, capability_id, record, expires)
+           VALUES ($1, $2, $3, $4::jsonb, $5)
+           ON CONFLICT DO NOTHING`,
+          [
+            spaceId,
+            record.meta.delegator,
+            record.capability.id,
+            JSON.stringify(record),
+            record.meta.expires ?? null
+          ]
+        )
       }
 
       return stats

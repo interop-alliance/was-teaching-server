@@ -2,12 +2,12 @@
  * ZCap verification: handleZcapVerify() checks the capability-invocation
  * signature against the Space controller's Ed25519 key, synthesizing the root
  * capability via the document loader. Also home to the zcap *revocation*
- * verification pair (the `/kms` facet):
+ * verification pair, shared by the `/kms` and WAS route families:
  * verifyRevocationChain() validates a to-be-revoked capability's delegation
  * chain, and handleRevocationInvocationVerify() authorizes the submission
- * under the dual-root rule (keystore root, or the revocation URL's own root
- * controlled by any chain participant -- ezcap-express's
- * `authorizeZcapRevocation` convention).
+ * under the dual-root rule (the scope's root -- a keystore or a Space -- or
+ * the revocation URL's own root controlled by any chain participant --
+ * ezcap-express's `authorizeZcapRevocation` convention).
  */
 import type { IncomingHttpHeaders } from 'node:http'
 import { securityLoader } from '@interop/security-document-loader'
@@ -29,7 +29,17 @@ import {
   InvalidRevocationError,
   UnauthorizedError
 } from './errors.js'
-import type { IDID, IVerificationMethod } from './types.js'
+import {
+  capabilitySummaries,
+  revocationChainInspector
+} from './lib/revocations.js'
+import type {
+  CapabilitySummary,
+  IDID,
+  IVerificationMethod,
+  RevocationScope,
+  StorageBackend
+} from './types.js'
 
 const didKeyDriver = didKey.driver()
 didKeyDriver.use({
@@ -157,9 +167,14 @@ export function isRootInvocation({
  * @param [options.attenuatedRootTarget] {string}   an ancestor target (e.g.
  *   the Space URL) whose root capability is also accepted as the root of a
  *   delegated chain that attenuates down to the request URL (see `verifyZcap`)
- * @param [options.inspectCapabilityChain] {InspectCapabilityChain}   hook run
- *   against the dereferenced chain after signature verification (the
- *   revocation-check extension point; see `verifyZcap`)
+ * @param options.revocation {object|string}   the revocation-store check, run
+ *   against the dereferenced chain after signature verification. REQUIRED so
+ *   that skipping revocation is a stated decision, never an omission: pass
+ *   `{ storage, scope }` -- the scope (keystore or Space) the chain roots
+ *   in -- or the literal `'no-revocation-scope'` when the verified target has
+ *   no scope a revocation could be stored under (a create/consent
+ *   verification for a not-yet-existing resource, or a collection-level root
+ *   like `/kms/keystores`).
  * @param [options.maxChainLength] {number}   max delegation chain length,
  *   root included (see `verifyZcap`)
  * @param [options.maxDelegationTtl] {number}   max delegated-zcap TTL in
@@ -181,7 +196,7 @@ export async function handleZcapVerify({
   allowTargetQuery = false,
   allowTargetAttenuation = false,
   attenuatedRootTarget,
-  inspectCapabilityChain,
+  revocation,
   maxChainLength,
   maxDelegationTtl
 }: {
@@ -197,11 +212,16 @@ export async function handleZcapVerify({
   allowTargetQuery?: boolean
   allowTargetAttenuation?: boolean
   attenuatedRootTarget?: string
-  inspectCapabilityChain?: InspectCapabilityChain
+  revocation:
+    | { storage: StorageBackend; scope: RevocationScope }
+    | 'no-revocation-scope'
   maxChainLength?: number
   maxDelegationTtl?: number
 }): Promise<VerifyCapabilityInvocationResult> {
-  // logger.info(`Performing zCap verification for url: ${url}`)
+  const inspectCapabilityChain =
+    revocation === 'no-revocation-scope'
+      ? undefined
+      : revocationChainInspector(revocation)
   let zcapVerifyResult: VerifyCapabilityInvocationResult
   try {
     zcapVerifyResult = await verifyZcap({
@@ -282,8 +302,8 @@ export async function handleZcapVerify({
  * @param [options.inspectCapabilityChain] {InspectCapabilityChain}   hook run
  *   against the dereferenced chain after signature verification -- the
  *   revocation-check extension point (a stored revocation of any capability
- *   in the chain fails the verification). Absent by default: the WAS route
- *   families have no revocation store yet.
+ *   in the chain fails the verification). Both route families pass one, scoped
+ *   to the keystore or the Space the request roots in.
  * @param [options.maxChainLength] {number}   max delegation chain length,
  *   root included (the `/kms` families pass `KMS_MAX_CHAIN_LENGTH`; absent,
  *   the zcap library's own default applies)
@@ -419,54 +439,61 @@ function capabilityControllers(capability: {
  * Verifies the delegation chain of a capability submitted for revocation
  * (`CapabilityDelegation` proof purpose over the embedded chain), throwing
  * `InvalidRevocationError` (400) when it does not verify. The chain must root
- * in the keystore: its root capability's invocation target must be
- * `keystoreUrl` or a path under it (enforced where the root is synthesized,
- * so a chain aimed at another keystore -- or another service -- cannot be
- * submitted here, per ezcap-express `authorizeZcapRevocation`). The supplied
- * `inspectCapabilityChain` hook runs against the full dereferenced chain, the
- * submitted capability included -- so a chain containing an already-revoked
- * link (resubmissions included) fails verification.
+ * in the revocation's scope: its root capability's invocation target must be
+ * `rootTarget` -- the keystore URL, or the Space URL for a WAS-route
+ * revocation -- or a path under it (enforced where the root is synthesized,
+ * so a chain aimed at another keystore or Space -- or another service --
+ * cannot be submitted here, per ezcap-express `authorizeZcapRevocation`).
+ * Deliberately structural only -- it does NOT consult the revocation store:
+ * this runs before the invocation is authorized, and a store-dependent
+ * failure here would disclose revocation state to unauthorized callers
+ * (400 already-revoked vs the masked 404). The caller checks the returned
+ * `capabilities` against the store after authorization.
  *
  * @param options {object}
  * @param options.capability {object}   the delegated capability to be revoked
  *   (the request body, verbatim)
- * @param options.keystoreUrl {string}   the keystore's full URL (the required
- *   root of the chain)
- * @param options.keystoreController {IDID}   the stored config's controller
- *   (controller of the synthesized root capability)
- * @param [options.inspectCapabilityChain] {InspectCapabilityChain}   the
- *   revocation-store hook
+ * @param options.rootTarget {string}   the scope's full URL -- the keystore or
+ *   the Space -- which the chain is required to root in
+ * @param options.rootController {IDID}   the scope's controller (controller of
+ *   the synthesized root capability)
  * @param [options.maxChainLength] {number}   max chain length, root included
  * @param [options.maxDelegationTtl] {number}   max delegated-zcap TTL (ms)
- * @returns {Promise<{ delegator: string, chainControllers: string[] }>}   the
- *   capability's delegator (its delegation proof's controller) and every
- *   controller in its chain (the parties allowed to submit the revocation)
+ * @returns {Promise<{ delegator: string, chainControllers: string[],
+ *   capabilities: CapabilitySummary[] }>}   the capability's delegator (its
+ *   delegation proof's controller), every controller in its chain (the
+ *   parties allowed to submit the revocation), and the chain's
+ *   `(capabilityId, delegator)` pairs for the caller's post-authorization
+ *   revocation-store check
  */
 export async function verifyRevocationChain({
   capability,
-  keystoreUrl,
-  keystoreController,
-  inspectCapabilityChain,
+  rootTarget,
+  rootController,
   maxChainLength,
   maxDelegationTtl
 }: {
   capability: Record<string, unknown>
-  keystoreUrl: string
-  keystoreController: IDID
-  inspectCapabilityChain?: InspectCapabilityChain
+  rootTarget: string
+  rootController: IDID
   maxChainLength?: number
   maxDelegationTtl?: number
-}): Promise<{ delegator: string; chainControllers: string[] }> {
+}): Promise<{
+  delegator: string
+  chainControllers: string[]
+  capabilities: CapabilitySummary[]
+}> {
   const chainControllers: string[] = []
+  let capabilities: CapabilitySummary[] = []
   const documentLoader = rootCapabilityLoader({
     controllerFor: target => {
-      if (target !== keystoreUrl && !target.startsWith(`${keystoreUrl}/`)) {
+      if (target !== rootTarget && !target.startsWith(`${rootTarget}/`)) {
         throw new Error(
           `The root capability from the revocation's delegation chain must` +
-            ` have an invocation target that starts with "${keystoreUrl}".`
+            ` have an invocation target that starts with "${rootTarget}".`
         )
       }
-      return keystoreController
+      return rootController
     }
   })
   const suite = new Ed25519Signature2020()
@@ -475,7 +502,7 @@ export async function verifyRevocationChain({
     suite,
     purpose: new CapabilityDelegation({
       suite,
-      expectedRootCapability: rootCapabilityId(keystoreUrl),
+      expectedRootCapability: rootCapabilityId(rootTarget),
       // Attenuation is always tolerated when judging revocability: a zcap
       // delegated with attenuation rules an invocation endpoint would refuse
       // can still be revoked (ezcap-express `_verifyDelegation`).
@@ -484,13 +511,13 @@ export async function verifyRevocationChain({
       maxDelegationTtl,
       inspectCapabilityChain: async details => {
         // Capture every controller in the dereferenced chain -- these are the
-        // parties the dual-root rule lets submit this revocation.
+        // parties the dual-root rule lets submit this revocation -- and the
+        // chain's lookup pairs for the caller's post-authorization store check.
         for (const chainCapability of details.capabilityChain) {
           chainControllers.push(...capabilityControllers(chainCapability))
         }
-        return inspectCapabilityChain
-          ? await inspectCapabilityChain(details)
-          : { valid: true }
+        capabilities = capabilitySummaries(details)
+        return { valid: true }
       }
     })
   })) as {
@@ -514,14 +541,15 @@ export async function verifyRevocationChain({
       detail: 'The capability delegation has no identifiable delegator.'
     })
   }
-  return { delegator, chainControllers }
+  return { delegator, chainControllers, capabilities }
 }
 
 /**
  * Verifies the capability invocation on a revocation submission under the
- * dual-root rule: the invocation may root in the keystore (its controller may
- * revoke anything delegated from it, delegates of a revocation capability
- * included, via target attenuation), or in the revocation URL itself, whose
+ * dual-root rule: the invocation may root in the scope -- the keystore or the
+ * Space -- (whose controller may revoke anything delegated from it, delegates
+ * of a revocation capability included, via target attenuation), or in the
+ * revocation URL itself, whose
  * synthesized root capability is controlled by *every controller in the
  * to-be-revoked capability's chain* -- so a delegee can revoke its own zcap
  * without holding a separate capability (ezcap-express
@@ -534,10 +562,14 @@ export async function verifyRevocationChain({
  * @param options.method {string}   the HTTP method of the request
  * @param options.headers {IncomingHttpHeaders}   the request headers
  * @param options.serverUrl {string}   this server's base URL
- * @param options.keystoreUrl {string}   the keystore's full URL
- * @param options.keystoreController {IDID}   the stored config's controller
+ * @param options.rootTarget {string}   the scope's full URL (the keystore or
+ *   the Space)
+ * @param options.rootController {IDID}   the scope's controller
  * @param options.chainControllers {string[]}   every controller in the
  *   to-be-revoked capability's (already verified) chain
+ * @param options.expectedAction {string}   the action the invocation must
+ *   carry: the webkms `write` on `/kms`, the HTTP verb (`POST`) on the WAS
+ *   route families, whose capabilities are scoped by HTTP method
  * @param [options.inspectCapabilityChain] {InspectCapabilityChain}   the
  *   revocation-store hook, run against the *invoking* chain
  * @param [options.maxChainLength] {number}   max chain length, root included
@@ -551,9 +583,10 @@ export async function handleRevocationInvocationVerify({
   method,
   headers,
   serverUrl,
-  keystoreUrl,
-  keystoreController,
+  rootTarget,
+  rootController,
   chainControllers,
+  expectedAction,
   inspectCapabilityChain,
   maxChainLength,
   maxDelegationTtl,
@@ -564,9 +597,10 @@ export async function handleRevocationInvocationVerify({
   method: string
   headers: IncomingHttpHeaders
   serverUrl: string
-  keystoreUrl: string
-  keystoreController: IDID
+  rootTarget: string
+  rootController: IDID
   chainControllers: string[]
+  expectedAction: string
   inspectCapabilityChain?: InspectCapabilityChain
   maxChainLength?: number
   maxDelegationTtl?: number
@@ -576,8 +610,8 @@ export async function handleRevocationInvocationVerify({
   const fullRequestUrl = new URL(url, serverUrl).toString()
   const documentLoader = rootCapabilityLoader({
     controllerFor: target => {
-      if (target === keystoreUrl) {
-        return keystoreController
+      if (target === rootTarget) {
+        return rootController
       }
       if (target === fullRequestUrl) {
         return chainControllers
@@ -594,17 +628,17 @@ export async function handleRevocationInvocationVerify({
       url: fullRequestUrl,
       method,
       headers: headers as Record<string, string>,
-      expectedAction: 'write',
+      expectedAction,
       expectedHost: new URL(serverUrl).host,
       expectedRootCapability: [
-        rootCapabilityId(keystoreUrl),
+        rootCapabilityId(rootTarget),
         rootCapabilityId(fullRequestUrl)
       ],
-      // The invoked target is the revocation URL, a path under the keystore;
-      // accept either as a delegated zcap's (attenuated) target. The array
-      // form is narrowed to `string` by the verify fork's option type (see
-      // the same cast in `verifyZcap`'s attenuation branch).
-      expectedTarget: [keystoreUrl, fullRequestUrl] as unknown as string,
+      // The invoked target is the revocation URL, a path under the scope's
+      // root; accept either as a delegated zcap's (attenuated) target. The
+      // array form is narrowed to `string` by the verify fork's option type
+      // (see the same cast in `verifyZcap`'s attenuation branch).
+      expectedTarget: [rootTarget, fullRequestUrl] as unknown as string,
       allowTargetAttenuation: true,
       documentLoader,
       getVerifier,

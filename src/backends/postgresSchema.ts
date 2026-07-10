@@ -145,6 +145,22 @@ export const MIGRATIONS: string[] = [
   // comparison.
   `
   ALTER TABLE resources ADD COLUMN created_by text;
+  `,
+  // v4: Space-scoped zcap revocations -- the WAS route families' sibling of the
+  // keystore-scoped `revocations` table above. A separate table (rather than a
+  // nullable-FK union over one table) lets each keep its own `ON DELETE CASCADE`
+  // to its parent and its own composite primary key; deleting a Space here
+  // deletes its revocations. Columns mirror `revocations`, with 'space_id'
+  // referencing the spaces tree in place of 'keystore_id'.
+  `
+  CREATE TABLE space_revocations (
+    space_id      text COLLATE "C" NOT NULL REFERENCES spaces ON DELETE CASCADE,
+    delegator     text COLLATE "C" NOT NULL,
+    capability_id text COLLATE "C" NOT NULL,
+    record        jsonb NOT NULL,
+    expires       text COLLATE "C",
+    PRIMARY KEY (space_id, delegator, capability_id)
+  );
   `
 ]
 

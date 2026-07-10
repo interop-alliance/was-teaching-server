@@ -1,5 +1,41 @@
 # History
 
+## 0.9.1 - TBD
+
+### Added
+
+- **ZCap revocation on the WAS route families.** A capability delegated from a
+  Space's root capability can now be revoked, via
+  `POST /space/:spaceId/zcaps/revocations/:revocationId` -- the sibling of the
+  existing `/kms` revocation endpoint, and the same wire contract
+  (`:revocationId` is the to-be-revoked capability's id, URL-encoded; the body
+  is that capability, verbatim; success is 204). Previously the only lever
+  against a leaked Space or Collection capability was a short `expires` and
+  waiting it out. The submission is authorized under the dual-root rule: an
+  invocation rooted in the Space, or in the revocation URL itself, whose
+  synthesized root is controlled by every controller in the to-be-revoked
+  capability's chain -- so a delegee can revoke its own capability without
+  holding a separate one. A root capability is never revocable; resubmitting a
+  stored revocation is a 400.
+- A revoked capability is rejected from then on wherever a Space-rooted chain is
+  verified: the write and privileged routes, and the capability leg of the read
+  routes. Because access-control policies are permissive, revoking a capability
+  withdraws only what that capability granted -- access a policy already grants
+  everyone (a public-readable Space) is unaffected.
+- Space exports carry the Space's revocation records (top-level `revocations/`
+  entries in the archive, on both backends), and imports restore them under the
+  destination Space's scope -- so an export/import round-trip (backup/restore,
+  backend migration) does not resurrect a revoked capability. Archives from
+  servers that predate this carry none and import as before.
+
+### Changed
+
+- The revocation store (`StorageBackend.insertRevocation` / `isRevoked`) is now
+  keyed on a `RevocationScope` -- a keystore or a Space -- rather than a
+  keystore id. A revocation stored under one scope has no effect on the other;
+  Space revocations live outside the Space's own tree and are deleted with the
+  Space.
+
 ## 0.9.0 - 2026-07-09
 
 ### Added

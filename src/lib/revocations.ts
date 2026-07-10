@@ -1,18 +1,48 @@
 /**
- * The zcap revocation chain-inspection hook (the `/kms` facet). Wired into
- * every keystore-rooted
+ * The zcap revocation chain-inspection hook. Wired into every keystore-rooted
+ * and Space-rooted
  * verification as the zcap library's `inspectCapabilityChain` extension
  * point, it fails a verification whose dereferenced chain contains any
- * capability with a stored revocation. Written route-family-agnostic over the
- * chain details -- only the storage lookup is keystore-scoped -- so a later
- * revocation store for the WAS route families can reuse the summary
- * extraction unchanged.
+ * capability with a stored revocation. Both route families share this hook;
+ * they differ only in the scope the storage lookup is keyed on (a keystore or
+ * a Space). Also home to the revocation-record file-name codec shared by the
+ * filesystem store and both backends' Space exports.
  */
+import { createHash } from 'node:crypto'
 import type {
   CapabilityChainDetails,
   InspectCapabilityChain
 } from '@interop/zcap'
-import type { CapabilitySummary, StorageBackend } from '../types.js'
+import type {
+  CapabilitySummary,
+  RevocationScope,
+  StorageBackend
+} from '../types.js'
+
+/**
+ * The file name a revocation record is stored (and archived) under:
+ * the `(delegator, capabilityId)` unique key folded into a SHA-256 digest,
+ * plus `.json`. Both parts are arbitrary-length URIs, so hashing (rather than
+ * encoding) keeps the name fixed-width and filesystem-safe. Shared by the
+ * filesystem store and both backends' `exportSpace`, so the same record
+ * always lands under the same name.
+ * @param options {object}
+ * @param options.delegator {string}   the revoked capability's delegator
+ * @param options.capabilityId {string}   the revoked capability's id
+ * @returns {string}
+ */
+export function revocationFileName({
+  delegator,
+  capabilityId
+}: {
+  delegator: string
+  capabilityId: string
+}): string {
+  const digest = createHash('sha256')
+    .update(`${delegator}\n${capabilityId}`)
+    .digest('hex')
+  return `${digest}.json`
+}
 
 /**
  * Extracts the `(capabilityId, delegator)` lookup pairs from a verified,
@@ -49,29 +79,30 @@ export function capabilitySummaries({
 }
 
 /**
- * Builds the `inspectCapabilityChain` hook for one keystore: valid when no
+ * Builds the `inspectCapabilityChain` hook for one scope: valid when no
  * delegated capability in the chain has a stored revocation under that
- * keystore (a chain of just the root has nothing to check).
+ * keystore or Space (a chain of just the root has nothing to check, so a bare
+ * root invocation never reaches the store).
  *
  * @param options {object}
  * @param options.storage {StorageBackend}   supplies the revocation store
- * @param options.keystoreId {string}   the keystore's local id (the store's
- *   scope)
+ * @param options.scope {RevocationScope}   the keystore or Space the lookup is
+ *   keyed on
  * @returns {InspectCapabilityChain}
  */
 export function revocationChainInspector({
   storage,
-  keystoreId
+  scope
 }: {
   storage: StorageBackend
-  keystoreId: string
+  scope: RevocationScope
 }): InspectCapabilityChain {
   return async details => {
     const capabilities = capabilitySummaries(details)
     if (capabilities.length === 0) {
       return { valid: true }
     }
-    const revoked = await storage.isRevoked({ keystoreId, capabilities })
+    const revoked = await storage.isRevoked({ scope, capabilities })
     if (revoked) {
       return {
         valid: false,

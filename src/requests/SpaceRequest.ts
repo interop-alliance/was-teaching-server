@@ -233,7 +233,8 @@ export class SpaceRequest {
         headers,
         serverUrl,
         spaceController: existingSpaceDescription.controller,
-        logger: request.log
+        logger: request.log,
+        revocation: { storage, scope: { spaceId } }
       })
     } else {
       await verifyBodyControllerConsent({

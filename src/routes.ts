@@ -191,6 +191,14 @@ export async function initSpaceRoutes(
   // handler note on the ZCap query-string limitation.
   app.get('/space/:spaceId/quotas', SpaceRequest.quotas)
 
+  // Revoke a zcap delegated from this Space (`:revocationId` = the URL-encoded
+  // id of the capability being revoked, which is also the request body). Four
+  // segments deep, so it shadows no Collection or Resource route.
+  app.post(
+    '/space/:spaceId/zcaps/revocations/:revocationId',
+    RevocationRequest.postSpace
+  )
+
   // Add Collection to a Space
   app.post('/space/:spaceId', redirectAddSlash)
   app.post('/space/:spaceId/', SpaceRequest.post)

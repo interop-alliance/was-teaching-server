@@ -88,6 +88,10 @@ export async function verifyBodyControllerConsent({
       spaceController: controller,
       requestName,
       logger: request.log,
+      // Consent verifies a chain rooted in the BODY's controller for a
+      // resource that does not exist yet, so there is no keystore or Space
+      // scope a revocation could have been stored under.
+      revocation: 'no-revocation-scope',
       maxChainLength,
       maxDelegationTtl
     })

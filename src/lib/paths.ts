@@ -353,3 +353,30 @@ export function kmsRevocationsPath({
     encodeURIComponent(revocationId)
   )
 }
+
+/**
+ * `/space/:spaceId/zcaps/revocations/:revocationId` -- a Space's zcap
+ * revocation submission target (POST), the WAS-route sibling of
+ * `kmsRevocationsPath` and the same ezcap-express `/zcaps/revocations/`
+ * convention. `revocationId` is the *to-be-revoked capability's id*,
+ * URL-encoded into the single path segment the route expects. The `zcaps`
+ * segment sits four levels under `/space`, deeper than any Collection or
+ * Resource route, so it shadows neither and needs no reserved-id entry.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.revocationId {string}   the to-be-revoked capability's id
+ *   (raw, un-encoded)
+ * @returns {string}
+ */
+export function spaceRevocationsPath({
+  spaceId,
+  revocationId
+}: {
+  spaceId: string
+  revocationId: string
+}): string {
+  return (
+    `${spacePath({ spaceId })}/zcaps/revocations/` +
+    encodeURIComponent(revocationId)
+  )
+}

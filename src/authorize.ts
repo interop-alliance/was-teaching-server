@@ -66,8 +66,11 @@ export async function authorize({
     method === 'GET' || method === 'HEAD' ? 'read' : 'write'
 
   // 1. If the caller presented a capability invocation, try it first. Success
-  // authorizes the request; failure falls through to the policy check (we hold
-  // the error to re-throw if the policy does not grant access either).
+  // authorizes the request; failure -- a revoked capability included -- falls
+  // through to the policy check (we hold the error to re-throw if the policy
+  // does not grant access either). Revoking a capability therefore withdraws
+  // only what the capability granted: access a policy already grants everyone
+  // (a public-readable Space) survives, which is the permissive-policy model.
   let zcapError: Error | undefined
   if (headers.authorization && headers['capability-invocation']) {
     try {
@@ -82,7 +85,8 @@ export async function authorize({
         requestName,
         logger: request.log,
         allowTargetQuery,
-        attenuatedRootTarget
+        attenuatedRootTarget,
+        revocation: { storage, scope: { spaceId } }
       })
       return
     } catch (err) {

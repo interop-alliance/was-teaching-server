@@ -19,6 +19,7 @@ import { LruCache } from '@interop/lru-memoize'
 import { handleZcapVerify } from '../zcap.js'
 import { authorize } from '../authorize.js'
 import { spacePath } from '../lib/paths.js'
+import { isUrlSafeSegment } from '../lib/validateId.js'
 import { SpaceNotFoundError } from '../errors.js'
 import {
   SPACE_DESCRIPTION_CACHE_MAX,
@@ -101,6 +102,43 @@ async function getSpaceDescriptionOrThrow({
     throw new SpaceNotFoundError({ requestName })
   }
   return spaceDescription
+}
+
+/**
+ * Loads a Space Description by its URL param, masking an unknown (or
+ * non-URL-safe) id as the 404 `SpaceNotFoundError` -- the WAS
+ * existence-masking convention. The verification-free half of
+ * `fetchSpaceAndVerify`, for handlers that need the controller before they can
+ * build their expected values (the revocation route, whose invocation verifies
+ * under the dual-root rule rather than the usual single root). The Space
+ * analogue of `fetchKeystore` (keystoreContext.ts).
+ *
+ * @param options {object}
+ * @param options.request {FastifyRequest}   supplies `request.server.storage`
+ * @param options.spaceId {string}
+ * @param options.requestName {string}   human-readable request name, used in
+ *   error titles
+ * @returns {Promise<SpaceDescription>}
+ */
+export async function fetchSpace({
+  request,
+  spaceId,
+  requestName
+}: {
+  request: FastifyRequest
+  spaceId: string
+  requestName: string
+}): Promise<SpaceDescription> {
+  // A non-URL-safe id cannot name a stored Space and must not reach the
+  // filesystem layer: same 404 masking.
+  if (!isUrlSafeSegment(spaceId)) {
+    throw new SpaceNotFoundError({ requestName })
+  }
+  return await getSpaceDescriptionOrThrow({
+    storage: request.server.storage,
+    spaceId,
+    requestName
+  })
 }
 
 /** The verified context every handler builds before touching storage. */
@@ -223,7 +261,9 @@ export async function fetchSpaceAndAuthorize({
  * Fetches the Space and VERIFIES the request **capability-only**: a valid
  * capability invocation is required, with no access-control-policy fallback (see
  * zcap.ts). Use for write/privileged endpoints and the controller-managed policy
- * resource. The action checked is the request's HTTP method.
+ * resource. The action checked is the request's HTTP method. The Space's
+ * revocation store is consulted on every delegated chain, so a revoked
+ * capability fails here as it does on the `/kms` routes.
  *
  * @param options {object}
  * @param options.request {FastifyRequest}   supplies url, method, headers,
@@ -253,7 +293,7 @@ export async function fetchSpaceAndVerify({
     requestName
   })
   const { url, method, headers } = request
-  const { serverUrl } = request.server
+  const { serverUrl, storage } = request.server
   await handleZcapVerify({
     url,
     allowedTarget: context.allowedTarget,
@@ -264,7 +304,8 @@ export async function fetchSpaceAndVerify({
     spaceController: context.spaceController,
     requestName,
     logger: request.log,
-    attenuatedRootTarget: context.spaceRootTarget
+    attenuatedRootTarget: context.spaceRootTarget,
+    revocation: { storage, scope: { spaceId } }
   })
   return context
 }

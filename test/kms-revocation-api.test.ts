@@ -19,6 +19,7 @@ import {
 } from '@interop/webkms-client'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import { kmsRevocationsPath } from '../src/lib/paths.js'
 import type { IRootZcap } from '../src/types.js'
 import { client, startTestServer, zcapClients } from './helpers.js'
 
@@ -76,9 +77,19 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
     }
   }
 
-  /** The revocation submission URL for a capability id. */
-  function revocationUrl(capabilityId: string, keystore = keystoreId): string {
-    return `${keystore}/zcaps/revocations/${encodeURIComponent(capabilityId)}`
+  /**
+   * The revocation submission URL for a capability id (keyed by the
+   * keystore's LOCAL id), built by the shared path builder -- so these tests
+   * pin `kmsRevocationsPath` against the live route.
+   */
+  function revocationUrl(
+    capabilityId: string,
+    keystore = keystoreLocalId
+  ): string {
+    return new URL(
+      kmsRevocationsPath({ keystoreId: keystore, revocationId: capabilityId }),
+      serverUrl
+    ).toString()
   }
 
   /**
@@ -230,9 +241,10 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
         invocationSigner: alice.signer
       })
 
-      // The second submission fails chain verification -- the chain now
-      // contains a revoked capability (ezcap-express parity); the 409
-      // duplicate is reserved for a write race at the store.
+      // The second submission passes authorization, then trips the
+      // post-authorization store check -- the chain contains a revoked
+      // capability (ezcap-express parity); the 409 duplicate is reserved for
+      // a write race at the store.
       const err = await requestError(
         client({ signer: alice.signer }).request({
           url: revocationUrl(zcap.id),
@@ -304,7 +316,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
       const unknownKeystore = `${keystoresUrl}/z1111unknown`
       const err = await requestError(
         client({ signer: alice.signer }).request({
-          url: revocationUrl(zcap.id, unknownKeystore),
+          url: revocationUrl(zcap.id, 'z1111unknown'),
           method: 'POST',
           action: 'write',
           capability: rootZcap(unknownKeystore),
@@ -453,19 +465,22 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
         }
       }
       await backend.insertRevocation({
-        keystoreId: keystoreLocalId,
+        scope: { keystoreId: keystoreLocalId },
         record
       })
       assert.equal(
         await backend.isRevoked({
-          keystoreId: keystoreLocalId,
+          scope: { keystoreId: keystoreLocalId },
           capabilities: [summary]
         }),
         true
       )
       // Insert-once: the same `(delegator, capabilityId)` conflicts (409).
       const err = await requestError(
-        backend.insertRevocation({ keystoreId: keystoreLocalId, record })
+        backend.insertRevocation({
+          scope: { keystoreId: keystoreLocalId },
+          record
+        })
       )
       assert.equal(err.statusCode, 409)
 
@@ -481,7 +496,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
         }
       }
       await backend.insertRevocation({
-        keystoreId: keystoreLocalId,
+        scope: { keystoreId: keystoreLocalId },
         record: expired
       })
       const expiredSummary = {
@@ -490,14 +505,14 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
       }
       assert.equal(
         await backend.isRevoked({
-          keystoreId: keystoreLocalId,
+          scope: { keystoreId: keystoreLocalId },
           capabilities: [expiredSummary]
         }),
         false
       )
       // Pruned: a re-insert of the same pair no longer conflicts.
       await backend.insertRevocation({
-        keystoreId: keystoreLocalId,
+        scope: { keystoreId: keystoreLocalId },
         record: expired
       })
     })

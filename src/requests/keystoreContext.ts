@@ -8,7 +8,6 @@ import type { FastifyRequest } from 'fastify'
 import { handleZcapVerify } from '../zcap.js'
 import { isUrlSafeSegment } from '../lib/validateId.js'
 import { kmsKeystoresPath } from '../lib/paths.js'
-import { revocationChainInspector } from '../lib/revocations.js'
 import {
   KMS_MAX_CHAIN_LENGTH,
   KMS_MAX_DELEGATION_TTL
@@ -114,7 +113,7 @@ export async function fetchKeystoreAndVerify({
     logger: request.log,
     allowTargetAttenuation,
     allowTargetQuery,
-    inspectCapabilityChain: revocationChainInspector({ storage, keystoreId }),
+    revocation: { storage, scope: { keystoreId } },
     maxChainLength: KMS_MAX_CHAIN_LENGTH,
     maxDelegationTtl: KMS_MAX_DELEGATION_TTL
   })

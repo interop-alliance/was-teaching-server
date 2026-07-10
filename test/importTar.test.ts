@@ -234,6 +234,47 @@ describe('buildImportPlan', () => {
       (err: Error) => err instanceof InvalidResourceIdError
     )
   })
+
+  it('carries top-level revocation records into the plan (and none when absent)', () => {
+    // An archive without a `revocations/` dir (e.g. from an older server)
+    // plans an empty list.
+    assert.deepStrictEqual(buildImportPlan(validSpaceEntries()).revocations, [])
+
+    const record = {
+      capability: { id: 'urn:zcap:delegated-1' },
+      meta: {
+        delegator: 'did:key:z6MkDelegator',
+        rootTarget: 'https://was.example/space/S1',
+        created: '2026-07-01T00:00:00.000Z'
+      }
+    }
+    const entries = validSpaceEntries()
+    entries.set('revocations/', { type: 'directory' })
+    entries.set('revocations/abc123.json', fileEntry(JSON.stringify(record)))
+    assert.deepStrictEqual(buildImportPlan(entries).revocations, [record])
+  })
+
+  it('throws InvalidImportError on a malformed revocation record', () => {
+    const badJson = validSpaceEntries()
+    badJson.set('revocations/broken.json', fileEntry('{not json'))
+    assert.throws(
+      () => buildImportPlan(badJson),
+      (err: Error) =>
+        err instanceof InvalidImportError && /not valid JSON/i.test(err.message)
+    )
+
+    // Parses, but lacks the `(capability.id, meta.delegator)` unique key.
+    const badShape = validSpaceEntries()
+    badShape.set(
+      'revocations/keyless.json',
+      fileEntry(JSON.stringify({ capability: {}, meta: {} }))
+    )
+    assert.throws(
+      () => buildImportPlan(badShape),
+      (err: Error) =>
+        err instanceof InvalidImportError && /malformed/i.test(err.message)
+    )
+  })
 })
 
 describe('extractTarEntries', () => {

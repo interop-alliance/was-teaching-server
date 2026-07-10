@@ -325,9 +325,17 @@ export interface KmsKeyDescription {
 }
 
 /**
- * A stored zcap revocation (the `/kms` facet), a `{capability, meta}` record.
- * Unique on `(delegator, capability.id)` within
- * its scope (the keystore tree it is stored under); `meta.expires` is the
+ * The object a revocation aggregates under, and the unit a revocation lookup
+ * is scoped to: a keystore (the `/kms` route family) or a Space (the WAS route
+ * families). A revocation stored under one scope has no effect on the other --
+ * a chain rooted in a Space is only ever inspected against that Space's store.
+ */
+export type RevocationScope = { keystoreId: string } | { spaceId: string }
+
+/**
+ * A stored zcap revocation, a `{capability, meta}` record. Unique on
+ * `(delegator, capability.id)` within
+ * its scope (the keystore or Space it is stored under); `meta.expires` is the
  * record's own garbage-collection horizon -- one day past the capability's
  * `expires`, after which the capability is rejected on expiry alone and the
  * record is prunable (the one-day margin covers clock-skew grace periods).
@@ -338,7 +346,10 @@ export interface RevocationRecord {
   meta: {
     /** the party that delegated the revoked capability (its proof creator) */
     delegator: string
-    /** the root object the revocation aggregates under (the keystore URL) */
+    /**
+     * the root object the revocation aggregates under (the keystore URL, or
+     * the Space URL for a WAS-route revocation)
+     */
     rootTarget: string
     /** server-managed creation timestamp (ISO 8601) */
     created: string
@@ -490,7 +501,19 @@ export interface StorageBackend {
    */
   listSpaces(): Promise<SpaceDescription[]>
   listCollections(options: { spaceId: string }): Promise<CollectionSummary[]>
+  /**
+   * Packs the Space as a tar archive: its Collections, Resources (including
+   * tombstones), policies, metadata sidecars, and the Space's zcap revocation
+   * records (so a revoked capability stays revoked across an export/import
+   * round-trip). Backend registration records (secret material) do NOT
+   * travel.
+   */
   exportSpace(options: { spaceId: string }): Promise<Readable>
+  /**
+   * Merges a Space-export archive into an existing Space, skip-not-overwrite
+   * per item; the archive's revocation records are restored under this
+   * Space's scope on the same terms (already-stored records are skipped).
+   */
   importSpace(options: {
     spaceId: string
     tarStream: Readable
@@ -821,29 +844,35 @@ export interface StorageBackend {
   }): Promise<Array<{ localId: string; record: KmsKeyRecord }>>
 
   /**
-   * WebKMS zcap revocations, stored under their keystore
-   * (`data/keystores/<keystoreId>/revocations/`), unique on
-   * `(delegator, capability.id)` within the keystore. The protocol defines no
-   * revocation read or delete: records exist only to be consulted by the
-   * chain-inspection hook, and lapse via `meta.expires` (the capability is
-   * rejected on its own expiry from then on).
+   * ZCap revocations, stored under their scope -- a keystore
+   * (`data/keystores/<keystoreId>/revocations/`) or a Space
+   * (`data/space-revocations/<spaceId>/`, kept out of the Space tree so a
+   * revocation directory can never be mistaken for, or collide with, a
+   * Collection). Unique on `(delegator, capability.id)` within the scope.
+   * Neither protocol defines a revocation read or delete: records exist only
+   * to be consulted by the chain-inspection hook, and lapse via
+   * `meta.expires` (the capability is rejected on its own expiry from then
+   * on). Deleting a Space deletes its revocations with it.
    *
    * Inserts a revocation record, create-only: rejects with the protocol's 409
    * duplicate (`DuplicateRevocationError`) when a record already exists at
-   * `(meta.delegator, capability.id)`, atomically with the write.
+   * `(meta.delegator, capability.id)`, atomically with the write. The scope
+   * must exist: inserting under an absent keystore or Space rejects with
+   * `StorageError` (the request layer 404-masks unknown scopes long before
+   * this; the Postgres backend's foreign keys enforce the same at the store).
    */
   insertRevocation(options: {
-    keystoreId: string
+    scope: RevocationScope
     record: RevocationRecord
   }): Promise<void>
   /**
    * True when any of the given capabilities has a stored, unexpired
-   * revocation under the keystore. Records past their `meta.expires` GC
+   * revocation under the scope. Records past their `meta.expires` GC
    * horizon count as not revoked (the capability itself has expired) and may
    * be pruned on the way through.
    */
   isRevoked(options: {
-    keystoreId: string
+    scope: RevocationScope
     capabilities: CapabilitySummary[]
   }): Promise<boolean>
 }

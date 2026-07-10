@@ -56,14 +56,19 @@ function collectionManifestEntry(fileName: string): unknown {
  * @param options {object}
  * @param options.spaceId {string}
  * @param options.entries {ExportSpaceEntry[]}   ordered top-level entries
+ * @param [options.revocationFiles] {string[]}   ordered file names of the
+ *   archive's Space-scoped zcap revocation records (`revocations/` entries);
+ *   omitted from the manifest when the Space has none
  * @returns {object}   the manifest document (serialize with `YAML.stringify`)
  */
 export function buildExportManifest({
   spaceId,
-  entries
+  entries,
+  revocationFiles = []
 }: {
   spaceId: string
   entries: ExportSpaceEntry[]
+  revocationFiles?: string[]
 }): object {
   const spaceContents: unknown[] = []
   for (const entry of entries) {
@@ -83,6 +88,9 @@ export function buildExportManifest({
     'ubc-version': '0.1',
     contents: {
       'manifest.yml': { url: UBC_MANIFEST_URL },
+      ...(revocationFiles.length > 0 && {
+        revocations: { contents: [...revocationFiles] }
+      }),
       space: {
         url: SPACE_URL,
         contents: {

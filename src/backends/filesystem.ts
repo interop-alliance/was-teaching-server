@@ -5,7 +5,6 @@
  * implementing the StorageBackend contract documented in types.ts.
  */
 import path from 'node:path'
-import { createHash } from 'node:crypto'
 import { mkdir, rm, stat as fsStat } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import { execFile } from 'node:child_process'
@@ -52,6 +51,7 @@ import { backendUsageFields } from '../lib/backendUsage.js'
 import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { encodeCursor, decodeCursor } from '../lib/cursor.js'
 import { buildExportManifest } from '../lib/exportManifest.js'
+import { revocationFileName } from '../lib/revocations.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
 import { isJson } from '../lib/isJson.js'
 import {
@@ -93,6 +93,7 @@ import type {
   KeystoreConfig,
   KmsKeyRecord,
   RevocationRecord,
+  RevocationScope,
   CapabilitySummary,
   IDID
 } from '../types.js'
@@ -214,6 +215,16 @@ export class FileSystemBackend implements StorageBackend {
    * (own route family, own storage tree).
    */
   keystoresDir: string
+  /**
+   * Root of the Space zcap revocation tree (`data/space-revocations/<spaceId>/`),
+   * a sibling of `spacesDir` rather than a subdirectory of each Space. Space
+   * revocations deliberately live OUTSIDE the Space's own directory because
+   * `listCollections` and `_countLiveResources` treat every subdirectory of a
+   * Space dir as a Collection -- a `revocations/` dir nested inside a Space would
+   * surface as a phantom Collection (and could collide with a real one), so it
+   * gets its own root.
+   */
+  spaceRevocationsDir: string
   logger: FastifyBaseLogger
   /**
    * Per-Space storage capacity, in bytes (spec "Quotas"). `undefined` means no
@@ -305,6 +316,10 @@ export class FileSystemBackend implements StorageBackend {
   }) {
     this.spacesDir = path.join(dataDir, 'spaces')
     this.keystoresDir = path.join(dataDir, 'keystores')
+    // A sibling of spacesDir, NOT nested under each Space: a `revocations/` dir
+    // inside a Space dir would be mistaken for a Collection (see the
+    // `spaceRevocationsDir` property doc).
+    this.spaceRevocationsDir = path.join(dataDir, 'space-revocations')
     this.logger = logger ?? silentLogger
     // A non-finite `capacityBytes` (`Infinity` from an explicit `unlimited`)
     // behaves exactly like unset inside the backend: no configured limit.
@@ -677,6 +692,19 @@ export class FileSystemBackend implements StorageBackend {
     return spaceDir
   }
 
+  /**
+   * The directory holding one Space's zcap revocation records, under the
+   * sibling `spaceRevocationsDir` root (see that property's doc for why it is
+   * not inside the Space dir), guarded against escaping it.
+   * @param spaceId {string}
+   * @returns {string}
+   */
+  _spaceRevocationDir(spaceId: string): string {
+    const dir = path.join(this.spaceRevocationsDir, spaceId)
+    this._assertContained(dir, this.spaceRevocationsDir)
+    return dir
+  }
+
   _collectionDir({
     spaceId,
     collectionId
@@ -886,6 +914,10 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * Removes a Space and everything scoped to it. The Space's zcap revocations
+   * live in a sibling root (`spaceRevocationsDir`), not under the Space dir, so
+   * they are removed explicitly here rather than falling out of the Space dir
+   * rm.
    * @param options {object}
    * @param options.spaceId {string}
    * @returns {Promise<void>}
@@ -893,6 +925,11 @@ export class FileSystemBackend implements StorageBackend {
   async deleteSpace({ spaceId }: { spaceId: string }): Promise<void> {
     // Freed bytes: drop the cached quota usage so the next write re-measures.
     this._usageCache.delete(spaceId)
+    // Remove this Space's revocations, which sit outside the Space dir.
+    await rm(this._spaceRevocationDir(spaceId), {
+      recursive: true,
+      force: true
+    })
     // `force: true` keeps delete idempotent (the `StorageBackend` contract):
     // removing an absent Space resolves rather than rejecting with `ENOENT`.
     return await rm(this._spaceDir(spaceId), { recursive: true, force: true })
@@ -1053,6 +1090,26 @@ export class FileSystemBackend implements StorageBackend {
         .sort((a, b) => a.name.localeCompare(b.name))
     }
 
+    // Space-scoped zcap revocations travel with the export. They live in the
+    // sibling `spaceRevocationsDir` root (see that property's doc), so the
+    // Space-dir walk above never sees them; they pack under a top-level
+    // `revocations/` dir -- outside `space/<spaceId>/`, where a subdirectory
+    // would read as a Collection on import.
+    const revocationsDir = this._spaceRevocationDir(spaceId)
+    let revocationFiles: string[] = []
+    try {
+      revocationFiles = (
+        await fs.promises.readdir(revocationsDir, { withFileTypes: true })
+      )
+        .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+        .map(entry => entry.name)
+        .sort((a, b) => a.localeCompare(b))
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new StorageError({ cause: err as Error })
+      }
+    }
+
     const manifest = buildExportManifest({
       spaceId,
       entries: spaceEntries.map(entry =>
@@ -1065,7 +1122,8 @@ export class FileSystemBackend implements StorageBackend {
             }
           : // top-level files in space (e.g. .space.<spaceId>.json)
             { name: entry.name }
-      )
+      ),
+      revocationFiles
     })
 
     const pack = tar.pack()
@@ -1092,6 +1150,16 @@ export class FileSystemBackend implements StorageBackend {
       }
     }
 
+    if (revocationFiles.length > 0) {
+      pack.entry({ name: 'revocations/', type: 'directory' })
+      for (const name of revocationFiles) {
+        const bytes = await fs.promises.readFile(
+          path.join(revocationsDir, name)
+        )
+        pack.entry({ name: `revocations/${name}` }, bytes)
+      }
+    }
+
     pack.finalize()
     return pack
   }
@@ -1112,7 +1180,7 @@ export class FileSystemBackend implements StorageBackend {
     tarStream: Readable
   }): Promise<ImportStats> {
     const entries = await extractTarEntries(tarStream)
-    const { spacePolicy, collections } = buildImportPlan(entries)
+    const { spacePolicy, collections, revocations } = buildImportPlan(entries)
 
     // Pre-flight pass over every staged resource, before writing anything, so a
     // rejected import leaves the Space untouched. Three checks, each of which the
@@ -1360,6 +1428,26 @@ export class FileSystemBackend implements StorageBackend {
           data: metadataBytes
         })
         stats.resourcesCreated++
+      }
+    }
+
+    // Restore the archive's Space-scoped zcap revocations under this Space's
+    // scope: a capability revoked before the export must stay revoked after
+    // an import (a backup/restore round-trip must not resurrect revoked
+    // access). Merge semantics match the rest of the import -- an
+    // already-stored record is skipped -- and a record past its GC horizon is
+    // dropped (the capability itself has expired; `isRevoked` would prune it).
+    const now = Date.now()
+    for (const record of revocations) {
+      if (record.meta.expires && Date.parse(record.meta.expires) <= now) {
+        continue
+      }
+      try {
+        await this.insertRevocation({ scope: { spaceId }, record })
+      } catch (err) {
+        if (!(err instanceof DuplicateRevocationError)) {
+          throw err
+        }
       }
     }
 
@@ -3259,34 +3347,36 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * The file holding one zcap revocation record, contained in its keystore's
-   * `revocations/` subdirectory. The `(delegator, capabilityId)` unique key
-   * is folded into the file name as a SHA-256 digest -- both parts are
-   * arbitrary-length URIs, so hashing (rather than encoding) keeps the name
-   * fixed-width and filesystem-safe.
+   * The file holding one zcap revocation record. For a keystore scope it lives
+   * in that keystore's `revocations/` subdirectory; for a Space scope it lives
+   * under the sibling `spaceRevocationsDir` root (NOT inside the Space dir --
+   * see the `spaceRevocationsDir` property doc). The file name folds the
+   * `(delegator, capabilityId)` unique key into a SHA-256 digest (the shared
+   * `revocationFileName` codec).
    * @param options {object}
-   * @param options.keystoreId {string}   the owning keystore's local id
+   * @param options.scope {RevocationScope}   the owning keystore or Space
    * @param options.delegator {string}   the revoked capability's delegator
    * @param options.capabilityId {string}   the revoked capability's id
    * @returns {string}
    */
   _revocationFile({
-    keystoreId,
+    scope,
     delegator,
     capabilityId
   }: {
-    keystoreId: string
+    scope: RevocationScope
     delegator: string
     capabilityId: string
   }): string {
-    const digest = createHash('sha256')
-      .update(`${delegator}\n${capabilityId}`)
-      .digest('hex')
-    return path.join(
-      this._keystoreDir(keystoreId),
-      'revocations',
-      `${digest}.json`
-    )
+    const fileName = revocationFileName({ delegator, capabilityId })
+    if ('keystoreId' in scope) {
+      return path.join(
+        this._keystoreDir(scope.keystoreId),
+        'revocations',
+        fileName
+      )
+    }
+    return path.join(this._spaceRevocationDir(scope.spaceId), fileName)
   }
 
   /**
@@ -3295,19 +3385,35 @@ export class FileSystemBackend implements StorageBackend {
    * rejecting a duplicate with the protocol's 409
    * (`DuplicateRevocationError`).
    * @param options {object}
-   * @param options.keystoreId {string}   the owning keystore's local id
+   * @param options.scope {RevocationScope}   the owning keystore or Space
    * @param options.record {RevocationRecord}   the revocation to store
    * @returns {Promise<void>}
    */
   async insertRevocation({
-    keystoreId,
+    scope,
     record
   }: {
-    keystoreId: string
+    scope: RevocationScope
     record: RevocationRecord
   }): Promise<void> {
+    // The scope must already exist -- the postgres backend enforces this via
+    // its foreign keys, so an absent-parent insert rejects identically on
+    // both backends instead of mkdir-ing an orphan record dir here. (The HTTP
+    // route 404-masks unknown scopes before reaching the store; this guards
+    // direct backend use.)
+    const scopeExists =
+      'keystoreId' in scope
+        ? Boolean(await this.getKeystore({ keystoreId: scope.keystoreId }))
+        : Boolean(await this.getSpaceDescription({ spaceId: scope.spaceId }))
+    if (!scopeExists) {
+      throw new StorageError({
+        cause: new Error(
+          'Cannot insert a revocation under an absent keystore or Space.'
+        )
+      })
+    }
     const revocationFile = this._revocationFile({
-      keystoreId,
+      scope,
       delegator: record.meta.delegator,
       capabilityId: record.capability.id
     })
@@ -3330,27 +3436,27 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * True when any of the given capabilities has a stored, unexpired
-   * revocation under the keystore. A record past its `meta.expires` GC
-   * horizon is pruned on the way through and counts as not revoked -- the
-   * capability itself has expired, so verification already rejects it on
-   * expiry (this is the filesystem analogue of a TTL index).
+   * revocation under the scope (keystore or Space). A record past its
+   * `meta.expires` GC horizon is pruned on the way through and counts as not
+   * revoked -- the capability itself has expired, so verification already
+   * rejects it on expiry (this is the filesystem analogue of a TTL index).
    * @param options {object}
-   * @param options.keystoreId {string}   the owning keystore's local id
+   * @param options.scope {RevocationScope}   the owning keystore or Space
    * @param options.capabilities {CapabilitySummary[]}   the
    *   `(capabilityId, delegator)` pairs to check
    * @returns {Promise<boolean>}
    */
   async isRevoked({
-    keystoreId,
+    scope,
     capabilities
   }: {
-    keystoreId: string
+    scope: RevocationScope
     capabilities: CapabilitySummary[]
   }): Promise<boolean> {
     const now = Date.now()
     for (const { capabilityId, delegator } of capabilities) {
       const revocationFile = this._revocationFile({
-        keystoreId,
+        scope,
         delegator,
         capabilityId
       })

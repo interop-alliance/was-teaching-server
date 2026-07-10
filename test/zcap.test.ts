@@ -51,7 +51,8 @@ describe('handleZcapVerify', () => {
         ...baseArgs,
         headers: {},
         requestName: 'Read Space',
-        logger
+        logger,
+        revocation: 'no-revocation-scope'
       })
     } catch (err) {
       thrown = err
@@ -73,7 +74,8 @@ describe('handleZcapVerify', () => {
         serverUrl: 'not-a-valid-url',
         headers: {},
         requestName: 'Read Space',
-        logger
+        logger,
+        revocation: 'no-revocation-scope'
       })
     } catch (err) {
       thrown = err

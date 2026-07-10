@@ -230,6 +230,11 @@ export class KeystoreRequest {
       requestName,
       logger: request.log,
       allowTargetQuery: true,
+      // The chain roots at the keystores-collection URL (keyed by the query
+      // `controller`), not at any one keystore, so no RevocationScope exists
+      // for it -- collection-level capabilities are outside the per-scope
+      // revocation model.
+      revocation: 'no-revocation-scope',
       maxChainLength: KMS_MAX_CHAIN_LENGTH,
       maxDelegationTtl: KMS_MAX_DELEGATION_TTL
     })
