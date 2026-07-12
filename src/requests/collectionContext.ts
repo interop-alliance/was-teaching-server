@@ -17,7 +17,7 @@ import type { CollectionDescription, StorageBackend } from '../types.js'
  * @param options.collectionId {string}
  * @param options.requestName {string}   human-readable request name, used in
  *   error titles
- * @returns {Promise<CollectionDescription>}
+ * @returns {Promise<CollectionDescription & { descriptionVersion?: number }>}
  */
 export async function getCollectionOrThrow({
   storage,
@@ -29,7 +29,7 @@ export async function getCollectionOrThrow({
   spaceId: string
   collectionId: string
   requestName: string
-}): Promise<CollectionDescription> {
+}): Promise<CollectionDescription & { descriptionVersion?: number }> {
   const collectionDescription = await storage.getCollectionDescription({
     spaceId,
     collectionId

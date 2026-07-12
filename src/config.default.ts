@@ -5,7 +5,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { parseKekMultibase } from './lib/kmsRecordCipher.js'
-import type { KmsRecordKekRegistry } from './types.js'
+import type { KmsRecordKekRegistry, RecordKek } from './types.js'
 
 // package.json sits a level above both src/ (dev, via tsx) and dist/ (prod),
 // so '../package.json' from import.meta.dirname resolves in either layout.
@@ -209,7 +209,10 @@ export interface EnvConfig {
   maxResourcesPerSpace?: number
   /** Backend registration allowlist (`WAS_ENABLED_BACKENDS`); unset = permissive. */
   enabledBackendProviders?: string[]
-  /** At-rest KMS key-record encryption registry (`KMS_RECORD_KEK`); unset = plaintext. */
+  /**
+   * At-rest KMS key-record encryption registry (`KMS_RECORD_KEK` /
+   * `KMS_RECORD_KEKS` / `KMS_RECORD_CURRENT_KEK`); unset = plaintext.
+   */
   kmsRecordKek?: KmsRecordKekRegistry
   /** Shared-secret provisioning gate (`WAS_ONBOARDING_TOKEN`); unset = open provisioning. */
   onboardingToken?: string
@@ -245,7 +248,11 @@ export function loadConfigFromEnv(
       'MAX_RESOURCES_PER_SPACE'
     ),
     enabledBackendProviders: parseEnabledBackends(env.WAS_ENABLED_BACKENDS),
-    kmsRecordKek: parseKmsRecordKek(env.KMS_RECORD_KEK),
+    kmsRecordKek: parseKmsRecordKekRegistry({
+      kek: env.KMS_RECORD_KEK,
+      keks: env.KMS_RECORD_KEKS,
+      currentKek: env.KMS_RECORD_CURRENT_KEK
+    }),
     onboardingToken: parseOnboardingToken(env.WAS_ONBOARDING_TOKEN)
   }
 }
@@ -341,26 +348,136 @@ export function parseDatabaseUrl(raw: string | undefined): string | undefined {
 }
 
 /**
- * Parses the `KMS_RECORD_KEK` env value into the at-rest key-record encryption
- * registry (the optional hardening increment). The value is a single AES-256
- * key-encryption key in base58btc Multikey form (`secretKeyMultibase`, header
- * `0xa2 0x01`);
- * an unset or empty value returns `undefined`, meaning encryption is disabled --
+ * Parses the at-rest key-record encryption env surface into a
+ * {@link KmsRecordKekRegistry} (the optional hardening increment). Each KEK is a
+ * single AES-256 key-encryption key in base58btc Multikey form
+ * (`secretKeyMultibase`, header `0xa2 0x01`), whose id is derived from its
+ * material (`deriveKekId`) and stored per record -- so registering a second KEK
+ * for rotation is a config change, not a schema migration. Three env variables
+ * feed it:
+ *
+ * - `KMS_RECORD_KEK` -- a single KEK (the teaching default alias);
+ * - `KMS_RECORD_KEKS` -- a comma-separated list of KEKs, each registered by its
+ *   derived id; the FIRST entry is the current KEK by default, so a rotation is
+ *   "prepend the new KEK, keep the old one behind it". Surrounding whitespace is
+ *   trimmed and empty entries ignored; a duplicate entry (same derived id twice)
+ *   throws;
+ * - `KMS_RECORD_CURRENT_KEK` -- optionally overrides which registered KEK wraps
+ *   NEW records: a `urn:kek:sha256:<hex>` id, a multibase KEK value (its id
+ *   derived), or the literal `none` (case-insensitive) which sets
+ *   `currentKekId: null` -- the decrypt-only posture (old records still read, new
+ *   records are written plaintext). It must name a registered KEK.
+ *
+ * All three unset/empty returns `undefined`, meaning encryption is disabled --
  * key records are written plaintext (the default, honest about the teaching
- * server's threat model). When set, the KEK's id is derived from its material
- * (`deriveKekId`) and stored per record, so multi-KEK rotation later is a config
- * change, not a schema migration. A malformed value throws (fails startup).
- * @param raw {string|undefined}   the raw env value
- * @returns {KmsRecordKekRegistry|undefined}   the registry, or `undefined` when unset
+ * server's threat model). Setting both `KMS_RECORD_KEK` and `KMS_RECORD_KEKS` is
+ * ambiguous and throws; setting `KMS_RECORD_CURRENT_KEK` with no KEK configured
+ * throws. A malformed value throws (fails startup), naming the offending
+ * variable (and, for a list entry, its 1-based position) but never echoing the
+ * secret.
+ * @param options {object}
+ * @param [options.kek] {string}   the `KMS_RECORD_KEK` value
+ * @param [options.keks] {string}   the `KMS_RECORD_KEKS` value
+ * @param [options.currentKek] {string}   the `KMS_RECORD_CURRENT_KEK` value
+ * @returns {KmsRecordKekRegistry|undefined}   the registry, or `undefined` when
+ *   no KEK is configured
  */
-export function parseKmsRecordKek(
-  raw: string | undefined
-): KmsRecordKekRegistry | undefined {
-  if (raw === undefined || raw.trim() === '') {
+export function parseKmsRecordKekRegistry({
+  kek,
+  keks,
+  currentKek
+}: {
+  kek?: string
+  keks?: string
+  currentKek?: string
+}): KmsRecordKekRegistry | undefined {
+  const kekSet = kek !== undefined && kek.trim() !== ''
+  const keksSet = keks !== undefined && keks.trim() !== ''
+  const currentSet = currentKek !== undefined && currentKek.trim() !== ''
+
+  if (kekSet && keksSet) {
+    throw new Error(
+      'Set only one of KMS_RECORD_KEK or KMS_RECORD_KEKS, not both (ambiguous).'
+    )
+  }
+
+  // Build the ordered registry: each KEK keyed by its derived id, in config
+  // order (the first entry is the default current KEK).
+  const registry = new Map<string, RecordKek>()
+  const order: RecordKek[] = []
+
+  if (kekSet) {
+    const parsed = parseKekMultibase(kek!.trim())
+    registry.set(parsed.id, parsed)
+    order.push(parsed)
+  } else if (keksSet) {
+    let position = 0
+    for (const entry of keks!.split(',')) {
+      const trimmed = entry.trim()
+      if (trimmed === '') {
+        continue // empty entries are ignored (like WAS_ENABLED_BACKENDS)
+      }
+      position += 1
+      const parsed = parseKekMultibase(
+        trimmed,
+        `KMS_RECORD_KEKS entry ${position}`
+      )
+      if (registry.has(parsed.id)) {
+        throw new Error(
+          `KMS_RECORD_KEKS entry ${position} duplicates an earlier KEK ` +
+            `(same derived kekId); register each KEK only once.`
+        )
+      }
+      registry.set(parsed.id, parsed)
+      order.push(parsed)
+    }
+  }
+
+  // No KEK material at all (all unset, or a list of only empty entries): a
+  // dangling KMS_RECORD_CURRENT_KEK is an error; otherwise encryption is off.
+  if (registry.size === 0) {
+    if (currentSet) {
+      throw new Error(
+        'KMS_RECORD_CURRENT_KEK is set but no KEK is configured; ' +
+          'set KMS_RECORD_KEK or KMS_RECORD_KEKS.'
+      )
+    }
     return undefined
   }
-  const kek = parseKekMultibase(raw.trim())
-  return { keks: new Map([[kek.id, kek]]), currentKekId: kek.id }
+
+  const currentKekId = currentSet
+    ? resolveCurrentKekId(currentKek!.trim(), registry)
+    : order[0]!.id
+  return { keks: registry, currentKekId }
+}
+
+/**
+ * Resolves a `KMS_RECORD_CURRENT_KEK` value to a registered `kekId` (or `null`
+ * for the literal `none`, the decrypt-only posture). The value is either a
+ * `urn:kek:sha256:<hex>` id or a multibase KEK whose id is derived; either way
+ * it must match a KEK already in `registry`. Throws on an unregistered target,
+ * naming the variable but never echoing the secret.
+ * @param value {string}   the trimmed `KMS_RECORD_CURRENT_KEK` value
+ * @param registry {Map<string, RecordKek>}   the registered KEKs, by id
+ * @returns {string|null}   the resolved current `kekId`, or `null` for `none`
+ */
+function resolveCurrentKekId(
+  value: string,
+  registry: Map<string, RecordKek>
+): string | null {
+  if (value.toLowerCase() === 'none') {
+    return null // decrypt-only: keep KEKs for unwrap, write new records plaintext
+  }
+  const kekId = value.startsWith('urn:kek:sha256:')
+    ? value
+    : parseKekMultibase(value, 'KMS_RECORD_CURRENT_KEK').id
+  if (!registry.has(kekId)) {
+    throw new Error(
+      'KMS_RECORD_CURRENT_KEK names a KEK that is not registered ' +
+        '(no matching KMS_RECORD_KEK / KMS_RECORD_KEKS entry).'
+    )
+  }
+  return kekId
 }
 
 /**

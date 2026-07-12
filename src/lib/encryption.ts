@@ -9,7 +9,10 @@
  * (validate on write / preserve on read), kept separate because encryption is a
  * per-Collection client concern, not a backend capability.
  */
-import type { CollectionEncryption } from '../types.js'
+import type {
+  CollectionEncryption,
+  CollectionEncryptionEpoch
+} from '../types.js'
 import {
   InvalidRequestBodyError,
   EncryptionImmutableError,
@@ -92,9 +95,246 @@ export function assertSupportedEncryption({
   if (!Object.hasOwn(SUPPORTED_ENCRYPTION_SCHEMES, scheme)) {
     throw new UnsupportedEncryptionSchemeError({ scheme })
   }
+  // Validate the OPTIONAL key-epoch fields (`epochs` / `currentEpoch`) when
+  // present: shape-only safety rails against client bugs (a dropped epoch, a
+  // dangling `currentEpoch`), never crypto verification -- the server holds no
+  // key. Absent fields are a plain single-key-set marker and pass unchanged.
+  assertValidEncryptionEpochs({
+    marker: encryption as CollectionEncryption,
+    requestName
+  })
+
   // Preserve the whole marker (only `scheme` is typed today; keep any extra
   // forward-compat fields on a recognized scheme).
   return encryption as CollectionEncryption
+}
+
+/**
+ * Validates the OPTIONAL key-epoch public-reference fields of a Collection
+ * `encryption` marker (spec "Encrypted Collections"; the `key-epochs` feature).
+ * Shape-only integrity checks that catch client bugs -- the server never
+ * interprets key material, so these are safety rails, not cryptographic
+ * verification. Rejects with `invalid-request-body` (400) and a precise
+ * `pointer`. Rules:
+ * - `epochs` and `currentEpoch` are all-or-nothing: either both absent (a plain
+ *   single-key-set marker) or both present.
+ * - `epochs`: a non-empty array; each entry an object with a non-empty string
+ *   `id` (ids unique across the array) and a non-empty `recipients` array.
+ * - each `recipients` entry carries the JWE recipients-entry members the
+ *   marker requires: a `header` object with non-empty string `kid` and `alg`,
+ *   plus a string `encrypted_key` (the wrapped epoch key).
+ * - `currentEpoch`: a non-empty string naming an `id` that exists in `epochs`.
+ *
+ * @param options {object}
+ * @param options.marker {CollectionEncryption}   the shape-validated marker
+ * @param [options.requestName] {string}   request name for the 400 error title
+ * @returns {void}
+ */
+function assertValidEncryptionEpochs({
+  marker,
+  requestName
+}: {
+  marker: CollectionEncryption
+  requestName?: string
+}): void {
+  const { epochs, currentEpoch } = marker
+  // All-or-nothing: `epochs` and `currentEpoch` appear together or not at all.
+  if ((epochs === undefined) !== (currentEpoch === undefined)) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail:
+        'Collection "encryption.epochs" and "encryption.currentEpoch" must both be present or both absent.',
+      pointer: '#/encryption/epochs'
+    })
+  }
+  if (epochs === undefined) {
+    return
+  }
+  if (!Array.isArray(epochs) || epochs.length === 0) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail: 'Collection "encryption.epochs" must be a non-empty array.',
+      pointer: '#/encryption/epochs'
+    })
+  }
+  const ids = new Set<string>()
+  epochs.forEach((epoch, epochIndex) => {
+    const pointer = `#/encryption/epochs/${epochIndex}`
+    if (typeof epoch !== 'object' || epoch === null || Array.isArray(epoch)) {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail: 'Each "encryption.epochs" entry must be an object.',
+        pointer
+      })
+    }
+    const { id, recipients } = epoch as CollectionEncryptionEpoch
+    if (typeof id !== 'string' || id.length === 0) {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail:
+          'Each "encryption.epochs" entry must have a non-empty string "id".',
+        pointer: `${pointer}/id`
+      })
+    }
+    if (ids.has(id)) {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail: `Duplicate "encryption.epochs" id "${id}".`,
+        pointer: `${pointer}/id`
+      })
+    }
+    ids.add(id)
+    if (!Array.isArray(recipients) || recipients.length === 0) {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail:
+          'Each "encryption.epochs" entry must have a non-empty "recipients" array.',
+        pointer: `${pointer}/recipients`
+      })
+    }
+    recipients.forEach((recipient, recipientIndex) => {
+      const rPointer = `${pointer}/recipients/${recipientIndex}`
+      // The JWE recipients-entry members the wrapped-epoch-key marker needs:
+      // `header.kid` / `header.alg` and the wrapped key `encrypted_key`. The
+      // member checks (optional chaining included) already reject every
+      // non-object or malformed entry, so no generic JWE-entry shape test runs
+      // first.
+      const header = (
+        recipient as { header?: { kid?: unknown; alg?: unknown } }
+      )?.header
+      if (
+        typeof header?.kid !== 'string' ||
+        header.kid.length === 0 ||
+        typeof header.alg !== 'string' ||
+        header.alg.length === 0 ||
+        typeof (recipient as { encrypted_key?: unknown }).encrypted_key !==
+          'string'
+      ) {
+        throw new InvalidRequestBodyError({
+          requestName,
+          detail:
+            'Each "recipients" entry must have a "header" object with non-empty string "kid" and "alg", plus a string "encrypted_key".',
+          pointer: rPointer
+        })
+      }
+    })
+  })
+  if (typeof currentEpoch !== 'string' || currentEpoch.length === 0) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail:
+        'Collection "encryption.currentEpoch" must be a non-empty string.',
+      pointer: '#/encryption/currentEpoch'
+    })
+  }
+  if (!ids.has(currentEpoch)) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail: `Collection "encryption.currentEpoch" ("${currentEpoch}") does not name an epoch in "epochs".`,
+      pointer: '#/encryption/currentEpoch'
+    })
+  }
+}
+
+/**
+ * Enforces the epoch-safety rails on an UPDATE, when the existing marker already
+ * carries `epochs` (spec "Encrypted Collections"; the `key-epochs` feature).
+ * Call only when an `incoming` marker was supplied and shape-validated. Rules
+ * (both `invalid-request-body`, 400):
+ * - **append-only**: every existing epoch id must still be present in
+ *   `incoming.epochs` -- dropping an epoch would strand every Resource stamped
+ *   with it (the removed reader could still hold that epoch's key, but no
+ *   remaining reader could find it).
+ * - **`currentEpoch` never moves backwards**: the incoming `currentEpoch` must
+ *   equal the existing one OR name an epoch id that was NOT in the existing
+ *   `epochs` list (a freshly appended epoch). This is the array-order-independent
+ *   formulation of "monotonic".
+ *
+ * Recipients WITHIN an existing epoch MAY change (adding a recipient wraps the
+ * epoch key to it; escrow adds entries to old epochs), so that is not
+ * restricted. A first declaration of `epochs` on a marker that had none is
+ * likewise unrestricted (there is nothing to append to yet).
+ *
+ * @param options {object}
+ * @param [options.existing] {CollectionEncryption}   the persisted marker
+ * @param options.incoming {CollectionEncryption}   the validated request marker
+ * @returns {void}
+ */
+export function assertEncryptionEpochsTransition({
+  existing,
+  incoming
+}: {
+  existing?: CollectionEncryption
+  incoming: CollectionEncryption
+}): void {
+  const existingEpochs = existing?.epochs
+  if (existingEpochs === undefined || existingEpochs.length === 0) {
+    // No prior epochs: a first epoch declaration has nothing to append to.
+    return
+  }
+  const incomingIds = new Set((incoming.epochs ?? []).map(epoch => epoch.id))
+  // Append-only: no existing epoch id may vanish.
+  for (const epoch of existingEpochs) {
+    if (!incomingIds.has(epoch.id)) {
+      throw new InvalidRequestBodyError({
+        detail: `Collection "encryption.epochs" is append-only: epoch "${epoch.id}" may not be removed.`,
+        pointer: '#/encryption/epochs'
+      })
+    }
+  }
+  // `currentEpoch` never moves backwards: keep it, or repoint it to a
+  // newly-appended epoch id (one that did not exist before).
+  const existingIds = new Set(existingEpochs.map(epoch => epoch.id))
+  const { currentEpoch } = incoming
+  if (
+    currentEpoch !== existing?.currentEpoch &&
+    existingIds.has(currentEpoch as string)
+  ) {
+    throw new InvalidRequestBodyError({
+      detail: `Collection "encryption.currentEpoch" may not move back to the existing epoch "${currentEpoch}"; repoint it only to a newly appended epoch.`,
+      pointer: '#/encryption/currentEpoch'
+    })
+  }
+}
+
+/**
+ * Enforces the full `encryption`-marker transition rails against a persisted
+ * marker in one call: set-once immutability
+ * ({@link assertEncryptionTransition}) plus the key-epoch rails
+ * ({@link assertEncryptionEpochsTransition}). Unlike those two -- which require
+ * a supplied `incoming` -- this also accepts an absent one: a write whose
+ * description would CLEAR an existing marker is rejected with
+ * `encryption-immutable` (409), on the same terms as changing it. The request
+ * layer uses this twice per Update Collection: once against its own
+ * (pre-lock) read for a clean early rejection, and again as the
+ * `writeCollection` `assertTransition` callback, re-evaluated inside the
+ * backend's lock/transaction against the freshly re-read description -- so a
+ * concurrent marker write cannot be silently clobbered and the epoch
+ * append-only rail holds unconditionally, not just under `If-Match`.
+ *
+ * @param options {object}
+ * @param [options.existing] {CollectionEncryption}   the persisted marker
+ * @param [options.incoming] {CollectionEncryption}   the marker about to be
+ *   persisted (absent when the write would drop the marker entirely)
+ * @returns {void}
+ */
+export function assertEncryptionMarkerTransition({
+  existing,
+  incoming
+}: {
+  existing?: CollectionEncryption
+  incoming?: CollectionEncryption
+}): void {
+  if (existing === undefined) {
+    // Nothing persisted yet: a first declaration (or a plaintext Collection
+    // staying plaintext) has no rails to check.
+    return
+  }
+  if (incoming === undefined) {
+    throw new EncryptionImmutableError()
+  }
+  assertEncryptionTransition({ existing, incoming })
+  assertEncryptionEpochsTransition({ existing, incoming })
 }
 
 /**

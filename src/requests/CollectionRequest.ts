@@ -21,9 +21,10 @@ import {
 } from '../lib/backends.js'
 import {
   assertSupportedEncryption,
-  assertEncryptionTransition,
+  assertEncryptionMarkerTransition,
   assertEncryptedWriteConforms
 } from '../lib/encryption.js'
+import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import {
   collectionPath,
@@ -33,7 +34,7 @@ import {
   quotaPath,
   queryPath
 } from '../lib/paths.js'
-import { formatEtag } from '../lib/etag.js'
+import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
 import {
   InvalidCollectionError,
   InvalidRequestBodyError,
@@ -115,13 +116,22 @@ export class CollectionRequest {
       collectionDescription
     })
     const input = await resolveResourceInput(request, dataBackend)
+    // A content write into an encrypted Collection MAY declare the key epoch it
+    // encrypted under via the `WAS-Key-Epoch` header (the `key-epochs` feature);
+    // the server stores it opaquely and clears it when absent (the new
+    // ciphertext's epoch is unknown). Advisory, non-signature-covered metadata.
+    const { epoch } = parseKeyEpochHeader({
+      headers: request.headers,
+      requestName
+    })
     try {
       written = await dataBackend.writeResource({
         spaceId,
         collectionId,
         resourceId,
         input,
-        createdBy: invokerDid(request)
+        createdBy: invokerDid(request),
+        epoch
       })
       response = {
         id: resourceId,
@@ -232,11 +242,15 @@ export class CollectionRequest {
       spaceId,
       collectionId
     })
-    // The encryption marker is set-once: an update may declare one on a
-    // Collection that lacks it, but may not change/clear an existing one
-    // (`encryption-immutable` 409). Checked here, after verification.
+    // The encryption marker is set-once (an update may declare one on a
+    // Collection that lacks it, but may not change/clear an existing one --
+    // `encryption-immutable` 409), and the key-epoch safety rails (the
+    // `key-epochs` feature) make epochs append-only with a `currentEpoch` that
+    // never moves backwards; recipient churn within an epoch stays free.
+    // Checked here, after verification, for a clean early rejection --
+    // re-evaluated atomically with the write via `assertTransition` below.
     if (suppliedEncryption !== undefined) {
-      assertEncryptionTransition({
+      assertEncryptionMarkerTransition({
         existing: existingCollection?.encryption,
         incoming: suppliedEncryption
       })
@@ -267,12 +281,34 @@ export class CollectionRequest {
           })
         }
 
+    // `If-Match` (the `key-epochs` / conditional-Collection-write feature) makes
+    // a Collection Description update a compare-and-swap on its monotonic
+    // description version, so two clients concurrently editing the marker (e.g.
+    // both adding a recipient) cannot silently clobber one another. Opt-in: an
+    // unconditional PUT still upserts as before. Evaluated atomically with the
+    // write inside the backend; a stale validator surfaces as 412
+    // `precondition-failed` (rethrown unchanged).
+    const { ifMatch } = parseWritePreconditions(request.headers)
+    let written: { version: number }
     try {
-      await storage.writeCollection({
+      written = await storage.writeCollection({
         spaceId,
         collectionId,
         collectionDescription,
-        createdBy: invokerDid(request)
+        createdBy: invokerDid(request),
+        ...(ifMatch !== undefined && { ifMatch }),
+        // Re-evaluate the encryption-marker rails atomically with the write,
+        // against the prior the backend re-reads under its lock: the early
+        // check above ran against a pre-lock read, so without this a
+        // concurrent marker write in between could be silently clobbered (an
+        // appended epoch dropped by this full replacement) even though both
+        // writers passed the rails -- the append-only guarantee must hold
+        // unconditionally, not just under `If-Match`.
+        assertTransition: prior =>
+          assertEncryptionMarkerTransition({
+            existing: prior?.encryption,
+            incoming: collectionDescription.encryption
+          })
       })
     } catch (err) {
       // Rethrow a typed ProblemError from the data-plane backend unchanged
@@ -282,6 +318,9 @@ export class CollectionRequest {
     }
 
     reply.header('Location', collectionUrl)
+    // Surface the new description ETag so a client can chain a conditional
+    // update (read-modify-CAS on the marker).
+    reply.header('etag', formatEtag(written.version))
     return existingCollection
       ? reply.status(204).send() // update
       : reply.status(201).send(collectionDescription) // create
@@ -337,18 +376,25 @@ export class CollectionRequest {
     // the `backend` property existed (spec: an unset backend is `default`).
     const backend = collectionDescription.backend ?? { id: DEFAULT_BACKEND_ID }
 
-    return reply
-      .status(200)
-      .type('application/json')
-      .send(
-        JSON.stringify({
-          ...collectionDescription,
-          type: [...collectionDescription.type].sort(),
-          backend,
-          url,
-          linkset
-        } satisfies CollectionDescription)
-      )
+    // The description `version` is the out-of-band ETag validator, not part of
+    // the Collection Description wire body, so strip it before serializing and
+    // surface it as the `ETag` header (so a client can read-modify-CAS the
+    // marker). Present only once the Collection has been written under
+    // versioning; a legacy Collection reports none.
+    const { descriptionVersion, ...descriptionBody } = collectionDescription
+    const getReply = reply.status(200).type('application/json')
+    if (descriptionVersion !== undefined) {
+      getReply.header('etag', formatEtag(descriptionVersion))
+    }
+    return getReply.send(
+      JSON.stringify({
+        ...descriptionBody,
+        type: [...collectionDescription.type].sort(),
+        backend,
+        url,
+        linkset
+      } satisfies CollectionDescription)
+    )
   }
 
   /**
@@ -708,7 +754,10 @@ export class CollectionRequest {
       ...(doc.metaVersion !== undefined && { metaVersion: doc.metaVersion }),
       ...(doc.createdBy !== undefined && { createdBy: doc.createdBy }),
       ...(doc.data !== undefined && { data: doc.data }),
-      ...(doc.custom !== undefined && { custom: doc.custom })
+      ...(doc.custom !== undefined && { custom: doc.custom }),
+      // The client-declared key epoch (the `key-epochs` feature) rides the feed
+      // so a replicating reader picks the right epoch key without a `/meta` fetch.
+      ...(doc.epoch !== undefined && { epoch: doc.epoch })
     }))
 
     return reply

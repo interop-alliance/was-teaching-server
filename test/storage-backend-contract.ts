@@ -9,6 +9,7 @@ import { it, describe, beforeAll, afterAll, expect } from 'vitest'
 import assert from 'node:assert'
 import { Readable } from 'node:stream'
 import { formatEtag } from '../src/lib/etag.js'
+import { extractTarEntries } from '../src/lib/importTar.js'
 import {
   PreconditionFailedError,
   ResourceNotFoundError,
@@ -29,6 +30,7 @@ import type {
   KmsKeyRecord,
   RevocationRecord,
   ResourceInput,
+  CollectionDescription,
   IDID
 } from '../src/types.js'
 
@@ -1158,6 +1160,440 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         )
         assert.deepEqual(tomb2, tomb1)
       })
+    })
+
+    describe('key-epoch stamping and Collection Description versioning', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-epochs'
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId)
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('a content write stores the declared epoch; metadata read surfaces it', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'e1',
+          input: jsonInput({ v: 1 }),
+          epoch: 'urn:epoch:1'
+        })
+        const metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'e1'
+        })
+        assert.equal(metadata?.epoch, 'urn:epoch:1')
+      })
+
+      it('surfaces the epoch on listings and the changes feed', async () => {
+        const { backend } = harness
+        const listing = await backend.listCollectionItems({
+          spaceId,
+          collectionId: 'col'
+        })
+        const item = listing.items.find(entry => entry.id === 'e1')
+        assert.equal((item as { epoch?: string }).epoch, 'urn:epoch:1')
+        const feed = await backend.changesSince!({
+          spaceId,
+          collectionId: 'col',
+          limit: 100
+        })
+        const doc = feed.documents.find(entry => entry.resourceId === 'e1')
+        assert.equal((doc as { epoch?: string }).epoch, 'urn:epoch:1')
+      })
+
+      it('a content rewrite WITHOUT an epoch clears the stored stamp', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'e1',
+          input: jsonInput({ v: 2 })
+        })
+        const metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'e1'
+        })
+        assert.equal(metadata?.epoch, undefined)
+      })
+
+      it('a metadata write PRESERVES the epoch when omitted, replaces it when supplied', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'e2',
+          input: jsonInput({ v: 1 }),
+          epoch: 'urn:epoch:1'
+        })
+        // Metadata write with no epoch preserves it.
+        await backend.writeResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'e2',
+          custom: {}
+        })
+        let metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'e2'
+        })
+        assert.equal(metadata?.epoch, 'urn:epoch:1')
+        // Metadata write with an epoch replaces it.
+        await backend.writeResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'e2',
+          custom: {},
+          epoch: 'urn:epoch:2'
+        })
+        metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'e2'
+        })
+        assert.equal(metadata?.epoch, 'urn:epoch:2')
+      })
+
+      it('writeCollection returns a monotonic description version', async () => {
+        const { backend } = harness
+        // The Collection was created in `provisionSpace` (version 1); update it.
+        const first = await backend.writeCollection({
+          spaceId,
+          collectionId: 'col',
+          collectionDescription: {
+            id: 'col',
+            type: ['Collection'],
+            name: 'Renamed once'
+          }
+        })
+        const second = await backend.writeCollection({
+          spaceId,
+          collectionId: 'col',
+          collectionDescription: {
+            id: 'col',
+            type: ['Collection'],
+            name: 'Renamed twice'
+          }
+        })
+        assert.equal(second.version, first.version + 1)
+        const description = await backend.getCollectionDescription({
+          spaceId,
+          collectionId: 'col'
+        })
+        assert.equal(description?.descriptionVersion, second.version)
+      })
+
+      it('If-Match on the description compare-and-swaps (stale validator 412)', async () => {
+        const { backend } = harness
+        const current = await backend.getCollectionDescription({
+          spaceId,
+          collectionId: 'col'
+        })
+        const currentVersion = current!.descriptionVersion!
+        // A matching If-Match succeeds and bumps the version.
+        const ok = await backend.writeCollection({
+          spaceId,
+          collectionId: 'col',
+          collectionDescription: {
+            id: 'col',
+            type: ['Collection'],
+            name: 'CAS ok'
+          },
+          ifMatch: formatEtag(currentVersion)
+        })
+        assert.equal(ok.version, currentVersion + 1)
+        // The now-stale validator is rejected.
+        await expect(
+          backend.writeCollection({
+            spaceId,
+            collectionId: 'col',
+            collectionDescription: {
+              id: 'col',
+              type: ['Collection'],
+              name: 'CAS stale'
+            },
+            ifMatch: formatEtag(currentVersion)
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+      })
+
+      it('an unconditional writeCollection still upserts (no If-Match)', async () => {
+        const { backend } = harness
+        const before = await backend.getCollectionDescription({
+          spaceId,
+          collectionId: 'col'
+        })
+        const result = await backend.writeCollection({
+          spaceId,
+          collectionId: 'col',
+          collectionDescription: {
+            id: 'col',
+            type: ['Collection'],
+            name: 'Unconditional'
+          }
+        })
+        assert.equal(result.version, before!.descriptionVersion! + 1)
+      })
+
+      it('the epoch survives an export / import round trip', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'e-export',
+          input: jsonInput({ v: 1 }),
+          epoch: 'urn:epoch:7'
+        })
+        const archive = await backend.exportSpace({ spaceId })
+        const target = await makeBackend()
+        try {
+          await target.backend.writeSpace({
+            spaceId,
+            spaceDescription: {
+              id: spaceId,
+              type: ['Space'],
+              name: `Space ${spaceId}`,
+              controller: CONTROLLER
+            }
+          })
+          await target.backend.importSpace({ spaceId, tarStream: archive })
+          const metadata = await target.backend.getResourceMetadata({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'e-export'
+          })
+          assert.equal(metadata?.epoch, 'urn:epoch:7')
+        } finally {
+          await target.cleanup()
+        }
+      })
+    })
+
+    describe('Collection description write atomicity (key-epochs review fixes)', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-atomicity'
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId)
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('invokes assertTransition with undefined on a create', async () => {
+        const { backend } = harness
+        let seen: unknown = 'unset'
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'at-create',
+          collectionDescription: {
+            id: 'at-create',
+            type: ['Collection'],
+            name: 'Created'
+          },
+          assertTransition: prior => {
+            seen = prior
+          }
+        })
+        // A create has no prior description to re-read under the lock.
+        assert.equal(seen, undefined)
+      })
+
+      it('invokes assertTransition with the current description (and descriptionVersion) on an update', async () => {
+        const { backend } = harness
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'at-update',
+          collectionDescription: {
+            id: 'at-update',
+            type: ['Collection'],
+            name: 'First'
+          }
+        })
+        let seen:
+          (CollectionDescription & { descriptionVersion?: number }) | undefined
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'at-update',
+          collectionDescription: {
+            id: 'at-update',
+            type: ['Collection'],
+            name: 'Second'
+          },
+          assertTransition: prior => {
+            seen = prior
+          }
+        })
+        // The callback sees the freshly re-read current description, carrying
+        // the version it is about to supersede.
+        assert.equal(seen?.name, 'First')
+        assert.equal(seen?.descriptionVersion, 1)
+      })
+
+      it('a throwing assertTransition aborts the write (description and version unchanged)', async () => {
+        const { backend } = harness
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'at-abort',
+          collectionDescription: {
+            id: 'at-abort',
+            type: ['Collection'],
+            name: 'Keep'
+          }
+        })
+        const before = await backend.getCollectionDescription({
+          spaceId,
+          collectionId: 'at-abort'
+        })
+        class TransitionRejected extends Error {}
+        await expect(
+          backend.writeCollection({
+            spaceId,
+            collectionId: 'at-abort',
+            collectionDescription: {
+              id: 'at-abort',
+              type: ['Collection'],
+              name: 'Clobber'
+            },
+            assertTransition: () => {
+              throw new TransitionRejected('rail refused the transition')
+            }
+          })
+        ).rejects.toBeInstanceOf(TransitionRejected)
+        // The write was aborted inside the lock: nothing changed, no version bump.
+        const after = await backend.getCollectionDescription({
+          spaceId,
+          collectionId: 'at-abort'
+        })
+        assert.equal(after?.name, 'Keep')
+        assert.equal(after?.descriptionVersion, before?.descriptionVersion)
+      })
+
+      it('a first description write on a placeholder (policy-created) row returns version 1', async () => {
+        const { backend } = harness
+        // A policy write with no described Collection creates a placeholder row
+        // (description NULL). The first real description write must start at 1,
+        // identically on both backends (the Postgres off-by-one fix).
+        await backend.writePolicy({
+          spaceId,
+          collectionId: 'ph',
+          policy: { rules: [] } as never
+        })
+        const { version } = await backend.writeCollection({
+          spaceId,
+          collectionId: 'ph',
+          collectionDescription: {
+            id: 'ph',
+            type: ['Collection'],
+            name: 'Placeholder'
+          }
+        })
+        assert.equal(version, 1)
+        const description = await backend.getCollectionDescription({
+          spaceId,
+          collectionId: 'ph'
+        })
+        assert.equal(description?.descriptionVersion, 1)
+      })
+
+      it('does not persist a stale version member; the archive carries _version, not descriptionVersion', async () => {
+        const { backend } = harness
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'merge',
+          collectionDescription: {
+            id: 'merge',
+            type: ['Collection'],
+            name: 'V1'
+          }
+        })
+        // Simulate the request handler's read-merge-write: the read attaches an
+        // out-of-band `descriptionVersion`, which the handler spreads back into
+        // the next write. Neither version member may leak into the stored body.
+        const read = await backend.getCollectionDescription({
+          spaceId,
+          collectionId: 'merge'
+        })
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'merge',
+          collectionDescription: { ...read!, name: 'V2' }
+        })
+        const after = await backend.getCollectionDescription({
+          spaceId,
+          collectionId: 'merge'
+        })
+        assert.equal(after?.descriptionVersion, 2)
+        assert.ok(!Object.prototype.hasOwnProperty.call(after, '_version'))
+
+        // The archived `.collection.` body carries the internal `_version`
+        // interchange token and never the out-of-band `descriptionVersion` --
+        // identical members on both backends (the Postgres jsonb-strip fix).
+        const entries = await extractTarEntries(
+          await backend.exportSpace({ spaceId })
+        )
+        const entry = [...entries].find(([entryName]) =>
+          entryName.endsWith('.collection.merge.json')
+        )
+        assert.ok(entry, 'expected an archived .collection.merge.json entry')
+        const body = JSON.parse(entry![1].body!.toString('utf8'))
+        assert.equal(body._version, 2)
+        assert.ok(
+          !Object.prototype.hasOwnProperty.call(body, 'descriptionVersion')
+        )
+      })
+
+      // The transactional space-row lock guarantee: two concurrent creates of
+      // different new Collections must not both slip past the count quota. Only
+      // the transactional (Postgres) accounting passes this strictly -- the
+      // filesystem's documented soft limit skips it.
+      it.runIf(hardQuota)(
+        'serializes concurrent creates against maxCollectionsPerSpace',
+        async () => {
+          const quotaHarness = await makeBackend({ maxCollectionsPerSpace: 2 })
+          try {
+            // provisionSpace writes the Space plus one Collection ('col'); the
+            // cap is 2, so exactly one of two new creates may win.
+            await provisionSpace(quotaHarness.backend, 'cc-quota')
+            const attempts = await Promise.allSettled(
+              ['new-a', 'new-b'].map(collectionId =>
+                quotaHarness.backend.writeCollection({
+                  spaceId: 'cc-quota',
+                  collectionId,
+                  collectionDescription: {
+                    id: collectionId,
+                    type: ['Collection'],
+                    name: collectionId
+                  }
+                })
+              )
+            )
+            const accepted = attempts.filter(
+              attempt => attempt.status === 'fulfilled'
+            )
+            const rejected = attempts.filter(
+              attempt =>
+                attempt.status === 'rejected' &&
+                attempt.reason instanceof CountQuotaExceededError
+            )
+            assert.equal(accepted.length, 1)
+            assert.equal(rejected.length, 1)
+            const collections = await quotaHarness.backend.listCollections({
+              spaceId: 'cc-quota'
+            })
+            assert.equal(collections.length, 2)
+          } finally {
+            await quotaHarness.cleanup()
+          }
+        }
+      )
     })
 
     describe('pagination', () => {
@@ -2795,7 +3231,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           await provisionSpace(target.backend, spaceId)
           await target.backend.importSpace({ spaceId, tarStream })
           assert.equal(
-            await target.backend.isRevoked({ scope: { spaceId }, capabilities }),
+            await target.backend.isRevoked({
+              scope: { spaceId },
+              capabilities
+            }),
             true
           )
           assert.equal(
@@ -2818,7 +3257,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             tarStream: await source.backend.exportSpace({ spaceId })
           })
           assert.equal(
-            await target.backend.isRevoked({ scope: { spaceId }, capabilities }),
+            await target.backend.isRevoked({
+              scope: { spaceId },
+              capabilities
+            }),
             true
           )
         } finally {

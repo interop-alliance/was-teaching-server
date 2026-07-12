@@ -83,8 +83,6 @@ export type {
 // Re-export the shared WAS wire model from `@interop/storage-core`.
 export type {
   SpaceDescription,
-  CollectionDescription,
-  CollectionEncryption,
   BackendReference,
   SpaceSummary,
   SpaceListing,
@@ -92,6 +90,10 @@ export type {
   CollectionsList,
   ResourceSummary,
   CollectionResourcesList,
+  CollectionDescription,
+  CollectionEncryption,
+  CollectionEncryptionEpoch,
+  CollectionEncryptionRecipient,
   ResourceMetadata,
   ResourceMetadataCustom,
   BackendDescriptor,
@@ -277,8 +279,9 @@ export interface RecordKek {
 }
 
 /**
- * The at-rest key-record KEK registry (config `KMS_RECORD_KEK`): every KEK
- * available to UNWRAP a record (keyed by `RecordKek.id`) plus `currentKekId`,
+ * The at-rest key-record KEK registry (config `KMS_RECORD_KEK` /
+ * `KMS_RECORD_KEKS` / `KMS_RECORD_CURRENT_KEK`): every KEK available to UNWRAP a
+ * record (keyed by `RecordKek.id`) plus `currentKekId`,
  * the KEK that WRAPS new records. `currentKekId: null` disables encryption --
  * new records are written plaintext -- while previously registered KEKs stay
  * available for decrypt. Rotation is a config change (register a new KEK, repoint
@@ -520,8 +523,15 @@ export interface StorageBackend {
   }): Promise<ImportStats>
 
   /**
-   * Writes a Collection Description (full replacement). `createdBy` is
-   * server-managed on the same terms as `writeSpace`'s.
+   * Writes a Collection Description (full replacement), bumping its monotonic
+   * description `version` (the `ETag` validator behind conditional Collection
+   * writes; the `key-epochs` feature) and returning the new version. `createdBy`
+   * is server-managed on the same terms as `writeSpace`'s. When `ifMatch` is
+   * supplied it is evaluated atomically with the write: the current description
+   * ETag must equal it (an update-if-unchanged compare-and-swap that keeps two
+   * concurrent recipient edits from clobbering one another), else
+   * `precondition-failed` (412). The version travels only as the `ETag` header
+   * -- it is kept OUT of the stored/wire Collection Description body.
    */
   writeCollection(options: {
     spaceId: string
@@ -529,11 +539,31 @@ export interface StorageBackend {
     collectionDescription: CollectionDescription
     /** DID of the invoker; recorded as `createdBy` on first write only */
     createdBy?: IDID
-  }): Promise<void>
+    ifMatch?: string
+    /**
+     * Invoked atomically with the write (inside the backend's per-Collection
+     * lock / row-locking transaction) against the freshly re-read current
+     * description (`undefined` on a create); throwing aborts the write. Carries
+     * the request layer's state-transition rails -- e.g. the epoch append-only
+     * check -- which are otherwise evaluated against a pre-lock read and could
+     * miss a concurrent write.
+     */
+    assertTransition?: (
+      prior?: CollectionDescription & { descriptionVersion?: number }
+    ) => void
+  }): Promise<{ version: number }>
+  /**
+   * Reads a Collection Description. Resolves falsy when the Collection does not
+   * exist. `descriptionVersion` is the out-of-band `ETag` validator (the handler
+   * strips it from the wire body and sets it as the `ETag` header); absent for a
+   * legacy Collection written before description versioning.
+   */
   getCollectionDescription(options: {
     spaceId: string
     collectionId: string
-  }): Promise<CollectionDescription | undefined>
+  }): Promise<
+    (CollectionDescription & { descriptionVersion?: number }) | undefined
+  >
   deleteCollection(options: {
     spaceId: string
     collectionId: string
@@ -593,6 +623,14 @@ export interface StorageBackend {
      * direct backend call), in which case no `createdBy` is recorded.
      */
     createdBy?: IDID
+    /**
+     * The client-declared key epoch this content was encrypted under (the
+     * `key-epochs` feature). Stored opaquely on the Resource's metadata and
+     * returned by reads; a content write with no epoch CLEARS any stored stamp
+     * (the new ciphertext's epoch is unknown). The server never computes or
+     * verifies it.
+     */
+    epoch?: string
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ version: number }>
@@ -645,6 +683,13 @@ export interface StorageBackend {
     collectionId: string
     resourceId: string
     custom: ResourceMetadataCustom | Record<string, unknown>
+    /**
+     * The client-declared key epoch (the `key-epochs` feature), a sibling of
+     * `custom`. Unlike `custom` (full replacement), an OMITTED `epoch`
+     * PRESERVES the stored value -- the stamp describes the content write, not
+     * the metadata write -- while a supplied value replaces it. Stored opaquely.
+     */
+    epoch?: string
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ metaVersion: number } | undefined>
@@ -695,6 +740,12 @@ export interface StorageBackend {
       // Omitted when unset, never `null`: the handler projects this straight
       // onto the wire `ChangeDocument.custom`, which admits no null.
       custom?: ResourceMetadataCustom | Record<string, unknown>
+      /**
+       * The client-declared key epoch the Resource was encrypted under (the
+       * `key-epochs` feature), when one was stamped. Rides the feed so a
+       * replicating reader picks the right epoch key without a `/meta` fetch.
+       */
+      epoch?: string
     }>
     checkpoint: { id: string; updatedAt: string } | null
   }>
@@ -919,8 +970,9 @@ declare module 'fastify' {
      */
     enabledBackendProviders?: string[]
     /**
-     * The at-rest key-record encryption registry (config `KMS_RECORD_KEK`): the
-     * KEK(s) available to unwrap stored WebKMS key records plus the
+     * The at-rest key-record encryption registry (config `KMS_RECORD_KEK` /
+     * `KMS_RECORD_KEKS` / `KMS_RECORD_CURRENT_KEK`): the KEK(s) available to
+     * unwrap stored WebKMS key records plus the
      * `currentKekId` selecting the one that wraps NEW records. `undefined` (or
      * `currentKekId: null`) means encryption is disabled -- records are written
      * plaintext (the teaching default). Read at the KMS orchestration seam

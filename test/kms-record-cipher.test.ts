@@ -20,7 +20,7 @@ import {
   recordKekLoader,
   PLAINTEXT_KEY_FIELDS
 } from '../src/lib/kmsRecordCipher.js'
-import { parseKmsRecordKek } from '../src/config.default.js'
+import { parseKmsRecordKekRegistry } from '../src/config.default.js'
 import type { KmsKeyRecord, RecordKek } from '../src/types.js'
 
 /** A base58btc Multikey `secretKeyMultibase` for a raw 32-byte AES-256 key. */
@@ -268,20 +268,132 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
     })
   })
 
-  describe('parseKmsRecordKek (config)', () => {
-    it('returns undefined when unset or empty (encryption disabled)', () => {
-      assert.equal(parseKmsRecordKek(undefined), undefined)
-      assert.equal(parseKmsRecordKek(''), undefined)
-      assert.equal(parseKmsRecordKek('   '), undefined)
+  describe('parseKmsRecordKekRegistry (config)', () => {
+    it('returns undefined when all vars are unset or empty (disabled)', () => {
+      assert.equal(parseKmsRecordKekRegistry({}), undefined)
+      assert.equal(
+        parseKmsRecordKekRegistry({ kek: '', keks: '   ' }),
+        undefined
+      )
     })
 
-    it('builds a single-KEK registry with currentKekId set', () => {
+    it('builds a single-KEK registry from KMS_RECORD_KEK (the alias)', () => {
       const raw = randomBytes(32)
-      const registry = parseKmsRecordKek(kekMultibase(raw))
+      const registry = parseKmsRecordKekRegistry({ kek: kekMultibase(raw) })
       assert.ok(registry)
       assert.equal(registry!.currentKekId, deriveKekId(raw))
       assert.equal(registry!.keks.size, 1)
       assert.ok(registry!.keks.get(deriveKekId(raw))!.key.equals(raw))
+    })
+
+    it('registers KMS_RECORD_KEKS with the first entry current', () => {
+      const raw1 = randomBytes(32)
+      const raw2 = randomBytes(32)
+      const registry = parseKmsRecordKekRegistry({
+        keks: `${kekMultibase(raw1)}, ${kekMultibase(raw2)}`
+      })
+      assert.ok(registry)
+      assert.equal(registry!.keks.size, 2)
+      assert.ok(registry!.keks.has(deriveKekId(raw1)))
+      assert.ok(registry!.keks.has(deriveKekId(raw2)))
+      // The first entry is the default current KEK.
+      assert.equal(registry!.currentKekId, deriveKekId(raw1))
+    })
+
+    it('ignores whitespace and empty entries; single entry == alias', () => {
+      const raw = randomBytes(32)
+      const registry = parseKmsRecordKekRegistry({
+        keks: ` , ${kekMultibase(raw)} ,  ,`
+      })
+      assert.ok(registry)
+      assert.equal(registry!.keks.size, 1)
+      assert.equal(registry!.currentKekId, deriveKekId(raw))
+    })
+
+    it('KMS_RECORD_CURRENT_KEK as a kekId URN selects the second entry', () => {
+      const raw1 = randomBytes(32)
+      const raw2 = randomBytes(32)
+      const registry = parseKmsRecordKekRegistry({
+        keks: `${kekMultibase(raw1)},${kekMultibase(raw2)}`,
+        currentKek: deriveKekId(raw2)
+      })
+      assert.ok(registry)
+      assert.equal(registry!.currentKekId, deriveKekId(raw2))
+    })
+
+    it('KMS_RECORD_CURRENT_KEK as a multibase value selects that KEK', () => {
+      const raw1 = randomBytes(32)
+      const raw2 = randomBytes(32)
+      const registry = parseKmsRecordKekRegistry({
+        keks: `${kekMultibase(raw1)},${kekMultibase(raw2)}`,
+        currentKek: kekMultibase(raw2)
+      })
+      assert.ok(registry)
+      assert.equal(registry!.currentKekId, deriveKekId(raw2))
+    })
+
+    it('KMS_RECORD_CURRENT_KEK=none sets currentKekId null (decrypt-only)', () => {
+      const raw = randomBytes(32)
+      const registry = parseKmsRecordKekRegistry({
+        kek: kekMultibase(raw),
+        currentKek: '  NONE  '
+      })
+      assert.ok(registry)
+      assert.equal(registry!.currentKekId, null)
+      // The KEK stays registered for unwrap.
+      assert.equal(registry!.keks.size, 1)
+      assert.ok(registry!.keks.has(deriveKekId(raw)))
+    })
+
+    it('throws when both KMS_RECORD_KEK and KMS_RECORD_KEKS are set', () => {
+      assert.throws(
+        () =>
+          parseKmsRecordKekRegistry({
+            kek: kekMultibase(randomBytes(32)),
+            keks: kekMultibase(randomBytes(32))
+          }),
+        /only one of KMS_RECORD_KEK or KMS_RECORD_KEKS/
+      )
+    })
+
+    it('throws when KMS_RECORD_CURRENT_KEK names an unregistered KEK', () => {
+      assert.throws(
+        () =>
+          parseKmsRecordKekRegistry({
+            keks: kekMultibase(randomBytes(32)),
+            currentKek: deriveKekId(randomBytes(32))
+          }),
+        /KMS_RECORD_CURRENT_KEK names a KEK that is not registered/
+      )
+    })
+
+    it('throws when KMS_RECORD_CURRENT_KEK is set with no KEKs', () => {
+      assert.throws(
+        () => parseKmsRecordKekRegistry({ currentKek: 'none' }),
+        /KMS_RECORD_CURRENT_KEK is set but no KEK is configured/
+      )
+    })
+
+    it('throws on a duplicate KMS_RECORD_KEKS entry', () => {
+      const dup = kekMultibase(randomBytes(32))
+      assert.throws(
+        () => parseKmsRecordKekRegistry({ keks: `${dup},${dup}` }),
+        /KMS_RECORD_KEKS entry 2 duplicates an earlier KEK/
+      )
+    })
+
+    it('names the list entry position on a malformed KEK, not the secret', () => {
+      const good = kekMultibase(randomBytes(32))
+      let caught: Error | undefined
+      try {
+        parseKmsRecordKekRegistry({ keks: `${good}, not-a-valid-kek!` })
+      } catch (err) {
+        caught = err as Error
+      }
+      assert.ok(caught)
+      assert.match(caught!.message, /KMS_RECORD_KEKS entry 2/)
+      // The secret material of the first (valid) entry never appears.
+      assert.ok(!caught!.message.includes(good))
     })
   })
 })

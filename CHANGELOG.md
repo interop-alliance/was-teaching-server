@@ -27,6 +27,54 @@
   destination Space's scope -- so an export/import round-trip (backup/restore,
   backend migration) does not resurrect a revoked capability. Archives from
   servers that predate this carry none and import as before.
+- **Multi-recipient encrypted Collections and key epochs.** An encrypted
+  Collection's `encryption` marker may now carry per-epoch wrapped collection
+  keys -- `epochs` (each an `{ id, recipients }`, where a recipient is the JWE
+  recipients-entry shape: a `header` with `kid` / `alg` plus a wrapped
+  `encrypted_key`) and a `currentEpoch`. Each app holds its own key-agreement
+  key and gets the epoch key wrapped to it, so adding a reader wraps the current
+  key to it and removing one appends a fresh epoch that excludes it. The server
+  never holds a key: it validates only the marker's shape (recipients are
+  well-formed, `currentEpoch` names an epoch that exists) and enforces two
+  safety rails on update -- `epochs` is append-only and `currentEpoch` never
+  moves backwards -- rejecting a violation with `invalid-request-body` (400).
+  Recipient churn within an epoch stays a free update (the set-once check is
+  still scheme-only).
+- A Resource may declare the key epoch its content was encrypted under, so a
+  reader picks the right key before attempting decryption: a `WAS-Key-Epoch`
+  request header on a content write (working uniformly for JSON, raw-stream, and
+  multipart writes), or a top-level `epoch` member on a `PUT .../meta` body. The
+  value is advisory client-declared metadata -- the server stores it opaquely,
+  never computing or verifying it, and requires only that a present value be a
+  non-empty string (400 otherwise). A content write stores the header's value
+  and clears the stamp when absent (the new ciphertext's epoch is unknown); a
+  metadata write preserves the stored value unless the body supplies a new one.
+  The stamp is returned by `GET .../meta`, rides each List Collection item and
+  each `changes`-feed document, and survives a Space export/import round-trip,
+  on both backends.
+- **Conditional Collection Description writes.**
+  `PUT /space/:spaceId/:collectionId` now honors an `If-Match` precondition
+  against the Collection Description's monotonic version, evaluated atomically
+  with the write (a stale validator is `precondition-failed`, 412), and every
+  create/update surfaces the new version as an `ETag` header -- as does `GET` of
+  the Collection. This gives recipient edits a compare-and-swap so two clients
+  concurrently changing the marker cannot silently clobber one another; an
+  unconditional `PUT` still works exactly as before. Both backends advertise the
+  `key-epochs` feature token.
+- **Multi-KEK registration for at-rest key-record encryption.** An operator can
+  now register more than one key-encryption key (KEK) for the WebKMS key-record
+  cipher, so a rotation adds a new KEK while keeping the old one available to
+  decrypt records already written under it. Two new env variables join the
+  existing `KMS_RECORD_KEK` (which stays the single-KEK alias):
+  `KMS_RECORD_KEKS` takes a comma-separated list of AES-256 Multikey KEKs -- the
+  first entry is the current KEK by default, so a rotation is "prepend the new
+  KEK, keep the old one behind it"; `KMS_RECORD_CURRENT_KEK` optionally names
+  which registered KEK wraps new records (a `urn:kek:sha256:` id, a multibase
+  value, or the literal `none`). `none` selects a decrypt-only posture: existing
+  encrypted records still read, but new key records are written plaintext -- the
+  path for winding encryption back down. Malformed or ambiguous configuration
+  (both single and list forms set, a current-KEK reference that matches nothing,
+  a duplicate list entry) fails fast at startup without echoing any secret.
 
 ### Changed
 

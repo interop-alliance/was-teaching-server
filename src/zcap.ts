@@ -213,8 +213,7 @@ export async function handleZcapVerify({
   allowTargetAttenuation?: boolean
   attenuatedRootTarget?: string
   revocation:
-    | { storage: StorageBackend; scope: RevocationScope }
-    | 'no-revocation-scope'
+    { storage: StorageBackend; scope: RevocationScope } | 'no-revocation-scope'
   maxChainLength?: number
   maxDelegationTtl?: number
 }): Promise<VerifyCapabilityInvocationResult> {

@@ -6,6 +6,8 @@
  */
 import { it, describe } from 'vitest'
 import assert from 'node:assert'
+import { randomBytes } from 'node:crypto'
+import { IdEncoder } from '@digitalcredentials/bnid'
 
 import {
   DEFAULT_PORT,
@@ -16,7 +18,14 @@ import {
   parseServerUrl,
   parseStorageLimit
 } from '../src/config.default.js'
+import { deriveKekId } from '../src/lib/kmsRecordCipher.js'
 import { createApp } from '../src/server.js'
+
+/** A base58btc Multikey `secretKeyMultibase` for a raw 32-byte AES-256 key. */
+function kekMultibase(key: Buffer): string {
+  const bytes = Buffer.concat([Buffer.from([0xa2, 0x01]), key])
+  return new IdEncoder({ encoding: 'base58', multibase: true }).encode(bytes)
+}
 
 describe('parseServerUrl', () => {
   it('requires SERVER_URL (unset, empty, and whitespace-only all throw)', () => {
@@ -186,6 +195,56 @@ describe('loadConfigFromEnv', () => {
           STORAGE_LIMIT_PER_SPACE: 'lots'
         }),
       /STORAGE_LIMIT_PER_SPACE/
+    )
+  })
+})
+
+describe('loadConfigFromEnv (KMS record KEK vars)', () => {
+  it('builds a registry from the KMS_RECORD_KEK alias', () => {
+    const raw = randomBytes(32)
+    const config = loadConfigFromEnv({
+      SERVER_URL: 'http://localhost:3002',
+      KMS_RECORD_KEK: kekMultibase(raw)
+    })
+    assert.ok(config.kmsRecordKek)
+    assert.equal(config.kmsRecordKek!.keks.size, 1)
+    assert.equal(config.kmsRecordKek!.currentKekId, deriveKekId(raw))
+  })
+
+  it('registers KMS_RECORD_KEKS with KMS_RECORD_CURRENT_KEK override', () => {
+    const raw1 = randomBytes(32)
+    const raw2 = randomBytes(32)
+    const config = loadConfigFromEnv({
+      SERVER_URL: 'http://localhost:3002',
+      KMS_RECORD_KEKS: `${kekMultibase(raw1)}, ${kekMultibase(raw2)}`,
+      KMS_RECORD_CURRENT_KEK: deriveKekId(raw2)
+    })
+    assert.ok(config.kmsRecordKek)
+    assert.equal(config.kmsRecordKek!.keks.size, 2)
+    assert.equal(config.kmsRecordKek!.currentKekId, deriveKekId(raw2))
+  })
+
+  it('supports the decrypt-only posture (KMS_RECORD_CURRENT_KEK=none)', () => {
+    const raw = randomBytes(32)
+    const config = loadConfigFromEnv({
+      SERVER_URL: 'http://localhost:3002',
+      KMS_RECORD_KEK: kekMultibase(raw),
+      KMS_RECORD_CURRENT_KEK: 'none'
+    })
+    assert.ok(config.kmsRecordKek)
+    assert.equal(config.kmsRecordKek!.currentKekId, null)
+    assert.equal(config.kmsRecordKek!.keks.size, 1)
+  })
+
+  it('fails fast when both KMS_RECORD_KEK and KMS_RECORD_KEKS are set', () => {
+    assert.throws(
+      () =>
+        loadConfigFromEnv({
+          SERVER_URL: 'http://localhost:3002',
+          KMS_RECORD_KEK: kekMultibase(randomBytes(32)),
+          KMS_RECORD_KEKS: kekMultibase(randomBytes(32))
+        }),
+      /only one of KMS_RECORD_KEK or KMS_RECORD_KEKS/
     )
   })
 })

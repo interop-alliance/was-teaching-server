@@ -54,6 +54,7 @@ import { buildExportManifest } from '../lib/exportManifest.js'
 import { revocationFileName } from '../lib/revocations.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
 import { isJson } from '../lib/isJson.js'
+import { normalizeDescriptionWrite } from '../lib/collectionDescription.js'
 import {
   atomicWriteFile,
   atomicCreateFile,
@@ -72,7 +73,8 @@ import type {
 } from '../lib/blindedIndex.js'
 import {
   assertWritePrecondition,
-  assertMetaWritePrecondition
+  assertMetaWritePrecondition,
+  assertCollectionWritePrecondition
 } from '../lib/preconditions.js'
 import type {
   SpaceDescription,
@@ -167,6 +169,12 @@ interface MetaSidecar {
   // Collection it is the opaque encryption envelope (an arbitrary JSON object),
   // stored verbatim -- the server never decrypts it.
   custom?: ResourceMetadataCustom | Record<string, unknown>
+  // The client-declared key epoch the current content was encrypted under (the
+  // `key-epochs` feature). Stored opaquely: a content write sets it from the
+  // `WAS-Key-Epoch` header (clearing it when absent -- the new ciphertext's
+  // epoch is unknown), while a metadata write PRESERVES it unless the `/meta`
+  // body supplies a new value. The server never computes or verifies it.
+  epoch?: string
   deleted?: boolean
   contentType?: string
 }
@@ -385,7 +393,15 @@ export class FileSystemBackend implements StorageBackend {
       // endpoint -- the replication change feed (`changesSince`).
       // `blinded-index-query`: serves the `blinded-index` profile -- EDV
       // blinded-attribute queries (`queryByBlindedIndex`).
-      features: ['conditional-writes', 'changes-query', 'blinded-index-query']
+      // `key-epochs`: multi-recipient encrypted Collections -- per-epoch wrapped
+      // keys on the `encryption` marker, a client-declared `epoch` stamp on
+      // Resources, and conditional (`If-Match`) Collection Description writes.
+      features: [
+        'conditional-writes',
+        'changes-query',
+        'blinded-index-query',
+        'key-epochs'
+      ]
     }
   }
 
@@ -1463,56 +1479,118 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.collectionDescription {CollectionDescription}
    * @param [options.createdBy] {string}   DID of the invoker, recorded as the
    *   Collection's `createdBy` on first write only
-   * @returns {Promise<void>} Resolved value is implementation-defined and ignored.
+   * @param [options.ifMatch] {string}   an `If-Match` compare-and-swap on the
+   *   current description version (the `key-epochs` feature); a stale validator
+   *   throws `PreconditionFailedError` (412)
+   * @returns {Promise<{ version: number }>}   the Collection's new description
+   *   version (the `ETag` validator)
    */
   async writeCollection({
     spaceId,
     collectionId,
     collectionDescription,
-    createdBy
+    createdBy,
+    ifMatch,
+    assertTransition
   }: {
     spaceId: string
     collectionId: string
     collectionDescription: CollectionDescription
     createdBy?: IDID
-  }): Promise<void> {
-    // Prior description, read once and reused below: for the create-path quota
-    // check (a new Collection has none yet) and to resolve `createdBy`.
-    const prior = await this.getCollectionDescription({
-      spaceId,
-      collectionId
-    })
-
-    // Count quota (create path only): a new Collection must not push its Space
-    // past `maxCollectionsPerSpace`; overwriting an existing Collection's
-    // description never trips it.
-    if (this.maxCollectionsPerSpace !== undefined && !prior) {
-      const collections = await this.listCollections({ spaceId })
-      if (collections.length >= this.maxCollectionsPerSpace) {
-        throw new CountQuotaExceededError({
-          scope: 'Collections per Space',
-          limit: this.maxCollectionsPerSpace
+    ifMatch?: string
+    assertTransition?: (
+      prior?: CollectionDescription & { descriptionVersion?: number }
+    ) => void
+  }): Promise<{ version: number }> {
+    // Serialize the read-check-write under a per-Collection-description lock so
+    // the `If-Match` compare-and-swap and the monotonic version bump are atomic
+    // with the write (two concurrent recipient edits cannot clobber one
+    // another). A distinct lock namespace from the per-Resource / unique-scan
+    // locks: a description write and a Resource write touch different files.
+    return this._writeMutex.run(
+      this._collectionDescLockKey({ spaceId, collectionId }),
+      async () => {
+        // Prior description, read once and reused below: for the create-path
+        // quota check, `createdBy` resolution, and the CAS version.
+        const prior = await this.getCollectionDescription({
+          spaceId,
+          collectionId
         })
-      }
-    }
 
-    // `createdBy` names the Collection's creator, not its last writer: taken
-    // from this write's invoker only when this write CREATES the description,
-    // and preserved verbatim afterward -- including preserved-as-absent. The
-    // client-supplied `collectionDescription` is wire input and may carry its
-    // own `createdBy` -- discard it, since the server alone is authoritative
-    // for this field.
-    const { createdBy: _suppliedCreatedBy, ...rest } = collectionDescription
-    const creator = prior ? prior.createdBy : createdBy
+        // Compare-and-swap on the current description version (opt-in): a stale
+        // `If-Match` throws 412. An unconditional write skips this.
+        assertCollectionWritePrecondition({
+          collectionId,
+          currentVersion: prior?.descriptionVersion ?? 0,
+          ifMatch
+        })
 
-    await this._persistCollection({
-      spaceId,
-      collectionId,
-      collectionDescription: {
-        ...rest,
-        ...(creator !== undefined && { createdBy: creator })
+        // The request layer's state-transition rails (e.g. epoch append-only),
+        // re-evaluated here against the description just read under the lock.
+        assertTransition?.(prior)
+
+        // Count quota (create path only): a new Collection must not push its
+        // Space past `maxCollectionsPerSpace`; overwriting an existing
+        // Collection's description never trips it.
+        if (this.maxCollectionsPerSpace !== undefined && !prior) {
+          const collections = await this.listCollections({ spaceId })
+          if (collections.length >= this.maxCollectionsPerSpace) {
+            throw new CountQuotaExceededError({
+              scope: 'Collections per Space',
+              limit: this.maxCollectionsPerSpace
+            })
+          }
+        }
+
+        // `createdBy` names the Collection's creator, not its last writer: taken
+        // from this write's invoker only when this write CREATES the
+        // description, and preserved verbatim afterward -- including
+        // preserved-as-absent. The client-supplied `collectionDescription` is
+        // wire input and may carry its own `createdBy` (and the out-of-band
+        // `descriptionVersion` when a caller spread a read result back in) --
+        // discard both, since the server alone is authoritative for them.
+        const {
+          createdBy: _suppliedCreatedBy,
+          descriptionVersion: _suppliedVersion,
+          ...rest
+        } = collectionDescription as CollectionDescription & {
+          descriptionVersion?: number
+        }
+        const creator = prior ? prior.createdBy : createdBy
+        const version = (prior?.descriptionVersion ?? 0) + 1
+
+        await this._persistCollection({
+          spaceId,
+          collectionId,
+          collectionDescription: {
+            ...rest,
+            ...(creator !== undefined && { createdBy: creator })
+          },
+          descriptionVersion: version
+        })
+        return { version }
       }
-    })
+    )
+  }
+
+  /**
+   * Builds the per-Collection-description serialization key for `_writeMutex`
+   * (`desc:<spaceId>/<collectionId>`), so a Collection Description compare-and-
+   * swap serializes with itself while staying disjoint from the per-Resource and
+   * unique-scan lock namespaces.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {string}
+   */
+  _collectionDescLockKey({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): string {
+    return `desc:${spaceId}/${collectionId}`
   }
 
   /**
@@ -1525,25 +1603,42 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.collectionDescription {CollectionDescription}
+   * @param [options.descriptionVersion] {number}   the monotonic description
+   *   version to persist (the `ETag` validator; the `key-epochs` feature). Kept
+   *   OUT of the wire body -- stored under a reserved `_version` member that
+   *   `getCollectionDescription` strips and re-surfaces as `descriptionVersion`.
+   *   When omitted (the import path), a `_version` already on the incoming
+   *   description is preserved, else it defaults to `1`.
    * @returns {Promise<void>}
    */
   async _persistCollection({
     spaceId,
     collectionId,
-    collectionDescription
+    collectionDescription,
+    descriptionVersion
   }: {
     spaceId: string
     collectionId: string
     collectionDescription: CollectionDescription
+    descriptionVersion?: number
   }): Promise<void> {
     const collectionDir = await this._ensureCollectionDir({
       spaceId,
       collectionId
     })
     const filename = `.collection.${collectionId}.json`
+    // Shared normalization (lib/collectionDescription.ts): strip the
+    // version-bearing members from the incoming body and re-stamp -- an
+    // explicit `descriptionVersion` wins, else a `_version` already on the
+    // incoming (imported) description is kept, else the first write starts
+    // at 1.
+    const { body, version } = normalizeDescriptionWrite({
+      collectionDescription,
+      descriptionVersion
+    })
     await atomicWriteFile({
       filePath: path.join(collectionDir, filename),
-      data: JSON.stringify(collectionDescription)
+      data: JSON.stringify({ ...body, _version: version })
     })
   }
 
@@ -1560,13 +1655,28 @@ export class FileSystemBackend implements StorageBackend {
   }: {
     spaceId: string
     collectionId: string
-  }): Promise<CollectionDescription | undefined> {
+  }): Promise<
+    (CollectionDescription & { descriptionVersion?: number }) | undefined
+  > {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
     const filename = `.collection.${collectionId}.json`
-    const metaStore = new MetadataJsonStore<CollectionDescription>({
+    const metaStore = new MetadataJsonStore<
+      CollectionDescription & { _version?: number }
+    >({
       file: path.join(collectionDir, filename)
     })
-    return await metaStore.read()
+    const raw = await metaStore.read()
+    if (!raw) {
+      return undefined
+    }
+    // `_version` is the internal ETag validator, kept out of the wire body:
+    // strip it and re-surface it out-of-band as `descriptionVersion` (the
+    // handler sets the `ETag` header from it). Absent for a legacy Collection.
+    const { _version, ...description } = raw
+    return {
+      ...description,
+      ...(_version !== undefined && { descriptionVersion: _version })
+    }
   }
 
   /**
@@ -1701,7 +1811,11 @@ export class FileSystemBackend implements StorageBackend {
           id: resourceId,
           url: resourcePath({ spaceId, collectionId, resourceId }),
           contentType,
-          ...(name !== undefined && { name })
+          ...(name !== undefined && { name }),
+          // The client-declared key epoch (the `key-epochs` feature) rides each
+          // listing item so a reader can pick the right epoch key without a
+          // `/meta` fetch per Resource.
+          ...(sidecar?.epoch !== undefined && { epoch: sidecar.epoch })
         }
       })
     )
@@ -1766,6 +1880,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId,
     input,
     createdBy,
+    epoch,
     ifMatch,
     ifNoneMatch
   }: {
@@ -1774,6 +1889,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     input: ResourceInput
     createdBy?: IDID
+    epoch?: string
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ version: number }> {
@@ -1791,6 +1907,7 @@ export class FileSystemBackend implements StorageBackend {
           resourceId,
           input,
           createdBy,
+          epoch,
           ifMatch,
           ifNoneMatch
         })
@@ -1840,6 +1957,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId,
     input,
     createdBy,
+    epoch,
     ifMatch,
     ifNoneMatch
   }: {
@@ -1848,6 +1966,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     input: ResourceInput
     createdBy?: IDID
+    epoch?: string
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ version: number }> {
@@ -2013,7 +2132,11 @@ export class FileSystemBackend implements StorageBackend {
         ...(prior?.metaVersion !== undefined && {
           metaVersion: prior.metaVersion
         }),
-        ...(prior?.custom && { custom: prior.custom })
+        ...(prior?.custom && { custom: prior.custom }),
+        // The key-epoch stamp is set from this write's declaration and CLEARED
+        // when absent (the new ciphertext's epoch is unknown -- a stale stamp is
+        // worse than none), so it is NOT preserved from `prior` like `custom`.
+        ...(epoch !== undefined && { epoch })
       }
     })
     return { version }
@@ -2286,6 +2409,8 @@ export class FileSystemBackend implements StorageBackend {
       // `custom` is returned verbatim -- `{ name, tags }` on a plaintext
       // Collection, the opaque encryption envelope on an encrypted one.
       ...(hasCustom && { custom: sidecar!.custom as ResourceMetadataCustom }),
+      // The client-declared key epoch (the `key-epochs` feature), when stamped.
+      ...(sidecar?.epoch !== undefined && { epoch: sidecar.epoch }),
       ...(sidecar?.version !== undefined && { version: sidecar.version }),
       ...(sidecar?.metaVersion !== undefined && {
         metaVersion: sidecar.metaVersion
@@ -2324,6 +2449,7 @@ export class FileSystemBackend implements StorageBackend {
     collectionId,
     resourceId,
     custom,
+    epoch,
     ifMatch,
     ifNoneMatch
   }: {
@@ -2331,6 +2457,7 @@ export class FileSystemBackend implements StorageBackend {
     collectionId: string
     resourceId: string
     custom: ResourceMetadataCustom | Record<string, unknown>
+    epoch?: string
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ metaVersion: number } | undefined> {
@@ -2367,6 +2494,10 @@ export class FileSystemBackend implements StorageBackend {
       }
       const metaVersion = (prior?.metaVersion ?? 0) + 1
       const hasCustom = Object.keys(custom).length > 0
+      // The key-epoch stamp describes the CONTENT write, not this metadata
+      // write, so a supplied `epoch` replaces it but an omitted one PRESERVES
+      // the stored value (unlike `custom`, which is full-replace).
+      const resolvedEpoch = epoch ?? prior?.epoch
       await this._writeMetaSidecar({
         collectionDir,
         resourceId,
@@ -2382,7 +2513,8 @@ export class FileSystemBackend implements StorageBackend {
           // change the stored representation.
           ...(prior?.version !== undefined && { version: prior.version }),
           metaVersion,
-          ...(hasCustom && { custom })
+          ...(hasCustom && { custom }),
+          ...(resolvedEpoch !== undefined && { epoch: resolvedEpoch })
         }
       })
       return { metaVersion }
@@ -2529,6 +2661,7 @@ export class FileSystemBackend implements StorageBackend {
       deleted: boolean
       data?: unknown
       custom?: ResourceMetadataCustom | Record<string, unknown>
+      epoch?: string
     }>
     checkpoint: { id: string; updatedAt: string } | null
   }> {
@@ -2583,6 +2716,7 @@ export class FileSystemBackend implements StorageBackend {
           deleted: false
           fileName: string
           custom?: ResourceMetadataCustom | Record<string, unknown>
+          epoch?: string
         }
       | {
           resourceId: string
@@ -2630,7 +2764,10 @@ export class FileSystemBackend implements StorageBackend {
           // The user-writable `custom` (the opaque encryption envelope on an
           // encrypted Collection) rides the feed so metadata replicates
           // alongside content; read from the sidecar already loaded here.
-          ...(sidecar?.custom !== undefined && { custom: sidecar.custom })
+          ...(sidecar?.custom !== undefined && { custom: sidecar.custom }),
+          // The client-declared key epoch (the `key-epochs` feature) rides the
+          // feed so a replicating reader picks the right epoch key.
+          ...(sidecar?.epoch !== undefined && { epoch: sidecar.epoch })
         }
       }
     )
@@ -2730,7 +2867,9 @@ export class FileSystemBackend implements StorageBackend {
           data,
           // Surface the user-writable `custom` (opaque envelope on an encrypted
           // Collection) so a metadata-only edit replicates.
-          ...(desc.custom !== undefined && { custom: desc.custom })
+          ...(desc.custom !== undefined && { custom: desc.custom }),
+          // Surface the client-declared key epoch (the `key-epochs` feature).
+          ...(desc.epoch !== undefined && { epoch: desc.epoch })
         }
       })
     )

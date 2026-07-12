@@ -10,7 +10,10 @@
  * - pass-through upgrade: a plaintext record written before a KEK was enabled
  *   still reads and signs after the switch is thrown;
  * - rotation: a record written under one KEK still signs after `currentKekId`
- *   is repointed to a second.
+ *   is repointed to a second -- including a rotation expressed purely through the
+ *   `KMS_RECORD_KEKS` env parser (new KEK first);
+ * - decrypt-only posture: under `KMS_RECORD_CURRENT_KEK=none`, an old record
+ *   still reads while a newly generated one is written plaintext.
  */
 import { it, describe } from 'vitest'
 import assert from 'node:assert'
@@ -28,6 +31,7 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { IdEncoder } from '@digitalcredentials/bnid'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import { parseKmsRecordKekRegistry } from '../src/config.default.js'
 import { parseKekMultibase } from '../src/lib/kmsRecordCipher.js'
 import type {
   IRootZcap,
@@ -436,6 +440,143 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
         type: 'Ed25519VerificationKey2020'
       } as any)) as AsymmetricKey
       assert.equal(await signVerifies(key), true)
+    } finally {
+      await fastify.close()
+      await rm(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  it('rotation expressed through the env parser (KMS_RECORD_KEKS, new KEK first)', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'was-kek-'))
+    const kek1Multibase = kekMultibase(randomBytes(32))
+    const kek2Multibase = kekMultibase(randomBytes(32))
+    const kek1 = parseKekMultibase(kek1Multibase)
+    const kek2 = parseKekMultibase(kek2Multibase)
+
+    // Phase 1: current KEK is kek1 -- generate a key wrapped under it.
+    const first = await bootServer({
+      dataDir,
+      kmsRecordKek: singleKekRegistry(kek1)
+    })
+    let kmsId: string
+    try {
+      const key = (await first.keystoreAgent.generateKey({
+        type: 'asymmetric'
+      })) as AsymmetricKey
+      kmsId = key.kmsId!
+      assert.equal(
+        (await readRecord(dataDir, kmsId)).key.encrypted.kekId,
+        kek1.id
+      )
+    } finally {
+      await first.fastify.close()
+    }
+
+    // Phase 2: rotate via an operator config STRING -- prepend the new KEK, keep
+    // the old one behind it. The env parser makes the first entry current, so an
+    // operator config string alone can now express rotation.
+    const rotated = parseKmsRecordKekRegistry({
+      keks: `${kek2Multibase}, ${kek1Multibase}`
+    })
+    assert.ok(rotated)
+    assert.equal(rotated!.currentKekId, kek2.id)
+    assert.equal(rotated!.keks.size, 2)
+
+    const backend = new FileSystemBackend({ dataDir })
+    const { fastify } = await startTestServer({
+      backend,
+      kmsRecordKek: rotated,
+      port: boundPort
+    })
+    try {
+      const keystoreLocalId = kmsId
+        .slice(`${serverUrl}/kms/keystores/`.length)
+        .split('/keys/')[0]!
+      const keystoreAgent = reattach(
+        `${serverUrl}/kms/keystores/${keystoreLocalId}`
+      )
+      const key = (await keystoreAgent.getAsymmetricKey({
+        kmsId,
+        id: kmsId,
+        type: 'Ed25519VerificationKey2020'
+      } as any)) as AsymmetricKey
+      // The record keeps its kek1 wrapping and still signs after the rotation.
+      assert.equal(await signVerifies(key), true)
+    } finally {
+      await fastify.close()
+      await rm(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  it('decrypt-only posture (KMS_RECORD_CURRENT_KEK=none): old reads, new is plaintext', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'was-kek-'))
+    const kek1Multibase = kekMultibase(randomBytes(32))
+    const kek1 = parseKekMultibase(kek1Multibase)
+
+    // Phase 1: current KEK is kek1 -- generate an encrypted key record.
+    const first = await bootServer({
+      dataDir,
+      kmsRecordKek: singleKekRegistry(kek1)
+    })
+    let oldKmsId: string
+    let keystoreLocalId: string
+    try {
+      const key = (await first.keystoreAgent.generateKey({
+        type: 'asymmetric'
+      })) as AsymmetricKey
+      oldKmsId = key.kmsId!
+      keystoreLocalId = oldKmsId
+        .slice(`${serverUrl}/kms/keystores/`.length)
+        .split('/keys/')[0]!
+      assert.ok((await readRecord(dataDir, oldKmsId)).key.encrypted)
+    } finally {
+      await first.fastify.close()
+    }
+
+    // Phase 2: wind encryption down -- keep kek1 registered for unwrap but stop
+    // writing ciphertext, via KMS_RECORD_CURRENT_KEK=none.
+    const decryptOnly = parseKmsRecordKekRegistry({
+      kek: kek1Multibase,
+      currentKek: 'none'
+    })
+    assert.ok(decryptOnly)
+    assert.equal(decryptOnly!.currentKekId, null)
+    assert.ok(decryptOnly!.keks.has(kek1.id))
+
+    const backend = new FileSystemBackend({ dataDir })
+    const { fastify } = await startTestServer({
+      backend,
+      kmsRecordKek: decryptOnly,
+      port: boundPort
+    })
+    try {
+      const keystoreAgent = reattach(
+        `${serverUrl}/kms/keystores/${keystoreLocalId}`
+      )
+      // The old (kek1-wrapped) record still decrypts and signs.
+      const oldKey = (await keystoreAgent.getAsymmetricKey({
+        kmsId: oldKmsId,
+        id: oldKmsId,
+        type: 'Ed25519VerificationKey2020'
+      } as any)) as AsymmetricKey
+      assert.equal(await signVerifies(oldKey), true)
+
+      // A NEWLY generated key record is written plaintext (no envelope).
+      const newKey = (await keystoreAgent.generateKey({
+        type: 'asymmetric'
+      })) as AsymmetricKey
+      const newRecord = await readRecord(dataDir, newKey.kmsId!)
+      assert.equal(
+        newRecord.key.encrypted,
+        undefined,
+        'new record is plaintext'
+      )
+      assert.ok(
+        typeof newRecord.key.privateKeyMultibase === 'string',
+        'the new key material is stored in the clear'
+      )
+      // ...and it still signs.
+      assert.equal(await signVerifies(newKey as AsymmetricKey), true)
     } finally {
       await fastify.close()
       await rm(dataDir, { recursive: true, force: true })

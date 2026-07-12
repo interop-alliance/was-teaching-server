@@ -15,6 +15,7 @@ import {
 import { assertValidIds } from '../lib/validateId.js'
 import { resourcePath, metaPath } from '../lib/paths.js'
 import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
+import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
 import {
   InvalidRequestBodyError,
   ResourceNotFoundError,
@@ -161,6 +162,15 @@ export class ResourceRequest {
       collectionDescription
     })
     const input = await resolveResourceInput(request, dataBackend)
+    // A content write into an encrypted Collection MAY declare the key epoch it
+    // encrypted under via the `WAS-Key-Epoch` header (the `key-epochs` feature);
+    // the server stores it opaquely and clears it when absent (the new
+    // ciphertext's epoch is unknown -- a stale stamp is worse than none).
+    // Advisory, non-signature-covered metadata.
+    const { epoch } = parseKeyEpochHeader({
+      headers: request.headers,
+      requestName
+    })
     // Surface any `If-Match` / `If-None-Match` write precondition to the storage
     // layer, which evaluates it atomically with the write (returning 412
     // `precondition-failed` on a mismatch -- rethrown unchanged below).
@@ -172,6 +182,7 @@ export class ResourceRequest {
         resourceId,
         input,
         createdBy: invokerDid(request),
+        epoch,
         ...parseWritePreconditions(request.headers)
       })
     } catch (err) {
@@ -520,6 +531,16 @@ export class ResourceRequest {
       custom = parseCustomMetadata(request.body)
     }
 
+    // The key-epoch stamp (the `key-epochs` feature) MAY also be declared here
+    // as a top-level `epoch` member (a sibling of `custom`). Unlike `custom`
+    // (full-replace), an omitted `epoch` PRESERVES the stored value -- it
+    // describes the content write, not the metadata write. A present value must
+    // be a non-empty string (400).
+    const { epoch } = parseMetaEpoch({
+      body: request.body as Record<string, unknown>,
+      requestName
+    })
+
     // Write Metadata to the Collection's selected (data-plane) backend. An
     // `If-Match` / `If-None-Match` precondition (the `conditional-writes`
     // feature) is evaluated on the `/meta` `metaVersion` atomically with the
@@ -537,6 +558,7 @@ export class ResourceRequest {
         collectionId,
         resourceId,
         custom,
+        epoch,
         ...parseWritePreconditions(request.headers)
       })
     } catch (err) {

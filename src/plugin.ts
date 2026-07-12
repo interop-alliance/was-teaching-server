@@ -99,9 +99,10 @@ export interface FastifyWasOptions {
    */
   enabledBackendProviders?: string[]
   /**
-   * The at-rest WebKMS key-record encryption registry (config `KMS_RECORD_KEK`);
-   * `undefined` (or `currentKekId: null`) disables encryption -- key records are
-   * written plaintext (the teaching default).
+   * The at-rest WebKMS key-record encryption registry (config `KMS_RECORD_KEK` /
+   * `KMS_RECORD_KEKS` / `KMS_RECORD_CURRENT_KEK`); `undefined` (or
+   * `currentKekId: null`) disables encryption -- key records are written
+   * plaintext (the teaching default).
    */
   kmsRecordKek?: KmsRecordKekRegistry
   /**

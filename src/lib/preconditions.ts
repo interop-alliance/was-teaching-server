@@ -69,6 +69,42 @@ export function assertWritePrecondition({
 }
 
 /**
+ * Evaluates a Collection Description write precondition against the Collection's
+ * current description `version` (the `key-epochs` / conditional-Collection-write
+ * feature). Throws `PreconditionFailedError` (412) when the supplied `If-Match`
+ * validator does not equal the current description ETag. Only `If-Match`
+ * (update-if-unchanged) is supported for Collections; a create through an
+ * unconditional PUT is unaffected. MUST be called atomically with the write
+ * (under the filesystem backend's per-Collection lock, or inside the Postgres
+ * backend's row-locking transaction).
+ * @param options {object}
+ * @param options.collectionId {string}   for the error detail
+ * @param options.currentVersion {number}   the Collection's current description
+ *   `version` (0 for a legacy Collection without one, or before its first write)
+ * @param [options.ifMatch] {string}   a quoted ETag (`If-Match`)
+ * @returns {void}
+ */
+export function assertCollectionWritePrecondition({
+  collectionId,
+  currentVersion,
+  ifMatch
+}: {
+  collectionId: string
+  currentVersion: number
+  ifMatch?: string
+}): void {
+  if (ifMatch === undefined) {
+    return
+  }
+  const currentEtag = formatEtag(currentVersion)
+  if (currentEtag !== ifMatch) {
+    throw new PreconditionFailedError({
+      detail: `Collection '${collectionId}' ETag ${currentEtag} does not match If-Match ${ifMatch}.`
+    })
+  }
+}
+
+/**
  * Evaluates a metadata-write (`/meta`) precondition against a Resource's
  * current `metaVersion`. Throws `PreconditionFailedError` (412) when it is not
  * met. `If-None-Match: *` means "only if no metadata has been written yet"

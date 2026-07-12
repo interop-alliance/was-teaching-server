@@ -161,6 +161,22 @@ export const MIGRATIONS: string[] = [
     expires       text COLLATE "C",
     PRIMARY KEY (space_id, delegator, capability_id)
   );
+  `,
+  // v5: the client-declared key epoch a Resource's content was encrypted under
+  // (multi-recipient encrypted Collections). Stored opaquely: the server never
+  // computes or verifies it. NULL when no epoch was declared (a plaintext
+  // Collection, or an encrypted write that omitted the stamp). Not `COLLATE "C"`
+  // -- it never participates in an `ORDER BY` or keyset comparison.
+  `
+  ALTER TABLE resources ADD COLUMN epoch text;
+  `,
+  // v6: the monotonic Collection Description version -- the ETag validator behind
+  // conditional (`If-Match`) Collection Description writes, so concurrent
+  // recipient edits compare-and-swap instead of clobbering. Kept out of the
+  // stored 'description' jsonb (it travels only as the `ETag` header). Backfill
+  // existing rows to 1; writeCollection bumps it on every write.
+  `
+  ALTER TABLE collections ADD COLUMN description_version integer NOT NULL DEFAULT 1;
   `
 ]
 

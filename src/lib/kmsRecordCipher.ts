@@ -88,29 +88,34 @@ export function deriveKekId(key: Buffer): string {
  * Parses a `secretKeyMultibase` (base58btc Multikey) AES-256 KEK into a
  * `RecordKek` (its raw key plus a derived id). Throws a plain `Error` on a
  * malformed value -- callers are config parsing (fails startup) and tests, not
- * the request path.
+ * the request path. The error messages name `label` (the offending config
+ * variable, e.g. a `KMS_RECORD_KEKS entry N` position) but NEVER echo the secret
+ * value itself.
  * @param secretKeyMultibase {string}   the multibase (`z...`) KEK value
+ * @param [label] {string}   the config source named in error messages
+ *   (defaults to `KMS_RECORD_KEK`)
  * @returns {RecordKek}
  */
-export function parseKekMultibase(secretKeyMultibase: string): RecordKek {
+export function parseKekMultibase(
+  secretKeyMultibase: string,
+  label = 'KMS_RECORD_KEK'
+): RecordKek {
   const decoder = new IdDecoder({ encoding: 'base58', multibase: true })
   let decoded: Buffer
   try {
     decoded = Buffer.from(decoder.decode(secretKeyMultibase))
   } catch {
-    throw new Error(
-      'KMS_RECORD_KEK is not a valid multibase (base58btc) value.'
-    )
+    throw new Error(`${label} is not a valid multibase (base58btc) value.`)
   }
   if (!decoded.subarray(0, 2).equals(AES_256_MULTIKEY_HEADER)) {
     throw new Error(
-      'KMS_RECORD_KEK must carry the AES-256 Multikey header (0xa2 0x01).'
+      `${label} must carry the AES-256 Multikey header (0xa2 0x01).`
     )
   }
   const key = decoded.subarray(2)
   if (key.length !== 32) {
     throw new Error(
-      `KMS_RECORD_KEK must be a 256-bit (32-byte) key; got ${key.length} bytes.`
+      `${label} must be a 256-bit (32-byte) key; got ${key.length} bytes.`
     )
   }
   return { id: deriveKekId(key), key }

@@ -15,19 +15,47 @@ import { it, describe } from 'vitest'
 import assert from 'node:assert'
 import {
   isValidEdvEnvelope,
-  isValidEdvDocument
+  isValidEdvDocument,
+  isValidJweRecipientEntry
 } from '../src/lib/edvEnvelope.js'
 import {
   assertSupportedEncryption,
   assertEncryptionTransition,
+  assertEncryptionEpochsTransition,
+  assertEncryptionMarkerTransition,
   assertEncryptedWriteConforms,
   assertEncryptedMetaConforms
 } from '../src/lib/encryption.js'
+import type { CollectionEncryption } from '../src/types.js'
 import {
   EncryptionImmutableError,
   UnsupportedEncryptionSchemeError,
-  EncryptionSchemeMismatchError
+  EncryptionSchemeMismatchError,
+  InvalidRequestBodyError
 } from '../src/errors.js'
+
+/** A minimal valid marker recipient entry (JWE recipients-entry shape). */
+function recipient(kid: string): {
+  header: { kid: string; alg: string }
+  encrypted_key: string
+} {
+  return {
+    header: { kid, alg: 'ECDH-ES+A256KW' },
+    encrypted_key: `wrapped-${kid}`
+  }
+}
+
+/** A valid multi-epoch marker naming `currentEpoch`, with two epochs. */
+function epochMarker(): CollectionEncryption {
+  return {
+    scheme: 'edv',
+    currentEpoch: 'urn:epoch:2',
+    epochs: [
+      { id: 'urn:epoch:2', recipients: [recipient('did:key:zApp1#ka')] },
+      { id: 'urn:epoch:1', recipients: [recipient('did:key:zApp2#ka')] }
+    ]
+  }
+}
 
 /** A minimal valid flattened JWE-JSON envelope. */
 const flattened = { protected: 'eyJhbGciOiJkaXIifQ', ciphertext: 'c1' }
@@ -166,6 +194,280 @@ describe('assertEncryptionTransition', () => {
           incoming: { scheme: 'other' } as unknown as { scheme: 'edv' }
         }),
       EncryptionImmutableError
+    )
+  })
+})
+
+describe('isValidJweRecipientEntry', () => {
+  const valid: [string, unknown][] = [
+    ['a bare object', {}],
+    ['header only', { header: { kid: 'k' } }],
+    ['header + encrypted_key', { header: { kid: 'k' }, encrypted_key: 'ek' }],
+    ['encrypted_key only', { encrypted_key: 'ek' }]
+  ]
+  for (const [label, entry] of valid) {
+    it(`accepts ${label}`, () => {
+      assert.equal(isValidJweRecipientEntry(entry), true)
+    })
+  }
+  const invalid: [string, unknown][] = [
+    ['a non-object', 'nope'],
+    ['null', null],
+    ['an array', []],
+    ['a non-object header', { header: 'nope' }],
+    ['a non-string encrypted_key', { encrypted_key: 5 }]
+  ]
+  for (const [label, entry] of invalid) {
+    it(`rejects ${label}`, () => {
+      assert.equal(isValidJweRecipientEntry(entry), false)
+    })
+  }
+})
+
+describe('assertSupportedEncryption (key-epoch fields)', () => {
+  it('accepts and round-trips a valid multi-epoch marker verbatim', () => {
+    const marker = epochMarker()
+    assert.deepStrictEqual(
+      assertSupportedEncryption({ encryption: marker }),
+      marker
+    )
+  })
+  it('rejects `epochs` without `currentEpoch` (400)', () => {
+    assert.throws(
+      () =>
+        assertSupportedEncryption({
+          encryption: {
+            scheme: 'edv',
+            epochs: [{ id: 'e1', recipients: [recipient('k')] }]
+          }
+        }),
+      InvalidRequestBodyError
+    )
+  })
+  it('rejects `currentEpoch` without `epochs` (400)', () => {
+    assert.throws(
+      () =>
+        assertSupportedEncryption({
+          encryption: { scheme: 'edv', currentEpoch: 'e1' }
+        }),
+      InvalidRequestBodyError
+    )
+  })
+  it('rejects a dangling `currentEpoch` that names no epoch (400)', () => {
+    assert.throws(
+      () =>
+        assertSupportedEncryption({
+          encryption: {
+            scheme: 'edv',
+            currentEpoch: 'missing',
+            epochs: [{ id: 'e1', recipients: [recipient('k')] }]
+          }
+        }),
+      InvalidRequestBodyError
+    )
+  })
+  it('rejects a malformed recipient entry (no header.kid) (400)', () => {
+    assert.throws(
+      () =>
+        assertSupportedEncryption({
+          encryption: {
+            scheme: 'edv',
+            currentEpoch: 'e1',
+            epochs: [
+              { id: 'e1', recipients: [{ encrypted_key: 'ek' } as never] }
+            ]
+          }
+        }),
+      InvalidRequestBodyError
+    )
+  })
+  it('rejects duplicate epoch ids (400)', () => {
+    assert.throws(
+      () =>
+        assertSupportedEncryption({
+          encryption: {
+            scheme: 'edv',
+            currentEpoch: 'e1',
+            epochs: [
+              { id: 'e1', recipients: [recipient('k')] },
+              { id: 'e1', recipients: [recipient('k2')] }
+            ]
+          }
+        }),
+      InvalidRequestBodyError
+    )
+  })
+  it('rejects an empty recipients array (400)', () => {
+    assert.throws(
+      () =>
+        assertSupportedEncryption({
+          encryption: {
+            scheme: 'edv',
+            currentEpoch: 'e1',
+            epochs: [{ id: 'e1', recipients: [] }]
+          }
+        }),
+      InvalidRequestBodyError
+    )
+  })
+})
+
+describe('assertEncryptionEpochsTransition', () => {
+  it('is a no-op when the existing marker has no epochs', () => {
+    assert.doesNotThrow(() =>
+      assertEncryptionEpochsTransition({
+        existing: { scheme: 'edv' },
+        incoming: epochMarker()
+      })
+    )
+  })
+  it('allows appending a new epoch and repointing currentEpoch to it', () => {
+    const existing = epochMarker()
+    const incoming: CollectionEncryption = {
+      scheme: 'edv',
+      currentEpoch: 'urn:epoch:3',
+      epochs: [
+        { id: 'urn:epoch:3', recipients: [recipient('did:key:zApp1#ka')] },
+        ...existing.epochs!
+      ]
+    }
+    assert.doesNotThrow(() =>
+      assertEncryptionEpochsTransition({ existing, incoming })
+    )
+  })
+  it('allows adding a recipient to an existing epoch (currentEpoch unchanged)', () => {
+    const existing = epochMarker()
+    const incoming: CollectionEncryption = {
+      scheme: 'edv',
+      currentEpoch: 'urn:epoch:2',
+      epochs: [
+        {
+          id: 'urn:epoch:2',
+          recipients: [
+            recipient('did:key:zApp1#ka'),
+            recipient('did:key:zApp3#ka')
+          ]
+        },
+        existing.epochs![1]!
+      ]
+    }
+    assert.doesNotThrow(() =>
+      assertEncryptionEpochsTransition({ existing, incoming })
+    )
+  })
+  it('rejects dropping an existing epoch (400 append-only)', () => {
+    const existing = epochMarker()
+    const incoming: CollectionEncryption = {
+      scheme: 'edv',
+      currentEpoch: 'urn:epoch:2',
+      epochs: [existing.epochs![0]!]
+    }
+    assert.throws(
+      () => assertEncryptionEpochsTransition({ existing, incoming }),
+      InvalidRequestBodyError
+    )
+  })
+  it('rejects moving currentEpoch back to an older existing epoch (400)', () => {
+    const existing = epochMarker()
+    const incoming: CollectionEncryption = {
+      ...epochMarker(),
+      currentEpoch: 'urn:epoch:1'
+    }
+    assert.throws(
+      () => assertEncryptionEpochsTransition({ existing, incoming }),
+      InvalidRequestBodyError
+    )
+  })
+})
+
+describe('assertEncryptionMarkerTransition', () => {
+  it('is a no-op when nothing is persisted yet (incoming defined)', () => {
+    assert.doesNotThrow(() =>
+      assertEncryptionMarkerTransition({
+        existing: undefined,
+        incoming: epochMarker()
+      })
+    )
+  })
+  it('is a no-op when nothing is persisted yet (incoming also undefined)', () => {
+    assert.doesNotThrow(() =>
+      assertEncryptionMarkerTransition({
+        existing: undefined,
+        incoming: undefined
+      })
+    )
+  })
+  it('throws EncryptionImmutableError (409) when the write would clear an existing marker', () => {
+    // The clear-the-marker race: a persisted marker with no incoming one.
+    assert.throws(
+      () =>
+        assertEncryptionMarkerTransition({
+          existing: { scheme: 'edv' },
+          incoming: undefined
+        }),
+      EncryptionImmutableError
+    )
+  })
+  it('delegates to the set-once rail: a scheme change throws EncryptionImmutableError (409)', () => {
+    assert.throws(
+      () =>
+        assertEncryptionMarkerTransition({
+          existing: { scheme: 'edv' },
+          incoming: { scheme: 'other' } as unknown as CollectionEncryption
+        }),
+      EncryptionImmutableError
+    )
+  })
+  it('delegates to the epoch rail: dropping an existing epoch throws InvalidRequestBodyError (400)', () => {
+    const existing = epochMarker()
+    const incoming: CollectionEncryption = {
+      scheme: 'edv',
+      currentEpoch: 'urn:epoch:2',
+      epochs: [existing.epochs![0]!]
+    }
+    assert.throws(
+      () => assertEncryptionMarkerTransition({ existing, incoming }),
+      InvalidRequestBodyError
+    )
+  })
+  it('passes a valid same-scheme epoch append', () => {
+    const existing = epochMarker()
+    const incoming: CollectionEncryption = {
+      scheme: 'edv',
+      currentEpoch: 'urn:epoch:3',
+      epochs: [
+        { id: 'urn:epoch:3', recipients: [recipient('did:key:zApp1#ka')] },
+        ...existing.epochs!
+      ]
+    }
+    assert.doesNotThrow(() =>
+      assertEncryptionMarkerTransition({ existing, incoming })
+    )
+  })
+})
+
+describe('assertEncryptionTransition (recipient/epoch evolution passes)', () => {
+  it('passes when only recipients/epochs change and `scheme` is unchanged', () => {
+    // The transition rule is scheme-only, so recipient/epoch churn is an allowed
+    // update -- pin that explicitly (it never trips `encryption-immutable`).
+    assert.doesNotThrow(() =>
+      assertEncryptionTransition({
+        existing: { scheme: 'edv' },
+        incoming: epochMarker()
+      })
+    )
+    assert.doesNotThrow(() =>
+      assertEncryptionTransition({
+        existing: epochMarker(),
+        incoming: {
+          scheme: 'edv',
+          currentEpoch: 'urn:epoch:3',
+          epochs: [
+            { id: 'urn:epoch:3', recipients: [recipient('did:key:zApp1#ka')] },
+            ...epochMarker().epochs!
+          ]
+        }
+      })
     )
   })
 })

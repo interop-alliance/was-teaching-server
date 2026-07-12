@@ -21,6 +21,7 @@ import {
   listRegisteredBackends
 } from '../lib/backends.js'
 import { assertSupportedEncryption } from '../lib/encryption.js'
+import { formatEtag } from '../lib/etag.js'
 import {
   spacePath,
   collectionPath,
@@ -371,7 +372,7 @@ export class SpaceRequest {
     }
 
     const createdBy = invokerDid(request)
-    await storage.writeCollection({
+    const written = await storage.writeCollection({
       spaceId,
       collectionId,
       collectionDescription,
@@ -383,6 +384,9 @@ export class SpaceRequest {
       serverUrl
     ).toString()
     reply.header('Location', createdUrl)
+    // Surface the new Collection Description ETag so a client can chain a
+    // conditional update (the `key-epochs` conditional-Collection-write feature).
+    reply.header('etag', formatEtag(written.version))
     // Echo what was persisted, `createdBy` included, so the create response and
     // a subsequent Get Collection agree. An id already in use was rejected as a
     // 409 above, so this write created the Collection.

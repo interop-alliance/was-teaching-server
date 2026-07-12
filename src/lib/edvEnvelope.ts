@@ -10,6 +10,39 @@
  */
 
 /**
+ * True if `entry` is a structurally valid JWE general-serialization
+ * `recipients` array entry: an object whose OPTIONAL `header` is an object and
+ * whose OPTIONAL `encrypted_key` is a string. Purely structural (values are
+ * never decoded); shared by {@link isValidEdvEnvelope} and the Collection
+ * key-epoch marker validator (`lib/encryption.ts`), which reuses the JWE
+ * recipients entry shape verbatim -- one wire vocabulary.
+ *
+ * @param entry {unknown}   one element of a `recipients` array
+ * @returns {boolean}
+ */
+export function isValidJweRecipientEntry(entry: unknown): boolean {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+    return false
+  }
+  const recipient = entry as Record<string, unknown>
+  if (
+    recipient.header !== undefined &&
+    (typeof recipient.header !== 'object' ||
+      recipient.header === null ||
+      Array.isArray(recipient.header))
+  ) {
+    return false
+  }
+  if (
+    recipient.encrypted_key !== undefined &&
+    typeof recipient.encrypted_key !== 'string'
+  ) {
+    return false
+  }
+  return true
+}
+
+/**
  * True if `body` is a structurally valid JWE-JSON-serialization object: an
  * object with a required non-empty string `ciphertext`; optional string
  * `protected` / `iv` / `tag` / `encrypted_key`; an optional `recipients` array
@@ -49,22 +82,7 @@ export function isValidEdvEnvelope(body: unknown): boolean {
       return false
     }
     for (const entry of envelope.recipients) {
-      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-        return false
-      }
-      const recipient = entry as Record<string, unknown>
-      if (
-        recipient.header !== undefined &&
-        (typeof recipient.header !== 'object' ||
-          recipient.header === null ||
-          Array.isArray(recipient.header))
-      ) {
-        return false
-      }
-      if (
-        recipient.encrypted_key !== undefined &&
-        typeof recipient.encrypted_key !== 'string'
-      ) {
+      if (!isValidJweRecipientEntry(entry)) {
         return false
       }
     }
