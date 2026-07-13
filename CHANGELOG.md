@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Offline re-encryption tool for at-rest WebKMS key records**
+  (`pnpm reencrypt-kms-records [--dry-run] [--data-dir <path>]`,
+  `scripts/reencrypt-kms-records.ts`). With the server stopped, it walks every
+  stored key record, decrypts each through the configured KEK registry
+  (plaintext records pass through), and rewrites it in place under the current
+  KEK -- or back to plaintext under `KMS_RECORD_CURRENT_KEK=none`. This is what
+  makes a rotation finishable: records written before encryption was enabled (or
+  under a since-rotated KEK) can now be re-wrapped, so an old KEK can finally be
+  retired from `KMS_RECORD_KEKS`, and the decrypt-only wind-down can end with
+  the KEK variables dropped entirely. Idempotent (records already in the target
+  form are untouched); filesystem backend only (refuses to run when
+  `DATABASE_URL` is set).
 - **ZCap revocation on the WAS route families.** A capability delegated from a
   Space's root capability can now be revoked, via
   `POST /space/:spaceId/zcaps/revocations/:revocationId` -- the sibling of the
