@@ -49,7 +49,10 @@ import { sanitizeBackendRecord } from '../lib/backends.js'
 import { backendUsageFields } from '../lib/backendUsage.js'
 import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { encodeCursor, decodeCursor } from '../lib/cursor.js'
-import { buildExportManifest } from '../lib/exportManifest.js'
+import {
+  buildExportManifest,
+  EXPORT_ENTRY_MTIME
+} from '../lib/exportManifest.js'
 import { revocationFileName } from '../lib/revocations.js'
 import { isJson } from '../lib/isJson.js'
 import { normalizeDescriptionWrite } from '../lib/collectionDescription.js'
@@ -2600,29 +2603,32 @@ export class PostgresBackend implements StorageBackend {
       revocationFiles: revocationFiles.map(file => file.name)
     })
 
+    // Fixed mtime on every entry so the archive is byte-reproducible (see
+    // EXPORT_ENTRY_MTIME).
+    const mtime = EXPORT_ENTRY_MTIME
     const pack = tar.pack()
-    pack.entry({ name: 'manifest.yml' }, YAML.stringify(manifest))
-    pack.entry({ name: 'space/', type: 'directory' })
-    pack.entry({ name: `space/${spaceId}/`, type: 'directory' })
+    pack.entry({ name: 'manifest.yml', mtime }, YAML.stringify(manifest))
+    pack.entry({ name: 'space/', type: 'directory', mtime })
+    pack.entry({ name: `space/${spaceId}/`, type: 'directory', mtime })
     for (const entry of topLevel) {
       const entryTarget = `space/${spaceId}/${entry.name}`
       if (entry.kind === 'collection') {
-        pack.entry({ name: `${entryTarget}/`, type: 'directory' })
+        pack.entry({ name: `${entryTarget}/`, type: 'directory', mtime })
         for (const file of entry.files) {
           const bytes =
             'bytes' in file
               ? file.bytes
               : await this._resourceContent({ spaceId, ...file.resource })
-          pack.entry({ name: `${entryTarget}/${file.name}` }, bytes)
+          pack.entry({ name: `${entryTarget}/${file.name}`, mtime }, bytes)
         }
       } else {
-        pack.entry({ name: entryTarget }, entry.bytes)
+        pack.entry({ name: entryTarget, mtime }, entry.bytes)
       }
     }
     if (revocationFiles.length > 0) {
-      pack.entry({ name: 'revocations/', type: 'directory' })
+      pack.entry({ name: 'revocations/', type: 'directory', mtime })
       for (const file of revocationFiles) {
-        pack.entry({ name: `revocations/${file.name}` }, file.bytes)
+        pack.entry({ name: `revocations/${file.name}`, mtime }, file.bytes)
       }
     }
     pack.finalize()

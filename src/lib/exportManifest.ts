@@ -15,6 +15,16 @@ import {
 } from '../config.default.js'
 
 /**
+ * Fixed `mtime` for every entry in an export archive. `tar-stream` defaults a
+ * header's `mtime` to the wall-clock time it was packed, which makes two
+ * exports of an unchanged Space differ whenever they straddle a one-second
+ * boundary. Pinning it to the Unix epoch makes an export a pure function of
+ * the Space's contents (byte-reproducible and diff-stable); the timestamp
+ * carries no meaning a consumer relies on.
+ */
+export const EXPORT_ENTRY_MTIME = new Date(0)
+
+/**
  * One top-level entry of the Space being exported, in archive order: a
  * Space-level file (`files` absent) or a Collection directory with its ordered
  * file names.

@@ -50,7 +50,10 @@ import { sanitizeBackendRecord } from '../lib/backends.js'
 import { backendUsageFields } from '../lib/backendUsage.js'
 import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { encodeCursor, decodeCursor } from '../lib/cursor.js'
-import { buildExportManifest } from '../lib/exportManifest.js'
+import {
+  buildExportManifest,
+  EXPORT_ENTRY_MTIME
+} from '../lib/exportManifest.js'
 import { revocationFileName } from '../lib/revocations.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
 import { isJson } from '../lib/isJson.js'
@@ -1142,37 +1145,40 @@ export class FileSystemBackend implements StorageBackend {
       revocationFiles
     })
 
+    // Fixed mtime on every entry so the archive is byte-reproducible (see
+    // EXPORT_ENTRY_MTIME).
+    const mtime = EXPORT_ENTRY_MTIME
     const pack = tar.pack()
-    pack.entry({ name: 'manifest.yml' }, YAML.stringify(manifest))
-    pack.entry({ name: 'space/', type: 'directory' })
-    pack.entry({ name: `space/${spaceId}/`, type: 'directory' })
+    pack.entry({ name: 'manifest.yml', mtime }, YAML.stringify(manifest))
+    pack.entry({ name: 'space/', type: 'directory', mtime })
+    pack.entry({ name: `space/${spaceId}/`, type: 'directory', mtime })
 
     for (const entry of spaceEntries) {
       const entryTarget = `space/${spaceId}/${entry.name}`
 
       if (entry.isDirectory()) {
-        pack.entry({ name: `${entryTarget}/`, type: 'directory' })
+        pack.entry({ name: `${entryTarget}/`, type: 'directory', mtime })
         for (const file of collectionEntriesByDir[entry.name] ?? []) {
           const bytes = await fs.promises.readFile(
             path.join(sourceSpaceDir, entry.name, file.name)
           )
-          pack.entry({ name: `${entryTarget}/${file.name}` }, bytes)
+          pack.entry({ name: `${entryTarget}/${file.name}`, mtime }, bytes)
         }
       } else if (entry.isFile()) {
         const bytes = await fs.promises.readFile(
           path.join(sourceSpaceDir, entry.name)
         )
-        pack.entry({ name: entryTarget }, bytes)
+        pack.entry({ name: entryTarget, mtime }, bytes)
       }
     }
 
     if (revocationFiles.length > 0) {
-      pack.entry({ name: 'revocations/', type: 'directory' })
+      pack.entry({ name: 'revocations/', type: 'directory', mtime })
       for (const name of revocationFiles) {
         const bytes = await fs.promises.readFile(
           path.join(revocationsDir, name)
         )
-        pack.entry({ name: `revocations/${name}` }, bytes)
+        pack.entry({ name: `revocations/${name}`, mtime }, bytes)
       }
     }
 

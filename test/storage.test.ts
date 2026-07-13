@@ -142,6 +142,79 @@ describe('Storage API', () => {
         await rm(tempDir, { recursive: true, force: true })
       }
     })
+
+    it('is byte-reproducible: entries carry a fixed mtime, not wall-clock', async () => {
+      const tempDir = await mkdtemp(path.join(os.tmpdir(), 'was-export-repro-'))
+      await mkdir(path.join(tempDir, 'spaces'))
+      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const spaceId = 'repro-space'
+
+      try {
+        await backend.writeSpace({
+          spaceId,
+          spaceDescription: {
+            id: spaceId,
+            type: ['Space'],
+            name: 'Repro Test Space',
+            controller: 'did:key:test-controller'
+          }
+        })
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'credentials',
+          collectionDescription: { id: 'credentials', type: ['Collection'] }
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'credentials',
+          resourceId: 'vc-1',
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { id: 'vc-1' }
+          }
+        })
+
+        async function exportBytes(): Promise<Buffer> {
+          const pack = await backend.exportSpace({ spaceId })
+          const chunks: Buffer[] = []
+          for await (const chunk of pack) {
+            chunks.push(Buffer.from(chunk))
+          }
+          return Buffer.concat(chunks)
+        }
+
+        // Every entry header carries the fixed epoch mtime (tar-stream would
+        // otherwise stamp wall-clock time, making exports that straddle a
+        // one-second boundary differ).
+        const first = await exportBytes()
+        const mtimes: Array<{ name: string; mtime: Date | undefined }> = []
+        const extract = tar.extract()
+        await new Promise<void>((resolve, reject) => {
+          extract.on('entry', (header, stream, next) => {
+            mtimes.push({ name: header.name, mtime: header.mtime })
+            stream.resume()
+            stream.on('end', next)
+            stream.on('error', reject)
+          })
+          extract.on('finish', resolve)
+          extract.on('error', reject)
+          Readable.from(first).pipe(extract)
+        })
+        assert.ok(mtimes.length > 0)
+        for (const { name, mtime } of mtimes) {
+          assert.equal(mtime?.getTime(), 0, `entry ${name} mtime not epoch`)
+        }
+
+        // And two exports of the unchanged Space agree byte-for-byte, even
+        // across a one-second boundary.
+        await new Promise(resolve => setTimeout(resolve, 1100))
+        const second = await exportBytes()
+        assert.ok(first.equals(second))
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
   })
 
   describe('FileSystemBackend export/import round-trips policies', () => {

@@ -96,6 +96,16 @@
   Space revocations live outside the Space's own tree and are deleted with the
   Space.
 
+### Fixed
+
+- **Space exports are now byte-reproducible.** Every entry in an export archive
+  is written with a fixed `mtime` (the Unix epoch) instead of the wall-clock
+  time it was packed, on both backends. Previously two exports of an unchanged
+  Space differed whenever they straddled a one-second boundary, which made
+  byte-for-byte comparisons of consecutive exports intermittently fail. An
+  export is now a pure function of the Space's contents -- content-addressable
+  and diff-stable. The timestamp carried no meaning on import.
+
 ## 0.9.0 - 2026-07-09
 
 ### Added
