@@ -177,6 +177,31 @@ export const MIGRATIONS: string[] = [
   // existing rows to 1; writeCollection bumps it on every write.
   `
   ALTER TABLE collections ADD COLUMN description_version integer NOT NULL DEFAULT 1;
+  `,
+  // v7: chunk storage for chunked Resources (the `chunked-streams` feature).
+  // One row per addressed chunk `(space, collection, resource, index)`; 'bytes'
+  // is the opaque chunk representation (stored exactly like a binary Resource's
+  // content, never parsed), 'size' its byte length (the quota-counter input),
+  // and 'version' the chunk's own monotonic ETag validator (independent of the
+  // parent Resource's). The foreign key to 'resources' gives chunk rows the same
+  // ON DELETE CASCADE the Space/Collection tree already uses, so a HARD delete of
+  // the parent Resource (or its Collection or Space) removes its chunks with it;
+  // a SOFT delete (the tombstone UPDATE in deleteResource) removes them
+  // explicitly in the same transaction instead.
+  `
+  CREATE TABLE chunks (
+    space_id      text COLLATE "C" NOT NULL,
+    collection_id text COLLATE "C" NOT NULL,
+    resource_id   text COLLATE "C" NOT NULL,
+    chunk_index   integer NOT NULL,
+    content_type  text NOT NULL,
+    bytes         bytea NOT NULL,
+    size          bigint NOT NULL DEFAULT 0,
+    version       integer NOT NULL,
+    PRIMARY KEY (space_id, collection_id, resource_id, chunk_index),
+    FOREIGN KEY (space_id, collection_id, resource_id)
+      REFERENCES resources ON DELETE CASCADE
+  );
   `
 ]
 

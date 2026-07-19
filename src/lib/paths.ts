@@ -210,6 +210,54 @@ export function metaPath({
 }
 
 /**
+ * `/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex` -- a single
+ * chunk of a chunked Resource (the `chunked-streams` feature). Chunks are
+ * addressed under their parent Resource; like `meta`, the `chunks` segment
+ * needs no reserved-id entry (it sits a level below any Resource route).
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.resourceId {string}
+ * @param options.chunkIndex {number}   non-negative integer chunk position
+ * @returns {string}
+ */
+export function chunkPath({
+  spaceId,
+  collectionId,
+  resourceId,
+  chunkIndex
+}: {
+  spaceId: string
+  collectionId: string
+  resourceId: string
+  chunkIndex: number
+}): string {
+  return `${resourcePath({ spaceId, collectionId, resourceId })}/chunks/${chunkIndex}`
+}
+
+/**
+ * `/space/:spaceId/:collectionId/:resourceId/chunks/` -- the chunk listing
+ * (container) path of a chunked Resource. Always the trailing-slash container
+ * form: a reader discovers the chunk count here before fetching `0..count-1`.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.resourceId {string}
+ * @returns {string}
+ */
+export function chunksContainerPath({
+  spaceId,
+  collectionId,
+  resourceId
+}: {
+  spaceId: string
+  collectionId: string
+  resourceId: string
+}): string {
+  return `${resourcePath({ spaceId, collectionId, resourceId })}/chunks/`
+}
+
+/**
  * `/space/:spaceId/:collectionId/backend` -- the "Collection Backend Selected"
  * resource path (reserved `backend` segment at the Resource level).
  * @param options {object}

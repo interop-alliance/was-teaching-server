@@ -67,3 +67,72 @@ export function parseResourceFileName(fileName: string): {
       : 'application/octet-stream'
   }
 }
+
+/**
+ * Prefix of a Resource's per-Resource chunk directory
+ * (`.chunks.<encodedResourceId>/`), which holds the chunk representations of a
+ * chunked Resource (the `chunked-streams` feature). The leading `.` keeps the
+ * directory out of the `r.`-prefixed Collection listing, and dot-escaping the
+ * id segment keeps it in one filesystem-name namespace with the Resource files.
+ */
+export const CHUNK_DIR_PREFIX = '.chunks.'
+
+/**
+ * Builds the on-disk directory name for a Resource's chunk directory:
+ * `.chunks.<encodedResourceId>`. The id segment is dot-escaped (see
+ * {@link encodeFilenameSegment}) so a dotted id round-trips.
+ * @param resourceId {string}
+ * @returns {string}
+ */
+export function chunkDirName(resourceId: string): string {
+  return `${CHUNK_DIR_PREFIX}${encodeFilenameSegment(resourceId)}`
+}
+
+/**
+ * Largest addressable chunk index. 2^31-1 (`int4` max): the Postgres backend
+ * stores the index in an `integer` column, so the shared validation caps it
+ * there and both backends agree on the addressable range.
+ */
+export const MAX_CHUNK_INDEX = 2 ** 31 - 1
+
+/**
+ * Canonical non-negative decimal integer: `0`, or a digit run with no leading
+ * zero. Rejecting non-canonical spellings (`01`, `+1`, `1e3`) keeps every chunk
+ * addressable at exactly one URL (and at exactly one archive file name).
+ */
+const CHUNK_INDEX_PATTERN = /^(0|[1-9][0-9]*)$/
+
+/**
+ * Parses a chunk-index segment -- the `:chunkIndex` path param, or the
+ * `<index>` segment of a chunk file name (`r.<index>.<encType>.<ext>` /
+ * `.meta.<index>.json`) -- into its number. Returns `undefined` unless the
+ * segment is the canonical decimal spelling of an integer in
+ * `[0, MAX_CHUNK_INDEX]`. The single shared predicate for the live route and
+ * both backends' import paths, so a chunk index means the same thing
+ * everywhere.
+ * @param segment {string}
+ * @returns {number | undefined}
+ */
+export function parseChunkIndexSegment(segment: string): number | undefined {
+  if (!CHUNK_INDEX_PATTERN.test(segment)) {
+    return undefined
+  }
+  const chunkIndex = Number(segment)
+  return chunkIndex <= MAX_CHUNK_INDEX ? chunkIndex : undefined
+}
+
+/**
+ * Parses a chunk directory name (`.chunks.<encodedResourceId>`) back into its
+ * parent `resourceId`, reversing {@link chunkDirName}. Returns `undefined` when
+ * the name is not a chunk directory (no matching prefix, or an empty id
+ * segment).
+ * @param dirName {string}   the basename of the directory
+ * @returns {string | undefined}
+ */
+export function parseChunkDirName(dirName: string): string | undefined {
+  if (!dirName.startsWith(CHUNK_DIR_PREFIX)) {
+    return undefined
+  }
+  const encodedId = dirName.slice(CHUNK_DIR_PREFIX.length)
+  return encodedId.length > 0 ? decodeURIComponent(encodedId) : undefined
+}

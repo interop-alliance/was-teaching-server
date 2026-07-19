@@ -16,6 +16,7 @@ import { SpacesRepositoryRequest } from './requests/SpacesRepositoryRequest.js'
 import { SpaceRequest } from './requests/SpaceRequest.js'
 import { handleError } from './errors.js'
 import { ResourceRequest } from './requests/ResourceRequest.js'
+import { ChunkRequest } from './requests/ChunkRequest.js'
 import { CollectionRequest } from './requests/CollectionRequest.js'
 import { PolicyRequest } from './requests/PolicyRequest.js'
 import { BackendRequest } from './requests/BackendRequest.js'
@@ -350,6 +351,51 @@ export async function initResourceRoutes(
   app.put(
     '/space/:spaceId/:collectionId/:resourceId/meta',
     ResourceRequest.putMeta
+  )
+
+  // Chunked Resource chunks (the `chunked-streams` feature). The member form
+  // (`chunks/:chunkIndex`) addresses one stored chunk; the container form
+  // (`chunks/`) is the discovery/reassembly listing. Like `meta`, the `chunks`
+  // segment sits below the Resource level, so it needs no reserved-id entry.
+
+  // Store a chunk by index
+  app.put(
+    '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex/', // no trailing slash allowed
+    redirectStripSlash
+  )
+  app.put(
+    '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex',
+    ChunkRequest.put
+  )
+
+  // Head Chunk. Declared before the GET route for the same reason as Head
+  // Resource: serve Content-Type/Content-Length from stored metadata without
+  // opening the byte stream.
+  app.head(
+    '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex',
+    ChunkRequest.head
+  )
+
+  // Get a chunk's bytes
+  app.get(
+    '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex',
+    ChunkRequest.get
+  )
+
+  // Delete a chunk
+  app.delete(
+    '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex',
+    ChunkRequest.delete
+  )
+
+  // List a Resource's chunks (container form; trailing slash is canonical)
+  app.get(
+    '/space/:spaceId/:collectionId/:resourceId/chunks', // trailing slash required
+    redirectAddSlash
+  )
+  app.get(
+    '/space/:spaceId/:collectionId/:resourceId/chunks/',
+    ChunkRequest.list
   )
 }
 

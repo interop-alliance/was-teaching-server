@@ -44,7 +44,9 @@ import { collectionPath, resourcePath } from '../lib/paths.js'
 import {
   encodeFilenameSegment,
   fileNameFor,
-  parseResourceFileName
+  parseResourceFileName,
+  chunkDirName,
+  CHUNK_DIR_PREFIX
 } from '../lib/resourceFileName.js'
 import { sanitizeBackendRecord } from '../lib/backends.js'
 import { backendUsageFields } from '../lib/backendUsage.js'
@@ -373,8 +375,9 @@ export class FileSystemBackend implements StorageBackend {
    * It advertises the `conditional-writes` affordance: it exposes a per-Resource
    * `version` as an HTTP `ETag` validator and honors `If-Match` / `If-None-Match`
    * write preconditions atomically (returning `412 precondition-failed` on a
-   * mismatch). The remaining `features` vocabulary token (`chunked-streams`)
-   * is not implemented yet and is added when it lands.
+   * mismatch). It also advertises `chunked-streams`: chunk addressing for large
+   * Resources (`/{resourceId}/chunks/{n}`), each chunk stored opaquely like a
+   * binary Resource representation.
    * (Client-side encryption is deliberately not a backend feature: encrypted
    * documents are opaque client-encrypted JSON this backend already stores
    * faithfully, with no server cooperation.)
@@ -399,11 +402,14 @@ export class FileSystemBackend implements StorageBackend {
       // `key-epochs`: multi-recipient encrypted Collections -- per-epoch wrapped
       // keys on the `encryption` marker, a client-declared `epoch` stamp on
       // Resources, and conditional (`If-Match`) Collection Description writes.
+      // `chunked-streams`: chunk addressing (`/{resourceId}/chunks/{n}`) for a
+      // large Resource, each chunk stored opaquely (bytes + content-type).
       features: [
         'conditional-writes',
         'changes-query',
         'blinded-index-query',
-        'key-epochs'
+        'key-epochs',
+        'chunked-streams'
       ]
     }
   }
@@ -1096,6 +1102,14 @@ export class FileSystemBackend implements StorageBackend {
     spaceEntries.sort((a, b) => a.name.localeCompare(b.name))
 
     const collectionEntriesByDir: Record<string, typeof spaceEntries> = {}
+    // Per-Resource chunk directories (`.chunks.<encId>/`; the `chunked-streams`
+    // feature) are subdirectories of a Collection dir, so the file filter below
+    // skips them. Gather each one's files here so a chunked Resource's chunks
+    // travel in the export, keyed by Collection then by chunk-directory name.
+    const chunkDirsByCollection: Record<
+      string,
+      Array<{ dirName: string; files: string[] }>
+    > = {}
     for (const entry of spaceEntries) {
       if (!entry.isDirectory()) {
         continue
@@ -1107,6 +1121,22 @@ export class FileSystemBackend implements StorageBackend {
       collectionEntriesByDir[entry.name] = entries
         .filter(e => e.isFile())
         .sort((a, b) => a.name.localeCompare(b.name))
+      const chunkDirs: Array<{ dirName: string; files: string[] }> = []
+      for (const sub of entries
+        .filter(e => e.isDirectory() && e.name.startsWith(CHUNK_DIR_PREFIX))
+        .sort((a, b) => a.name.localeCompare(b.name))) {
+        const files = (
+          await fs.promises.readdir(
+            path.join(sourceSpaceDir, entry.name, sub.name),
+            { withFileTypes: true }
+          )
+        )
+          .filter(e => e.isFile())
+          .map(e => e.name)
+          .sort((a, b) => a.localeCompare(b))
+        chunkDirs.push({ dirName: sub.name, files })
+      }
+      chunkDirsByCollection[entry.name] = chunkDirs
     }
 
     // Space-scoped zcap revocations travel with the export. They live in the
@@ -1135,9 +1165,18 @@ export class FileSystemBackend implements StorageBackend {
         entry.isDirectory()
           ? {
               name: entry.name,
-              files: (collectionEntriesByDir[entry.name] ?? []).map(
-                file => file.name
-              )
+              // The Collection's own files, then each chunked Resource's chunk
+              // files listed by their `.chunks.<encId>/<file>` relative path
+              // (the manifest mirrors the pack order below).
+              files: [
+                ...(collectionEntriesByDir[entry.name] ?? []).map(
+                  file => file.name
+                ),
+                ...(chunkDirsByCollection[entry.name] ?? []).flatMap(
+                  ({ dirName, files }) =>
+                    files.map(file => `${dirName}/${file}`)
+                )
+              ]
             }
           : // top-level files in space (e.g. .space.<spaceId>.json)
             { name: entry.name }
@@ -1163,6 +1202,25 @@ export class FileSystemBackend implements StorageBackend {
             path.join(sourceSpaceDir, entry.name, file.name)
           )
           pack.entry({ name: `${entryTarget}/${file.name}`, mtime }, bytes)
+        }
+        // A chunked Resource's chunk directory and its files, packed under the
+        // Collection so `.chunks.<encId>/<file>` round-trips on import.
+        for (const { dirName, files } of chunkDirsByCollection[entry.name] ??
+          []) {
+          pack.entry({
+            name: `${entryTarget}/${dirName}/`,
+            type: 'directory',
+            mtime
+          })
+          for (const file of files) {
+            const bytes = await fs.promises.readFile(
+              path.join(sourceSpaceDir, entry.name, dirName, file)
+            )
+            pack.entry(
+              { name: `${entryTarget}/${dirName}/${file}`, mtime },
+              bytes
+            )
+          }
         }
       } else if (entry.isFile()) {
         const bytes = await fs.promises.readFile(
@@ -1226,7 +1284,8 @@ export class FileSystemBackend implements StorageBackend {
     for (const {
       collectionId,
       collectionDescription,
-      resources
+      resources,
+      chunkFiles
     } of collections) {
       const existing = await this.getCollectionDescription({
         spaceId,
@@ -1255,6 +1314,19 @@ export class FileSystemBackend implements StorageBackend {
             collectionDescription: { encryption: effectiveEncryption },
             contentType,
             body: parsedBody
+          })
+        }
+        incomingBytes += body.length
+      }
+      // Chunk files (the `chunked-streams` feature) inherit the per-upload cap
+      // and quota estimate, but NOT the encryption-conformance check: a chunk is
+      // opaque bytes, not a JSON envelope of the Collection's scheme.
+      for (const { body } of chunkFiles) {
+        if (maxUploadBytes !== undefined && body.length > maxUploadBytes) {
+          throw new PayloadTooLargeError({
+            maxUploadBytes,
+            backendId: this.describe().id,
+            uploadBytes: body.length
           })
         }
         incomingBytes += body.length
@@ -1309,7 +1381,8 @@ export class FileSystemBackend implements StorageBackend {
       collectionPolicy,
       resources,
       resourcePolicies,
-      resourceMetadata
+      resourceMetadata,
+      chunkFiles
     } of collections) {
       // check if collection already exists
       const collectionExisted = Boolean(
@@ -1450,6 +1523,43 @@ export class FileSystemBackend implements StorageBackend {
           data: metadataBytes
         })
         stats.resourcesCreated++
+      }
+
+      // Restore chunk files of chunked Resources (the `chunked-streams` feature)
+      // into their per-Resource chunk directories. Skip-not-overwrite, per chunk
+      // file: an existing chunk file is left untouched, so a re-import never
+      // clobbers stored chunk bytes (or their version sidecar). An ORPHAN chunk
+      // file -- one whose parent Resource is absent or a tombstone (no live
+      // representation on the destination after the Resource apply loop above)
+      // -- is skipped rather than resurrected, matching the live write path's
+      // parent-exists rule (and the Postgres import).
+      const parentIsLive = new Map<string, boolean>()
+      for (const { resourceId, fileName, body } of chunkFiles) {
+        let live = parentIsLive.get(resourceId)
+        if (live === undefined) {
+          live = Boolean(await this._findFile({ collectionDir, resourceId }))
+          parentIsLive.set(resourceId, live)
+        }
+        if (!live) {
+          continue
+        }
+        const chunkDir = this._chunkDir({ collectionDir, resourceId })
+        const target = path.join(chunkDir, fileName)
+        this._assertContained(target)
+        let present = false
+        try {
+          await fsStat(target)
+          present = true
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw err
+          }
+        }
+        if (present) {
+          continue
+        }
+        await mkdir(chunkDir, { recursive: true })
+        await atomicWriteFile({ filePath: target, data: body })
       }
     }
 
@@ -2009,6 +2119,83 @@ export class FileSystemBackend implements StorageBackend {
       }
     }
 
+    await this._writeRepresentationBytes({ spaceId, filePath, input })
+
+    // A Resource has a single current representation: remove any prior
+    // representation stored under a different content-type (its filename
+    // differs). Write-new-then-prune (not delete-then-write) so the resource is
+    // never momentarily absent.
+    const existing = await this._resourceFilesFor({ collectionDir, resourceId })
+    await Promise.all(
+      existing
+        .filter(name => path.resolve(name) !== path.resolve(filePath))
+        .map(name => rm(name))
+    )
+
+    // Maintain the server-managed timestamps and the monotonic `version`: a
+    // content write sets `createdAt` on first write, bumps `updatedAt`, and
+    // increments `version` (the ETag validator) from its prior value, preserving
+    // any user-writable `custom` and the independent `metaVersion` already stored
+    // in the sidecar (a content write does not touch the metadata sub-resource).
+    //
+    // `createdBy` pairs with `createdAt`: taken from this write's invoker only
+    // when this write creates the sidecar, so it names the creator rather than
+    // the last writer, and is preserved verbatim afterward -- including
+    // preserved-as-absent, so a Resource created with no invoker never has a
+    // later writer backfilled into it. A tombstone keeps both, so re-creating a
+    // deleted id under a different invoker preserves the original creator, as
+    // it does the original `createdAt`.
+    const now = new Date().toISOString()
+    const prior = await this._readMetaSidecar({ collectionDir, resourceId })
+    const version = (prior?.version ?? 0) + 1
+    const creator = prior ? prior.createdBy : createdBy
+    await this._writeMetaSidecar({
+      collectionDir,
+      resourceId,
+      sidecar: {
+        createdAt: prior?.createdAt ?? now,
+        updatedAt: now,
+        ...(creator !== undefined && { createdBy: creator }),
+        version,
+        ...(prior?.metaVersion !== undefined && {
+          metaVersion: prior.metaVersion
+        }),
+        ...(prior?.custom && { custom: prior.custom }),
+        // The key-epoch stamp is set from this write's declaration and CLEARED
+        // when absent (the new ciphertext's epoch is unknown -- a stale stamp is
+        // worse than none), so it is NOT preserved from `prior` like `custom`.
+        ...(epoch !== undefined && { epoch })
+      }
+    })
+    return { version }
+  }
+
+  /**
+   * Writes a representation body (JSON value or byte stream) to `filePath`,
+   * applying the same size guards every write path shares: the per-upload cap
+   * (413 `PayloadTooLargeError`) and, when a byte quota is configured, the
+   * Space headroom (507). A JSON body is fully in memory, so its size is checked
+   * up front and written atomically; a binary body is streamed through the cap /
+   * quota guards into a temp file and durably committed (fsync + rename + dir
+   * fsync), removing the partial file on any failure. Shared by the Resource
+   * write path (`_writeResourceLocked`) and the chunk write path
+   * (`_writeChunkLocked`); the caller has already resolved `filePath` and ensured
+   * its parent directory exists for the streamed case.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.filePath {string}   absolute path of the representation file
+   * @param options.input {ResourceInput}
+   * @returns {Promise<void>}
+   */
+  private async _writeRepresentationBytes({
+    spaceId,
+    filePath,
+    input
+  }: {
+    spaceId: string
+    filePath: string
+    input: ResourceInput
+  }): Promise<void> {
     const { capacityBytes, maxUploadBytes } = this
 
     if (input.kind === 'json') {
@@ -2098,54 +2285,6 @@ export class FileSystemBackend implements StorageBackend {
         throw err
       }
     }
-
-    // A Resource has a single current representation: remove any prior
-    // representation stored under a different content-type (its filename
-    // differs). Write-new-then-prune (not delete-then-write) so the resource is
-    // never momentarily absent.
-    const existing = await this._resourceFilesFor({ collectionDir, resourceId })
-    await Promise.all(
-      existing
-        .filter(name => path.resolve(name) !== path.resolve(filePath))
-        .map(name => rm(name))
-    )
-
-    // Maintain the server-managed timestamps and the monotonic `version`: a
-    // content write sets `createdAt` on first write, bumps `updatedAt`, and
-    // increments `version` (the ETag validator) from its prior value, preserving
-    // any user-writable `custom` and the independent `metaVersion` already stored
-    // in the sidecar (a content write does not touch the metadata sub-resource).
-    //
-    // `createdBy` pairs with `createdAt`: taken from this write's invoker only
-    // when this write creates the sidecar, so it names the creator rather than
-    // the last writer, and is preserved verbatim afterward -- including
-    // preserved-as-absent, so a Resource created with no invoker never has a
-    // later writer backfilled into it. A tombstone keeps both, so re-creating a
-    // deleted id under a different invoker preserves the original creator, as
-    // it does the original `createdAt`.
-    const now = new Date().toISOString()
-    const prior = await this._readMetaSidecar({ collectionDir, resourceId })
-    const version = (prior?.version ?? 0) + 1
-    const creator = prior ? prior.createdBy : createdBy
-    await this._writeMetaSidecar({
-      collectionDir,
-      resourceId,
-      sidecar: {
-        createdAt: prior?.createdAt ?? now,
-        updatedAt: now,
-        ...(creator !== undefined && { createdBy: creator }),
-        version,
-        ...(prior?.metaVersion !== undefined && {
-          metaVersion: prior.metaVersion
-        }),
-        ...(prior?.custom && { custom: prior.custom }),
-        // The key-epoch stamp is set from this write's declaration and CLEARED
-        // when absent (the new ciphertext's epoch is unknown -- a stale stamp is
-        // worse than none), so it is NOT preserved from `prior` like `custom`.
-        ...(epoch !== undefined && { epoch })
-      }
-    })
-    return { version }
   }
 
   /**
@@ -2598,6 +2737,15 @@ export class FileSystemBackend implements StorageBackend {
       )
       // Drop the content representation(s) but KEEP the sidecar as the tombstone.
       await Promise.all(filesForResource.map(filename => rm(filename)))
+      // Cascade-delete the Resource's chunks (the `chunked-streams` feature): a
+      // chunk must never outlive its parent Resource, so its whole chunk
+      // directory goes with the content. Runs under the same per-Resource lock a
+      // `writeChunk` takes, so a chunk write racing this delete cannot re-create
+      // an orphan directory. `force` makes an absent chunk directory a no-op.
+      await rm(this._chunkDir({ collectionDir, resourceId }), {
+        recursive: true,
+        force: true
+      })
       // Bump `version` / `updatedAt` so the tombstone sorts after the Resource's
       // prior state in the change feed, and continues the monotonic version (a
       // later re-create reads this sidecar and keeps counting up). `custom` is
@@ -2628,6 +2776,439 @@ export class FileSystemBackend implements StorageBackend {
       this._resourceLockKey({ spaceId, collectionId, resourceId }),
       softDelete
     )
+  }
+
+  // Chunks (the `chunked-streams` feature)
+
+  /**
+   * Builds the on-disk path for a Resource's chunk directory
+   * (`.chunks.<encodedResourceId>/`) inside its Collection dir. A hidden
+   * subdirectory (leading `.`, so it is invisible to the `r.`-prefixed Collection
+   * listing and the live-Resource count) that holds the Resource's chunk
+   * representations; inside it a chunk is stored exactly like a Resource keyed by
+   * its index (`r.<index>.<encodedContentType>.<ext>` plus a `.meta.<index>.json`
+   * version sidecar), so the Resource file / sidecar helpers are reused verbatim
+   * with the chunk directory as the `collectionDir`.
+   * @param options {object}
+   * @param options.collectionDir {string}
+   * @param options.resourceId {string}
+   * @returns {string}
+   */
+  _chunkDir({
+    collectionDir,
+    resourceId
+  }: {
+    collectionDir: string
+    resourceId: string
+  }): string {
+    const chunkDir = path.join(collectionDir, chunkDirName(resourceId))
+    this._assertContained(chunkDir)
+    return chunkDir
+  }
+
+  /**
+   * Writes one chunk of a chunked Resource, keyed by
+   * `(spaceId, collectionId, resourceId, chunkIndex)`. The parent Resource MUST
+   * already exist (else `ResourceNotFoundError`, 404), checked under the same
+   * per-Resource lock a `deleteResource` cascade takes so a chunk can never be
+   * orphaned by a racing delete. The body is stored opaquely (bytes +
+   * content-type) through the shared upload-cap / quota guards, and the chunk's
+   * own monotonic `version` (its ETag validator, independent of the parent's) is
+   * bumped; any `If-Match` / `If-None-Match` precondition is evaluated on that
+   * version atomically with the write (`PreconditionFailedError`, 412).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.chunkIndex {number}   non-negative integer chunk position
+   * @param options.input {ResourceInput}
+   * @param [options.ifMatch] {string}   `If-Match` precondition (a quoted ETag)
+   * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *` (create-if-absent)
+   * @returns {Promise<{ version: number }>}   the chunk's new version
+   */
+  async writeChunk({
+    spaceId,
+    collectionId,
+    resourceId,
+    chunkIndex,
+    input,
+    ifMatch,
+    ifNoneMatch
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    chunkIndex: number
+    input: ResourceInput
+    ifMatch?: string
+    ifNoneMatch?: boolean
+  }): Promise<{ version: number }> {
+    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    // Serialize on the parent Resource's lock key -- the same key
+    // `deleteResource` takes -- so the parent-exists check, the write, and the
+    // cascade delete cannot interleave (no orphan chunk).
+    return this._writeMutex.run(
+      this._resourceLockKey({ spaceId, collectionId, resourceId }),
+      () =>
+        this._writeChunkLocked({
+          spaceId,
+          collectionDir,
+          resourceId,
+          chunkIndex,
+          input,
+          ifMatch,
+          ifNoneMatch
+        })
+    )
+  }
+
+  /**
+   * The critical section of `writeChunk`, run under the per-Resource lock. See
+   * `writeChunk` for the parameters.
+   * @returns {Promise<{ version: number }>}
+   */
+  private async _writeChunkLocked({
+    spaceId,
+    collectionDir,
+    resourceId,
+    chunkIndex,
+    input,
+    ifMatch,
+    ifNoneMatch
+  }: {
+    spaceId: string
+    collectionDir: string
+    resourceId: string
+    chunkIndex: number
+    input: ResourceInput
+    ifMatch?: string
+    ifNoneMatch?: boolean
+  }): Promise<{ version: number }> {
+    // The parent Resource must exist: writing a chunk of an absent Resource
+    // rejects, so orphan chunks cannot accumulate.
+    const parentExists =
+      (await this._findFile({ collectionDir, resourceId })) !== undefined
+    if (!parentExists) {
+      throw new ResourceNotFoundError({ requestName: 'Write Chunk' })
+    }
+
+    // Inside the chunk directory a chunk is a Resource keyed by its index, so the
+    // Resource file / sidecar helpers apply with `chunkDir` as the collectionDir
+    // and the stringified index as the resourceId.
+    const chunkDir = this._chunkDir({ collectionDir, resourceId })
+    const chunkId = String(chunkIndex)
+    const filename = fileNameFor({
+      resourceId: chunkId,
+      contentType: input.contentType
+    })
+    const filePath = path.join(chunkDir, filename)
+    this._assertContained(filePath)
+
+    // Evaluate any precondition against the chunk's current version before
+    // writing (still inside the lock, so check and write are atomic).
+    if (ifMatch !== undefined || ifNoneMatch) {
+      await this._assertWritePrecondition({
+        collectionDir: chunkDir,
+        resourceId: chunkId,
+        ifMatch,
+        ifNoneMatch
+      })
+    }
+
+    // The chunk directory is created lazily on first write (a binary body is
+    // streamed into a temp file in it, so it must exist first).
+    await mkdir(chunkDir, { recursive: true })
+    await this._writeRepresentationBytes({ spaceId, filePath, input })
+
+    // A chunk has a single current representation: remove any prior one stored
+    // under a different content-type (write-new-then-prune).
+    const existing = await this._resourceFilesFor({
+      collectionDir: chunkDir,
+      resourceId: chunkId
+    })
+    await Promise.all(
+      existing
+        .filter(name => path.resolve(name) !== path.resolve(filePath))
+        .map(name => rm(name))
+    )
+
+    // Bump the chunk's monotonic `version` (its ETag validator), preserving its
+    // `createdAt`. A chunk carries no user Metadata / `createdBy` / epoch stamp.
+    const now = new Date().toISOString()
+    const prior = await this._readMetaSidecar({
+      collectionDir: chunkDir,
+      resourceId: chunkId
+    })
+    const version = (prior?.version ?? 0) + 1
+    await this._writeMetaSidecar({
+      collectionDir: chunkDir,
+      resourceId: chunkId,
+      sidecar: {
+        createdAt: prior?.createdAt ?? now,
+        updatedAt: now,
+        version
+      }
+    })
+    return { version }
+  }
+
+  /**
+   * Reads a chunk's bytes, resolving a `ResourceResult` (stream + resolved
+   * content-type + the chunk's `version`). Throws `ResourceNotFoundError` (404)
+   * when the chunk is absent.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.chunkIndex {number}
+   * @returns {Promise<ResourceResult>}
+   */
+  async getChunk({
+    spaceId,
+    collectionId,
+    resourceId,
+    chunkIndex
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    chunkIndex: number
+  }): Promise<ResourceResult> {
+    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const chunkDir = this._chunkDir({ collectionDir, resourceId })
+    const chunkId = String(chunkIndex)
+    const filePath = await this._findFile({
+      collectionDir: chunkDir,
+      resourceId: chunkId
+    })
+    if (!filePath) {
+      throw new ResourceNotFoundError({ requestName: 'Get Chunk' })
+    }
+
+    try {
+      await fsStat(filePath)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new ResourceNotFoundError({ requestName: 'Get Chunk' })
+      }
+      throw err
+    }
+
+    const { contentType: storedResourceType } = parseResourceFileName(
+      path.basename(filePath)
+    )
+    const sidecar = await this._readMetaSidecar({
+      collectionDir: chunkDir,
+      resourceId: chunkId
+    })
+    return {
+      resourceStream: await openFileStream(filePath, this.logger),
+      storedResourceType,
+      ...(sidecar?.version !== undefined && { version: sidecar.version })
+    }
+  }
+
+  /**
+   * Reads a chunk's stored content-type / size / version (the HEAD payload
+   * headers). Resolves `undefined` when the chunk is absent.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.chunkIndex {number}
+   * @returns {Promise<{ contentType: string, size: number, version?: number } |
+   *   undefined>}
+   */
+  async getChunkMetadata({
+    spaceId,
+    collectionId,
+    resourceId,
+    chunkIndex
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    chunkIndex: number
+  }): Promise<
+    { contentType: string; size: number; version?: number } | undefined
+  > {
+    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const chunkDir = this._chunkDir({ collectionDir, resourceId })
+    const chunkId = String(chunkIndex)
+    const filePath = await this._findFile({
+      collectionDir: chunkDir,
+      resourceId: chunkId
+    })
+    if (!filePath) {
+      return undefined
+    }
+
+    let stats
+    try {
+      stats = await fsStat(filePath)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return undefined
+      }
+      throw err
+    }
+
+    const { contentType } = parseResourceFileName(path.basename(filePath))
+    const sidecar = await this._readMetaSidecar({
+      collectionDir: chunkDir,
+      resourceId: chunkId
+    })
+    return {
+      contentType,
+      size: stats.size,
+      ...(sidecar?.version !== undefined && { version: sidecar.version })
+    }
+  }
+
+  /**
+   * Deletes one chunk (a hard delete: its bytes and version sidecar both go, and
+   * -- unlike a Resource -- it leaves no tombstone, since chunks are not part of
+   * the change feed). Resolves `true` when a chunk was removed and `false` when
+   * none was stored at that index. When `ifMatch` is supplied it is evaluated on
+   * the chunk's current version atomically with the removal (under the same
+   * per-Resource lock), throwing `PreconditionFailedError` (412) on a mismatch.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.chunkIndex {number}
+   * @param [options.ifMatch] {string}   `If-Match` precondition (a quoted ETag)
+   * @returns {Promise<boolean>}
+   */
+  async deleteChunk({
+    spaceId,
+    collectionId,
+    resourceId,
+    chunkIndex,
+    ifMatch
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    chunkIndex: number
+    ifMatch?: string
+  }): Promise<boolean> {
+    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const chunkDir = this._chunkDir({ collectionDir, resourceId })
+    const chunkId = String(chunkIndex)
+    return this._writeMutex.run(
+      this._resourceLockKey({ spaceId, collectionId, resourceId }),
+      async () => {
+        const files = await this._resourceFilesFor({
+          collectionDir: chunkDir,
+          resourceId: chunkId
+        })
+        if (files.length === 0) {
+          // Absent: the handler 404s on `false` (chunk deletes are not silently
+          // idempotent, mirroring the EDV chunk contract).
+          return false
+        }
+        if (ifMatch !== undefined) {
+          await this._assertWritePrecondition({
+            collectionDir: chunkDir,
+            resourceId: chunkId,
+            ifMatch
+          })
+        }
+        await Promise.all(files.map(name => rm(name)))
+        // Remove the version sidecar too: a chunk keeps no tombstone.
+        await rm(
+          this._metaSidecarPath({
+            collectionDir: chunkDir,
+            resourceId: chunkId
+          }),
+          { force: true }
+        )
+        // When that was the last chunk, remove the now-empty chunk directory
+        // itself: a lingering empty `.chunks.<encId>/` would otherwise appear
+        // in the export walk (diverging from a Postgres export of the same
+        // logical state) and count its allocated block toward the du-based
+        // quota measurement. Safe under the per-Resource lock (`writeChunk`
+        // serializes on the same key, so nothing lands in the directory
+        // between the check and the rmdir).
+        const remaining = await fs.promises.readdir(chunkDir)
+        if (remaining.length === 0) {
+          await fs.promises.rmdir(chunkDir)
+        }
+        // Freed bytes: drop the cached quota usage so the next write re-measures.
+        this._usageCache.delete(spaceId)
+        return true
+      }
+    )
+  }
+
+  /**
+   * Lists a Resource's stored chunks in ascending `index` order -- the
+   * discovery/reassembly listing (the server never reassembles). Resolves an
+   * empty listing when the Resource has no chunk directory (including when the
+   * Resource itself is absent -- existence is the parent routes' concern).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @returns {Promise<{ count: number, chunks: Array<{ index: number, size:
+   *   number, contentType: string, version?: number }> }>}
+   */
+  async listChunks({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+  }): Promise<{
+    count: number
+    chunks: Array<{
+      index: number
+      size: number
+      contentType: string
+      version?: number
+    }>
+  }> {
+    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const chunkDir = this._chunkDir({ collectionDir, resourceId })
+    let entries: fs.Dirent[]
+    try {
+      entries = await fs.promises.readdir(chunkDir, { withFileTypes: true })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { count: 0, chunks: [] }
+      }
+      throw err
+    }
+
+    // Keep only chunk representations (`r.<index>.<type>.<ext>`), dropping the
+    // `.meta.<index>.json` version sidecars.
+    const chunkEntries = entries.filter(
+      entry => entry.isFile() && entry.name.startsWith('r.')
+    )
+    const chunks = await Promise.all(
+      chunkEntries.map(async entry => {
+        const { resourceId: indexStr, contentType } = parseResourceFileName(
+          entry.name
+        )
+        const filePath = path.join(chunkDir, entry.name)
+        const stats = await fsStat(filePath)
+        const sidecar = await this._readMetaSidecar({
+          collectionDir: chunkDir,
+          resourceId: indexStr
+        })
+        return {
+          index: Number(indexStr),
+          size: stats.size,
+          contentType,
+          ...(sidecar?.version !== undefined && { version: sidecar.version })
+        }
+      })
+    )
+    chunks.sort((left, right) => left.index - right.index)
+    return { count: chunks.length, chunks }
   }
 
   /**

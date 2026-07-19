@@ -52,7 +52,8 @@ describe('Space backend registration (/backends)', () => {
       'conditional-writes',
       'changes-query',
       'blinded-index-query',
-      'key-epochs'
+      'key-epochs',
+      'chunked-streams'
     ]
   }
 

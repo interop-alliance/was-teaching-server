@@ -125,6 +125,25 @@ export class InvalidResourceIdError extends ProblemError {
 }
 
 /**
+ * 400 — the `:chunkIndex` path param of a chunk operation (the
+ * `chunked-streams` feature) is not a canonical non-negative integer. The
+ * canonical-form requirement (no leading zeros, no sign) keeps every chunk
+ * addressable at exactly one URL.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ */
+export class InvalidChunkIndexError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({
+      type: ProblemTypes.INVALID_ID,
+      title: `Invalid ${requestName || 'Chunk'} request`,
+      detail: 'Invalid chunk index (must be a canonical non-negative integer).',
+      statusCode: 400
+    })
+  }
+}
+
+/**
  * 409 — a `POST` create operation supplied an `id` that already exists.
  * Create-or-replace at a client-chosen id is the idempotent `PUT` path, which
  * does not conflict.

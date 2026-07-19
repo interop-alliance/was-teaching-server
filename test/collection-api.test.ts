@@ -306,7 +306,8 @@ describe('Collections API', () => {
           'conditional-writes',
           'changes-query',
           'blinded-index-query',
-          'key-epochs'
+          'key-epochs',
+          'chunked-streams'
         ]
       })
     })
@@ -330,7 +331,8 @@ describe('Collections API', () => {
         'conditional-writes',
         'changes-query',
         'blinded-index-query',
-        'key-epochs'
+        'key-epochs',
+        'chunked-streams'
       ])
     })
 

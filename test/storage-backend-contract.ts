@@ -8,6 +8,7 @@
 import { it, describe, beforeAll, afterAll, expect } from 'vitest'
 import assert from 'node:assert'
 import { Readable } from 'node:stream'
+import * as tar from 'tar-stream'
 import { formatEtag } from '../src/lib/etag.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
 import {
@@ -3077,6 +3078,345 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       })
     })
 
+    describe('chunks (chunked-streams)', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-chunks'
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId)
+        await harness.backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'parent',
+          input: jsonInput({ manifest: true })
+        })
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('writeChunk rejects when the parent Resource is absent', async () => {
+        await expect(
+          harness.backend.writeChunk({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'no-such-parent',
+            chunkIndex: 0,
+            input: binaryInput(Buffer.from('orphan'))
+          })
+        ).rejects.toBeInstanceOf(ResourceNotFoundError)
+      })
+
+      it('writeChunk is an upsert that bumps the chunk version', async () => {
+        const { backend } = harness
+        const first = await backend.writeChunk({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'parent',
+          chunkIndex: 0,
+          input: binaryInput(Buffer.from('v1'))
+        })
+        assert.equal(first.version, 1)
+        const second = await backend.writeChunk({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'parent',
+          chunkIndex: 0,
+          input: binaryInput(Buffer.from('v2-longer'))
+        })
+        assert.equal(second.version, 2)
+      })
+
+      it('getChunk / getChunkMetadata read back bytes, content-type, size, version', async () => {
+        const { backend } = harness
+        const bytes = Buffer.from([9, 8, 7, 6])
+        await backend.writeChunk({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'parent',
+          chunkIndex: 1,
+          input: binaryInput(bytes, { contentType: 'application/octet-stream' })
+        })
+        const result = await backend.getChunk({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'parent',
+          chunkIndex: 1
+        })
+        assert.equal(result.storedResourceType, 'application/octet-stream')
+        assert.equal(result.version, 1)
+        const readChunks: Buffer[] = []
+        for await (const part of result.resourceStream) {
+          readChunks.push(Buffer.from(part))
+        }
+        assert.deepEqual(Buffer.concat(readChunks), bytes)
+
+        const metadata = await backend.getChunkMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'parent',
+          chunkIndex: 1
+        })
+        assert.equal(metadata?.contentType, 'application/octet-stream')
+        assert.equal(metadata?.size, bytes.length)
+        assert.equal(metadata?.version, 1)
+      })
+
+      it('getChunk throws / getChunkMetadata resolves undefined on an absent chunk', async () => {
+        await expect(
+          harness.backend.getChunk({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'parent',
+            chunkIndex: 99
+          })
+        ).rejects.toBeInstanceOf(ResourceNotFoundError)
+        assert.equal(
+          await harness.backend.getChunkMetadata({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'parent',
+            chunkIndex: 99
+          }),
+          undefined
+        )
+      })
+
+      it('listChunks returns the chunk set in ascending index order', async () => {
+        const { backend } = harness
+        await provisionSpace(backend, 'space-chunks-list')
+        await backend.writeResource({
+          spaceId: 'space-chunks-list',
+          collectionId: 'col',
+          resourceId: 'r',
+          input: jsonInput({})
+        })
+        // An empty listing when the Resource has no chunks.
+        const empty = await backend.listChunks({
+          spaceId: 'space-chunks-list',
+          collectionId: 'col',
+          resourceId: 'r'
+        })
+        assert.deepEqual(empty, { count: 0, chunks: [] })
+        // Write out of order to prove the sort is by index, not write order.
+        for (const chunkIndex of [2, 0, 1]) {
+          await backend.writeChunk({
+            spaceId: 'space-chunks-list',
+            collectionId: 'col',
+            resourceId: 'r',
+            chunkIndex,
+            input: binaryInput(Buffer.alloc(chunkIndex + 1, 1))
+          })
+        }
+        const listing = await backend.listChunks({
+          spaceId: 'space-chunks-list',
+          collectionId: 'col',
+          resourceId: 'r'
+        })
+        assert.equal(listing.count, 3)
+        assert.deepEqual(
+          listing.chunks.map(chunk => chunk.index),
+          [0, 1, 2]
+        )
+        assert.deepEqual(
+          listing.chunks.map(chunk => chunk.size),
+          [1, 2, 3]
+        )
+      })
+
+      it('deleteChunk resolves true when it removes a chunk, false when absent', async () => {
+        const { backend } = harness
+        await backend.writeChunk({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'parent',
+          chunkIndex: 5,
+          input: binaryInput(Buffer.from('gone'))
+        })
+        assert.equal(
+          await backend.deleteChunk({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'parent',
+            chunkIndex: 5
+          }),
+          true
+        )
+        // A second delete of the now-absent chunk is not idempotent: false.
+        assert.equal(
+          await backend.deleteChunk({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'parent',
+            chunkIndex: 5
+          }),
+          false
+        )
+      })
+
+      it('chunk conditional writes gate on the chunk version', async () => {
+        const { backend } = harness
+        const created = await backend.writeChunk({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'parent',
+          chunkIndex: 7,
+          input: binaryInput(Buffer.from('a')),
+          ifNoneMatch: true
+        })
+        assert.equal(created.version, 1)
+        // If-None-Match: * on an existing chunk 412s.
+        await expect(
+          backend.writeChunk({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'parent',
+            chunkIndex: 7,
+            input: binaryInput(Buffer.from('b')),
+            ifNoneMatch: true
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        // A stale If-Match 412s; the matching one succeeds.
+        await expect(
+          backend.writeChunk({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'parent',
+            chunkIndex: 7,
+            input: binaryInput(Buffer.from('b')),
+            ifMatch: formatEtag(9)
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        const updated = await backend.writeChunk({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'parent',
+          chunkIndex: 7,
+          input: binaryInput(Buffer.from('b')),
+          ifMatch: formatEtag(1)
+        })
+        assert.equal(updated.version, 2)
+      })
+
+      it('deleteResource cascade-removes the Resource chunks', async () => {
+        const { backend } = harness
+        await provisionSpace(backend, 'space-chunks-cascade')
+        await backend.writeResource({
+          spaceId: 'space-chunks-cascade',
+          collectionId: 'col',
+          resourceId: 'r',
+          input: jsonInput({})
+        })
+        for (const chunkIndex of [0, 1]) {
+          await backend.writeChunk({
+            spaceId: 'space-chunks-cascade',
+            collectionId: 'col',
+            resourceId: 'r',
+            chunkIndex,
+            input: binaryInput(Buffer.from('x'))
+          })
+        }
+        await backend.deleteResource({
+          spaceId: 'space-chunks-cascade',
+          collectionId: 'col',
+          resourceId: 'r'
+        })
+        // The chunks are gone with their parent.
+        await expect(
+          backend.getChunk({
+            spaceId: 'space-chunks-cascade',
+            collectionId: 'col',
+            resourceId: 'r',
+            chunkIndex: 0
+          })
+        ).rejects.toBeInstanceOf(ResourceNotFoundError)
+        const listing = await backend.listChunks({
+          spaceId: 'space-chunks-cascade',
+          collectionId: 'col',
+          resourceId: 'r'
+        })
+        assert.equal(listing.count, 0)
+      })
+
+      // Exact-usage backends account usage transactionally, so two creators
+      // racing on one not-yet-existing key must count its bytes once, not
+      // twice (the lock-nothing `SELECT ... FOR UPDATE` race). The bodies are
+      // the same length, so the final usage is one body's length regardless of
+      // which write lands last. The du-measured filesystem backend skips this:
+      // it re-measures from disk, so the race cannot inflate its figure.
+      it.runIf(exactUsage)(
+        'two creators racing on one new Resource count its bytes once',
+        async () => {
+          const race = await makeBackend()
+          try {
+            const spaceId = 'space-create-race'
+            await provisionSpace(race.backend, spaceId)
+            const bodyOne = Buffer.from('race-body-1')
+            const bodyTwo = Buffer.from('race-body-2')
+            await Promise.all([
+              race.backend.writeResource({
+                spaceId,
+                collectionId: 'col',
+                resourceId: 'raced',
+                input: binaryInput(bodyOne)
+              }),
+              race.backend.writeResource({
+                spaceId,
+                collectionId: 'col',
+                resourceId: 'raced',
+                input: binaryInput(bodyTwo)
+              })
+            ])
+            const usage = await race.backend.reportUsage({ spaceId })
+            assert.equal(usage.usageBytes, bodyOne.length)
+          } finally {
+            await race.cleanup()
+          }
+        }
+      )
+
+      it.runIf(exactUsage)(
+        'two creators racing on one new chunk count its bytes once',
+        async () => {
+          const race = await makeBackend()
+          try {
+            const spaceId = 'space-chunk-create-race'
+            await provisionSpace(race.backend, spaceId)
+            const parentInput = jsonInput({ manifest: true })
+            await race.backend.writeResource({
+              spaceId,
+              collectionId: 'col',
+              resourceId: 'parent',
+              input: parentInput
+            })
+            const parentBytes = JSON.stringify({ manifest: true }).length
+            const bodyOne = Buffer.from('race-body-1')
+            const bodyTwo = Buffer.from('race-body-2')
+            await Promise.all([
+              race.backend.writeChunk({
+                spaceId,
+                collectionId: 'col',
+                resourceId: 'parent',
+                chunkIndex: 0,
+                input: binaryInput(bodyOne)
+              }),
+              race.backend.writeChunk({
+                spaceId,
+                collectionId: 'col',
+                resourceId: 'parent',
+                chunkIndex: 0,
+                input: binaryInput(bodyTwo)
+              })
+            ])
+            const usage = await race.backend.reportUsage({ spaceId })
+            assert.equal(usage.usageBytes, parentBytes + bodyOne.length)
+          } finally {
+            await race.cleanup()
+          }
+        }
+      )
+    })
+
     describe('export / import round-trip', () => {
       it('round-trips a Space (descriptions, resources, policies, metadata, tombstones) within the backend', async () => {
         const source = await makeBackend()
@@ -3193,6 +3533,95 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           )
         } finally {
           await source.cleanup()
+          await target.cleanup()
+        }
+      })
+
+      it('import drops non-canonical-index and orphan chunk files', async () => {
+        const target = await makeBackend()
+        try {
+          const spaceId = 'space-imp-chunk-gates'
+          // Hand-build an archive in the export dialect carrying three chunk
+          // files: a canonical chunk 1 of 'doc', a NON-canonical spelling of
+          // the same index (`r.01.*`, which must be dropped, not coerced onto
+          // -- or stored alongside -- the canonical chunk), and a chunk of
+          // 'ghost', which has no representation in the archive (an orphan
+          // that must not be resurrected).
+          const pack = tar.pack()
+          pack.entry(
+            { name: 'manifest.yml' },
+            [
+              "ubc-version: '0.1'",
+              'contents:',
+              '  space:',
+              '    id: src',
+              ''
+            ].join('\n')
+          )
+          pack.entry(
+            { name: 'space/src/col/r.doc.application%2Fjson.json' },
+            JSON.stringify({ manifest: true })
+          )
+          pack.entry(
+            {
+              name: 'space/src/col/.chunks.doc/r.1.application%2Foctet-stream.bin'
+            },
+            'canonical'
+          )
+          pack.entry(
+            {
+              name: 'space/src/col/.chunks.doc/r.01.application%2Foctet-stream.bin'
+            },
+            'alias'
+          )
+          pack.entry(
+            {
+              name: 'space/src/col/.chunks.ghost/r.0.application%2Foctet-stream.bin'
+            },
+            'orphan'
+          )
+          pack.finalize()
+
+          await provisionSpace(target.backend, spaceId)
+          await target.backend.importSpace({
+            spaceId,
+            tarStream: pack as unknown as Readable
+          })
+
+          // Only the canonical chunk landed, with its own bytes...
+          const listing = await target.backend.listChunks({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'doc'
+          })
+          assert.deepEqual(
+            listing.chunks.map(chunk => chunk.index),
+            [1]
+          )
+          const chunk = await target.backend.getChunk({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'doc',
+            chunkIndex: 1
+          })
+          assert.equal(await streamToString(chunk.resourceStream), 'canonical')
+
+          // ...and the orphan was skipped on both backends.
+          const ghost = await target.backend.listChunks({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'ghost'
+          })
+          assert.equal(ghost.count, 0)
+          await expect(
+            target.backend.getChunk({
+              spaceId,
+              collectionId: 'col',
+              resourceId: 'ghost',
+              chunkIndex: 0
+            })
+          ).rejects.toBeInstanceOf(ResourceNotFoundError)
+        } finally {
           await target.cleanup()
         }
       })

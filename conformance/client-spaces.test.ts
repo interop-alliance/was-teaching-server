@@ -162,7 +162,8 @@ describe('WasClient — Spaces & Collections', () => {
           'conditional-writes',
           'changes-query',
           'blinded-index-query',
-          'key-epochs'
+          'key-epochs',
+          'chunked-streams'
         ]
       })
     })
@@ -221,7 +222,8 @@ describe('WasClient — Spaces & Collections', () => {
           'conditional-writes',
           'changes-query',
           'blinded-index-query',
-          'key-epochs'
+          'key-epochs',
+          'chunked-streams'
         ]
       })
     })

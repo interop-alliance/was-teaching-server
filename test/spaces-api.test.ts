@@ -632,7 +632,8 @@ describe('Spaces', () => {
         'conditional-writes',
         'changes-query',
         'blinded-index-query',
-        'key-epochs'
+        'key-epochs',
+        'chunked-streams'
       ]
     }
 
@@ -676,7 +677,8 @@ describe('Spaces', () => {
         'conditional-writes',
         'changes-query',
         'blinded-index-query',
-        'key-epochs'
+        'key-epochs',
+        'chunked-streams'
       ])
     })
 

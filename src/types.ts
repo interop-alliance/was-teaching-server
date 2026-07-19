@@ -645,7 +645,9 @@ export interface StorageBackend {
    * Deletes a Resource. When `ifMatch` is supplied (`conditional-writes`), the
    * delete proceeds only if the Resource's current ETag matches, evaluated
    * atomically with the removal; a mismatch rejects with `precondition-failed`
-   * (412). Without it, the delete is unconditional and idempotent.
+   * (412). Without it, the delete is unconditional and idempotent. Deleting a
+   * Resource cascade-deletes any chunks stored under it (the `chunked-streams`
+   * feature), so chunks never outlive their parent.
    */
   deleteResource(options: {
     spaceId: string
@@ -693,6 +695,81 @@ export interface StorageBackend {
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ metaVersion: number } | undefined>
+
+  /**
+   * Writes one chunk of a chunked Resource (the `chunked-streams` feature),
+   * keyed by `(spaceId, collectionId, resourceId, chunkIndex)`. The chunk body
+   * is opaque bytes + content-type -- stored exactly like a binary Resource
+   * representation (same upload cap / quota guards); the server never parses
+   * it. The parent Resource MUST already exist: writing a chunk of an absent
+   * Resource rejects with `ResourceNotFoundError` (404), so orphan chunks
+   * cannot accumulate. An upsert per chunk, bumping the chunk's own monotonic
+   * `version` (its ETag validator, independent of the parent's); an `ifMatch` /
+   * `ifNoneMatch` precondition is evaluated on that chunk version atomically
+   * with the write (`precondition-failed` 412 on mismatch).
+   */
+  writeChunk(options: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    chunkIndex: number
+    input: ResourceInput
+    ifMatch?: string
+    ifNoneMatch?: boolean
+  }): Promise<{ version: number }>
+  /** Reads a chunk's bytes; rejects with `ResourceNotFoundError` when absent. */
+  getChunk(options: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    chunkIndex: number
+  }): Promise<ResourceResult>
+  /**
+   * Reads a chunk's stored content-type / size / version (the HEAD payload
+   * headers). Resolves `undefined` when the chunk is absent.
+   */
+  getChunkMetadata(options: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    chunkIndex: number
+  }): Promise<
+    { contentType: string; size: number; version?: number } | undefined
+  >
+  /**
+   * Deletes one chunk. Resolves `true` when a chunk was removed and `false`
+   * when none was stored at that index (the handler 404s on `false` -- unlike
+   * `deleteResource`, chunk deletes are not silently idempotent, mirroring the
+   * EDV chunk contract). An `ifMatch` precondition is evaluated atomically
+   * with the removal (`precondition-failed` 412 on mismatch).
+   */
+  deleteChunk(options: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    chunkIndex: number
+    ifMatch?: string
+  }): Promise<boolean>
+  /**
+   * Lists a Resource's stored chunks in ascending `index` order -- the
+   * discovery/reassembly listing (the server never reassembles; a reader
+   * learns the chunk set here). Resolves an empty listing when the Resource
+   * has no chunks (including when the Resource itself is absent -- existence
+   * is the parent routes' concern).
+   */
+  listChunks(options: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+  }): Promise<{
+    count: number
+    chunks: Array<{
+      index: number
+      size: number
+      contentType: string
+      version?: number
+    }>
+  }>
 
   /**
    * OPTIONAL replication change feed (the `changes` query profile.

@@ -1,6 +1,55 @@
 # History
 
-## 0.9.1 - 2026-07-12
+## 0.9.2 - TBD
+
+### Added
+
+- **Chunk addressing for chunked Resources (the `chunked-streams` backend
+  feature).** A Resource can now carry an ordered set of opaque chunks,
+  addressed at
+  `PUT|GET|HEAD|DELETE /space/{spaceId}/{collectionId}/{resourceId}/chunks/{n}`
+  with a discovery listing at `.../chunks/` (JSON
+  `{ resourceId, count, chunks: [{ index, size, contentType, version }] }`; the
+  no-slash form 308-redirects to the container form). A chunk body is raw bytes
+  plus a content-type, stored exactly like a binary Resource representation --
+  the server never parses or reassembles chunks, so any encryption framing (e.g.
+  an EDV `{ index, offset, sequence, jwe }` chunk document, or a future
+  authenticated per-chunk AEAD layout) is purely a client concern. Both backends
+  implement and advertise the feature, which completes the spec's four-token
+  `features` vocabulary (`conditional-writes`, `changes-query`,
+  `blinded-index-query`, `chunked-streams`).
+- Chunk semantics: every chunk operation requires its parent Resource to exist
+  (404 otherwise -- chunks cannot be orphaned, and an orphan left by out-of-band
+  state is unreadable), each chunk carries its own monotonic `ETag` and honors
+  `If-Match` / `If-None-Match` (412 on mismatch), oversized chunk bodies reuse
+  the per-upload cap (`payload-too-large`, 413), and -- unlike Delete Resource
+  -- deleting an absent chunk is a 404, so a reassembling reader can distinguish
+  "gone" from "never written". A non-canonical `{n}` (negative, non-integer,
+  leading zeros) or one above 2^31-1 is a 400 (both backends enforce the same
+  index range). Deleting the parent Resource cascade-deletes its chunks; chunk
+  bytes count toward Space/Collection usage and quotas; Space export archives
+  carry chunk files and imports restore them (skip-not-overwrite, both backends,
+  cross-backend compatible), holding each restored chunk to the same
+  canonical-index rule as the live route and skipping orphan chunk files whose
+  parent Resource is absent or tombstoned. Chunk writes and deletes never
+  surface on the `changes` feed (per spec): a replicating client finishes a
+  chunked write by `PUT`ting the parent Resource's own content, which does.
+- Authorization follows the existing exact-match model: chunk writes are
+  capability-only and chunk reads capability-or-policy, each against the chunk's
+  own full URL (or the `chunks/` container URL for the listing), with the parent
+  Resource's policy governing reads.
+
+### Fixed
+
+- Postgres backend: the Space's `usage_bytes` quota counter no longer
+  over-counts when two writers race to create the same not-yet-existing
+  Resource. Under `READ COMMITTED` a `SELECT ... FOR UPDATE` on an absent row
+  locks nothing, so both creators read "no prior row" and both counted their
+  full byte size as the usage delta, permanently inflating the counter by one
+  write's size. Same-key creates now serialize on a transaction-scoped advisory
+  lock and re-read the row under lock, so the second writer's precondition,
+  version, and usage delta are all computed from the first writer's committed
+  row.
 
 ### Added
 

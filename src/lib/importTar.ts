@@ -2,7 +2,11 @@ import * as tar from 'tar-stream'
 import YAML from 'yaml'
 import type { Readable } from 'node:stream'
 import { assertValidId } from './validateId.js'
-import { parseResourceFileName } from './resourceFileName.js'
+import {
+  parseChunkDirName,
+  parseChunkIndexSegment,
+  parseResourceFileName
+} from './resourceFileName.js'
 import { InvalidImportError } from '../errors.js'
 import type {
   CollectionDescription,
@@ -53,6 +57,60 @@ export function metaSidecarFileId(fileName: string): string | undefined {
   return dotFileId(fileName, META_PREFIX)
 }
 
+/**
+ * If `fileName` is a chunk entry relative to its Collection dir
+ * (`.chunks.<encodedResourceId>/<chunkFile>`, the `chunked-streams` feature),
+ * returns the parent `resourceId` (decoded from the directory name) and the
+ * `chunkFileName` (its single-segment basename inside the chunk directory);
+ * otherwise undefined. Any deeper nesting or a traversal segment in the chunk
+ * file name is rejected (undefined), so the caller never builds a path from it.
+ * @param fileName {string}   the entry name relative to the Collection dir
+ * @returns {{ resourceId: string, chunkFileName: string } | undefined}
+ */
+function chunkEntryName(
+  fileName: string
+): { resourceId: string; chunkFileName: string } | undefined {
+  const slash = fileName.indexOf('/')
+  if (slash === -1) {
+    return undefined
+  }
+  const resourceId = parseChunkDirName(fileName.slice(0, slash))
+  if (resourceId === undefined) {
+    return undefined
+  }
+  const chunkFileName = fileName.slice(slash + 1)
+  if (
+    chunkFileName.length === 0 ||
+    chunkFileName.includes('/') ||
+    chunkFileName === '..'
+  ) {
+    return undefined
+  }
+  return { resourceId, chunkFileName }
+}
+
+/**
+ * The canonical-chunk-index gate for an archive chunk file: returns true only
+ * when `chunkFileName` is a chunk representation (`r.<index>.<encType>.<ext>`)
+ * or its version sidecar (`.meta.<index>.json`) whose RAW `<index>` segment
+ * passes {@link parseChunkIndexSegment} -- the same predicate the live route
+ * enforces. Validating the raw (undecoded) segment rejects both non-canonical
+ * spellings (`r.01.*`, which would alias chunk 1) and percent-encoded ones
+ * (`r.%31.*`), so an imported chunk file is always reachable at exactly the
+ * URL the listing advertises. Anything else in a chunk directory is dropped.
+ * @param chunkFileName {string}   the file's basename inside the chunk dir
+ * @returns {boolean}
+ */
+function isCanonicalChunkFileName(chunkFileName: string): boolean {
+  const indexSegment =
+    metaSidecarFileId(chunkFileName) ??
+    (chunkFileName.startsWith('r.') ? chunkFileName.split('.')[1] : undefined)
+  return (
+    indexSegment !== undefined &&
+    parseChunkIndexSegment(indexSegment) !== undefined
+  )
+}
+
 /** One extracted archive entry, keyed by its archive path. */
 export interface TarEntry {
   type: 'file' | 'directory'
@@ -63,6 +121,19 @@ export interface TarEntry {
 export interface ImportPlanResource {
   fileName: string
   resourceId: string
+  body: Buffer
+}
+
+/**
+ * One chunk file of a chunked Resource staged for import (the `chunked-streams`
+ * feature): the raw bytes carried verbatim, keyed by the parent `resourceId`
+ * (decoded from the `.chunks.<encId>/` directory name) and the chunk file's
+ * basename inside that directory (`r.<index>...` bytes or its `.meta.<index>.json`
+ * version sidecar).
+ */
+export interface ImportPlanChunkFile {
+  resourceId: string
+  fileName: string
   body: Buffer
 }
 
@@ -77,6 +148,8 @@ export interface ImportPlanCollection {
   resourcePolicies: Map<string, PolicyDocument>
   /** Resource metadata sidecars (raw `.meta.<id>.json` bytes), keyed by resourceId. */
   resourceMetadata: Map<string, Buffer>
+  /** Chunk files of chunked Resources in this Collection, carried verbatim. */
+  chunkFiles: ImportPlanChunkFile[]
 }
 
 /** The merge plan produced by {@link buildImportPlan}. */
@@ -185,10 +258,12 @@ export function validateManifest(entries: Map<string, TarEntry>): void {
  * - space/<sourceSpaceId>/<collectionId>/.policy.<collectionId>.json (collection policy)
  * - space/<sourceSpaceId>/<collectionId>/.policy.<resourceId>.json (resource policy)
  * - space/<sourceSpaceId>/<collectionId>/r.<resourceId>.<encodedContentType>.<ext>
+ * - space/<sourceSpaceId>/<collectionId>/.chunks.<encodedResourceId>/<chunkFile>
+ *   (a chunked Resource's chunk files; the `chunked-streams` feature)
  *
  * The source space id in the path may differ from the import target; collection
- * metadata, r.* resource files, and `.policy.*` policy files are merged into the
- * destination.
+ * metadata, r.* resource files, `.chunks.*` chunk files, and `.policy.*` policy
+ * files are merged into the destination.
  *
  * @param entries {Map<string, TarEntry>}
  * @returns {ImportPlan}
@@ -246,6 +321,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     let collectionPolicy: PolicyDocument | undefined
     const resourcePolicies = new Map<string, PolicyDocument>()
     const resourceMetadata = new Map<string, Buffer>()
+    const chunkFiles: ImportPlanChunkFile[] = []
     for (const [entryName, entry] of entries) {
       if (
         !entryName.startsWith(collectionPrefix) ||
@@ -256,6 +332,32 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       }
 
       const fileName = entryName.slice(collectionPrefix.length)
+
+      // Chunk files of a chunked Resource live in a per-Resource subdirectory
+      // (`.chunks.<encId>/<chunkFile>`), so they are the one Collection entry
+      // carrying a slash. Carry them verbatim, keyed by the parent resourceId
+      // decoded from the directory name (validated against path traversal).
+      const chunk = chunkEntryName(fileName)
+      if (chunk) {
+        assertValidId(chunk.resourceId, {
+          kind: 'resource',
+          requestName: 'Import Space'
+        })
+        // Drop a chunk file with a non-canonical index (or a stray file that
+        // is neither a representation nor a sidecar): written verbatim it
+        // would be unreachable at the canonical member URL yet advertised by
+        // the listing.
+        if (!isCanonicalChunkFileName(chunk.chunkFileName)) {
+          continue
+        }
+        chunkFiles.push({
+          resourceId: chunk.resourceId,
+          fileName: chunk.chunkFileName,
+          body: entry.body
+        })
+        continue
+      }
+
       if (fileName.includes('/')) {
         continue
       }
@@ -325,7 +427,8 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       collectionPolicy,
       resources,
       resourcePolicies,
-      resourceMetadata
+      resourceMetadata,
+      chunkFiles
     }
   })
 

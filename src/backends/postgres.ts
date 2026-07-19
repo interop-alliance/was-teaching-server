@@ -42,9 +42,21 @@ import {
   DuplicateRevocationError
 } from '../errors.js'
 import { applyMigrations } from './postgresSchema.js'
-import { extractTarEntries, buildImportPlan } from '../lib/importTar.js'
+import {
+  extractTarEntries,
+  buildImportPlan,
+  metaSidecarFileId
+} from '../lib/importTar.js'
+import type { TarEntry } from '../lib/importTar.js'
 import { collectionPath, resourcePath } from '../lib/paths.js'
-import { fileNameFor, parseResourceFileName } from '../lib/resourceFileName.js'
+import {
+  fileNameFor,
+  parseResourceFileName,
+  chunkDirName,
+  parseChunkDirName,
+  parseChunkIndexSegment
+} from '../lib/resourceFileName.js'
+import { assertValidId } from '../lib/validateId.js'
 import { sanitizeBackendRecord } from '../lib/backends.js'
 import { backendUsageFields } from '../lib/backendUsage.js'
 import { assertEncryptedWriteConforms } from '../lib/encryption.js'
@@ -204,6 +216,17 @@ function parseSidecar(bytes: Buffer | undefined): SidecarShape | undefined {
   } catch {
     return undefined
   }
+}
+
+/**
+ * The chunk-metadata sidecar shape (`.chunks.<encId>/.meta.<index>.json`) the
+ * filesystem backend writes per chunk. Only the monotonic `version` (the
+ * chunk's ETag validator) is carried across export/import; the filesystem
+ * writes `createdAt` / `updatedAt` too, but this backend's `chunks` table holds
+ * no chunk timestamps, so it emits and reads only `version`.
+ */
+interface ChunkSidecar {
+  version?: number
 }
 
 export class PostgresBackend implements StorageBackend {
@@ -421,11 +444,14 @@ export class PostgresBackend implements StorageBackend {
       // `key-epochs`: multi-recipient encrypted Collections -- per-epoch wrapped
       // keys on the `encryption` marker, a client-declared `epoch` stamp on
       // Resources, and conditional (`If-Match`) Collection Description writes.
+      // `chunked-streams`: chunk addressing at `/{resourceId}/chunks/{n}`, opaque
+      // per-chunk raw-bytes storage in the `chunks` table.
       features: [
         'conditional-writes',
         'changes-query',
         'blinded-index-query',
-        'key-epochs'
+        'key-epochs',
+        'chunked-streams'
       ]
     }
   }
@@ -519,6 +545,42 @@ export class PostgresBackend implements StorageBackend {
     }
   }
 
+  /**
+   * Serializes concurrent CREATORS of one not-yet-existing row (a Resource or
+   * a chunk) on a transaction-scoped advisory lock keyed by the row's
+   * identity. Under READ COMMITTED a `SELECT ... FOR UPDATE` on an absent row
+   * locks nothing (no gap locks), so two concurrent creators would both read
+   * "no prior row" and both apply their full byte size as the usage delta --
+   * and while the `ON CONFLICT` arm recomputes `version` from the conflicting
+   * row, it cannot retroactively fix the loser's delta, leaving `usage_bytes`
+   * inflated by one write's size. The caller takes this lock when its
+   * lock-nothing SELECT found no row, then RE-reads the row: the second
+   * creator blocks here until the first commits, and its re-read sees the
+   * committed row, so its precondition, version, and usage delta are computed
+   * from accurate state. Held to commit (advisory xact lock). The `create:`
+   * prefix keeps this key domain distinct from the unique-blinded-term
+   * advisory lock, which hashes the bare `(spaceId, collectionId)`.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param options.rowKey {string}   the row's identity within the Space
+   * @returns {Promise<void>}
+   */
+  private async _lockSameKeyCreate({
+    client,
+    spaceId,
+    rowKey
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    rowKey: string
+  }): Promise<void> {
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+      [spaceId, `create:${rowKey}`]
+    )
+  }
+
   // Quotas
 
   /**
@@ -546,13 +608,20 @@ export class PostgresBackend implements StorageBackend {
 
     let usageByCollection: CollectionUsage[] | undefined
     if (includeCollections) {
+      // Per-Collection usage sums both Resource content bytes and chunk bytes
+      // (the `chunked-streams` feature) so the breakdown agrees with the
+      // Space total in the transactional counter.
       const { rows: collectionRows } = await this._pool.query<{
         collection_id: string
         usage: string
       }>(
-        `SELECT collection_id, COALESCE(SUM(size_bytes), 0) AS usage
-           FROM resources
-          WHERE space_id = $1
+        `SELECT collection_id, COALESCE(SUM(bytes), 0) AS usage FROM (
+           SELECT collection_id, size_bytes AS bytes FROM resources
+             WHERE space_id = $1
+           UNION ALL
+           SELECT collection_id, size AS bytes FROM chunks
+             WHERE space_id = $1
+         ) usage_rows
           GROUP BY collection_id
           ORDER BY collection_id`,
         [spaceId]
@@ -595,6 +664,8 @@ export class PostgresBackend implements StorageBackend {
          (SELECT COALESCE(usage_bytes, 0) FROM spaces WHERE space_id = $1)
            AS space_total,
          (SELECT COALESCE(SUM(size_bytes), 0) FROM resources
+           WHERE space_id = $1 AND collection_id = $2)
+         + (SELECT COALESCE(SUM(size), 0) FROM chunks
            WHERE space_id = $1 AND collection_id = $2) AS collection_total`,
       [spaceId, collectionId]
     )
@@ -1024,9 +1095,15 @@ export class PostgresBackend implements StorageBackend {
     collectionId: string
   }): Promise<void> {
     await this._withTransaction(async client => {
+      // The Collection's freed bytes are its Resource content plus its chunk
+      // bytes (the `chunked-streams` feature); both cascade away with the
+      // Collection row, so both leave the quota counter.
       const { rows } = await client.query<{ total: string }>(
-        `SELECT COALESCE(SUM(size_bytes), 0) AS total FROM resources
-          WHERE space_id = $1 AND collection_id = $2`,
+        `SELECT
+           (SELECT COALESCE(SUM(size_bytes), 0) FROM resources
+             WHERE space_id = $1 AND collection_id = $2)
+         + (SELECT COALESCE(SUM(size), 0) FROM chunks
+             WHERE space_id = $1 AND collection_id = $2) AS total`,
         [spaceId, collectionId]
       )
       const freedBytes = Number(rows[0]?.total ?? 0)
@@ -1307,7 +1384,31 @@ export class PostgresBackend implements StorageBackend {
           FOR UPDATE`,
         [spaceId, collectionId, resourceId]
       )
-      const prior = rows[0]
+      let prior = rows[0]
+      if (prior === undefined) {
+        // The lock-nothing case: serialize with any concurrent creator of the
+        // same id and re-read, so `exists` / `priorSize` below reflect the row
+        // it committed (see `_lockSameKeyCreate` -- without this, both
+        // creators would count their full byte size as the usage delta).
+        await this._lockSameKeyCreate({
+          client,
+          spaceId,
+          rowKey: `${collectionId}/${resourceId}`
+        })
+        const { rows: reread } = await client.query<
+          Pick<
+            ResourceRow,
+            'version' | 'size_bytes' | 'deleted' | 'created_at' | 'created_by'
+          >
+        >(
+          `SELECT version, size_bytes, deleted, created_at, created_by
+             FROM resources
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+            FOR UPDATE`,
+          [spaceId, collectionId, resourceId]
+        )
+        prior = reread[0]
+      }
       const exists = prior !== undefined && !prior.deleted
       if (ifMatch !== undefined || ifNoneMatch) {
         assertWritePrecondition({
@@ -1339,7 +1440,7 @@ export class PostgresBackend implements StorageBackend {
 
       const now = new Date().toISOString()
       const version = (prior?.version ?? 0) + 1
-      const priorSize = exists ? Number(prior.size_bytes) : 0
+      const priorSize = exists ? Number(prior?.size_bytes ?? 0) : 0
       const delta = content.length - priorSize
       if (delta !== 0) {
         await this._applyUsageDelta({ client, spaceId, delta })
@@ -1350,10 +1451,11 @@ export class PostgresBackend implements StorageBackend {
       // dropped both (the metadata went with the deleted Resource).
       //
       // Create-if-absent atomicity: when `If-None-Match: *` found NO prior row
-      // (a tombstone is a real row and stays lock-serialized), the SELECT FOR
-      // UPDATE locked nothing -- READ COMMITTED has no gap locks -- so a
-      // concurrent creator may have raced past the same precondition. A plain
-      // INSERT (no ON CONFLICT) makes the primary key the arbiter: the loser's
+      // (a tombstone is a real row and stays lock-serialized), concurrent
+      // creators through this method are already serialized by
+      // `_lockSameKeyCreate` above -- but a writer that does not take that
+      // lock (`importSpace`'s plain INSERTs) can still race. A plain INSERT
+      // (no ON CONFLICT) keeps the primary key as the arbiter: the loser's
       // unique violation maps to the 412 the precondition would have thrown.
       // `createdBy` names the Resource's creator, not its last writer: taken
       // from this write's invoker only when there is no prior row at all
@@ -1519,7 +1621,25 @@ export class PostgresBackend implements StorageBackend {
         // no-op, keeping an existing tombstone's change-feed entry stable.
         return
       }
-      const freedBytes = Number(prior.size_bytes)
+      // A soft delete is an UPDATE, not a row removal, so the chunk foreign
+      // key's ON DELETE CASCADE does not fire -- remove the Resource's chunks
+      // (the `chunked-streams` feature) explicitly in this same transaction so
+      // they never outlive their parent, and return their bytes to the quota
+      // counter alongside the Resource's content bytes.
+      const { rows: chunkRows } = await client.query<{ total: string }>(
+        `SELECT COALESCE(SUM(size), 0) AS total FROM chunks
+          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
+        [spaceId, collectionId, resourceId]
+      )
+      const freedChunkBytes = Number(chunkRows[0]?.total ?? 0)
+      if (freedChunkBytes > 0) {
+        await client.query(
+          `DELETE FROM chunks
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
+          [spaceId, collectionId, resourceId]
+        )
+      }
+      const freedBytes = Number(prior.size_bytes) + freedChunkBytes
       if (freedBytes > 0) {
         await this._applyUsageDelta({ client, spaceId, delta: -freedBytes })
       }
@@ -1669,6 +1789,395 @@ export class PostgresBackend implements StorageBackend {
       )
       return { metaVersion }
     })
+  }
+
+  // Chunks (the `chunked-streams` feature)
+
+  /**
+   * Writes one chunk of a chunked Resource as one transaction: the parent
+   * Resource must exist (checked atomically -- a `FOR SHARE` lock on it also
+   * blocks a concurrent delete of the parent for the duration of the write, so
+   * a chunk can never be orphaned by a racing `deleteResource`), the chunk row
+   * is locked, its precondition evaluated, its monotonic `version` bumped, and
+   * the transactional quota delta applied. The chunk body is stored opaquely as
+   * a single `bytea`, the buffered-blob path (bounded by `maxUploadBytes`),
+   * exactly like a binary Resource representation.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.chunkIndex {number}   a non-negative safe integer
+   * @param options.input {ResourceInput}
+   * @param [options.ifMatch] {string}
+   * @param [options.ifNoneMatch] {boolean}
+   * @returns {Promise<{ version: number }>}   the chunk's new version
+   */
+  async writeChunk({
+    spaceId,
+    collectionId,
+    resourceId,
+    chunkIndex,
+    input,
+    ifMatch,
+    ifNoneMatch
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    chunkIndex: number
+    input: ResourceInput
+    ifMatch?: string
+    ifNoneMatch?: boolean
+  }): Promise<{ version: number }> {
+    const { maxUploadBytes } = this
+    let bytes: Buffer
+    if (input.kind === 'json') {
+      bytes = Buffer.from(JSON.stringify(input.data))
+      if (bytes.length > maxUploadBytes) {
+        throw new PayloadTooLargeError({
+          maxUploadBytes,
+          backendId: this.describe().id,
+          uploadBytes: bytes.length
+        })
+      }
+    } else {
+      // Pre-flight a declared size, then buffer through the counting guard that
+      // hard-caps a body whose size is omitted or understated. Buffering
+      // happens BEFORE the transaction so a slow upload holds no row lock.
+      if (
+        input.declaredBytes !== undefined &&
+        input.declaredBytes > maxUploadBytes
+      ) {
+        throw new PayloadTooLargeError({
+          maxUploadBytes,
+          backendId: this.describe().id,
+          uploadBytes: input.declaredBytes
+        })
+      }
+      bytes = await bufferStreamCapped({
+        stream: input.stream,
+        maxUploadBytes,
+        backendId: this.describe().id
+      })
+    }
+
+    return this._withTransaction(async client => {
+      // Parent Resource must exist (and not be a tombstone). `FOR SHARE`
+      // conflicts with the `FOR UPDATE` a concurrent `deleteResource` takes, so
+      // the two serialize on the parent row -- the parent cannot be deleted
+      // between this check and the chunk write.
+      const { rows: parentRows } = await client.query<{ deleted: boolean }>(
+        `SELECT deleted FROM resources
+          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+          FOR SHARE`,
+        [spaceId, collectionId, resourceId]
+      )
+      const parent = parentRows[0]
+      if (!parent || parent.deleted) {
+        throw new ResourceNotFoundError({ requestName: 'Write Chunk' })
+      }
+
+      // Lock the chunk row (if any) and read its current version/size, so the
+      // precondition, the monotonic bump, and the usage delta are all atomic
+      // with the write.
+      const { rows } = await client.query<{ version: number; size: string }>(
+        `SELECT version, size FROM chunks
+          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+            AND chunk_index = $4
+          FOR UPDATE`,
+        [spaceId, collectionId, resourceId, chunkIndex]
+      )
+      let prior = rows[0]
+      const chunkLabel = `${resourceId}/chunks/${chunkIndex}`
+      if (prior === undefined) {
+        // The lock-nothing case: serialize with any concurrent creator of the
+        // same chunk and re-read, so the usage delta below reflects the row it
+        // committed (see `_lockSameKeyCreate`).
+        await this._lockSameKeyCreate({
+          client,
+          spaceId,
+          rowKey: `${collectionId}/${chunkLabel}`
+        })
+        const { rows: reread } = await client.query<{
+          version: number
+          size: string
+        }>(
+          `SELECT version, size FROM chunks
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+              AND chunk_index = $4
+            FOR UPDATE`,
+          [spaceId, collectionId, resourceId, chunkIndex]
+        )
+        prior = reread[0]
+      }
+      const exists = prior !== undefined
+      if (ifMatch !== undefined || ifNoneMatch) {
+        assertWritePrecondition({
+          resourceId: chunkLabel,
+          exists,
+          currentVersion: prior?.version ?? 0,
+          ifMatch,
+          ifNoneMatch
+        })
+      }
+
+      const version = (prior?.version ?? 0) + 1
+      const priorSize = exists ? Number(prior?.size ?? 0) : 0
+      const delta = bytes.length - priorSize
+      if (delta !== 0) {
+        await this._applyUsageDelta({ client, spaceId, delta })
+      }
+
+      const values = [
+        spaceId,
+        collectionId,
+        resourceId,
+        chunkIndex,
+        input.contentType,
+        bytes,
+        bytes.length,
+        version
+      ]
+      const insertSql = `
+        INSERT INTO chunks (
+          space_id, collection_id, resource_id, chunk_index,
+          content_type, bytes, size, version
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+      // Create-if-absent atomicity mirrors `writeResource`: concurrent
+      // creators through this method are serialized by `_lockSameKeyCreate`
+      // above, and against a writer that does not take that lock
+      // (`importSpace`'s plain INSERTs) the plain INSERT keeps the primary key
+      // as the arbiter -- a racing creator's unique violation maps to the 412
+      // the precondition would have thrown.
+      if (ifNoneMatch && prior === undefined) {
+        try {
+          await client.query(insertSql, values)
+        } catch (err) {
+          if ((err as { code?: string }).code === '23505') {
+            throw new PreconditionFailedError({
+              detail: `Chunk '${chunkLabel}' already exists (If-None-Match: *).`
+            })
+          }
+          throw err
+        }
+        return { version }
+      }
+      // The conflict update derives `version` from the row (`chunks.version +
+      // 1`), not from the pre-read, so a concurrent creator that slipped in
+      // after our lock-nothing SELECT still advances the counter monotonically.
+      // RETURNING reports the version that actually landed.
+      const { rows: written } = await client.query<{ version: number }>(
+        `${insertSql}
+         ON CONFLICT (space_id, collection_id, resource_id, chunk_index)
+         DO UPDATE SET
+           content_type = EXCLUDED.content_type,
+           bytes = EXCLUDED.bytes,
+           size = EXCLUDED.size,
+           version = chunks.version + 1
+         RETURNING version`,
+        values
+      )
+      return { version: written[0]!.version }
+    })
+  }
+
+  /**
+   * Reads a chunk's bytes. Rejects with `ResourceNotFoundError` (404) when no
+   * chunk is stored at that index.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.chunkIndex {number}
+   * @returns {Promise<ResourceResult>}
+   */
+  async getChunk({
+    spaceId,
+    collectionId,
+    resourceId,
+    chunkIndex
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    chunkIndex: number
+  }): Promise<ResourceResult> {
+    const { rows } = await this._pool.query<{
+      content_type: string
+      bytes: Buffer
+      version: number
+    }>(
+      `SELECT content_type, bytes, version FROM chunks
+        WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+          AND chunk_index = $4`,
+      [spaceId, collectionId, resourceId, chunkIndex]
+    )
+    const row = rows[0]
+    if (!row) {
+      throw new ResourceNotFoundError({ requestName: 'Get Chunk' })
+    }
+    return {
+      resourceStream: Readable.from(row.bytes),
+      storedResourceType: row.content_type,
+      version: row.version
+    }
+  }
+
+  /**
+   * Reads a chunk's stored content-type / size / version (the HEAD payload
+   * headers). Resolves `undefined` when the chunk is absent.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.chunkIndex {number}
+   * @returns {Promise<{ contentType: string, size: number, version?: number }
+   *   | undefined>}
+   */
+  async getChunkMetadata({
+    spaceId,
+    collectionId,
+    resourceId,
+    chunkIndex
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    chunkIndex: number
+  }): Promise<
+    { contentType: string; size: number; version?: number } | undefined
+  > {
+    const { rows } = await this._pool.query<{
+      content_type: string
+      size: string
+      version: number
+    }>(
+      `SELECT content_type, size, version FROM chunks
+        WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+          AND chunk_index = $4`,
+      [spaceId, collectionId, resourceId, chunkIndex]
+    )
+    const row = rows[0]
+    if (!row) {
+      return undefined
+    }
+    return {
+      contentType: row.content_type,
+      size: Number(row.size),
+      version: row.version
+    }
+  }
+
+  /**
+   * Deletes one chunk as one transaction (the chunk row is locked, its
+   * `ifMatch` precondition evaluated atomically, and its bytes returned to the
+   * quota counter). Resolves `true` when a chunk was removed, `false` when none
+   * was stored at that index (the handler 404s on `false` -- chunk deletes are
+   * not silently idempotent, unlike `deleteResource`).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.chunkIndex {number}
+   * @param [options.ifMatch] {string}
+   * @returns {Promise<boolean>}
+   */
+  async deleteChunk({
+    spaceId,
+    collectionId,
+    resourceId,
+    chunkIndex,
+    ifMatch
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    chunkIndex: number
+    ifMatch?: string
+  }): Promise<boolean> {
+    return this._withTransaction(async client => {
+      const { rows } = await client.query<{ version: number; size: string }>(
+        `SELECT version, size FROM chunks
+          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+            AND chunk_index = $4
+          FOR UPDATE`,
+        [spaceId, collectionId, resourceId, chunkIndex]
+      )
+      const prior = rows[0]
+      if (prior === undefined) {
+        return false
+      }
+      if (ifMatch !== undefined) {
+        assertWritePrecondition({
+          resourceId: `${resourceId}/chunks/${chunkIndex}`,
+          exists: true,
+          currentVersion: prior.version,
+          ifMatch
+        })
+      }
+      await client.query(
+        `DELETE FROM chunks
+          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+            AND chunk_index = $4`,
+        [spaceId, collectionId, resourceId, chunkIndex]
+      )
+      const freedBytes = Number(prior.size)
+      if (freedBytes > 0) {
+        await this._applyUsageDelta({ client, spaceId, delta: -freedBytes })
+      }
+      return true
+    })
+  }
+
+  /**
+   * Lists a Resource's stored chunks in ascending `chunk_index` order -- the
+   * discovery/reassembly listing. The opaque `bytes` column is deliberately not
+   * selected. An empty listing (Resource with no chunks, or an absent Resource)
+   * resolves `{ count: 0, chunks: [] }`.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @returns {Promise<{ count: number, chunks: Array<{ index: number, size:
+   *   number, contentType: string, version?: number }> }>}
+   */
+  async listChunks({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+  }): Promise<{
+    count: number
+    chunks: Array<{
+      index: number
+      size: number
+      contentType: string
+      version?: number
+    }>
+  }> {
+    const { rows } = await this._pool.query<{
+      chunk_index: number
+      size: string
+      content_type: string
+      version: number
+    }>(
+      `SELECT chunk_index, size, content_type, version FROM chunks
+        WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+        ORDER BY chunk_index`,
+      [spaceId, collectionId, resourceId]
+    )
+    return {
+      count: rows.length,
+      chunks: rows.map(row => ({
+        index: row.chunk_index,
+        size: Number(row.size),
+        contentType: row.content_type,
+        version: row.version
+      }))
+    }
   }
 
   /**
@@ -2435,7 +2944,8 @@ export class PostgresBackend implements StorageBackend {
       { rows: policyRows },
       { rows: collectionRows },
       { rows: resourceRows },
-      { rows: revocationRows }
+      { rows: revocationRows },
+      { rows: chunkRows }
     ] = await Promise.all([
       this._pool.query<{
         collection_id: string
@@ -2477,6 +2987,20 @@ export class PostgresBackend implements StorageBackend {
         `SELECT delegator, capability_id, record FROM space_revocations
             WHERE space_id = $1`,
         [spaceId]
+      ),
+      // Chunk metadata only -- bytes are fetched one chunk at a time while
+      // packing, so an export never holds a chunked Resource whole in memory.
+      this._pool.query<{
+        collection_id: string
+        resource_id: string
+        chunk_index: number
+        content_type: string
+        version: number
+      }>(
+        `SELECT collection_id, resource_id, chunk_index, content_type, version
+           FROM chunks WHERE space_id = $1
+          ORDER BY collection_id, resource_id, chunk_index`,
+        [spaceId]
       )
     ])
 
@@ -2487,11 +3011,26 @@ export class PostgresBackend implements StorageBackend {
       row => row.collection_id === '' && row.resource_id === ''
     )?.policy
 
-    // A file entry carries its bytes inline (the small JSON dot-files) or a
-    // lazy reference to a resource representation, resolved at pack time.
+    // A file entry carries its bytes inline (the small JSON dot-files), a lazy
+    // reference to a resource representation, or a chunk directory (the
+    // `chunked-streams` feature) whose files are likewise inline (the per-chunk
+    // `.meta.<index>.json` sidecar) or lazy (the chunk `r.<index>...`
+    // representation, resolved at pack time). `name` is the entry's sort key
+    // within its dir; a chunk directory sorts by its `.chunks.<encId>` dir name.
+    type ChunkFile =
+      | { name: string; bytes: Buffer }
+      | {
+          name: string
+          chunk: {
+            collectionId: string
+            resourceId: string
+            chunkIndex: number
+          }
+        }
     type FileEntry =
       | { name: string; bytes: Buffer }
       | { name: string; resource: { collectionId: string; resourceId: string } }
+      | { name: string; chunkDir: ChunkFile[] }
     // Space-level dot-files are always small JSON, carried inline.
     const spaceFiles: Array<{ name: string; bytes: Buffer }> = [
       {
@@ -2564,6 +3103,48 @@ export class PostgresBackend implements StorageBackend {
         })
       }
     }
+    // Chunks (the `chunked-streams` feature): each chunked Resource contributes
+    // one `.chunks.<encResourceId>/` subdirectory in its Collection dir, in the
+    // exact filesystem-backend layout so an archive imports into either backend.
+    // A chunk is stored there as a Resource keyed by its stringified index: an
+    // `r.<index>.<encContentType>.<ext>` representation file (`fileNameFor`)
+    // plus a `.meta.<index>.json` version sidecar. Files within a chunk dir are
+    // sorted by name (the filesystem's readdir sort). Rows arrive ordered by
+    // `(collection, resource, index)`.
+    const chunkDirsByResource = new Map<string, ChunkFile[]>()
+    for (const row of chunkRows) {
+      const dirKey = `${row.collection_id}/${row.resource_id}`
+      let chunkFiles = chunkDirsByResource.get(dirKey)
+      if (!chunkFiles) {
+        chunkFiles = []
+        chunkDirsByResource.set(dirKey, chunkFiles)
+        filesFor(row.collection_id).push({
+          name: chunkDirName(row.resource_id),
+          chunkDir: chunkFiles
+        })
+      }
+      const chunkId = String(row.chunk_index)
+      chunkFiles.push({
+        name: fileNameFor({
+          resourceId: chunkId,
+          contentType: row.content_type
+        }),
+        chunk: {
+          collectionId: row.collection_id,
+          resourceId: row.resource_id,
+          chunkIndex: row.chunk_index
+        }
+      })
+      chunkFiles.push({
+        name: `.meta.${chunkId}.json`,
+        bytes: Buffer.from(
+          JSON.stringify({ version: row.version } satisfies ChunkSidecar)
+        )
+      })
+    }
+    for (const chunkFiles of chunkDirsByResource.values()) {
+      chunkFiles.sort((left, right) => left.name.localeCompare(right.name))
+    }
 
     // Top-level order: space-level files and collection dirs interleaved,
     // sorted by name -- the same order the filesystem's readdir+sort yields.
@@ -2597,7 +3178,17 @@ export class PostgresBackend implements StorageBackend {
       spaceId,
       entries: topLevel.map(entry =>
         entry.kind === 'collection'
-          ? { name: entry.name, files: entry.files.map(file => file.name) }
+          ? {
+              name: entry.name,
+              // A chunk directory expands to its `.chunks.<encId>/<file>`
+              // relative paths (mirroring the pack order), so the manifest
+              // matches the filesystem backend's for the same Space.
+              files: entry.files.flatMap(file =>
+                'chunkDir' in file
+                  ? file.chunkDir.map(child => `${file.name}/${child.name}`)
+                  : [file.name]
+              )
+            }
           : { name: entry.name }
       ),
       revocationFiles: revocationFiles.map(file => file.name)
@@ -2615,6 +3206,25 @@ export class PostgresBackend implements StorageBackend {
       if (entry.kind === 'collection') {
         pack.entry({ name: `${entryTarget}/`, type: 'directory', mtime })
         for (const file of entry.files) {
+          if ('chunkDir' in file) {
+            // A chunked Resource's `.chunks.<encId>/` subdirectory: emit the
+            // directory entry, then each file -- an inline `.meta.<index>.json`
+            // sidecar, or a chunk representation whose bytes are fetched one at
+            // a time.
+            const dirTarget = `${entryTarget}/${file.name}`
+            pack.entry({ name: `${dirTarget}/`, type: 'directory', mtime })
+            for (const chunkFile of file.chunkDir) {
+              const bytes =
+                'bytes' in chunkFile
+                  ? chunkFile.bytes
+                  : await this._chunkContent({ spaceId, ...chunkFile.chunk })
+              pack.entry(
+                { name: `${dirTarget}/${chunkFile.name}`, mtime },
+                bytes
+              )
+            }
+            continue
+          }
           const bytes =
             'bytes' in file
               ? file.bytes
@@ -2664,6 +3274,38 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
+   * Fetches one chunk's bytes for the export pack loop (the `chunked-streams`
+   * feature). A chunk removed between the metadata pass and this read yields an
+   * empty body rather than failing the whole archive, matching
+   * `_resourceContent`.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.chunkIndex {number}
+   * @returns {Promise<Buffer>}
+   */
+  private async _chunkContent({
+    spaceId,
+    collectionId,
+    resourceId,
+    chunkIndex
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    chunkIndex: number
+  }): Promise<Buffer> {
+    const { rows } = await this._pool.query<{ bytes: Buffer | null }>(
+      `SELECT bytes FROM chunks
+        WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+          AND chunk_index = $4`,
+      [spaceId, collectionId, resourceId, chunkIndex]
+    )
+    return rows[0]?.bytes ?? Buffer.alloc(0)
+  }
+
+  /**
    * Merges a WAS space-export tarball into an existing Space with the same
    * three-invariant pre-flight (per-entry 413, fail-closed 422 encryption
    * conformance, cumulative 507) and skip-not-overwrite merge semantics as
@@ -2685,6 +3327,10 @@ export class PostgresBackend implements StorageBackend {
   }): Promise<ImportStats> {
     const entries = await extractTarEntries(tarStream)
     const { spacePolicy, collections, revocations } = buildImportPlan(entries)
+    // Chunk entries (the `chunked-streams` feature) live in per-Resource
+    // `.chunks.<encId>/` subdirectories, which `buildImportPlan` skips (it
+    // ignores nested files); parse them straight off the raw tar entries.
+    const chunkEntries = this._chunkEntriesFromArchive(entries)
     const {
       capacityBytes,
       maxUploadBytes,
@@ -2773,6 +3419,19 @@ export class PostgresBackend implements StorageBackend {
           }
           incomingBytes += body.length
         }
+      }
+      // Chunks (the `chunked-streams` feature) are opaque bytes -- no
+      // encryption-conformance check applies -- but they count the same per-body
+      // 413 and the (conservative) capacity pre-flight as Resource bodies.
+      for (const chunk of chunkEntries) {
+        if (chunk.body.length > maxUploadBytes) {
+          throw new PayloadTooLargeError({
+            maxUploadBytes,
+            backendId: this.describe().id,
+            uploadBytes: chunk.body.length
+          })
+        }
+        incomingBytes += chunk.body.length
       }
       if (
         capacityBytes !== undefined &&
@@ -2966,13 +3625,63 @@ export class PostgresBackend implements StorageBackend {
         }
       }
 
-      if (createdBytes > 0) {
+      // Chunks (the `chunked-streams` feature): restore each archived chunk
+      // skip-not-overwrite, after the Resource apply loop so a chunk's parent
+      // Resource row already exists in this transaction (the foreign key
+      // requires it). An orphan chunk -- one whose parent is absent or a
+      // tombstone -- is skipped rather than resurrected. Existing chunk rows are
+      // left untouched.
+      let createdChunkBytes = 0
+      for (const chunk of chunkEntries) {
+        const { rows: parentRows } = await client.query<{ deleted: boolean }>(
+          `SELECT deleted FROM resources
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
+          [spaceId, chunk.collectionId, chunk.resourceId]
+        )
+        const parent = parentRows[0]
+        if (!parent || parent.deleted) {
+          continue
+        }
+        const { rows: existingChunkRows } = await client.query(
+          `SELECT 1 FROM chunks
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+              AND chunk_index = $4`,
+          [spaceId, chunk.collectionId, chunk.resourceId, chunk.chunkIndex]
+        )
+        if (existingChunkRows.length > 0) {
+          continue
+        }
+        // The chunk's `version` comes from its archived `.meta.<index>.json`
+        // sidecar; an archive without one (or a chunk written before sidecars)
+        // starts at version 1, the same fresh-write default as a Resource
+        // restored without a sidecar.
+        await client.query(
+          `INSERT INTO chunks (
+             space_id, collection_id, resource_id, chunk_index,
+             content_type, bytes, size, version
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            spaceId,
+            chunk.collectionId,
+            chunk.resourceId,
+            chunk.chunkIndex,
+            chunk.contentType,
+            chunk.body,
+            chunk.body.length,
+            chunk.version ?? 1
+          ]
+        )
+        createdChunkBytes += chunk.body.length
+      }
+
+      const createdTotalBytes = createdBytes + createdChunkBytes
+      if (createdTotalBytes > 0) {
         // The pre-flight was conservative (it counted skips too), so the
         // actual created total always fits; apply it unguarded.
         await this._applyUsageDelta({
           client,
           spaceId,
-          delta: createdBytes
+          delta: createdTotalBytes
         })
       }
 
@@ -3069,5 +3778,142 @@ export class PostgresBackend implements StorageBackend {
         sidecar?.epoch ?? null
       ]
     )
+  }
+
+  /**
+   * Parses a Space-export archive's chunk entries (the `chunked-streams`
+   * feature) out of the raw tar entry map, in the filesystem backend's on-disk
+   * layout so archives round-trip between the two backends. Chunk files live at
+   * `space/<sourceSpaceId>/<collectionId>/.chunks.<encResourceId>/<file>` --
+   * where a chunk is a Resource keyed by its stringified index: an
+   * `r.<index>.<encContentType>.<ext>` representation paired with an optional
+   * `.meta.<index>.json` version sidecar. `buildImportPlan` skips these (it
+   * ignores nested Collection-dir files), so they are parsed here. Ids parsed
+   * from the archive are validated (the path-traversal guard); a file whose
+   * raw index segment is not canonical (`parseChunkIndexSegment`) is ignored,
+   * and a sidecar with no paired representation is dropped (a chunk keeps no
+   * tombstone).
+   * @param entries {Map<string, TarEntry>}
+   * @returns {Array<{ collectionId: string, resourceId: string, chunkIndex:
+   *   number, contentType: string, body: Buffer, version?: number }>}
+   */
+  private _chunkEntriesFromArchive(entries: Map<string, TarEntry>): Array<{
+    collectionId: string
+    resourceId: string
+    chunkIndex: number
+    contentType: string
+    body: Buffer
+    version?: number
+  }> {
+    // Accumulate the representation and the sidecar of each chunk under one
+    // key, then emit only the chunks that carry a representation.
+    const staged = new Map<
+      string,
+      {
+        collectionId: string
+        resourceId: string
+        chunkIndex: number
+        contentType?: string
+        body?: Buffer
+        version?: number
+      }
+    >()
+    const pattern = /^space\/[^/]+\/([^/]+)\/(\.chunks\.[^/]+)\/([^/]+)$/
+    for (const [entryName, entry] of entries) {
+      if (entry.type !== 'file' || !entry.body) {
+        continue
+      }
+      const match = entryName.match(pattern)
+      if (!match) {
+        continue
+      }
+      const collectionId = match[1]!
+      const resourceId = parseChunkDirName(match[2]!)
+      const fileName = match[3]!
+      if (resourceId === undefined) {
+        continue
+      }
+      // Reject a path-traversal / non-URL-safe id parsed from the archive
+      // before it keys a destination row.
+      assertValidId(collectionId, {
+        kind: 'collection',
+        requestName: 'Import Space'
+      })
+      assertValidId(resourceId, {
+        kind: 'resource',
+        requestName: 'Import Space'
+      })
+
+      // A chunk's index is the "resource id" of its file within the chunk dir:
+      // `r.<index>.<encType>.<ext>` for the representation, `.meta.<index>.json`
+      // for the version sidecar. The RAW index segment must pass the same
+      // canonical predicate as the live route (`parseChunkIndexSegment`), so a
+      // non-canonical spelling (`r.01.*`, `r.%31.*`) is dropped rather than
+      // coerced onto -- and colliding with -- the canonical chunk's row.
+      let chunkIdSegment: string | undefined
+      let representation: { contentType: string; body: Buffer } | undefined
+      let sidecarVersion: number | undefined
+      const metaId = metaSidecarFileId(fileName)
+      if (metaId !== undefined) {
+        chunkIdSegment = metaId
+        try {
+          const sidecar = JSON.parse(
+            entry.body.toString('utf8')
+          ) as ChunkSidecar
+          sidecarVersion = sidecar.version
+        } catch {
+          sidecarVersion = undefined
+        }
+      } else if (fileName.startsWith('r.')) {
+        const { contentType } = parseResourceFileName(fileName)
+        chunkIdSegment = fileName.split('.')[1]
+        representation = { contentType, body: entry.body }
+      } else {
+        continue
+      }
+
+      const chunkIndex =
+        chunkIdSegment === undefined
+          ? undefined
+          : parseChunkIndexSegment(chunkIdSegment)
+      if (chunkIndex === undefined) {
+        continue
+      }
+
+      const key = `${collectionId}/${resourceId}/${chunkIndex}`
+      const slot = staged.get(key) ?? { collectionId, resourceId, chunkIndex }
+      if (representation !== undefined) {
+        slot.contentType = representation.contentType
+        slot.body = representation.body
+      }
+      if (sidecarVersion !== undefined) {
+        slot.version = sidecarVersion
+      }
+      staged.set(key, slot)
+    }
+
+    const parsed: Array<{
+      collectionId: string
+      resourceId: string
+      chunkIndex: number
+      contentType: string
+      body: Buffer
+      version?: number
+    }> = []
+    for (const slot of staged.values()) {
+      if (slot.body === undefined) {
+        // A sidecar with no paired representation is not a valid chunk.
+        continue
+      }
+      parsed.push({
+        collectionId: slot.collectionId,
+        resourceId: slot.resourceId,
+        chunkIndex: slot.chunkIndex,
+        contentType: slot.contentType ?? 'application/octet-stream',
+        body: slot.body,
+        version: slot.version
+      })
+    }
+    return parsed
   }
 }
