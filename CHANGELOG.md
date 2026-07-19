@@ -1,5 +1,15 @@
 # History
 
+## Unreleased - TBD
+
+### Fixed
+
+- CORS registration now sets `exposedHeaders: ['Location', 'ETag', 'Link']`,
+  so browser-based clients can read the `Location` header on space/resource
+  creation, `ETag` for metaVersion concurrency, and `Link` for pagination and
+  policy linkset discovery. Previously these were blocked by the default CORS
+  response-header allowlist, breaking browser wallets.
+
 ## 0.10.0 - 2026-07-19
 
 ### Added

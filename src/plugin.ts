@@ -212,10 +212,13 @@ async function wasPlugin(
       (onboardingToken ? onboardingTokenAuthorizer(onboardingToken) : undefined)
   )
 
-  // Disable CORS
+  // Disable CORS. `exposedHeaders` is required for browser clients: without
+  // it, cross-origin JS cannot read `Location` (space/resource creation),
+  // `ETag` (metaVersion concurrency), or `Link` (pagination, policy linksets).
   fastify.register(cors, {
     origin: '*',
-    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    exposedHeaders: ['Location', 'ETag', 'Link']
   })
 
   // Multipart file uploading. The cap is `files: 2`, not `1`: a write MUST carry
