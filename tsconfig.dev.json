@@ -3,11 +3,6 @@
   "compilerOptions": {
     "noEmit": true
   },
-  "include": [
-    "src/**/*",
-    "test/**/*.ts",
-    "conformance/**/*.ts",
-    "vite.config.ts"
-  ],
+  "include": ["src/**/*", "test/**/*.ts", "vite.config.ts"],
   "exclude": ["node_modules", "dist"]
 }

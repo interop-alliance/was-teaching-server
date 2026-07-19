@@ -6,3 +6,4 @@ minimumReleaseAgeExclude:
   - '@interop/storage-core@0.3.4'
   - '@interop/was-client@0.14.2'
   - '@interop/x25519-key-agreement-key@5.2.0'
+  - '@interop/was-conformance-suite@0.1.1'

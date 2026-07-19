@@ -194,13 +194,15 @@ export class PostgresBackend implements StorageBackend {
 
 ## Verifying your composition
 
-The conformance suite in this repository runs against any WAS server by URL and
-is the definition of "speaks WAS." Point it at your composed server:
+The `was-conformance` CLI (from
+[`@interop/was-conformance-suite`](https://github.com/interop-alliance/was-conformance-suite))
+runs against any WAS server by URL and is the definition of "speaks WAS." Point
+it at your composed server:
 
 ```bash
-TEST_SERVER_URL=http://localhost:3002 pnpm conformance
+npx was-conformance http://localhost:3002
 ```
 
-`TEST_SERVER_URL` must be exactly the `serverUrl` the server was started with
-(the same exact-match rule as above). If your server gates `POST /spaces/`
-behind an onboarding token, pass `TEST_ONBOARDING_TOKEN`.
+The URL must be exactly the `serverUrl` the server was started with (the same
+exact-match rule as above). If your server gates `POST /spaces/` behind an
+onboarding token, pass `--token`.

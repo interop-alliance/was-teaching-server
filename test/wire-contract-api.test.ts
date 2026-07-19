@@ -4,7 +4,7 @@
  * `WasClient` handles hide status/headers by design, so this uses the
  * `was.request()` escape hatch (raw `HttpResponse`, raw errors) to keep a
  * minimal status-code check in the `pnpm test` gate. Exhaustive wire-contract
- * coverage lives in `conformance/*-api`.
+ * coverage lives in the `*-api` suites of `@interop/was-conformance-suite`.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'

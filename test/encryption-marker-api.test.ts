@@ -9,7 +9,7 @@
  * (raw `HttpResponse` / raw errors), mirroring `wire-contract-api.test.ts` --
  * the high-level handles hide exactly those details. End-to-end coverage through
  * the high-level client lives in `@interop/was-client`'s own EDV integration
- * suite and the `conformance/` marker test.
+ * suite and the `@interop/was-conformance-suite` marker test.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'

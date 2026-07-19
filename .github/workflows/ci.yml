@@ -45,6 +45,11 @@ jobs:
 
   conformance:
     runs-on: ubuntu-latest
+    # The CLI target URL must stay byte-identical to SERVER_URL (ZCap
+    # invocation targets embed host:port), so both come from one place.
+    env:
+      PORT: '3002'
+      SERVER_URL: http://localhost:3002
     steps:
       - uses: actions/checkout@v6
 
@@ -61,10 +66,52 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Spawns the server as a subprocess, waits for it to answer, runs the
-      # standalone conformance suite against it, then tears it down. PORT is
-      # passed explicitly so the run does not depend on the script's default.
-      - name: Conformance (server spawned in-process)
-        run: pnpm conformance:local
+      - name: Build
+        run: pnpm run build
+
+      # Run the `was-conformance` CLI (from @interop/was-conformance-suite)
+      # twice against the production build: once with open provisioning, once
+      # with an onboarding token required server-side and supplied client-side.
+      # The CLI exit code gates the job (0 = conformant, 1 = failures,
+      # 2 = usage error / server unreachable); the JSON reports are uploaded as
+      # build artifacts.
+      - name: Conformance (open provisioning)
+        shell: bash
+        run: |
+          node dist/start.js > server-open.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            curl -fsS "$SERVER_URL/health" > /dev/null 2>&1 && break
+            sleep 0.5
+          done
+          pnpm exec was-conformance "$SERVER_URL" \
+            --reporter json > conformance-open.json
+
+      - name: Conformance (onboarding token)
+        shell: bash
         env:
-          PORT: '3002'
+          WAS_ONBOARDING_TOKEN: ci-conformance-token
+        run: |
+          node dist/start.js > server-token.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            curl -fsS "$SERVER_URL/health" > /dev/null 2>&1 && break
+            sleep 0.5
+          done
+          pnpm exec was-conformance "$SERVER_URL" \
+            --token "$WAS_ONBOARDING_TOKEN" \
+            --reporter json > conformance-token.json
+
+      - name: Upload conformance reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-reports
+          path: |
+            conformance-open.json
+            conformance-token.json
+            server-open.log
+            server-token.log
+          if-no-files-found: warn

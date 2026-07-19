@@ -1,11 +1,26 @@
 # History
 
+## 0.10.2 - TBD
+
+### Changed
+
+- Protocol conformance testing now uses the extracted
+  `@interop/was-conformance-suite` package (devDependency) instead of the
+  in-tree `conformance/` directory, which has been removed. `pnpm conformance`
+  now runs the package's `was-conformance` CLI (URL passed positionally;
+  `TEST_SERVER_URL` / `TEST_ONBOARDING_TOKEN` env vars still work as fallbacks),
+  and `pnpm conformance:local` still spins up a matched local server but
+  delegates the test run to the CLI, forwarding any extra arguments. CI now
+  exercises the production build against the CLI twice -- open provisioning and
+  onboarding-token-gated -- and uploads the JSON conformance reports as build
+  artifacts.
+
 ## 0.10.1 - 2026-07-19
 
 ### Fixed
 
-- CORS registration now sets `exposedHeaders: ['Location', 'ETag', 'Link']`,
-  so browser-based clients can read the `Location` header on space/resource
+- CORS registration now sets `exposedHeaders: ['Location', 'ETag', 'Link']`, so
+  browser-based clients can read the `Location` header on space/resource
   creation, `ETag` for metaVersion concurrency, and `Link` for pagination and
   policy linkset discovery. Previously these were blocked by the default CORS
   response-header allowlist, breaking browser wallets.

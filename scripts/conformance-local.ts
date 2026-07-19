@@ -1,22 +1,22 @@
 /**
  * One-shot local conformance runner.
  *
- * Spins up the WAS server on a fixed local URL, waits until it answers, runs the
- * standalone `conformance/` suite against it with a matching `TEST_SERVER_URL`,
- * then tears the server down (even if the suite fails). This guarantees the
- * `SERVER_URL` / `TEST_SERVER_URL` match that ZCap `invocationTarget`
+ * Spins up the WAS server on a fixed local URL, waits until it answers, runs
+ * the `@interop/was-conformance-suite` CLI (`was-conformance`) against it, then
+ * tears the server down (even if the suite fails). This guarantees the
+ * `SERVER_URL` / conformance-target match that ZCap `invocationTarget`
  * verification requires — the two must be byte-identical host:port strings, or
  * the delegated-access tests 404.
  *
- * Override the port with `PORT=... pnpm conformance:local` if 3002 is taken; the
- * server URL and the test URL are both derived from it, so they stay in sync.
+ * Override the port with `PORT=... pnpm conformance:local` if 3002 is taken;
+ * the server URL and the CLI's target URL are both derived from it, so they
+ * stay in sync. Extra arguments are forwarded to the CLI, e.g.
+ * `pnpm conformance:local -- --grep chunk --reporter json`.
  *
  * Usage: pnpm conformance:local
  */
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import { readdirSync } from 'node:fs'
-import path from 'node:path'
 import process from 'node:process'
 
 const port = process.env.PORT ?? '3002'
@@ -46,28 +46,20 @@ async function waitForHealth(url: string): Promise<void> {
 }
 
 /**
- * The `conformance/*.test.ts` files, resolved here rather than via a shell glob
- * (this script spawns processes directly, without a shell to expand `*`).
- * @returns {string[]} repo-relative paths
- */
-function conformanceTestFiles(): string[] {
-  const dir = path.join(import.meta.dirname, '..', 'conformance')
-  return readdirSync(dir)
-    .filter(name => name.endsWith('.test.ts'))
-    .map(name => path.join('conformance', name))
-}
-
-/**
- * Runs the conformance suite against `serverUrl`, inheriting stdio so its output
- * streams to the terminal.
+ * Runs the `was-conformance` CLI against `serverUrl`, inheriting stdio so its
+ * output streams to the terminal. The URL is passed positionally and must stay
+ * byte-identical to the `SERVER_URL` the server was started with (ZCap
+ * invocation targets embed host:port). Any CLI arguments given to this script
+ * are forwarded through.
  * @returns {Promise<number>} the suite's exit code
  */
 function runConformance(): Promise<number> {
   return new Promise((resolve, reject) => {
-    const suite = spawn('tsx', ['--test', ...conformanceTestFiles()], {
-      env: { ...process.env, TEST_SERVER_URL: serverUrl },
-      stdio: 'inherit'
-    })
+    const suite = spawn(
+      'pnpm',
+      ['exec', 'was-conformance', serverUrl, ...process.argv.slice(2)],
+      { stdio: 'inherit' }
+    )
     suite.on('exit', code => resolve(code ?? 1))
     suite.on('error', reject)
   })

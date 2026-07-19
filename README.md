@@ -272,29 +272,41 @@ reusable.
 
 ### Conformance Tests
 
-The `conformance/` suite runs against any external WAS server. The server's
-`SERVER_URL` and the test's `TEST_SERVER_URL` **must be byte-for-byte
-identical** (including host and port) — ZCap `invocationTarget` URLs embed the
-full host:port, so even `localhost` vs `127.0.0.1` or a port mismatch will make
-delegated-access tests 404.
+Protocol conformance testing lives in its own package,
+[`@interop/was-conformance-suite`](https://github.com/interop-alliance/was-conformance-suite),
+which ships a `was-conformance` CLI that runs against any WAS server by URL
+(installed here as a devDependency). The URL passed to the CLI and the server's
+`SERVER_URL` **must be byte-for-byte identical** (including host and port) —
+ZCap `invocationTarget` URLs embed the full host:port, so even `localhost` vs
+`127.0.0.1` or a port mismatch will make delegated-access tests 404.
 
 For a local run, `pnpm conformance:local` does the whole dance for you: it spins
-up the server on a fixed local URL, waits until it answers, runs the suite with
-a matching `TEST_SERVER_URL`, and tears the server down afterward (even if the
-suite fails) — so the two URLs can't drift out of sync.
+up the server on a fixed local URL, waits until it answers, runs the CLI against
+that same URL, and tears the server down afterward (even if the suite fails) —
+so the two URLs can't drift out of sync.
 
 ```bash
 # One-shot local run (recommended). Override the port with PORT=... if 3002 is
-# taken; the server and test URLs are both derived from it, so they stay in sync.
+# taken; the server and CLI URLs are both derived from it, so they stay in
+# sync. Arguments after -- are forwarded to the CLI.
 pnpm conformance:local
+pnpm conformance:local -- --grep chunk --reporter json
 
 # Against an already-running or external server. Start it with a matching
 # SERVER_URL, then in another shell:
-TEST_SERVER_URL=https://was.example.com pnpm conformance
+pnpm conformance https://was.example.com
 
 # With an onboarding token, for servers that require one for POST /spaces/:
-TEST_SERVER_URL=https://was.example.com TEST_ONBOARDING_TOKEN=abc123 pnpm conformance
+pnpm conformance https://was.example.com --token abc123
+
+# TEST_SERVER_URL / TEST_ONBOARDING_TOKEN env vars still work as fallbacks:
+TEST_SERVER_URL=https://was.example.com pnpm conformance
 ```
+
+Useful CLI options: `-s/--suite <id>`, `-g/--grep <pattern>`,
+`--include-optional` / `--skip-optional`, `-r json`, `--timeout <ms>`,
+`--fail-fast`. Exit codes: `0` conformant, `1` failures, `2` usage error or
+server unreachable.
 
 ## Security
 
