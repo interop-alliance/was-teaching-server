@@ -1,5 +1,48 @@
 # History
 
+## 0.11.0 - TBD
+
+### Added
+
+- **The `equality` query profile (the `equality-query` backend feature).** A
+  plaintext Collection can now declare which top-level attributes the server
+  extracts and indexes, and answer server-side equality queries over them at
+  `POST /space/{spaceId}/{collectionId}/query` with `{ "profile": "equality" }`.
+  The body carries exactly one of `equals` (a disjunction of `{ name: value }`
+  conjunctions) or `has` (attributes that must be present), plus optional
+  `count`, `limit`, and an opaque `cursor`; matching is strict JSON equality
+  (`"1"` never matches `1`; a multi-valued array attribute matches any element)
+  and a query naming an attribute the Collection does not declare is rejected
+  fail-closed (`invalid-request-body`, 400). The response is a
+  `{ documents: [{ id, data?, custom? }], hasMore, cursor? }` page in ascending
+  Resource-id order (`data` for JSON Resources, `custom` for any Resource with
+  custom metadata -- so blob Resources are queryable through their `custom`
+  tags), or `{ count }`. Unlike the client-computed `blinded-index` profile, the
+  server does the extraction, so a plain Resource write is immediately
+  queryable; the profile is capability-or-policy readable like List Collection,
+  and an encrypted Collection answers `unsupported-operation` (501). Both
+  first-party backends evaluate through one shared module so their semantics
+  cannot drift.
+- **The `indexes` Collection Description property.** A plaintext Collection opts
+  in by declaring `indexes`: an array of attribute-name strings, or objects
+  `{ name, source: "content" | "custom", unique: true }` where `source` (default
+  `content`) names where the attribute is extracted from -- a JSON Resource's
+  content, or any Resource's `custom` metadata object. Declared names must be
+  unique across the array. Unlike `encryption`, `indexes` is updatable (entries
+  may be added or removed); it MUST NOT be combined with an `encryption` marker
+  (rejected `invalid-request-body`, 400, in both directions). An entry marked
+  `unique: true` claims per-Collection uniqueness for that attribute's
+  `(name, value)` pairs: a content or metadata write whose extracted value is
+  already held by a different Resource is rejected with `id-conflict` (409),
+  enforced atomically with the write; adding a unique claim to a Collection
+  whose stored Resources already violate it is likewise rejected (409).
+- **The GET `filter[attr]=value` equality filter on List Collection.**
+  `GET /space/{spaceId}/{collectionId}/?filter[attr]=value` runs the equality
+  profile over the same machinery from the anonymous, HTTP-cacheable listing
+  endpoint: it answers the same document page. Every filter attribute must be
+  declared in the Collection's `indexes` (fail-closed 400); on a `PublicCanRead`
+  Collection the filter query needs no capability, so a cache can serve it.
+
 ## 0.10.2 - TBD
 
 ### Changed

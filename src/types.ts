@@ -41,6 +41,13 @@ import type {
   BlindedIndexQuery,
   BlindedIndexQueryPage
 } from './lib/blindedIndex.js'
+import type {
+  EqualityQuery,
+  EqualityQueryPage,
+  EqualityCandidate,
+  EqualityValue,
+  NormalizedIndexDeclaration
+} from './lib/equalityIndex.js'
 
 // The shared WAS wire model now lives in `@interop/storage-core`. Import the
 // shapes referenced by the `StorageBackend` contract below, and re-export the
@@ -63,6 +70,17 @@ import type {
 // Surface the blinded-index query shapes referenced by the `StorageBackend`
 // contract (`queryByBlindedIndex`) from this one module.
 export type { BlindedIndexQuery, BlindedIndexQueryPage }
+
+// Surface the equality-index query shapes referenced by the `StorageBackend`
+// contract (`queryByEquality` / `findEqualityUniqueViolation`) from this one
+// module, alongside the blinded-index ones.
+export type {
+  EqualityQuery,
+  EqualityQueryPage,
+  EqualityCandidate,
+  EqualityValue,
+  NormalizedIndexDeclaration
+}
 
 // Surface the reused @interop/data-integrity-core types from this one module.
 export type {
@@ -91,6 +109,7 @@ export type {
   ResourceSummary,
   CollectionResourcesList,
   CollectionDescription,
+  CollectionIndexDeclaration,
   CollectionEncryption,
   CollectionEncryptionEpoch,
   CollectionEncryptionRecipient,
@@ -608,12 +627,30 @@ export interface StorageBackend {
    * (see `lib/blindedIndex.ts`). Conflicts require `unique: true` on both
    * sides, and a document keeping its own unique attribute across an update
    * never self-conflicts.
+   *
+   * A backend carrying the `equality-query` feature enforces the analogous
+   * plaintext unique-attribute invariant when the request layer passes
+   * `uniqueIndexes` (the target Collection's normalized `unique: true`
+   * declarations, resolved from its control-plane description): a write whose
+   * extracted value for a `unique` content-sourced attribute is already claimed
+   * by a different live Resource in the same Collection rejects with
+   * `UniqueAttributeConflictError` (409), evaluated atomically with the write
+   * (see `lib/equalityIndex.ts`). Unlike the blinded invariant this is
+   * Collection-level, so a conflict does not require the other side to opt in.
    */
   writeResource(options: {
     spaceId: string
     collectionId: string
     resourceId: string
     input: ResourceInput
+    /**
+     * The target Collection's normalized `unique: true` index declarations,
+     * passed by the request layer only when the Collection declares any. The
+     * backend enforces the plaintext unique-attribute claim atomically with the
+     * write (409 `UniqueAttributeConflictError`), for the content-sourced
+     * entries a content write can claim.
+     */
+    uniqueIndexes?: NormalizedIndexDeclaration[]
     /**
      * DID of the party whose capability invocation authorized this write (the
      * signing key's DID, fragment stripped). Recorded as the Resource's
@@ -685,6 +722,15 @@ export interface StorageBackend {
     collectionId: string
     resourceId: string
     custom: ResourceMetadataCustom | Record<string, unknown>
+    /**
+     * The target Collection's normalized `unique: true` index declarations,
+     * passed by the request layer only when the Collection declares any. The
+     * backend enforces the plaintext unique-attribute claim atomically with the
+     * metadata write (409 `UniqueAttributeConflictError`), for the
+     * custom-sourced entries a metadata write can claim (see
+     * `lib/equalityIndex.ts`).
+     */
+    uniqueIndexes?: NormalizedIndexDeclaration[]
     /**
      * The client-declared key epoch (the `key-epochs` feature), a sibling of
      * `custom`. Unlike `custom` (full replacement), an OMITTED `epoch`
@@ -853,6 +899,57 @@ export interface StorageBackend {
     limit?: number
     cursor?: string
   }): Promise<{ count: number } | BlindedIndexQueryPage>
+
+  /**
+   * OPTIONAL plaintext equality query (the `equality` query profile; the
+   * `equality-query` feature token). Evaluates an equality query -- `equals`
+   * (OR across elements of an AND within each element's `{name: value}` pairs)
+   * or `has` (every named attribute present with an indexable value) -- over
+   * the attributes the server extracts from the Collection's live Resources per
+   * the `indexes` declaration. `indexes` is the NORMALIZED declaration array:
+   * the request layer resolves it from the control-plane description (a
+   * data-plane backend does not hold the description) and passes it in. Matching
+   * is strict JSON equality (no coercion); a content-sourced attribute reads a
+   * JSON Resource's stored content, a custom-sourced one reads the `custom`
+   * metadata object (so blobs are queryable too). With `count`, resolves only
+   * the match total; otherwise a page of matching documents (`{ id, data?,
+   * custom? }`) in ascending `resourceId` order, paginated with the standard
+   * opaque cursor (`cursor` present iff `hasMore`; a malformed one rejects with
+   * `invalid-cursor` 400). Both first-party backends answer through
+   * `lib/equalityIndex.ts` so semantics cannot drift.
+   *
+   * OPTIONAL: a backend that omits this method does not serve the profile, and
+   * the request layer returns `unsupported-operation` (501). The Space and
+   * Collection are guaranteed to exist by the request layer.
+   */
+  queryByEquality?(options: {
+    spaceId: string
+    collectionId: string
+    query: EqualityQuery
+    indexes: NormalizedIndexDeclaration[]
+    count?: boolean
+    limit?: number
+    cursor?: string
+  }): Promise<{ count: number } | EqualityQueryPage>
+
+  /**
+   * OPTIONAL declare-time uniqueness scan for the `equality` profile: given the
+   * Collection's normalized `unique: true` declarations, scans its already-
+   * stored live Resources for two DIFFERENT Resources that claim the same
+   * `(name, value)`, resolving the first such `{ name, value }` or `undefined`
+   * when none exists. The request layer runs it when a Collection update ADDS a
+   * unique claim, rejecting a found violation with `id-conflict` (409) so a
+   * unique claim is never acknowledged over already-conflicting data.
+   *
+   * OPTIONAL: paired with `queryByEquality` on backends carrying the
+   * `equality-query` feature. The Space and Collection are guaranteed to exist
+   * by the request layer.
+   */
+  findEqualityUniqueViolation?(options: {
+    spaceId: string
+    collectionId: string
+    indexes: NormalizedIndexDeclaration[]
+  }): Promise<{ name: string; value: EqualityValue } | undefined>
 
   /**
    * Access-control policy documents. The level is selected by which ids are

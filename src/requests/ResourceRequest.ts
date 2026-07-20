@@ -13,6 +13,7 @@ import {
   assertEncryptedMetaConforms
 } from '../lib/encryption.js'
 import { assertValidIds } from '../lib/validateId.js'
+import { normalizeIndexes } from '../lib/equalityIndex.js'
 import { resourcePath, metaPath } from '../lib/paths.js'
 import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
 import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
@@ -171,6 +172,14 @@ export class ResourceRequest {
       headers: request.headers,
       requestName
     })
+    // When the Collection declares any `unique: true` index entries (the
+    // `equality-query` feature), pass the normalized unique entries so the
+    // backend enforces the plaintext uniqueness claim atomically with the write
+    // (409). Authorization has already run above, so the existence-revealing 409
+    // is observable only to a caller authorized to write here.
+    const uniqueIndexes = normalizeIndexes({
+      indexes: collectionDescription.indexes
+    }).filter(declaration => declaration.unique)
     // Surface any `If-Match` / `If-None-Match` write precondition to the storage
     // layer, which evaluates it atomically with the write (returning 412
     // `precondition-failed` on a mismatch -- rethrown unchanged below).
@@ -183,6 +192,7 @@ export class ResourceRequest {
         input,
         createdBy: invokerDid(request),
         epoch,
+        ...(uniqueIndexes.length > 0 && { uniqueIndexes }),
         ...parseWritePreconditions(request.headers)
       })
     } catch (err) {
@@ -551,6 +561,15 @@ export class ResourceRequest {
       collectionId,
       collectionDescription
     })
+    // When the Collection declares any `unique: true` index entries (the
+    // `equality-query` feature), pass the normalized unique entries so the
+    // backend enforces the plaintext uniqueness claim for custom-sourced
+    // attributes atomically with this metadata write (409). Authorization has
+    // already run, so the existence-revealing 409 is observable only to a caller
+    // authorized to write here.
+    const uniqueIndexes = normalizeIndexes({
+      indexes: collectionDescription.indexes
+    }).filter(declaration => declaration.unique)
     let written
     try {
       written = await dataBackend.writeResourceMetadata({
@@ -559,6 +578,7 @@ export class ResourceRequest {
         resourceId,
         custom,
         epoch,
+        ...(uniqueIndexes.length > 0 && { uniqueIndexes }),
         ...parseWritePreconditions(request.headers)
       })
     } catch (err) {

@@ -79,6 +79,18 @@ import type {
   BlindedIndexQueryPage
 } from '../lib/blindedIndex.js'
 import {
+  runEqualityQuery,
+  assertNoUniqueEqualityConflict,
+  findEqualityUniqueViolation
+} from '../lib/equalityIndex.js'
+import type {
+  EqualityQuery,
+  EqualityQueryPage,
+  EqualityCandidate,
+  EqualityValue,
+  NormalizedIndexDeclaration
+} from '../lib/equalityIndex.js'
+import {
   DEFAULT_MAX_UPLOAD_BYTES,
   DEFAULT_MAX_SPACES_PER_CONTROLLER,
   DEFAULT_MAX_COLLECTIONS_PER_SPACE,
@@ -446,10 +458,14 @@ export class PostgresBackend implements StorageBackend {
       // Resources, and conditional (`If-Match`) Collection Description writes.
       // `chunked-streams`: chunk addressing at `/{resourceId}/chunks/{n}`, opaque
       // per-chunk raw-bytes storage in the `chunks` table.
+      // `equality-query`: serves the `equality` profile -- server-extracted
+      // plaintext attribute equality over a Collection's declared `indexes`
+      // (`queryByEquality`), plus the GET `filter[attr]=value` equality filter.
       features: [
         'conditional-writes',
         'changes-query',
         'blinded-index-query',
+        'equality-query',
         'key-epochs',
         'chunked-streams'
       ]
@@ -1280,6 +1296,7 @@ export class PostgresBackend implements StorageBackend {
     input,
     createdBy,
     epoch,
+    uniqueIndexes,
     ifMatch,
     ifNoneMatch
   }: {
@@ -1289,6 +1306,7 @@ export class PostgresBackend implements StorageBackend {
     input: ResourceInput
     createdBy?: IDID
     epoch?: string
+    uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ version: number }> {
@@ -1327,23 +1345,29 @@ export class PostgresBackend implements StorageBackend {
     return this._withTransaction(async client => {
       await this._ensureCollectionRow({ client, spaceId, collectionId })
 
-      // The EDV unique-attribute invariant (`unique: true` blinded attributes;
-      // the `blinded-index-query` feature): a write claiming a unique blinded
-      // triple must not collide with another live document's claim. Only a
-      // unique-carrying JSON write can create a new claim, so only such writes
-      // pay for it: a per-Collection transaction-scoped advisory lock
+      // Two unique-attribute invariants can force a JSON content write to
+      // serialize before it upserts its row: the EDV blinded one (`unique: true`
+      // blinded attributes; the `blinded-index-query` feature) and the plaintext
+      // equality one (a Collection's `unique`-declared `indexes`; the
+      // `equality-query` feature). Only a unique-carrying JSON write can create
+      // either claim. A per-Collection transaction-scoped advisory lock
       // serializes the claimants (held to commit, so the loser's scan sees the
-      // winner's committed row) without entering the row-lock ordering of
-      // plain writes, then the conflict is evaluated against the Collection's
-      // other live JSON documents.
-      if (
+      // winner's committed row) without entering the row-lock ordering of plain
+      // writes; it is taken once and shared by both checks.
+      const blindedUnique =
         input.kind === 'json' &&
         collectUniqueBlindedTerms({ document: input.data }).length > 0
-      ) {
+      const equalityUnique =
+        input.kind === 'json' &&
+        uniqueIndexes !== undefined &&
+        uniqueIndexes.length > 0
+      if (blindedUnique || equalityUnique) {
         await client.query(
           'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
           [spaceId, collectionId]
         )
+      }
+      if (blindedUnique) {
         const { rows: candidateRows } = await client.query<{
           resource_id: string
           content: Buffer | null
@@ -1367,7 +1391,32 @@ export class PostgresBackend implements StorageBackend {
             // skip an unparsable body
           }
         }
-        assertNoUniqueBlindedConflict({ document: input.data, candidates })
+        assertNoUniqueBlindedConflict({
+          document: input.kind === 'json' ? input.data : undefined,
+          candidates
+        })
+      }
+      if (equalityUnique) {
+        // A content write does not change the Resource's `custom`, so the custom
+        // side of the claim comes from the CURRENT stored row.
+        const { rows: selfRows } = await client.query<{
+          custom: ResourceMetadataCustom | Record<string, unknown> | null
+        }>(
+          `SELECT custom FROM resources
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+              AND NOT deleted`,
+          [spaceId, collectionId, resourceId]
+        )
+        assertNoUniqueEqualityConflict({
+          indexes: uniqueIndexes!,
+          content: input.kind === 'json' ? input.data : undefined,
+          custom: selfRows[0]?.custom ?? undefined,
+          candidates: await this._readEqualityCandidates(client, {
+            spaceId,
+            collectionId,
+            excludeResourceId: resourceId
+          })
+        })
       }
 
       // Narrow projection: the lock needs the row, not its (possibly multi-MB)
@@ -1735,6 +1784,7 @@ export class PostgresBackend implements StorageBackend {
     resourceId,
     custom,
     epoch,
+    uniqueIndexes,
     ifMatch,
     ifNoneMatch
   }: {
@@ -1743,10 +1793,24 @@ export class PostgresBackend implements StorageBackend {
     resourceId: string
     custom: ResourceMetadataCustom | Record<string, unknown>
     epoch?: string
+    uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ metaVersion: number } | undefined> {
     return this._withTransaction(async client => {
+      // A metadata write can create a plaintext equality unique claim for a
+      // `custom`-sourced attribute (the `equality-query` feature). When the
+      // Collection declares any unique index, take the per-Collection advisory
+      // lock first (held to commit, serializing concurrent claimants) so the
+      // conflict scan below is atomic with the write.
+      const equalityUnique =
+        uniqueIndexes !== undefined && uniqueIndexes.length > 0
+      if (equalityUnique) {
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+          [spaceId, collectionId]
+        )
+      }
       const { rows } = await client.query<ResourceRow>(
         `SELECT meta_version, deleted FROM resources
           WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
@@ -1763,6 +1827,39 @@ export class PostgresBackend implements StorageBackend {
         ifMatch,
         ifNoneMatch
       })
+      if (equalityUnique) {
+        // Content is the Resource's stored JSON content (unchanged by a
+        // metadata write); custom is the incoming value this write sets. Fetch
+        // the (possibly multi-MB) content only on this uniqueness path -- the
+        // row is already `FOR UPDATE`-locked above.
+        const { rows: selfRows } = await client.query<{
+          content: Buffer | null
+          is_json: boolean
+        }>(
+          `SELECT content, is_json FROM resources
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
+          [spaceId, collectionId, resourceId]
+        )
+        let content: unknown
+        const selfRow = selfRows[0]
+        if (selfRow?.is_json && selfRow.content) {
+          try {
+            content = JSON.parse(selfRow.content.toString('utf8')) as unknown
+          } catch {
+            content = undefined
+          }
+        }
+        assertNoUniqueEqualityConflict({
+          indexes: uniqueIndexes!,
+          content,
+          custom,
+          candidates: await this._readEqualityCandidates(client, {
+            spaceId,
+            collectionId,
+            excludeResourceId: resourceId
+          })
+        })
+      }
       const metaVersion = (prior.meta_version ?? 0) + 1
       const hasCustom = Object.keys(custom).length > 0
       const now = new Date().toISOString()
@@ -2341,6 +2438,145 @@ export class PostgresBackend implements StorageBackend {
     }
 
     return runBlindedIndexQuery({ candidates, query, count, limit, cursor })
+  }
+
+  /**
+   * Plaintext equality query (the `equality` query profile; see the
+   * `StorageBackend.queryByEquality` contract). Reads the Collection's live
+   * Resources -- JSON rows carrying parsed `content`, all rows carrying their
+   * `custom` jsonb -- and hands the candidates to the shared evaluator
+   * (`lib/equalityIndex.ts`) for extraction, matching, ordering, and cursor
+   * pagination -- identical semantics to the filesystem backend. A full scan of
+   * the Collection per call, deliberate for this teaching backend; a
+   * materialized variant would answer from a JSONB expression index.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.query {EqualityQuery}
+   * @param options.indexes {NormalizedIndexDeclaration[]}
+   * @param [options.count] {boolean}   return only the match count
+   * @param [options.limit] {number}   requested page size
+   * @param [options.cursor] {string}   opaque cursor from a prior page
+   * @returns {Promise<{ count: number } | EqualityQueryPage>}
+   */
+  async queryByEquality({
+    spaceId,
+    collectionId,
+    query,
+    indexes,
+    count,
+    limit,
+    cursor
+  }: {
+    spaceId: string
+    collectionId: string
+    query: EqualityQuery
+    indexes: NormalizedIndexDeclaration[]
+    count?: boolean
+    limit?: number
+    cursor?: string
+  }): Promise<{ count: number } | EqualityQueryPage> {
+    const candidates = await this._readEqualityCandidates(this._pool, {
+      spaceId,
+      collectionId
+    })
+    return runEqualityQuery({
+      candidates,
+      query,
+      indexes,
+      count,
+      limit,
+      cursor
+    })
+  }
+
+  /**
+   * Declare-time uniqueness scan for the `equality` profile (see the
+   * `StorageBackend.findEqualityUniqueViolation` contract): reads the
+   * Collection's live Resources and delegates to the shared scan, which reports
+   * the first `(name, value)` claimed by two different Resources under the given
+   * `unique` declarations (or `undefined` when none is).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.indexes {NormalizedIndexDeclaration[]}
+   * @returns {Promise<{ name: string, value: EqualityValue } | undefined>}
+   */
+  async findEqualityUniqueViolation({
+    spaceId,
+    collectionId,
+    indexes
+  }: {
+    spaceId: string
+    collectionId: string
+    indexes: NormalizedIndexDeclaration[]
+  }): Promise<{ name: string; value: EqualityValue } | undefined> {
+    const candidates = await this._readEqualityCandidates(this._pool, {
+      spaceId,
+      collectionId
+    })
+    return findEqualityUniqueViolation({ indexes, candidates })
+  }
+
+  /**
+   * Reads every live Resource of a Collection as an equality candidate -- the
+   * candidate set for the equality query and the plaintext unique-attribute
+   * conflict scans. Includes blob Resources (queryable through their
+   * `custom`-sourced attributes): each row resolves `{ resourceId, content?,
+   * custom? }`, where `content` is the parsed JSON of a JSON row (a blob and
+   * unparsable JSON contribute none) and `custom` is the row's jsonb `custom`
+   * when set. Tombstones are excluded (`NOT deleted`); an optional excluded
+   * Resource is skipped. Runs on the given executor -- the pool for a read-only
+   * query, or the write transaction's client for a uniqueness scan (so the scan
+   * shares the advisory lock and sees a consistent snapshot).
+   * @param executor {pg.Pool | pg.PoolClient}
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param [options.excludeResourceId] {string}
+   * @returns {Promise<EqualityCandidate[]>}
+   */
+  private async _readEqualityCandidates(
+    executor: pg.Pool | pg.PoolClient,
+    {
+      spaceId,
+      collectionId,
+      excludeResourceId
+    }: {
+      spaceId: string
+      collectionId: string
+      excludeResourceId?: string
+    }
+  ): Promise<EqualityCandidate[]> {
+    const { rows } = await executor.query<{
+      resource_id: string
+      content: Buffer | null
+      is_json: boolean
+      custom: ResourceMetadataCustom | Record<string, unknown> | null
+    }>(
+      `SELECT resource_id, content, is_json, custom FROM resources
+        WHERE space_id = $1 AND collection_id = $2 AND NOT deleted
+          AND ($3::text IS NULL OR resource_id <> $3)
+        ORDER BY resource_id`,
+      [spaceId, collectionId, excludeResourceId ?? null]
+    )
+    const candidates: EqualityCandidate[] = []
+    for (const row of rows) {
+      let content: unknown
+      if (row.is_json && row.content) {
+        try {
+          content = JSON.parse(row.content.toString('utf8')) as unknown
+        } catch {
+          // skip an unparsable body -- it contributes no content attributes
+        }
+      }
+      candidates.push({
+        resourceId: row.resource_id,
+        ...(content !== undefined && { content }),
+        ...(row.custom !== null && { custom: row.custom })
+      })
+    }
+    return candidates
   }
 
   // Policies

@@ -632,6 +632,7 @@ describe('Spaces', () => {
         'conditional-writes',
         'changes-query',
         'blinded-index-query',
+        'equality-query',
         'key-epochs',
         'chunked-streams'
       ]
@@ -670,13 +671,14 @@ describe('Spaces', () => {
       // The filesystem backend implements the conditional-writes affordance
       // (ETag / If-Match optimistic concurrency), the `changes-query`
       // replication change feed, the `blinded-index-query` EDV query profile,
-      // and the `key-epochs` multi-recipient-encryption affordance; it
-      // advertises all four tokens.
+      // the `equality-query` plaintext equality profile, and the `key-epochs`
+      // multi-recipient-encryption affordance; it advertises every token.
       assert.ok(Array.isArray(response.data[0].features))
       assert.deepStrictEqual(response.data[0].features, [
         'conditional-writes',
         'changes-query',
         'blinded-index-query',
+        'equality-query',
         'key-epochs',
         'chunked-streams'
       ])

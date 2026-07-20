@@ -15,6 +15,12 @@ import { assertValidIds } from '../lib/validateId.js'
 import type { CollectionDescription, StorageBackend } from '../types.js'
 import { parseBlindedIndexQueryBody } from '../lib/blindedIndex.js'
 import {
+  assertSupportedIndexes,
+  normalizeIndexes,
+  parseEqualityQueryBody,
+  parseListFilter
+} from '../lib/equalityIndex.js'
+import {
   assertSupportedBackend,
   resolveBackendDescriptor,
   DEFAULT_BACKEND_ID
@@ -39,8 +45,45 @@ import {
   InvalidCollectionError,
   InvalidRequestBodyError,
   UnsupportedOperationError,
+  UniqueAttributeConflictError,
   rethrowOrWrapStorageError
 } from '../errors.js'
+import type {
+  CollectionIndexDeclaration,
+  NormalizedIndexDeclaration
+} from '../types.js'
+
+/**
+ * The normalized `unique: true` declarations an `indexes` update ADDS -- names
+ * that are unique in the incoming declaration but were not unique (declared, or
+ * declared without `unique`) in the existing one. These are the claims a
+ * declare-time conflict scan must verify against already-stored Resources; an
+ * unchanged or removed unique claim needs no scan (it was enforced at write
+ * time).
+ *
+ * @param options {object}
+ * @param [options.existing] {Array<string | CollectionIndexDeclaration>}   the
+ *   Collection's previously-stored `indexes`
+ * @param [options.incoming] {Array<string | CollectionIndexDeclaration>}   the
+ *   `indexes` about to be persisted
+ * @returns {NormalizedIndexDeclaration[]}
+ */
+function newlyUniqueDeclarations({
+  existing,
+  incoming
+}: {
+  existing?: Array<string | CollectionIndexDeclaration>
+  incoming?: Array<string | CollectionIndexDeclaration>
+}): NormalizedIndexDeclaration[] {
+  const existingUnique = new Set(
+    normalizeIndexes({ indexes: existing })
+      .filter(declaration => declaration.unique)
+      .map(declaration => declaration.name)
+  )
+  return normalizeIndexes({ indexes: incoming }).filter(
+    declaration => declaration.unique && !existingUnique.has(declaration.name)
+  )
+}
 
 export class CollectionRequest {
   /**
@@ -124,6 +167,14 @@ export class CollectionRequest {
       headers: request.headers,
       requestName
     })
+    // When the Collection declares any `unique: true` index entries (the
+    // `equality-query` feature), pass the normalized unique entries so the
+    // backend enforces the plaintext uniqueness claim atomically with the write
+    // (409). Write authorization has already run, so the existence-revealing 409
+    // is observable only to a caller authorized to write here.
+    const uniqueIndexes = normalizeIndexes({
+      indexes: collectionDescription.indexes
+    }).filter(declaration => declaration.unique)
     try {
       written = await dataBackend.writeResource({
         spaceId,
@@ -131,7 +182,8 @@ export class CollectionRequest {
         resourceId,
         input,
         createdBy: invokerDid(request),
-        epoch
+        epoch,
+        ...(uniqueIndexes.length > 0 && { uniqueIndexes })
       })
       response = {
         id: resourceId,
@@ -174,6 +226,7 @@ export class CollectionRequest {
         name?: string
         backend?: unknown
         encryption?: unknown
+        indexes?: unknown
       }
     }>,
     reply: FastifyReply
@@ -208,6 +261,16 @@ export class CollectionRequest {
     // encryption state).
     const suppliedEncryption = assertSupportedEncryption({
       encryption: body.encryption,
+      requestName
+    })
+    // Validate the optional `indexes` declaration (shape only); an absent
+    // `indexes` validates to `undefined` and leaves the stored declaration
+    // untouched, while a supplied array (an empty one clears it) replaces it --
+    // `indexes` is updatable, unlike the set-once `encryption` marker. The
+    // mutual-exclusion-with-encryption rail and the unique-add conflict scan are
+    // enforced below, against the description about to be persisted.
+    const suppliedIndexes = assertSupportedIndexes({
+      indexes: body.indexes,
       requestName
     })
 
@@ -268,7 +331,8 @@ export class CollectionRequest {
           ...(suppliedBackend !== undefined && { backend: suppliedBackend }),
           ...(suppliedEncryption !== undefined && {
             encryption: suppliedEncryption
-          })
+          }),
+          ...(suppliedIndexes !== undefined && { indexes: suppliedIndexes })
         }
       : // New Collection
         {
@@ -278,8 +342,58 @@ export class CollectionRequest {
           backend: suppliedBackend ?? { id: DEFAULT_BACKEND_ID },
           ...(suppliedEncryption !== undefined && {
             encryption: suppliedEncryption
-          })
+          }),
+          ...(suppliedIndexes !== undefined && { indexes: suppliedIndexes })
         }
+
+    // Mutual exclusion (spec "Collection Data Model"): the description about to
+    // be persisted MUST NOT carry both a non-empty `indexes` and an `encryption`
+    // marker -- the server cannot extract plaintext attributes from an opaque
+    // envelope. Enforced in BOTH directions (adding `indexes` to an encrypted
+    // Collection, or `encryption` to an indexed one) against the merged
+    // description, so a pre-existing value on the other field is caught too.
+    if (
+      Array.isArray(collectionDescription.indexes) &&
+      collectionDescription.indexes.length > 0 &&
+      collectionDescription.encryption !== undefined
+    ) {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail:
+          'Collection "indexes" must not be combined with an "encryption" marker.',
+        pointer: '#/indexes'
+      })
+    }
+
+    // Adding a `unique: true` claim for a name that was not unique before MUST
+    // be rejected if the Collection's already-stored Resources already violate
+    // it (spec "Collection Data Model"). Scan for a pre-existing conflict before
+    // acknowledging the update, when the data-plane backend supports the scan.
+    // Best-effort under concurrency (like the count-quota checks): a Resource
+    // write racing this update could still slip a conflicting value in, which
+    // the write-time uniqueness check then rejects.
+    const newlyUnique = newlyUniqueDeclarations({
+      existing: existingCollection?.indexes,
+      incoming: collectionDescription.indexes
+    })
+    if (newlyUnique.length > 0) {
+      const dataBackend = await resolveBackend({
+        request,
+        spaceId,
+        collectionId,
+        collectionDescription
+      })
+      if (dataBackend.findEqualityUniqueViolation) {
+        const violation = await dataBackend.findEqualityUniqueViolation({
+          spaceId,
+          collectionId,
+          indexes: newlyUnique
+        })
+        if (violation) {
+          throw new UniqueAttributeConflictError({ variant: 'equality' })
+        }
+      }
+    }
 
     // `If-Match` (the `key-epochs` / conditional-Collection-write feature) makes
     // a Collection Description update a compare-and-swap on its monotonic
@@ -580,6 +694,12 @@ export class CollectionRequest {
    *   the Collection's stored documents, answering `{documents, hasMore,
    *   cursor?}` (matching documents verbatim, opaque-cursor paginated) or
    *   `{count}`.
+   * - `equality` -- the plaintext equality query (the `equality-query` backend
+   *   feature): `{equals | has, count, limit, cursor}` evaluated against the
+   *   attributes the server extracts from the Collection's Resources per its
+   *   declared `indexes`, answering `{documents, hasMore, cursor?}` (each
+   *   document `{id, data?, custom?}`) or `{count}`. Only plaintext Collections
+   *   serve it; an encrypted Collection answers `unsupported-operation` (501).
    *
    * The query parameters ride the signed JSON POST body (covered by the
    * `Digest`), so no `allowTargetQuery` is needed. A body naming any other
@@ -662,6 +782,32 @@ export class CollectionRequest {
       const result = await dataBackend.queryByBlindedIndex({
         spaceId,
         collectionId,
+        ...parsed
+      })
+      return reply
+        .status(200)
+        .type('application/json')
+        .send(JSON.stringify(result))
+    }
+    if (body?.profile === 'equality' && dataBackend.queryByEquality) {
+      // The `equality` profile applies only to plaintext Collections: an
+      // encrypted Collection's documents are opaque envelopes the server cannot
+      // extract attributes from, so it answers `unsupported-operation` (501).
+      if (collectionDescription.encryption !== undefined) {
+        throw new UnsupportedOperationError({ requestName })
+      }
+      // Resolve the declared indexes off the control-plane description: an
+      // undeclared/empty declaration means every named attribute fails the
+      // fail-closed declared-names check (400). Parse/validate the query body
+      // against it, then let the backend extract, match, and paginate.
+      const indexes = normalizeIndexes({
+        indexes: collectionDescription.indexes
+      })
+      const parsed = parseEqualityQueryBody({ body, indexes, requestName })
+      const result = await dataBackend.queryByEquality({
+        spaceId,
+        collectionId,
+        indexes,
         ...parsed
       })
       return reply
@@ -816,7 +962,20 @@ export class CollectionRequest {
 
   /**
    * GET /space/:spaceId/:collectionId/ (with trailing slash):
-   * List Collection items
+   * List Collection items.
+   *
+   * With one or more `filter[<attr>]=<value>` query parameters this becomes the
+   * anonymous-cacheable entry point over the same equality machinery as the
+   * POST `equality` query profile: the filters map to a single-element `equals`
+   * conjunction (string-valued equality only) and the handler answers the same
+   * `{documents, hasMore, cursor?}` page. Authorization is the ordinary
+   * capability-or-policy GET path (a `PublicCanRead` Collection answers a filter
+   * query anonymously, so an HTTP cache can serve it); `allowTargetQuery`
+   * already tolerates the query string. Every filter attribute MUST be declared
+   * in the Collection's `indexes` (fail-closed 400, which also covers encrypted
+   * Collections -- they can never declare `indexes`); the data-plane backend
+   * MUST serve `queryByEquality` (else 501). With no `filter[...]` parameter the
+   * existing listing behavior is unchanged.
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
@@ -825,14 +984,19 @@ export class CollectionRequest {
   static async list(
     request: FastifyRequest<{
       Params: { spaceId: string; collectionId: string }
-      Querystring: { limit?: string; cursor?: string }
+      Querystring: Record<string, string | string[] | undefined>
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
-      params: { spaceId, collectionId },
-      query: { limit, cursor }
+      params: { spaceId, collectionId }
     } = request
+    // `limit` / `cursor` are single-valued pagination params; a repeated value
+    // (an array) is ignored here and falls back to the backend default.
+    const rawLimit = request.query.limit
+    const rawCursor = request.query.cursor
+    const limit = typeof rawLimit === 'string' ? rawLimit : undefined
+    const cursor = typeof rawCursor === 'string' ? rawCursor : undefined
     const { storage } = request.server
     const requestName = 'List Collection'
 
@@ -867,17 +1031,62 @@ export class CollectionRequest {
       requestName
     })
 
-    // Coerce `limit` (a query string) to a positive integer; a non-numeric or
-    // `< 1` value is ignored so the backend applies its own default. `cursor` is
-    // opaque and passed through verbatim -- the backend validates it and rejects
-    // a malformed one with `invalid-cursor` (400).
-    // List from the Collection's selected (data-plane) backend.
+    // List (or filter-query) from the Collection's selected (data-plane) backend.
     const dataBackend = await resolveBackend({
       request,
       spaceId,
       collectionId,
       collectionDescription
     })
+
+    // GET equality filter: `filter[<attr>]=<value>` maps to the equality profile
+    // over the same machinery. Present filters take this cacheable path; their
+    // absence leaves the ordinary listing below untouched.
+    const filters = parseListFilter({ query: request.query, requestName })
+    if (filters !== undefined) {
+      // Fail-closed declared-names check, the same rule as the POST profile:
+      // every filter attribute MUST be declared in the Collection's `indexes`
+      // (an encrypted Collection has none, so a filter there is always a 400).
+      const indexes = normalizeIndexes({
+        indexes: collectionDescription.indexes
+      })
+      const declared = new Set(indexes.map(declaration => declaration.name))
+      for (const name of Object.keys(filters)) {
+        if (!declared.has(name)) {
+          throw new InvalidRequestBodyError({
+            requestName,
+            detail: `Filter attribute "${name}" is not declared in the Collection's indexes.`,
+            pointer: `#/filter/${name}`
+          })
+        }
+      }
+      if (!dataBackend.queryByEquality) {
+        throw new UnsupportedOperationError({ requestName })
+      }
+      // The canonical GET semantics: a single-element `equals` conjunction over
+      // string values. Reuse the already-parsed `limit` / `cursor` params and
+      // answer the same page shape as the POST profile.
+      const parsedFilterLimit = limit !== undefined ? Number(limit) : NaN
+      const result = await dataBackend.queryByEquality({
+        spaceId,
+        collectionId,
+        indexes,
+        query: { equals: [{ ...filters }] },
+        ...(Number.isFinite(parsedFilterLimit) && parsedFilterLimit >= 1
+          ? { limit: parsedFilterLimit }
+          : {}),
+        ...(cursor !== undefined && { cursor })
+      })
+      return reply
+        .status(200)
+        .type('application/json')
+        .send(JSON.stringify(result))
+    }
+
+    // Coerce `limit` (a query string) to a positive integer; a non-numeric or
+    // `< 1` value is ignored so the backend applies its own default. `cursor` is
+    // opaque and passed through verbatim -- the backend validates it and rejects
+    // a malformed one with `invalid-cursor` (400).
     const parsedLimit = limit !== undefined ? Number(limit) : NaN
     const collectionItems = await dataBackend.listCollectionItems({
       spaceId,

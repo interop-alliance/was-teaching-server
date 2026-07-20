@@ -165,26 +165,39 @@ export class IdConflictError extends ProblemError {
 }
 
 /**
- * 409 — a Resource write carries an `indexed` blinded attribute marked
- * `unique: true` whose (HMAC key id, name, value) triple is already claimed by
- * another live Resource in the same Collection (the EDV unique-attribute
- * invariant, enforced by backends carrying the `blinded-index-query` feature).
- * Reuses the `id-conflict` problem type (like the WebKMS conflicts): a unique
- * blinded attribute is a client-chosen identifier-like claim, and the registry
- * defines no more specific kind. Only ever observable by a caller already
- * authorized to write the target.
+ * 409 — a write claims a `unique: true` indexed attribute already claimed by
+ * another live Resource in the same Collection. Two invariants share it: the
+ * EDV blinded one (an `indexed` blinded attribute's (HMAC key id, name, value)
+ * triple; the `blinded-index-query` feature, `variant: 'blinded'`, the
+ * default) and the plaintext equality one (a `unique`-declared `indexes`
+ * attribute's (name, value) pair; the `equality-query` feature,
+ * `variant: 'equality'`). Reuses the `id-conflict` problem type (like the
+ * WebKMS conflicts): a unique attribute is a client-chosen identifier-like
+ * claim, and the registry defines no more specific kind. Only ever observable
+ * by a caller already authorized to write the target.
  */
 export class UniqueAttributeConflictError extends ProblemError {
-  constructor() {
+  constructor({
+    variant = 'blinded'
+  }: { variant?: 'blinded' | 'equality' } = {}) {
+    const attribute =
+      variant === 'equality'
+        ? 'unique indexed attribute'
+        : 'unique blinded index attribute'
     const detail =
-      'Could not write document; a unique blinded index attribute is already' +
+      `Could not write document; a ${attribute} is already` +
       ' in use by another Resource in this Collection.'
     super({
       type: ProblemTypes.ID_CONFLICT,
-      title: 'A unique blinded index attribute is already in use.',
+      title: `A ${attribute} is already in use.`,
       detail,
       statusCode: 409,
-      problems: [{ detail, pointer: '#/indexed' }]
+      problems: [
+        {
+          detail,
+          pointer: variant === 'equality' ? '#/indexes' : '#/indexed'
+        }
+      ]
     })
   }
 }

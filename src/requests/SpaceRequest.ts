@@ -21,6 +21,7 @@ import {
   listRegisteredBackends
 } from '../lib/backends.js'
 import { assertSupportedEncryption } from '../lib/encryption.js'
+import { assertSupportedIndexes } from '../lib/equalityIndex.js'
 import { formatEtag } from '../lib/etag.js'
 import {
   spacePath,
@@ -302,6 +303,7 @@ export class SpaceRequest {
         name?: string
         backend?: unknown
         encryption?: unknown
+        indexes?: unknown
       }
     }>,
     reply: FastifyReply
@@ -324,6 +326,27 @@ export class SpaceRequest {
       encryption: body?.encryption,
       requestName
     })
+    // Validate the optional `indexes` declaration (the `equality-query`
+    // feature) on the same terms as the PUT path, and enforce the
+    // mutual-exclusion rail here too: a Collection cannot be born both indexed
+    // and encrypted (the server cannot extract plaintext attributes from an
+    // opaque envelope).
+    const indexes = assertSupportedIndexes({
+      indexes: body?.indexes,
+      requestName
+    })
+    if (
+      indexes !== undefined &&
+      indexes.length > 0 &&
+      encryption !== undefined
+    ) {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail:
+          'Collection "indexes" must not be combined with an "encryption" marker.',
+        pointer: '#/indexes'
+      })
+    }
 
     // Verify (capability-only): creating a Collection requires a valid
     // capability invocation; no access-control-policy fallback.
@@ -368,7 +391,8 @@ export class SpaceRequest {
       type: ['Collection'],
       name,
       backend,
-      ...(encryption !== undefined && { encryption })
+      ...(encryption !== undefined && { encryption }),
+      ...(indexes !== undefined && { indexes })
     }
 
     const createdBy = invokerDid(request)

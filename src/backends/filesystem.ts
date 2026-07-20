@@ -77,6 +77,18 @@ import type {
   BlindedIndexQueryPage
 } from '../lib/blindedIndex.js'
 import {
+  runEqualityQuery,
+  assertNoUniqueEqualityConflict,
+  findEqualityUniqueViolation
+} from '../lib/equalityIndex.js'
+import type {
+  EqualityQuery,
+  EqualityQueryPage,
+  EqualityCandidate,
+  EqualityValue,
+  NormalizedIndexDeclaration
+} from '../lib/equalityIndex.js'
+import {
   assertWritePrecondition,
   assertMetaWritePrecondition,
   assertCollectionWritePrecondition
@@ -404,10 +416,14 @@ export class FileSystemBackend implements StorageBackend {
       // Resources, and conditional (`If-Match`) Collection Description writes.
       // `chunked-streams`: chunk addressing (`/{resourceId}/chunks/{n}`) for a
       // large Resource, each chunk stored opaquely (bytes + content-type).
+      // `equality-query`: serves the `equality` profile -- server-extracted
+      // plaintext attribute equality over a Collection's declared `indexes`
+      // (`queryByEquality`), plus the GET `filter[attr]=value` equality filter.
       features: [
         'conditional-writes',
         'changes-query',
         'blinded-index-query',
+        'equality-query',
         'key-epochs',
         'chunked-streams'
       ]
@@ -1997,6 +2013,7 @@ export class FileSystemBackend implements StorageBackend {
     input,
     createdBy,
     epoch,
+    uniqueIndexes,
     ifMatch,
     ifNoneMatch
   }: {
@@ -2006,6 +2023,7 @@ export class FileSystemBackend implements StorageBackend {
     input: ResourceInput
     createdBy?: IDID
     epoch?: string
+    uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ version: number }> {
@@ -2029,30 +2047,57 @@ export class FileSystemBackend implements StorageBackend {
         })
       )
 
-    // The EDV unique-attribute invariant (`unique: true` blinded attributes;
-    // the `blinded-index-query` feature): a write claiming a unique blinded
-    // triple must not collide with another live document's claim. Only a
-    // unique-carrying JSON write can create a new claim, so only such writes
-    // pay for it: they serialize per Collection (the outer lock, so two racing
-    // claimants cannot both pass the scan), evaluate the conflict against the
-    // Collection's other live JSON documents, then take the ordinary
-    // per-Resource lock nested inside. Distinct-key nesting cannot deadlock:
-    // plain writes never hold a Resource key while waiting on a Collection key.
-    if (
+    // Two unique-attribute invariants can force a write to serialize on the
+    // Collection lock before it takes its per-Resource lock: the EDV blinded
+    // one (`unique: true` blinded attributes; the `blinded-index-query`
+    // feature) and the plaintext equality one (a Collection's `unique`-declared
+    // `indexes`; the `equality-query` feature). Only a JSON content write can
+    // create either claim, so only such writes pay for it: they serialize per
+    // Collection (the outer lock, so two racing claimants cannot both pass the
+    // scan), evaluate the conflict against the Collection's other live
+    // documents, then take the ordinary per-Resource lock nested inside.
+    // Distinct-key nesting cannot deadlock: plain writes never hold a Resource
+    // key while waiting on a Collection key. The two conditions are unified so a
+    // write carrying both claims acquires the Collection lock exactly once.
+    const blindedUnique =
       input.kind === 'json' &&
       collectUniqueBlindedTerms({ document: input.data }).length > 0
-    ) {
+    const equalityUnique =
+      input.kind === 'json' &&
+      uniqueIndexes !== undefined &&
+      uniqueIndexes.length > 0
+    if (blindedUnique || equalityUnique) {
       return this._writeMutex.run(
         this._collectionLockKey({ spaceId, collectionId }),
         async () => {
-          assertNoUniqueBlindedConflict({
-            document: input.data,
-            candidates: await this._readJsonCandidates({
-              spaceId,
-              collectionId,
-              excludeResourceId: resourceId
+          if (blindedUnique) {
+            assertNoUniqueBlindedConflict({
+              document: input.kind === 'json' ? input.data : undefined,
+              candidates: await this._readJsonCandidates({
+                spaceId,
+                collectionId,
+                excludeResourceId: resourceId
+              })
             })
-          })
+          }
+          if (equalityUnique) {
+            // A content write does not change the Resource's `custom`, so the
+            // custom side of the claim comes from the CURRENT stored sidecar.
+            const priorSidecar = await this._readMetaSidecar({
+              collectionDir,
+              resourceId
+            })
+            assertNoUniqueEqualityConflict({
+              indexes: uniqueIndexes!,
+              content: input.kind === 'json' ? input.data : undefined,
+              custom: priorSidecar?.custom,
+              candidates: await this._readEqualityCandidates({
+                spaceId,
+                collectionId,
+                excludeResourceId: resourceId
+              })
+            })
+          }
           return write()
         }
       )
@@ -2595,6 +2640,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId,
     custom,
     epoch,
+    uniqueIndexes,
     ifMatch,
     ifNoneMatch
   }: {
@@ -2603,6 +2649,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     custom: ResourceMetadataCustom | Record<string, unknown>
     epoch?: string
+    uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ metaVersion: number } | undefined> {
@@ -2663,6 +2710,38 @@ export class FileSystemBackend implements StorageBackend {
         }
       })
       return { metaVersion }
+    }
+    // A metadata write can create a plaintext equality unique claim for a
+    // `custom`-sourced attribute (the `equality-query` feature). When the
+    // Collection declares any unique index, serialize on the Collection lock and
+    // scan for a conflict -- content is the Resource's stored JSON content
+    // (unchanged by a metadata write), custom is the incoming value this write
+    // sets -- before taking the per-Resource lock nested inside. Distinct-key
+    // nesting cannot deadlock (plain writes never hold a Resource key while
+    // waiting on a Collection key).
+    if (uniqueIndexes !== undefined && uniqueIndexes.length > 0) {
+      return this._writeMutex.run(
+        this._collectionLockKey({ spaceId, collectionId }),
+        async () => {
+          assertNoUniqueEqualityConflict({
+            indexes: uniqueIndexes,
+            content: await this._readResourceJsonContent({
+              collectionDir,
+              resourceId
+            }),
+            custom,
+            candidates: await this._readEqualityCandidates({
+              spaceId,
+              collectionId,
+              excludeResourceId: resourceId
+            })
+          })
+          return this._writeMutex.run(
+            this._resourceLockKey({ spaceId, collectionId, resourceId }),
+            writeMeta
+          )
+        }
+      )
     }
     return this._writeMutex.run(
       this._resourceLockKey({ spaceId, collectionId, resourceId }),
@@ -3575,6 +3654,195 @@ export class FileSystemBackend implements StorageBackend {
           })
       )
     ).filter(candidate => candidate !== undefined)
+  }
+
+  /**
+   * Plaintext equality query (the `equality` query profile; see the
+   * `StorageBackend.queryByEquality` contract). Reads every live Resource of
+   * the Collection -- JSON Resources carrying parsed `content`, blobs carrying
+   * only their sidecar `custom` -- and hands the candidates to the shared
+   * evaluator (`lib/equalityIndex.ts`) for extraction, matching, ordering, and
+   * cursor pagination. O(n) over the Collection per call, with every JSON body
+   * read -- deliberate for this teaching backend; a materialized backend would
+   * answer from an attribute index. Tombstones are excluded naturally (no live
+   * content file).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.query {EqualityQuery}
+   * @param options.indexes {NormalizedIndexDeclaration[]}   the normalized
+   *   declared indexes (the request layer resolves them from the description)
+   * @param [options.count] {boolean}   return only the match count
+   * @param [options.limit] {number}   requested page size
+   * @param [options.cursor] {string}   opaque cursor from a prior page
+   * @returns {Promise<{ count: number } | EqualityQueryPage>}
+   */
+  async queryByEquality({
+    spaceId,
+    collectionId,
+    query,
+    indexes,
+    count,
+    limit,
+    cursor
+  }: {
+    spaceId: string
+    collectionId: string
+    query: EqualityQuery
+    indexes: NormalizedIndexDeclaration[]
+    count?: boolean
+    limit?: number
+    cursor?: string
+  }): Promise<{ count: number } | EqualityQueryPage> {
+    const candidates = await this._readEqualityCandidates({
+      spaceId,
+      collectionId
+    })
+    return runEqualityQuery({
+      candidates,
+      query,
+      indexes,
+      count,
+      limit,
+      cursor
+    })
+  }
+
+  /**
+   * Declare-time uniqueness scan for the `equality` profile (see the
+   * `StorageBackend.findEqualityUniqueViolation` contract): reads the
+   * Collection's live Resources and delegates to the shared scan, which reports
+   * the first `(name, value)` claimed by two different Resources under the given
+   * `unique` declarations (or `undefined` when none is).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.indexes {NormalizedIndexDeclaration[]}
+   * @returns {Promise<{ name: string, value: EqualityValue } | undefined>}
+   */
+  async findEqualityUniqueViolation({
+    spaceId,
+    collectionId,
+    indexes
+  }: {
+    spaceId: string
+    collectionId: string
+    indexes: NormalizedIndexDeclaration[]
+  }): Promise<{ name: string; value: EqualityValue } | undefined> {
+    const candidates = await this._readEqualityCandidates({
+      spaceId,
+      collectionId
+    })
+    return findEqualityUniqueViolation({ indexes, candidates })
+  }
+
+  /**
+   * Reads every live Resource of a Collection as an equality candidate -- the
+   * candidate set for the equality query and the plaintext unique-attribute
+   * conflict scans. Unlike `_readJsonCandidates` this INCLUDES blob Resources
+   * (a blob is queryable through its `custom`-sourced attributes): each entry
+   * resolves `{ resourceId, content?, custom? }`, where `content` is the parsed
+   * JSON of a JSON-typed representation (the blob content read is skipped, and
+   * unparsable JSON is dropped, as in `_readJsonCandidates`) and `custom` is the
+   * `.meta.` sidecar's `custom` when present. Tombstones are excluded naturally
+   * (no live `r.` content file); an optional excluded Resource is skipped. An
+   * absent Collection dir resolves empty.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param [options.excludeResourceId] {string}   omit this Resource (a conflict
+   *   scan excludes the Resource being written)
+   * @returns {Promise<EqualityCandidate[]>}
+   */
+  private async _readEqualityCandidates({
+    spaceId,
+    collectionId,
+    excludeResourceId
+  }: {
+    spaceId: string
+    collectionId: string
+    excludeResourceId?: string
+  }): Promise<EqualityCandidate[]> {
+    const collectionDir = this._collectionDir({ spaceId, collectionId })
+
+    let entries: fs.Dirent[] = []
+    try {
+      entries = await fs.promises.readdir(collectionDir, {
+        withFileTypes: true
+      })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw err
+      }
+    }
+
+    return await Promise.all(
+      entries
+        .filter(entry => entry.isFile() && entry.name.startsWith('r.'))
+        .map(entry => ({
+          fileName: entry.name,
+          ...parseResourceFileName(entry.name)
+        }))
+        .filter(({ resourceId }) => resourceId !== excludeResourceId)
+        .map(async ({ resourceId, fileName, contentType }) => {
+          // Parse the content only for a JSON representation; a blob contributes
+          // no content-sourced attributes (its `custom` still makes it
+          // queryable). Unparsable JSON is treated as no content.
+          let content: unknown
+          if (isJson({ contentType })) {
+            try {
+              content = JSON.parse(
+                await fs.promises.readFile(
+                  path.join(collectionDir, fileName),
+                  'utf8'
+                )
+              ) as unknown
+            } catch {
+              content = undefined
+            }
+          }
+          const sidecar = await this._readMetaSidecar({
+            collectionDir,
+            resourceId
+          })
+          return {
+            resourceId,
+            ...(content !== undefined && { content }),
+            ...(sidecar?.custom !== undefined && { custom: sidecar.custom })
+          }
+        })
+    )
+  }
+
+  /**
+   * Reads and parses a single Resource's stored JSON content, or resolves
+   * `undefined` when the Resource is absent, a blob, or unparsable JSON -- the
+   * content side of a custom-sourced unique-attribute claim on a metadata write.
+   * @param options {object}
+   * @param options.collectionDir {string}
+   * @param options.resourceId {string}
+   * @returns {Promise<unknown>}
+   */
+  private async _readResourceJsonContent({
+    collectionDir,
+    resourceId
+  }: {
+    collectionDir: string
+    resourceId: string
+  }): Promise<unknown> {
+    const filePath = await this._findFile({ collectionDir, resourceId })
+    if (!filePath) {
+      return undefined
+    }
+    const { contentType } = parseResourceFileName(path.basename(filePath))
+    if (!isJson({ contentType })) {
+      return undefined
+    }
+    try {
+      return JSON.parse(await fs.promises.readFile(filePath, 'utf8')) as unknown
+    } catch {
+      return undefined
+    }
   }
 
   // Policies

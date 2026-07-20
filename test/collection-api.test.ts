@@ -306,6 +306,7 @@ describe('Collections API', () => {
           'conditional-writes',
           'changes-query',
           'blinded-index-query',
+          'equality-query',
           'key-epochs',
           'chunked-streams'
         ]
@@ -324,13 +325,14 @@ describe('Collections API', () => {
       // The filesystem backend implements the conditional-writes affordance
       // (ETag / If-Match optimistic concurrency), the `changes-query`
       // replication change feed, the `blinded-index-query` EDV query profile,
-      // and the `key-epochs` multi-recipient-encryption affordance; it
-      // advertises all four tokens.
+      // the `equality-query` plaintext equality profile, and the `key-epochs`
+      // multi-recipient-encryption affordance; it advertises every token.
       assert.ok(Array.isArray(response.data.features))
       assert.deepStrictEqual(response.data.features, [
         'conditional-writes',
         'changes-query',
         'blinded-index-query',
+        'equality-query',
         'key-epochs',
         'chunked-streams'
       ])
