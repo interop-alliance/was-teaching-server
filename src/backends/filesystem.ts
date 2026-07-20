@@ -40,7 +40,7 @@ import {
   buildImportPlan,
   metaSidecarFileId
 } from '../lib/importTar.js'
-import { collectionPath, resourcePath } from '../lib/paths.js'
+import { collectionPath, collectionsPath, resourcePath } from '../lib/paths.js'
 import {
   encodeFilenameSegment,
   fileNameFor,
@@ -66,7 +66,11 @@ import {
   tempPathFor,
   commitTempFile
 } from '../lib/atomicFile.js'
-import { DEFAULT_PAGE_SIZE, clampPageSize } from '../lib/pagination.js'
+import {
+  DEFAULT_PAGE_SIZE,
+  clampPageSize,
+  compareCodeUnits
+} from '../lib/pagination.js'
 import {
   runBlindedIndexQuery,
   collectUniqueBlindedTerms,
@@ -97,6 +101,7 @@ import type {
   SpaceDescription,
   CollectionDescription,
   CollectionSummary,
+  CollectionsList,
   CollectionResourcesList,
   ResourceResult,
   ResourceMetadata,
@@ -120,15 +125,6 @@ import type {
 const { Store: MetadataJsonStore } = jsonfs
 
 const execFileAsync = promisify(execFile)
-
-/**
- * Compares two strings in code-unit order (the order the `<` / `>` operators
- * use), returning -1 / 0 / 1. Keyset pagination sorts and seeks with the same
- * operator, so the comparator must agree with `>` -- `localeCompare` can not.
- */
-function compareCodeUnits(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0
-}
 
 /**
  * Silent logger used when no logger is injected into the backend, so the backend
@@ -1057,41 +1053,116 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * Every Collection id in the Space, in code-unit ascending order -- the
+   * keyset order the paginated `listCollections` seeks within. The unpaginated
+   * full-enumeration path: `listCollections` builds one page from it, while the
+   * internal full-Space callers (import count-quota seeding, create count-quota)
+   * that must see EVERY Collection rather than a single page read it directly.
    * @param options {object}
    * @param options.spaceId {string}
-   * @returns {Promise<CollectionSummary[]>}
+   * @returns {Promise<string[]>}
    */
-  async listCollections({
+  private async _collectionIds({
     spaceId
   }: {
     spaceId: string
-  }): Promise<CollectionSummary[]> {
+  }): Promise<string[]> {
     const spaceDir = this._spaceDir(spaceId)
     const spaceEntries = await fs.promises.readdir(spaceDir, {
       withFileTypes: true
     })
-    const collectionEntries = spaceEntries
+    // Sort in code-unit order -- the SAME ordering the cursor seek
+    // (`collectionId > after`) uses, so the keyset stays consistent
+    // (localeCompare could disagree with the `>` operator and break paging).
+    return spaceEntries
       .filter(entry => entry.isDirectory())
-      .sort((a, b) => a.name.localeCompare(b.name))
-    const collections: CollectionSummary[] = []
-    for (const entry of collectionEntries) {
+      .map(entry => entry.name)
+      .sort(compareCodeUnits)
+  }
+
+  /**
+   * Lists a Space's Collections, OPTIONALLY cursor-paginated (spec
+   * "Pagination"), mirroring `listCollectionItems`: a stable total order
+   * (ascending by Collection id, code-unit), a `cursor` that resumes at the
+   * first id strictly greater than its anchor, a `limit` clamped to
+   * `[1, MAX_PAGE_SIZE]` (default `DEFAULT_PAGE_SIZE`), and a `next` present
+   * only when a further page may follow. `totalItems` is the full Collection
+   * count of the Space -- free here, since the whole directory is enumerated.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.limit] {number}   requested page size
+   * @param [options.cursor] {string}   opaque cursor from a prior page's `next`
+   * @returns {Promise<CollectionsList>}
+   */
+  async listCollections({
+    spaceId,
+    limit,
+    cursor
+  }: {
+    spaceId: string
+    limit?: number
+    cursor?: string
+  }): Promise<CollectionsList> {
+    const ids = await this._collectionIds({ spaceId })
+
+    // The full count is free (we enumerated the whole Space), so keep returning
+    // `totalItems` -- the count of every Collection, not the page.
+    const totalItems = ids.length
+
+    // Seek to the first id strictly after the cursor's anchor. Keyset stability:
+    // a missing anchor (deleted between pages) does not break the scan, since we
+    // resume at the first id greater than it.
+    let startIndex = 0
+    if (cursor !== undefined) {
+      const { after } = decodeCursor(cursor)
+      const found = ids.findIndex(id => id > after)
+      startIndex = found === -1 ? ids.length : found
+    }
+
+    // Clamp `limit` to `[1, MAX_PAGE_SIZE]`, defaulting when absent.
+    const pageSize =
+      limit === undefined ? DEFAULT_PAGE_SIZE : clampPageSize(limit)
+
+    // Take `pageSize + 1` from the seek point to detect a further page without a
+    // second pass; the page is the first `pageSize`.
+    const window = ids.slice(startIndex, startIndex + pageSize + 1)
+    const hasMore = window.length > pageSize
+    const pageIds = hasMore ? window.slice(0, pageSize) : window
+
+    const items: CollectionSummary[] = []
+    for (const collectionId of pageIds) {
       const collectionDescription = await this.getCollectionDescription({
         spaceId,
-        collectionId: entry.name
+        collectionId
       })
-      collections.push({
-        id: entry.name,
-        url: collectionPath({ spaceId, collectionId: entry.name }),
+      items.push({
+        id: collectionId,
+        url: collectionPath({ spaceId, collectionId }),
         // `name` is optional on the wire type; a stored Collection normally has
         // one (create defaults it to the id). Fall back to the dir name for a
         // description-less directory too (e.g. one left by a policy write to a
         // never-created Collection) -- reading `.name` off `undefined` here would
         // 500 the entire Space listing.
-        name: collectionDescription?.name ?? entry.name
+        name: collectionDescription?.name ?? collectionId
       })
     }
 
-    return collections
+    // `next` is present iff a further page may follow; its absence marks the last
+    // page (the authoritative end-of-list signal). The cursor (the last id on
+    // this page) and the page size are baked into the URL so the client follows
+    // it verbatim without constructing query parameters.
+    let next: string | undefined
+    if (hasMore) {
+      const lastId = pageIds[pageIds.length - 1]!
+      next = `${collectionsPath({ spaceId })}?limit=${pageSize}&cursor=${encodeCursor(lastId)}`
+    }
+
+    return {
+      url: collectionsPath({ spaceId }),
+      totalItems,
+      items,
+      ...(next !== undefined && { next })
+    }
   }
 
   /**
@@ -1383,9 +1454,7 @@ export class FileSystemBackend implements StorageBackend {
     // `maxResourcesPerSpace`. Only brand-new items count -- a re-imported
     // existing id is skipped and does not -- mirroring the per-create
     // write-path guards without re-enumerating the Space per item.
-    const collectionIds = new Set(
-      (await this.listCollections({ spaceId })).map(entry => entry.id)
-    )
+    const collectionIds = new Set(await this._collectionIds({ spaceId }))
     let liveResourceCount =
       maxResourcesPerSpace !== undefined
         ? await this._countLiveResources({ spaceId })
@@ -1665,8 +1734,8 @@ export class FileSystemBackend implements StorageBackend {
         // Space past `maxCollectionsPerSpace`; overwriting an existing
         // Collection's description never trips it.
         if (this.maxCollectionsPerSpace !== undefined && !prior) {
-          const collections = await this.listCollections({ spaceId })
-          if (collections.length >= this.maxCollectionsPerSpace) {
+          const collectionIds = await this._collectionIds({ spaceId })
+          if (collectionIds.length >= this.maxCollectionsPerSpace) {
             throw new CountQuotaExceededError({
               scope: 'Collections per Space',
               limit: this.maxCollectionsPerSpace

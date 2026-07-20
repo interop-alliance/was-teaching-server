@@ -296,21 +296,24 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         )
       })
 
-      it('writeCollection upserts; listCollections sorts by id', async () => {
+      it('writeCollection upserts; listCollections sorts by id (code-unit order)', async () => {
         const { backend } = harness
         await backend.writeCollection({
           spaceId: 'space-a',
           collectionId: 'zeta',
           collectionDescription: { id: 'zeta', type: ['Collection'], name: 'Z' }
         })
-        const collections = await backend.listCollections({
+        const listing = await backend.listCollections({
           spaceId: 'space-a'
         })
         assert.deepEqual(
-          collections.map(collection => collection.id),
+          listing.items.map(collection => collection.id),
           ['col', 'zeta']
         )
-        assert.equal(collections[1]!.name, 'Z')
+        assert.equal(listing.totalItems, 2)
+        assert.equal(listing.items[1]!.name, 'Z')
+        // A short listing that fits in one page advertises no continuation link.
+        assert.equal(listing.next, undefined)
       })
 
       it('deleteSpace removes the Space and its contents', async () => {
@@ -1589,7 +1592,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             const collections = await quotaHarness.backend.listCollections({
               spaceId: 'cc-quota'
             })
-            assert.equal(collections.length, 2)
+            assert.equal(collections.totalItems, 2)
           } finally {
             await quotaHarness.cleanup()
           }

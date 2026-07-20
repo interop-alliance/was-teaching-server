@@ -549,19 +549,31 @@ export class SpaceRequest {
 
   /**
    * GET /space/:spaceId/collections/
-   * Request handler for "List Collections" request
+   * Request handler for "List Collections" request, OPTIONALLY cursor-paginated
+   * (spec "Pagination"): `?limit`/`cursor` select a page of the Space's
+   * Collections, and the response carries a `next` continuation link when a
+   * further page may follow.
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
    * @returns {Promise<FastifyReply>}
    */
   static async listCollections(
-    request: FastifyRequest<{ Params: { spaceId: string } }>,
+    request: FastifyRequest<{
+      Params: { spaceId: string }
+      Querystring: Record<string, string | string[] | undefined>
+    }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
       params: { spaceId }
     } = request
+    // `limit` / `cursor` are single-valued pagination params; a repeated value
+    // (an array) is ignored here and falls back to the backend default.
+    const rawLimit = request.query.limit
+    const rawCursor = request.query.cursor
+    const limit = typeof rawLimit === 'string' ? rawLimit : undefined
+    const cursor = typeof rawCursor === 'string' ? rawCursor : undefined
     const { storage } = request.server
     const requestName = 'List Collections'
 
@@ -570,19 +582,36 @@ export class SpaceRequest {
 
     // Authorize (capability-or-policy): capability invocation first, then the
     // Space's access-control policy as a fallback (a public-readable Space).
+    // `allowTargetQuery` lets the signed-request path tolerate the `?limit`/
+    // `cursor` pagination query parameters: per the spec they select a page
+    // within an already-authorized target and do not change the capability
+    // target. Authorization still runs before any cursor validation in the
+    // backend, so an under-authorized caller gets the merged 404 -- never an
+    // `invalid-cursor`.
     await fetchSpaceAndAuthorize({
       request,
       spaceId,
       targetPath: collectionsPath({ spaceId }),
-      requestName
+      requestName,
+      allowTargetQuery: true
     })
 
-    const collections = await storage.listCollections({ spaceId })
-    return reply.status(200).send({
-      url: collectionsPath({ spaceId }),
-      totalItems: collections.length,
-      items: collections
-    } satisfies CollectionsList)
+    // Coerce `limit` (a query string) to a positive integer; a non-numeric or
+    // `< 1` value is ignored so the backend applies its own default. `cursor` is
+    // opaque and passed through verbatim -- the backend validates it and rejects
+    // a malformed one with `invalid-cursor` (400).
+    const parsedLimit = limit !== undefined ? Number(limit) : NaN
+    const collections = await storage.listCollections({
+      spaceId,
+      ...(Number.isFinite(parsedLimit) && parsedLimit >= 1
+        ? { limit: parsedLimit }
+        : {}),
+      ...(cursor !== undefined && { cursor })
+    })
+    return reply
+      .status(200)
+      .type('application/json')
+      .send(JSON.stringify(collections satisfies CollectionsList))
   }
 
   /**

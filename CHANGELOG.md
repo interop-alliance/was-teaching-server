@@ -1,5 +1,38 @@
 # History
 
+## Unreleased - TBD
+
+### Added
+
+- **Cursor pagination for the List Collections
+  (`GET /space/{spaceId}/collections/`) and List Spaces (`GET /spaces/`)
+  operations.** Both accept the optional `limit` / `cursor` query parameters and
+  return one keyset-ordered page (ascending by id, code-unit order) at a time,
+  with a `next` continuation link when a further page may follow -- the same
+  profile the List Collection operation already uses. `limit` defaults to 100
+  and clamps to 1000; a malformed cursor is rejected with `invalid-cursor`
+  (400), after authorization, so an under-authorized caller still gets the
+  merged 404. The `limit` / `cursor` parameters select a page within an
+  already-authorized target and do not change the capability target, so a `next`
+  link verifies against the same bare list capability.
+  - List Spaces paginates in the request handler, since the page is a page of
+    the Spaces the caller is authorized to see (per-controller authorization
+    filtering happens there); it emits `totalItems` only on a complete,
+    unpaginated listing (no cursor and no `next`), since computing the true
+    total would mean verifying every candidate controller. An anonymous request
+    still returns the empty listing without validating a cursor.
+
+### Changed
+
+- The `StorageBackend.listCollections` port now accepts
+  `{ spaceId, limit?, cursor? }` and returns the paginated `CollectionsList`
+  (`{ url, totalItems, items, next? }`) instead of a bare `CollectionSummary[]`;
+  both the filesystem and Postgres backends implement it with the shared keyset
+  machinery, and the filesystem backend now sorts Collections in code-unit order
+  (matching the cursor seek). Internal full-Space enumerations (import and
+  create count-quota checks) read every Collection through a dedicated
+  unpaginated path, so they are never truncated to a page.
+
 ## 0.11.0 - 2026-07-19
 
 ### Added

@@ -48,7 +48,7 @@ import {
   metaSidecarFileId
 } from '../lib/importTar.js'
 import type { TarEntry } from '../lib/importTar.js'
-import { collectionPath, resourcePath } from '../lib/paths.js'
+import { collectionPath, collectionsPath, resourcePath } from '../lib/paths.js'
 import {
   fileNameFor,
   parseResourceFileName,
@@ -106,6 +106,7 @@ import type {
   SpaceDescription,
   CollectionDescription,
   CollectionSummary,
+  CollectionsList,
   CollectionResourcesList,
   ResourceResult,
   ResourceMetadata,
@@ -1140,31 +1141,74 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
-   * Every Collection row in the Space, sorted by id. A row without a
-   * description (created by a sub-Collection write) falls back to the id for
-   * its `name`, like a description-less directory on the filesystem.
+   * Lists a Space's Collections, OPTIONALLY cursor-paginated (spec
+   * "Pagination"), with the same keyset (ascending `collection_id`, byte order
+   * via the column's `COLLATE "C"`), cursor codec, clamps, and `next`
+   * construction as `listCollectionItems`. `totalItems` is the full Collection
+   * count (a `COUNT`). A row without a description (created by a sub-Collection
+   * write) falls back to the id for its `name`, like a description-less
+   * directory on the filesystem.
    * @param options {object}
    * @param options.spaceId {string}
-   * @returns {Promise<CollectionSummary[]>}
+   * @param [options.limit] {number}   requested page size
+   * @param [options.cursor] {string}   opaque cursor from a prior page's `next`
+   * @returns {Promise<CollectionsList>}
    */
   async listCollections({
-    spaceId
+    spaceId,
+    limit,
+    cursor
   }: {
     spaceId: string
-  }): Promise<CollectionSummary[]> {
+    limit?: number
+    cursor?: string
+  }): Promise<CollectionsList> {
+    const after = cursor !== undefined ? decodeCursor(cursor).after : undefined
+    const pageSize =
+      limit === undefined ? DEFAULT_PAGE_SIZE : clampPageSize(limit)
+
+    const { rows: countRows } = await this._pool.query<{ total: string }>(
+      `SELECT COUNT(*) AS total FROM collections WHERE space_id = $1`,
+      [spaceId]
+    )
+    const totalItems = Number(countRows[0]?.total ?? 0)
+
+    // Take `pageSize + 1` from the seek point to detect a further page without
+    // a second query; `hasMore` is whether the extra row arrived. The
+    // `collection_id > $2` seek relies on the column's byte collation, the same
+    // ordering the cursor codec's code-unit comparison assumes.
     const { rows } = await this._pool.query<{
       collection_id: string
       description: CollectionDescription | null
     }>(
       `SELECT collection_id, description FROM collections
-        WHERE space_id = $1 ORDER BY collection_id`,
-      [spaceId]
+        WHERE space_id = $1
+          AND ($2::text IS NULL OR collection_id > $2)
+        ORDER BY collection_id
+        LIMIT $3`,
+      [spaceId, after ?? null, pageSize + 1]
     )
-    return rows.map(row => ({
+    const hasMore = rows.length > pageSize
+    const pageRows = hasMore ? rows.slice(0, pageSize) : rows
+
+    const items: CollectionSummary[] = pageRows.map(row => ({
       id: row.collection_id,
       url: collectionPath({ spaceId, collectionId: row.collection_id }),
       name: row.description?.name ?? row.collection_id
     }))
+
+    let next: string | undefined
+    if (hasMore) {
+      const lastId = pageRows[pageRows.length - 1]!.collection_id
+      next = `${collectionsPath({ spaceId })}?limit=${pageSize}&cursor=${encodeCursor(lastId)}`
+    }
+
+    return {
+      url: collectionsPath({ spaceId }),
+      totalItems,
+      items,
+      ...(next !== undefined && { next })
+    }
   }
 
   /**

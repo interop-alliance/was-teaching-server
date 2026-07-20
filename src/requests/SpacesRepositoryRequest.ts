@@ -11,6 +11,12 @@ import { verifyBodyControllerConsent } from './controllerConsent.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidId } from '../lib/validateId.js'
 import { spacePath, spacesPath } from '../lib/paths.js'
+import { encodeCursor, decodeCursor } from '../lib/cursor.js'
+import {
+  DEFAULT_PAGE_SIZE,
+  clampPageSize,
+  compareCodeUnits
+} from '../lib/pagination.js'
 import { assertValidController } from '../lib/validateDid.js'
 import {
   SpaceControllerMismatchError,
@@ -36,24 +42,42 @@ export class SpacesRepositoryRequest {
    * work; a delegated invocation reveals the Spaces of whichever controller
    * roots its capability chain.
    *
+   * OPTIONALLY cursor-paginated (spec "Pagination"): pagination happens here in
+   * the handler, not the backend, because the page is a page of AUTHORIZED
+   * items and the per-controller authorization filtering lives here. Spaces are
+   * ordered by `id` ascending (code-unit), a `cursor` resumes strictly after
+   * its anchor id, and a `next` link is emitted when one more authorized item
+   * exists beyond the page. `totalItems` -- the full authorized count -- is
+   * included ONLY on a complete, unpaginated listing (no `cursor` supplied and
+   * the scan reached the end without a `next`); otherwise it is omitted, since
+   * the spec permits it and computing the true total would mean verifying every
+   * candidate controller.
+   *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
    * @returns {Promise<FastifyReply>}
    */
   static async get(
-    request: FastifyRequest,
+    request: FastifyRequest<{
+      Querystring: Record<string, string | string[] | undefined>
+    }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const { url, method, headers } = request
     const { serverUrl, storage } = request.server
 
     const items: SpaceSummary[] = []
-    const listing: SpaceListing = { url: spacesPath(), totalItems: 0, items }
 
     // No (complete) authorization presented: authorized to see no Spaces,
-    // which is the empty 200, not an error.
+    // which is the empty 200, not an error. This runs BEFORE any cursor
+    // validation, so an anonymous caller with a garbage cursor still gets the
+    // empty 200 rather than an `invalid-cursor`.
     if (!request.zcap?.invocation) {
-      return reply.send(listing)
+      return reply.send({
+        url: spacesPath(),
+        totalItems: 0,
+        items
+      } satisfies SpaceListing)
     }
 
     const { keyId, invocation } = request.zcap
@@ -61,12 +85,54 @@ export class SpacesRepositoryRequest {
     const rootInvocation = isRootInvocation({ invocation })
     const allowedTarget = new URL(spacesPath(), serverUrl).toString()
 
+    // `limit` / `cursor` are single-valued pagination params; a repeated value
+    // (an array) is ignored and falls back to the default page size.
+    const rawLimit = request.query.limit
+    const rawCursor = request.query.cursor
+    const limit = typeof rawLimit === 'string' ? rawLimit : undefined
+    const cursor = typeof rawCursor === 'string' ? rawCursor : undefined
+
+    // Decode the cursor now -- after the anonymous early-return, so an anonymous
+    // caller never trips it. The per-space verification below is the
+    // authorization; an invalid cursor from an authenticated caller is a 400
+    // `invalid-cursor` (the spec's ordering note, as closely as this
+    // per-controller-filtered operation allows).
+    const after = cursor !== undefined ? decodeCursor(cursor).after : undefined
+
+    // Coerce `limit` to a positive integer, clamped; a non-numeric or `< 1`
+    // value falls back to the default page size.
+    const parsedLimit = limit !== undefined ? Number(limit) : NaN
+    const pageSize =
+      Number.isFinite(parsedLimit) && parsedLimit >= 1
+        ? clampPageSize(parsedLimit)
+        : DEFAULT_PAGE_SIZE
+
+    // Sort by `id` ascending in code-unit order -- the keyset order the cursor
+    // seeks within; do not rely on backend ordering.
+    const spaces = (await storage.listSpaces()).sort((left, right) =>
+      compareCodeUnits(left.id, right.id)
+    )
+
+    // Seek to the first space id strictly greater than the cursor's anchor.
+    let startIndex = 0
+    if (after !== undefined) {
+      const found = spaces.findIndex(space => space.id > after)
+      startIndex = found === -1 ? spaces.length : found
+    }
+
     // Visibility is identical across Spaces sharing a controller (the
-    // verification depends only on the controller), so verify once per
-    // distinct controller. A failed verification just excludes that
-    // controller's Spaces -- never an error response.
+    // verification depends only on the controller), so verify once per distinct
+    // controller. A failed verification just excludes that controller's Spaces
+    // -- never an error response.
     const verifiedByController = new Map<IDID, boolean>()
-    for (const space of await storage.listSpaces()) {
+
+    // Fill the page: collect authorized items in id order from the seek point.
+    // Once the page is full, keep scanning only until ONE more authorized item
+    // is found -- that sets `hasMore` (and thus `next`) -- rather than verifying
+    // the whole tail.
+    let hasMore = false
+    for (let index = startIndex; index < spaces.length; index++) {
+      const space = spaces[index]!
       const { controller } = space
       if (rootInvocation && controller !== zcapSigningDid) {
         continue // a bare-root invocation cannot verify for another controller
@@ -81,7 +147,11 @@ export class SpacesRepositoryRequest {
             method,
             headers,
             serverUrl,
-            spaceController: controller
+            spaceController: controller,
+            // The `?limit`/`cursor` query selects a page of an already-
+            // authorized target; it must still verify against the bare
+            // `/spaces/` root capability (see `verifyZcap`).
+            allowTargetQuery: true
           })
           authorized = result.verified === true
         } catch (err) {
@@ -93,19 +163,36 @@ export class SpacesRepositoryRequest {
         }
         verifiedByController.set(controller, authorized)
       }
-      if (authorized) {
-        const item: SpaceSummary = {
-          id: space.id,
-          url: spacePath({ spaceId: space.id })
-        }
-        if (space.name !== undefined) {
-          item.name = space.name
-        }
-        items.push(item)
+      if (!authorized) {
+        continue
       }
+      if (items.length === pageSize) {
+        // One authorized item beyond a full page: there is a further page, but
+        // we stop here without verifying the rest of the tail.
+        hasMore = true
+        break
+      }
+      const item: SpaceSummary = {
+        id: space.id,
+        url: spacePath({ spaceId: space.id })
+      }
+      if (space.name !== undefined) {
+        item.name = space.name
+      }
+      items.push(item)
     }
 
-    listing.totalItems = items.length
+    const listing: SpaceListing = { url: spacesPath(), items }
+    if (hasMore) {
+      const lastId = items[items.length - 1]!.id
+      listing.next = `${spacesPath()}?limit=${pageSize}&cursor=${encodeCursor(lastId)}`
+    }
+    // `totalItems` is the full authorized count only when this response IS the
+    // complete authorized set: no cursor was supplied AND the scan reached the
+    // end without truncation (no `next`).
+    if (cursor === undefined && !hasMore) {
+      listing.totalItems = items.length
+    }
     return reply.send(listing)
   }
 

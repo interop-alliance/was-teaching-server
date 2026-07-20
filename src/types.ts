@@ -56,7 +56,7 @@ import type {
 import type {
   SpaceDescription,
   CollectionDescription,
-  CollectionSummary,
+  CollectionsList,
   CollectionResourcesList,
   ResourceMetadata,
   ResourceMetadataCustom,
@@ -522,7 +522,24 @@ export interface StorageBackend {
    * stored yet (must not throw on an absent storage root).
    */
   listSpaces(): Promise<SpaceDescription[]>
-  listCollections(options: { spaceId: string }): Promise<CollectionSummary[]>
+  /**
+   * Lists a Space's Collections, OPTIONALLY cursor-paginated (spec
+   * "Pagination"), on the same keyset machinery as `listCollectionItems`:
+   * `limit` bounds the page (a backend MAY clamp an oversized value to its own
+   * maximum, and applies its default when absent); `cursor` is the opaque token
+   * from a prior page's `next`, naming the keyset position (a Collection id) to
+   * resume strictly after. The result carries `next` -- a ready-to-follow URL
+   * with the cursor and limit baked in -- if and only if a further page may
+   * follow; its absence marks the last page. `totalItems` is the FULL count of
+   * the Space's Collections (free to compute for this listing, so always
+   * present). A malformed/un-honorable `cursor` rejects with
+   * `InvalidCursorError` (400 `invalid-cursor`).
+   */
+  listCollections(options: {
+    spaceId: string
+    limit?: number
+    cursor?: string
+  }): Promise<CollectionsList>
   /**
    * Packs the Space as a tar archive: its Collections, Resources (including
    * tombstones), policies, metadata sidecars, and the Space's zcap revocation
