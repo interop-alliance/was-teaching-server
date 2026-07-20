@@ -1,7 +1,7 @@
 {
   "name": "was-teaching-server",
   "description": "A basic Wallet Attached Storage server used to demonstrate the WAS specification.",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
