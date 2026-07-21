@@ -1,5 +1,20 @@
 # History
 
+## Unreleased - TBD
+
+### Added
+
+- **Scheme-version rail for the Collection `encryption` marker.** The marker
+  gains an optional `version` member (the encryption scheme's version). When
+  present it must be a positive safe integer, else `invalid-request-body` (400,
+  pointer `#/encryption/version`). Once a marker has `version` set, an update may
+  neither remove it nor decrease it -- the same never-backwards rule as
+  `currentEpoch` -- while raising it is allowed as a future migration; either
+  violation is `invalid-request-body` (400, pointer `#/encryption/version`). The
+  transition check runs inside `writeCollection`'s in-lock `assertTransition`
+  callback, so it holds under concurrent marker writes. The value is stored
+  opaquely, as the marker's other public-reference fields are.
+
 ## 0.12.0 - 2026-07-20
 
 ### Added

@@ -1,10 +1,8 @@
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
-  - '@interop/did-web-resolver@6.3.0'
-  - '@interop/edv-client@17.7.0'
-  - '@interop/minimal-cipher@7.7.0'
-  - '@interop/security-document-loader@9.4.4'
-  - '@interop/storage-core@0.3.7'
-  - '@interop/was-client@0.16.0'
-  - '@interop/was-conformance-suite@0.1.1'
+  - '@interop/edv-client@17.8.0'
+  - '@interop/minimal-cipher@7.8.0'
+  - '@interop/storage-core@0.3.8'
+  - '@interop/was-client@0.18.0'
+  - '@interop/was-conformance-suite@0.1.2'
