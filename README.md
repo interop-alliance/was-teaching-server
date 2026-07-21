@@ -3,7 +3,7 @@
 [![Node.js CI](https://github.com/interop-alliance/was-teaching-server/workflows/CI/badge.svg)](https://github.com/interop-alliance/was-teaching-server/actions?query=workflow%3A%22CI%22)
 
 > A basic
-> [Wallet Attached Storage](https://digitalcredentials.github.io/wallet-attached-storage-spec/)
+> [Wallet Attached Storage](https://w3c-ccg.github.io/wallet-attached-storage-spec/)
 > Server used to demonstrate the specification
 
 ## Table of Contents
@@ -18,7 +18,10 @@
 
 See:
 
-- [Wallet Attached Storage Specification](https://digitalcredentials.github.io/wallet-attached-storage-spec/)
+- [Wallet Attached Storage Specification](https://w3c-ccg.github.io/wallet-attached-storage-spec/)
+- [ARCHITECTURE.md](ARCHITECTURE.md) -- request flow, domain model, and ZCap
+  authorization structure
+- [CONTRIBUTING.md](CONTRIBUTING.md) -- code style and contribution conventions
 
 ### Supported Features
 
@@ -28,42 +31,42 @@ for more details.
 
 #### Spaces API
 
-- [Create Space](https://digitalcredentials.github.io/wallet-attached-storage-spec/#http-api-post-spaces)
+- [Create Space](https://w3c-ccg.github.io/wallet-attached-storage-spec/#http-api-post-spaces)
   (`POST /spaces/`)
-- [Get Space by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#read-space-operation)
+- [Get Space by Id](https://w3c-ccg.github.io/wallet-attached-storage-spec/#read-space-operation)
   (`GET /space/:spaceId`)
-- [Update Space (or Create Space by Id)](https://digitalcredentials.github.io/wallet-attached-storage-spec/#update-space-operation)
+- [Update Space (or Create Space by Id)](https://w3c-ccg.github.io/wallet-attached-storage-spec/#update-or-create-by-id-space-operation)
   (`PUT /space/:spaceId`)
-- [Delete Space by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#delete-space-operation)
+- [Delete Space by Id](https://w3c-ccg.github.io/wallet-attached-storage-spec/#delete-space-operation)
   (`DELETE /space/:spaceId`)
 
 #### Collections API
 
-- [Create Collection](https://digitalcredentials.github.io/wallet-attached-storage-spec/#create-collection-add-collection-to-a-space-operation)
+- [Create Collection](https://w3c-ccg.github.io/wallet-attached-storage-spec/#create-collection-add-collection-to-a-space-operation)
   (`POST /space/:spaceId/`)
-- [Update Collection (or Create Collection by Id)](https://digitalcredentials.github.io/wallet-attached-storage-spec/#update-or-create-by-id-collection-operation)
+- [Update Collection (or Create Collection by Id)](https://w3c-ccg.github.io/wallet-attached-storage-spec/#update-or-create-by-id-collection-operation)
   (`PUT /space/:spaceId/:collectionId`)
-- [Get a Collection Description object](https://digitalcredentials.github.io/wallet-attached-storage-spec/#get-collection-description-operation)
+- [Get a Collection Description object](https://w3c-ccg.github.io/wallet-attached-storage-spec/#get-collection-description-operation)
   (`GET /space/:spaceId/:collectionId` - no trailing slash)
-- [List Resources in a Collection](https://digitalcredentials.github.io/wallet-attached-storage-spec/#get-collection-operation)
+- [List Resources in a Collection](https://w3c-ccg.github.io/wallet-attached-storage-spec/#list-collection-operation)
   (`GET /space/:spaceId/:collectionId/` - with trailing slash)
-- [Delete Collection by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#delete-collection-operation)
+- [Delete Collection by Id](https://w3c-ccg.github.io/wallet-attached-storage-spec/#delete-collection-operation)
   (`DELETE /space/:spaceId/:collectionId`)
 
 #### Resources API
 
-- [Create Resource](https://digitalcredentials.github.io/wallet-attached-storage-spec/#create-resource-add-resource-to-collection-operation)
+- [Create Resource](https://w3c-ccg.github.io/wallet-attached-storage-spec/#create-resource-add-resource-to-collection-operation)
   (`POST /space/:spaceId/:collectionId/`)
   - both JSON objects and binary blobs
-- [Get Resource by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#read-resource-operation)
+- [Get Resource by Id](https://w3c-ccg.github.io/wallet-attached-storage-spec/#read-resource-operation)
   (`GET /space/:spaceId/:collectionId/:resourceId`)
-- [Head Resource by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#content-types-and-representations)
+- [Head Resource by Id](https://w3c-ccg.github.io/wallet-attached-storage-spec/#content-types-and-representations)
   (`HEAD /space/:spaceId/:collectionId/:resourceId`)
   - same headers as `GET` with no body; `Content-Type`/`Content-Length` from the
     Resource's Metadata
-- [Update Resource (or Create Resource by Id)](https://digitalcredentials.github.io/wallet-attached-storage-spec/#update-or-create-by-id-resource-operation)
+- [Update Resource (or Create Resource by Id)](https://w3c-ccg.github.io/wallet-attached-storage-spec/#update-or-create-by-id-resource-operation)
   (`PUT /space/:spaceId/:collectionId/:resourceId`)
-- [Delete Resource by Id](https://digitalcredentials.github.io/wallet-attached-storage-spec/#delete-resource-operation)
+- [Delete Resource by Id](https://w3c-ccg.github.io/wallet-attached-storage-spec/#delete-resource-operation)
   (`DELETE /space/:spaceId/:collectionId/:resourceId`)
 
 **Uploading binary resources (and large files).** Send the file as the **raw
