@@ -104,9 +104,51 @@ export function assertSupportedEncryption({
     requestName
   })
 
+  // Validate the OPTIONAL scheme-version field when present (shape only).
+  assertValidEncryptionVersion({ marker: encryption, requestName })
+
   // Preserve the whole marker (only `scheme` is typed today; keep any extra
   // forward-compat fields on a recognized scheme).
   return encryption as CollectionEncryption
+}
+
+/**
+ * Validates the OPTIONAL `version` member of a Collection `encryption` marker --
+ * the encryption scheme's version, a sibling of `scheme`. Shape-only: when
+ * present it MUST be a positive safe integer, else `invalid-request-body` (400,
+ * pointer `#/encryption/version`). Absent is a legacy/unversioned marker and
+ * passes unchanged. Read from the still-`unknown`-shaped marker value: `version`
+ * is a forward-compatibility field the server preserves opaquely, not part of
+ * the typed `CollectionEncryption` shape.
+ *
+ * @param options {object}
+ * @param options.marker {unknown}   the shape-validated marker value
+ * @param [options.requestName] {string}   request name for the 400 error title
+ * @returns {void}
+ */
+function assertValidEncryptionVersion({
+  marker,
+  requestName
+}: {
+  marker: unknown
+  requestName?: string
+}): void {
+  const { version } = marker as { version?: unknown }
+  if (version === undefined) {
+    return
+  }
+  if (
+    typeof version !== 'number' ||
+    !Number.isSafeInteger(version) ||
+    version <= 0
+  ) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail:
+        'Collection "encryption.version" must be a positive safe integer.',
+      pointer: '#/encryption/version'
+    })
+  }
 }
 
 /**
@@ -335,6 +377,54 @@ export function assertEncryptionMarkerTransition({
   }
   assertEncryptionTransition({ existing, incoming })
   assertEncryptionEpochsTransition({ existing, incoming })
+  assertEncryptionVersionTransition({ existing, incoming })
+}
+
+/**
+ * Enforces the scheme-version rail on an UPDATE, when the existing marker
+ * already carries a `version` (spec "Encrypted Collections"; the scheme-version
+ * field). Call only when an `incoming` marker was supplied (and shape-validated).
+ * Once set, the marker's `version` follows the same never-backwards philosophy
+ * as `currentEpoch`: an update may not REMOVE it and may not DECREASE it
+ * (increasing is allowed, a future scheme migration). Either violation is
+ * `invalid-request-body` (400, pointer `#/encryption/version`). A marker that
+ * had no prior `version` is unrestricted (a first declaration -- including
+ * ADDING a version to a versionless marker -- has nothing to move backwards
+ * from). Both values are read from the still-`unknown`-shaped marker: `version`
+ * is preserved opaquely, not part of the typed `CollectionEncryption` shape.
+ *
+ * @param options {object}
+ * @param [options.existing] {CollectionEncryption}   the persisted marker
+ * @param options.incoming {CollectionEncryption}   the validated request marker
+ * @returns {void}
+ */
+export function assertEncryptionVersionTransition({
+  existing,
+  incoming
+}: {
+  existing?: CollectionEncryption
+  incoming: CollectionEncryption
+}): void {
+  const existingVersion = (existing as { version?: unknown } | undefined)
+    ?.version
+  if (typeof existingVersion !== 'number') {
+    // No prior version: a first declaration has nothing to move backwards from.
+    return
+  }
+  const incomingVersion = (incoming as { version?: unknown }).version
+  if (incomingVersion === undefined) {
+    throw new InvalidRequestBodyError({
+      detail:
+        'Collection "encryption.version" may not be removed once it has been set.',
+      pointer: '#/encryption/version'
+    })
+  }
+  if ((incomingVersion as number) < existingVersion) {
+    throw new InvalidRequestBodyError({
+      detail: `Collection "encryption.version" may not decrease (from ${existingVersion} to ${incomingVersion as number}).`,
+      pointer: '#/encryption/version'
+    })
+  }
 }
 
 /**

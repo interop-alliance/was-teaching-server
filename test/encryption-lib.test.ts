@@ -312,6 +312,104 @@ describe('assertSupportedEncryption (key-epoch fields)', () => {
   })
 })
 
+/** Asserts `fn` throws an InvalidRequestBodyError carrying `pointer`. */
+function throwsInvalidBodyPointer(fn: () => void, pointer: string): void {
+  assert.throws(fn, (err: unknown) => {
+    assert.ok(err instanceof InvalidRequestBodyError)
+    assert.equal(
+      (err as { problems?: { pointer?: string }[] }).problems?.[0]?.pointer,
+      pointer
+    )
+    return true
+  })
+}
+
+describe('assertSupportedEncryption (scheme version)', () => {
+  it('accepts and round-trips a marker with version 1 verbatim', () => {
+    const marker = { scheme: 'edv', version: 1 }
+    assert.deepStrictEqual(
+      assertSupportedEncryption({ encryption: marker }),
+      marker
+    )
+  })
+  it('accepts a versionless marker (legacy) unchanged', () => {
+    assert.deepStrictEqual(
+      assertSupportedEncryption({ encryption: { scheme: 'edv' } }),
+      { scheme: 'edv' }
+    )
+  })
+  const rejected: [string, unknown][] = [
+    ['version 0', 0],
+    ['a negative version', -1],
+    ['a non-integer version', 1.5],
+    ['a non-number version', '1']
+  ]
+  for (const [label, version] of rejected) {
+    it(`rejects ${label} (400, pointer #/encryption/version)`, () => {
+      throwsInvalidBodyPointer(
+        () =>
+          assertSupportedEncryption({ encryption: { scheme: 'edv', version } }),
+        '#/encryption/version'
+      )
+    })
+  }
+})
+
+describe('assertEncryptionMarkerTransition (scheme version)', () => {
+  it('allows keeping the same version', () => {
+    assert.doesNotThrow(() =>
+      assertEncryptionMarkerTransition({
+        existing: { scheme: 'edv', version: 1 } as CollectionEncryption,
+        incoming: { scheme: 'edv', version: 1 } as CollectionEncryption
+      })
+    )
+  })
+  it('allows raising the version (a future migration)', () => {
+    assert.doesNotThrow(() =>
+      assertEncryptionMarkerTransition({
+        existing: { scheme: 'edv', version: 1 } as CollectionEncryption,
+        incoming: { scheme: 'edv', version: 2 } as CollectionEncryption
+      })
+    )
+  })
+  it('allows adding a version to a versionless marker', () => {
+    assert.doesNotThrow(() =>
+      assertEncryptionMarkerTransition({
+        existing: { scheme: 'edv' },
+        incoming: { scheme: 'edv', version: 1 } as CollectionEncryption
+      })
+    )
+  })
+  it('is a no-op when neither marker carries a version', () => {
+    assert.doesNotThrow(() =>
+      assertEncryptionMarkerTransition({
+        existing: { scheme: 'edv' },
+        incoming: { scheme: 'edv' }
+      })
+    )
+  })
+  it('rejects lowering the version (400, pointer #/encryption/version)', () => {
+    throwsInvalidBodyPointer(
+      () =>
+        assertEncryptionMarkerTransition({
+          existing: { scheme: 'edv', version: 2 } as CollectionEncryption,
+          incoming: { scheme: 'edv', version: 1 } as CollectionEncryption
+        }),
+      '#/encryption/version'
+    )
+  })
+  it('rejects dropping the version once set (400, pointer #/encryption/version)', () => {
+    throwsInvalidBodyPointer(
+      () =>
+        assertEncryptionMarkerTransition({
+          existing: { scheme: 'edv', version: 1 } as CollectionEncryption,
+          incoming: { scheme: 'edv' }
+        }),
+      '#/encryption/version'
+    )
+  })
+})
+
 describe('assertEncryptionEpochsTransition', () => {
   it('is a no-op when the existing marker has no epochs', () => {
     assert.doesNotThrow(() =>
