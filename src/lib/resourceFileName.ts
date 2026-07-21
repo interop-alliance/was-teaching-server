@@ -8,6 +8,27 @@
 import * as mime from 'mime-types'
 
 /**
+ * Prefix of a Resource representation file name
+ * (`r.<resourceId>.<encodedContentType>.<ext>`) -- and, inside a chunk
+ * directory, of a chunk representation (`r.<index>...`). The bare `r.` marks the
+ * entry as content bytes (not a `.`-prefixed dot-file), so it is what a
+ * Collection listing and the tar importer/exporter filter a directory on.
+ */
+export const REPRESENTATION_PREFIX = 'r.'
+
+/**
+ * True when `fileName` is a Resource (or chunk) representation file -- i.e. it
+ * carries the {@link REPRESENTATION_PREFIX}. The single shared test for the
+ * content files both backends and the tar importer/exporter select a directory
+ * by.
+ * @param fileName {string}
+ * @returns {boolean}
+ */
+export function isRepresentationFileName(fileName: string): boolean {
+  return fileName.startsWith(REPRESENTATION_PREFIX)
+}
+
+/**
  * Percent-encodes a filename segment so it carries no literal `.`, the
  * structural delimiter of `r.<resourceId>.<encodedContentType>.<ext>`.
  * `encodeURIComponent` leaves `.` unescaped, so escape it explicitly to `%2E`;
@@ -43,7 +64,7 @@ export function fileNameFor({
   const encodedId = encodeFilenameSegment(resourceId)
   const encodedType = encodeFilenameSegment(contentType)
   const extension = mime.extension(contentType) || 'blob'
-  return `r.${encodedId}.${encodedType}.${extension}`
+  return `${REPRESENTATION_PREFIX}${encodedId}.${encodedType}.${extension}`
 }
 
 /**

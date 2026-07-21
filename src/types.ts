@@ -146,6 +146,33 @@ export interface ResourceResult {
 }
 
 /**
+ * Return shape of `getChunkMetadata()` (the `chunked-streams` feature): a
+ * chunk's stored content-type / size / version -- the HEAD payload headers.
+ * `version` is the chunk's own monotonic ETag validator, absent for a legacy
+ * chunk written before versioning.
+ */
+export interface ChunkMetadata {
+  contentType: string
+  size: number
+  version?: number
+}
+
+/**
+ * Return shape of `listChunks()` (the `chunked-streams` feature): a Resource's
+ * stored chunks in ascending `index` order (the discovery/reassembly listing),
+ * with the total `count`.
+ */
+export interface ChunkListing {
+  count: number
+  chunks: Array<{
+    index: number
+    size: number
+    contentType: string
+    version?: number
+  }>
+}
+
+/**
  * Transport-neutral input to `writeResource`. The request layer resolves a
  * Fastify request into one of these shapes (see `resolveResourceInput` in
  * requests/resourceInput.ts) so that storage backends never depend on Fastify:
@@ -761,15 +788,16 @@ export interface StorageBackend {
 
   /**
    * Writes one chunk of a chunked Resource (the `chunked-streams` feature),
-   * keyed by `(spaceId, collectionId, resourceId, chunkIndex)`. The chunk body
-   * is opaque bytes + content-type -- stored exactly like a binary Resource
-   * representation (same upload cap / quota guards); the server never parses
-   * it. The parent Resource MUST already exist: writing a chunk of an absent
-   * Resource rejects with `ResourceNotFoundError` (404), so orphan chunks
-   * cannot accumulate. An upsert per chunk, bumping the chunk's own monotonic
-   * `version` (its ETag validator, independent of the parent's); an `ifMatch` /
-   * `ifNoneMatch` precondition is evaluated on that chunk version atomically
-   * with the write (`precondition-failed` 412 on mismatch).
+   * keyed by `(spaceId, collectionId, resourceId, chunkIndex)`. Same upload-cap
+   * / quota guards, monotonic `version` bump (the ETag validator), and atomic
+   * `ifMatch` / `ifNoneMatch` precondition semantics as `writeResource`;
+   * differences:
+   * - the body is opaque bytes + content-type (the server never parses it), so
+   *   no encryption-conformance or unique-index enforcement applies;
+   * - the `version` bumped is the chunk's OWN, independent of the parent's;
+   * - the parent Resource MUST already exist, else `ResourceNotFoundError`
+   *   (404), so orphan chunks cannot accumulate;
+   * - a chunk carries no server-managed `createdBy` / epoch / user Metadata.
    */
   writeChunk(options: {
     spaceId: string
@@ -780,7 +808,10 @@ export interface StorageBackend {
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ version: number }>
-  /** Reads a chunk's bytes; rejects with `ResourceNotFoundError` when absent. */
+  /**
+   * Reads a chunk's bytes, resolving the same `ResourceResult` shape as
+   * `getResource`; rejects with `ResourceNotFoundError` when absent.
+   */
   getChunk(options: {
     spaceId: string
     collectionId: string
@@ -796,9 +827,7 @@ export interface StorageBackend {
     collectionId: string
     resourceId: string
     chunkIndex: number
-  }): Promise<
-    { contentType: string; size: number; version?: number } | undefined
-  >
+  }): Promise<ChunkMetadata | undefined>
   /**
    * Deletes one chunk. Resolves `true` when a chunk was removed and `false`
    * when none was stored at that index (the handler 404s on `false` -- unlike
@@ -824,15 +853,7 @@ export interface StorageBackend {
     spaceId: string
     collectionId: string
     resourceId: string
-  }): Promise<{
-    count: number
-    chunks: Array<{
-      index: number
-      size: number
-      contentType: string
-      version?: number
-    }>
-  }>
+  }): Promise<ChunkListing>
 
   /**
    * OPTIONAL replication change feed (the `changes` query profile.

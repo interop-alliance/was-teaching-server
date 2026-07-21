@@ -46,7 +46,8 @@ import {
   fileNameFor,
   parseResourceFileName,
   chunkDirName,
-  CHUNK_DIR_PREFIX
+  CHUNK_DIR_PREFIX,
+  isRepresentationFileName
 } from '../lib/resourceFileName.js'
 import { sanitizeBackendRecord } from '../lib/backends.js'
 import { backendUsageFields } from '../lib/backendUsage.js'
@@ -104,6 +105,8 @@ import type {
   CollectionsList,
   CollectionResourcesList,
   ResourceResult,
+  ChunkMetadata,
+  ChunkListing,
   ResourceMetadata,
   ResourceMetadataCustom,
   ResourceInput,
@@ -1042,7 +1045,7 @@ export class FileSystemBackend implements StorageBackend {
       // double-counted.
       const liveIds = new Set<string>()
       for (const fileName of files) {
-        if (!fileName.startsWith('r.')) {
+        if (!isRepresentationFileName(fileName)) {
           continue
         }
         liveIds.add(parseResourceFileName(fileName).resourceId)
@@ -1955,7 +1958,7 @@ export class FileSystemBackend implements StorageBackend {
       this.logger.error({ err }, 'Error reading collection directory')
     }
     const resources = entries
-      .filter(entry => entry.isFile() && entry.name.startsWith('r.'))
+      .filter(entry => entry.isFile() && isRepresentationFileName(entry.name))
       .map(entry => parseResourceFileName(entry.name))
       // Sort by `resourceId` ascending in code-unit order -- the SAME ordering
       // the cursor seek (`resourceId > after`) uses, so the keyset is consistent
@@ -2235,16 +2238,13 @@ export class FileSystemBackend implements StorageBackend {
 
     await this._writeRepresentationBytes({ spaceId, filePath, input })
 
-    // A Resource has a single current representation: remove any prior
-    // representation stored under a different content-type (its filename
-    // differs). Write-new-then-prune (not delete-then-write) so the resource is
-    // never momentarily absent.
-    const existing = await this._resourceFilesFor({ collectionDir, resourceId })
-    await Promise.all(
-      existing
-        .filter(name => path.resolve(name) !== path.resolve(filePath))
-        .map(name => rm(name))
-    )
+    // A Resource has a single current representation: remove any prior one
+    // stored under a different content-type (write-new-then-prune).
+    await this._pruneStaleRepresentations({
+      collectionDir,
+      resourceId,
+      keepPath: filePath
+    })
 
     // Maintain the server-managed timestamps and the monotonic `version`: a
     // content write sets `createdAt` on first write, bumps `updatedAt`, and
@@ -2259,29 +2259,28 @@ export class FileSystemBackend implements StorageBackend {
     // later writer backfilled into it. A tombstone keeps both, so re-creating a
     // deleted id under a different invoker preserves the original creator, as
     // it does the original `createdAt`.
-    const now = new Date().toISOString()
-    const prior = await this._readMetaSidecar({ collectionDir, resourceId })
-    const version = (prior?.version ?? 0) + 1
-    const creator = prior ? prior.createdBy : createdBy
-    await this._writeMetaSidecar({
+    return this._bumpSidecarVersion({
       collectionDir,
       resourceId,
-      sidecar: {
-        createdAt: prior?.createdAt ?? now,
-        updatedAt: now,
-        ...(creator !== undefined && { createdBy: creator }),
-        version,
-        ...(prior?.metaVersion !== undefined && {
-          metaVersion: prior.metaVersion
-        }),
-        ...(prior?.custom && { custom: prior.custom }),
-        // The key-epoch stamp is set from this write's declaration and CLEARED
-        // when absent (the new ciphertext's epoch is unknown -- a stale stamp is
-        // worse than none), so it is NOT preserved from `prior` like `custom`.
-        ...(epoch !== undefined && { epoch })
+      build: ({ prior, version, now }) => {
+        const creator = prior ? prior.createdBy : createdBy
+        return {
+          createdAt: prior?.createdAt ?? now,
+          updatedAt: now,
+          ...(creator !== undefined && { createdBy: creator }),
+          version,
+          ...(prior?.metaVersion !== undefined && {
+            metaVersion: prior.metaVersion
+          }),
+          ...(prior?.custom && { custom: prior.custom }),
+          // The key-epoch stamp is set from this write's declaration and CLEARED
+          // when absent (the new ciphertext's epoch is unknown -- a stale stamp
+          // is worse than none), so it is NOT preserved from `prior` like
+          // `custom`.
+          ...(epoch !== undefined && { epoch })
+        }
       }
     })
-    return { version }
   }
 
   /**
@@ -2402,6 +2401,81 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * Removes any prior representation of a Resource (or chunk) stored under a
+   * different content-type than the one just written: its filename differs, so
+   * `_resourceFilesFor` still lists it. Write-new-then-prune (the caller writes
+   * the new representation first) so the item is never momentarily absent.
+   * Shared by the Resource write path (`_writeResourceLocked`) and the chunk
+   * write path (`_writeChunkLocked`).
+   * @param options {object}
+   * @param options.collectionDir {string}   the dir the representation lives in
+   *   (a Collection dir, or a chunk dir for a chunk)
+   * @param options.resourceId {string}   the representation id (a resourceId, or
+   *   the stringified chunk index)
+   * @param options.keepPath {string}   full path of the just-written
+   *   representation to keep
+   * @returns {Promise<void>}
+   */
+  private async _pruneStaleRepresentations({
+    collectionDir,
+    resourceId,
+    keepPath
+  }: {
+    collectionDir: string
+    resourceId: string
+    keepPath: string
+  }): Promise<void> {
+    const existing = await this._resourceFilesFor({ collectionDir, resourceId })
+    await Promise.all(
+      existing
+        .filter(name => path.resolve(name) !== path.resolve(keepPath))
+        .map(name => rm(name))
+    )
+  }
+
+  /**
+   * The read-bump-write sidecar tail shared by `_writeResourceLocked` and
+   * `_writeChunkLocked`: reads the item's current metadata sidecar, computes the
+   * next monotonic `version` (bumped from the prior value, so a first write
+   * lands at 1), builds the new sidecar via `build`, writes it, and returns the
+   * new version. The two write paths fill in different fields -- a chunk carries
+   * no user Metadata / `createdBy` / epoch stamp -- so `build` supplies the
+   * sidecar body from the shared `{ prior, version, now }` inputs.
+   * @param options {object}
+   * @param options.collectionDir {string}   the dir the sidecar lives in (a
+   *   Collection dir, or a chunk dir for a chunk)
+   * @param options.resourceId {string}   the sidecar id (a resourceId, or the
+   *   stringified chunk index)
+   * @param options.build {(context: { prior?: MetaSidecar, version: number,
+   *   now: string }) => MetaSidecar}   builds the sidecar to persist from the
+   *   prior sidecar, the bumped `version`, and the write timestamp
+   * @returns {Promise<{ version: number }>}
+   */
+  private async _bumpSidecarVersion({
+    collectionDir,
+    resourceId,
+    build
+  }: {
+    collectionDir: string
+    resourceId: string
+    build: (context: {
+      prior?: MetaSidecar
+      version: number
+      now: string
+    }) => MetaSidecar
+  }): Promise<{ version: number }> {
+    const now = new Date().toISOString()
+    const prior = await this._readMetaSidecar({ collectionDir, resourceId })
+    const version = (prior?.version ?? 0) + 1
+    await this._writeMetaSidecar({
+      collectionDir,
+      resourceId,
+      sidecar: build({ prior, version, now })
+    })
+    return { version }
+  }
+
+  /**
    * Builds the per-Resource serialization key for `_writeMutex`
    * (`<spaceId>/<collectionId>/<resourceId>`), so conditional writes to distinct
    * Resources run concurrently while writes to the same Resource are ordered.
@@ -2503,29 +2577,48 @@ export class FileSystemBackend implements StorageBackend {
     contentType?: string
   }): Promise<ResourceResult> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
+    return this._readRepresentation({
+      collectionDir,
+      resourceId,
+      requestName: 'Get Resource'
+    })
+  }
+
+  /**
+   * Resolves a stored representation's read stream, content-type, and version
+   * (a `ResourceResult`), shared by `getResource` and `getChunk` -- a chunk is a
+   * Resource keyed by its index inside its chunk dir. The content-type is
+   * derived from the filename segment (the exact type it was written under), and
+   * the `version` ETag validator from the sidecar (absent only for a legacy item
+   * written before versioning). Throws `ResourceNotFoundError` (404) when no
+   * representation file is present. Unlike the metadata getters it does NOT
+   * re-`stat` the file: the read stream's own `open` surfaces a concurrent
+   * removal, so a stat existence recheck would be redundant.
+   * @param options {object}
+   * @param options.collectionDir {string}   the dir the representation lives in
+   *   (a Collection dir, or a chunk dir for a chunk)
+   * @param options.resourceId {string}   the representation id (a resourceId, or
+   *   the stringified chunk index)
+   * @param options.requestName {string}   used in the 404 error title
+   * @returns {Promise<ResourceResult>}
+   */
+  private async _readRepresentation({
+    collectionDir,
+    resourceId,
+    requestName
+  }: {
+    collectionDir: string
+    resourceId: string
+    requestName: string
+  }): Promise<ResourceResult> {
     const filePath = await this._findFile({ collectionDir, resourceId })
-
     if (!filePath) {
-      throw new ResourceNotFoundError({ requestName: 'Get Resource' })
+      throw new ResourceNotFoundError({ requestName })
     }
 
-    try {
-      await fsStat(filePath)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new ResourceNotFoundError({ requestName: 'Get Resource' })
-      }
-      throw err
-    }
-
-    // Derive the stored content-type from the filename segment (the exact type
-    // it was written under), not from `mime.lookup` on the extension.
     const { contentType: storedResourceType } = parseResourceFileName(
       path.basename(filePath)
     )
-
-    // Surface the ETag validator: the per-Resource `version` from the sidecar
-    // (absent only for a legacy Resource written before versioning).
     const sidecar = await this._readMetaSidecar({ collectionDir, resourceId })
 
     return {
@@ -2533,6 +2626,51 @@ export class FileSystemBackend implements StorageBackend {
       storedResourceType,
       ...(sidecar?.version !== undefined && { version: sidecar.version })
     }
+  }
+
+  /**
+   * Resolves a stored representation's `stat`, filename content-type, and
+   * sidecar together -- the shared core of the two metadata getters
+   * (`getResourceMetadata` and `getChunkMetadata`). Resolves `undefined` when no
+   * representation file is present (including a delete race on `stat`). Unlike
+   * `_readRepresentation`, the `stat` result is USED (the reported `size`, and
+   * the timestamp fallbacks in `getResourceMetadata`), so it is not dropped.
+   * @param options {object}
+   * @param options.collectionDir {string}   the dir the representation lives in
+   * @param options.resourceId {string}   the representation id (a resourceId, or
+   *   the stringified chunk index)
+   * @returns {Promise<{ stats: import('node:fs').Stats, contentType: string,
+   *   sidecar?: MetaSidecar } | undefined>}
+   */
+  private async _statRepresentation({
+    collectionDir,
+    resourceId
+  }: {
+    collectionDir: string
+    resourceId: string
+  }): Promise<
+    { stats: fs.Stats; contentType: string; sidecar?: MetaSidecar } | undefined
+  > {
+    const filePath = await this._findFile({ collectionDir, resourceId })
+    if (!filePath) {
+      return undefined
+    }
+
+    let stats
+    try {
+      stats = await fsStat(filePath)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return undefined
+      }
+      throw err
+    }
+
+    // Derive the stored content-type from the filename segment (the exact type
+    // it was written under), as `getResource` does.
+    const { contentType } = parseResourceFileName(path.basename(filePath))
+    const sidecar = await this._readMetaSidecar({ collectionDir, resourceId })
+    return { stats, contentType, sidecar }
   }
 
   /**
@@ -2633,26 +2771,12 @@ export class FileSystemBackend implements StorageBackend {
     (ResourceMetadata & { version?: number; metaVersion?: number }) | undefined
   > {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
-    const filePath = await this._findFile({ collectionDir, resourceId })
-    if (!filePath) {
+    const stated = await this._statRepresentation({ collectionDir, resourceId })
+    if (!stated) {
       return undefined
     }
+    const { stats, contentType, sidecar } = stated
 
-    let stats
-    try {
-      stats = await fsStat(filePath)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return undefined
-      }
-      throw err
-    }
-
-    // Derive the stored content-type from the filename segment (the exact type
-    // it was written under), as `getResource` does.
-    const { contentType } = parseResourceFileName(path.basename(filePath))
-
-    const sidecar = await this._readMetaSidecar({ collectionDir, resourceId })
     const createdAt = sidecar?.createdAt ?? stats.birthtime.toISOString()
     const updatedAt = sidecar?.updatedAt ?? stats.mtime.toISOString()
     const hasCustom = sidecar?.custom && Object.keys(sidecar.custom).length > 0
@@ -3070,34 +3194,23 @@ export class FileSystemBackend implements StorageBackend {
 
     // A chunk has a single current representation: remove any prior one stored
     // under a different content-type (write-new-then-prune).
-    const existing = await this._resourceFilesFor({
+    await this._pruneStaleRepresentations({
       collectionDir: chunkDir,
-      resourceId: chunkId
+      resourceId: chunkId,
+      keepPath: filePath
     })
-    await Promise.all(
-      existing
-        .filter(name => path.resolve(name) !== path.resolve(filePath))
-        .map(name => rm(name))
-    )
 
     // Bump the chunk's monotonic `version` (its ETag validator), preserving its
     // `createdAt`. A chunk carries no user Metadata / `createdBy` / epoch stamp.
-    const now = new Date().toISOString()
-    const prior = await this._readMetaSidecar({
-      collectionDir: chunkDir,
-      resourceId: chunkId
-    })
-    const version = (prior?.version ?? 0) + 1
-    await this._writeMetaSidecar({
+    return this._bumpSidecarVersion({
       collectionDir: chunkDir,
       resourceId: chunkId,
-      sidecar: {
+      build: ({ prior, version, now }) => ({
         createdAt: prior?.createdAt ?? now,
         updatedAt: now,
         version
-      }
+      })
     })
-    return { version }
   }
 
   /**
@@ -3124,36 +3237,13 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<ResourceResult> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
     const chunkDir = this._chunkDir({ collectionDir, resourceId })
-    const chunkId = String(chunkIndex)
-    const filePath = await this._findFile({
+    // A chunk is a Resource keyed by its index inside its chunk dir, so the
+    // shared representation reader applies with `chunkDir` as the collectionDir.
+    return this._readRepresentation({
       collectionDir: chunkDir,
-      resourceId: chunkId
+      resourceId: String(chunkIndex),
+      requestName: 'Get Chunk'
     })
-    if (!filePath) {
-      throw new ResourceNotFoundError({ requestName: 'Get Chunk' })
-    }
-
-    try {
-      await fsStat(filePath)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new ResourceNotFoundError({ requestName: 'Get Chunk' })
-      }
-      throw err
-    }
-
-    const { contentType: storedResourceType } = parseResourceFileName(
-      path.basename(filePath)
-    )
-    const sidecar = await this._readMetaSidecar({
-      collectionDir: chunkDir,
-      resourceId: chunkId
-    })
-    return {
-      resourceStream: await openFileStream(filePath, this.logger),
-      storedResourceType,
-      ...(sidecar?.version !== undefined && { version: sidecar.version })
-    }
   }
 
   /**
@@ -3164,8 +3254,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param options.chunkIndex {number}
-   * @returns {Promise<{ contentType: string, size: number, version?: number } |
-   *   undefined>}
+   * @returns {Promise<ChunkMetadata|undefined>}
    */
   async getChunkMetadata({
     spaceId,
@@ -3177,35 +3266,19 @@ export class FileSystemBackend implements StorageBackend {
     collectionId: string
     resourceId: string
     chunkIndex: number
-  }): Promise<
-    { contentType: string; size: number; version?: number } | undefined
-  > {
+  }): Promise<ChunkMetadata | undefined> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
     const chunkDir = this._chunkDir({ collectionDir, resourceId })
-    const chunkId = String(chunkIndex)
-    const filePath = await this._findFile({
+    // A chunk is a Resource keyed by its index inside its chunk dir, so the
+    // shared stat/sidecar reader applies with `chunkDir` as the collectionDir.
+    const stated = await this._statRepresentation({
       collectionDir: chunkDir,
-      resourceId: chunkId
+      resourceId: String(chunkIndex)
     })
-    if (!filePath) {
+    if (!stated) {
       return undefined
     }
-
-    let stats
-    try {
-      stats = await fsStat(filePath)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return undefined
-      }
-      throw err
-    }
-
-    const { contentType } = parseResourceFileName(path.basename(filePath))
-    const sidecar = await this._readMetaSidecar({
-      collectionDir: chunkDir,
-      resourceId: chunkId
-    })
+    const { stats, contentType, sidecar } = stated
     return {
       contentType,
       size: stats.size,
@@ -3299,8 +3372,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
-   * @returns {Promise<{ count: number, chunks: Array<{ index: number, size:
-   *   number, contentType: string, version?: number }> }>}
+   * @returns {Promise<ChunkListing>}
    */
   async listChunks({
     spaceId,
@@ -3310,15 +3382,7 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
     resourceId: string
-  }): Promise<{
-    count: number
-    chunks: Array<{
-      index: number
-      size: number
-      contentType: string
-      version?: number
-    }>
-  }> {
+  }): Promise<ChunkListing> {
     const collectionDir = this._collectionDir({ spaceId, collectionId })
     const chunkDir = this._chunkDir({ collectionDir, resourceId })
     let entries: fs.Dirent[]
@@ -3334,7 +3398,7 @@ export class FileSystemBackend implements StorageBackend {
     // Keep only chunk representations (`r.<index>.<type>.<ext>`), dropping the
     // `.meta.<index>.json` version sidecars.
     const chunkEntries = entries.filter(
-      entry => entry.isFile() && entry.name.startsWith('r.')
+      entry => entry.isFile() && isRepresentationFileName(entry.name)
     )
     const chunks = await Promise.all(
       chunkEntries.map(async entry => {
@@ -3424,7 +3488,7 @@ export class FileSystemBackend implements StorageBackend {
       if (!entry.isFile()) {
         continue
       }
-      if (entry.name.startsWith('r.')) {
+      if (isRepresentationFileName(entry.name)) {
         const { resourceId, contentType } = parseResourceFileName(entry.name)
         liveFileById.set(resourceId, { fileName: entry.name, contentType })
       } else {
@@ -3697,7 +3761,9 @@ export class FileSystemBackend implements StorageBackend {
     return (
       await Promise.all(
         entries
-          .filter(entry => entry.isFile() && entry.name.startsWith('r.'))
+          .filter(
+            entry => entry.isFile() && isRepresentationFileName(entry.name)
+          )
           .map(entry => ({
             fileName: entry.name,
             ...parseResourceFileName(entry.name)
@@ -3847,7 +3913,7 @@ export class FileSystemBackend implements StorageBackend {
 
     return await Promise.all(
       entries
-        .filter(entry => entry.isFile() && entry.name.startsWith('r.'))
+        .filter(entry => entry.isFile() && isRepresentationFileName(entry.name))
         .map(entry => ({
           fileName: entry.name,
           ...parseResourceFileName(entry.name)
