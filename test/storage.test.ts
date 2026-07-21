@@ -446,7 +446,7 @@ describe('Storage API', () => {
           collectionId,
           resourceId: 'gone'
         })
-        const srcTombstone = await backend._readMetaSidecar({
+        const srcTombstone = await backend.readMetaSidecar({
           collectionDir: path.join(tempDir, 'spaces', src, collectionId),
           resourceId: 'gone'
         })
@@ -466,7 +466,7 @@ describe('Storage API', () => {
         // The tombstone survives: no content file, a `deleted` sidecar carried
         // verbatim, and it stays invisible to normal reads on the target.
         const dstCollectionDir = path.join(tempDir, 'spaces', dst, collectionId)
-        const dstTombstone = await backend._readMetaSidecar({
+        const dstTombstone = await backend.readMetaSidecar({
           collectionDir: dstCollectionDir,
           resourceId: 'gone'
         })
@@ -652,7 +652,7 @@ describe('Storage API', () => {
 
         // The tombstone records `deleted`, a bumped `version`, and the
         // last-known content-type (the content filename no longer carries it).
-        const sidecar = await backend._readMetaSidecar({
+        const sidecar = await backend.readMetaSidecar({
           collectionDir,
           resourceId: 'note'
         })
@@ -733,7 +733,7 @@ describe('Storage API', () => {
             v: 2
           }
         )
-        const sidecar = await backend._readMetaSidecar({
+        const sidecar = await backend.readMetaSidecar({
           collectionDir,
           resourceId: 'note'
         })
@@ -756,7 +756,7 @@ describe('Storage API', () => {
           collectionId,
           resourceId: 'note'
         })
-        const first = await backend._readMetaSidecar({
+        const first = await backend.readMetaSidecar({
           collectionDir,
           resourceId: 'note'
         })
@@ -765,7 +765,7 @@ describe('Storage API', () => {
           collectionId,
           resourceId: 'note'
         })
-        const second = await backend._readMetaSidecar({
+        const second = await backend.readMetaSidecar({
           collectionDir,
           resourceId: 'note'
         })

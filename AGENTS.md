@@ -8,9 +8,8 @@ protocol and data model. The specification is a W3C CCG work item; its home is
 [spec.md](https://github.com/w3c-ccg/wallet-attached-storage-spec/blob/main/spec.md);
 rendered: <https://w3c-ccg.github.io/wallet-attached-storage-spec/>).
 
-Spec-vs-implementation gap analyses:
-[server roadmap](./ROADMAP.md) (features the spec defines that this server
-doesn't implement yet) and the
+Spec-vs-implementation gap analyses: [server roadmap](./ROADMAP.md) (features
+the spec defines that this server doesn't implement yet) and the
 [client roadmap](https://github.com/interop-alliance/was-client/blob/main/ROADMAP.md)
 (the same analysis for the companion `was-client` library, in its repo).
 

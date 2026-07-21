@@ -80,24 +80,24 @@ function digestMatches({
  * write).
  */
 class DigestVerifyStream extends Transform {
-  private readonly _hash = createHash('sha256')
-  private readonly _digestHeader: string
+  readonly #hash = createHash('sha256')
+  readonly #digestHeader: string
   constructor(digestHeader: string) {
     super()
-    this._digestHeader = digestHeader
+    this.#digestHeader = digestHeader
   }
   override _transform(
     chunk: Buffer,
     _encoding: BufferEncoding,
     callback: (error?: Error | null, data?: Buffer) => void
   ): void {
-    this._hash.update(chunk)
+    this.#hash.update(chunk)
     callback(null, chunk)
   }
   override _flush(callback: (error?: Error | null) => void): void {
     const matched = digestMatches({
-      sha256Digest: this._hash.digest(),
-      headerValue: this._digestHeader
+      sha256Digest: this.#hash.digest(),
+      headerValue: this.#digestHeader
     })
     callback(
       matched

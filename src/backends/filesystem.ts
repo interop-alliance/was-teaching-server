@@ -164,7 +164,7 @@ const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
  * representation but keeps the sidecar so the change feed (replication) still
  * surfaces it. A
  * tombstone has no `r.<id>...` content file, so it is invisible to every normal
- * read path (which gates on the content file via `_findFile`); only the
+ * read path (which gates on the content file via `#findFile`); only the
  * (future) change feed reads it. `contentType` records the representation's
  * last-known content-type, which the content filename no longer carries once it
  * is gone -- present only on a tombstone (a live Resource derives its
@@ -243,7 +243,7 @@ export class FileSystemBackend implements StorageBackend {
    * Root of the Space zcap revocation tree (`data/space-revocations/<spaceId>/`),
    * a sibling of `spacesDir` rather than a subdirectory of each Space. Space
    * revocations deliberately live OUTSIDE the Space's own directory because
-   * `listCollections` and `_countLiveResources` treat every subdirectory of a
+   * `listCollections` and `#countLiveResources` treat every subdirectory of a
    * Space dir as a Collection -- a `revocations/` dir nested inside a Space would
    * surface as a phantom Collection (and could collide with a real one), so it
    * gets its own root.
@@ -306,20 +306,17 @@ export class FileSystemBackend implements StorageBackend {
    * this lock, keyed per Resource -- so two concurrent writers cannot both
    * observe the same prior version and both succeed. Single-instance only.
    */
-  private _writeMutex = new KeyedMutex()
+  #writeMutex = new KeyedMutex()
 
   /**
    * Per-Space usage totals for the write-path quota pre-flight, so
-   * `_assertSpaceHeadroom` does not spawn `du` (a whole-Space tree walk) on
+   * `#assertSpaceHeadroom` does not spawn `du` (a whole-Space tree walk) on
    * every resource write. Entries live `QUOTA_USAGE_CACHE_TTL` ms; each
    * accepted write adds its incoming bytes to the cached total, and deletes
    * invalidate the Space's entry. Quota reports (`reportUsage`) always
-   * re-measure. Single-instance only, like `_writeMutex`.
+   * re-measure. Single-instance only, like `#writeMutex`.
    */
-  private _usageCache = new Map<
-    string,
-    { usageBytes: number; expiresAt: number }
-  >()
+  #usageCache = new Map<string, { usageBytes: number; expiresAt: number }>()
 
   constructor({
     dataDir,
@@ -439,7 +436,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param spaceDir {string}
    * @returns {Promise<{ total: number, byCollection: CollectionUsage[] }>}
    */
-  async _diskUsage(
+  async #diskUsage(
     spaceDir: string
   ): Promise<{ total: number; byCollection: CollectionUsage[] }> {
     let stdout: string
@@ -516,14 +513,14 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     includeCollections?: boolean
   }): Promise<BackendUsage> {
-    const spaceDir = this._spaceDir(spaceId)
+    const spaceDir = this.#spaceDir(spaceId)
     const measuredAt = new Date().toISOString()
 
     const { total: usageBytes, byCollection: usageByCollection } =
-      await this._diskUsage(spaceDir)
+      await this.#diskUsage(spaceDir)
 
     return {
-      ...this._backendUsageFields({ usageBytes, spaceTotalBytes: usageBytes }),
+      ...this.#backendUsageFields({ usageBytes, spaceTotalBytes: usageBytes }),
       measuredAt,
       ...(includeCollections && { usageByCollection })
     }
@@ -533,7 +530,7 @@ export class FileSystemBackend implements StorageBackend {
    * Measures the bytes a single Collection consumes on disk for the
    * per-Collection Quota report (spec "Quotas", `GET /space/{id}/{cid}/quota`).
    * `usageBytes` is scoped to the Collection (its slice of the one-pass
-   * `_diskUsage` breakdown; zero if the Collection dir is empty or absent),
+   * `#diskUsage` breakdown; zero if the Collection dir is empty or absent),
    * while `state` / `limit` / `restrictedActions` describe the backend's overall
    * condition (derived from the Space total -- the quota is a per-backend limit,
    * not per-Collection). The per-Collection `usageByCollection` breakdown is
@@ -550,16 +547,16 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
   }): Promise<BackendUsage> {
-    const spaceDir = this._spaceDir(spaceId)
+    const spaceDir = this.#spaceDir(spaceId)
     const measuredAt = new Date().toISOString()
 
     const { total: spaceTotalBytes, byCollection } =
-      await this._diskUsage(spaceDir)
+      await this.#diskUsage(spaceDir)
     const usageBytes =
       byCollection.find(entry => entry.id === collectionId)?.usageBytes ?? 0
 
     return {
-      ...this._backendUsageFields({ usageBytes, spaceTotalBytes }),
+      ...this.#backendUsageFields({ usageBytes, spaceTotalBytes }),
       measuredAt
     }
   }
@@ -576,7 +573,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.spaceTotalBytes {number}   the Space total, for state
    * @returns {Omit<BackendUsage, 'measuredAt' | 'usageByCollection'>}
    */
-  _backendUsageFields({
+  #backendUsageFields({
     usageBytes,
     spaceTotalBytes
   }: {
@@ -605,10 +602,10 @@ export class FileSystemBackend implements StorageBackend {
    *
    * This is a soft limit under concurrency: two simultaneous writes can each pass
    * against the same usage snapshot and jointly overshoot. The per-write
-   * streaming guard (`_quotaGuard`) still bounds each individual write.
+   * streaming guard (`#quotaGuard`) still bounds each individual write.
    *
    * The `du` measurement (a whole-Space tree walk) is cached per Space for
-   * `QUOTA_USAGE_CACHE_TTL` ms (see `_usageCache`): between re-measurements
+   * `QUOTA_USAGE_CACHE_TTL` ms (see `#usageCache`): between re-measurements
    * each accepted write's `incomingBytes` is added to the cached total, so a
    * burst of writes costs one tree walk, not one per write.
    * @param options {object}
@@ -617,7 +614,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.incomingBytes] {number}   known size of the pending write
    * @returns {Promise<number>}   remaining headroom in bytes
    */
-  async _assertSpaceHeadroom({
+  async #assertSpaceHeadroom({
     spaceId,
     capacityBytes,
     incomingBytes = 0
@@ -626,14 +623,14 @@ export class FileSystemBackend implements StorageBackend {
     capacityBytes: number
     incomingBytes?: number
   }): Promise<number> {
-    let cached = this._usageCache.get(spaceId)
+    let cached = this.#usageCache.get(spaceId)
     if (!cached || cached.expiresAt <= Date.now()) {
-      const { total } = await this._diskUsage(this._spaceDir(spaceId))
+      const { total } = await this.#diskUsage(this.#spaceDir(spaceId))
       cached = {
         usageBytes: total,
         expiresAt: Date.now() + QUOTA_USAGE_CACHE_TTL
       }
-      this._usageCache.set(spaceId, cached)
+      this.#usageCache.set(spaceId, cached)
     }
     const headroom = capacityBytes - cached.usageBytes
     if (headroom <= 0 || incomingBytes > headroom) {
@@ -657,7 +654,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.headroomBytes {number}   max bytes this write may add
    * @returns {Transform}
    */
-  _quotaGuard({
+  #quotaGuard({
     spaceId,
     capacityBytes,
     headroomBytes
@@ -689,7 +686,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.maxUploadBytes {number}   the per-upload cap in bytes
    * @returns {Transform}
    */
-  _uploadCapGuard({ maxUploadBytes }: { maxUploadBytes: number }): Transform {
+  #uploadCapGuard({ maxUploadBytes }: { maxUploadBytes: number }): Transform {
     const backendId = this.describe().id
     let written = 0
     return new Transform({
@@ -714,7 +711,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param [rootDir] {string}   the containing root; defaults to `spacesDir`
    * @returns {void}
    */
-  _assertContained(targetPath: string, rootDir: string = this.spacesDir): void {
+  #assertContained(targetPath: string, rootDir: string = this.spacesDir): void {
     const root = path.resolve(rootDir)
     const resolved = path.resolve(targetPath)
     if (resolved !== root && !resolved.startsWith(root + path.sep)) {
@@ -726,9 +723,9 @@ export class FileSystemBackend implements StorageBackend {
     }
   }
 
-  _spaceDir(spaceId: string): string {
+  #spaceDir(spaceId: string): string {
     const spaceDir = path.join(this.spacesDir, spaceId)
-    this._assertContained(spaceDir)
+    this.#assertContained(spaceDir)
     return spaceDir
   }
 
@@ -739,21 +736,21 @@ export class FileSystemBackend implements StorageBackend {
    * @param spaceId {string}
    * @returns {string}
    */
-  _spaceRevocationDir(spaceId: string): string {
+  #spaceRevocationDir(spaceId: string): string {
     const dir = path.join(this.spaceRevocationsDir, spaceId)
-    this._assertContained(dir, this.spaceRevocationsDir)
+    this.#assertContained(dir, this.spaceRevocationsDir)
     return dir
   }
 
-  _collectionDir({
+  #collectionDir({
     spaceId,
     collectionId
   }: {
     spaceId: string
     collectionId: string
   }): string {
-    const collectionDir = path.join(this._spaceDir(spaceId), collectionId)
-    this._assertContained(collectionDir)
+    const collectionDir = path.join(this.#spaceDir(spaceId), collectionId)
+    this.#assertContained(collectionDir)
     return collectionDir
   }
 
@@ -762,8 +759,8 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @returns {Promise<string>} Created space storage directory path.
    */
-  async _ensureSpaceDir({ spaceId }: { spaceId: string }): Promise<string> {
-    const spaceDir = this._spaceDir(spaceId)
+  async #ensureSpaceDir({ spaceId }: { spaceId: string }): Promise<string> {
+    const spaceDir = this.#spaceDir(spaceId)
     // Ensure the parent spaces/ directory exists (the dataDir may be brand new,
     // e.g. a per-suite temp dir); the space dir itself is created non-recursively
     // below so its EEXIST case can be detected.
@@ -786,14 +783,14 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.collectionId {string}
    * @returns {Promise<string>} Created collection storage directory path.
    */
-  async _ensureCollectionDir({
+  async #ensureCollectionDir({
     spaceId,
     collectionId
   }: {
     spaceId: string
     collectionId: string
   }): Promise<string> {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
     try {
       await mkdir(collectionDir)
     } catch (err) {
@@ -825,7 +822,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.resourceId {string}
    * @returns {Promise<string[]>}   full paths, in directory order
    */
-  async _resourceFilesFor({
+  async #resourceFilesFor({
     collectionDir,
     resourceId
   }: {
@@ -855,14 +852,14 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.resourceId {string}
    * @returns {Promise<string|undefined>} First matching resource file path.
    */
-  async _findFile({
+  async #findFile({
     collectionDir,
     resourceId
   }: {
     collectionDir: string
     resourceId: string
   }): Promise<string | undefined> {
-    const [filePath] = await this._resourceFilesFor({
+    const [filePath] = await this.#resourceFilesFor({
       collectionDir,
       resourceId
     })
@@ -921,7 +918,7 @@ export class FileSystemBackend implements StorageBackend {
     const { createdBy: _suppliedCreatedBy, ...rest } = spaceDescription
     const creator = prior ? prior.createdBy : createdBy
 
-    const spaceDir = await this._ensureSpaceDir({ spaceId })
+    const spaceDir = await this.#ensureSpaceDir({ spaceId })
     const filename = `.space.${spaceId}.json`
     // Durable full replacement: `MetadataJsonStore.read` parses plain JSON, so
     // an atomically-written JSON string round-trips through the same read path.
@@ -945,7 +942,7 @@ export class FileSystemBackend implements StorageBackend {
   }: {
     spaceId: string
   }): Promise<SpaceDescription | undefined> {
-    const spaceDir = this._spaceDir(spaceId)
+    const spaceDir = this.#spaceDir(spaceId)
     const filename = `.space.${spaceId}.json`
     const metaStore = new MetadataJsonStore<SpaceDescription>({
       file: path.join(spaceDir, filename)
@@ -964,15 +961,15 @@ export class FileSystemBackend implements StorageBackend {
    */
   async deleteSpace({ spaceId }: { spaceId: string }): Promise<void> {
     // Freed bytes: drop the cached quota usage so the next write re-measures.
-    this._usageCache.delete(spaceId)
+    this.#usageCache.delete(spaceId)
     // Remove this Space's revocations, which sit outside the Space dir.
-    await rm(this._spaceRevocationDir(spaceId), {
+    await rm(this.#spaceRevocationDir(spaceId), {
       recursive: true,
       force: true
     })
     // `force: true` keeps delete idempotent (the `StorageBackend` contract):
     // removing an absent Space resolves rather than rejecting with `ENOENT`.
-    return await rm(this._spaceDir(spaceId), { recursive: true, force: true })
+    return await rm(this.#spaceDir(spaceId), { recursive: true, force: true })
   }
 
   /**
@@ -1020,8 +1017,8 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @returns {Promise<number>}   the number of live Resources
    */
-  async _countLiveResources({ spaceId }: { spaceId: string }): Promise<number> {
-    const spaceDir = this._spaceDir(spaceId)
+  async #countLiveResources({ spaceId }: { spaceId: string }): Promise<number> {
+    const spaceDir = this.#spaceDir(spaceId)
     let spaceEntries: fs.Dirent[]
     try {
       spaceEntries = await fs.promises.readdir(spaceDir, {
@@ -1065,12 +1062,8 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @returns {Promise<string[]>}
    */
-  private async _collectionIds({
-    spaceId
-  }: {
-    spaceId: string
-  }): Promise<string[]> {
-    const spaceDir = this._spaceDir(spaceId)
+  async #collectionIds({ spaceId }: { spaceId: string }): Promise<string[]> {
+    const spaceDir = this.#spaceDir(spaceId)
     const spaceEntries = await fs.promises.readdir(spaceDir, {
       withFileTypes: true
     })
@@ -1106,7 +1099,7 @@ export class FileSystemBackend implements StorageBackend {
     limit?: number
     cursor?: string
   }): Promise<CollectionsList> {
-    const ids = await this._collectionIds({ spaceId })
+    const ids = await this.#collectionIds({ spaceId })
 
     // The full count is free (we enumerated the whole Space), so keep returning
     // `totalItems` -- the count of every Collection, not the page.
@@ -1179,7 +1172,7 @@ export class FileSystemBackend implements StorageBackend {
       throw new SpaceNotFoundError({ requestName: 'Export Space' })
     }
 
-    const sourceSpaceDir = this._spaceDir(spaceId)
+    const sourceSpaceDir = this.#spaceDir(spaceId)
     const spaceEntries = (
       await fs.promises.readdir(sourceSpaceDir, { withFileTypes: true })
     ).filter(
@@ -1234,7 +1227,7 @@ export class FileSystemBackend implements StorageBackend {
     // Space-dir walk above never sees them; they pack under a top-level
     // `revocations/` dir -- outside `space/<spaceId>/`, where a subdirectory
     // would read as a Collection on import.
-    const revocationsDir = this._spaceRevocationDir(spaceId)
+    const revocationsDir = this.#spaceRevocationDir(spaceId)
     let revocationFiles: string[] = []
     try {
       revocationFiles = (
@@ -1423,7 +1416,7 @@ export class FileSystemBackend implements StorageBackend {
       }
     }
     if (capacityBytes !== undefined) {
-      await this._assertSpaceHeadroom({
+      await this.#assertSpaceHeadroom({
         spaceId,
         capacityBytes,
         incomingBytes
@@ -1457,10 +1450,10 @@ export class FileSystemBackend implements StorageBackend {
     // `maxResourcesPerSpace`. Only brand-new items count -- a re-imported
     // existing id is skipped and does not -- mirroring the per-create
     // write-path guards without re-enumerating the Space per item.
-    const collectionIds = new Set(await this._collectionIds({ spaceId }))
+    const collectionIds = new Set(await this.#collectionIds({ spaceId }))
     let liveResourceCount =
       maxResourcesPerSpace !== undefined
-        ? await this._countLiveResources({ spaceId })
+        ? await this.#countLiveResources({ spaceId })
         : 0
 
     for (const {
@@ -1493,7 +1486,7 @@ export class FileSystemBackend implements StorageBackend {
           })
         }
         collectionIds.add(collectionId)
-        await this._persistCollection({
+        await this.#persistCollection({
           spaceId,
           collectionId,
           collectionDescription
@@ -1516,18 +1509,18 @@ export class FileSystemBackend implements StorageBackend {
         }
       }
 
-      const collectionDir = this._collectionDir({ spaceId, collectionId })
+      const collectionDir = this.#collectionDir({ spaceId, collectionId })
 
       for (const { fileName, resourceId, body } of resources) {
         // Skip anything the destination already has for this id: a live
-        // representation (`_findFile`) OR a sidecar (`_readMetaSidecar`, which
-        // includes a `deleted:true` tombstone). Checking only `_findFile` would
+        // representation (`#findFile`) OR a sidecar (`readMetaSidecar`, which
+        // includes a `deleted:true` tombstone). Checking only `#findFile` would
         // let an import write content back over a soft-deleted (tombstoned)
         // resource -- resurrecting it while its `deleted:true` sidecar remains,
         // yielding a served-but-tombstoned resource and an inconsistent feed.
         const resourceExists =
-          Boolean(await this._findFile({ collectionDir, resourceId })) ||
-          Boolean(await this._readMetaSidecar({ collectionDir, resourceId }))
+          Boolean(await this.#findFile({ collectionDir, resourceId })) ||
+          Boolean(await this.readMetaSidecar({ collectionDir, resourceId }))
         if (resourceExists) {
           stats.resourcesSkipped++
           // A resource-level policy travels with a newly-created resource only.
@@ -1560,7 +1553,7 @@ export class FileSystemBackend implements StorageBackend {
         const metadataBytes = resourceMetadata.get(resourceId)
         if (metadataBytes) {
           await atomicWriteFile({
-            filePath: this._metaSidecarPath({ collectionDir, resourceId }),
+            filePath: this.#metaSidecarPath({ collectionDir, resourceId }),
             data: metadataBytes
           })
         }
@@ -1600,14 +1593,14 @@ export class FileSystemBackend implements StorageBackend {
           continue
         }
         const exists =
-          Boolean(await this._findFile({ collectionDir, resourceId })) ||
-          Boolean(await this._readMetaSidecar({ collectionDir, resourceId }))
+          Boolean(await this.#findFile({ collectionDir, resourceId })) ||
+          Boolean(await this.readMetaSidecar({ collectionDir, resourceId }))
         if (exists) {
           stats.resourcesSkipped++
           continue
         }
         await atomicWriteFile({
-          filePath: this._metaSidecarPath({ collectionDir, resourceId }),
+          filePath: this.#metaSidecarPath({ collectionDir, resourceId }),
           data: metadataBytes
         })
         stats.resourcesCreated++
@@ -1625,15 +1618,15 @@ export class FileSystemBackend implements StorageBackend {
       for (const { resourceId, fileName, body } of chunkFiles) {
         let live = parentIsLive.get(resourceId)
         if (live === undefined) {
-          live = Boolean(await this._findFile({ collectionDir, resourceId }))
+          live = Boolean(await this.#findFile({ collectionDir, resourceId }))
           parentIsLive.set(resourceId, live)
         }
         if (!live) {
           continue
         }
-        const chunkDir = this._chunkDir({ collectionDir, resourceId })
+        const chunkDir = this.#chunkDir({ collectionDir, resourceId })
         const target = path.join(chunkDir, fileName)
-        this._assertContained(target)
+        this.#assertContained(target)
         let present = false
         try {
           await fsStat(target)
@@ -1711,8 +1704,8 @@ export class FileSystemBackend implements StorageBackend {
     // with the write (two concurrent recipient edits cannot clobber one
     // another). A distinct lock namespace from the per-Resource / unique-scan
     // locks: a description write and a Resource write touch different files.
-    return this._writeMutex.run(
-      this._collectionDescLockKey({ spaceId, collectionId }),
+    return this.#writeMutex.run(
+      this.#collectionDescLockKey({ spaceId, collectionId }),
       async () => {
         // Prior description, read once and reused below: for the create-path
         // quota check, `createdBy` resolution, and the CAS version.
@@ -1737,7 +1730,7 @@ export class FileSystemBackend implements StorageBackend {
         // Space past `maxCollectionsPerSpace`; overwriting an existing
         // Collection's description never trips it.
         if (this.maxCollectionsPerSpace !== undefined && !prior) {
-          const collectionIds = await this._collectionIds({ spaceId })
+          const collectionIds = await this.#collectionIds({ spaceId })
           if (collectionIds.length >= this.maxCollectionsPerSpace) {
             throw new CountQuotaExceededError({
               scope: 'Collections per Space',
@@ -1763,7 +1756,7 @@ export class FileSystemBackend implements StorageBackend {
         const creator = prior ? prior.createdBy : createdBy
         const version = (prior?.descriptionVersion ?? 0) + 1
 
-        await this._persistCollection({
+        await this.#persistCollection({
           spaceId,
           collectionId,
           collectionDescription: {
@@ -1778,7 +1771,7 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Builds the per-Collection-description serialization key for `_writeMutex`
+   * Builds the per-Collection-description serialization key for `#writeMutex`
    * (`desc:<spaceId>/<collectionId>`), so a Collection Description compare-and-
    * swap serializes with itself while staying disjoint from the per-Resource and
    * unique-scan lock namespaces.
@@ -1787,7 +1780,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.collectionId {string}
    * @returns {string}
    */
-  _collectionDescLockKey({
+  #collectionDescLockKey({
     spaceId,
     collectionId
   }: {
@@ -1815,7 +1808,7 @@ export class FileSystemBackend implements StorageBackend {
    *   description is preserved, else it defaults to `1`.
    * @returns {Promise<void>}
    */
-  async _persistCollection({
+  async #persistCollection({
     spaceId,
     collectionId,
     collectionDescription,
@@ -1826,7 +1819,7 @@ export class FileSystemBackend implements StorageBackend {
     collectionDescription: CollectionDescription
     descriptionVersion?: number
   }): Promise<void> {
-    const collectionDir = await this._ensureCollectionDir({
+    const collectionDir = await this.#ensureCollectionDir({
       spaceId,
       collectionId
     })
@@ -1862,7 +1855,7 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<
     (CollectionDescription & { descriptionVersion?: number }) | undefined
   > {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
     const filename = `.collection.${collectionId}.json`
     const metaStore = new MetadataJsonStore<
       CollectionDescription & { _version?: number }
@@ -1897,11 +1890,11 @@ export class FileSystemBackend implements StorageBackend {
     collectionId: string
   }): Promise<void> {
     // Freed bytes: drop the cached quota usage so the next write re-measures.
-    this._usageCache.delete(spaceId)
+    this.#usageCache.delete(spaceId)
     // `force: true` keeps delete idempotent (spec / `StorageBackend` contract):
     // removing an absent (or already-deleted) Collection resolves rather than
     // rejecting with `ENOENT` (which the request layer would wrap as a 500).
-    return await rm(this._collectionDir({ spaceId, collectionId }), {
+    return await rm(this.#collectionDir({ spaceId, collectionId }), {
       recursive: true,
       force: true
     })
@@ -1936,7 +1929,7 @@ export class FileSystemBackend implements StorageBackend {
     cursor?: string
     collectionDescription?: CollectionDescription
   }): Promise<CollectionResourcesList> {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
     // Prefer the caller's control-plane description. When this backend serves a
     // Collection's data plane (an external backend), it does NOT hold the
     // description locally, so its own `getCollectionDescription` would resolve
@@ -2004,7 +1997,7 @@ export class FileSystemBackend implements StorageBackend {
     const encrypted = collectionDescription?.encryption !== undefined
     const items = await Promise.all(
       pageEntries.map(async ({ resourceId, contentType }) => {
-        const sidecar = await this._readMetaSidecar({
+        const sidecar = await this.readMetaSidecar({
           collectionDir,
           resourceId
         })
@@ -2099,15 +2092,15 @@ export class FileSystemBackend implements StorageBackend {
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ version: number }> {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
-    const lockKey = this._resourceLockKey({
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
+    const lockKey = this.#resourceLockKey({
       spaceId,
       collectionId,
       resourceId
     })
     const write = () =>
-      this._writeMutex.run(lockKey, () =>
-        this._writeResourceLocked({
+      this.#writeMutex.run(lockKey, () =>
+        this.#writeResourceLocked({
           spaceId,
           collectionDir,
           resourceId,
@@ -2139,13 +2132,13 @@ export class FileSystemBackend implements StorageBackend {
       uniqueIndexes !== undefined &&
       uniqueIndexes.length > 0
     if (blindedUnique || equalityUnique) {
-      return this._writeMutex.run(
-        this._collectionLockKey({ spaceId, collectionId }),
+      return this.#writeMutex.run(
+        this.#collectionLockKey({ spaceId, collectionId }),
         async () => {
           if (blindedUnique) {
             assertNoUniqueBlindedConflict({
               document: input.kind === 'json' ? input.data : undefined,
-              candidates: await this._readJsonCandidates({
+              candidates: await this.#readJsonCandidates({
                 spaceId,
                 collectionId,
                 excludeResourceId: resourceId
@@ -2155,7 +2148,7 @@ export class FileSystemBackend implements StorageBackend {
           if (equalityUnique) {
             // A content write does not change the Resource's `custom`, so the
             // custom side of the claim comes from the CURRENT stored sidecar.
-            const priorSidecar = await this._readMetaSidecar({
+            const priorSidecar = await this.readMetaSidecar({
               collectionDir,
               resourceId
             })
@@ -2163,7 +2156,7 @@ export class FileSystemBackend implements StorageBackend {
               indexes: uniqueIndexes!,
               content: input.kind === 'json' ? input.data : undefined,
               custom: priorSidecar?.custom,
-              candidates: await this._readEqualityCandidates({
+              candidates: await this.#readEqualityCandidates({
                 spaceId,
                 collectionId,
                 excludeResourceId: resourceId
@@ -2184,7 +2177,7 @@ export class FileSystemBackend implements StorageBackend {
    * `version` in the sidecar. See `writeResource` for the parameters.
    * @returns {Promise<{ version: number }>}
    */
-  private async _writeResourceLocked({
+  async #writeResourceLocked({
     spaceId,
     collectionDir,
     resourceId,
@@ -2205,12 +2198,12 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<{ version: number }> {
     const filename = fileNameFor({ resourceId, contentType: input.contentType })
     const filePath = path.join(collectionDir, filename)
-    this._assertContained(filePath)
+    this.#assertContained(filePath)
 
     // Evaluate any conditional-write precondition against the current state
     // before writing (still inside the lock, so the check and write are atomic).
     if (ifMatch !== undefined || ifNoneMatch) {
-      await this._assertWritePrecondition({
+      await this.#assertWritePrecondition({
         collectionDir,
         resourceId,
         ifMatch,
@@ -2224,9 +2217,9 @@ export class FileSystemBackend implements StorageBackend {
     // (no `r.` file) is a create and does count. Soft under concurrency.
     if (this.maxResourcesPerSpace !== undefined) {
       const isLive =
-        (await this._findFile({ collectionDir, resourceId })) !== undefined
+        (await this.#findFile({ collectionDir, resourceId })) !== undefined
       if (!isLive) {
-        const liveCount = await this._countLiveResources({ spaceId })
+        const liveCount = await this.#countLiveResources({ spaceId })
         if (liveCount >= this.maxResourcesPerSpace) {
           throw new CountQuotaExceededError({
             scope: 'Resources per Space',
@@ -2236,11 +2229,11 @@ export class FileSystemBackend implements StorageBackend {
       }
     }
 
-    await this._writeRepresentationBytes({ spaceId, filePath, input })
+    await this.#writeRepresentationBytes({ spaceId, filePath, input })
 
     // A Resource has a single current representation: remove any prior one
     // stored under a different content-type (write-new-then-prune).
-    await this._pruneStaleRepresentations({
+    await this.#pruneStaleRepresentations({
       collectionDir,
       resourceId,
       keepPath: filePath
@@ -2259,7 +2252,7 @@ export class FileSystemBackend implements StorageBackend {
     // later writer backfilled into it. A tombstone keeps both, so re-creating a
     // deleted id under a different invoker preserves the original creator, as
     // it does the original `createdAt`.
-    return this._bumpSidecarVersion({
+    return this.#bumpSidecarVersion({
       collectionDir,
       resourceId,
       build: ({ prior, version, now }) => {
@@ -2291,8 +2284,8 @@ export class FileSystemBackend implements StorageBackend {
    * up front and written atomically; a binary body is streamed through the cap /
    * quota guards into a temp file and durably committed (fsync + rename + dir
    * fsync), removing the partial file on any failure. Shared by the Resource
-   * write path (`_writeResourceLocked`) and the chunk write path
-   * (`_writeChunkLocked`); the caller has already resolved `filePath` and ensured
+   * write path (`#writeResourceLocked`) and the chunk write path
+   * (`#writeChunkLocked`); the caller has already resolved `filePath` and ensured
    * its parent directory exists for the streamed case.
    * @param options {object}
    * @param options.spaceId {string}
@@ -2300,7 +2293,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.input {ResourceInput}
    * @returns {Promise<void>}
    */
-  private async _writeRepresentationBytes({
+  async #writeRepresentationBytes({
     spaceId,
     filePath,
     input
@@ -2326,7 +2319,7 @@ export class FileSystemBackend implements StorageBackend {
         })
       }
       if (capacityBytes !== undefined) {
-        await this._assertSpaceHeadroom({
+        await this.#assertSpaceHeadroom({
           spaceId,
           capacityBytes,
           incomingBytes
@@ -2365,15 +2358,15 @@ export class FileSystemBackend implements StorageBackend {
       }
       const guards: Transform[] = []
       if (maxUploadBytes !== undefined) {
-        guards.push(this._uploadCapGuard({ maxUploadBytes }))
+        guards.push(this.#uploadCapGuard({ maxUploadBytes }))
       }
       if (capacityBytes !== undefined) {
-        const headroomBytes = await this._assertSpaceHeadroom({
+        const headroomBytes = await this.#assertSpaceHeadroom({
           spaceId,
           capacityBytes,
           incomingBytes: input.declaredBytes ?? 0
         })
-        guards.push(this._quotaGuard({ spaceId, capacityBytes, headroomBytes }))
+        guards.push(this.#quotaGuard({ spaceId, capacityBytes, headroomBytes }))
       }
       // Stream into a temp file in the same directory, then durably commit it
       // (fsync + rename + dir fsync) once the whole body has been written and
@@ -2403,10 +2396,10 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Removes any prior representation of a Resource (or chunk) stored under a
    * different content-type than the one just written: its filename differs, so
-   * `_resourceFilesFor` still lists it. Write-new-then-prune (the caller writes
+   * `#resourceFilesFor` still lists it. Write-new-then-prune (the caller writes
    * the new representation first) so the item is never momentarily absent.
-   * Shared by the Resource write path (`_writeResourceLocked`) and the chunk
-   * write path (`_writeChunkLocked`).
+   * Shared by the Resource write path (`#writeResourceLocked`) and the chunk
+   * write path (`#writeChunkLocked`).
    * @param options {object}
    * @param options.collectionDir {string}   the dir the representation lives in
    *   (a Collection dir, or a chunk dir for a chunk)
@@ -2416,7 +2409,7 @@ export class FileSystemBackend implements StorageBackend {
    *   representation to keep
    * @returns {Promise<void>}
    */
-  private async _pruneStaleRepresentations({
+  async #pruneStaleRepresentations({
     collectionDir,
     resourceId,
     keepPath
@@ -2425,7 +2418,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     keepPath: string
   }): Promise<void> {
-    const existing = await this._resourceFilesFor({ collectionDir, resourceId })
+    const existing = await this.#resourceFilesFor({ collectionDir, resourceId })
     await Promise.all(
       existing
         .filter(name => path.resolve(name) !== path.resolve(keepPath))
@@ -2434,8 +2427,8 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * The read-bump-write sidecar tail shared by `_writeResourceLocked` and
-   * `_writeChunkLocked`: reads the item's current metadata sidecar, computes the
+   * The read-bump-write sidecar tail shared by `#writeResourceLocked` and
+   * `#writeChunkLocked`: reads the item's current metadata sidecar, computes the
    * next monotonic `version` (bumped from the prior value, so a first write
    * lands at 1), builds the new sidecar via `build`, writes it, and returns the
    * new version. The two write paths fill in different fields -- a chunk carries
@@ -2451,7 +2444,7 @@ export class FileSystemBackend implements StorageBackend {
    *   prior sidecar, the bumped `version`, and the write timestamp
    * @returns {Promise<{ version: number }>}
    */
-  private async _bumpSidecarVersion({
+  async #bumpSidecarVersion({
     collectionDir,
     resourceId,
     build
@@ -2465,9 +2458,9 @@ export class FileSystemBackend implements StorageBackend {
     }) => MetaSidecar
   }): Promise<{ version: number }> {
     const now = new Date().toISOString()
-    const prior = await this._readMetaSidecar({ collectionDir, resourceId })
+    const prior = await this.readMetaSidecar({ collectionDir, resourceId })
     const version = (prior?.version ?? 0) + 1
-    await this._writeMetaSidecar({
+    await this.#writeMetaSidecar({
       collectionDir,
       resourceId,
       sidecar: build({ prior, version, now })
@@ -2476,7 +2469,7 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Builds the per-Resource serialization key for `_writeMutex`
+   * Builds the per-Resource serialization key for `#writeMutex`
    * (`<spaceId>/<collectionId>/<resourceId>`), so conditional writes to distinct
    * Resources run concurrently while writes to the same Resource are ordered.
    * @param options {object}
@@ -2485,7 +2478,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.resourceId {string}
    * @returns {string}
    */
-  _resourceLockKey({
+  #resourceLockKey({
     spaceId,
     collectionId,
     resourceId
@@ -2506,7 +2499,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.collectionId {string}
    * @returns {string}
    */
-  _collectionLockKey({
+  #collectionLockKey({
     spaceId,
     collectionId
   }: {
@@ -2528,7 +2521,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *` (create-if-absent)
    * @returns {Promise<void>}
    */
-  async _assertWritePrecondition({
+  async #assertWritePrecondition({
     collectionDir,
     resourceId,
     ifMatch,
@@ -2540,9 +2533,9 @@ export class FileSystemBackend implements StorageBackend {
     ifNoneMatch?: boolean
   }): Promise<void> {
     const exists =
-      (await this._findFile({ collectionDir, resourceId })) !== undefined
+      (await this.#findFile({ collectionDir, resourceId })) !== undefined
     const prior = exists
-      ? await this._readMetaSidecar({ collectionDir, resourceId })
+      ? await this.readMetaSidecar({ collectionDir, resourceId })
       : undefined
     assertWritePrecondition({
       resourceId,
@@ -2576,8 +2569,8 @@ export class FileSystemBackend implements StorageBackend {
      */
     contentType?: string
   }): Promise<ResourceResult> {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
-    return this._readRepresentation({
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
+    return this.#readRepresentation({
       collectionDir,
       resourceId,
       requestName: 'Get Resource'
@@ -2602,7 +2595,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.requestName {string}   used in the 404 error title
    * @returns {Promise<ResourceResult>}
    */
-  private async _readRepresentation({
+  async #readRepresentation({
     collectionDir,
     resourceId,
     requestName
@@ -2611,7 +2604,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     requestName: string
   }): Promise<ResourceResult> {
-    const filePath = await this._findFile({ collectionDir, resourceId })
+    const filePath = await this.#findFile({ collectionDir, resourceId })
     if (!filePath) {
       throw new ResourceNotFoundError({ requestName })
     }
@@ -2619,7 +2612,7 @@ export class FileSystemBackend implements StorageBackend {
     const { contentType: storedResourceType } = parseResourceFileName(
       path.basename(filePath)
     )
-    const sidecar = await this._readMetaSidecar({ collectionDir, resourceId })
+    const sidecar = await this.readMetaSidecar({ collectionDir, resourceId })
 
     return {
       resourceStream: await openFileStream(filePath, this.logger),
@@ -2633,7 +2626,7 @@ export class FileSystemBackend implements StorageBackend {
    * sidecar together -- the shared core of the two metadata getters
    * (`getResourceMetadata` and `getChunkMetadata`). Resolves `undefined` when no
    * representation file is present (including a delete race on `stat`). Unlike
-   * `_readRepresentation`, the `stat` result is USED (the reported `size`, and
+   * `#readRepresentation`, the `stat` result is USED (the reported `size`, and
    * the timestamp fallbacks in `getResourceMetadata`), so it is not dropped.
    * @param options {object}
    * @param options.collectionDir {string}   the dir the representation lives in
@@ -2642,7 +2635,7 @@ export class FileSystemBackend implements StorageBackend {
    * @returns {Promise<{ stats: import('node:fs').Stats, contentType: string,
    *   sidecar?: MetaSidecar } | undefined>}
    */
-  private async _statRepresentation({
+  async #statRepresentation({
     collectionDir,
     resourceId
   }: {
@@ -2651,7 +2644,7 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<
     { stats: fs.Stats; contentType: string; sidecar?: MetaSidecar } | undefined
   > {
-    const filePath = await this._findFile({ collectionDir, resourceId })
+    const filePath = await this.#findFile({ collectionDir, resourceId })
     if (!filePath) {
       return undefined
     }
@@ -2669,7 +2662,7 @@ export class FileSystemBackend implements StorageBackend {
     // Derive the stored content-type from the filename segment (the exact type
     // it was written under), as `getResource` does.
     const { contentType } = parseResourceFileName(path.basename(filePath))
-    const sidecar = await this._readMetaSidecar({ collectionDir, resourceId })
+    const sidecar = await this.readMetaSidecar({ collectionDir, resourceId })
     return { stats, contentType, sidecar }
   }
 
@@ -2681,7 +2674,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.resourceId {string}
    * @returns {string}
    */
-  _metaSidecarPath({
+  #metaSidecarPath({
     collectionDir,
     resourceId
   }: {
@@ -2689,7 +2682,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
   }): string {
     const filePath = path.join(collectionDir, metaSidecarFileName(resourceId))
-    this._assertContained(filePath)
+    this.#assertContained(filePath)
     return filePath
   }
 
@@ -2701,7 +2694,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.resourceId {string}
    * @returns {Promise<MetaSidecar|undefined>}
    */
-  async _readMetaSidecar({
+  async readMetaSidecar({
     collectionDir,
     resourceId
   }: {
@@ -2709,7 +2702,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
   }): Promise<MetaSidecar | undefined> {
     const metaStore = new MetadataJsonStore<MetaSidecar>({
-      file: this._metaSidecarPath({ collectionDir, resourceId })
+      file: this.#metaSidecarPath({ collectionDir, resourceId })
     })
     return await metaStore.read()
   }
@@ -2722,7 +2715,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.sidecar {MetaSidecar}
    * @returns {Promise<void>}
    */
-  async _writeMetaSidecar({
+  async #writeMetaSidecar({
     collectionDir,
     resourceId,
     sidecar
@@ -2732,7 +2725,7 @@ export class FileSystemBackend implements StorageBackend {
     sidecar: MetaSidecar
   }): Promise<void> {
     await atomicWriteFile({
-      filePath: this._metaSidecarPath({ collectionDir, resourceId }),
+      filePath: this.#metaSidecarPath({ collectionDir, resourceId }),
       data: JSON.stringify(sidecar)
     })
   }
@@ -2770,8 +2763,8 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<
     (ResourceMetadata & { version?: number; metaVersion?: number }) | undefined
   > {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
-    const stated = await this._statRepresentation({ collectionDir, resourceId })
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
+    const stated = await this.#statRepresentation({ collectionDir, resourceId })
     if (!stated) {
       return undefined
     }
@@ -2846,15 +2839,15 @@ export class FileSystemBackend implements StorageBackend {
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ metaVersion: number } | undefined> {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
     const writeMeta = async (): Promise<
       { metaVersion: number } | undefined
     > => {
-      const filePath = await this._findFile({ collectionDir, resourceId })
+      const filePath = await this.#findFile({ collectionDir, resourceId })
       if (!filePath) {
         return undefined
       }
-      const prior = await this._readMetaSidecar({ collectionDir, resourceId })
+      const prior = await this.readMetaSidecar({ collectionDir, resourceId })
       // Evaluate the `/meta` precondition against the current `metaVersion`
       // atomically under the lock, before writing. `If-None-Match: *` means
       // "only if no metadata has been written yet"; `If-Match` pins the current
@@ -2883,7 +2876,7 @@ export class FileSystemBackend implements StorageBackend {
       // write, so a supplied `epoch` replaces it but an omitted one PRESERVES
       // the stored value (unlike `custom`, which is full-replace).
       const resolvedEpoch = epoch ?? prior?.epoch
-      await this._writeMetaSidecar({
+      await this.#writeMetaSidecar({
         collectionDir,
         resourceId,
         sidecar: {
@@ -2913,31 +2906,31 @@ export class FileSystemBackend implements StorageBackend {
     // nesting cannot deadlock (plain writes never hold a Resource key while
     // waiting on a Collection key).
     if (uniqueIndexes !== undefined && uniqueIndexes.length > 0) {
-      return this._writeMutex.run(
-        this._collectionLockKey({ spaceId, collectionId }),
+      return this.#writeMutex.run(
+        this.#collectionLockKey({ spaceId, collectionId }),
         async () => {
           assertNoUniqueEqualityConflict({
             indexes: uniqueIndexes,
-            content: await this._readResourceJsonContent({
+            content: await this.#readResourceJsonContent({
               collectionDir,
               resourceId
             }),
             custom,
-            candidates: await this._readEqualityCandidates({
+            candidates: await this.#readEqualityCandidates({
               spaceId,
               collectionId,
               excludeResourceId: resourceId
             })
           })
-          return this._writeMutex.run(
-            this._resourceLockKey({ spaceId, collectionId, resourceId }),
+          return this.#writeMutex.run(
+            this.#resourceLockKey({ spaceId, collectionId, resourceId }),
             writeMeta
           )
         }
       )
     }
-    return this._writeMutex.run(
-      this._resourceLockKey({ spaceId, collectionId, resourceId }),
+    return this.#writeMutex.run(
+      this.#resourceLockKey({ spaceId, collectionId, resourceId }),
       writeMeta
     )
   }
@@ -2950,7 +2943,7 @@ export class FileSystemBackend implements StorageBackend {
    * future work). With no content file left, the tombstone is invisible to
    * every normal read path
    * (`getResource` / `getResourceMetadata` / `listCollectionItems` all gate on
-   * the content file via `_findFile`, so they 404 / skip it), making soft delete
+   * the content file via `#findFile`, so they 404 / skip it), making soft delete
    * transparent to the existing API.
    *
    * When `ifMatch` is supplied (the `conditional-writes` feature), the delete
@@ -2977,21 +2970,21 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     ifMatch?: string
   }): Promise<void> {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
     // Freed bytes: drop the cached quota usage so the next write re-measures.
-    this._usageCache.delete(spaceId)
+    this.#usageCache.delete(spaceId)
     const softDelete = async (): Promise<void> => {
       if (ifMatch !== undefined) {
-        await this._assertWritePrecondition({
+        await this.#assertWritePrecondition({
           collectionDir,
           resourceId,
           ifMatch
         })
       }
       // A Resource has a single current representation, so this normally matches
-      // one file. The segment-anchored match in `_resourceFilesFor` keeps a
+      // one file. The segment-anchored match in `#resourceFilesFor` keeps a
       // prefix id (e.g. `note` vs `notebook`) from being swept up too.
-      const filesForResource = await this._resourceFilesFor({
+      const filesForResource = await this.#resourceFilesFor({
         collectionDir,
         resourceId
       })
@@ -3014,7 +3007,7 @@ export class FileSystemBackend implements StorageBackend {
       // directory goes with the content. Runs under the same per-Resource lock a
       // `writeChunk` takes, so a chunk write racing this delete cannot re-create
       // an orphan directory. `force` makes an absent chunk directory a no-op.
-      await rm(this._chunkDir({ collectionDir, resourceId }), {
+      await rm(this.#chunkDir({ collectionDir, resourceId }), {
         recursive: true,
         force: true
       })
@@ -3025,8 +3018,8 @@ export class FileSystemBackend implements StorageBackend {
       // `createdBy` are kept: they are the server's record of the Resource's
       // origin, which a re-create under the same id continues.
       const now = new Date().toISOString()
-      const prior = await this._readMetaSidecar({ collectionDir, resourceId })
-      await this._writeMetaSidecar({
+      const prior = await this.readMetaSidecar({ collectionDir, resourceId })
+      await this.#writeMetaSidecar({
         collectionDir,
         resourceId,
         sidecar: {
@@ -3044,8 +3037,8 @@ export class FileSystemBackend implements StorageBackend {
     // The soft delete is a read-modify-write on the sidecar, so it always
     // serializes with concurrent writes under the per-Resource lock (not only
     // for a conditional delete, as the old unconditional removal did).
-    return this._writeMutex.run(
-      this._resourceLockKey({ spaceId, collectionId, resourceId }),
+    return this.#writeMutex.run(
+      this.#resourceLockKey({ spaceId, collectionId, resourceId }),
       softDelete
     )
   }
@@ -3066,7 +3059,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.resourceId {string}
    * @returns {string}
    */
-  _chunkDir({
+  #chunkDir({
     collectionDir,
     resourceId
   }: {
@@ -3074,7 +3067,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
   }): string {
     const chunkDir = path.join(collectionDir, chunkDirName(resourceId))
-    this._assertContained(chunkDir)
+    this.#assertContained(chunkDir)
     return chunkDir
   }
 
@@ -3115,14 +3108,14 @@ export class FileSystemBackend implements StorageBackend {
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ version: number }> {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
     // Serialize on the parent Resource's lock key -- the same key
     // `deleteResource` takes -- so the parent-exists check, the write, and the
     // cascade delete cannot interleave (no orphan chunk).
-    return this._writeMutex.run(
-      this._resourceLockKey({ spaceId, collectionId, resourceId }),
+    return this.#writeMutex.run(
+      this.#resourceLockKey({ spaceId, collectionId, resourceId }),
       () =>
-        this._writeChunkLocked({
+        this.#writeChunkLocked({
           spaceId,
           collectionDir,
           resourceId,
@@ -3139,7 +3132,7 @@ export class FileSystemBackend implements StorageBackend {
    * `writeChunk` for the parameters.
    * @returns {Promise<{ version: number }>}
    */
-  private async _writeChunkLocked({
+  async #writeChunkLocked({
     spaceId,
     collectionDir,
     resourceId,
@@ -3159,7 +3152,7 @@ export class FileSystemBackend implements StorageBackend {
     // The parent Resource must exist: writing a chunk of an absent Resource
     // rejects, so orphan chunks cannot accumulate.
     const parentExists =
-      (await this._findFile({ collectionDir, resourceId })) !== undefined
+      (await this.#findFile({ collectionDir, resourceId })) !== undefined
     if (!parentExists) {
       throw new ResourceNotFoundError({ requestName: 'Write Chunk' })
     }
@@ -3167,19 +3160,19 @@ export class FileSystemBackend implements StorageBackend {
     // Inside the chunk directory a chunk is a Resource keyed by its index, so the
     // Resource file / sidecar helpers apply with `chunkDir` as the collectionDir
     // and the stringified index as the resourceId.
-    const chunkDir = this._chunkDir({ collectionDir, resourceId })
+    const chunkDir = this.#chunkDir({ collectionDir, resourceId })
     const chunkId = String(chunkIndex)
     const filename = fileNameFor({
       resourceId: chunkId,
       contentType: input.contentType
     })
     const filePath = path.join(chunkDir, filename)
-    this._assertContained(filePath)
+    this.#assertContained(filePath)
 
     // Evaluate any precondition against the chunk's current version before
     // writing (still inside the lock, so check and write are atomic).
     if (ifMatch !== undefined || ifNoneMatch) {
-      await this._assertWritePrecondition({
+      await this.#assertWritePrecondition({
         collectionDir: chunkDir,
         resourceId: chunkId,
         ifMatch,
@@ -3190,11 +3183,11 @@ export class FileSystemBackend implements StorageBackend {
     // The chunk directory is created lazily on first write (a binary body is
     // streamed into a temp file in it, so it must exist first).
     await mkdir(chunkDir, { recursive: true })
-    await this._writeRepresentationBytes({ spaceId, filePath, input })
+    await this.#writeRepresentationBytes({ spaceId, filePath, input })
 
     // A chunk has a single current representation: remove any prior one stored
     // under a different content-type (write-new-then-prune).
-    await this._pruneStaleRepresentations({
+    await this.#pruneStaleRepresentations({
       collectionDir: chunkDir,
       resourceId: chunkId,
       keepPath: filePath
@@ -3202,7 +3195,7 @@ export class FileSystemBackend implements StorageBackend {
 
     // Bump the chunk's monotonic `version` (its ETag validator), preserving its
     // `createdAt`. A chunk carries no user Metadata / `createdBy` / epoch stamp.
-    return this._bumpSidecarVersion({
+    return this.#bumpSidecarVersion({
       collectionDir: chunkDir,
       resourceId: chunkId,
       build: ({ prior, version, now }) => ({
@@ -3235,11 +3228,11 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     chunkIndex: number
   }): Promise<ResourceResult> {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
-    const chunkDir = this._chunkDir({ collectionDir, resourceId })
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
+    const chunkDir = this.#chunkDir({ collectionDir, resourceId })
     // A chunk is a Resource keyed by its index inside its chunk dir, so the
     // shared representation reader applies with `chunkDir` as the collectionDir.
-    return this._readRepresentation({
+    return this.#readRepresentation({
       collectionDir: chunkDir,
       resourceId: String(chunkIndex),
       requestName: 'Get Chunk'
@@ -3267,11 +3260,11 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     chunkIndex: number
   }): Promise<ChunkMetadata | undefined> {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
-    const chunkDir = this._chunkDir({ collectionDir, resourceId })
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
+    const chunkDir = this.#chunkDir({ collectionDir, resourceId })
     // A chunk is a Resource keyed by its index inside its chunk dir, so the
     // shared stat/sidecar reader applies with `chunkDir` as the collectionDir.
-    const stated = await this._statRepresentation({
+    const stated = await this.#statRepresentation({
       collectionDir: chunkDir,
       resourceId: String(chunkIndex)
     })
@@ -3314,13 +3307,13 @@ export class FileSystemBackend implements StorageBackend {
     chunkIndex: number
     ifMatch?: string
   }): Promise<boolean> {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
-    const chunkDir = this._chunkDir({ collectionDir, resourceId })
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
+    const chunkDir = this.#chunkDir({ collectionDir, resourceId })
     const chunkId = String(chunkIndex)
-    return this._writeMutex.run(
-      this._resourceLockKey({ spaceId, collectionId, resourceId }),
+    return this.#writeMutex.run(
+      this.#resourceLockKey({ spaceId, collectionId, resourceId }),
       async () => {
-        const files = await this._resourceFilesFor({
+        const files = await this.#resourceFilesFor({
           collectionDir: chunkDir,
           resourceId: chunkId
         })
@@ -3330,7 +3323,7 @@ export class FileSystemBackend implements StorageBackend {
           return false
         }
         if (ifMatch !== undefined) {
-          await this._assertWritePrecondition({
+          await this.#assertWritePrecondition({
             collectionDir: chunkDir,
             resourceId: chunkId,
             ifMatch
@@ -3339,7 +3332,7 @@ export class FileSystemBackend implements StorageBackend {
         await Promise.all(files.map(name => rm(name)))
         // Remove the version sidecar too: a chunk keeps no tombstone.
         await rm(
-          this._metaSidecarPath({
+          this.#metaSidecarPath({
             collectionDir: chunkDir,
             resourceId: chunkId
           }),
@@ -3357,7 +3350,7 @@ export class FileSystemBackend implements StorageBackend {
           await fs.promises.rmdir(chunkDir)
         }
         // Freed bytes: drop the cached quota usage so the next write re-measures.
-        this._usageCache.delete(spaceId)
+        this.#usageCache.delete(spaceId)
         return true
       }
     )
@@ -3383,8 +3376,8 @@ export class FileSystemBackend implements StorageBackend {
     collectionId: string
     resourceId: string
   }): Promise<ChunkListing> {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
-    const chunkDir = this._chunkDir({ collectionDir, resourceId })
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
+    const chunkDir = this.#chunkDir({ collectionDir, resourceId })
     let entries: fs.Dirent[]
     try {
       entries = await fs.promises.readdir(chunkDir, { withFileTypes: true })
@@ -3407,7 +3400,7 @@ export class FileSystemBackend implements StorageBackend {
         )
         const filePath = path.join(chunkDir, entry.name)
         const stats = await fsStat(filePath)
-        const sidecar = await this._readMetaSidecar({
+        const sidecar = await this.readMetaSidecar({
           collectionDir: chunkDir,
           resourceId: indexStr
         })
@@ -3464,7 +3457,7 @@ export class FileSystemBackend implements StorageBackend {
     }>
     checkpoint: { id: string; updatedAt: string } | null
   }> {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
 
     let entries: fs.Dirent[] = []
     try {
@@ -3530,7 +3523,7 @@ export class FileSystemBackend implements StorageBackend {
         if (!isJson({ contentType: live.contentType })) {
           return undefined
         }
-        const sidecar = await this._readMetaSidecar({
+        const sidecar = await this.readMetaSidecar({
           collectionDir,
           resourceId
         })
@@ -3575,7 +3568,7 @@ export class FileSystemBackend implements StorageBackend {
     const tombstoneDescriptors = [...sidecarIds]
       .filter(resourceId => !liveFileById.has(resourceId))
       .map(async (resourceId): Promise<Descriptor | undefined> => {
-        const sidecar = await this._readMetaSidecar({
+        const sidecar = await this.readMetaSidecar({
           collectionDir,
           resourceId
         })
@@ -3716,7 +3709,7 @@ export class FileSystemBackend implements StorageBackend {
     limit?: number
     cursor?: string
   }): Promise<{ count: number } | BlindedIndexQueryPage> {
-    const candidates = await this._readJsonCandidates({
+    const candidates = await this.#readJsonCandidates({
       spaceId,
       collectionId
     })
@@ -3736,7 +3729,7 @@ export class FileSystemBackend implements StorageBackend {
    *   conflict scan excludes the document being written)
    * @returns {Promise<Array<{ resourceId: string, document: unknown }>>}
    */
-  private async _readJsonCandidates({
+  async #readJsonCandidates({
     spaceId,
     collectionId,
     excludeResourceId
@@ -3745,7 +3738,7 @@ export class FileSystemBackend implements StorageBackend {
     collectionId: string
     excludeResourceId?: string
   }): Promise<Array<{ resourceId: string; document: unknown }>> {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
 
     let entries: fs.Dirent[] = []
     try {
@@ -3829,7 +3822,7 @@ export class FileSystemBackend implements StorageBackend {
     limit?: number
     cursor?: string
   }): Promise<{ count: number } | EqualityQueryPage> {
-    const candidates = await this._readEqualityCandidates({
+    const candidates = await this.#readEqualityCandidates({
       spaceId,
       collectionId
     })
@@ -3864,7 +3857,7 @@ export class FileSystemBackend implements StorageBackend {
     collectionId: string
     indexes: NormalizedIndexDeclaration[]
   }): Promise<{ name: string; value: EqualityValue } | undefined> {
-    const candidates = await this._readEqualityCandidates({
+    const candidates = await this.#readEqualityCandidates({
       spaceId,
       collectionId
     })
@@ -3874,11 +3867,11 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Reads every live Resource of a Collection as an equality candidate -- the
    * candidate set for the equality query and the plaintext unique-attribute
-   * conflict scans. Unlike `_readJsonCandidates` this INCLUDES blob Resources
+   * conflict scans. Unlike `#readJsonCandidates` this INCLUDES blob Resources
    * (a blob is queryable through its `custom`-sourced attributes): each entry
    * resolves `{ resourceId, content?, custom? }`, where `content` is the parsed
    * JSON of a JSON-typed representation (the blob content read is skipped, and
-   * unparsable JSON is dropped, as in `_readJsonCandidates`) and `custom` is the
+   * unparsable JSON is dropped, as in `#readJsonCandidates`) and `custom` is the
    * `.meta.` sidecar's `custom` when present. Tombstones are excluded naturally
    * (no live `r.` content file); an optional excluded Resource is skipped. An
    * absent Collection dir resolves empty.
@@ -3889,7 +3882,7 @@ export class FileSystemBackend implements StorageBackend {
    *   scan excludes the Resource being written)
    * @returns {Promise<EqualityCandidate[]>}
    */
-  private async _readEqualityCandidates({
+  async #readEqualityCandidates({
     spaceId,
     collectionId,
     excludeResourceId
@@ -3898,7 +3891,7 @@ export class FileSystemBackend implements StorageBackend {
     collectionId: string
     excludeResourceId?: string
   }): Promise<EqualityCandidate[]> {
-    const collectionDir = this._collectionDir({ spaceId, collectionId })
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
 
     let entries: fs.Dirent[] = []
     try {
@@ -3936,7 +3929,7 @@ export class FileSystemBackend implements StorageBackend {
               content = undefined
             }
           }
-          const sidecar = await this._readMetaSidecar({
+          const sidecar = await this.readMetaSidecar({
             collectionDir,
             resourceId
           })
@@ -3958,14 +3951,14 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.resourceId {string}
    * @returns {Promise<unknown>}
    */
-  private async _readResourceJsonContent({
+  async #readResourceJsonContent({
     collectionDir,
     resourceId
   }: {
     collectionDir: string
     resourceId: string
   }): Promise<unknown> {
-    const filePath = await this._findFile({ collectionDir, resourceId })
+    const filePath = await this.#findFile({ collectionDir, resourceId })
     if (!filePath) {
       return undefined
     }
@@ -3993,7 +3986,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.resourceId] {string}
    * @returns {string}
    */
-  _policyFile({
+  #policyFile({
     spaceId,
     collectionId,
     resourceId
@@ -4004,11 +3997,11 @@ export class FileSystemBackend implements StorageBackend {
   }): string {
     const dir =
       collectionId !== undefined
-        ? this._collectionDir({ spaceId, collectionId })
-        : this._spaceDir(spaceId)
+        ? this.#collectionDir({ spaceId, collectionId })
+        : this.#spaceDir(spaceId)
     const filename = `.policy.${resourceId ?? collectionId ?? spaceId}.json`
     const filePath = path.join(dir, filename)
-    this._assertContained(filePath)
+    this.#assertContained(filePath)
     return filePath
   }
 
@@ -4030,7 +4023,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId?: string
   }): Promise<PolicyDocument | undefined> {
     const metaStore = new MetadataJsonStore<PolicyDocument>({
-      file: this._policyFile({ spaceId, collectionId, resourceId })
+      file: this.#policyFile({ spaceId, collectionId, resourceId })
     })
     return await metaStore.read()
   }
@@ -4056,12 +4049,12 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<void> {
     // Ensure the containing directory exists (Space or Collection dir).
     if (collectionId !== undefined) {
-      await this._ensureCollectionDir({ spaceId, collectionId })
+      await this.#ensureCollectionDir({ spaceId, collectionId })
     } else {
-      await this._ensureSpaceDir({ spaceId })
+      await this.#ensureSpaceDir({ spaceId })
     }
     await atomicWriteFile({
-      filePath: this._policyFile({ spaceId, collectionId, resourceId }),
+      filePath: this.#policyFile({ spaceId, collectionId, resourceId }),
       data: JSON.stringify(policy)
     })
   }
@@ -4082,7 +4075,7 @@ export class FileSystemBackend implements StorageBackend {
     collectionId?: string
     resourceId?: string
   }): Promise<void> {
-    await rm(this._policyFile({ spaceId, collectionId, resourceId }), {
+    await rm(this.#policyFile({ spaceId, collectionId, resourceId }), {
       force: true
     })
   }
@@ -4098,7 +4091,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.backendId {string}
    * @returns {string}
    */
-  _backendFile({
+  #backendFile({
     spaceId,
     backendId
   }: {
@@ -4106,10 +4099,10 @@ export class FileSystemBackend implements StorageBackend {
     backendId: string
   }): string {
     const filePath = path.join(
-      this._spaceDir(spaceId),
+      this.#spaceDir(spaceId),
       `.backend.${backendId}.json`
     )
-    this._assertContained(filePath)
+    this.#assertContained(filePath)
     return filePath
   }
 
@@ -4130,9 +4123,9 @@ export class FileSystemBackend implements StorageBackend {
     backendId: string
     record: StoredBackendRecord
   }): Promise<void> {
-    await this._ensureSpaceDir({ spaceId })
+    await this.#ensureSpaceDir({ spaceId })
     await atomicWriteFile({
-      filePath: this._backendFile({ spaceId, backendId }),
+      filePath: this.#backendFile({ spaceId, backendId }),
       data: JSON.stringify(record)
     })
   }
@@ -4154,7 +4147,7 @@ export class FileSystemBackend implements StorageBackend {
     backendId: string
   }): Promise<StoredBackendRecord | undefined> {
     const metaStore = new MetadataJsonStore<StoredBackendRecord>({
-      file: this._backendFile({ spaceId, backendId })
+      file: this.#backendFile({ spaceId, backendId })
     })
     return await metaStore.read()
   }
@@ -4173,7 +4166,7 @@ export class FileSystemBackend implements StorageBackend {
   }: {
     spaceId: string
   }): Promise<BackendDescriptor[]> {
-    const spaceDir = this._spaceDir(spaceId)
+    const spaceDir = this.#spaceDir(spaceId)
     let entries
     try {
       entries = await fs.promises.readdir(spaceDir, { withFileTypes: true })
@@ -4212,7 +4205,7 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     backendId: string
   }): Promise<void> {
-    await rm(this._backendFile({ spaceId, backendId }), { force: true })
+    await rm(this.#backendFile({ spaceId, backendId }), { force: true })
   }
 
   /**
@@ -4225,14 +4218,14 @@ export class FileSystemBackend implements StorageBackend {
    * @param keystoreId {string}   the keystore's server-generated local id
    * @returns {string}
    */
-  _keystoreDir(keystoreId: string): string {
+  #keystoreDir(keystoreId: string): string {
     const keystoreDir = path.join(this.keystoresDir, keystoreId)
-    this._assertContained(keystoreDir, this.keystoresDir)
+    this.#assertContained(keystoreDir, this.keystoresDir)
     return keystoreDir
   }
 
-  _keystoreConfigFile(keystoreId: string): string {
-    return path.join(this._keystoreDir(keystoreId), 'config.json')
+  #keystoreConfigFile(keystoreId: string): string {
+    return path.join(this.#keystoreDir(keystoreId), 'config.json')
   }
 
   /**
@@ -4251,9 +4244,9 @@ export class FileSystemBackend implements StorageBackend {
     keystoreId: string
     config: KeystoreConfig
   }): Promise<void> {
-    await mkdir(this._keystoreDir(keystoreId), { recursive: true })
+    await mkdir(this.#keystoreDir(keystoreId), { recursive: true })
     await atomicWriteFile({
-      filePath: this._keystoreConfigFile(keystoreId),
+      filePath: this.#keystoreConfigFile(keystoreId),
       data: JSON.stringify(config)
     })
   }
@@ -4270,7 +4263,7 @@ export class FileSystemBackend implements StorageBackend {
     keystoreId: string
   }): Promise<KeystoreConfig | undefined> {
     const metaStore = new MetadataJsonStore<KeystoreConfig>({
-      file: this._keystoreConfigFile(keystoreId)
+      file: this.#keystoreConfigFile(keystoreId)
     })
     return await metaStore.read()
   }
@@ -4293,7 +4286,7 @@ export class FileSystemBackend implements StorageBackend {
     keystoreId: string
     config: KeystoreConfig
   }): Promise<void> {
-    await this._writeMutex.run(`keystore:${keystoreId}`, async () => {
+    await this.#writeMutex.run(`keystore:${keystoreId}`, async () => {
       const existing = await this.getKeystore({ keystoreId })
       if (
         !existing ||
@@ -4303,7 +4296,7 @@ export class FileSystemBackend implements StorageBackend {
         throw new KeystoreStateConflictError()
       }
       await atomicWriteFile({
-        filePath: this._keystoreConfigFile(keystoreId),
+        filePath: this.#keystoreConfigFile(keystoreId),
         data: JSON.stringify(config)
       })
     })
@@ -4357,16 +4350,16 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.localId {string}   the key's local id
    * @returns {string}
    */
-  _keyFile({
+  #keyFile({
     keystoreId,
     localId
   }: {
     keystoreId: string
     localId: string
   }): string {
-    const keysDir = path.join(this._keystoreDir(keystoreId), 'keys')
+    const keysDir = path.join(this.#keystoreDir(keystoreId), 'keys')
     const keyFile = path.join(keysDir, `${localId}.json`)
-    this._assertContained(keyFile, keysDir)
+    this.#assertContained(keyFile, keysDir)
     return keyFile
   }
 
@@ -4389,7 +4382,7 @@ export class FileSystemBackend implements StorageBackend {
     localId: string
     record: KmsKeyRecord
   }): Promise<void> {
-    const keyFile = this._keyFile({ keystoreId, localId })
+    const keyFile = this.#keyFile({ keystoreId, localId })
     await mkdir(path.dirname(keyFile), { recursive: true })
     try {
       // Durable, atomic create-only write: `atomicCreateFile` preserves the
@@ -4423,7 +4416,7 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<KmsKeyRecord | undefined> {
     try {
       const raw = await fs.promises.readFile(
-        this._keyFile({ keystoreId, localId }),
+        this.#keyFile({ keystoreId, localId }),
         'utf8'
       )
       return JSON.parse(raw) as KmsKeyRecord
@@ -4449,7 +4442,7 @@ export class FileSystemBackend implements StorageBackend {
   }: {
     keystoreId: string
   }): Promise<Array<{ localId: string; record: KmsKeyRecord }>> {
-    const keysDir = path.join(this._keystoreDir(keystoreId), 'keys')
+    const keysDir = path.join(this.#keystoreDir(keystoreId), 'keys')
     let entries: fs.Dirent[]
     try {
       entries = await fs.promises.readdir(keysDir, { withFileTypes: true })
@@ -4488,7 +4481,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.capabilityId {string}   the revoked capability's id
    * @returns {string}
    */
-  _revocationFile({
+  #revocationFile({
     scope,
     delegator,
     capabilityId
@@ -4500,12 +4493,12 @@ export class FileSystemBackend implements StorageBackend {
     const fileName = revocationFileName({ delegator, capabilityId })
     if ('keystoreId' in scope) {
       return path.join(
-        this._keystoreDir(scope.keystoreId),
+        this.#keystoreDir(scope.keystoreId),
         'revocations',
         fileName
       )
     }
-    return path.join(this._spaceRevocationDir(scope.spaceId), fileName)
+    return path.join(this.#spaceRevocationDir(scope.spaceId), fileName)
   }
 
   /**
@@ -4541,7 +4534,7 @@ export class FileSystemBackend implements StorageBackend {
         )
       })
     }
-    const revocationFile = this._revocationFile({
+    const revocationFile = this.#revocationFile({
       scope,
       delegator: record.meta.delegator,
       capabilityId: record.capability.id
@@ -4584,7 +4577,7 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<boolean> {
     const now = Date.now()
     for (const { capabilityId, delegator } of capabilities) {
-      const revocationFile = this._revocationFile({
+      const revocationFile = this.#revocationFile({
         scope,
         delegator,
         capabilityId

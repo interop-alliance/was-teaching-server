@@ -267,8 +267,8 @@ export class PostgresBackend implements StorageBackend {
    */
   maxResourcesPerSpace?: number
 
-  private _pool: pg.Pool
-  private _schema?: string
+  #pool: pg.Pool
+  #schema?: string
 
   /**
    * @param options {object}
@@ -315,7 +315,7 @@ export class PostgresBackend implements StorageBackend {
     if (schema !== undefined && !/^[a-z_][a-z0-9_]*$/i.test(schema)) {
       throw new Error(`Invalid Postgres schema name: "${schema}".`)
     }
-    this._schema = schema
+    this.#schema = schema
     this.logger = logger ?? silentLogger
     // A non-finite `capacityBytes` (`Infinity` from an explicit `unlimited`)
     // behaves exactly like unset inside the backend: no configured limit.
@@ -349,7 +349,7 @@ export class PostgresBackend implements StorageBackend {
       maxResourcesPerSpace,
       DEFAULT_MAX_RESOURCES_PER_SPACE
     )
-    this._pool = new pg.Pool({
+    this.#pool = new pg.Pool({
       connectionString,
       max: POOL_MAX,
       statement_timeout: STATEMENT_TIMEOUT_MS,
@@ -357,7 +357,7 @@ export class PostgresBackend implements StorageBackend {
       // connection lands in the right schema with no per-checkout SET race.
       ...(schema !== undefined && { options: `-csearch_path=${schema}` })
     })
-    this._pool.on('error', err => {
+    this.#pool.on('error', err => {
       this.logger.error({ err }, 'Postgres pool background error')
     })
   }
@@ -369,11 +369,11 @@ export class PostgresBackend implements StorageBackend {
    * @returns {Promise<void>}
    */
   async init(): Promise<void> {
-    const client = await this._pool.connect()
+    const client = await this.#pool.connect()
     try {
-      if (this._schema !== undefined) {
+      if (this.#schema !== undefined) {
         // Identifier-quoted; the constructor validated the name's charset.
-        await client.query(`CREATE SCHEMA IF NOT EXISTS "${this._schema}"`)
+        await client.query(`CREATE SCHEMA IF NOT EXISTS "${this.#schema}"`)
       }
       // Lift the pool's statement timeout for this session: a waiting
       // instance blocks on the migration advisory lock for as long as the
@@ -394,7 +394,7 @@ export class PostgresBackend implements StorageBackend {
    * @returns {Promise<void>}
    */
   async close(): Promise<void> {
-    await this._pool.end()
+    await this.#pool.end()
   }
 
   /**
@@ -403,10 +403,10 @@ export class PostgresBackend implements StorageBackend {
    * @param fn {(client: pg.PoolClient) => Promise<T>}
    * @returns {Promise<T>}
    */
-  private async _withTransaction<T>(
+  async #withTransaction<T>(
     fn: (client: pg.PoolClient) => Promise<T>
   ): Promise<T> {
-    const client = await this._pool.connect()
+    const client = await this.#pool.connect()
     try {
       await client.query('BEGIN')
       const result = await fn(client)
@@ -466,7 +466,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @returns {Promise<void>}
    */
-  private async _ensureSpaceRow({
+  async #ensureSpaceRow({
     client,
     spaceId
   }: {
@@ -482,14 +482,14 @@ export class PostgresBackend implements StorageBackend {
 
   /**
    * Ensures the `collections` row (and its parent `spaces` row) exists,
-   * placeholder-description like `_ensureSpaceRow`.
+   * placeholder-description like `#ensureSpaceRow`.
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @returns {Promise<void>}
    */
-  private async _ensureCollectionRow({
+  async #ensureCollectionRow({
     client,
     spaceId,
     collectionId
@@ -498,7 +498,7 @@ export class PostgresBackend implements StorageBackend {
     spaceId: string
     collectionId: string
   }): Promise<void> {
-    await this._ensureSpaceRow({ client, spaceId })
+    await this.#ensureSpaceRow({ client, spaceId })
     await client.query(
       `INSERT INTO collections (space_id, collection_id) VALUES ($1, $2)
        ON CONFLICT (space_id, collection_id) DO NOTHING`,
@@ -519,7 +519,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options.delta {number}   signed byte delta (new minus old size)
    * @returns {Promise<void>}
    */
-  private async _applyUsageDelta({
+  async #applyUsageDelta({
     client,
     spaceId,
     delta
@@ -567,7 +567,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options.rowKey {string}   the row's identity within the Space
    * @returns {Promise<void>}
    */
-  private async _lockSameKeyCreate({
+  async #lockSameKeyCreate({
     client,
     spaceId,
     rowKey
@@ -586,7 +586,7 @@ export class PostgresBackend implements StorageBackend {
    * Locks a create-or-update target row and returns its prior state (or
    * `undefined` when absent), running `lockingSelect` -- a `SELECT ... FOR
    * UPDATE` on the row -- once, and, when it finds no row, taking the same-key
-   * create lock (`_lockSameKeyCreate`) and re-running it. Under READ COMMITTED a
+   * create lock (`#lockSameKeyCreate`) and re-running it. Under READ COMMITTED a
    * `FOR UPDATE` on an absent row locks nothing (no gap locks), so two
    * concurrent creators would both read "no prior row" and both apply their full
    * byte size as the usage delta; blocking on the create lock and re-reading
@@ -598,13 +598,13 @@ export class PostgresBackend implements StorageBackend {
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
    * @param options.rowKey {string}   the row's identity within the Space (the
-   *   `_lockSameKeyCreate` key domain)
+   *   `#lockSameKeyCreate` key domain)
    * @param options.lockingSelect {() => Promise<T | undefined>}   runs the
    *   `SELECT ... FOR UPDATE` and resolves the prior row (or `undefined`)
    * @returns {Promise<T | undefined>}   the prior row, re-read under the create
    *   lock when the first select found none
    */
-  private async _lockRowForWrite<T>({
+  async #lockRowForWrite<T>({
     client,
     spaceId,
     rowKey,
@@ -619,8 +619,8 @@ export class PostgresBackend implements StorageBackend {
     if (prior === undefined) {
       // The lock-nothing case: serialize with any concurrent creator of the
       // same key and re-read, so the caller's precondition / version / usage
-      // delta reflect the row it committed (see `_lockSameKeyCreate`).
-      await this._lockSameKeyCreate({ client, spaceId, rowKey })
+      // delta reflect the row it committed (see `#lockSameKeyCreate`).
+      await this.#lockSameKeyCreate({ client, spaceId, rowKey })
       prior = await lockingSelect()
     }
     return prior
@@ -636,7 +636,7 @@ export class PostgresBackend implements StorageBackend {
    * @param input {ResourceInput}
    * @returns {Promise<Buffer>}
    */
-  private async _bufferInputCapped(input: ResourceInput): Promise<Buffer> {
+  async #bufferInputCapped(input: ResourceInput): Promise<Buffer> {
     const { maxUploadBytes } = this
     const backendId = this.describe().id
     if (input.kind === 'json') {
@@ -686,7 +686,7 @@ export class PostgresBackend implements StorageBackend {
     includeCollections?: boolean
   }): Promise<BackendUsage> {
     const measuredAt = new Date().toISOString()
-    const { rows } = await this._pool.query<{ usage_bytes: string }>(
+    const { rows } = await this.#pool.query<{ usage_bytes: string }>(
       'SELECT usage_bytes FROM spaces WHERE space_id = $1',
       [spaceId]
     )
@@ -697,7 +697,7 @@ export class PostgresBackend implements StorageBackend {
       // Per-Collection usage sums both Resource content bytes and chunk bytes
       // (the `chunked-streams` feature) so the breakdown agrees with the
       // Space total in the transactional counter.
-      const { rows: collectionRows } = await this._pool.query<{
+      const { rows: collectionRows } = await this.#pool.query<{
         collection_id: string
         usage: string
       }>(
@@ -719,7 +719,7 @@ export class PostgresBackend implements StorageBackend {
     }
 
     return {
-      ...this._backendUsageFields({ usageBytes, spaceTotalBytes: usageBytes }),
+      ...this.#backendUsageFields({ usageBytes, spaceTotalBytes: usageBytes }),
       measuredAt,
       ...(includeCollections && { usageByCollection })
     }
@@ -742,7 +742,7 @@ export class PostgresBackend implements StorageBackend {
     collectionId: string
   }): Promise<BackendUsage> {
     const measuredAt = new Date().toISOString()
-    const { rows } = await this._pool.query<{
+    const { rows } = await this.#pool.query<{
       space_total: string
       collection_total: string
     }>(
@@ -758,7 +758,7 @@ export class PostgresBackend implements StorageBackend {
     const spaceTotalBytes = Number(rows[0]?.space_total ?? 0)
     const usageBytes = Number(rows[0]?.collection_total ?? 0)
     return {
-      ...this._backendUsageFields({ usageBytes, spaceTotalBytes }),
+      ...this.#backendUsageFields({ usageBytes, spaceTotalBytes }),
       measuredAt
     }
   }
@@ -771,7 +771,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options.spaceTotalBytes {number}
    * @returns {Omit<BackendUsage, 'measuredAt' | 'usageByCollection'>}
    */
-  private _backendUsageFields({
+  #backendUsageFields({
     usageBytes,
     spaceTotalBytes
   }: {
@@ -857,7 +857,7 @@ export class PostgresBackend implements StorageBackend {
       )
 
     if (this.maxSpacesPerController === undefined) {
-      await upsert(this._pool)
+      await upsert(this.#pool)
       return
     }
 
@@ -866,7 +866,7 @@ export class PostgresBackend implements StorageBackend {
     // controller serialize (the byte quota's posture), detect a create (no
     // described row yet -- a NULL-description placeholder counts as a create),
     // COUNT this controller's Spaces, and reject at the limit.
-    await this._withTransaction(async client => {
+    await this.#withTransaction(async client => {
       await client.query(
         `SELECT pg_advisory_xact_lock(hashtext('controller-count:' || $1))`,
         [controller]
@@ -903,7 +903,7 @@ export class PostgresBackend implements StorageBackend {
   }: {
     spaceId: string
   }): Promise<SpaceDescription | undefined> {
-    const { rows } = await this._pool.query<{
+    const { rows } = await this.#pool.query<{
       description: SpaceDescription | null
     }>('SELECT description FROM spaces WHERE space_id = $1', [spaceId])
     return rows[0]?.description ?? undefined
@@ -918,7 +918,7 @@ export class PostgresBackend implements StorageBackend {
    * @returns {Promise<void>}
    */
   async deleteSpace({ spaceId }: { spaceId: string }): Promise<void> {
-    await this._pool.query('DELETE FROM spaces WHERE space_id = $1', [spaceId])
+    await this.#pool.query('DELETE FROM spaces WHERE space_id = $1', [spaceId])
   }
 
   /**
@@ -928,7 +928,7 @@ export class PostgresBackend implements StorageBackend {
    * @returns {Promise<SpaceDescription[]>}
    */
   async listSpaces(): Promise<SpaceDescription[]> {
-    const { rows } = await this._pool.query<{
+    const { rows } = await this.#pool.query<{
       description: SpaceDescription
     }>(
       `SELECT description FROM spaces
@@ -970,8 +970,8 @@ export class PostgresBackend implements StorageBackend {
       prior?: CollectionDescription & { descriptionVersion?: number }
     ) => void
   }): Promise<{ version: number }> {
-    return this._withTransaction(async client => {
-      await this._ensureSpaceRow({ client, spaceId })
+    return this.#withTransaction(async client => {
+      await this.#ensureSpaceRow({ client, spaceId })
       // Serialize all Collection writes within the Space on its space row: the
       // collection-row `FOR UPDATE` below locks nothing when the row does not
       // exist yet, so without this two concurrent creates of *different* new
@@ -1033,7 +1033,7 @@ export class PostgresBackend implements StorageBackend {
         }
       }
       const version = currentVersion + 1
-      await this._upsertCollection({
+      await this.#upsertCollection({
         queryable: client,
         spaceId,
         collectionId,
@@ -1080,7 +1080,7 @@ export class PostgresBackend implements StorageBackend {
    *   path), a `_version` on the incoming archived description is used, else 1.
    * @returns {Promise<void>}
    */
-  private async _upsertCollection({
+  async #upsertCollection({
     queryable,
     spaceId,
     collectionId,
@@ -1146,7 +1146,7 @@ export class PostgresBackend implements StorageBackend {
   }): Promise<
     (CollectionDescription & { descriptionVersion?: number }) | undefined
   > {
-    const { rows } = await this._pool.query<{
+    const { rows } = await this.#pool.query<{
       description: CollectionDescription | null
       description_version: number
     }>(
@@ -1180,7 +1180,7 @@ export class PostgresBackend implements StorageBackend {
     spaceId: string
     collectionId: string
   }): Promise<void> {
-    await this._withTransaction(async client => {
+    await this.#withTransaction(async client => {
       // The Collection's freed bytes are its Resource content plus its chunk
       // bytes (the `chunked-streams` feature); both cascade away with the
       // Collection row, so both leave the quota counter.
@@ -1204,7 +1204,7 @@ export class PostgresBackend implements StorageBackend {
         [spaceId, collectionId]
       )
       if (freedBytes > 0) {
-        await this._applyUsageDelta({ client, spaceId, delta: -freedBytes })
+        await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
       }
     })
   }
@@ -1236,7 +1236,7 @@ export class PostgresBackend implements StorageBackend {
     const pageSize =
       limit === undefined ? DEFAULT_PAGE_SIZE : clampPageSize(limit)
 
-    const { rows: countRows } = await this._pool.query<{ total: string }>(
+    const { rows: countRows } = await this.#pool.query<{ total: string }>(
       `SELECT COUNT(*) AS total FROM collections WHERE space_id = $1`,
       [spaceId]
     )
@@ -1246,7 +1246,7 @@ export class PostgresBackend implements StorageBackend {
     // a second query; `hasMore` is whether the extra row arrived. The
     // `collection_id > $2` seek relies on the column's byte collation, the same
     // ordering the cursor codec's code-unit comparison assumes.
-    const { rows } = await this._pool.query<{
+    const { rows } = await this.#pool.query<{
       collection_id: string
       description: CollectionDescription | null
     }>(
@@ -1313,7 +1313,7 @@ export class PostgresBackend implements StorageBackend {
     const pageSize =
       limit === undefined ? DEFAULT_PAGE_SIZE : clampPageSize(limit)
 
-    const { rows: countRows } = await this._pool.query<{ total: string }>(
+    const { rows: countRows } = await this.#pool.query<{ total: string }>(
       `SELECT COUNT(*) AS total FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND NOT deleted`,
       [spaceId, collectionId]
@@ -1322,7 +1322,7 @@ export class PostgresBackend implements StorageBackend {
 
     // Take `pageSize + 1` from the seek point to detect a further page without
     // a second query; `hasMore` is whether the extra row arrived.
-    const { rows } = await this._pool.query<{
+    const { rows } = await this.#pool.query<{
       resource_id: string
       content_type: string
       custom: ResourceMetadataCustom | null
@@ -1423,10 +1423,10 @@ export class PostgresBackend implements StorageBackend {
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ version: number }> {
-    const content = await this._bufferInputCapped(input)
+    const content = await this.#bufferInputCapped(input)
 
-    return this._withTransaction(async client => {
-      await this._ensureCollectionRow({ client, spaceId, collectionId })
+    return this.#withTransaction(async client => {
+      await this.#ensureCollectionRow({ client, spaceId, collectionId })
 
       // Two unique-attribute invariants can force a JSON content write to
       // serialize before it upserts its row: the EDV blinded one (`unique: true`
@@ -1494,7 +1494,7 @@ export class PostgresBackend implements StorageBackend {
           indexes: uniqueIndexes!,
           content: input.kind === 'json' ? input.data : undefined,
           custom: selfRows[0]?.custom ?? undefined,
-          candidates: await this._readEqualityCandidates(client, {
+          candidates: await this.#readEqualityCandidates(client, {
             spaceId,
             collectionId,
             excludeResourceId: resourceId
@@ -1527,7 +1527,7 @@ export class PostgresBackend implements StorageBackend {
         )
         return rows[0]
       }
-      const prior = await this._lockRowForWrite({
+      const prior = await this.#lockRowForWrite({
         client,
         spaceId,
         rowKey: `${collectionId}/${resourceId}`,
@@ -1567,7 +1567,7 @@ export class PostgresBackend implements StorageBackend {
       const priorSize = exists ? Number(prior?.size_bytes ?? 0) : 0
       const delta = content.length - priorSize
       if (delta !== 0) {
-        await this._applyUsageDelta({ client, spaceId, delta })
+        await this.#applyUsageDelta({ client, spaceId, delta })
       }
 
       // A content write preserves the independent `metaVersion` and the
@@ -1577,7 +1577,7 @@ export class PostgresBackend implements StorageBackend {
       // Create-if-absent atomicity: when `If-None-Match: *` found NO prior row
       // (a tombstone is a real row and stays lock-serialized), concurrent
       // creators through this method are already serialized by
-      // `_lockSameKeyCreate` above -- but a writer that does not take that
+      // `#lockSameKeyCreate` above -- but a writer that does not take that
       // lock (`importSpace`'s plain INSERTs) can still race. A plain INSERT
       // (no ON CONFLICT) keeps the primary key as the arbiter: the loser's
       // unique violation maps to the 412 the precondition would have thrown.
@@ -1679,7 +1679,7 @@ export class PostgresBackend implements StorageBackend {
     resourceId: string
     contentType?: string
   }): Promise<ResourceResult> {
-    const { rows } = await this._pool.query<ResourceRow>(
+    const { rows } = await this.#pool.query<ResourceRow>(
       `SELECT content_type, content, version, deleted FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
       [spaceId, collectionId, resourceId]
@@ -1719,7 +1719,7 @@ export class PostgresBackend implements StorageBackend {
     resourceId: string
     ifMatch?: string
   }): Promise<void> {
-    await this._withTransaction(async client => {
+    await this.#withTransaction(async client => {
       // Narrow projection: the lock needs the row, not the `content` bytea
       // that is about to be dropped anyway.
       const { rows } = await client.query<
@@ -1763,7 +1763,7 @@ export class PostgresBackend implements StorageBackend {
       )
       const freedBytes = Number(prior.size_bytes) + freedChunkBytes
       if (freedBytes > 0) {
-        await this._applyUsageDelta({ client, spaceId, delta: -freedBytes })
+        await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
       }
       const now = new Date().toISOString()
       await client.query(
@@ -1809,7 +1809,7 @@ export class PostgresBackend implements StorageBackend {
       })
     | undefined
   > {
-    const { rows } = await this._pool.query<ResourceRow>(
+    const { rows } = await this.#pool.query<ResourceRow>(
       `SELECT content_type, size_bytes, version, meta_version, custom, epoch,
               deleted, created_at, updated_at, created_by
          FROM resources
@@ -1870,7 +1870,7 @@ export class PostgresBackend implements StorageBackend {
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ metaVersion: number } | undefined> {
-    return this._withTransaction(async client => {
+    return this.#withTransaction(async client => {
       // A metadata write can create a plaintext equality unique claim for a
       // `custom`-sourced attribute (the `equality-query` feature). When the
       // Collection declares any unique index, take the per-Collection advisory
@@ -1926,7 +1926,7 @@ export class PostgresBackend implements StorageBackend {
           indexes: uniqueIndexes!,
           content,
           custom,
-          candidates: await this._readEqualityCandidates(client, {
+          candidates: await this.#readEqualityCandidates(client, {
             spaceId,
             collectionId,
             excludeResourceId: resourceId
@@ -1999,9 +1999,9 @@ export class PostgresBackend implements StorageBackend {
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<{ version: number }> {
-    const bytes = await this._bufferInputCapped(input)
+    const bytes = await this.#bufferInputCapped(input)
 
-    return this._withTransaction(async client => {
+    return this.#withTransaction(async client => {
       // Parent Resource must exist (and not be a tombstone). `FOR SHARE`
       // conflicts with the `FOR UPDATE` a concurrent `deleteResource` takes, so
       // the two serialize on the parent row -- the parent cannot be deleted
@@ -2034,7 +2034,7 @@ export class PostgresBackend implements StorageBackend {
         )
         return rows[0]
       }
-      const prior = await this._lockRowForWrite({
+      const prior = await this.#lockRowForWrite({
         client,
         spaceId,
         rowKey: `${collectionId}/${chunkLabel}`,
@@ -2055,7 +2055,7 @@ export class PostgresBackend implements StorageBackend {
       const priorSize = exists ? Number(prior?.size ?? 0) : 0
       const delta = bytes.length - priorSize
       if (delta !== 0) {
-        await this._applyUsageDelta({ client, spaceId, delta })
+        await this.#applyUsageDelta({ client, spaceId, delta })
       }
 
       const values = [
@@ -2074,7 +2074,7 @@ export class PostgresBackend implements StorageBackend {
           content_type, bytes, size, version
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
       // Create-if-absent atomicity mirrors `writeResource`: concurrent
-      // creators through this method are serialized by `_lockSameKeyCreate`
+      // creators through this method are serialized by `#lockSameKeyCreate`
       // above, and against a writer that does not take that lock
       // (`importSpace`'s plain INSERTs) the plain INSERT keeps the primary key
       // as the arbiter -- a racing creator's unique violation maps to the 412
@@ -2132,7 +2132,7 @@ export class PostgresBackend implements StorageBackend {
     resourceId: string
     chunkIndex: number
   }): Promise<ResourceResult> {
-    const { rows } = await this._pool.query<{
+    const { rows } = await this.#pool.query<{
       content_type: string
       bytes: Buffer
       version: number
@@ -2174,7 +2174,7 @@ export class PostgresBackend implements StorageBackend {
     resourceId: string
     chunkIndex: number
   }): Promise<ChunkMetadata | undefined> {
-    const { rows } = await this._pool.query<{
+    const { rows } = await this.#pool.query<{
       content_type: string
       size: string
       version: number
@@ -2222,7 +2222,7 @@ export class PostgresBackend implements StorageBackend {
     chunkIndex: number
     ifMatch?: string
   }): Promise<boolean> {
-    return this._withTransaction(async client => {
+    return this.#withTransaction(async client => {
       const { rows } = await client.query<{ version: number; size: string }>(
         `SELECT version, size FROM chunks
           WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
@@ -2250,7 +2250,7 @@ export class PostgresBackend implements StorageBackend {
       )
       const freedBytes = Number(prior.size)
       if (freedBytes > 0) {
-        await this._applyUsageDelta({ client, spaceId, delta: -freedBytes })
+        await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
       }
       return true
     })
@@ -2276,7 +2276,7 @@ export class PostgresBackend implements StorageBackend {
     collectionId: string
     resourceId: string
   }): Promise<ChunkListing> {
-    const { rows } = await this._pool.query<{
+    const { rows } = await this.#pool.query<{
       chunk_index: number
       size: string
       content_type: string
@@ -2334,7 +2334,7 @@ export class PostgresBackend implements StorageBackend {
     checkpoint: { id: string; updatedAt: string } | null
   }> {
     const pageSize = clampPageSize(limit)
-    const { rows } = await this._pool.query<
+    const { rows } = await this.#pool.query<
       ResourceRow & { resource_id: string }
     >(
       `SELECT resource_id, content, version, meta_version, custom, epoch,
@@ -2433,7 +2433,7 @@ export class PostgresBackend implements StorageBackend {
     limit?: number
     cursor?: string
   }): Promise<{ count: number } | BlindedIndexQueryPage> {
-    const { rows } = await this._pool.query<{
+    const { rows } = await this.#pool.query<{
       resource_id: string
       content: Buffer | null
     }>(
@@ -2497,7 +2497,7 @@ export class PostgresBackend implements StorageBackend {
     limit?: number
     cursor?: string
   }): Promise<{ count: number } | EqualityQueryPage> {
-    const candidates = await this._readEqualityCandidates(this._pool, {
+    const candidates = await this.#readEqualityCandidates(this.#pool, {
       spaceId,
       collectionId
     })
@@ -2532,7 +2532,7 @@ export class PostgresBackend implements StorageBackend {
     collectionId: string
     indexes: NormalizedIndexDeclaration[]
   }): Promise<{ name: string; value: EqualityValue } | undefined> {
-    const candidates = await this._readEqualityCandidates(this._pool, {
+    const candidates = await this.#readEqualityCandidates(this.#pool, {
       spaceId,
       collectionId
     })
@@ -2557,7 +2557,7 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.excludeResourceId] {string}
    * @returns {Promise<EqualityCandidate[]>}
    */
-  private async _readEqualityCandidates(
+  async #readEqualityCandidates(
     executor: pg.Pool | pg.PoolClient,
     {
       spaceId,
@@ -2611,7 +2611,7 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.resourceId] {string}
    * @returns {{ collectionKey: string, resourceKey: string }}
    */
-  private _policyKey({
+  #policyKey({
     collectionId,
     resourceId
   }: {
@@ -2640,11 +2640,11 @@ export class PostgresBackend implements StorageBackend {
     collectionId?: string
     resourceId?: string
   }): Promise<PolicyDocument | undefined> {
-    const { collectionKey, resourceKey } = this._policyKey({
+    const { collectionKey, resourceKey } = this.#policyKey({
       collectionId,
       resourceId
     })
-    const { rows } = await this._pool.query<{ policy: PolicyDocument }>(
+    const { rows } = await this.#pool.query<{ policy: PolicyDocument }>(
       `SELECT policy FROM policies
         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
       [spaceId, collectionKey, resourceKey]
@@ -2671,15 +2671,15 @@ export class PostgresBackend implements StorageBackend {
     resourceId?: string
     policy: PolicyDocument
   }): Promise<void> {
-    await this._withTransaction(async client => {
+    await this.#withTransaction(async client => {
       // Ensure the containing rows exist (Space, and the Collection when the
       // policy is below Space level), like the filesystem's dir provisioning.
       if (collectionId !== undefined) {
-        await this._ensureCollectionRow({ client, spaceId, collectionId })
+        await this.#ensureCollectionRow({ client, spaceId, collectionId })
       } else {
-        await this._ensureSpaceRow({ client, spaceId })
+        await this.#ensureSpaceRow({ client, spaceId })
       }
-      await this._upsertPolicy({
+      await this.#upsertPolicy({
         queryable: client,
         spaceId,
         collectionId,
@@ -2691,7 +2691,7 @@ export class PostgresBackend implements StorageBackend {
 
   /**
    * The one policy upsert statement, shared by `writePolicy` and the import
-   * apply loop; keys through `_policyKey` so the sentinel convention lives in
+   * apply loop; keys through `#policyKey` so the sentinel convention lives in
    * one place.
    * @param options {object}
    * @param options.queryable {Queryable}
@@ -2701,7 +2701,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options.policy {PolicyDocument}
    * @returns {Promise<void>}
    */
-  private async _upsertPolicy({
+  async #upsertPolicy({
     queryable,
     spaceId,
     collectionId,
@@ -2714,7 +2714,7 @@ export class PostgresBackend implements StorageBackend {
     resourceId?: string
     policy: PolicyDocument
   }): Promise<void> {
-    const { collectionKey, resourceKey } = this._policyKey({
+    const { collectionKey, resourceKey } = this.#policyKey({
       collectionId,
       resourceId
     })
@@ -2743,11 +2743,11 @@ export class PostgresBackend implements StorageBackend {
     collectionId?: string
     resourceId?: string
   }): Promise<void> {
-    const { collectionKey, resourceKey } = this._policyKey({
+    const { collectionKey, resourceKey } = this.#policyKey({
       collectionId,
       resourceId
     })
-    await this._pool.query(
+    await this.#pool.query(
       `DELETE FROM policies
         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
       [spaceId, collectionKey, resourceKey]
@@ -2773,8 +2773,8 @@ export class PostgresBackend implements StorageBackend {
     backendId: string
     record: StoredBackendRecord
   }): Promise<void> {
-    await this._withTransaction(async client => {
-      await this._ensureSpaceRow({ client, spaceId })
+    await this.#withTransaction(async client => {
+      await this.#ensureSpaceRow({ client, spaceId })
       await client.query(
         `INSERT INTO backend_records (space_id, backend_id, record)
          VALUES ($1, $2, $3::jsonb)
@@ -2800,7 +2800,7 @@ export class PostgresBackend implements StorageBackend {
     spaceId: string
     backendId: string
   }): Promise<StoredBackendRecord | undefined> {
-    const { rows } = await this._pool.query<{ record: StoredBackendRecord }>(
+    const { rows } = await this.#pool.query<{ record: StoredBackendRecord }>(
       `SELECT record FROM backend_records
         WHERE space_id = $1 AND backend_id = $2`,
       [spaceId, backendId]
@@ -2820,7 +2820,7 @@ export class PostgresBackend implements StorageBackend {
   }: {
     spaceId: string
   }): Promise<BackendDescriptor[]> {
-    const { rows } = await this._pool.query<{ record: StoredBackendRecord }>(
+    const { rows } = await this.#pool.query<{ record: StoredBackendRecord }>(
       `SELECT record FROM backend_records
         WHERE space_id = $1 ORDER BY backend_id`,
       [spaceId]
@@ -2841,7 +2841,7 @@ export class PostgresBackend implements StorageBackend {
     spaceId: string
     backendId: string
   }): Promise<void> {
-    await this._pool.query(
+    await this.#pool.query(
       `DELETE FROM backend_records WHERE space_id = $1 AND backend_id = $2`,
       [spaceId, backendId]
     )
@@ -2866,7 +2866,7 @@ export class PostgresBackend implements StorageBackend {
     keystoreId: string
     config: KeystoreConfig
   }): Promise<void> {
-    await this._pool.query(
+    await this.#pool.query(
       `INSERT INTO keystores (keystore_id, controller, sequence, kms_module, config)
        VALUES ($1, $2, $3, $4, $5::jsonb)
        ON CONFLICT (keystore_id) DO UPDATE SET
@@ -2894,7 +2894,7 @@ export class PostgresBackend implements StorageBackend {
   }: {
     keystoreId: string
   }): Promise<KeystoreConfig | undefined> {
-    const { rows } = await this._pool.query<{ config: KeystoreConfig }>(
+    const { rows } = await this.#pool.query<{ config: KeystoreConfig }>(
       'SELECT config FROM keystores WHERE keystore_id = $1',
       [keystoreId]
     )
@@ -2919,7 +2919,7 @@ export class PostgresBackend implements StorageBackend {
     keystoreId: string
     config: KeystoreConfig
   }): Promise<void> {
-    const result = await this._pool.query(
+    const result = await this.#pool.query(
       `UPDATE keystores SET
          controller = $2,
          sequence = $3,
@@ -2950,7 +2950,7 @@ export class PostgresBackend implements StorageBackend {
   }: {
     controller: IDID
   }): Promise<KeystoreConfig[]> {
-    const { rows } = await this._pool.query<{ config: KeystoreConfig }>(
+    const { rows } = await this.#pool.query<{ config: KeystoreConfig }>(
       `SELECT config FROM keystores
         WHERE controller = $1 ORDER BY keystore_id`,
       [controller]
@@ -2979,7 +2979,7 @@ export class PostgresBackend implements StorageBackend {
     record: KmsKeyRecord
   }): Promise<void> {
     try {
-      await this._pool.query(
+      await this.#pool.query(
         `INSERT INTO kms_keys (keystore_id, local_id, record)
          VALUES ($1, $2, $3::jsonb)`,
         [keystoreId, localId, JSON.stringify(record)]
@@ -3005,7 +3005,7 @@ export class PostgresBackend implements StorageBackend {
     keystoreId: string
     localId: string
   }): Promise<KmsKeyRecord | undefined> {
-    const { rows } = await this._pool.query<{ record: KmsKeyRecord }>(
+    const { rows } = await this.#pool.query<{ record: KmsKeyRecord }>(
       `SELECT record FROM kms_keys
         WHERE keystore_id = $1 AND local_id = $2`,
       [keystoreId, localId]
@@ -3027,7 +3027,7 @@ export class PostgresBackend implements StorageBackend {
   }: {
     keystoreId: string
   }): Promise<Array<{ localId: string; record: KmsKeyRecord }>> {
-    const { rows } = await this._pool.query<{
+    const { rows } = await this.#pool.query<{
       local_id: string
       record: KmsKeyRecord
     }>(
@@ -3046,7 +3046,7 @@ export class PostgresBackend implements StorageBackend {
    * @param scope {RevocationScope}
    * @returns {{ table: string, column: string, id: string }}
    */
-  private _revocationTable(scope: RevocationScope): {
+  #revocationTable(scope: RevocationScope): {
     table: string
     column: string
     id: string
@@ -3078,19 +3078,19 @@ export class PostgresBackend implements StorageBackend {
     record: RevocationRecord
   }): Promise<void> {
     // `table` / `column` are internal constants, not user input; ids are bound.
-    const { table, column, id } = this._revocationTable(scope)
+    const { table, column, id } = this.#revocationTable(scope)
     try {
       // Prune rows past their GC horizon while on this (rare) write path, so
       // the hot read path (`isRevoked`, consulted on every delegated-chain
       // verification) stays a single read-only SELECT -- the SQL analogue of
       // a TTL index. Table-wide on purpose: expired rows are dead weight
       // whichever scope they belong to.
-      await this._pool.query(
+      await this.#pool.query(
         `DELETE FROM ${table}
           WHERE expires IS NOT NULL AND expires <= $1`,
         [new Date().toISOString()]
       )
-      await this._pool.query(
+      await this.#pool.query(
         `INSERT INTO ${table}
            (${column}, delegator, capability_id, record, expires)
          VALUES ($1, $2, $3, $4::jsonb, $5)`,
@@ -3134,10 +3134,10 @@ export class PostgresBackend implements StorageBackend {
       return false
     }
     // `table` / `column` are internal constants, not user input; ids are bound.
-    const { table, column, id } = this._revocationTable(scope)
+    const { table, column, id } = this.#revocationTable(scope)
     const delegators = capabilities.map(entry => entry.delegator)
     const capabilityIds = capabilities.map(entry => entry.capabilityId)
-    const { rows } = await this._pool.query(
+    const { rows } = await this.#pool.query(
       `SELECT 1 FROM ${table}
         WHERE ${column} = $1
           AND (delegator, capability_id) IN
@@ -3158,7 +3158,7 @@ export class PostgresBackend implements StorageBackend {
    * @param row {Omit<ResourceRow, 'content'>}
    * @returns {SidecarShape}
    */
-  private _sidecarFor(row: Omit<ResourceRow, 'content'>): SidecarShape {
+  #sidecarFor(row: Omit<ResourceRow, 'content'>): SidecarShape {
     if (row.deleted) {
       return {
         createdAt: row.created_at,
@@ -3204,7 +3204,7 @@ export class PostgresBackend implements StorageBackend {
       { rows: revocationRows },
       { rows: chunkRows }
     ] = await Promise.all([
-      this._pool.query<{
+      this.#pool.query<{
         collection_id: string
         resource_id: string
         policy: PolicyDocument
@@ -3213,7 +3213,7 @@ export class PostgresBackend implements StorageBackend {
             WHERE space_id = $1`,
         [spaceId]
       ),
-      this._pool.query<{
+      this.#pool.query<{
         collection_id: string
         description: CollectionDescription | null
         description_version: number
@@ -3224,7 +3224,7 @@ export class PostgresBackend implements StorageBackend {
       ),
       // Metadata only -- content bytes are fetched one resource at a time
       // while packing, so an export never holds the whole Space in memory.
-      this._pool.query<
+      this.#pool.query<
         Omit<ResourceRow, 'content'> & {
           collection_id: string
           resource_id: string
@@ -3236,7 +3236,7 @@ export class PostgresBackend implements StorageBackend {
            FROM resources WHERE space_id = $1`,
         [spaceId]
       ),
-      this._pool.query<{
+      this.#pool.query<{
         delegator: string
         capability_id: string
         record: RevocationRecord
@@ -3247,7 +3247,7 @@ export class PostgresBackend implements StorageBackend {
       ),
       // Chunk metadata only -- bytes are fetched one chunk at a time while
       // packing, so an export never holds a chunked Resource whole in memory.
-      this._pool.query<{
+      this.#pool.query<{
         collection_id: string
         resource_id: string
         chunk_index: number
@@ -3345,7 +3345,7 @@ export class PostgresBackend implements StorageBackend {
       const files = filesFor(row.collection_id)
       files.push({
         name: `.meta.${row.resource_id}.json`,
-        bytes: Buffer.from(JSON.stringify(this._sidecarFor(row)))
+        bytes: Buffer.from(JSON.stringify(this.#sidecarFor(row)))
       })
       if (!row.deleted) {
         files.push({
@@ -3482,7 +3482,7 @@ export class PostgresBackend implements StorageBackend {
               const bytes =
                 'bytes' in chunkFile
                   ? chunkFile.bytes
-                  : await this._chunkContent({ spaceId, ...chunkFile.chunk })
+                  : await this.#chunkContent({ spaceId, ...chunkFile.chunk })
               pack.entry(
                 { name: `${dirTarget}/${chunkFile.name}`, mtime },
                 bytes
@@ -3493,7 +3493,7 @@ export class PostgresBackend implements StorageBackend {
           const bytes =
             'bytes' in file
               ? file.bytes
-              : await this._resourceContent({ spaceId, ...file.resource })
+              : await this.#resourceContent({ spaceId, ...file.resource })
           pack.entry({ name: `${entryTarget}/${file.name}`, mtime }, bytes)
         }
       } else {
@@ -3521,7 +3521,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options.resourceId {string}
    * @returns {Promise<Buffer>}
    */
-  private async _resourceContent({
+  async #resourceContent({
     spaceId,
     collectionId,
     resourceId
@@ -3530,7 +3530,7 @@ export class PostgresBackend implements StorageBackend {
     collectionId: string
     resourceId: string
   }): Promise<Buffer> {
-    const { rows } = await this._pool.query<{ content: Buffer | null }>(
+    const { rows } = await this.#pool.query<{ content: Buffer | null }>(
       `SELECT content FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
       [spaceId, collectionId, resourceId]
@@ -3542,7 +3542,7 @@ export class PostgresBackend implements StorageBackend {
    * Fetches one chunk's bytes for the export pack loop (the `chunked-streams`
    * feature). A chunk removed between the metadata pass and this read yields an
    * empty body rather than failing the whole archive, matching
-   * `_resourceContent`.
+   * `#resourceContent`.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -3550,7 +3550,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options.chunkIndex {number}
    * @returns {Promise<Buffer>}
    */
-  private async _chunkContent({
+  async #chunkContent({
     spaceId,
     collectionId,
     resourceId,
@@ -3561,7 +3561,7 @@ export class PostgresBackend implements StorageBackend {
     resourceId: string
     chunkIndex: number
   }): Promise<Buffer> {
-    const { rows } = await this._pool.query<{ bytes: Buffer | null }>(
+    const { rows } = await this.#pool.query<{ bytes: Buffer | null }>(
       `SELECT bytes FROM chunks
         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
           AND chunk_index = $4`,
@@ -3596,7 +3596,7 @@ export class PostgresBackend implements StorageBackend {
     // chunk file (representation + optional version sidecar) with its decoded
     // fields; the `chunks` table stores a chunk as one row, so merge the two
     // files of each chunk into a single row here.
-    const chunkEntries = this._mergeChunkEntries(collections)
+    const chunkEntries = this.#mergeChunkEntries(collections)
     const {
       capacityBytes,
       maxUploadBytes,
@@ -3604,8 +3604,8 @@ export class PostgresBackend implements StorageBackend {
       maxResourcesPerSpace
     } = this
 
-    return this._withTransaction(async client => {
-      await this._ensureSpaceRow({ client, spaceId })
+    return this.#withTransaction(async client => {
+      await this.#ensureSpaceRow({ client, spaceId })
       // Serialize with concurrent writers on this Space for the duration of
       // the import: the usage counter row is the natural lock.
       const { rows: spaceRows } = await client.query<{ usage_bytes: string }>(
@@ -3725,7 +3725,7 @@ export class PostgresBackend implements StorageBackend {
         if (rows.length > 0) {
           stats.policiesSkipped++
         } else {
-          await this._upsertPolicy({
+          await this.#upsertPolicy({
             queryable: client,
             spaceId,
             policy: spacePolicy
@@ -3762,11 +3762,11 @@ export class PostgresBackend implements StorageBackend {
             })
           }
           // Import restores `createdBy` verbatim from the archived document
-          // (already discarded and reapplied by `_upsertCollection`, same as
+          // (already discarded and reapplied by `#upsertCollection`, same as
           // any other write): this is only ever a create here (the branch
           // above skips existing Collections), so there is no prior row for
           // COALESCE to prefer over it.
-          await this._upsertCollection({
+          await this.#upsertCollection({
             queryable: client,
             spaceId,
             collectionId,
@@ -3786,7 +3786,7 @@ export class PostgresBackend implements StorageBackend {
           if (collectionExisted) {
             stats.policiesSkipped++
           } else {
-            await this._upsertPolicy({
+            await this.#upsertPolicy({
               queryable: client,
               spaceId,
               collectionId,
@@ -3832,7 +3832,7 @@ export class PostgresBackend implements StorageBackend {
             liveResourceCount++
           }
           const { contentType } = parseResourceFileName(fileName)
-          await this._insertImportedResource({
+          await this.#insertImportedResource({
             client,
             spaceId,
             collectionId,
@@ -3847,7 +3847,7 @@ export class PostgresBackend implements StorageBackend {
 
           const resourcePolicy = resourcePolicies.get(resourceId)
           if (resourcePolicy) {
-            await this._upsertPolicy({
+            await this.#upsertPolicy({
               queryable: client,
               spaceId,
               collectionId,
@@ -3877,7 +3877,7 @@ export class PostgresBackend implements StorageBackend {
             stats.resourcesSkipped++
             continue
           }
-          await this._insertImportedResource({
+          await this.#insertImportedResource({
             client,
             spaceId,
             collectionId,
@@ -3953,7 +3953,7 @@ export class PostgresBackend implements StorageBackend {
       if (createdTotalBytes > 0) {
         // The pre-flight was conservative (it counted skips too), so the
         // actual created total always fits; apply it unguarded.
-        await this._applyUsageDelta({
+        await this.#applyUsageDelta({
           client,
           spaceId,
           delta: createdTotalBytes
@@ -4007,7 +4007,7 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.sidecar] {SidecarShape}
    * @returns {Promise<void>}
    */
-  private async _insertImportedResource({
+  async #insertImportedResource({
     client,
     spaceId,
     collectionId,
@@ -4070,7 +4070,7 @@ export class PostgresBackend implements StorageBackend {
    * @returns {Array<{ collectionId: string, resourceId: string, chunkIndex:
    *   number, contentType: string, body: Buffer, version?: number }>}
    */
-  private _mergeChunkEntries(collections: ImportPlanCollection[]): Array<{
+  #mergeChunkEntries(collections: ImportPlanCollection[]): Array<{
     collectionId: string
     resourceId: string
     chunkIndex: number

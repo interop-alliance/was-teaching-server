@@ -77,7 +77,7 @@ export const QUOTA_NEAR_LIMIT_FRACTION = 0.9
 
 /**
  * Write-path quota usage cache TTL (see
- * `FileSystemBackend._assertSpaceHeadroom`). The quota pre-flight measures a
+ * `FileSystemBackend.#assertSpaceHeadroom`). The quota pre-flight measures a
  * Space's on-disk usage with `du`, which walks the whole Space tree -- too
  * costly to repeat on every resource write. The measured total is cached per
  * Space for this long, with each accepted write's incoming bytes added to the

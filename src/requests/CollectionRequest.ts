@@ -766,7 +766,7 @@ export class CollectionRequest {
     })
 
     if (body?.profile === 'changes' && dataBackend.changesSince) {
-      return CollectionRequest._queryChanges({
+      return CollectionRequest.#queryChanges({
         reply,
         dataBackend,
         spaceId,
@@ -834,7 +834,7 @@ export class CollectionRequest {
    * @param options.requestName {string}
    * @returns {Promise<FastifyReply>}
    */
-  static async _queryChanges({
+  static async #queryChanges({
     reply,
     dataBackend,
     spaceId,
