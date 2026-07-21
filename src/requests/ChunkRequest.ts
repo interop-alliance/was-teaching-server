@@ -453,19 +453,26 @@ export class ChunkRequest {
     })
     let listing
     try {
-      const parent = await dataBackend.getResourceMetadata({
-        spaceId,
-        collectionId,
-        resourceId
-      })
-      if (!parent) {
+      // The parent-existence check and the chunk listing are independent reads,
+      // so issue both together and settle before applying the same precedence
+      // the serial version had: a rejected parent read wins first, then the
+      // parent-absent 404, then a rejected listing. Settling (rather than
+      // `Promise.all`) keeps a listing rejection from masking the 404 and
+      // leaves no unhandled rejection when the 404 short-circuits.
+      const [parentResult, listingResult] = await Promise.allSettled([
+        dataBackend.getResourceMetadata({ spaceId, collectionId, resourceId }),
+        dataBackend.listChunks({ spaceId, collectionId, resourceId })
+      ])
+      if (parentResult.status === 'rejected') {
+        throw parentResult.reason
+      }
+      if (!parentResult.value) {
         throw new ResourceNotFoundError({ requestName })
       }
-      listing = await dataBackend.listChunks({
-        spaceId,
-        collectionId,
-        resourceId
-      })
+      if (listingResult.status === 'rejected') {
+        throw listingResult.reason
+      }
+      listing = listingResult.value
     } catch (err) {
       rethrowOrWrapStorageError({ err, requestName })
     }

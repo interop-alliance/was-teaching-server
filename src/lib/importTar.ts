@@ -5,7 +5,8 @@ import { assertValidId } from './validateId.js'
 import {
   parseChunkDirName,
   parseChunkIndexSegment,
-  parseResourceFileName
+  parseResourceFileName,
+  isRepresentationFileName
 } from './resourceFileName.js'
 import { InvalidImportError } from '../errors.js'
 import type {
@@ -90,25 +91,56 @@ function chunkEntryName(
 }
 
 /**
- * The canonical-chunk-index gate for an archive chunk file: returns true only
- * when `chunkFileName` is a chunk representation (`r.<index>.<encType>.<ext>`)
- * or its version sidecar (`.meta.<index>.json`) whose RAW `<index>` segment
- * passes {@link parseChunkIndexSegment} -- the same predicate the live route
- * enforces. Validating the raw (undecoded) segment rejects both non-canonical
- * spellings (`r.01.*`, which would alias chunk 1) and percent-encoded ones
- * (`r.%31.*`), so an imported chunk file is always reachable at exactly the
- * URL the listing advertises. Anything else in a chunk directory is dropped.
+ * Parses an archive chunk file's basename into its decoded chunk fields, or
+ * undefined when the name is not a canonical chunk file. A representation
+ * (`r.<index>.<encType>.<ext>`) yields its `chunkIndex` and decoded
+ * `contentType`; a version sidecar (`.meta.<index>.json`) yields its
+ * `chunkIndex` and parsed `version` (undefined when `body` is absent or not
+ * JSON). In both cases the RAW `<index>` segment must pass
+ * {@link parseChunkIndexSegment} -- the same predicate the live route enforces.
+ * Validating the raw (undecoded) segment rejects both non-canonical spellings
+ * (`r.01.*`, which would alias chunk 1) and percent-encoded ones (`r.%31.*`),
+ * so an imported chunk file is always reachable at exactly the URL the listing
+ * advertises. This is the single application site of the canonical-index gate
+ * for both backends' import paths; anything else in a chunk directory is
+ * dropped (undefined).
  * @param chunkFileName {string}   the file's basename inside the chunk dir
- * @returns {boolean}
+ * @param body {Buffer}   the file's bytes (only read for a sidecar's version)
+ * @returns {{ chunkIndex: number, contentType?: string, version?: number } |
+ *   undefined}
  */
-function isCanonicalChunkFileName(chunkFileName: string): boolean {
-  const indexSegment =
-    metaSidecarFileId(chunkFileName) ??
-    (chunkFileName.startsWith('r.') ? chunkFileName.split('.')[1] : undefined)
-  return (
-    indexSegment !== undefined &&
-    parseChunkIndexSegment(indexSegment) !== undefined
-  )
+function parseChunkFileName(
+  chunkFileName: string,
+  body: Buffer
+): { chunkIndex: number; contentType?: string; version?: number } | undefined {
+  const metaId = metaSidecarFileId(chunkFileName)
+  if (metaId !== undefined) {
+    const chunkIndex = parseChunkIndexSegment(metaId)
+    if (chunkIndex === undefined) {
+      return undefined
+    }
+    let version: number | undefined
+    try {
+      version = (JSON.parse(body.toString('utf8')) as { version?: number })
+        .version
+    } catch {
+      version = undefined
+    }
+    return { chunkIndex, version }
+  }
+  if (isRepresentationFileName(chunkFileName)) {
+    const indexSegment = chunkFileName.split('.')[1]
+    const chunkIndex =
+      indexSegment === undefined
+        ? undefined
+        : parseChunkIndexSegment(indexSegment)
+    if (chunkIndex === undefined) {
+      return undefined
+    }
+    const { contentType } = parseResourceFileName(chunkFileName)
+    return { chunkIndex, contentType }
+  }
+  return undefined
 }
 
 /** One extracted archive entry, keyed by its archive path. */
@@ -129,12 +161,22 @@ export interface ImportPlanResource {
  * feature): the raw bytes carried verbatim, keyed by the parent `resourceId`
  * (decoded from the `.chunks.<encId>/` directory name) and the chunk file's
  * basename inside that directory (`r.<index>...` bytes or its `.meta.<index>.json`
- * version sidecar).
+ * version sidecar). The plan also carries the decoded chunk fields so a
+ * row-oriented backend (Postgres) need not re-parse the file name: a
+ * representation carries its `contentType` (and no `version`); a version
+ * sidecar carries its `version` (and no `contentType`). The filesystem backend
+ * ignores the decoded fields and writes `fileName`/`body` verbatim.
  */
 export interface ImportPlanChunkFile {
   resourceId: string
   fileName: string
   body: Buffer
+  /** Decoded canonical chunk index this file belongs to. */
+  chunkIndex: number
+  /** Representation file: its decoded content-type (a sidecar has none). */
+  contentType?: string
+  /** Version sidecar: its parsed `version` (a representation has none). */
+  version?: number
 }
 
 /** One collection (plus its resources and policies) staged for import. */
@@ -346,14 +388,19 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
         // Drop a chunk file with a non-canonical index (or a stray file that
         // is neither a representation nor a sidecar): written verbatim it
         // would be unreachable at the canonical member URL yet advertised by
-        // the listing.
-        if (!isCanonicalChunkFileName(chunk.chunkFileName)) {
+        // the listing. The parse also decodes the chunk fields carried on the
+        // plan (for the row-oriented Postgres import).
+        const parsedChunk = parseChunkFileName(chunk.chunkFileName, entry.body)
+        if (parsedChunk === undefined) {
           continue
         }
         chunkFiles.push({
           resourceId: chunk.resourceId,
           fileName: chunk.chunkFileName,
-          body: entry.body
+          body: entry.body,
+          chunkIndex: parsedChunk.chunkIndex,
+          contentType: parsedChunk.contentType,
+          version: parsedChunk.version
         })
         continue
       }
@@ -392,7 +439,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
         continue
       }
 
-      if (!fileName.startsWith('r.')) {
+      if (!isRepresentationFileName(fileName)) {
         continue
       }
 

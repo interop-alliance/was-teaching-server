@@ -13,6 +13,7 @@ import {
   POLICY_URL,
   META_URL
 } from '../config.default.js'
+import { isRepresentationFileName } from './resourceFileName.js'
 
 /**
  * Fixed `mtime` for every entry in an export archive. `tar-stream` defaults a
@@ -52,7 +53,7 @@ function collectionManifestEntry(fileName: string): unknown {
   if (fileName.startsWith('.meta.')) {
     return { [fileName]: { url: META_URL } }
   }
-  if (fileName.startsWith('r.')) {
+  if (isRepresentationFileName(fileName)) {
     return { [fileName]: { url: RESOURCE_URL } }
   }
   return fileName
