@@ -1,9 +1,7 @@
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
-  - '@interop/edv-client@17.8.0'
+  - '@interop/data-integrity-core@8.4.0'
   - '@interop/http-signature-zcap-verify@12.2.0'
-  - '@interop/minimal-cipher@7.8.0'
-  - '@interop/storage-core@0.3.8'
-  - '@interop/was-client@0.19.0'
-  - '@interop/was-conformance-suite@0.2.0'
+  - '@interop/was-client@0.20.0'
+  - '@interop/was-conformance-suite@0.3.0'
