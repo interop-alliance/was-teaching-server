@@ -1,5 +1,24 @@
 # History
 
+## 0.15.0 - TBD
+
+### Changed
+
+- **Test-suite hardening (test-only; no runtime changes).** Added wire-level
+  coverage for Space export/import (authz 404 masking, the `application/x-tar`
+  response type, a streamed round-trip asserting the `ImportStats` shape, and
+  the remaining `invalid-import` error shapes). Added wire-level regression
+  guards for the last uncovered error classes: `InvalidCollectionError`
+  (bodyless or JSON-`null` Update Collection body) and the recorded finding that
+  `EncryptionImmutableError` is masked over the wire by the fail-closed
+  `unsupported-encryption-scheme` 400 while only one scheme is registered (the
+  reachable wire shape is pinned instead). Cleaned up weak and duplicated tests:
+  the public-read Resource case now genuinely exercises an unauthenticated read,
+  the standalone list-collections suite was folded into the collection suite,
+  the served `version` is now asserted against `package.json` instead of a
+  tautological type check, and shared revocation/pagination test setup was
+  deduplicated into `test/helpers.ts`.
+
 ## 0.14.0 - 2026-07-22
 
 ### Changed

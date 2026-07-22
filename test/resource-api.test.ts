@@ -225,15 +225,32 @@ describe('Resource API', () => {
   })
 
   it('[un-authorized!] Read a public Resource by acl policy', async () => {
-    // Create new public collection by id (upsert via configure -> PUT).
-    const publicCollection = aliceSpace.collection('public-collection')
-    await publicCollection.configure({ name: 'Public Collection', force: true })
+    // A genuinely unauthenticated read (a bare `fetch`, no signature) of a
+    // Resource made public via the PublicCanRead policy: the read is served by
+    // the policy fallback, not by capability verification.
+    const publicCollection = await aliceSpace.createCollection({
+      id: 'public-collection',
+      name: 'Public Collection'
+    })
+    await publicCollection.put('public-vc', {
+      id: 'public-vc',
+      name: 'A shared Verifiable Credential'
+    })
 
-    // Check it was created
-    assert.notEqual(await publicCollection.describe(), null)
+    const resourceUrl = `${serverUrl}/space/${alice.space1.id}/public-collection/public-vc`
 
-    // Cleanup: Delete collection
-    await publicCollection.delete()
+    // Before any policy: the anonymous read is denied (404, no leak).
+    const beforeResponse = await fetch(new URL(resourceUrl))
+    assert.equal(beforeResponse.status, 404)
+
+    await publicCollection.setPublic()
+
+    // With PublicCanRead: the same unauthenticated GET now succeeds and returns
+    // the Resource body.
+    const response = await fetch(new URL(resourceUrl))
+    assert.equal(response.status, 200)
+    const body = (await response.json()) as { name: string }
+    assert.equal(body.name, 'A shared Verifiable Credential')
   })
 
   describe('HEAD Resource', () => {

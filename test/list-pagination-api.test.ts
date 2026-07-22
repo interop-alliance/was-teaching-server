@@ -18,7 +18,11 @@ import type { FastifyInstance } from 'fastify'
 import type { Space } from '@interop/was-client'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import {
+  signedGet as sharedSignedGet,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('List Collections pagination', () => {
   let fastify: FastifyInstance,
@@ -29,10 +33,8 @@ describe('List Collections pagination', () => {
     aliceSpace: Space
 
   /** GETs an absolute or server-relative URL with Alice's signed capability. */
-  async function aliceGet(url: string): Promise<any> {
-    const absolute = new URL(url, serverUrl).toString()
-    return alice.was.request({ url: absolute, method: 'GET' })
-  }
+  const aliceGet = (url: string): Promise<any> =>
+    sharedSignedGet({ identity: alice, serverUrl, url })
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
@@ -220,12 +222,8 @@ describe('List Spaces pagination', () => {
     bob: any
 
   /** GETs an absolute or server-relative URL with the given identity's cap. */
-  async function signedGet(identity: any, url: string): Promise<any> {
-    return identity.was.request({
-      url: new URL(url, serverUrl).toString(),
-      method: 'GET'
-    })
-  }
+  const signedGet = (identity: any, url: string): Promise<any> =>
+    sharedSignedGet({ identity, serverUrl, url })
 
   // Interleave Alice's and Bob's Spaces by id so the authorized-only scan must
   // skip Bob's between Alice's: Alice owns the even positions, Bob the odd.

@@ -22,8 +22,13 @@ import type { FastifyInstance } from 'fastify'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { spaceRevocationsPath } from '../src/lib/paths.js'
-import type { IRootZcap } from '../src/types.js'
-import { client, startTestServer, zcapClients } from './helpers.js'
+import {
+  client,
+  requestError,
+  rootZcap as makeRootZcap,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
   let fastify: FastifyInstance,
@@ -69,19 +74,10 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
     await rm(dataDir, { recursive: true, force: true })
   })
 
-  /**
-   * The root capability for a target URL in object form (the ezcap client
-   * requires `https:` targets for *string* root capability ids; the object
-   * form reduces to the bare `zcap id="..."` header either way).
-   */
-  function rootZcap(target: string): IRootZcap {
-    return {
-      '@context': 'https://w3id.org/zcap/v1',
-      id: `urn:zcap:root:${encodeURIComponent(target)}`,
-      invocationTarget: target,
-      controller: alice.did
-    }
-  }
+  // The root capability for a target URL, controlled by Alice (this suite's
+  // Space controller). Delegates to the shared builder.
+  const rootZcap = (target: string) =>
+    makeRootZcap({ target, controller: alice.did })
 
   /**
    * The revocation submission URL for a capability id, built by the shared
@@ -148,16 +144,6 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       action: 'GET',
       capability: zcap
     })
-  }
-
-  /** Awaits a request expected to fail, returning the thrown error. */
-  async function requestError(promise: Promise<unknown>): Promise<any> {
-    try {
-      await promise
-    } catch (err) {
-      return err
-    }
-    assert.fail('expected the request to be rejected')
   }
 
   beforeAll(async () => {

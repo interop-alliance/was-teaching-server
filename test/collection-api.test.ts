@@ -123,6 +123,42 @@ describe('Collections API', () => {
     assert.equal(listing.totalItems, listing.items.length)
   })
 
+  it('[root] space.collections() lists the Space collections with the listing shape', async () => {
+    // A fresh Space so the listing holds exactly the one Collection created
+    // here, letting the full List Collections shape be asserted exactly (the
+    // high-level client path; the raw wire form is pinned by the pagination
+    // suite). This is the only place the `space.collections()` listing shape --
+    // its `url`, `totalItems`, and per-entry `{ id, url, name }` -- is asserted.
+    const spaceId = crypto.randomUUID()
+    const collectionId = crypto.randomUUID()
+    const resourceId = crypto.randomUUID()
+    const space = await alice.was.createSpace({
+      id: spaceId,
+      name: 'List Collections Test Space',
+      controller: alice.did
+    })
+    const collection = await space.createCollection({
+      id: collectionId,
+      name: 'List Collections Test Collection'
+    })
+    await collection.put(resourceId, {
+      id: resourceId,
+      name: 'List Collections Test Resource'
+    })
+
+    assert.deepStrictEqual(await space.collections(), {
+      url: `/space/${spaceId}/collections/`,
+      totalItems: 1,
+      items: [
+        {
+          id: collectionId,
+          url: `/space/${spaceId}/${collectionId}`,
+          name: 'List Collections Test Collection'
+        }
+      ]
+    })
+  })
+
   it('[root] get collection description via GET :collectionId', async () => {
     assert.deepStrictEqual(
       await aliceSpace.collection('credentials').describe(),

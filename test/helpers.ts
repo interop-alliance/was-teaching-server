@@ -1,3 +1,4 @@
+import assert from 'node:assert'
 import type { AddressInfo } from 'node:net'
 import type { FastifyInstance } from 'fastify'
 import { ZcapClient } from '@interop/ezcap'
@@ -9,6 +10,7 @@ import type { ISigner } from '@interop/data-integrity-core'
 
 import { createApp } from '../src/server.js'
 import type { FastifyWasOptions } from '../src/plugin.js'
+import type { IRootZcap } from '../src/types.js'
 
 /**
  * Boots a test server on an OS-assigned ephemeral port and returns the
@@ -49,6 +51,78 @@ export async function startTestServer({
   const serverUrl = `http://localhost:${listeningPort}`
   fastify.serverUrl = serverUrl
   return { fastify, serverUrl, port: listeningPort }
+}
+
+/**
+ * Builds a root capability object for a target URL: the
+ * `urn:zcap:root:<target>` whose controller is `controller`. Shared by the two
+ * revocation suites, whose negative cases shape invocations by hand. The object
+ * form is used because the ezcap client requires `https:` targets for *string*
+ * root-capability ids; the object form reduces to the bare `zcap id="..."`
+ * header either way.
+ *
+ * @param options {object}
+ * @param options.target {string}   the capability's invocationTarget URL
+ * @param options.controller {string}   the controller DID
+ * @returns {IRootZcap}
+ */
+export function rootZcap({
+  target,
+  controller
+}: {
+  target: string
+  controller: string
+}): IRootZcap {
+  return {
+    '@context': 'https://w3id.org/zcap/v1',
+    id: `urn:zcap:root:${encodeURIComponent(target)}`,
+    invocationTarget: target,
+    controller
+  }
+}
+
+/**
+ * Awaits a request expected to fail and returns the thrown error, failing the
+ * test if the promise unexpectedly resolves. Shared by the two revocation
+ * suites, whose negative cases need to inspect the thrown error's status.
+ *
+ * @param promise {Promise<unknown>}   the request expected to reject
+ * @returns {Promise<any>}   the thrown error
+ */
+export async function requestError(promise: Promise<unknown>): Promise<any> {
+  try {
+    await promise
+  } catch (err) {
+    return err
+  }
+  assert.fail('expected the request to be rejected')
+}
+
+/**
+ * GETs an absolute or server-relative URL with an identity's signed capability
+ * (the raw `was.request` escape hatch). Shared by the pagination suites, whose
+ * paginated reads carry a `?limit` / `cursor` query string that the high-level
+ * list methods do not yet surface.
+ *
+ * @param options {object}
+ * @param options.identity {any}   a test identity carrying a `was` client
+ * @param options.serverUrl {string}   base URL to resolve `url` against
+ * @param options.url {string}   the absolute or server-relative URL to GET
+ * @returns {Promise<any>}
+ */
+export async function signedGet({
+  identity,
+  serverUrl,
+  url
+}: {
+  identity: any
+  serverUrl: string
+  url: string
+}): Promise<any> {
+  return identity.was.request({
+    url: new URL(url, serverUrl).toString(),
+    method: 'GET'
+  })
 }
 
 export const fixtures = {
