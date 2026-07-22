@@ -55,8 +55,8 @@ Complete Google Cloud console organization / brand identity verification for
 interopalliance.org, the prerequisite for publishing an OAuth consent screen
 tied to the org. Blocks all remaining Google Drive BYOS work: the OAuth client
 setup, both adapter stages, and the ToS clearance conversation all presuppose a
-verified org. Note: This is technically not necessary for the feature, but
-will help with verification and testing.
+verified org. Note: This is technically not necessary for the feature, but will
+help with verification and testing.
 
 ### WAS-2: Google OAuth confidential client + consent setup (plan stage 4)
 
@@ -182,13 +182,32 @@ once the spec nails a content-type-independent mechanism.
 - priority: medium
 - labels: data-model, security
 - acceptance:
-  - [ ] The server has its own DID and signing key, distinct from any Space
-        controller
+  - [ ] The server has its own `did:webvh` DID (derived from `SERVER_URL`,
+        `portable: true`) and signing key, distinct from any Space controller;
+        the DID log is served at the corresponding well-known route
+  - [ ] The identity is minted automatically on first boot (identity state
+        absent AND store empty), atomically, with key material encrypted at rest
+        under the KEK; identity absent but store non-empty refuses to boot
+        (minting then requires the admin script; no env-flag override)
+  - [ ] Boot fails loudly when `SERVER_URL` does not match the URL recorded in
+        the identity state (no silent re-mint); the error names both URLs and
+        points at the migration runbook
   - [ ] Export signs each metadata sidecar and Space/Collection Description over
         a canonical serialization covering the server-managed fields and the
-        resource content digest
+        resource content digest, referencing the DID log `versionId`, and embeds
+        a snapshot of the DID log so archives verify offline; the signature
+        envelope is signing-time-agnostic (no export-specific context in the
+        signed bytes); chunked resources use a composite digest over the ordered
+        chunk-digest list
   - [ ] Import verifies signatures: verified archives keep `createdBy`;
-        unverified archives import with `createdBy` dropped, not rejected
+        unverified archives import with `createdBy` dropped, not rejected; the
+        import report distinguishes "signature invalid" from "signature valid,
+        content mismatch"
+  - [ ] An admin script performs `SERVER_URL` migration (appends the domain-move
+        log entry, updates the recorded URL) and explicit minting over a
+        non-empty store
+  - [ ] `docs/admin-guide.md` gains runbooks for identity backup, `SERVER_URL`
+        migration, and compromise recovery (re-mint)
 
 Raised 2026-07-09, while implementing server-managed `createdBy`.
 
@@ -236,32 +255,151 @@ This turns `createdBy` from a value the current server happens to remember into
 a statement some named server actually made -- a verifiable credential about a
 storage event, in effect.
 
-_Open questions._
+_Design decisions (2026-07-22)._
 
-- **Key custody and rotation.** Where does the server key live? The `/kms` facet
-  already exists (WebKMS keystores, key records encrypted at rest under a KEK).
-  Is the server's own signing key just another keystore entry, or does that
-  invert a dependency (the KMS is a facet _of_ the server)?
-- **Rotation vs. old archives.** An archive signed under a retired key must stay
-  verifiable, so the server DID needs a DID document with key history, which
-  `did:key` cannot express. That argues for `did:web` or `did:tdw` for the
-  _server_, even though `did:key` remains right for controllers.
-- **Sign on write, or only on export?** Signing every sidecar write puts an
-  Ed25519 signature on the hot path of every resource write. Signing only at
-  export is cheap but means the server is attesting at export time to facts it
-  recorded earlier and did not itself authenticate -- which is fine if the store
-  is trusted, and is exactly the assumption an operator already makes.
-- **What is signed?** Sidecars alone leave the content unbound; binding the
-  content digest makes the signature an integrity check on the Resource too,
-  which starts to overlap with the export manifest's role.
-- **Spec status.** The spec now defines `createdBy` on the Space, Collection,
-  and Resource Metadata data models (OPTIONAL, server-managed, read-only: "a
-  server MUST ignore a `createdBy` supplied in a request body"). What it does
-  NOT define is any way to _authenticate_ that claim once the data leaves the
-  server, nor a server DID to anchor it -- which is exactly this gap. Worth
-  checking against the Keyhive research notes -- a signed-provenance envelope is
-  close to what "concap" ops carry, and there may be no reason to invent a
-  bespoke format.
+- **DID method: `did:webvh`, derived from `SERVER_URL`.** The server already
+  serves HTTPS at that origin, so it hosts its own DID log at the well-known
+  route. `did:key` cannot express key history; `did:web` has no verifiable
+  history. `did:webvh` gives both, and its log is **self-certifying**
+  (SCID-bound, hash-chained, each entry signed by the previously authorized
+  update key) -- so exports embed a log snapshot and importers verify provenance
+  offline, against the key epoch current at export time, without the origin
+  server being reachable. The signed payload references the log `versionId` so
+  the importer knows which epoch to check. Mint with `portable: true` so a later
+  `SERVER_URL` migration can keep the SCID.
+- **The server DID is self-managed.** Its signatures are consumed only by
+  importers, who resolve against a log the server itself hosts; there is no
+  external registrar or ceremony, and the trust anchor is the domain plus the
+  operator's reputation, not the key. So the server mints on first boot and
+  rotates by appending log entries on its own schedule, no human in the loop.
+- **Key custody.** The server key is NOT a WebKMS keystore entry (that facet
+  models client-controlled keystores with zcap authz -- the wrong shape for the
+  server's own identity, and it would invert the dependency). It is
+  server-private state that merely reuses the KEK encryption-at-rest mechanism
+  (`KMS_RECORD_KEK` pattern).
+- **Assurance ceiling, stated honestly.** Self-management means server
+  compromise = DID compromise: an attacker who owns the box owns the update key
+  and any pre-committed next key. Proportionate for a reference server signing
+  provenance metadata. Upgrade path (documented, not implemented): operator-held
+  pre-rotation keys (`nextKeyHashes`) or `did:webvh` witnesses.
+- **Rotation is hygiene; compromise recovery is operator work.** Routine
+  rotation keeps old signatures valid (the log proves the old key was authorized
+  at that epoch). But "distrust signatures made after date X" cannot be
+  expressed by appending log entries, because archive signatures carry no
+  trustworthy timestamp -- a forger with the stolen key backdates freely. On
+  compromise the DID's attestations are suspect wholesale and the operator mints
+  a fresh identity.
+- **DID state is critical, non-restorable state.** The log and key material
+  cannot be recovered from the archives they protect; losing them means the
+  server can never again extend that DID. Backing them up is an operator duty
+  (admin guide).
+- **Sign on export, not on write.** The cost of sign-on-write is not CPU
+  (Ed25519 sign is microseconds; every authenticated request already does a zcap
+  signature _verification_) but complexity: canonicalization on every write path
+  in both backends, and since `version`/`metaVersion` bump on every write, each
+  write re-signs and discards the previous signature -- hot-path machinery that
+  ends up holding exactly one signature per object, over its latest state, which
+  is what a single export-time pass produces anyway. Nor does sign-on-write buy
+  real tamper-evidence here: the signing key is KEK-decryptable on the same box
+  as the store, and an importer cannot tell when a signature was made, so the
+  exported artifact's trust semantics are identical either way. The obligation
+  this choice imposes: the canonical serialization and signature envelope must
+  be **signing-time-agnostic** -- a statement about the object (server-managed
+  fields + content digest + DID log `versionId`) with no export-specific context
+  (no export timestamp, no manifest reference) inside the signed bytes -- so
+  signing the same envelope at write time can be added later as an opt-in
+  producing bit-compatible signatures. Triggers for revisiting: custody
+  separation (a backend where the store lives with a party the operator does not
+  fully trust -- an external Postgres, or BYOS metadata on Google Drive), and
+  write receipts (see _Option value_).
+- **The envelope binds the content digest.** The signature is a claim that "DID
+  X created content with digest D" -- leaving the content unbound would let an
+  archive pair authentic metadata with substituted bytes. This chains nicely to
+  the existing Request Body Integrity enforcement: the server verified a
+  client-signed multihash over the content at write time, so the digest it
+  attests at export traces back to something the client signed. Same multihash
+  encoding (sha-256, `mh=`) as the `Digest` header, for consistency and hash
+  agility. Riders:
+  - _Chunked resources_ get a composite digest over the **ordered list of chunk
+    digests**, not the concatenated bytes -- verification stays streaming and
+    per-chunk. (Consequence for write receipts: the full-content digest exists
+    only once the last chunk lands, so a receipt is mintable at completion, not
+    per-chunk.)
+  - _Conflated failure is intentional but must be reported distinctly._ A
+    corrupted body fails verification and drops `createdBy` just like a forgery
+    -- correct, since the attribution does not apply to different bytes -- but
+    import must distinguish "signature invalid" from "signature valid, content
+    mismatch" in its logging/report, or operators debugging bit-rot will
+    conclude signatures are flaky.
+  - _Content-transforming migrations invalidate provenance._ Any future tool
+    that rewrites bytes (re-encryption, plaintext/EDV conversion) must either
+    re-attest over the transformed content or accept the drop.
+  - _Omission stays invisible_ -- every surviving envelope still verifies after
+    an object is deleted from an archive. Completeness is inherently the export
+    manifest's job (see _Option value_); the per-object envelope covers
+    portability, not completeness. Complementary, not redundant.
+
+_Boot and migration behavior._
+
+- **First-boot detection** = absence of persisted identity state (DID log +
+  KEK-encrypted key file, e.g. under a server-scoped `.server/identity/` area),
+  not "data dir empty". Rules: identity absent + store empty = mint; identity
+  absent + store non-empty = refuse to boot (this looks like a restore that lost
+  the key, and silently minting would fork the server's identity); the only
+  override is minting explicitly via the admin script -- no env-flag escape
+  hatch, keeping the dangerous path off the env-var surface; identity present =
+  load it and compare its recorded URL against `SERVER_URL`, failing loudly on
+  mismatch. Minting must be atomic (temp + rename) so a crash mid-mint cannot
+  leave a half-identity.
+- **`SERVER_URL` migration** is a deliberate act, not a re-derivation: the SCID
+  binds the initial log entry, so the DID must not silently follow the env var
+  (same foot-gun class as the zcap `invocationTarget` exact-match constraint).
+  Affordances: (1) the boot-time mismatch error is the discovery point; (2) an
+  offline admin script (the `reencrypt-kms-records.ts` pattern) appends the
+  signed domain-move log entry and updates the recorded URL; (3) the documented
+  alternative is re-minting fresh, accepting provenance discontinuity -- old
+  archives stay verifiable either way via their embedded log snapshots; (4) the
+  admin guide notes that keeping the old domain serving (or redirecting) the log
+  helps live resolution of the old DID string but is not required for archive
+  verification.
+
+_Spec status (resolved 2026-07-22)._ The spec defines `createdBy` on the Space,
+Collection, and Resource Metadata data models (OPTIONAL, server-managed,
+read-only) but no way to _authenticate_ that claim once the data leaves the
+server, nor a server DID to anchor it. Resolution: the WAS spec itself gains
+only (a) a server-DID anchor -- how a server advertises its DID, via the
+well-known DID log route -- and (b) a normative reference from the Export/Import
+operations to a separate reusable **container spec** (WAS-37, draft) that owns
+the envelope format, manifest, and verification procedure. The Keyhive "concap"
+format check moves to WAS-37's design phase. Implementation does not wait on
+either: WAS-7 ships against the de facto format, and the spec text is extracted
+from it (this repo's existing pattern).
+
+_Option value._ Once the server has a DID and signing key, other uses become
+cheap; recorded here so the option value is not lost (razor: TLS already
+authenticates live reads, so a signature only earns its keep where the statement
+outlives the connection -- stored for later, shown to a third party, or compared
+between parties):
+
+- **Write receipts** -- a signed "stored resource `id` with content digest D at
+  version N at time T" returned to the writer; the live-path counterpart of the
+  export signing. The signing-time-agnostic envelope (see design decisions)
+  keeps this a later opt-in: mint the same envelope at write time and return it
+  to the client, without storing it.
+- **Signed changes-feed checkpoints** -- promoted to its own item, WAS-36.
+- **Epoch anti-rollback** -- a signed current-epoch statement for
+  multi-recipient collections; `epochsMac` binds epoch state but is only
+  server-verifiable, a signature makes the freshness claim third-party- and
+  offline-verifiable.
+- **Server as zcap delegatee** -- the receiving direction: a user delegates a
+  read capability to the server's DID so it can pull from a peer server
+  unattended (server-to-server backup / replication / migration). Any future
+  federation story needs the server DID as a prerequisite.
+- **Signed export manifest** -- a whole-archive "backup receipt" over the
+  manifest's content digests. The completeness complement to the per-object
+  envelopes: per-object signatures cannot detect an object _omitted_ from an
+  archive (see the digest-binding decision), so omission-detection is inherently
+  the manifest's job.
 
 _Related._ `createdBy` implementation: `invokerDid()` in
 `src/auth-header-hooks.ts`; the strip-and-apply in `writeSpace` /
@@ -274,14 +412,14 @@ descriptions and sidecars raw) and in `src/backends/postgres.ts` (routes through
 
 ### WAS-8: Differentiate delegated-verification failure `detail` (spec SHOULD)
 
-- status: todo
+- status: done
 - priority: low
 - labels: authz
 - acceptance:
-  - [ ] Static pre-triage of the submitted chain distinguishes
+  - [x] Static pre-triage of the submitted chain distinguishes
         chain-rooted-elsewhere / expired-delegation / failed-proof in the
         non-normative `detail` string where the server can tell
-  - [ ] The `controller-mismatch` error type itself is unchanged
+  - [x] The `controller-mismatch` error type itself is unchanged
 
 Minor follow-up (SHOULD): the spec explicitly folds _all_ delegated verification
 failures (chain rooted elsewhere, expired delegation, failed proof) into
@@ -458,6 +596,34 @@ ciphertext rollback/freshness (a signed snapshot/manifest lets a reader detect a
 server serving stale state -- the gap Cryptomator leaves open after two audits,
 per the hardening notes) and the compaction tier the linear `changesSince` feed
 currently lacks. Interlocks with the tombstone-GC follow-on (WAS-13).
+
+### WAS-36: Server-signed changes-feed checkpoints (split-view detection)
+
+- status: todo
+- priority: low
+- labels: someday, sync, security
+- blocked-by: WAS-7
+- acceptance:
+  - [ ] The server signs feed checkpoints ("as of feed version N, the head hash
+        is X") with its server DID key, reusing the WAS-7 canonical
+        serialization and referencing the DID log `versionId`
+  - [ ] The signed checkpoint is available to sync clients (in `changesSince`
+        responses and, once WAS-12 lands, SSE checkpoint batches)
+  - [ ] Two clients comparing signed checkpoints for the same feed version can
+        detect a split view (the server showing different histories to different
+        clients); the comparison procedure is documented
+
+Raised 2026-07-22 during the WAS-7 server-DID design discussion
+(discovered-from: WAS-7). TLS authenticates what a client reads live, so a
+server signature only adds value where the statement outlives the connection --
+and a feed checkpoint is exactly that: a claim two clients can later _compare_.
+Without signatures, a malicious or compromised server can serve different
+histories to different sync clients (equivocation) undetectably; with them, any
+two clients (or a client and an auditor) holding checkpoints for the same feed
+version can catch the fork. Complements WAS-15, which covers the _client_-signed
+direction (a reader detecting a server serving stale ciphertext); this item is
+the server-attested direction. Interlocks with WAS-12 (the SSE `checkpoint`
+batch is a natural carrier).
 
 ### WAS-16: Opaque/blinded Resource ids + padded sizes (opt-in)
 
@@ -688,6 +854,11 @@ repo, not server code.
 operation, and `import` is not in the Reserved Path Segment Registry (the
 `invalid-import` error type is registered, orphaned).
 
+If WAS-37 proceeds, this operation thins out to profile-plus-reference: the
+accepted container format moves to the container spec, and the WAS spec keeps
+the HTTP operation, the WAS profile, and the import-specific semantics (merge
+behavior, `ImportStats`, provenance verification outcomes).
+
 ### WAS-27: Spec the zcap revocation operation
 
 - status: todo
@@ -723,6 +894,58 @@ it, also describe chunk entries neutrally in the export manifest: today the
 archive chunk layout is the filesystem backend's on-disk encoding
 (`chunkDirName` + `fileNameFor` + `.meta.<n>.json` sidecars), which the Postgres
 export synthesizes and any non-filesystem backend must emulate to interoperate.
+
+If WAS-37 proceeds, this operation thins out to profile-plus-reference: the
+container format (layout, manifest, provenance envelope) moves to the container
+spec, and the WAS spec keeps the HTTP operation plus the WAS profile
+(space/collection structure, reserved sidecar names, chunk layout). The
+chunk-neutrality acceptance item above is really a container-spec requirement.
+
+### WAS-37: Reusable signed-container spec for exports (WAS + wallet backups)
+
+- status: draft
+- priority: low
+- labels: spec-side
+
+Raised 2026-07-22, while resolving WAS-7's spec-status question
+(discovered-from: WAS-7). Draft because the actionable scope depends on two
+decisions not yet made: whether to raise it as a CCG work item, and whether
+wallet implementations (Freewallet, DCW) commit to consuming it -- without that
+buy-in, a WAS-spec appendix delivers everything except the reuse.
+
+_The idea._ The artifact WAS-7 defines is a container, not protocol: "a set of
+items + metadata sidecars + a completeness manifest + signed provenance by the
+exporting party." Nothing in it requires WAS -- and it is exactly the shape of a
+wallet backup. A separate spec would own the archive layout conventions, the
+FEP-6fcd-style manifest, the metadata sidecar model, and the provenance
+envelope + verification procedure (verified / unverified / content-mismatch
+semantics). The attester is just "a DID": a WAS server's `did:webvh` for WAS
+exports, the wallet's own DID for a wallet export -- WAS-7's
+signing-time-agnostic envelope (no export- or WAS-specific context in the signed
+bytes) is precisely what makes that generalization possible. The
+embedded-DID-log-snapshot offline-verification feature becomes an optional
+capability for DID methods with logs (`did:webvh`), plain DID resolution the
+fallback (a wallet on `did:key` simply gets no key history).
+
+_Layering._ (1) Core container spec, as above. (2) WAS profile: space/collection
+structure, reserved names, chunk layout, and the Export/Import HTTP operations
+(WAS-26/WAS-28 thin out to profile-plus-reference). (3) Wallet profile(s),
+later, mapping Freewallet/DCW items.
+
+_Scope discipline._ Container encryption is OUT of scope for the core: wallet
+backups need at-rest passphrase protection, WAS exports do not (their contents
+may already be EDV ciphertext), and a wrapping layer (e.g. JWE around the whole
+archive) is orthogonal. Say so early or the wallet use case will drag it in.
+
+_Sequencing._ Implementation-first: WAS-7 ships against the de facto server
+format and this spec is extracted from it -- WAS-7 must NOT acquire a dependency
+on a CCG work-item lifecycle. Design-phase checks: the Keyhive "concap" envelope
+comparison (moved here from WAS-7), and a WAS-neutral name (something in the
+vein of "verifiable content archive" -- "space contents export" undersells the
+reuse).
+
+Promotion to `todo` requires: the CCG-work-item decision, at least one wallet
+consumer signal, and acceptance criteria for the core spec's section list.
 
 ### WAS-29: Spec the key-epochs surface (`epoch` feed member, marker/stamp rails)
 

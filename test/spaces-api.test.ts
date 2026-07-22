@@ -11,7 +11,7 @@ import type { FastifyInstance } from 'fastify'
 import { Space } from '@interop/was-client'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import { client, startTestServer, zcapClients } from './helpers.js'
 
 describe('Spaces', () => {
   let fastify: FastifyInstance,
@@ -409,7 +409,93 @@ describe('Spaces', () => {
         expectedError.data.type,
         'https://wallet.storage/spec#controller-mismatch'
       )
+      // The differentiated cause (spec SHOULD): the chain roots in Alice's
+      // DID, not the body's controller (Bob).
+      assert.match(
+        expectedError.data.errors[0].detail,
+        new RegExp(`rooted in "${alice.did}", not the body's controller`)
+      )
       assert.equal(await bob.was.space(spaceId).describe(), null)
+    })
+
+    it('[delegated] an expired delegation names the expiry in the controller-mismatch detail', async () => {
+      // Alice's delegation to her app has expired: the chain is correctly
+      // rooted in the body's controller, so the differentiated cause (spec
+      // SHOULD) is the expiry -- Alice must re-delegate. Delegated through the
+      // raw ZcapClient so the delegation proof can be backdated before its own
+      // `expires` (`grant` cannot mint an already-expired zcap); well past the
+      // verifier's clock-skew tolerance.
+      const spacesUrl = new URL('/spaces/', serverUrl).toString()
+      const zcap = await client({ signer: alice.signer }).delegate({
+        controller: aliceDelegatedApp.did,
+        invocationTarget: spacesUrl,
+        allowedActions: ['POST'],
+        expires: new Date(Date.now() - 10 * 60 * 1000),
+        now: Date.now() - 20 * 60 * 1000
+      })
+
+      const spaceId = crypto.randomUUID()
+      const expectedError = await requestError({
+        client: aliceDelegatedApp.was,
+        request: {
+          url: spacesUrl,
+          method: 'POST',
+          capability: zcap,
+          json: { id: spaceId, name: 'Too Late', controller: alice.did }
+        }
+      })
+      assert.equal(expectedError.response.status, 400)
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#controller-mismatch'
+      )
+      assert.match(
+        expectedError.data.errors[0].detail,
+        /a delegation in the chain expired at/
+      )
+      assert.equal(await alice.was.space(spaceId).describe(), null)
+    })
+
+    it('[delegated] a tampered delegation proof names the failed proof in the controller-mismatch detail', async () => {
+      // The chain is rooted in the body's controller and unexpired, but its
+      // delegation proof does not verify: the differentiated cause (spec
+      // SHOULD) falls through to the failed-proof clause.
+      const spacesUrl = new URL('/spaces/', serverUrl).toString()
+      const zcap = await alice.was.grant({
+        to: aliceDelegatedApp.did,
+        actions: ['POST'],
+        target: spacesUrl
+      })
+      const proofValue: string = zcap.proof.proofValue
+      const tampered = {
+        ...zcap,
+        proof: {
+          ...zcap.proof,
+          proofValue:
+            proofValue.slice(0, -2) + (proofValue.endsWith('aa') ? 'bb' : 'aa')
+        }
+      }
+
+      const spaceId = crypto.randomUUID()
+      const expectedError = await requestError({
+        client: aliceDelegatedApp.was,
+        request: {
+          url: spacesUrl,
+          method: 'POST',
+          capability: tampered,
+          json: { id: spaceId, name: 'Tampered', controller: alice.did }
+        }
+      })
+      assert.equal(expectedError.response.status, 400)
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#controller-mismatch'
+      )
+      assert.match(
+        expectedError.data.errors[0].detail,
+        /the delegation chain proof failed verification/
+      )
+      assert.equal(await alice.was.space(spaceId).describe(), null)
     })
 
     it('[root] create-via-PUT signed by a different DID than the body controller yields controller-mismatch (400)', async () => {
@@ -501,7 +587,50 @@ describe('Spaces', () => {
         expectedError.data.type,
         'https://wallet.storage/spec#controller-mismatch'
       )
+      assert.match(
+        expectedError.data.errors[0].detail,
+        new RegExp(`rooted in "${alice.did}", not the body's controller`)
+      )
       assert.equal(await bob.was.space(spaceId).describe(), null)
+    })
+
+    it('[delegated] a PUT-create chain rooted at a different target names the root target in the detail', async () => {
+      // Alice's delegation chain roots at Space A's root capability, but its
+      // invocationTarget (and the app's invocation) is Space B's URL: the
+      // differentiated cause (spec SHOULD) names the mismatched root target.
+      const grantedSpaceId = crypto.randomUUID()
+      const grantedSpaceUrl = new URL(
+        `/space/${grantedSpaceId}`,
+        serverUrl
+      ).toString()
+
+      const spaceId = crypto.randomUUID()
+      const spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
+      const zcap = await alice.was.grant({
+        to: aliceDelegatedApp.did,
+        actions: ['PUT'],
+        target: spaceUrl,
+        capability: `urn:zcap:root:${encodeURIComponent(grantedSpaceUrl)}`
+      })
+      const expectedError = await requestError({
+        client: aliceDelegatedApp.was,
+        request: {
+          url: spaceUrl,
+          method: 'PUT',
+          capability: zcap,
+          json: { name: 'Wrong Root', controller: alice.did }
+        }
+      })
+      assert.equal(expectedError.response.status, 400)
+      assert.equal(
+        expectedError.data.type,
+        'https://wallet.storage/spec#controller-mismatch'
+      )
+      assert.match(
+        expectedError.data.errors[0].detail,
+        new RegExp(`rooted at "${grantedSpaceUrl}", not at "${spaceUrl}"`)
+      )
+      assert.equal(await alice.was.space(spaceId).describe(), null)
     })
 
     it('[root] an update still verifies against the stored controller, not the body', async () => {

@@ -657,6 +657,9 @@ export class InvalidControllerError extends ProblemError {
  * @param options {object}
  * @param options.zcapSigningDid {string}   DID that signed the invocation
  * @param options.controller {string}   controller DID supplied in the body
+ * @param [options.causeDetail] {string}   the differentiated failure cause
+ *   (chain rooted elsewhere / expired delegation / failed proof) from the
+ *   static chain triage, appended to the non-normative `detail` (spec SHOULD)
  * @param [options.cause] {Error}   the underlying chain-verification failure,
  *   for a delegated invocation rejected at verification time
  */
@@ -664,16 +667,19 @@ export class SpaceControllerMismatchError extends ProblemError {
   constructor({
     zcapSigningDid,
     controller,
+    causeDetail,
     cause
   }: {
     zcapSigningDid: string
     controller: string
+    causeDetail?: string
     cause?: Error
   }) {
     const detail =
       `The invocation must be authorized by the 'controller' DID in the` +
       ` request body ("${controller}"): signed by it, or via a delegation` +
-      ` chain rooted in it (invocation signed by "${zcapSigningDid}").`
+      ` chain rooted in it (invocation signed by "${zcapSigningDid}").` +
+      (causeDetail ? ` Cause: ${causeDetail}.` : '')
     super({
       type: ProblemTypes.CONTROLLER_MISMATCH,
       title: 'Invalid Create Space request',
@@ -950,6 +956,9 @@ export class KeystoreNotFoundError extends ProblemError {
  * @param options {object}
  * @param options.zcapSigningDid {string}   DID that signed the invocation
  * @param options.controller {string}   controller DID supplied in the body
+ * @param [options.causeDetail] {string}   the differentiated failure cause
+ *   (chain rooted elsewhere / expired delegation / failed proof) from the
+ *   static chain triage, appended to the non-normative `detail` (spec SHOULD)
  * @param [options.cause] {Error}   the underlying chain-verification failure,
  *   for a delegated invocation rejected at verification time
  */
@@ -957,16 +966,19 @@ export class KeystoreControllerMismatchError extends ProblemError {
   constructor({
     zcapSigningDid,
     controller,
+    causeDetail,
     cause
   }: {
     zcapSigningDid: string
     controller: string
+    causeDetail?: string
     cause?: Error
   }) {
     const detail =
       `The invocation must be authorized by the 'controller' DID in the` +
       ` request body ("${controller}"): signed by it, or via a delegation` +
-      ` chain rooted in it (invocation signed by "${zcapSigningDid}").`
+      ` chain rooted in it (invocation signed by "${zcapSigningDid}").` +
+      (causeDetail ? ` Cause: ${causeDetail}.` : '')
     super({
       type: ProblemTypes.CONTROLLER_MISMATCH,
       title: 'Invalid Create Keystore request',

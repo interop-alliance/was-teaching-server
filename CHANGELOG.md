@@ -1,5 +1,19 @@
 # History
 
+## 0.14.0 - TBD
+
+### Changed
+
+- **Differentiated `controller-mismatch` failure causes.** Per the spec's SHOULD
+  (Create Space Errors and the error registry), a failed delegated consent
+  verification (Create Space via POST or create-via-PUT, Create Keystore) now
+  names the cause in the non-normative `detail` string via a static pre-triage
+  of the submitted chain: a chain rooted at a different target, a base
+  delegation signed by a DID other than the body's controller, an expired
+  delegation, or -- when nothing is statically wrong -- a failed proof. The
+  `controller-mismatch` error type and 400 status are unchanged, and a
+  capability that cannot be decoded keeps the generic detail.
+
 ## 0.13.0 - 2026-07-21
 
 ### Added
