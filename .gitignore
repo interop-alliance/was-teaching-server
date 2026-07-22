@@ -145,3 +145,5 @@ data/*
 
 # TypeScript build output (tsc → dist/)
 dist/
+
+!CLAUDE.md

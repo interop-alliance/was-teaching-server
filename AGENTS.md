@@ -43,6 +43,40 @@ Code style, refactoring, JSDoc, comment, and error-handling conventions live in
 Repo-specific addition: throw the custom error classes defined in
 `src/errors.ts` rather than generic `Error`.
 
+## Roadmap & Task Conventions
+
+All roadmap tracking lives in [ROADMAP.md](./ROADMAP.md): narrative context
+(section preambles, gap analysis) plus structured work items. Never create a
+parallel task list elsewhere (no `TODO.md`, no task lists in other docs).
+
+Each work item follows this schema:
+
+- A heading `### WAS-N: Title`, then a field block, then free prose context.
+- Fields: `status` (`todo` / `in-progress` / `draft` / `done`), `priority`
+  (`high` / `medium` / `low`), `labels` (comma-separated), optional `blocked-by`
+  (other `WAS-N` ids), and an `acceptance:` checklist.
+- `draft` marks items with no actionable done-state yet (spec-blocked or parking
+  records); a draft states _why_ instead of acceptance criteria and must gain
+  acceptance criteria when promoted to `todo`.
+
+Rules:
+
+- Item ids are permanent and never reused. A new item takes the next unused
+  number, regardless of which section it lands in.
+- Every non-draft item needs acceptance criteria before it may be moved to
+  `in-progress`.
+- Statuses are edited in place (change the `status:` field); acceptance
+  checkboxes are ticked as they are met.
+- Completed items are dropped from ROADMAP.md once shipped -- CHANGELOG.md is
+  the permanent record of what landed (existing convention).
+- Work discovered mid-implementation gets its own item immediately, noting
+  `discovered-from: WAS-N` in its prose, plus a `blocked-by` link if it blocks
+  anything.
+- Reference item ids in commit messages and PR descriptions where relevant (e.g.
+  `WAS-12: add SSE changes endpoint`).
+- `blocked-by` links only express dependencies implied by the work itself; do
+  not invent orderings.
+
 ## Test Suite
 
 Two separate test directories serve different purposes:

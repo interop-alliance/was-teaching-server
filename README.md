@@ -22,6 +22,8 @@ See:
 - [ARCHITECTURE.md](ARCHITECTURE.md) -- request flow, domain model, and ZCap
   authorization structure
 - [CONTRIBUTING.md](CONTRIBUTING.md) -- code style and contribution conventions
+- [ROADMAP.md](ROADMAP.md) -- spec-gap analysis and tracked work items
+  (structured `WAS-N` entries with status, priority, and acceptance criteria)
 
 ### Supported Features
 

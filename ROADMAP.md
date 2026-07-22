@@ -55,7 +55,8 @@ Complete Google Cloud console organization / brand identity verification for
 interopalliance.org, the prerequisite for publishing an OAuth consent screen
 tied to the org. Blocks all remaining Google Drive BYOS work: the OAuth client
 setup, both adapter stages, and the ToS clearance conversation all presuppose a
-verified org.
+verified org. Note: This is technically not necessary for the feature, but
+will help with verification and testing.
 
 ### WAS-2: Google OAuth confidential client + consent setup (plan stage 4)
 
