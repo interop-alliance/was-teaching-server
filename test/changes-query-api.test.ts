@@ -162,6 +162,24 @@ describe('Collection changes query profile', () => {
     assert.deepEqual(seen.sort(), ['a', 'b', 'c', 'd', 'e'])
   })
 
+  it('rejects a body with no profile with 400 invalid-request-body', async () => {
+    await seedCollection('missing-profile', ['a'])
+    let thrown: any
+    try {
+      // `profile: undefined` overrides the helper's default and is dropped by
+      // JSON serialization, so the signed body has no `profile` member.
+      await queryChanges(alice, 'missing-profile', { profile: undefined })
+    } catch (err) {
+      thrown = err
+    }
+    assert.ok(thrown, 'expected a missing profile to be rejected')
+    assert.equal(thrown.response.status, 400)
+    assert.equal(
+      thrown.data.type,
+      'https://wallet.storage/spec#invalid-request-body'
+    )
+  })
+
   it('rejects an unknown profile with 501', async () => {
     await seedCollection('unknown-profile', ['a'])
     let thrown: any

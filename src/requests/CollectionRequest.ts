@@ -702,9 +702,11 @@ export class CollectionRequest {
    *   serve it; an encrypted Collection answers `unsupported-operation` (501).
    *
    * The query parameters ride the signed JSON POST body (covered by the
-   * `Digest`), so no `allowTargetQuery` is needed. A body naming any other
-   * profile, or a backend without the profile's method, yields
-   * `unsupported-operation` (501). Authorization is capability-or-policy, the
+   * `Digest`), so no `allowTargetQuery` is needed. A body with no `profile`
+   * member is malformed (the registry marks `profile` REQUIRED) and yields
+   * `invalid-request-body` (400); a body naming any other profile, or a
+   * backend without the profile's method, yields `unsupported-operation`
+   * (501). Authorization is capability-or-policy, the
    * same read semantics as List Collection: an under-authorized caller
    * receives a 404.
    *
@@ -764,6 +766,17 @@ export class CollectionRequest {
       collectionId,
       collectionDescription
     })
+
+    // "You did not say which profile" is a malformed request (the Query
+    // Profile Registry marks `profile` REQUIRED), not an unsupported feature:
+    // 400, distinct from the 501 an unrecognized profile gets below.
+    if (body?.profile === undefined) {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail: "The query body is missing the required 'profile' member.",
+        pointer: '#/profile'
+      })
+    }
 
     if (body?.profile === 'changes' && dataBackend.changesSince) {
       return CollectionRequest.#queryChanges({

@@ -4,6 +4,11 @@
 
 ### Changed
 
+- **A Collection query with no `profile` member is now rejected with 400
+  `invalid-request-body`** (pointer `#/profile`) instead of 501
+  `unsupported-operation`: the Query Profile Registry marks `profile` REQUIRED,
+  so omitting it is a malformed request, distinct from naming a profile the
+  server does not serve (which keeps answering 501).
 - **Differentiated `controller-mismatch` failure causes.** Per the spec's SHOULD
   (Create Space Errors and the error registry), a failed delegated consent
   verification (Create Space via POST or create-via-PUT, Create Keystore) now

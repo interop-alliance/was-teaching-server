@@ -9,7 +9,9 @@ registry and the shared WAS wire model now live in `@interop/storage-core`.
 
 Scope: features the **spec defines that the server does not yet implement** (or
 implements with deviations). A section of reverse gaps (server features the spec
-does not yet describe) is at the end, since those are spec-side work.
+does not yet describe) is at the end, since those are spec-side work. A test
+coverage section (conformance-suite and `test/` gaps from the 2026-07-22
+coverage analysis) sits in between.
 
 This document tracks only the **remaining** gaps; completed items are dropped as
 they land (the shipped feature set is recorded in CHANGELOG.md, and earlier
@@ -408,6 +410,51 @@ trusts the archive: `importSpace` in `src/backends/filesystem.ts` (writes
 descriptions and sidecars raw) and in `src/backends/postgres.ts` (routes through
 `_upsertCollection`, still trusting the archived value).
 
+### WAS-52: `/query` with a missing `profile` returns 501 instead of 400
+
+- status: done
+- priority: medium
+- labels: error-handling
+- acceptance:
+  - [x] `POST .../query` with a body that has no `profile` member returns 400
+        `invalid-request-body` (the registry marks `profile` REQUIRED and
+        `invalid-request-body` covers "a required property is absent"); an
+        unrecognized `profile` value keeps returning 501 `unsupported-operation`
+  - [x] A conformance test asserts the 400 branch (deliberately left out of the
+        WAS-45 sweep because the server currently 501s)
+
+Discovered while burning down the conformance gap list (discovered-from:
+WAS-45). `CollectionRequest.query` treats an absent `profile` and an unknown one
+uniformly, falling through to `UnsupportedOperationError` -- but "you did not
+say which profile" is a malformed request, not an unsupported feature.
+
+### WAS-54: Read-side caching: 304 on `If-None-Match` and `Cache-Control`
+
+- status: todo
+- priority: low
+- labels: caching
+- acceptance:
+  - [ ] A Resource GET/HEAD with an `If-None-Match` that matches the current
+        `ETag` returns 304 Not Modified with no body (and the `ETag` header),
+        per RFC 9110 conditional-read semantics; a non-matching validator
+        returns the full 200 representation
+  - [ ] The same conditional-read handling applies to the other ETag-emitting
+        reads (chunk GET/HEAD, `/meta`, Collection Description)
+  - [ ] Non-idempotent responses are marked non-cacheable
+        (`Cache-Control: no-store` on POST responses), per the spec SHOULD
+  - [ ] Integration tests in `test/`, plus optional-tier conformance tests in
+        the `conditional-requests-api` suite (the spec keeps caching at
+        SHOULD/MAY, so they stay optional-tier)
+
+The read-side half of the caching story (discovered-from: WAS-45; recorded as
+the one genuinely unimplemented area in the WAS-45 dark-section triage). The
+write-side validators already exist: `formatEtag` in `src/lib/etag.ts` emits
+strong version-based ETags on GET/HEAD, and `If-Match`/`If-None-Match` gate
+writes via `src/lib/preconditions.ts` -- but no read path ever evaluates
+`If-None-Match`, so clients re-download unchanged content. Note the spec defers
+`Cache-Control` semantics in an editor's note, so keep the `no-store` marking
+minimal and revisit if the spec text firms up.
+
 ## Authorization profile
 
 ### WAS-8: Differentiate delegated-verification failure `detail` (spec SHOULD)
@@ -433,6 +480,276 @@ authorization headers." -- the cause is attached but never surfaced), because
 the chain verifier reports failure opaquely. Differentiating would take static
 pre-triage of the submitted chain (check the base delegation proof's signer
 against `body.controller`, and the zcap's `expires`) before full verification.
+
+### WAS-38: Conformance tests for the delegated Create Space failure shapes
+
+- status: todo
+- priority: medium
+- labels: authz, conformance-suite
+- acceptance:
+  - [ ] Chain rooted in a different DID than the body's controller: 400,
+        `controller-mismatch`, Space not created
+  - [ ] Expired delegation (proof backdated via ezcap's `now` override, past the
+        verifier's clock-skew tolerance): 400, `controller-mismatch`, Space not
+        created
+  - [ ] Tampered delegation proof: 400, `controller-mismatch`, Space not created
+  - [ ] Optional-tier test: the three responses' `detail` strings are pairwise
+        distinct (the differentiation SHOULD), asserting nothing about wording
+
+Suite-side work (lands in `@interop/was-conformance-suite`, tracked here per
+convention); discovered-from: WAS-8. The error registry folds all three
+delegated Create Space verification failures into `controller-mismatch` as a
+MUST, but the suite currently only exercises the basic signer-mismatch case -- a
+server that 500s or 404-masks an expired delegation or a tampered proof would
+pass today. All three shapes are black-box constructible because the suite mints
+its own zcaps. The detail-differentiation SHOULD goes in the optional tier only,
+as a wording-agnostic pairwise-distinctness check: `detail` is non-normative
+free text, so asserting on phrasing (or requiring differentiation at all in the
+normative tier) would over-constrain conforming servers. Note the distinctness
+check is a signal, not proof -- per-request echo content (e.g. a request id) in
+`detail` could mask an undifferentiated implementation.
+
+---
+
+## Test coverage gaps (conformance suite + server `test/`)
+
+Produced by a 2026-07-22 coverage analysis: an inventory of the spec's 324
+testable normative statements matched statement-by-statement against the
+conformance suite's 95 tests (12 suites), plus a survey of the server's own
+`test/` suite against `src/routes.ts` and `src/errors.ts`. Conformance
+scoreboard: 111 covered / 50 partial / 155 uncovered / 8 not-suite-testable --
+only 24% of MUST-family statements are fully covered. The suite is strong on
+happy paths and read-side 404 masking, weak on _ordering_ requirements (authz
+before conflict/validation checks) and request-integrity negatives. Working docs
+(spec inventory, conformance inventory, full 205-item gap list with a suggested
+test per gap, server test survey) are archived in `_spec/test-coverage/`.
+
+Suite-side items land in `@interop/was-conformance-suite` (tracked here per
+convention, like WAS-38); the `test/` items are in-repo.
+
+### WAS-39: Conformance tests for authz-ordering / no-leak negatives
+
+- status: done
+- priority: high
+- labels: conformance-suite, authz
+- acceptance:
+  - [x] Unauthorized POST to an existing Collection id and to an existing
+        Resource id returns 404, not 409 (authz before conflict detection)
+  - [x] Under-authorized write to an `encryption`-marked Collection returns 404,
+        not 422 (authz before envelope validation)
+  - [x] Unauthorized list and `POST .../query` requests carrying an invalid
+        cursor / query body return 404, not 400 (authz before cursor/body
+        validation)
+  - [x] Unauthorized quota read returns 404, not 403
+  - [x] Cross-user Resource DELETE returns 404 (the one mutating verb with no
+        no-leak test today)
+
+The suite's dominant cross-suite invariant is 404 masking on reads, but none of
+the _ordering_ MUSTs are tested: a server that runs conflict detection, body
+validation, or quota checks before authorization leaks resource existence
+through the differing status code and passes the suite today.
+
+### WAS-40: Conformance tests for request-body integrity (Digest) negatives
+
+- status: done
+- priority: high
+- labels: conformance-suite, authz
+- acceptance:
+  - [x] A signed body request whose signature does not cover the `digest` header
+        is rejected with 400 `invalid-authorization-header` (MUST)
+  - [x] Optional tier: a request whose body does not match its signed `digest`
+        (tampered after signing) is rejected with 400 (SHOULD)
+
+The Digest enforcement section is normative (and implemented in this server via
+`src/digest.ts`), but the suite never sends a bad-integrity request -- a server
+that ignores the `Digest` header entirely passes today.
+
+### WAS-41: Conformance tests for write-validation negatives (reserved ids, Content-Type)
+
+- status: done
+- priority: high
+- labels: conformance-suite
+- acceptance:
+  - [x] Creating a Collection with a reserved path-segment id returns 409
+        `reserved-id` (MUST)
+  - [x] Creating a Resource with a reserved id returns 409 `reserved-id` (MUST)
+  - [x] Creating a Resource without a `Content-Type` header returns 400 (MUST)
+
+The Reserved Path Segment Registry has zero conformance coverage despite
+reserved-id enforcement being a MUST (the registry appendix is one of the
+fully-dark spec sections).
+
+### WAS-42: Conformance tests for direct Create/Update Space controller negatives
+
+- status: done
+- priority: high
+- labels: conformance-suite, authz
+- acceptance:
+  - [x] `POST /spaces/` with no `controller` in the body returns 400 (MUST)
+  - [x] `POST /spaces/` signed by a key that is not the body's `controller`
+        returns 400 `controller-mismatch` (MUST)
+  - [x] A Space `PUT` update is verified against the _stored_ controller, not
+        the body's: a request that swaps `controller` in the body and is signed
+        by the would-be new controller fails (MUST -- the privilege-escalation
+        guard)
+
+The direct (non-delegated) counterpart of WAS-38, which covers the delegated
+Create Space failure shapes; between the two, all `controller-mismatch` paths in
+the error registry get negative tests.
+
+### WAS-43: Conformance test for encryption-marker immutability
+
+- status: done
+- priority: medium
+- labels: conformance-suite, encryption
+- acceptance:
+  - [x] Changing or removing the `encryption` marker on an existing encrypted
+        Collection returns 409 (MUST)
+
+The marker-immutability MUST has no conformance test (this server enforces it;
+see also WAS-49 for the in-repo wire-level gap). The authz-ordering half of the
+encrypted-write negatives lives in WAS-39.
+
+Shipped in `encryption-marker-api` with a recorded finding (the WAS-49 scenario,
+confirmed): a generic suite cannot name a second scheme the server recognizes,
+so on this server the change-attempt is intercepted by the fail-closed registry
+gate (400 `unsupported-encryption-scheme`) before the set-once check -- the test
+accepts either rejection and asserts the stored marker survives intact; 409
+`encryption-immutable` is asserted strictly when a server reports it. Clearing
+is likewise asserted as rejected-or-marker-preserved, since this server's
+updates leave an omitted `encryption` untouched (merge semantics) rather than
+reading it as a clear attempt.
+
+### WAS-44: Conformance test for `invocationTarget` mismatch rejection
+
+- status: done
+- priority: high
+- labels: conformance-suite, authz
+- acceptance:
+  - [x] Invoking a capability against a URL other than its `invocationTarget`
+        (e.g. a sibling Resource or another Space) is rejected without
+        performing the operation (MUST)
+
+Shipped as the new `invocation-target-api` suite: a Resource-scoped delegated
+capability is invoked (via the low-level signing primitive, past ezcap's
+client-side confused-deputy guard) against a sibling Resource (read and delete,
+asserting the delete is not performed), the parent Collection listing, and a
+Resource in another Space under the same controller. Accepted rejection shapes
+are 400 `invalid-authorization-header` or the privacy-merged 404 mask (this
+server answers 404 on all four).
+
+The ZCap URL-binding is the invariant the whole authorization profile leans on
+(and the source of the exact-match `SERVER_URL` constraint), yet the suite only
+ever relies on it implicitly -- it is never negatively tested.
+
+### WAS-45: Burn down the remaining MUST-family conformance gaps
+
+- status: done
+- priority: medium
+- labels: conformance-suite
+- acceptance:
+  - [x] Every uncovered/partial MUST-family statement in the gap analysis (49
+        uncovered + 18 partial) either gains a test or a recorded won't-test
+        rationale
+  - [x] The fully-dark sections triaged: caching, conditional requests, chunked
+        resources, and the blinded-index profile get optional-tier tests (they
+        are OPTIONAL features) or explicit out-of-scope notes
+  - [x] `specRefs` populated on all suite tests (only 6 of 95 carry one today),
+        so future spec-vs-suite audits are mechanical
+
+The umbrella item behind WAS-39 to WAS-44: those name the highest-value
+individual gaps; this one tracks working through the rest of the archived gap
+list systematically. Dispositions recorded in the archived burndown doc next to
+the gap analysis; the suite grew from 118 to 160 tests (three new feature-gated
+suites: chunks, conditional requests, blinded-index). Follow-ups discovered:
+WAS-52 (query missing-profile status) and WAS-53 (chunk-cap exact-match vs
+attenuation).
+
+### WAS-46: Un-skip the Postgres and flag-gated storage-contract tests
+
+- status: todo
+- priority: high
+- labels: tests, backend
+- acceptance:
+  - [ ] The `hardQuota`/`exactUsage`-only contract tests (concurrent hard-quota,
+        count-quota create serialization, count-bytes-once races) run against at
+        least one backend in a default `pnpm test-node` run
+  - [ ] The Postgres contract suite runs in CI (service container or equivalent)
+        instead of collapsing to a single skip
+  - [ ] When `WAS_TEST_DATABASE_URL` is unset the skip is loud about what was
+        not run
+
+The whole Postgres storage-contract suite is gated on `WAS_TEST_DATABASE_URL`
+and silently collapses to one `it.skip` in a normal run. Worse, the contract
+tests that only run when a backend advertises `hardQuota`/`exactUsage` then run
+against _no_ backend at all, since the filesystem harness sets both flags false
+-- the race-condition tests the flags exist for are dormant by default.
+
+### WAS-47: Cover `start.ts` and the untested config parsers
+
+- status: todo
+- priority: medium
+- labels: tests
+- acceptance:
+  - [ ] `parseCountLimit`/`normalizeCountLimit` and the three `MAX_*_PER_*` env
+        vars tested, including invalid input; `loadConfigFromEnv` asserts those
+        output fields
+  - [ ] Error paths of `parseDatabaseUrl`/`parseEnabledBackends`/
+        `parseOnboardingToken` covered (currently happy-path only)
+  - [ ] `start.ts` behavior covered: backend selection by `DATABASE_URL`, the
+        two startup warnings, and the exit-on-failure path (extracting testable
+        pieces if needed)
+
+`src/start.ts` currently has zero test coverage.
+
+### WAS-48: Wire-level tests for the Space export/import handlers
+
+- status: todo
+- priority: medium
+- labels: tests
+- acceptance:
+  - [ ] Export over HTTP: authz (404 mask for non-controllers), `Content-Type`
+        of the tar response, and a streamed round-trip
+  - [ ] Import over HTTP: authz, `application/x-tar` parsing, the `ImportStats`
+        response shape, and the `invalid-import` error shapes beyond the
+        reserved-id case `validation-api` already covers
+
+The tar round-trip is well covered at the backend/lib layer, but
+`SpaceRequest.export`/`import` themselves get little direct HTTP-request
+coverage.
+
+### WAS-49: Error-registry wire-coverage stragglers
+
+- status: todo
+- priority: low
+- labels: tests
+- acceptance:
+  - [ ] `EncryptionImmutableError` (409) asserted over the wire, or the finding
+        that `UnsupportedEncryptionSchemeError` always fires first on that path
+        recorded and the reachable wire shape asserted instead
+  - [ ] `InvalidCollectionError` triggered by name in a test, or its
+        unreachability documented
+
+The last two error classes in `src/errors.ts` with no wire-level regression
+guard.
+
+### WAS-50: Clean up weak and duplicated tests
+
+- status: todo
+- priority: low
+- labels: tests
+- acceptance:
+  - [ ] The `resource-api` "[un-authorized!] Read a public Resource" case made
+        to match its title (it is currently a no-op relative to what it names)
+  - [ ] The `list-collections-api` / `collection-api` overlap deduplicated or
+        differentiated
+  - [ ] `server.test.ts`'s tautological `typeof version === 'string'` replaced
+        with a meaningful assertion
+  - [ ] Shared setup deduplicated between the two revocation suites and the two
+        pagination suites
+
+The weak/duplicated cases flagged by the `test/` survey (details in the archived
+survey doc).
 
 ---
 
@@ -1045,6 +1362,48 @@ means moving a Resource to a new epoch only rewraps the JWE `recipients` --
 which suggests a future client-driven bulk **rewrap** operation as a cheap
 post-removal migration (honest caveat: rewrapping does not help against a reader
 that cached the CEKs themselves).
+
+### WAS-51: Reconcile the `encryption.version` marker text with the implementation
+
+- status: todo
+- priority: medium
+- labels: spec-side, encryption
+- acceptance:
+  - [ ] The Collection Data Model marker definition and the implementation agree
+        on `version`'s type and optionality (spec today: a required string, e.g.
+        `"0.1"`; server: an optional positive integer)
+  - [ ] The error surface for a version transition is reconciled: the spec today
+        folds any `version` change or removal into 409 `encryption-immutable`,
+        while the server allows increases (a future scheme migration) and
+        rejects decreases/removals with 400 `invalid-request-body`
+        (`#/encryption/version`) -- amend one side and update the error-registry
+        row to match
+  - [ ] Conformance coverage for the reconciled version-transition behavior
+        added (deliberately left out of WAS-43 because of this divergence)
+
+Discovered while implementing WAS-43 (discovered-from: WAS-43). Touches the same
+marker text WAS-33 extends (the scheme-version registry column and the
+never-backwards rail), so the two should land as one spec edit.
+
+### WAS-53: Reconcile chunk-capability exact-match text with target attenuation
+
+- status: draft
+- priority: medium
+- labels: spec-side, authorization
+
+Discovered while writing the chunked-resources conformance suite
+(discovered-from: WAS-45). The spec's Chunk Authorization text says a
+chunk-write capability's `invocationTarget` MUST be the chunk's own full URL
+under "the same exact-match target rule that governs every WAS URL" -- but the
+server deliberately verifies chunk (and other descendant) writes with
+space-rooted RESTful target attenuation (`attenuatedRootTarget`), so a
+capability scoped to the Space, Collection, or parent Resource authorizes a
+descendant chunk write. One side has to move: either the spec's authorization
+profile describes attenuation (an ancestor-scoped capability covers descendant
+paths) and the chunk text inherits it, or the server enforces exact-match on
+chunk URLs and breaks ancestor-cap workflows. Draft until the spec decision is
+made; the conformance suite meanwhile covers the URL-binding MUST with a
+non-ancestor (sibling-chunk) probe, which both readings reject.
 
 ### WAS-34: Spec the `epochsMac` authenticated epoch configuration
 
