@@ -141,7 +141,7 @@
   declared in the Collection's `indexes` (fail-closed 400); on a `PublicCanRead`
   Collection the filter query needs no capability, so a cache can serve it.
 
-## 0.10.2 - TBD
+## 0.10.2 - 2026-07-23
 
 ### Changed
 
