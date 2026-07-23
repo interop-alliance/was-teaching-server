@@ -2,6 +2,18 @@
 
 ## 0.15.0 - TBD
 
+### Added
+
+- **List Collections now reports each Collection's `public` flag inline.** Every
+  item in the List Collections response carries `public` -- `true` iff a
+  `PublicCanRead` access-control policy is attached to that Collection, `false`
+  otherwise (expressed, not omitted). Clients rendering a Collection browser no
+  longer need one policy probe per listed Collection (an N+1). Only the page's
+  Collections are probed: the filesystem backend reads each page item's policy
+  alongside its description, and the Postgres backend resolves the whole page in
+  a single batch query over its ids. Unrecognized policy types fail closed to
+  `false`.
+
 ### Changed
 
 - **Test-suite hardening (test-only; no runtime changes).** Added wire-level

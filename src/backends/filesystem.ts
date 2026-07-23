@@ -58,6 +58,7 @@ import {
   EXPORT_ENTRY_MTIME
 } from '../lib/exportManifest.js'
 import { revocationFileName } from '../lib/revocations.js'
+import { policyGrants } from '../policy.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
 import { isJson } from '../lib/isJson.js'
 import { normalizeDescriptionWrite } from '../lib/collectionDescription.js'
@@ -1084,6 +1085,8 @@ export class FileSystemBackend implements StorageBackend {
    * `[1, MAX_PAGE_SIZE]` (default `DEFAULT_PAGE_SIZE`), and a `next` present
    * only when a further page may follow. `totalItems` is the full Collection
    * count of the Space -- free here, since the whole directory is enumerated.
+   * Each summary's `public` flag is the Collection's `PublicCanRead` policy
+   * state, probed inline for the page's Collections only (O(page size)).
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.limit] {number}   requested page size
@@ -1131,6 +1134,12 @@ export class FileSystemBackend implements StorageBackend {
         spaceId,
         collectionId
       })
+      // Probe the collection-level policy inline so a client need not issue one
+      // policy request per listed Collection (an N+1). Only page items are read,
+      // so this stays O(page size). `public` is true iff a `PublicCanRead`
+      // policy is attached (via the shared `policyGrants` recognizer, which
+      // fail-closes any other/unrecognized policy type to false).
+      const policy = await this.getPolicy({ spaceId, collectionId })
       items.push({
         id: collectionId,
         url: collectionPath({ spaceId, collectionId }),
@@ -1139,7 +1148,8 @@ export class FileSystemBackend implements StorageBackend {
         // description-less directory too (e.g. one left by a policy write to a
         // never-created Collection) -- reading `.name` off `undefined` here would
         // 500 the entire Space listing.
-        name: collectionDescription?.name ?? collectionId
+        name: collectionDescription?.name ?? collectionId,
+        public: policyGrants({ policy, action: 'read', logger: this.logger })
       })
     }
 

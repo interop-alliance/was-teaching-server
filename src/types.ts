@@ -559,7 +559,10 @@ export interface StorageBackend {
    * with the cursor and limit baked in -- if and only if a further page may
    * follow; its absence marks the last page. `totalItems` is the FULL count of
    * the Space's Collections (free to compute for this listing, so always
-   * present). A malformed/un-honorable `cursor` rejects with
+   * present). Each summary carries `public` -- true iff a `PublicCanRead`
+   * access-control policy is attached to that Collection -- so a client need
+   * not issue one policy probe per listed Collection; only the page's
+   * Collections are probed. A malformed/un-honorable `cursor` rejects with
    * `InvalidCursorError` (400 `invalid-cursor`).
    */
   listCollections(options: {

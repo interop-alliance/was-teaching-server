@@ -128,7 +128,8 @@ describe('Collections API', () => {
     // here, letting the full List Collections shape be asserted exactly (the
     // high-level client path; the raw wire form is pinned by the pagination
     // suite). This is the only place the `space.collections()` listing shape --
-    // its `url`, `totalItems`, and per-entry `{ id, url, name }` -- is asserted.
+    // its `url`, `totalItems`, and per-entry `{ id, url, name, public }` -- is
+    // asserted. `public` is `false` here (no `PublicCanRead` policy attached).
     const spaceId = crypto.randomUUID()
     const collectionId = crypto.randomUUID()
     const resourceId = crypto.randomUUID()
@@ -153,7 +154,8 @@ describe('Collections API', () => {
         {
           id: collectionId,
           url: `/space/${spaceId}/${collectionId}`,
-          name: 'List Collections Test Collection'
+          name: 'List Collections Test Collection',
+          public: false
         }
       ]
     })
