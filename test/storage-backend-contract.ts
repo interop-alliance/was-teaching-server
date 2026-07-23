@@ -316,6 +316,43 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(listing.next, undefined)
       })
 
+      it('listCollections surfaces each Collection `public` flag inline', async () => {
+        const { backend } = harness
+        const spaceId = 'space-public'
+        // Three Collections: one with a `PublicCanRead` policy (public: true),
+        // one with no policy at all (public: false), and one with an
+        // unrecognized policy type (public: false, fail-closed).
+        await provisionSpace(backend, spaceId, 'open')
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'closed',
+          collectionDescription: { id: 'closed', type: ['Collection'] }
+        })
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'other',
+          collectionDescription: { id: 'other', type: ['Collection'] }
+        })
+        await backend.writePolicy({
+          spaceId,
+          collectionId: 'open',
+          policy: { type: 'PublicCanRead' }
+        })
+        await backend.writePolicy({
+          spaceId,
+          collectionId: 'other',
+          policy: { type: 'SomeUnrecognizedPolicy' }
+        })
+        const listing = await backend.listCollections({ spaceId })
+        const publicById = new Map(
+          listing.items.map(collection => [collection.id, collection.public])
+        )
+        // `false` is expressed on every item, not omitted.
+        assert.equal(publicById.get('open'), true)
+        assert.equal(publicById.get('closed'), false)
+        assert.equal(publicById.get('other'), false)
+      })
+
       it('deleteSpace removes the Space and its contents', async () => {
         const { backend } = harness
         await provisionSpace(backend, 'space-gone')

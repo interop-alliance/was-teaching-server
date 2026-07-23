@@ -552,7 +552,9 @@ export class SpaceRequest {
    * Request handler for "List Collections" request, OPTIONALLY cursor-paginated
    * (spec "Pagination"): `?limit`/`cursor` select a page of the Space's
    * Collections, and the response carries a `next` continuation link when a
-   * further page may follow.
+   * further page may follow. Each listed Collection carries a `public` flag
+   * (true iff a `PublicCanRead` policy is attached), so a client need not
+   * probe each Collection's policy resource separately.
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}

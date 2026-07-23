@@ -54,6 +54,7 @@ import { sanitizeBackendRecord } from '../lib/backends.js'
 import { backendUsageFields } from '../lib/backendUsage.js'
 import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { encodeCursor, decodeCursor } from '../lib/cursor.js'
+import { policyGrants } from '../policy.js'
 import {
   buildExportManifest,
   EXPORT_ENTRY_MTIME
@@ -1216,7 +1217,9 @@ export class PostgresBackend implements StorageBackend {
    * construction as `listCollectionItems`. `totalItems` is the full Collection
    * count (a `COUNT`). A row without a description (created by a sub-Collection
    * write) falls back to the id for its `name`, like a description-less
-   * directory on the filesystem.
+   * directory on the filesystem. Each summary's `public` flag is the
+   * Collection's `PublicCanRead` policy state, resolved for the page in a
+   * single batch query over the page's ids (not a per-row lookup).
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.limit] {number}   requested page size
@@ -1260,10 +1263,42 @@ export class PostgresBackend implements StorageBackend {
     const hasMore = rows.length > pageSize
     const pageRows = hasMore ? rows.slice(0, pageSize) : rows
 
+    // Probe the page's collection-level policies inline so a client need not
+    // issue one policy request per listed Collection (an N+1). A single batch
+    // query over the page's ids keeps this off the per-row path. A
+    // collection-level policy is keyed by `resource_id = ''` (the sentinel
+    // convention in `#policyKey`); `public` is true iff a `PublicCanRead` policy
+    // is attached (via the shared `policyGrants` recognizer, which fail-closes
+    // any other/unrecognized policy type to false).
+    const pageIds = pageRows.map(row => row.collection_id)
+    const publicCollectionIds = new Set<string>()
+    if (pageIds.length > 0) {
+      const { rows: policyRows } = await this.#pool.query<{
+        collection_id: string
+        policy: PolicyDocument
+      }>(
+        `SELECT collection_id, policy FROM policies
+          WHERE space_id = $1 AND collection_id = ANY($2) AND resource_id = ''`,
+        [spaceId, pageIds]
+      )
+      for (const policyRow of policyRows) {
+        if (
+          policyGrants({
+            policy: policyRow.policy,
+            action: 'read',
+            logger: this.logger
+          })
+        ) {
+          publicCollectionIds.add(policyRow.collection_id)
+        }
+      }
+    }
+
     const items: CollectionSummary[] = pageRows.map(row => ({
       id: row.collection_id,
       url: collectionPath({ spaceId, collectionId: row.collection_id }),
-      name: row.description?.name ?? row.collection_id
+      name: row.description?.name ?? row.collection_id,
+      public: publicCollectionIds.has(row.collection_id)
     }))
 
     let next: string | undefined
