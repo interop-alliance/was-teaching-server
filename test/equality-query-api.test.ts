@@ -9,7 +9,7 @@
  * These assert the server's wire contract directly (status codes, problem
  * `type`s / `pointer`s, the `{documents, hasMore, cursor?}` / `{count}` page
  * shapes) via the signed `was.request()` escape hatch, mirroring
- * `blinded-index-query-api.test.ts` and `encryption-marker-api.test.ts`. They
+ * `blinded-index-query-api.test.ts` and `encryption-descriptor-api.test.ts`. They
  * cover the `indexes` declaration (validation, update, mutual exclusion with
  * `encryption`), the query matcher (equals / has, strict typing, multi-valued
  * arrays, blob + custom-sourced matching), count and pagination, the
@@ -276,7 +276,7 @@ describe('Collection equality query profile', () => {
       assert.equal(err.data.errors?.[0]?.pointer, '#/indexes/1/name')
     })
 
-    it('rejects declaring indexes together with an encryption marker (400)', async () => {
+    it('rejects declaring indexes together with an encryption descriptor (400)', async () => {
       const err = await rejection(
         alice.was.request({
           path: `/space/${spaceId()}/mx-create`,
@@ -310,7 +310,7 @@ describe('Collection equality query profile', () => {
       assert.equal(err.data.errors?.[0]?.pointer, '#/indexes')
     })
 
-    it('rejects adding an encryption marker to an already-indexed Collection (400)', async () => {
+    it('rejects adding an encryption descriptor to an already-indexed Collection (400)', async () => {
       await createIndexedCollection('mx-idx-first', ['parentId'])
       const err = await rejection(
         alice.was.request({

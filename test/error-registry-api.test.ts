@@ -65,28 +65,28 @@ describe('Error registry wire coverage', () => {
     // The 409 has two throw sites (src/lib/encryption.ts:376 and :457):
     //
     //  1. The scheme-CHANGE site (`assertEncryptionTransition`, :457) requires
-    //     an `incoming` marker whose `scheme` differs from the persisted one.
-    //     But an update's marker must first pass `assertSupportedEncryption`
+    //     an `incoming` descriptor whose `scheme` differs from the persisted one.
+    //     But an update's descriptor must first pass `assertSupportedEncryption`
     //     (CollectionRequest.put), whose fail-closed gate rejects any `scheme`
     //     not in `SUPPORTED_ENCRYPTION_SCHEMES` with
     //     `unsupported-encryption-scheme` (400). v1 registers exactly one
     //     scheme (`edv`), so any scheme that DIFFERS from an existing `edv`
-    //     marker is by definition unrecognized and 400s at that earlier gate --
+    //     descriptor is by definition unrecognized and 400s at that earlier gate --
     //     never reaching the 409. (Re-sending the same `edv` scheme is a no-op,
     //     not a change.) A second recognized scheme would be needed to reach
     //     the 409 over the wire; that requires a `src/` change, out of scope.
     //
-    //  2. The marker-CLEAR site (`assertEncryptionMarkerTransition`, :376,
+    //  2. The descriptor-CLEAR site (`assertEncryptionDescriptorTransition`, :376,
     //     `incoming === undefined`) is unreachable from the handler: the PUT
     //     handler only calls the transition when `suppliedEncryption !==
     //     undefined`, and an absent body `encryption` leaves the existing
-    //     marker untouched rather than clearing it. There is no wire request
+    //     descriptor untouched rather than clearing it. There is no wire request
     //     that reaches the transition with an undefined `incoming`.
     //
     // The 409 keeps its lib-layer guard in `test/encryption-lib.test.ts`. Here
     // we pin the reachable wire shape: the masking 400, plus proof the stored
-    // marker is not corrupted.
-    it('scheme change masked by unsupported-encryption-scheme (400), marker intact', async () => {
+    // descriptor is not corrupted.
+    it('scheme change masked by unsupported-encryption-scheme (400), descriptor intact', async () => {
       const collectionId = 'immutable-wire'
       await alice.was.request({
         path: `/space/${spaceId}/`,
@@ -107,7 +107,7 @@ describe('Error registry wire coverage', () => {
         'https://wallet.storage/spec#unsupported-encryption-scheme'
       )
       assert.equal(err.data.errors?.[0]?.pointer, '#/encryption/scheme')
-      // The stored marker is unchanged -- the 409's invariant still holds.
+      // The stored descriptor is unchanged -- the 409's invariant still holds.
       assert.deepStrictEqual((await readDesc(collectionId)).encryption, {
         scheme: 'edv'
       })

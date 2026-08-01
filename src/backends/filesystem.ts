@@ -409,7 +409,7 @@ export class FileSystemBackend implements StorageBackend {
       // `blinded-index-query`: serves the `blinded-index` profile -- EDV
       // blinded-attribute queries (`queryByBlindedIndex`).
       // `key-epochs`: multi-recipient encrypted Collections -- per-epoch wrapped
-      // keys on the `encryption` marker, a client-declared `epoch` stamp on
+      // keys on the `encryption` descriptor, a client-declared `epoch` stamp on
       // Resources, and conditional (`If-Match`) Collection Description writes.
       // `chunked-streams`: chunk addressing (`/{resourceId}/chunks/{n}`) for a
       // large Resource, each chunk stored opaquely (bytes + content-type).
@@ -1364,7 +1364,7 @@ export class FileSystemBackend implements StorageBackend {
     //    conforming envelope of it (a plaintext body under an encrypted
     //    Collection would otherwise store server-visible plaintext);
     //  - cumulative quota (507): sum bodies and check remaining Space headroom.
-    // The effective encryption marker is the merged-into Collection's existing
+    // The effective encryption descriptor is the merged-into Collection's existing
     // one, else the import's own Collection description (a new Collection). Skips
     // (existing ids) are counted conservatively, as for the quota estimate.
     const {

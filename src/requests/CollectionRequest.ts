@@ -27,7 +27,7 @@ import {
 } from '../lib/backends.js'
 import {
   assertSupportedEncryption,
-  assertEncryptionMarkerTransition,
+  assertEncryptionDescriptorTransition,
   assertEncryptedWriteConforms
 } from '../lib/encryption.js'
 import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
@@ -258,8 +258,8 @@ export class CollectionRequest {
         pointer: '#/id'
       })
     }
-    // Validate the optional encryption marker (shape only); an absent
-    // `encryption` validates to `undefined` and leaves the existing marker
+    // Validate the optional encryption descriptor (shape only); an absent
+    // `encryption` validates to `undefined` and leaves the existing descriptor
     // untouched. The set-once immutability transition is enforced below, after
     // the existing Collection is fetched (so an unauthorized caller cannot probe
     // encryption state).
@@ -270,7 +270,7 @@ export class CollectionRequest {
     // Validate the optional `indexes` declaration (shape only); an absent
     // `indexes` validates to `undefined` and leaves the stored declaration
     // untouched, while a supplied array (an empty one clears it) replaces it --
-    // `indexes` is updatable, unlike the set-once `encryption` marker. The
+    // `indexes` is updatable, unlike the set-once `encryption` descriptor. The
     // mutual-exclusion-with-encryption rail and the unique-add conflict scan are
     // enforced below, against the description about to be persisted.
     const suppliedIndexes = assertSupportedIndexes({
@@ -309,7 +309,7 @@ export class CollectionRequest {
       spaceId,
       collectionId
     })
-    // The encryption marker is set-once (an update may declare one on a
+    // The encryption descriptor is set-once (an update may declare one on a
     // Collection that lacks it, but may not change/clear an existing one --
     // `encryption-immutable` 409), and the key-epoch safety rails (the
     // `key-epochs` feature) make epochs append-only with a `currentEpoch` that
@@ -317,7 +317,7 @@ export class CollectionRequest {
     // Checked here, after verification, for a clean early rejection --
     // re-evaluated atomically with the write via `assertTransition` below.
     if (suppliedEncryption !== undefined) {
-      assertEncryptionMarkerTransition({
+      assertEncryptionDescriptorTransition({
         existing: existingCollection?.encryption,
         incoming: suppliedEncryption
       })
@@ -352,7 +352,7 @@ export class CollectionRequest {
 
     // Mutual exclusion (spec "Collection Data Model"): the description about to
     // be persisted MUST NOT carry both a non-empty `indexes` and an `encryption`
-    // marker -- the server cannot extract plaintext attributes from an opaque
+    // descriptor -- the server cannot extract plaintext attributes from an opaque
     // envelope. Enforced in BOTH directions (adding `indexes` to an encrypted
     // Collection, or `encryption` to an indexed one) against the merged
     // description, so a pre-existing value on the other field is caught too.
@@ -364,7 +364,7 @@ export class CollectionRequest {
       throw new InvalidRequestBodyError({
         requestName,
         detail:
-          'Collection "indexes" must not be combined with an "encryption" marker.',
+          'Collection "indexes" must not be combined with an "encryption" descriptor.',
         pointer: '#/indexes'
       })
     }
@@ -401,7 +401,7 @@ export class CollectionRequest {
 
     // `If-Match` (the `key-epochs` / conditional-Collection-write feature) makes
     // a Collection Description update a compare-and-swap on its monotonic
-    // description version, so two clients concurrently editing the marker (e.g.
+    // description version, so two clients concurrently editing the descriptor (e.g.
     // both adding a recipient) cannot silently clobber one another. Opt-in: an
     // unconditional PUT still upserts as before. Evaluated atomically with the
     // write inside the backend; a stale validator surfaces as 412
@@ -415,15 +415,15 @@ export class CollectionRequest {
         collectionDescription,
         createdBy: invokerDid(request),
         ...(ifMatch !== undefined && { ifMatch }),
-        // Re-evaluate the encryption-marker rails atomically with the write,
+        // Re-evaluate the encryption-descriptor rails atomically with the write,
         // against the prior the backend re-reads under its lock: the early
         // check above ran against a pre-lock read, so without this a
-        // concurrent marker write in between could be silently clobbered (an
+        // concurrent descriptor write in between could be silently clobbered (an
         // appended epoch dropped by this full replacement) even though both
         // writers passed the rails -- the append-only guarantee must hold
         // unconditionally, not just under `If-Match`.
         assertTransition: prior =>
-          assertEncryptionMarkerTransition({
+          assertEncryptionDescriptorTransition({
             existing: prior?.encryption,
             incoming: collectionDescription.encryption
           })
@@ -437,7 +437,7 @@ export class CollectionRequest {
 
     reply.header('Location', collectionUrl)
     // Surface the new description ETag so a client can chain a conditional
-    // update (read-modify-CAS on the marker).
+    // update (read-modify-CAS on the descriptor).
     reply.header('etag', formatEtag(written.version))
     return existingCollection
       ? reply.status(204).send() // update
@@ -497,7 +497,7 @@ export class CollectionRequest {
     // The description `version` is the out-of-band ETag validator, not part of
     // the Collection Description wire body, so strip it before serializing and
     // surface it as the `ETag` header (so a client can read-modify-CAS the
-    // marker). Present only once the Collection has been written under
+    // descriptor). Present only once the Collection has been written under
     // versioning; a legacy Collection reports none.
     const { descriptionVersion, ...descriptionBody } = collectionDescription
     const getReply = reply.status(200).type('application/json')

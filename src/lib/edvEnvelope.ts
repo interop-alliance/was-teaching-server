@@ -14,7 +14,7 @@
  * `recipients` array entry: an object whose OPTIONAL `header` is an object and
  * whose OPTIONAL `encrypted_key` is a string. Purely structural (values are
  * never decoded); shared by {@link isValidEdvEnvelope} and the Collection
- * key-epoch marker validator (`lib/encryption.ts`), which reuses the JWE
+ * key-epoch descriptor validator (`lib/encryption.ts`), which reuses the JWE
  * recipients entry shape verbatim -- one wire vocabulary.
  *
  * @param entry {unknown}   one element of a `recipients` array

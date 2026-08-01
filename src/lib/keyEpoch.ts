@@ -17,7 +17,7 @@
  * value -- see the `putMeta` handler.
  *
  * The only validation is that a present value is a non-empty string (400
- * otherwise); the server never checks it against the Collection marker's epochs.
+ * otherwise); the server never checks it against the Collection descriptor's epochs.
  */
 import { InvalidRequestBodyError } from '../errors.js'
 

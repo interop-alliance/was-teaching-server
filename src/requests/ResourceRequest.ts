@@ -39,7 +39,7 @@ import type { ResourceMetadataCustom } from '../types.js'
  * On an **encrypted** Collection this shape check does not apply -- `custom` is
  * the opaque encryption envelope, validated structurally by
  * {@link assertEncryptedMetaConforms} instead (a `422` on non-conformance).
- * `putMeta` branches on the Collection's `encryption` marker after authorization.
+ * `putMeta` branches on the Collection's `encryption` descriptor after authorization.
  * @param body {unknown}   the parsed request body
  * @returns {ResourceMetadataCustom}
  */
@@ -503,7 +503,7 @@ export class ResourceRequest {
 
     // Pre-auth body shape (400): the body MUST be a JSON object. The deeper
     // `custom` shape check is deferred until after authorization, where the
-    // Collection's `encryption` marker decides whether `custom` is a plaintext
+    // Collection's `encryption` descriptor decides whether `custom` is a plaintext
     // `{ name, tags }` (validated by `parseCustomMetadata`) or an opaque envelope
     // (validated structurally by `assertEncryptedMetaConforms`) -- neither is
     // knowable before reading the Collection Description, and gating the check on
@@ -538,7 +538,7 @@ export class ResourceRequest {
       requestName
     })
 
-    // Branch on the Collection's encryption marker. On an encrypted Collection
+    // Branch on the Collection's encryption descriptor. On an encrypted Collection
     // the `custom` value MUST be a conforming envelope of the scheme (stored
     // opaquely, `422` on a plaintext/malformed value); on a plaintext Collection
     // it MUST be a well-formed `{ name, tags }` object (`400` otherwise).

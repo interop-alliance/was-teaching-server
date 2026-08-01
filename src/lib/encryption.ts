@@ -1,10 +1,10 @@
 /**
- * Collection client-side encryption marker helpers (spec "Encrypted
- * Collections"). A Collection MAY carry a non-secret `encryption` marker
+ * Collection client-side encryption descriptor helpers (spec "Encrypted
+ * Collections"). A Collection MAY carry a non-secret `encryption` descriptor
  * declaring that its Resources are client-encrypted and naming the scheme; any
  * authorized reader discovers it by reading the Collection Description and then
  * decrypts with its own keys. The server never decrypts: it validates only the
- * marker's *shape* and enforces *set-once* immutability, storing the value
+ * descriptor's *shape* and enforces *set-once* immutability, storing the value
  * opaquely. This mirrors the backend-selection helpers in lib/backends.ts
  * (validate on write / preserve on read), kept separate because encryption is a
  * per-Collection client concern, not a backend capability.
@@ -47,16 +47,16 @@ export const SUPPORTED_ENCRYPTION_SCHEMES: Record<
 }
 
 /**
- * Validates a client-supplied Collection `encryption` marker and returns the
+ * Validates a client-supplied Collection `encryption` descriptor and returns the
  * normalized value to persist, or `undefined` when absent (plaintext). Two
  * gates: (1) shape -- a present value must be an object with a non-empty string
  * `scheme`, else `invalid-request-body` (400, pointer `#/encryption`); (2)
  * fail-closed scheme gate -- the `scheme` MUST name one this server recognizes
  * and can enforce on write (`SUPPORTED_ENCRYPTION_SCHEMES`), else
  * `unsupported-encryption-scheme` (400, pointer `#/encryption/scheme`). Taking
- * the spec's SHOULD path, the reference server refuses to store a marker it
+ * the spec's SHOULD path, the reference server refuses to store a descriptor it
  * cannot back with write-time validation, rather than storing an unknown scheme
- * opaquely. Unknown **extra fields** on an otherwise-recognized marker are still
+ * opaquely. Unknown **extra fields** on an otherwise-recognized descriptor are still
  * preserved (the whole object is returned, not reduced to `{ scheme }`) so
  * future public-reference fields a newer client adds (e.g. recipient key
  * references) survive an older server unchanged.
@@ -64,7 +64,7 @@ export const SUPPORTED_ENCRYPTION_SCHEMES: Record<
  * @param options {object}
  * @param [options.encryption] {unknown}   the request body's `encryption` value
  * @param [options.requestName] {string}   request name for the 400 error title
- * @returns {CollectionEncryption | undefined}   the marker to store, or undefined
+ * @returns {CollectionEncryption | undefined}   the descriptor to store, or undefined
  */
 export function assertSupportedEncryption({
   encryption,
@@ -98,42 +98,42 @@ export function assertSupportedEncryption({
   // Validate the OPTIONAL key-epoch fields (`epochs` / `currentEpoch`) when
   // present: shape-only safety rails against client bugs (a dropped epoch, a
   // dangling `currentEpoch`), never crypto verification -- the server holds no
-  // key. Absent fields are a plain single-key-set marker and pass unchanged.
+  // key. Absent fields are a plain single-key-set descriptor and pass unchanged.
   assertValidEncryptionEpochs({
-    marker: encryption as CollectionEncryption,
+    descriptor: encryption as CollectionEncryption,
     requestName
   })
 
   // Validate the OPTIONAL scheme-version field when present (shape only).
-  assertValidEncryptionVersion({ marker: encryption, requestName })
+  assertValidEncryptionVersion({ descriptor: encryption, requestName })
 
-  // Preserve the whole marker (only `scheme` is typed today; keep any extra
+  // Preserve the whole descriptor (only `scheme` is typed today; keep any extra
   // forward-compat fields on a recognized scheme).
   return encryption as CollectionEncryption
 }
 
 /**
- * Validates the OPTIONAL `version` member of a Collection `encryption` marker --
+ * Validates the OPTIONAL `version` member of a Collection `encryption` descriptor --
  * the encryption scheme's version, a sibling of `scheme`. Shape-only: when
  * present it MUST be a positive safe integer, else `invalid-request-body` (400,
- * pointer `#/encryption/version`). Absent is a legacy/unversioned marker and
- * passes unchanged. Read from the still-`unknown`-shaped marker value: `version`
+ * pointer `#/encryption/version`). Absent is a legacy/unversioned descriptor and
+ * passes unchanged. Read from the still-`unknown`-shaped descriptor value: `version`
  * is a forward-compatibility field the server preserves opaquely, not part of
  * the typed `CollectionEncryption` shape.
  *
  * @param options {object}
- * @param options.marker {unknown}   the shape-validated marker value
+ * @param options.descriptor {unknown}   the shape-validated descriptor value
  * @param [options.requestName] {string}   request name for the 400 error title
  * @returns {void}
  */
 function assertValidEncryptionVersion({
-  marker,
+  descriptor,
   requestName
 }: {
-  marker: unknown
+  descriptor: unknown
   requestName?: string
 }): void {
-  const { version } = marker as { version?: unknown }
+  const { version } = descriptor as { version?: unknown }
   if (version === undefined) {
     return
   }
@@ -153,33 +153,33 @@ function assertValidEncryptionVersion({
 
 /**
  * Validates the OPTIONAL key-epoch public-reference fields of a Collection
- * `encryption` marker (spec "Encrypted Collections"; the `key-epochs` feature).
+ * `encryption` descriptor (spec "Encrypted Collections"; the `key-epochs` feature).
  * Shape-only integrity checks that catch client bugs -- the server never
  * interprets key material, so these are safety rails, not cryptographic
  * verification. Rejects with `invalid-request-body` (400) and a precise
  * `pointer`. Rules:
  * - `epochs` and `currentEpoch` are all-or-nothing: either both absent (a plain
- *   single-key-set marker) or both present.
+ *   single-key-set descriptor) or both present.
  * - `epochs`: a non-empty array; each entry an object with a non-empty string
  *   `id` (ids unique across the array) and a non-empty `recipients` array.
  * - each `recipients` entry carries the JWE recipients-entry members the
- *   marker requires: a `header` object with non-empty string `kid` and `alg`,
+ *   descriptor requires: a `header` object with non-empty string `kid` and `alg`,
  *   plus a string `encrypted_key` (the wrapped epoch key).
  * - `currentEpoch`: a non-empty string naming an `id` that exists in `epochs`.
  *
  * @param options {object}
- * @param options.marker {CollectionEncryption}   the shape-validated marker
+ * @param options.descriptor {CollectionEncryption}   the shape-validated descriptor
  * @param [options.requestName] {string}   request name for the 400 error title
  * @returns {void}
  */
 function assertValidEncryptionEpochs({
-  marker,
+  descriptor,
   requestName
 }: {
-  marker: CollectionEncryption
+  descriptor: CollectionEncryption
   requestName?: string
 }): void {
-  const { epochs, currentEpoch } = marker
+  const { epochs, currentEpoch } = descriptor
   // All-or-nothing: `epochs` and `currentEpoch` appear together or not at all.
   if ((epochs === undefined) !== (currentEpoch === undefined)) {
     throw new InvalidRequestBodyError({
@@ -236,7 +236,7 @@ function assertValidEncryptionEpochs({
     }
     recipients.forEach((recipient, recipientIndex) => {
       const rPointer = `${pointer}/recipients/${recipientIndex}`
-      // The JWE recipients-entry members the wrapped-epoch-key marker needs:
+      // The JWE recipients-entry members the wrapped-epoch-key descriptor needs:
       // `header.kid` / `header.alg` and the wrapped key `encrypted_key`. The
       // member checks (optional chaining included) already reject every
       // non-object or malformed entry, so no generic JWE-entry shape test runs
@@ -279,9 +279,9 @@ function assertValidEncryptionEpochs({
 }
 
 /**
- * Enforces the epoch-safety rails on an UPDATE, when the existing marker already
+ * Enforces the epoch-safety rails on an UPDATE, when the existing descriptor already
  * carries `epochs` (spec "Encrypted Collections"; the `key-epochs` feature).
- * Call only when an `incoming` marker was supplied and shape-validated. Rules
+ * Call only when an `incoming` descriptor was supplied and shape-validated. Rules
  * (both `invalid-request-body`, 400):
  * - **append-only**: every existing epoch id must still be present in
  *   `incoming.epochs` -- dropping an epoch would strand every Resource stamped
@@ -294,12 +294,12 @@ function assertValidEncryptionEpochs({
  *
  * Recipients WITHIN an existing epoch MAY change (adding a recipient wraps the
  * epoch key to it; escrow adds entries to old epochs), so that is not
- * restricted. A first declaration of `epochs` on a marker that had none is
+ * restricted. A first declaration of `epochs` on a descriptor that had none is
  * likewise unrestricted (there is nothing to append to yet).
  *
  * @param options {object}
- * @param [options.existing] {CollectionEncryption}   the persisted marker
- * @param options.incoming {CollectionEncryption}   the validated request marker
+ * @param [options.existing] {CollectionEncryption}   the persisted descriptor
+ * @param options.incoming {CollectionEncryption}   the validated request descriptor
  * @returns {void}
  */
 export function assertEncryptionEpochsTransition({
@@ -340,27 +340,27 @@ export function assertEncryptionEpochsTransition({
 }
 
 /**
- * Enforces the full `encryption`-marker transition rails against a persisted
- * marker in one call: set-once immutability
+ * Enforces the full `encryption`-descriptor transition rails against a persisted
+ * descriptor in one call: set-once immutability
  * ({@link assertEncryptionTransition}) plus the key-epoch rails
  * ({@link assertEncryptionEpochsTransition}). Unlike those two -- which require
  * a supplied `incoming` -- this also accepts an absent one: a write whose
- * description would CLEAR an existing marker is rejected with
+ * description would CLEAR an existing descriptor is rejected with
  * `encryption-immutable` (409), on the same terms as changing it. The request
  * layer uses this twice per Update Collection: once against its own
  * (pre-lock) read for a clean early rejection, and again as the
  * `writeCollection` `assertTransition` callback, re-evaluated inside the
  * backend's lock/transaction against the freshly re-read description -- so a
- * concurrent marker write cannot be silently clobbered and the epoch
+ * concurrent descriptor write cannot be silently clobbered and the epoch
  * append-only rail holds unconditionally, not just under `If-Match`.
  *
  * @param options {object}
- * @param [options.existing] {CollectionEncryption}   the persisted marker
- * @param [options.incoming] {CollectionEncryption}   the marker about to be
- *   persisted (absent when the write would drop the marker entirely)
+ * @param [options.existing] {CollectionEncryption}   the persisted descriptor
+ * @param [options.incoming] {CollectionEncryption}   the descriptor about to be
+ *   persisted (absent when the write would drop the descriptor entirely)
  * @returns {void}
  */
-export function assertEncryptionMarkerTransition({
+export function assertEncryptionDescriptorTransition({
   existing,
   incoming
 }: {
@@ -381,21 +381,21 @@ export function assertEncryptionMarkerTransition({
 }
 
 /**
- * Enforces the scheme-version rail on an UPDATE, when the existing marker
+ * Enforces the scheme-version rail on an UPDATE, when the existing descriptor
  * already carries a `version` (spec "Encrypted Collections"; the scheme-version
- * field). Call only when an `incoming` marker was supplied (and shape-validated).
- * Once set, the marker's `version` follows the same never-backwards philosophy
+ * field). Call only when an `incoming` descriptor was supplied (and shape-validated).
+ * Once set, the descriptor's `version` follows the same never-backwards philosophy
  * as `currentEpoch`: an update may not REMOVE it and may not DECREASE it
  * (increasing is allowed, a future scheme migration). Either violation is
- * `invalid-request-body` (400, pointer `#/encryption/version`). A marker that
+ * `invalid-request-body` (400, pointer `#/encryption/version`). A descriptor that
  * had no prior `version` is unrestricted (a first declaration -- including
- * ADDING a version to a versionless marker -- has nothing to move backwards
- * from). Both values are read from the still-`unknown`-shaped marker: `version`
+ * ADDING a version to a versionless descriptor -- has nothing to move backwards
+ * from). Both values are read from the still-`unknown`-shaped descriptor: `version`
  * is preserved opaquely, not part of the typed `CollectionEncryption` shape.
  *
  * @param options {object}
- * @param [options.existing] {CollectionEncryption}   the persisted marker
- * @param options.incoming {CollectionEncryption}   the validated request marker
+ * @param [options.existing] {CollectionEncryption}   the persisted descriptor
+ * @param options.incoming {CollectionEncryption}   the validated request descriptor
  * @returns {void}
  */
 export function assertEncryptionVersionTransition({
@@ -428,22 +428,22 @@ export function assertEncryptionVersionTransition({
 }
 
 /**
- * Enforces set-once immutability of a Collection's `encryption` marker on
- * update. Call only when an `incoming` marker was supplied (and shape-validated)
- * by the request. Declaring a marker on a Collection that lacks one is allowed
- * (`absent -> present`: late declaration / migration of a pre-marker
+ * Enforces set-once immutability of a Collection's `encryption` descriptor on
+ * update. Call only when an `incoming` descriptor was supplied (and shape-validated)
+ * by the request. Declaring a descriptor on a Collection that lacks one is allowed
+ * (`absent -> present`: late declaration / migration of a pre-descriptor
  * Collection); re-sending the same `scheme` is a no-op. Changing the `scheme` of
- * an existing marker is rejected with `encryption-immutable` (409) -- it would
+ * an existing descriptor is rejected with `encryption-immutable` (409) -- it would
  * corrupt the stored, client-encrypted Resources. (Clearing is not expressible:
- * an absent body `encryption` leaves the existing marker untouched, and an
+ * an absent body `encryption` leaves the existing descriptor untouched, and an
  * explicit non-object is already a 400 in `assertSupportedEncryption`.) The
  * `scheme` is the immutable identity; comparison deliberately ignores any
  * future public-reference fields, whose evolution (e.g. adding a recipient) is a
  * separate, allowed operation.
  *
  * @param options {object}
- * @param [options.existing] {CollectionEncryption}   the persisted marker
- * @param options.incoming {CollectionEncryption}   the validated request marker
+ * @param [options.existing] {CollectionEncryption}   the persisted descriptor
+ * @param options.incoming {CollectionEncryption}   the validated request descriptor
  * @returns {void}
  */
 export function assertEncryptionTransition({
@@ -467,7 +467,7 @@ export function assertEncryptionTransition({
  * `multipart`, or plain `application/json` upload is rejected outright), and (2)
  * the parsed body MUST satisfy the scheme's structural envelope profile. A
  * failure of either is `encryption-scheme-mismatch` (422). No-op when the
- * Collection has no marker (plaintext) or -- defensively -- an unrecognized
+ * Collection has no descriptor (plaintext) or -- defensively -- an unrecognized
  * scheme (which `assertSupportedEncryption` prevents from ever being stored), so
  * plaintext Collections and API documents are unaffected. The server validates
  * structure only; it never decrypts. Call this **after** capability verification
@@ -527,7 +527,7 @@ export function assertEncryptedWriteConforms({
  * **no media-type gate**: the metadata document itself stays `application/json`
  * (its server-managed top-level fields are plaintext); only the `custom`
  * sub-value is the envelope. A non-conforming `custom` is
- * `encryption-scheme-mismatch` (422). No-op when the Collection has no marker
+ * `encryption-scheme-mismatch` (422). No-op when the Collection has no descriptor
  * (plaintext) or -- defensively -- an unrecognized scheme. The server validates
  * structure only; it never decrypts. Call this **after** capability verification
  * and the 404-if-missing check, before the write, so a 422 is observable only to

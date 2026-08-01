@@ -22,7 +22,7 @@ import {
   assertSupportedEncryption,
   assertEncryptionTransition,
   assertEncryptionEpochsTransition,
-  assertEncryptionMarkerTransition,
+  assertEncryptionDescriptorTransition,
   assertEncryptedWriteConforms,
   assertEncryptedMetaConforms
 } from '../src/lib/encryption.js'
@@ -34,7 +34,7 @@ import {
   InvalidRequestBodyError
 } from '../src/errors.js'
 
-/** A minimal valid marker recipient entry (JWE recipients-entry shape). */
+/** A minimal valid descriptor recipient entry (JWE recipients-entry shape). */
 function recipient(kid: string): {
   header: { kid: string; alg: string }
   encrypted_key: string
@@ -45,8 +45,8 @@ function recipient(kid: string): {
   }
 }
 
-/** A valid multi-epoch marker naming `currentEpoch`, with two epochs. */
-function epochMarker(): CollectionEncryption {
+/** A valid multi-epoch descriptor naming `currentEpoch`, with two epochs. */
+function epochDescriptor(): CollectionEncryption {
   return {
     scheme: 'edv',
     currentEpoch: 'urn:epoch:2',
@@ -140,20 +140,20 @@ describe('isValidEdvDocument', () => {
 })
 
 describe('assertSupportedEncryption', () => {
-  it('accepts and returns a recognized `edv` marker', () => {
+  it('accepts and returns a recognized `edv` descriptor', () => {
     assert.deepStrictEqual(
       assertSupportedEncryption({ encryption: { scheme: 'edv' } }),
       { scheme: 'edv' }
     )
   })
-  it('preserves extra forward-compat fields on a recognized marker', () => {
-    const marker = { scheme: 'edv', recipients: [{ id: 'k1' }] }
+  it('preserves extra forward-compat fields on a recognized descriptor', () => {
+    const descriptor = { scheme: 'edv', recipients: [{ id: 'k1' }] }
     assert.deepStrictEqual(
-      assertSupportedEncryption({ encryption: marker }),
-      marker
+      assertSupportedEncryption({ encryption: descriptor }),
+      descriptor
     )
   })
-  it('returns undefined for an absent marker (plaintext)', () => {
+  it('returns undefined for an absent descriptor (plaintext)', () => {
     assert.equal(
       assertSupportedEncryption({ encryption: undefined }),
       undefined
@@ -168,7 +168,7 @@ describe('assertSupportedEncryption', () => {
 })
 
 describe('assertEncryptionTransition', () => {
-  it('is a no-op declaring a marker on a Collection that lacks one', () => {
+  it('is a no-op declaring a descriptor on a Collection that lacks one', () => {
     assert.doesNotThrow(() =>
       assertEncryptionTransition({
         existing: undefined,
@@ -225,11 +225,11 @@ describe('isValidJweRecipientEntry', () => {
 })
 
 describe('assertSupportedEncryption (key-epoch fields)', () => {
-  it('accepts and round-trips a valid multi-epoch marker verbatim', () => {
-    const marker = epochMarker()
+  it('accepts and round-trips a valid multi-epoch descriptor verbatim', () => {
+    const descriptor = epochDescriptor()
     assert.deepStrictEqual(
-      assertSupportedEncryption({ encryption: marker }),
-      marker
+      assertSupportedEncryption({ encryption: descriptor }),
+      descriptor
     )
   })
   it('rejects `epochs` without `currentEpoch` (400)', () => {
@@ -325,14 +325,14 @@ function throwsInvalidBodyPointer(fn: () => void, pointer: string): void {
 }
 
 describe('assertSupportedEncryption (scheme version)', () => {
-  it('accepts and round-trips a marker with version 1 verbatim', () => {
-    const marker = { scheme: 'edv', version: 1 }
+  it('accepts and round-trips a descriptor with version 1 verbatim', () => {
+    const descriptor = { scheme: 'edv', version: 1 }
     assert.deepStrictEqual(
-      assertSupportedEncryption({ encryption: marker }),
-      marker
+      assertSupportedEncryption({ encryption: descriptor }),
+      descriptor
     )
   })
-  it('accepts a versionless marker (legacy) unchanged', () => {
+  it('accepts a versionless descriptor (legacy) unchanged', () => {
     assert.deepStrictEqual(
       assertSupportedEncryption({ encryption: { scheme: 'edv' } }),
       { scheme: 'edv' }
@@ -355,10 +355,10 @@ describe('assertSupportedEncryption (scheme version)', () => {
   }
 })
 
-describe('assertEncryptionMarkerTransition (scheme version)', () => {
+describe('assertEncryptionDescriptorTransition (scheme version)', () => {
   it('allows keeping the same version', () => {
     assert.doesNotThrow(() =>
-      assertEncryptionMarkerTransition({
+      assertEncryptionDescriptorTransition({
         existing: { scheme: 'edv', version: 1 } as CollectionEncryption,
         incoming: { scheme: 'edv', version: 1 } as CollectionEncryption
       })
@@ -366,23 +366,23 @@ describe('assertEncryptionMarkerTransition (scheme version)', () => {
   })
   it('allows raising the version (a future migration)', () => {
     assert.doesNotThrow(() =>
-      assertEncryptionMarkerTransition({
+      assertEncryptionDescriptorTransition({
         existing: { scheme: 'edv', version: 1 } as CollectionEncryption,
         incoming: { scheme: 'edv', version: 2 } as CollectionEncryption
       })
     )
   })
-  it('allows adding a version to a versionless marker', () => {
+  it('allows adding a version to a versionless descriptor', () => {
     assert.doesNotThrow(() =>
-      assertEncryptionMarkerTransition({
+      assertEncryptionDescriptorTransition({
         existing: { scheme: 'edv' },
         incoming: { scheme: 'edv', version: 1 } as CollectionEncryption
       })
     )
   })
-  it('is a no-op when neither marker carries a version', () => {
+  it('is a no-op when neither descriptor carries a version', () => {
     assert.doesNotThrow(() =>
-      assertEncryptionMarkerTransition({
+      assertEncryptionDescriptorTransition({
         existing: { scheme: 'edv' },
         incoming: { scheme: 'edv' }
       })
@@ -391,7 +391,7 @@ describe('assertEncryptionMarkerTransition (scheme version)', () => {
   it('rejects lowering the version (400, pointer #/encryption/version)', () => {
     throwsInvalidBodyPointer(
       () =>
-        assertEncryptionMarkerTransition({
+        assertEncryptionDescriptorTransition({
           existing: { scheme: 'edv', version: 2 } as CollectionEncryption,
           incoming: { scheme: 'edv', version: 1 } as CollectionEncryption
         }),
@@ -401,7 +401,7 @@ describe('assertEncryptionMarkerTransition (scheme version)', () => {
   it('rejects dropping the version once set (400, pointer #/encryption/version)', () => {
     throwsInvalidBodyPointer(
       () =>
-        assertEncryptionMarkerTransition({
+        assertEncryptionDescriptorTransition({
           existing: { scheme: 'edv', version: 1 } as CollectionEncryption,
           incoming: { scheme: 'edv' }
         }),
@@ -411,16 +411,16 @@ describe('assertEncryptionMarkerTransition (scheme version)', () => {
 })
 
 describe('assertEncryptionEpochsTransition', () => {
-  it('is a no-op when the existing marker has no epochs', () => {
+  it('is a no-op when the existing descriptor has no epochs', () => {
     assert.doesNotThrow(() =>
       assertEncryptionEpochsTransition({
         existing: { scheme: 'edv' },
-        incoming: epochMarker()
+        incoming: epochDescriptor()
       })
     )
   })
   it('allows appending a new epoch and repointing currentEpoch to it', () => {
-    const existing = epochMarker()
+    const existing = epochDescriptor()
     const incoming: CollectionEncryption = {
       scheme: 'edv',
       currentEpoch: 'urn:epoch:3',
@@ -434,7 +434,7 @@ describe('assertEncryptionEpochsTransition', () => {
     )
   })
   it('allows adding a recipient to an existing epoch (currentEpoch unchanged)', () => {
-    const existing = epochMarker()
+    const existing = epochDescriptor()
     const incoming: CollectionEncryption = {
       scheme: 'edv',
       currentEpoch: 'urn:epoch:2',
@@ -454,7 +454,7 @@ describe('assertEncryptionEpochsTransition', () => {
     )
   })
   it('rejects dropping an existing epoch (400 append-only)', () => {
-    const existing = epochMarker()
+    const existing = epochDescriptor()
     const incoming: CollectionEncryption = {
       scheme: 'edv',
       currentEpoch: 'urn:epoch:2',
@@ -466,9 +466,9 @@ describe('assertEncryptionEpochsTransition', () => {
     )
   })
   it('rejects moving currentEpoch back to an older existing epoch (400)', () => {
-    const existing = epochMarker()
+    const existing = epochDescriptor()
     const incoming: CollectionEncryption = {
-      ...epochMarker(),
+      ...epochDescriptor(),
       currentEpoch: 'urn:epoch:1'
     }
     assert.throws(
@@ -478,28 +478,28 @@ describe('assertEncryptionEpochsTransition', () => {
   })
 })
 
-describe('assertEncryptionMarkerTransition', () => {
+describe('assertEncryptionDescriptorTransition', () => {
   it('is a no-op when nothing is persisted yet (incoming defined)', () => {
     assert.doesNotThrow(() =>
-      assertEncryptionMarkerTransition({
+      assertEncryptionDescriptorTransition({
         existing: undefined,
-        incoming: epochMarker()
+        incoming: epochDescriptor()
       })
     )
   })
   it('is a no-op when nothing is persisted yet (incoming also undefined)', () => {
     assert.doesNotThrow(() =>
-      assertEncryptionMarkerTransition({
+      assertEncryptionDescriptorTransition({
         existing: undefined,
         incoming: undefined
       })
     )
   })
-  it('throws EncryptionImmutableError (409) when the write would clear an existing marker', () => {
-    // The clear-the-marker race: a persisted marker with no incoming one.
+  it('throws EncryptionImmutableError (409) when the write would clear an existing descriptor', () => {
+    // The clear-the-descriptor race: a persisted descriptor with no incoming one.
     assert.throws(
       () =>
-        assertEncryptionMarkerTransition({
+        assertEncryptionDescriptorTransition({
           existing: { scheme: 'edv' },
           incoming: undefined
         }),
@@ -509,7 +509,7 @@ describe('assertEncryptionMarkerTransition', () => {
   it('delegates to the set-once rail: a scheme change throws EncryptionImmutableError (409)', () => {
     assert.throws(
       () =>
-        assertEncryptionMarkerTransition({
+        assertEncryptionDescriptorTransition({
           existing: { scheme: 'edv' },
           incoming: { scheme: 'other' } as unknown as CollectionEncryption
         }),
@@ -517,19 +517,19 @@ describe('assertEncryptionMarkerTransition', () => {
     )
   })
   it('delegates to the epoch rail: dropping an existing epoch throws InvalidRequestBodyError (400)', () => {
-    const existing = epochMarker()
+    const existing = epochDescriptor()
     const incoming: CollectionEncryption = {
       scheme: 'edv',
       currentEpoch: 'urn:epoch:2',
       epochs: [existing.epochs![0]!]
     }
     assert.throws(
-      () => assertEncryptionMarkerTransition({ existing, incoming }),
+      () => assertEncryptionDescriptorTransition({ existing, incoming }),
       InvalidRequestBodyError
     )
   })
   it('passes a valid same-scheme epoch append', () => {
-    const existing = epochMarker()
+    const existing = epochDescriptor()
     const incoming: CollectionEncryption = {
       scheme: 'edv',
       currentEpoch: 'urn:epoch:3',
@@ -539,7 +539,7 @@ describe('assertEncryptionMarkerTransition', () => {
       ]
     }
     assert.doesNotThrow(() =>
-      assertEncryptionMarkerTransition({ existing, incoming })
+      assertEncryptionDescriptorTransition({ existing, incoming })
     )
   })
 })
@@ -551,18 +551,18 @@ describe('assertEncryptionTransition (recipient/epoch evolution passes)', () => 
     assert.doesNotThrow(() =>
       assertEncryptionTransition({
         existing: { scheme: 'edv' },
-        incoming: epochMarker()
+        incoming: epochDescriptor()
       })
     )
     assert.doesNotThrow(() =>
       assertEncryptionTransition({
-        existing: epochMarker(),
+        existing: epochDescriptor(),
         incoming: {
           scheme: 'edv',
           currentEpoch: 'urn:epoch:3',
           epochs: [
             { id: 'urn:epoch:3', recipients: [recipient('did:key:zApp1#ka')] },
-            ...epochMarker().epochs!
+            ...epochDescriptor().epochs!
           ]
         }
       })

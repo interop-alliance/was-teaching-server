@@ -1,6 +1,18 @@
 # History
 
-## Unreleased - TBD
+## 0.16.0 - TBD
+
+### Changed
+
+- **The Collection `encryption` member is now called the encryption
+  "descriptor"** (previously "marker"), following the spec's rename. Nothing
+  changes on the wire except the `encryption-immutable` problem+json strings,
+  which now match the spec verbatim: title
+  `"Collection encryption descriptor is immutable."` and detail
+  `"A Collection's 'encryption' descriptor is set-once and cannot be changed or
+  cleared."` -- the error `type`, status, and pointer are unchanged. Internal
+  helpers (`assertEncryptionDescriptorTransition`), comments, and tests renamed
+  to match; no public export carried the old word.
 
 ### Added
 

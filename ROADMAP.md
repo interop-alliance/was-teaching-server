@@ -1049,7 +1049,7 @@ reuse).
 Promotion to `todo` requires: the CCG-work-item decision, at least one wallet
 consumer signal, and acceptance criteria for the core spec's section list.
 
-### WAS-29: Spec the key-epochs surface (`epoch` feed member, marker/stamp rails)
+### WAS-29: Spec the key-epochs surface (`epoch` feed member, descriptor/stamp rails)
 
 - status: todo
 - priority: medium
@@ -1057,7 +1057,7 @@ consumer signal, and acceptance criteria for the core spec's section list.
 - acceptance:
   - [ ] The optional `epoch` member added to the `changes` profile registry
         entry (or `key-epochs` documented as an extension)
-  - [ ] The marker/stamp surface (`encryption.epochs` / `currentEpoch` rails,
+  - [ ] The descriptor/stamp surface (`encryption.epochs` / `currentEpoch` rails,
         `WAS-Key-Epoch` Resource stamp) covered
 
 The `changes` profile's registry entry omits the `epoch` member the server emits
@@ -1127,7 +1127,7 @@ under, and the key-epoch id, all AEAD-covered by the JWE, so a server-side
 envelope swap between ids, an epoch relabel, or a per-envelope scheme downgrade
 fails on decrypt.
 
-### WAS-33: Spec the `encryption.version` marker member
+### WAS-33: Spec the `encryption.version` descriptor member
 
 - status: todo
 - priority: medium
@@ -1140,7 +1140,7 @@ fails on decrypt.
         removed)
 
 The server now validates an optional positive-integer `version` on the
-`encryption` marker and enforces that, once set, it never decreases and is never
+`encryption` descriptor and enforces that, once set, it never decreases and is never
 removed (the same never-backwards rail as `currentEpoch`); clients stamp
 `version: 1` when declaring epochs. The per-resource-CEK-under-epoch-key layout
 means moving a Resource to a new epoch only rewraps the JWE `recipients` --
@@ -1148,13 +1148,13 @@ which suggests a future client-driven bulk **rewrap** operation as a cheap
 post-removal migration (honest caveat: rewrapping does not help against a reader
 that cached the CEKs themselves).
 
-### WAS-51: Reconcile the `encryption.version` marker text with the implementation
+### WAS-51: Reconcile the `encryption.version` descriptor text with the implementation
 
 - status: todo
 - priority: medium
 - labels: spec-side, encryption
 - acceptance:
-  - [ ] The Collection Data Model marker definition and the implementation agree
+  - [ ] The Collection Data Model descriptor definition and the implementation agree
         on `version`'s type and optionality (spec today: a required string, e.g.
         `"0.1"`; server: an optional positive integer)
   - [ ] The error surface for a version transition is reconciled: the spec today
@@ -1167,7 +1167,7 @@ that cached the CEKs themselves).
         added (deliberately left out of WAS-43 because of this divergence)
 
 Discovered while implementing WAS-43 (discovered-from: WAS-43). Touches the same
-marker text WAS-33 extends (the scheme-version registry column and the
+descriptor text WAS-33 extends (the scheme-version registry column and the
 never-backwards rail), so the two should land as one spec edit.
 
 ### WAS-53: Reconcile chunk-capability exact-match text with target attenuation
@@ -1196,20 +1196,20 @@ non-ancestor (sibling-chunk) probe, which both readings reject.
 - priority: medium
 - labels: spec-side, encryption
 - acceptance:
-  - [ ] The marker member `epochsMac: { v: 1, alg: "HS256", mac }` and its
+  - [ ] The descriptor member `epochsMac: { v: 1, alg: "HS256", mac }` and its
         MAC/HKDF construction defined
   - [ ] The whole-config replay limitation owned in the text
 
 Shipped in the client stack, 2026-07-20; the server stores it opaquely. The spec
 should define: an HMAC-SHA256 over
 `"was-epoch-config/v1." + JSON.stringify({ scheme, version, currentEpoch, epochs })`
-(epoch ids in marker order, `version` null when absent), keyed via HKDF-SHA256
+(epoch ids in descriptor order, `version` null when absent), keyed via HKDF-SHA256
 from the current epoch's 32-byte secret with info `"was-epoch-config-mac/v1"` --
 a key the server never holds. Writers verify it before encrypting, so a server
 that points `currentEpoch` back at an epoch a revoked reader still holds fails
 to authenticate. The text must also own the limitation: a replay of an _entire_
 old consistent configuration (old list plus its old MAC) is only detectable with
-client-side monotonic state, out of scope for the marker itself. Pairs with the
+client-side monotonic state, out of scope for the descriptor itself. Pairs with the
 layered-revocation item (WAS-30).
 
 ### WAS-35: Spec the chunked-stream encryption profile (`caad`)

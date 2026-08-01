@@ -12,7 +12,7 @@
  * server validates structure only and never decrypts.
  *
  * These drive the wire contract directly via the signed `was.request()` escape
- * hatch (raw `HttpResponse` / raw errors), mirroring `encryption-marker-api`.
+ * hatch (raw `HttpResponse` / raw errors), mirroring `encryption-descriptor-api`.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'

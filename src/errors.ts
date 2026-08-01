@@ -265,7 +265,7 @@ export class UnsupportedBackendError extends ProblemError {
 
 /**
  * 409 — a Collection update tried to change or clear an existing client-side
- * `encryption` marker. The marker is set-once (spec): declaring it on a
+ * `encryption` descriptor. The descriptor is set-once (spec): declaring it on a
  * Collection that lacks one is allowed, but changing its scheme (or clearing
  * it) on a populated Collection would corrupt the stored, client-encrypted
  * Resources. Like the other state-conflict 409s (`id-conflict`,
@@ -275,10 +275,10 @@ export class UnsupportedBackendError extends ProblemError {
 export class EncryptionImmutableError extends ProblemError {
   constructor() {
     const detail =
-      "A Collection's 'encryption' marker is set-once and cannot be changed or cleared."
+      "A Collection's 'encryption' descriptor is set-once and cannot be changed or cleared."
     super({
       type: ProblemTypes.ENCRYPTION_IMMUTABLE,
-      title: 'Collection encryption marker is immutable.',
+      title: 'Collection encryption descriptor is immutable.',
       detail,
       statusCode: 409,
       problems: [{ detail, pointer: '#/encryption' }]
@@ -287,11 +287,11 @@ export class EncryptionImmutableError extends ProblemError {
 }
 
 /**
- * 400 — a Collection create/update supplied an `encryption` marker naming a
+ * 400 — a Collection create/update supplied an `encryption` descriptor naming a
  * `scheme` this server does not recognize and therefore cannot enforce on write.
  * Taking the spec's fail-closed SHOULD path ("Encryption Scheme Registry"), the
- * reference server rejects such a marker rather than storing it opaquely, so
- * every accepted marker is one whose non-conforming (e.g. plaintext) writes it
+ * reference server rejects such a descriptor rather than storing it opaquely, so
+ * every accepted descriptor is one whose non-conforming (e.g. plaintext) writes it
  * will reject. A pure body-shape rejection, checked before capability
  * verification like the other `invalid`-shaped 400s.
  * @param options {object}
@@ -311,7 +311,7 @@ export class UnsupportedEncryptionSchemeError extends ProblemError {
 }
 
 /**
- * 422 — a content write into a Collection whose `encryption` marker declares a
+ * 422 — a content write into a Collection whose `encryption` descriptor declares a
  * recognized scheme did not conform to that scheme's envelope profile: the
  * request `Content-Type` was not the scheme's registered media type, or the body
  * was not a structurally valid envelope (spec "Encryption Scheme Registry"). The

@@ -357,7 +357,7 @@ export class SpaceRequest {
     if (body?.id !== undefined) {
       assertValidId(body.id, { kind: 'collection', requestName })
     }
-    // Validate the optional client-side encryption marker (shape only; the
+    // Validate the optional client-side encryption descriptor (shape only; the
     // server stores it opaquely and never decrypts). Absent => plaintext.
     const encryption = assertSupportedEncryption({
       encryption: body?.encryption,
@@ -380,7 +380,7 @@ export class SpaceRequest {
       throw new InvalidRequestBodyError({
         requestName,
         detail:
-          'Collection "indexes" must not be combined with an "encryption" marker.',
+          'Collection "indexes" must not be combined with an "encryption" descriptor.',
         pointer: '#/indexes'
       })
     }

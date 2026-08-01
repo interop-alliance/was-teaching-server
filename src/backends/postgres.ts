@@ -440,7 +440,7 @@ export class PostgresBackend implements StorageBackend {
       storageMode: ['document', 'blob'],
       persistence: 'durable',
       // `key-epochs`: multi-recipient encrypted Collections -- per-epoch wrapped
-      // keys on the `encryption` marker, a client-declared `epoch` stamp on
+      // keys on the `encryption` descriptor, a client-declared `epoch` stamp on
       // Resources, and conditional (`If-Match`) Collection Description writes.
       // `chunked-streams`: chunk addressing at `/{resourceId}/chunks/{n}`, opaque
       // per-chunk raw-bytes storage in the `chunks` table.

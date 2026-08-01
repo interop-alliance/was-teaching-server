@@ -1,15 +1,15 @@
 /**
- * Encryption-marker API tests (Vitest): the server's accept / validate /
- * persist / set-once handling of a Collection's client-side `encryption` marker
+ * Encryption-descriptor API tests (Vitest): the server's accept / validate /
+ * persist / set-once handling of a Collection's client-side `encryption` descriptor
  * (spec "Encrypted Collections"). The server never decrypts -- it stores the
- * marker opaquely, validates only its shape, and enforces set-once immutability.
+ * descriptor opaquely, validates only its shape, and enforces set-once immutability.
  *
  * These assert the server's wire contract directly (status codes, problem
  * `type`s, the echoed Description) via the signed `was.request()` escape hatch
  * (raw `HttpResponse` / raw errors), mirroring `wire-contract-api.test.ts` --
  * the high-level handles hide exactly those details. End-to-end coverage through
  * the high-level client lives in `@interop/was-client`'s own EDV integration
- * suite and the `@interop/was-conformance-suite` marker test.
+ * suite and the `@interop/was-conformance-suite` descriptor test.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
@@ -21,9 +21,9 @@ import type { FastifyInstance } from 'fastify'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { startTestServer, zcapClients } from './helpers.js'
 
-describe('Encryption marker API', () => {
+describe('Encryption descriptor API', () => {
   let fastify: FastifyInstance, serverUrl: string, dataDir: string, alice: any
-  const spaceId = `enc-marker-space-${crypto.randomUUID()}`
+  const spaceId = `enc-descriptor-space-${crypto.randomUUID()}`
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
@@ -34,7 +34,7 @@ describe('Encryption marker API', () => {
 
     await alice.was.createSpace({
       id: spaceId,
-      name: 'Encryption Marker Space',
+      name: 'Encryption Descriptor Space',
       controller: alice.did
     })
   })
@@ -62,13 +62,13 @@ describe('Encryption marker API', () => {
     }
   }
 
-  /** A marker recipient entry (the JWE recipients-entry shape). */
+  /** A descriptor recipient entry (the JWE recipients-entry shape). */
   const recipient = (kid: string) => ({
     header: { kid, alg: 'ECDH-ES+A256KW' },
     encrypted_key: `wrapped-${kid}`
   })
-  /** A valid two-epoch marker, `currentEpoch` = the newest. */
-  const twoEpochMarker = () => ({
+  /** A valid two-epoch descriptor, `currentEpoch` = the newest. */
+  const twoEpochDescriptor = () => ({
     scheme: 'edv',
     currentEpoch: 'urn:epoch:2',
     epochs: [
@@ -77,7 +77,7 @@ describe('Encryption marker API', () => {
     ]
   })
 
-  it('persists and echoes the marker on create', async () => {
+  it('persists and echoes the descriptor on create', async () => {
     const collectionId = 'vault'
     const response = await alice.was.request({
       path: `/space/${spaceId}/`,
@@ -91,7 +91,7 @@ describe('Encryption marker API', () => {
     })
   })
 
-  it('omits the marker for a plaintext collection (no encryption sent)', async () => {
+  it('omits the descriptor for a plaintext collection (no encryption sent)', async () => {
     const collectionId = 'plain'
     await alice.was.request({
       path: `/space/${spaceId}/`,
@@ -101,19 +101,19 @@ describe('Encryption marker API', () => {
     assert.equal((await readDesc(collectionId)).encryption, undefined)
   })
 
-  it('preserves unknown extra marker fields opaquely (forward-compat)', async () => {
+  it('preserves unknown extra descriptor fields opaquely (forward-compat)', async () => {
     const collectionId = 'forward'
-    const marker = { scheme: 'edv', recipients: [{ id: 'k1', type: 'X' }] }
+    const descriptor = { scheme: 'edv', recipients: [{ id: 'k1', type: 'X' }] }
     const response = await alice.was.request({
       path: `/space/${spaceId}/`,
       method: 'POST',
-      json: { id: collectionId, encryption: marker }
+      json: { id: collectionId, encryption: descriptor }
     })
     assert.equal(response.status, 201)
-    assert.deepStrictEqual((await readDesc(collectionId)).encryption, marker)
+    assert.deepStrictEqual((await readDesc(collectionId)).encryption, descriptor)
   })
 
-  it('rejects a marker object without a string scheme (400)', async () => {
+  it('rejects a descriptor object without a string scheme (400)', async () => {
     const err = await rejection(
       alice.was.request({
         path: `/space/${spaceId}/`,
@@ -127,7 +127,7 @@ describe('Encryption marker API', () => {
     assert.equal(err.data.errors?.[0]?.pointer, '#/encryption')
   })
 
-  it('rejects a non-object marker (400)', async () => {
+  it('rejects a non-object descriptor (400)', async () => {
     const err = await rejection(
       alice.was.request({
         path: `/space/${spaceId}/`,
@@ -151,7 +151,7 @@ describe('Encryption marker API', () => {
     assert.equal(err.data.errors?.[0]?.pointer, '#/encryption/scheme')
   })
 
-  it('allows declaring a marker on an existing plaintext collection (absent -> present)', async () => {
+  it('allows declaring a descriptor on an existing plaintext collection (absent -> present)', async () => {
     const collectionId = 'late-declare'
     await alice.was.request({
       path: `/space/${spaceId}/`,
@@ -169,7 +169,7 @@ describe('Encryption marker API', () => {
     })
   })
 
-  it('allows re-sending the same marker (same -> same is a no-op)', async () => {
+  it('allows re-sending the same descriptor (same -> same is a no-op)', async () => {
     const collectionId = 'idempotent'
     await alice.was.request({
       path: `/space/${spaceId}/`,
@@ -184,12 +184,12 @@ describe('Encryption marker API', () => {
     assert.equal(put.status, 204)
   })
 
-  it('rejects changing to an unrecognized scheme (400 unsupported-encryption-scheme, marker unchanged)', async () => {
+  it('rejects changing to an unrecognized scheme (400 unsupported-encryption-scheme, descriptor unchanged)', async () => {
     // With v1 recognizing only `edv`, a scheme *change* names a scheme the
     // server cannot enforce, so the fail-closed `unsupported-encryption-scheme`
     // gate fires first -- before the set-once `encryption-immutable` (409) check,
     // which the direct-transition unit test below still exercises. Either way the
-    // stored marker cannot be corrupted.
+    // stored descriptor cannot be corrupted.
     const collectionId = 'immutable'
     await alice.was.request({
       path: `/space/${spaceId}/`,
@@ -205,20 +205,20 @@ describe('Encryption marker API', () => {
     )
     assert.equal(err.response.status, 400)
     assert.match(err.data.type, /#unsupported-encryption-scheme/)
-    // The stored marker is unchanged.
+    // The stored descriptor is unchanged.
     assert.deepStrictEqual((await readDesc(collectionId)).encryption, {
       scheme: 'edv'
     })
   })
 
-  it('leaves an existing marker untouched when an update omits encryption', async () => {
+  it('leaves an existing descriptor untouched when an update omits encryption', async () => {
     const collectionId = 'untouched'
     await alice.was.request({
       path: `/space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, encryption: { scheme: 'edv' } }
     })
-    // A name-only update must not clear the marker (client #8: merge, not
+    // A name-only update must not clear the descriptor (client #8: merge, not
     // replace) -- and it must succeed (204), not trip `encryption-immutable`.
     const put = await alice.was.request({
       path: `/space/${spaceId}/${collectionId}`,
@@ -231,17 +231,17 @@ describe('Encryption marker API', () => {
     assert.deepStrictEqual(desc.encryption, { scheme: 'edv' })
   })
 
-  describe('key-epoch marker validation', () => {
-    it('accepts a valid multi-epoch marker and round-trips it verbatim on GET', async () => {
+  describe('key-epoch descriptor validation', () => {
+    it('accepts a valid multi-epoch descriptor and round-trips it verbatim on GET', async () => {
       const collectionId = 'epochs-ok'
-      const marker = twoEpochMarker()
+      const descriptor = twoEpochDescriptor()
       const response = await alice.was.request({
         path: `/space/${spaceId}/`,
         method: 'POST',
-        json: { id: collectionId, encryption: marker }
+        json: { id: collectionId, encryption: descriptor }
       })
       assert.equal(response.status, 201)
-      assert.deepStrictEqual((await readDesc(collectionId)).encryption, marker)
+      assert.deepStrictEqual((await readDesc(collectionId)).encryption, descriptor)
     })
 
     it('rejects a malformed recipient entry (400)', async () => {
@@ -322,7 +322,7 @@ describe('Encryption marker API', () => {
       await alice.was.request({
         path: `/space/${spaceId}/`,
         method: 'POST',
-        json: { id: collectionId, encryption: twoEpochMarker() }
+        json: { id: collectionId, encryption: twoEpochDescriptor() }
       })
       const err = await rejection(
         alice.was.request({
@@ -351,7 +351,7 @@ describe('Encryption marker API', () => {
       await alice.was.request({
         path: `/space/${spaceId}/`,
         method: 'POST',
-        json: { id: collectionId, encryption: twoEpochMarker() }
+        json: { id: collectionId, encryption: twoEpochDescriptor() }
       })
       const err = await rejection(
         alice.was.request({
@@ -359,7 +359,7 @@ describe('Encryption marker API', () => {
           method: 'PUT',
           json: {
             id: collectionId,
-            encryption: { ...twoEpochMarker(), currentEpoch: 'urn:epoch:1' }
+            encryption: { ...twoEpochDescriptor(), currentEpoch: 'urn:epoch:1' }
           }
         })
       )
@@ -371,14 +371,14 @@ describe('Encryption marker API', () => {
       await alice.was.request({
         path: `/space/${spaceId}/`,
         method: 'POST',
-        json: { id: collectionId, encryption: twoEpochMarker() }
+        json: { id: collectionId, encryption: twoEpochDescriptor() }
       })
       const grown = {
         scheme: 'edv',
         currentEpoch: 'urn:epoch:3',
         epochs: [
           { id: 'urn:epoch:3', recipients: [recipient('did:key:zApp1#ka')] },
-          ...twoEpochMarker().epochs
+          ...twoEpochDescriptor().epochs
         ]
       }
       const put = await alice.was.request({
@@ -395,7 +395,7 @@ describe('Encryption marker API', () => {
       await alice.was.request({
         path: `/space/${spaceId}/`,
         method: 'POST',
-        json: { id: collectionId, encryption: twoEpochMarker() }
+        json: { id: collectionId, encryption: twoEpochDescriptor() }
       })
       const withNewRecipient = {
         scheme: 'edv',
@@ -408,7 +408,7 @@ describe('Encryption marker API', () => {
               recipient('did:key:zApp3#ka')
             ]
           },
-          twoEpochMarker().epochs[1]
+          twoEpochDescriptor().epochs[1]
         ]
       }
       const put = await alice.was.request({
