@@ -128,6 +128,7 @@ async function submitRevocation({
       capability: capabilityBody,
       rootTarget,
       rootController,
+      webvh: { storage, serverUrl },
       maxChainLength,
       maxDelegationTtl
     })
@@ -139,6 +140,7 @@ async function submitRevocation({
     serverUrl,
     rootTarget,
     rootController,
+    webvh: { storage, serverUrl },
     chainControllers,
     expectedAction,
     // The *invoking* chain is checked against the store as on every other

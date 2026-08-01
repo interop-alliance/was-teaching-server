@@ -113,6 +113,9 @@ export async function fetchKeystoreAndVerify({
     logger: request.log,
     allowTargetAttenuation,
     allowTargetQuery,
+    // A promoted keystore's controller is a self-hosted did:webvh; the
+    // context engages only for that shape (did:key keystores pay nothing).
+    webvh: { storage, serverUrl },
     revocation: { storage, scope: { keystoreId } },
     maxChainLength: KMS_MAX_CHAIN_LENGTH,
     maxDelegationTtl: KMS_MAX_DELEGATION_TTL

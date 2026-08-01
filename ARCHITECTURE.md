@@ -69,8 +69,10 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   (`/space/:spaceId/:collectionId`). Has a description object.
 - **Resource** — an individual stored item, JSON object or binary blob, within a
   Collection (`/space/:spaceId/:collectionId/:resourceId`).
-- **Controller** — the `did:key` that owns a Space; its Ed25519 key signs
-  capability invocations and is checked during ZCap verification.
+- **Controller** — the DID that owns a Space; its Ed25519 key signs capability
+  invocations and is checked during ZCap verification. Two shapes are accepted:
+  a `did:key` (the only one a Space may be _created_ with), or a **self-hosted
+  `did:webvh`** a Space may be _updated_ to (see below).
 - **ZCap (Authorization Capability)** — the authorization model. Clients sign
   HTTP requests; the server verifies the signature against the Space
   controller's key rather than using sessions or bearer tokens.
@@ -79,8 +81,25 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   ZCap constraint under Test Suite in [AGENTS.md](AGENTS.md).
 - **Root capability** — `urn:zcap:root:<url-encoded target>`, whose controller
   is the Space controller. Synthesized by the document loader in `zcap.ts`.
-- **`did:key`** — the only DID method used here; keys are Ed25519
-  (`Ed25519VerificationKey2020` / `Ed25519Signature2020`).
+- **`did:key`** — the default DID method here; keys are Ed25519
+  (`Ed25519VerificationKey2020` / `Ed25519Signature2020`). Space creation, and
+  the `/kms` keystore routes, accept nothing else.
+- **Self-hosted `did:webvh`** — the second accepted Space-controller shape, so a
+  wallet can carry one stable user identity whose DID document lists a
+  verification method per enrolled client. The DID must be anchored on _this_
+  server: `did:webvh:<scid>:<host>:space:<spaceId>:id`, whose history log is the
+  `did.jsonl` Resource in that Space's world-readable `id` Collection. A Space
+  is **promoted** to one by PUTting its Space Description with the new
+  `controller`, still authorized by the stored `did:key` — creation stays
+  `did:key`-only. Resolution is a **local storage read, never a network fetch**:
+  cross-host `did:webvh`, `did:web`, and every other method are refused. The log
+  is verified, not trusted (SCID pinning plus full hash-chain / update-key
+  verification via `@interop/did-method-webvh`), because after promotion the
+  writes to that log are authorized by the very document being resolved. The
+  proposed controller must resolve _before_ it is stored, or the Space would be
+  deadlocked. Key validity is the **current-key-set rule**: an invocation or
+  delegation verifies iff its verification method is in the currently resolved
+  document, under the right verification relationship.
 
 **Trailing slashes:** the spec assigns distinct meaning to `.../` vs `...`. By
 convention, "create/update by id" (`PUT`) uses the no-trailing-slash form, while

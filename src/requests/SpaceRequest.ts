@@ -15,7 +15,14 @@ import {
 import { verifyBodyControllerConsent } from './controllerConsent.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidIds, assertValidId } from '../lib/validateId.js'
-import { assertValidController } from '../lib/validateDid.js'
+import {
+  assertValidSpaceController,
+  isSelfHostedWebvhController
+} from '../lib/validateDid.js'
+import {
+  invalidateResolvedWebvhDid,
+  resolveWebvhController
+} from '../lib/webvhController.js'
 import {
   assertSupportedBackend,
   listRegisteredBackends
@@ -39,7 +46,8 @@ import {
   InvalidImportError,
   InvalidRequestBodyError,
   IdConflictError,
-  SpaceControllerMismatchError
+  SpaceControllerMismatchError,
+  UnresolvableControllerError
 } from '../errors.js'
 import type {
   IDID,
@@ -194,8 +202,14 @@ export class SpaceRequest {
         pointer: '#/controller'
       })
     }
-    // Reject a malformed / non-`did:key` controller before it is stored.
-    assertValidController(body.controller, { requestName: 'Update Space' })
+    // Reject a controller shape this server cannot authorize against before it
+    // is stored. Update Space is the one call site that also accepts a
+    // self-hosted `did:webvh` (the "promotion by ordering" flow); create and
+    // the keystore routes stay `did:key`-only.
+    assertValidSpaceController(body.controller, {
+      serverUrl,
+      requestName: 'Update Space'
+    })
 
     // Check to see if space already exists (if yes, this will be an Update)
     const existingSpaceDescription = await storage.getSpaceDescription({
@@ -235,6 +249,7 @@ export class SpaceRequest {
         headers,
         serverUrl,
         spaceController: existingSpaceDescription.controller,
+        webvh: { storage, serverUrl },
         logger: request.log,
         revocation: { storage, scope: { spaceId } }
       })
@@ -249,6 +264,28 @@ export class SpaceRequest {
     }
 
     request.log.info('zCap verified')
+
+    // A proposed `did:webvh` controller must resolve -- and fully verify --
+    // against its history log in this server's storage BEFORE it is stored.
+    // After the promotion, both this request and writes to that log's `id`
+    // collection are authorized by the very controller being named, so storing
+    // an unresolvable DID (a typo, a not-yet-published log) would deadlock the
+    // Space with no break-glass.
+    if (isSelfHostedWebvhController(body.controller, { serverUrl })) {
+      try {
+        await resolveWebvhController({
+          storage,
+          serverUrl,
+          did: body.controller
+        })
+      } catch (err) {
+        throw new UnresolvableControllerError({
+          did: body.controller,
+          requestName: 'Update Space',
+          cause: err as Error
+        })
+      }
+    }
 
     // Compose Space Description object body, new or updated. `name` is
     // optional, so only include it when the request supplies one.
@@ -457,6 +494,9 @@ export class SpaceRequest {
     await storage.deleteSpace({ spaceId })
     // Bust the cached description so the next read sees the Space as gone (404).
     invalidateSpaceDescription({ storage, spaceId })
+    // The Space's `id` collection went with it, so any controller document
+    // resolved out of its history log is stale too.
+    invalidateResolvedWebvhDid({ storage, spaceId })
 
     return reply.status(204).send()
   }
@@ -532,6 +572,9 @@ export class SpaceRequest {
         spaceId,
         tarStream: request.body
       })
+      // An import may add or replace the Space's `id` collection contents, so
+      // drop any controller document resolved from the previous history log.
+      invalidateResolvedWebvhDid({ storage, spaceId })
       return reply.status(200).send(summary)
     } catch (err) {
       // Archive-validation failures already surface as typed ProblemErrors

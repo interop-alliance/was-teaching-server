@@ -44,6 +44,7 @@
     "@fastify/view": "^12.0.0",
     "@interop/data-integrity-core": "^8.4.0",
     "@interop/did-method-key": "^7.3.4",
+    "@interop/did-method-webvh": "^5.0.0",
     "@interop/ed25519-signature": "^7.1.4",
     "@interop/ed25519-verification-key": "^8.0.3",
     "@interop/http-digest-header": "^3.0.0",

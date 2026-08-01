@@ -12,7 +12,10 @@ import {
   MissingKeyIdError
 } from './errors.js'
 import { parseSignatureHeader } from '@interop/http-signature-header'
-import { isValidController } from './lib/validateDid.js'
+import {
+  isSelfHostedWebvhController,
+  isValidController
+} from './lib/validateDid.js'
 import type { IDID, ParsedZcap } from './types.js'
 
 /**
@@ -92,16 +95,22 @@ export async function parseAuthHeaders(
  *
  * Resolves to `undefined` when the request carries no parsed invocation (an
  * anonymous read of a public Resource, or a provisioning-token request), or
- * when the stripped `keyId` is not a syntactically valid `did:key`. Callers
- * recording it as server-managed provenance therefore treat it as optional,
- * and never persist a value that failed to narrow to a DID.
+ * when the stripped `keyId` is neither a syntactically valid `did:key` nor a
+ * self-hosted `did:webvh` (the second accepted controller shape -- recognized
+ * here so `createdBy` provenance keeps being recorded once a Space is promoted
+ * to one). Callers recording it as server-managed provenance therefore treat it
+ * as optional, and never persist a value that failed to narrow to a DID.
  *
  * @param request {import('fastify').FastifyRequest}
  * @returns {IDID | undefined}
  */
 export function invokerDid(request: FastifyRequest): IDID | undefined {
   const did = request.zcap?.keyId.split('#')[0]
-  return isValidController(did) ? did : undefined
+  if (isValidController(did)) {
+    return did
+  }
+  const { serverUrl } = request.server
+  return isSelfHostedWebvhController(did, { serverUrl }) ? did : undefined
 }
 
 /**

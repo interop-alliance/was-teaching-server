@@ -8,9 +8,19 @@
  * under the dual-root rule (the scope's root -- a keystore or a Space -- or
  * the revocation URL's own root controlled by any chain participant --
  * ezcap-express's `authorizeZcapRevocation` convention).
+ *
+ * A Space's controller is normally a `did:key`, resolved by the did:key driver.
+ * On a Space promoted to a self-hosted `did:webvh` controller, both the
+ * signature keyId and the jsigs purpose check resolve instead through
+ * `lib/webvhController.ts`, which verifies the DID's history log out of local
+ * storage. That branch is engaged per verification (never module-global), and
+ * only when the controller the chain roots in is such a DID.
  */
 import type { IncomingHttpHeaders } from 'node:http'
-import { securityLoader } from '@interop/security-document-loader'
+import {
+  createDefaultDidResolver,
+  securityLoader
+} from '@interop/security-document-loader'
 import {
   verifyCapabilityInvocation,
   type VerifyCapabilityInvocationResult
@@ -33,6 +43,12 @@ import {
   capabilitySummaries,
   revocationChainInspector
 } from './lib/revocations.js'
+import { isSelfHostedWebvhController } from './lib/validateDid.js'
+import {
+  resolveWebvhController,
+  webvhDidResolverDriver,
+  type WebvhResolverContext
+} from './lib/webvhController.js'
 import type {
   CapabilitySummary,
   IDID,
@@ -58,24 +74,65 @@ function rootCapabilityId(target: string): string {
 }
 
 /**
+ * Narrows a resolver context to the requests that actually need it: the
+ * `did:webvh` branch is engaged only when the controller the chain roots in is
+ * a self-hosted `did:webvh`, so a `did:key`-controlled Space pays nothing for
+ * it. Returns `undefined` otherwise.
+ *
+ * @param options {object}
+ * @param [options.webvh] {WebvhResolverContext}   the request layer's storage +
+ *   serverUrl, when supplied
+ * @param options.controller {IDID}   the controller the chain roots in
+ * @returns {WebvhResolverContext | undefined}
+ */
+function activeWebvhContext({
+  webvh,
+  controller
+}: {
+  webvh?: WebvhResolverContext
+  controller: IDID
+}): WebvhResolverContext | undefined {
+  if (!webvh) {
+    return undefined
+  }
+  return isSelfHostedWebvhController(controller, {
+    serverUrl: webvh.serverUrl
+  })
+    ? webvh
+    : undefined
+}
+
+/**
  * Builds a document loader whose `urn` protocol handler synthesizes
  * `urn:zcap:root:<target>` capabilities on demand, with the controller chosen
  * per target. The zcap library only dereferences a root capability it already
  * expects (per `expectedRootCapability`), so `controllerFor` sees expected
  * targets only -- it may still throw to refuse one outright.
  *
+ * When a `did:webvh` context is supplied, the loader's DID resolver also serves
+ * the locally resolved controller document (and its verification-method
+ * fragments), which is what lets the jsigs purpose check confirm the signing
+ * method is listed under the document's `capabilityInvocation` /
+ * `capabilityDelegation`.
+ *
  * @param options {object}
  * @param options.controllerFor {(target: string) => IDID | string[]}   maps a
  *   decoded root invocation target to the controller(s) of its synthesized
  *   root capability
+ * @param [options.webvh] {WebvhResolverContext}   engage the local `did:webvh`
+ *   resolver for this verification
  * @returns {IDocumentLoader}
  */
 function rootCapabilityLoader({
-  controllerFor
+  controllerFor,
+  webvh
 }: {
   controllerFor: (target: string) => IDID | string[]
+  webvh?: WebvhResolverContext
 }): IDocumentLoader {
-  const loader = securityLoader()
+  const loader = webvh
+    ? securityLoader({ didResolver: didResolverWithWebvh(webvh) })
+    : securityLoader()
   loader.setProtocolHandler({
     protocol: 'urn',
     handler: {
@@ -97,21 +154,98 @@ function rootCapabilityLoader({
 }
 
 /**
- * Resolves an invocation's keyId to an Ed25519 verifier (the
- * `verifyCapabilityInvocation` HTTP-signature key hook).
+ * Builds the standard DID resolver extended with the local `did:webvh` driver.
+ * Per-verification rather than module-global, because the driver closes over
+ * the request's storage backend.
+ *
+ * @param webvh {WebvhResolverContext}
+ * @returns {ReturnType<typeof createDefaultDidResolver>}
+ */
+function didResolverWithWebvh(webvh: WebvhResolverContext) {
+  const didResolver = createDefaultDidResolver()
+  // The local driver is the did-io `{ method, get }` shape, minus the key
+  // *generation* half of the interface (this server only ever resolves).
+  didResolver.use(
+    webvhDidResolverDriver(webvh) as unknown as Parameters<
+      typeof didResolver.use
+    >[0]
+  )
+  return didResolver
+}
+
+/**
+ * Resolves a `did:webvh` invocation keyId to a verifier, out of the locally
+ * resolved (and log-verified) controller document. The returned
+ * verificationMethod's `controller` is the bare `did:webvh` string, which is
+ * what makes `@interop/zcap`'s string-compare `isController` match the promoted
+ * Space's stored controller.
+ *
  * @param options {object}
- * @param options.keyId {string}   the did:key verification method URL
+ * @param options.webvh {WebvhResolverContext}
+ * @param options.keyId {string}   the `<did:webvh>#<fragment>` method URL
  * @returns {Promise<{ verifier: object, verificationMethod: IVerificationMethod }>}
  */
-async function getVerifier({ keyId }: { keyId: string }) {
-  const verificationMethod = await didKeyDriver.get({ url: keyId })
+async function webvhVerifier({
+  webvh,
+  keyId
+}: {
+  webvh: WebvhResolverContext
+  keyId: string
+}) {
+  const [did] = keyId.split('#')
+  const doc = await resolveWebvhController({ ...webvh, did: did! })
+  const method = (doc.verificationMethod ?? []).find(
+    entry => entry.id === keyId
+  )
+  if (!method?.publicKeyMultibase) {
+    throw new Error(
+      `Verification method "${keyId}" is not in the current DID document.`
+    )
+  }
+  // The resolved methods are `Multikey`; restate them in the suite's own shape
+  // (the same fields, and `Ed25519VerificationKey.from` accepts either) so the
+  // key material and the controller string are both explicit here.
+  const verificationMethod = {
+    id: keyId,
+    type: 'Ed25519VerificationKey2020',
+    controller: did,
+    publicKeyMultibase: method.publicKeyMultibase
+  }
   const key = await Ed25519VerificationKey.from(
     verificationMethod as IPublicKey
   )
-  const verifier = key.verifier()
   return {
-    verifier,
+    verifier: key.verifier(),
     verificationMethod: verificationMethod as IVerificationMethod
+  }
+}
+
+/**
+ * Builds the `verifyCapabilityInvocation` HTTP-signature key hook: resolves an
+ * invocation's keyId to an Ed25519 verifier. `did:key` keyIds resolve through
+ * the did:key driver as always; a `did:webvh` keyId resolves through the local
+ * (log-verifying) controller-document resolver, when one is engaged.
+ *
+ * @param options {object}
+ * @param [options.webvh] {WebvhResolverContext}   engage the local `did:webvh`
+ *   resolver for this verification
+ * @returns {(options: { keyId: string }) => Promise<{ verifier: object,
+ *   verificationMethod: IVerificationMethod }>}
+ */
+function createGetVerifier({ webvh }: { webvh?: WebvhResolverContext } = {}) {
+  return async function getVerifier({ keyId }: { keyId: string }) {
+    if (webvh && keyId.startsWith('did:webvh:')) {
+      return await webvhVerifier({ webvh, keyId })
+    }
+    const verificationMethod = await didKeyDriver.get({ url: keyId })
+    const key = await Ed25519VerificationKey.from(
+      verificationMethod as IPublicKey
+    )
+    const verifier = key.verifier()
+    return {
+      verifier,
+      verificationMethod: verificationMethod as IVerificationMethod
+    }
   }
 }
 
@@ -154,7 +288,10 @@ export function isRootInvocation({
  * @param options.headers {IncomingHttpHeaders}   the request headers (including
  *   `authorization`, `capability-invocation`, and `digest`)
  * @param options.serverUrl {string}   this server's base URL
- * @param options.spaceController {IDID}   the did:key that controls the Space
+ * @param options.spaceController {IDID}   the DID that controls the Space: a
+ *   `did:key`, or a self-hosted `did:webvh` on a promoted Space
+ * @param [options.webvh] {WebvhResolverContext}   storage + serverUrl for the
+ *   local `did:webvh` resolver; engaged only when `spaceController` is one
  * @param [options.requestName] {string}   human-readable request name, used in
  *   error titles
  * @param [options.logger] {ZcapLogger}   logger for verification errors;
@@ -191,6 +328,7 @@ export async function handleZcapVerify({
   headers,
   serverUrl,
   spaceController,
+  webvh,
   requestName = '',
   logger = console,
   allowTargetQuery = false,
@@ -207,6 +345,7 @@ export async function handleZcapVerify({
   headers: IncomingHttpHeaders
   serverUrl: string
   spaceController: IDID
+  webvh?: WebvhResolverContext
   requestName?: string
   logger?: ZcapLogger
   allowTargetQuery?: boolean
@@ -231,6 +370,7 @@ export async function handleZcapVerify({
       headers,
       serverUrl,
       spaceController,
+      webvh,
       allowTargetQuery,
       allowTargetAttenuation,
       attenuatedRootTarget,
@@ -262,7 +402,10 @@ export async function handleZcapVerify({
  * @param options.method {string}   the HTTP method of the request
  * @param options.headers {IncomingHttpHeaders}   the request headers
  * @param options.serverUrl {string}   this server's base URL
- * @param options.spaceController {IDID}   the did:key that controls the Space
+ * @param options.spaceController {IDID}   the DID that controls the Space: a
+ *   `did:key`, or a self-hosted `did:webvh` on a promoted Space
+ * @param [options.webvh] {WebvhResolverContext}   storage + serverUrl for the
+ *   local `did:webvh` resolver; engaged only when `spaceController` is one
  * @param [options.allowTargetQuery] {boolean}   when set, accept a request URL
  *   that adds query parameters to `allowedTarget` (e.g. List Collection's
  *   `?limit`/`cursor`) as authorized by a capability for the bare target. The
@@ -319,6 +462,7 @@ export async function verifyZcap({
   headers,
   serverUrl,
   spaceController,
+  webvh,
   allowTargetQuery = false,
   allowTargetAttenuation = false,
   attenuatedRootTarget,
@@ -333,6 +477,7 @@ export async function verifyZcap({
   headers: IncomingHttpHeaders
   serverUrl: string
   spaceController: IDID
+  webvh?: WebvhResolverContext
   allowTargetQuery?: boolean
   allowTargetAttenuation?: boolean
   attenuatedRootTarget?: string
@@ -392,8 +537,10 @@ export async function verifyZcap({
     }
   }
 
+  const activeWebvh = activeWebvhContext({ webvh, controller: spaceController })
   const documentLoader = rootCapabilityLoader({
-    controllerFor: () => spaceController
+    controllerFor: () => spaceController,
+    webvh: activeWebvh
   })
 
   // Returns the following object:
@@ -410,7 +557,7 @@ export async function verifyZcap({
     headers: headers as Record<string, string>,
     ...expected,
     documentLoader,
-    getVerifier,
+    getVerifier: createGetVerifier({ webvh: activeWebvh }),
     inspectCapabilityChain,
     maxChainLength,
     maxDelegationTtl,
@@ -456,6 +603,8 @@ function capabilityControllers(capability: {
  *   the Space -- which the chain is required to root in
  * @param options.rootController {IDID}   the scope's controller (controller of
  *   the synthesized root capability)
+ * @param [options.webvh] {WebvhResolverContext}   storage + serverUrl for the
+ *   local `did:webvh` resolver; engaged only when `rootController` is one
  * @param [options.maxChainLength] {number}   max chain length, root included
  * @param [options.maxDelegationTtl] {number}   max delegated-zcap TTL (ms)
  * @returns {Promise<{ delegator: string, chainControllers: string[],
@@ -469,12 +618,14 @@ export async function verifyRevocationChain({
   capability,
   rootTarget,
   rootController,
+  webvh,
   maxChainLength,
   maxDelegationTtl
 }: {
   capability: Record<string, unknown>
   rootTarget: string
   rootController: IDID
+  webvh?: WebvhResolverContext
   maxChainLength?: number
   maxDelegationTtl?: number
 }): Promise<{
@@ -493,7 +644,8 @@ export async function verifyRevocationChain({
         )
       }
       return rootController
-    }
+    },
+    webvh: activeWebvhContext({ webvh, controller: rootController })
   })
   const suite = new Ed25519Signature2020()
   const result = (await jsigs.verify(capability, {
@@ -564,6 +716,8 @@ export async function verifyRevocationChain({
  * @param options.rootTarget {string}   the scope's full URL (the keystore or
  *   the Space)
  * @param options.rootController {IDID}   the scope's controller
+ * @param [options.webvh] {WebvhResolverContext}   storage + serverUrl for the
+ *   local `did:webvh` resolver; engaged only when `rootController` is one
  * @param options.chainControllers {string[]}   every controller in the
  *   to-be-revoked capability's (already verified) chain
  * @param options.expectedAction {string}   the action the invocation must
@@ -584,6 +738,7 @@ export async function handleRevocationInvocationVerify({
   serverUrl,
   rootTarget,
   rootController,
+  webvh,
   chainControllers,
   expectedAction,
   inspectCapabilityChain,
@@ -598,6 +753,7 @@ export async function handleRevocationInvocationVerify({
   serverUrl: string
   rootTarget: string
   rootController: IDID
+  webvh?: WebvhResolverContext
   chainControllers: string[]
   expectedAction: string
   inspectCapabilityChain?: InspectCapabilityChain
@@ -607,6 +763,7 @@ export async function handleRevocationInvocationVerify({
   logger?: ZcapLogger
 }): Promise<void> {
   const fullRequestUrl = new URL(url, serverUrl).toString()
+  const activeWebvh = activeWebvhContext({ webvh, controller: rootController })
   const documentLoader = rootCapabilityLoader({
     controllerFor: target => {
       if (target === rootTarget) {
@@ -618,7 +775,8 @@ export async function handleRevocationInvocationVerify({
       throw new Error(
         `Unexpected root capability target "${target}" on a revocation.`
       )
-    }
+    },
+    webvh: activeWebvh
   })
 
   let zcapVerifyResult: VerifyCapabilityInvocationResult
@@ -640,7 +798,7 @@ export async function handleRevocationInvocationVerify({
       expectedTarget: [rootTarget, fullRequestUrl] as unknown as string,
       allowTargetAttenuation: true,
       documentLoader,
-      getVerifier,
+      getVerifier: createGetVerifier({ webvh: activeWebvh }),
       inspectCapabilityChain,
       maxChainLength,
       maxDelegationTtl,

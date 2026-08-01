@@ -18,6 +18,10 @@ import { resourcePath, metaPath } from '../lib/paths.js'
 import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
 import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
 import {
+  invalidateResolvedWebvhDid,
+  WEBVH_LOG_COLLECTION_ID
+} from '../lib/webvhController.js'
+import {
   InvalidRequestBodyError,
   ResourceNotFoundError,
   rethrowOrWrapStorageError
@@ -197,6 +201,12 @@ export class ResourceRequest {
       })
     } catch (err) {
       rethrowOrWrapStorageError({ err, requestName })
+    }
+    // A write into the `id` collection may replace the history log a
+    // self-hosted did:webvh controller resolves from, so any document cached
+    // from the previous log is stale as of this write.
+    if (collectionId === WEBVH_LOG_COLLECTION_ID) {
+      invalidateResolvedWebvhDid({ storage, spaceId })
     }
     // Return the new ETag so a client can chain a subsequent conditional write.
     return reply.status(204).header('etag', formatEtag(written.version)).send()
@@ -662,6 +672,11 @@ export class ResourceRequest {
       })
     } catch (err) {
       rethrowOrWrapStorageError({ err, requestName })
+    }
+    // Removing the history log makes a self-hosted did:webvh controller
+    // unresolvable; drop any document still cached from it.
+    if (collectionId === WEBVH_LOG_COLLECTION_ID) {
+      invalidateResolvedWebvhDid({ storage, spaceId })
     }
 
     return reply.status(204).send()

@@ -629,22 +629,71 @@ export class AuthVerificationError extends ProblemError {
 }
 
 /**
- * 400 — the `controller` field is present but is not a syntactically valid
- * `did:key` DID (the only DID method this server accepts). Caught at the request
- * layer so a malformed controller is rejected on the way in rather than failing
- * later, at capability-verification time.
+ * 400 — the `controller` field is present but is not one of the controller
+ * shapes this server accepts. Caught at the request layer so a malformed
+ * controller is rejected on the way in rather than failing later, at
+ * capability-verification time.
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
+ * @param [options.allowWebvh] {boolean}   set on the one call site (Update
+ *   Space) that also accepts a self-hosted `did:webvh`, so the message names
+ *   both accepted shapes there and stays `did:key`-only everywhere else
  */
 export class InvalidControllerError extends ProblemError {
-  constructor({ requestName }: { requestName?: string } = {}) {
-    const detail = 'The "controller" property must be a valid did:key DID.'
+  constructor({
+    requestName,
+    allowWebvh = false
+  }: { requestName?: string; allowWebvh?: boolean } = {}) {
+    const detail = allowWebvh
+      ? 'The "controller" property must be a valid did:key DID, or a' +
+        ' did:webvh DID hosted by this server.'
+      : 'The "controller" property must be a valid did:key DID.'
     super({
       type: ProblemTypes.INVALID_REQUEST_BODY,
       title: `Invalid ${requestName || 'request'} body`,
       detail,
       statusCode: 400,
       problems: [{ detail, pointer: '#/controller' }]
+    })
+  }
+}
+
+/**
+ * 400 — the proposed `controller` is a syntactically self-hosted `did:webvh`,
+ * but its history log does not resolve to a verified DID document: the log is
+ * absent, malformed, fails verification, names a different DID, or the DID has
+ * been deactivated.
+ *
+ * Refused before the promotion is stored, because after it both Update Space
+ * and writes to the log's `id` collection are authorized by the very controller
+ * being named -- so storing an unresolvable one would deadlock the Space with
+ * no break-glass.
+ *
+ * @param options {object}
+ * @param options.did {string}   the proposed controller DID
+ * @param [options.requestName] {string}   request name used in the error title
+ * @param [options.cause] {Error}   the underlying resolution failure
+ */
+export class UnresolvableControllerError extends ProblemError {
+  constructor({
+    did,
+    requestName,
+    cause
+  }: {
+    did: string
+    requestName?: string
+    cause?: Error
+  }) {
+    const detail =
+      `The "controller" DID ("${did}") could not be resolved and verified` +
+      ` from its history log in this server's storage.`
+    super({
+      type: ProblemTypes.INVALID_REQUEST_BODY,
+      title: `Invalid ${requestName || 'request'} body`,
+      detail,
+      statusCode: 400,
+      problems: [{ detail, pointer: '#/controller' }],
+      cause
     })
   }
 }

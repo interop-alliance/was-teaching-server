@@ -13,13 +13,14 @@ does not yet describe) is at the end, since those are spec-side work. A test
 coverage section (conformance-suite and `test/` gaps from the 2026-07-22
 coverage analysis) sits in between.
 
-This document tracks only the **remaining** gaps; completed items are dropped as
-they land (the shipped feature set is recorded in CHANGELOG.md, and earlier
-revisions of this doc carried the full inventory). The server implements the
-whole core protocol surface -- CRUD at all three levels, listings with cursor
-pagination, policies, linksets, quotas/backends reads, metadata, export/import,
-conditional writes, key epochs, both `POST .../query` profiles, chunk
-addressing, zcap revocation, and the full error-type registry.
+This document tracks only the **remaining** gaps; completed items move verbatim
+to [archived-roadmap.md](archived-roadmap.md) as they land, so WAS-N references
+keep resolving (the shipped feature set is recorded in CHANGELOG.md; items
+completed before the archive existed live only in git history). The server
+implements the whole core protocol surface -- CRUD at all three levels, listings
+with cursor pagination, policies, linksets, quotas/backends reads, metadata,
+export/import, conditional writes, key epochs, both `POST .../query` profiles,
+chunk addressing, zcap revocation, and the full error-type registry.
 
 ## Item format
 
@@ -27,8 +28,9 @@ Each work item is a `### WAS-N: Title` heading followed by a field block and
 free prose context. Ids are permanent and never reused; new items take the next
 unused number regardless of section. Statuses: `todo`, `in-progress`, `draft`
 (no actionable done-state yet -- spec-blocked or a parking record); `done` items
-are dropped from this file once shipped (CHANGELOG.md is the record). Full
-conventions live in [AGENTS.md](AGENTS.md) under "Roadmap & Task Conventions".
+move to [archived-roadmap.md](archived-roadmap.md) once shipped (CHANGELOG.md
+remains the record of what landed). Full conventions live in
+[AGENTS.md](AGENTS.md) under "Roadmap & Task Conventions".
 
 ---
 
@@ -927,6 +929,13 @@ documents converge. All of these are edits to `spec.md` in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
 repo, not server code.
 
+The venue-and-method plan for the wider BYOE-layer spec extraction -- what lands
+in the WAS spec proper vs the companion CCG work items (App Connect, Encrypted
+Collections) vs the implementers guide -- is recorded in freewallet's
+`_spec/additional-spec-roadmap.md`; its FW-60 triage table (freewallet's
+`_spec/fw-60-triage-table.md`, 2026-07-31) is the superset work queue the items
+below are mapped into.
+
 ### WAS-26: Spec the Import operation
 
 - status: todo
@@ -934,13 +943,16 @@ repo, not server code.
 - labels: spec-side
 - acceptance:
   - [ ] An Import operation is defined in the spec
-  - [ ] `import` added to the Reserved Path Segment Registry
-  - [ ] The `invalid-import` error type is no longer orphaned
+  - [x] `import` added to the Reserved Path Segment Registry (2026-07-31,
+        alongside a "Reserved / not yet specified" API-summary row next to
+        `export`)
+  - [ ] The `invalid-import` error type is no longer orphaned (interim
+        2026-07-31: its registry row now points at the reserved path and states
+        the operation is not yet specified; fully closed by the first box)
 
 `POST /space/{id}/import` is implemented (tar merge with FEP-6fcd manifest,
 `ImportStats` summary, `invalid-import` errors) but the spec defines no Import
-operation, and `import` is not in the Reserved Path Segment Registry (the
-`invalid-import` error type is registered, orphaned).
+operation.
 
 If WAS-37 proceeds, this operation thins out to profile-plus-reference: the
 accepted container format moves to the container spec, and the WAS spec keeps
@@ -962,7 +974,9 @@ authorization profile "delegatable, revocable, secure, flexible" and its
 provider-defined state, yet defines no revocation operation. The server follows
 the ezcap-express `/zcaps/revocations/` convention
 (`POST /space/{space_id}/zcaps/revocations/{revocation_id}`), which the spec
-should either adopt or replace.
+should either adopt or replace. Interim (2026-07-31): the spec's Delegation
+section now carries an ednote acknowledging the gap and naming the shipped
+convention; the defined operation remains this item.
 
 ### WAS-28: Spec the Export operation
 

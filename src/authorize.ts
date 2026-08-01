@@ -29,7 +29,8 @@ import type { IDID } from './types.js'
  * @param options.spaceId {string}
  * @param [options.collectionId] {string}
  * @param [options.resourceId] {string}
- * @param options.spaceController {IDID}   the did:key that controls the Space
+ * @param options.spaceController {IDID}   the DID that controls the Space: a
+ *   `did:key`, or a self-hosted `did:webvh` on a promoted Space
  * @param [options.requestName] {string}   human-readable request name, used in
  *   error titles
  * @param [options.allowTargetQuery] {boolean}   tolerate query parameters that
@@ -82,6 +83,7 @@ export async function authorize({
         headers,
         serverUrl,
         spaceController,
+        webvh: { storage, serverUrl },
         requestName,
         logger: request.log,
         allowTargetQuery,

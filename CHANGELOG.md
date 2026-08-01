@@ -1,5 +1,38 @@
 # History
 
+## Unreleased - TBD
+
+### Added
+
+- **A Space (or keystore) may now be controlled by a self-hosted `did:webvh`.**
+  Alongside the existing Ed25519 `did:key`, "Update Space" -- and, under the
+  same rules, "Update Keystore" / "List Keystores" on the `/kms` facet --
+  accepts a `did:webvh` anchored on this server
+  (`did:webvh:<scid>:<host>:space:<spaceId>:id`), whose history log is the
+  `did.jsonl` Resource in that Space's world-readable `id` Collection. This lets
+  a wallet hold one stable user identity whose DID document carries a
+  verification method per enrolled client, instead of a single shared key. The
+  flow is promotion by ordering: create with a `did:key`, publish the log, then
+  PUT the Description naming the `did:webvh` (still authorized by the stored
+  `did:key`) -- creation stays `did:key`-only. Cross-host `did:webvh`,
+  `did:web`, and every other DID method are refused, and a proposed `did:webvh`
+  must resolve and fully verify before it is stored (otherwise a typo or an
+  unpublished log would deadlock the Space, since after promotion the controller
+  being named authorizes its own updates); both failures are 400
+  `invalid-request-body` pointing at `#/controller`.
+- **Capability verification against a resolved `did:webvh` controller.** On a
+  promoted Space or keystore, invocation keyIds (`<did:webvh>#<fragment>`), the
+  delegation chain, and the revocation routes all resolve through the DID's
+  currently resolved document, so a verification method no longer listed in it
+  stops verifying (the current-key-set rule); `createdBy` provenance records a
+  `did:webvh` invoker too. Resolution is a local storage read, never a network
+  fetch (no liveness or SSRF surface), and the log is verified rather than
+  trusted: the SCID pinned in the DID plus full log verification (hash chain,
+  prerotation, update-key signatures, via `@interop/did-method-webvh`) rules out
+  a forged controller document. Verified documents are cached per storage
+  backend on a short TTL and invalidated by any write, delete, or import that
+  could change the log.
+
 ## 0.15.0 - 2026-07-23
 
 ### Added

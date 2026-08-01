@@ -145,7 +145,7 @@ export async function fetchSpace({
 export interface VerifiedSpaceContext {
   /** the fetched Space Description (its controller authorized the request) */
   spaceDescription: SpaceDescription
-  /** the did:key that controls the Space */
+  /** the DID that controls the Space (a did:key, or a promoted did:webvh) */
   spaceController: IDID
   /** the resolved invocationTarget URL the request was authorized against */
   allowedTarget: string
@@ -302,6 +302,7 @@ export async function fetchSpaceAndVerify({
     headers,
     serverUrl,
     spaceController: context.spaceController,
+    webvh: { storage, serverUrl },
     requestName,
     logger: request.log,
     attenuatedRootTarget: context.spaceRootTarget,

@@ -28,6 +28,18 @@ export const SPACE_DESCRIPTION_CACHE_TTL = 5_000 // milliseconds
 export const SPACE_DESCRIPTION_CACHE_MAX = 1_000
 
 /**
+ * Resolved `did:webvh` controller-document cache (see
+ * src/lib/webvhController.ts). Verifying a history log is the most expensive
+ * step on a promoted Space's hot path, so the verified document is memoized per
+ * storage backend. Writes to the log's `id` collection invalidate the entry
+ * explicitly; the short TTL mirrors the Space Description cache's backstop for
+ * multi-process deployments sharing one storage backend.
+ */
+export const WEBVH_DOCUMENT_CACHE_TTL = 5_000 // milliseconds
+/** Max number of resolved did:webvh documents held per backend cache. */
+export const WEBVH_DOCUMENT_CACHE_MAX = 1_000
+
+/**
  * Max number of resolved external-backend adapters held per provider-registry
  * cache (see src/lib/backendRegistry.ts), LRU-bounded. One adapter instance is
  * memoized per selected `{spaceId}/{backendId}` and reused across requests;

@@ -33,6 +33,10 @@ import {
 import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import {
+  invalidateResolvedWebvhDid,
+  WEBVH_LOG_COLLECTION_ID
+} from '../lib/webvhController.js'
+import {
   collectionPath,
   resourcePath,
   linksetPath,
@@ -963,6 +967,11 @@ export class CollectionRequest {
 
     try {
       await storage.deleteCollection({ spaceId, collectionId })
+      // Deleting the `id` collection drops the history log a self-hosted
+      // did:webvh controller resolves from; bust any document cached from it.
+      if (collectionId === WEBVH_LOG_COLLECTION_ID) {
+        invalidateResolvedWebvhDid({ storage, spaceId })
+      }
     } catch (err) {
       // Rethrow a typed ProblemError from the data-plane backend unchanged
       // (e.g. a 507 quota / 412 precondition) rather than flattening it to a

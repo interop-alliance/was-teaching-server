@@ -16,7 +16,10 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { generateId } from '@digitalcredentials/bnid'
 import { handleZcapVerify } from '../zcap.js'
-import { assertValidController } from '../lib/validateDid.js'
+import {
+  assertValidController,
+  assertValidSpaceController
+} from '../lib/validateDid.js'
 import { kmsKeystoresPath } from '../lib/paths.js'
 import { fetchKeystoreAndVerify } from './keystoreContext.js'
 import { verifyBodyControllerConsent } from './controllerConsent.js'
@@ -44,25 +47,31 @@ interface KeystoreConfigBody {
  * Validates a keystore config request body against the webkms schema shape
  * (minus the dropped `meterId` / `ipAllowList`): required fields present, no
  * unknown fields (`additionalProperties: false`), `controller` a valid
- * did:key, `sequence` a non-negative integer -- exactly 0 on create; the
- * update path's previous+1 gate is the storage layer's, where it is atomic.
- * Throws `InvalidRequestBodyError` (400).
+ * did:key (on update, additionally a self-hosted did:webvh -- keystore
+ * promotion mirrors Space promotion: created under a did:key, updatable to
+ * the account's did:webvh), `sequence` a non-negative integer -- exactly 0
+ * on create; the update path's previous+1 gate is the storage layer's,
+ * where it is atomic. Throws `InvalidRequestBodyError` (400).
  *
  * @param options {object}
  * @param options.body {unknown}   the parsed request body
  * @param options.requestName {string}   request name used in error titles
  * @param [options.isUpdate] {boolean}   validate the update shape (requires
  *   `id`, allows any non-negative `sequence`)
+ * @param [options.serverUrl] {string}   this server's base URL; required by
+ *   the update shape (the did:webvh acceptance is self-hosted-only)
  * @returns {KeystoreConfigBody}   the body, narrowed
  */
 function assertKeystoreConfigBody({
   body,
   requestName,
-  isUpdate = false
+  isUpdate = false,
+  serverUrl
 }: {
   body: unknown
   requestName: string
   isUpdate?: boolean
+  serverUrl?: string
 }): KeystoreConfigBody {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
     throw new InvalidRequestBodyError({
@@ -83,7 +92,11 @@ function assertKeystoreConfigBody({
     }
   }
   const config = body as Partial<KeystoreConfigBody>
-  assertValidController(config.controller, { requestName })
+  if (isUpdate && serverUrl) {
+    assertValidSpaceController(config.controller, { serverUrl, requestName })
+  } else {
+    assertValidController(config.controller, { requestName })
+  }
   if (
     !Number.isInteger(config.sequence) ||
     (config.sequence as number) < 0 ||
@@ -215,7 +228,9 @@ export class KeystoreRequest {
         })
       }
     }
-    assertValidController(query.controller, { requestName })
+    // A promoted account lists by its did:webvh (self-hosted-only), so the
+    // update-shape assert applies here too.
+    assertValidSpaceController(query.controller, { serverUrl, requestName })
     const controller = query.controller as IDID
 
     const allowedTarget = new URL(kmsKeystoresPath(), serverUrl).toString()
@@ -230,6 +245,7 @@ export class KeystoreRequest {
       requestName,
       logger: request.log,
       allowTargetQuery: true,
+      webvh: { storage, serverUrl },
       // The chain roots at the keystores-collection URL (keyed by the query
       // `controller`), not at any one keystore, so no RevocationScope exists
       // for it -- collection-level capabilities are outside the per-scope
@@ -289,10 +305,10 @@ export class KeystoreRequest {
   ): Promise<FastifyReply> {
     const requestName = 'Update Keystore'
     const { body } = request
-    const { storage } = request.server
+    const { serverUrl, storage } = request.server
     const { keystoreId } = request.params
 
-    assertKeystoreConfigBody({ body, requestName, isUpdate: true })
+    assertKeystoreConfigBody({ body, requestName, isUpdate: true, serverUrl })
 
     const { config: existing } = await fetchKeystoreAndVerify({
       request,
