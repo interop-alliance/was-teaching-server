@@ -115,8 +115,8 @@ importers:
         specifier: ^0.23.0
         version: 0.23.0(@interop/jsonld-signatures@11.8.3)
       '@interop/was-conformance-suite':
-        specifier: ^0.3.1
-        version: 0.3.1(@interop/jsonld-signatures@11.8.3)(@interop/was-client@0.23.0(@interop/jsonld-signatures@11.8.3))(react-native@0.86.0(@babel/core@7.29.7)(react@19.2.8))
+        specifier: ^0.4.1
+        version: 0.4.1(@interop/jsonld-signatures@11.8.3)(@interop/was-client@0.23.0(@interop/jsonld-signatures@11.8.3))(react-native@0.86.0(@babel/core@7.29.7)(react@19.2.8))
       '@interop/webkms-client':
         specifier: ^14.7.1
         version: 14.7.1
@@ -677,8 +677,8 @@ packages:
     resolution: {integrity: sha512-XV+tgFvgBH0p+kFVT3r/3k32OuROMi5fbCPwt/9x1CYuWmseLMjv9TGvmsib0dwuB2gqHyJzW162MJBft6ZwdA==}
     engines: {node: '>=24.0'}
 
-  '@interop/was-conformance-suite@0.3.1':
-    resolution: {integrity: sha512-Dv4EtATMnIOIev3/uL2q3tncuE7ccmPzMEBMBKa6cigSEJzfSP0xKx3TWKV56hQVs8kNx/pjt2rhfiZweLLNag==}
+  '@interop/was-conformance-suite@0.4.1':
+    resolution: {integrity: sha512-XiRUe7QYnR0oyU4xfIT52FISjJgjX9wDUld2cG2++8QWmdCljqNAp1SzTdboCzccEklKfM7pdQQgoqNvsWtUhg==}
     engines: {node: '>=24.0'}
     hasBin: true
     peerDependencies:
@@ -3487,7 +3487,7 @@ snapshots:
       - expo-crypto
       - react-native-get-random-values
 
-  '@interop/was-conformance-suite@0.3.1(@interop/jsonld-signatures@11.8.3)(@interop/was-client@0.23.0(@interop/jsonld-signatures@11.8.3))(react-native@0.86.0(@babel/core@7.29.7)(react@19.2.8))':
+  '@interop/was-conformance-suite@0.4.1(@interop/jsonld-signatures@11.8.3)(@interop/was-client@0.23.0(@interop/jsonld-signatures@11.8.3))(react-native@0.86.0(@babel/core@7.29.7)(react@19.2.8))':
     dependencies:
       '@digitalcredentials/bnid': 5.0.0(react-native@0.86.0(@babel/core@7.29.7)(react@19.2.8))
       '@interop/data-integrity-core': 8.4.0
