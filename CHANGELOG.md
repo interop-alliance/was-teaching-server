@@ -1,5 +1,16 @@
 # History
 
+## 0.16.1 - TBD
+
+### Fixed
+
+- **Delegated capabilities whose controller is a self-hosted `did:webvh` now
+  verify on a `did:key`-controlled Space too.** The local `did:webvh` resolver
+  is engaged whenever it is available, not only when the Space controller itself
+  is a `did:webvh`. This widens resolution only, never authority: the driver
+  still refuses any DID this server does not host, and the capability chain
+  still roots in the Space's own root capability.
+
 ## 0.16.0 - 2026-08-01
 
 ### Changed
@@ -9,10 +20,10 @@
   changes on the wire except the `encryption-immutable` problem+json strings,
   which now match the spec verbatim: title
   `"Collection encryption descriptor is immutable."` and detail
-  `"A Collection's 'encryption' descriptor is set-once and cannot be changed or
-  cleared."` -- the error `type`, status, and pointer are unchanged. Internal
-  helpers (`assertEncryptionDescriptorTransition`), comments, and tests renamed
-  to match; no public export carried the old word.
+  `"A Collection's 'encryption' descriptor is set-once and cannot be changed or cleared."`
+  -- the error `type`, status, and pointer are unchanged. Internal helpers
+  (`assertEncryptionDescriptorTransition`), comments, and tests renamed to
+  match; no public export carried the old word.
 
 ### Added
 

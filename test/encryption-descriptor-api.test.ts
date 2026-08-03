@@ -110,7 +110,10 @@ describe('Encryption descriptor API', () => {
       json: { id: collectionId, encryption: descriptor }
     })
     assert.equal(response.status, 201)
-    assert.deepStrictEqual((await readDesc(collectionId)).encryption, descriptor)
+    assert.deepStrictEqual(
+      (await readDesc(collectionId)).encryption,
+      descriptor
+    )
   })
 
   it('rejects a descriptor object without a string scheme (400)', async () => {
@@ -241,7 +244,10 @@ describe('Encryption descriptor API', () => {
         json: { id: collectionId, encryption: descriptor }
       })
       assert.equal(response.status, 201)
-      assert.deepStrictEqual((await readDesc(collectionId)).encryption, descriptor)
+      assert.deepStrictEqual(
+        (await readDesc(collectionId)).encryption,
+        descriptor
+      )
     })
 
     it('rejects a malformed recipient entry (400)', async () => {

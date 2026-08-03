@@ -1057,8 +1057,8 @@ consumer signal, and acceptance criteria for the core spec's section list.
 - acceptance:
   - [ ] The optional `epoch` member added to the `changes` profile registry
         entry (or `key-epochs` documented as an extension)
-  - [ ] The descriptor/stamp surface (`encryption.epochs` / `currentEpoch` rails,
-        `WAS-Key-Epoch` Resource stamp) covered
+  - [ ] The descriptor/stamp surface (`encryption.epochs` / `currentEpoch`
+        rails, `WAS-Key-Epoch` Resource stamp) covered
 
 The `changes` profile's registry entry omits the `epoch` member the server emits
 on feed documents (the `key-epochs` stamp, carried so a replicating reader picks
@@ -1140,8 +1140,8 @@ fails on decrypt.
         removed)
 
 The server now validates an optional positive-integer `version` on the
-`encryption` descriptor and enforces that, once set, it never decreases and is never
-removed (the same never-backwards rail as `currentEpoch`); clients stamp
+`encryption` descriptor and enforces that, once set, it never decreases and is
+never removed (the same never-backwards rail as `currentEpoch`); clients stamp
 `version: 1` when declaring epochs. The per-resource-CEK-under-epoch-key layout
 means moving a Resource to a new epoch only rewraps the JWE `recipients` --
 which suggests a future client-driven bulk **rewrap** operation as a cheap
@@ -1154,9 +1154,9 @@ that cached the CEKs themselves).
 - priority: medium
 - labels: spec-side, encryption
 - acceptance:
-  - [ ] The Collection Data Model descriptor definition and the implementation agree
-        on `version`'s type and optionality (spec today: a required string, e.g.
-        `"0.1"`; server: an optional positive integer)
+  - [ ] The Collection Data Model descriptor definition and the implementation
+        agree on `version`'s type and optionality (spec today: a required
+        string, e.g. `"0.1"`; server: an optional positive integer)
   - [ ] The error surface for a version transition is reconciled: the spec today
         folds any `version` change or removal into 409 `encryption-immutable`,
         while the server allows increases (a future scheme migration) and
@@ -1203,14 +1203,14 @@ non-ancestor (sibling-chunk) probe, which both readings reject.
 Shipped in the client stack, 2026-07-20; the server stores it opaquely. The spec
 should define: an HMAC-SHA256 over
 `"was-epoch-config/v1." + JSON.stringify({ scheme, version, currentEpoch, epochs })`
-(epoch ids in descriptor order, `version` null when absent), keyed via HKDF-SHA256
-from the current epoch's 32-byte secret with info `"was-epoch-config-mac/v1"` --
-a key the server never holds. Writers verify it before encrypting, so a server
-that points `currentEpoch` back at an epoch a revoked reader still holds fails
-to authenticate. The text must also own the limitation: a replay of an _entire_
-old consistent configuration (old list plus its old MAC) is only detectable with
-client-side monotonic state, out of scope for the descriptor itself. Pairs with the
-layered-revocation item (WAS-30).
+(epoch ids in descriptor order, `version` null when absent), keyed via
+HKDF-SHA256 from the current epoch's 32-byte secret with info
+`"was-epoch-config-mac/v1"` -- a key the server never holds. Writers verify it
+before encrypting, so a server that points `currentEpoch` back at an epoch a
+revoked reader still holds fails to authenticate. The text must also own the
+limitation: a replay of an _entire_ old consistent configuration (old list plus
+its old MAC) is only detectable with client-side monotonic state, out of scope
+for the descriptor itself. Pairs with the layered-revocation item (WAS-30).
 
 ### WAS-35: Spec the chunked-stream encryption profile (`caad`)
 

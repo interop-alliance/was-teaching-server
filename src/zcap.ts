@@ -291,7 +291,9 @@ export function isRootInvocation({
  * @param options.spaceController {IDID}   the DID that controls the Space: a
  *   `did:key`, or a self-hosted `did:webvh` on a promoted Space
  * @param [options.webvh] {WebvhResolverContext}   storage + serverUrl for the
- *   local `did:webvh` resolver; engaged only when `spaceController` is one
+ *   local `did:webvh` resolver; engaged whenever supplied, so a delegated
+ *   capability's did:webvh controller resolves even on a did:key-controlled
+ *   Space (the driver still refuses DIDs this server does not host)
  * @param [options.requestName] {string}   human-readable request name, used in
  *   error titles
  * @param [options.logger] {ZcapLogger}   logger for verification errors;
@@ -405,7 +407,9 @@ export async function handleZcapVerify({
  * @param options.spaceController {IDID}   the DID that controls the Space: a
  *   `did:key`, or a self-hosted `did:webvh` on a promoted Space
  * @param [options.webvh] {WebvhResolverContext}   storage + serverUrl for the
- *   local `did:webvh` resolver; engaged only when `spaceController` is one
+ *   local `did:webvh` resolver; engaged whenever supplied, so a delegated
+ *   capability's did:webvh controller resolves even on a did:key-controlled
+ *   Space (the driver still refuses DIDs this server does not host)
  * @param [options.allowTargetQuery] {boolean}   when set, accept a request URL
  *   that adds query parameters to `allowedTarget` (e.g. List Collection's
  *   `?limit`/`cursor`) as authorized by a capability for the bare target. The
@@ -537,10 +541,18 @@ export async function verifyZcap({
     }
   }
 
-  const activeWebvh = activeWebvhContext({ webvh, controller: spaceController })
+  // The webvh resolver is engaged whenever a context is supplied, not only
+  // when the Space controller itself is a did:webvh: a delegated capability
+  // on a did:key-controlled Space (an unlock Space's management zcap) may
+  // name a self-hosted did:webvh as its delegated controller, and verifying
+  // its invocation requires resolving that document. This widens resolution
+  // only, never authority -- the driver refuses any DID this server does not
+  // host, and the chain still roots in the Space's own root capability. A
+  // did:key-only verification never dereferences a webvh URL, so it pays
+  // nothing beyond the driver construction.
   const documentLoader = rootCapabilityLoader({
     controllerFor: () => spaceController,
-    webvh: activeWebvh
+    webvh
   })
 
   // Returns the following object:
@@ -557,7 +569,7 @@ export async function verifyZcap({
     headers: headers as Record<string, string>,
     ...expected,
     documentLoader,
-    getVerifier: createGetVerifier({ webvh: activeWebvh }),
+    getVerifier: createGetVerifier({ webvh }),
     inspectCapabilityChain,
     maxChainLength,
     maxDelegationTtl,
