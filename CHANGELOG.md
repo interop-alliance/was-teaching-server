@@ -1,5 +1,16 @@
 # History
 
+## 0.17.0 - TBD
+
+### Added
+
+- **Build-provenance stamp and stale-build fail-fast.** `pnpm build` now writes
+  `dist/build-info.json` (version, git commit with a `-dirty` suffix for an
+  unclean tree, build time). Startup refuses to serve when the stamped version
+  does not match `package.json` (sources updated without a rebuild), and
+  `/health` reports the stamped version, commit, and build time -- the code
+  actually running, not the `package.json` on disk.
+
 ## 0.16.1 - 2026-08-03
 
 ### Fixed

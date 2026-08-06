@@ -1,12 +1,13 @@
 /**
- * Entry point: loads and validates the env config surface via
- * loadConfigFromEnv() (fail-fast on a missing SERVER_URL or any malformed
- * value), builds the app via createApp() and starts listening.
+ * Entry point: refuses a stale build via assertFreshBuild() (a dist/ whose
+ * stamped version no longer matches package.json), loads and validates the env
+ * config surface via loadConfigFromEnv() (fail-fast on a missing SERVER_URL or
+ * any malformed value), builds the app via createApp() and starts listening.
  */
 import type { FastifyInstance } from 'fastify'
 import { createApp } from './server.js'
 import { PostgresBackend } from './backends/postgres.js'
-import { loadConfigFromEnv } from './config.default.js'
+import { assertFreshBuild, loadConfigFromEnv } from './config.default.js'
 
 /**
  * Loads the validated env config, builds the app via createApp(), and starts
@@ -16,6 +17,7 @@ import { loadConfigFromEnv } from './config.default.js'
 export async function startServer(): Promise<void> {
   let fastify: FastifyInstance
   try {
+    assertFreshBuild()
     const config = loadConfigFromEnv()
     // Backend selection: presence of DATABASE_URL selects the Postgres
     // backend; otherwise createApp falls back to the default filesystem

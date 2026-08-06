@@ -11,10 +11,63 @@ import type { KmsRecordKekRegistry, RecordKek } from './types.js'
 // so '../package.json' from import.meta.dirname resolves in either layout.
 const packageJsonPath = path.join(import.meta.dirname, '..', 'package.json')
 
-/** Server version, read from package.json at startup. */
-export const SERVER_VERSION = JSON.parse(
+/**
+ * The version package.json declares, read from disk at startup. This is the
+ * repo's version, not necessarily the running build's -- see BUILD_INFO.
+ */
+export const PACKAGE_VERSION = JSON.parse(
   fs.readFileSync(packageJsonPath, 'utf8')
 ).version as string
+
+// The build-provenance stamp sits beside the compiled modules in dist/
+// (written by scripts/write-build-info.ts as the last step of `pnpm build`),
+// so it resolves only when running the built output -- absent under tsx/dev.
+const buildInfoPath = path.join(import.meta.dirname, 'build-info.json')
+
+/**
+ * Provenance of the build actually running, from `dist/build-info.json`:
+ * the version and git commit dist/ was built from, and when. Undefined when
+ * running from src/ (dev, via tsx), where the sources cannot be stale.
+ */
+export const BUILD_INFO:
+  { version: string; commit: string | null; builtAt: string } | undefined =
+  fs.existsSync(buildInfoPath)
+    ? JSON.parse(fs.readFileSync(buildInfoPath, 'utf8'))
+    : undefined
+
+/**
+ * Server version reported by `/health` and the welcome page: the version the
+ * running build was built from when the build stamp is present, else the
+ * package.json version (dev).
+ */
+export const SERVER_VERSION = BUILD_INFO?.version ?? PACKAGE_VERSION
+
+/**
+ * Fail-fast guard against serving a stale build: when running from dist/ (the
+ * build stamp is present), the version stamped at build time must match the
+ * package.json on disk -- a mismatch means the sources were updated (e.g. a
+ * `git pull`) without a rebuild, and the process would silently run old code
+ * while reporting the new version. Called from the start.ts entry point only,
+ * so library and test compositions of createApp() are unaffected.
+ *
+ * @param options {object}
+ * @param [options.buildVersion] {string}   the stamped build version
+ *   (defaults to BUILD_INFO's; undefined = no stamp = dev, always fresh)
+ * @param [options.packageVersion] {string}   the on-disk package.json version
+ * @returns {void}
+ */
+export function assertFreshBuild({
+  buildVersion = BUILD_INFO?.version,
+  packageVersion = PACKAGE_VERSION
+}: { buildVersion?: string; packageVersion?: string } = {}): void {
+  if (buildVersion === undefined || buildVersion === packageVersion) {
+    return
+  }
+  throw new Error(
+    `dist/ was built from version ${buildVersion} but package.json is ` +
+      `${packageVersion} -- run 'pnpm build' before starting.`
+  )
+}
 
 /**
  * Space Description cache (see src/requests/spaceContext.ts). The description is

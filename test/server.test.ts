@@ -53,8 +53,10 @@ describe('Server', () => {
       /^application\/health\+json/
     )
     assert.equal(body.status, 'pass')
-    // The served version is exactly the package.json version, and has a
-    // semver-shaped `major.minor.patch` core.
+    // Under vitest the app runs from src/ (no build stamp), so the served
+    // version falls back to exactly the package.json version, and has a
+    // semver-shaped `major.minor.patch` core. A built dist/ serves the
+    // stamped build version instead.
     assert.equal(body.version, packageVersion)
     assert.match(body.version, /^\d+\.\d+\.\d+/)
   })

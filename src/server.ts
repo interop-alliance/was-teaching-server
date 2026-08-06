@@ -13,7 +13,7 @@ import path from 'node:path'
 
 import { fastifyWas, type FastifyWasOptions } from './plugin.js'
 import { initCorsProxyRoutes as initApiCorsProxyRoutes } from './corsProxy.js'
-import { SPEC_URL, SERVER_VERSION } from './config.default.js'
+import { BUILD_INFO, SPEC_URL, SERVER_VERSION } from './config.default.js'
 
 // TODO: https://github.com/fastify/fastify-helmet
 
@@ -57,10 +57,19 @@ export function createApp(options: FastifyWasOptions = {}): FastifyInstance {
   // and orchestrators can poll it cheaply. Body follows the
   // `application/health+json` shape from the IETF `draft-inadarei-api-health-check`
   // draft; Fastify's implicit HEAD route serves bodyless probes for free.
+  // When running a built dist/, the version comes from the build stamp (the
+  // code actually running, not the package.json on disk) alongside the commit
+  // and build time -- so a `curl /health` after a deploy verifies the exact
+  // build is live.
   fastify.get('/health', async (request, reply) => {
-    return reply
-      .type('application/health+json')
-      .send({ status: 'pass', version: SERVER_VERSION })
+    return reply.type('application/health+json').send({
+      status: 'pass',
+      version: SERVER_VERSION,
+      ...(BUILD_INFO && {
+        commit: BUILD_INFO.commit,
+        builtAt: BUILD_INFO.builtAt
+      })
+    })
   })
 
   fastify.register(initApiCorsProxyRoutes)

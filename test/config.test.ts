@@ -11,6 +11,7 @@ import { IdEncoder } from '@digitalcredentials/bnid'
 
 import {
   DEFAULT_PORT,
+  assertFreshBuild,
   assertValidServerUrl,
   loadConfigFromEnv,
   parseMaxUploadBytes,
@@ -26,6 +27,28 @@ function kekMultibase(key: Buffer): string {
   const bytes = Buffer.concat([Buffer.from([0xa2, 0x01]), key])
   return new IdEncoder({ encoding: 'base58', multibase: true }).encode(bytes)
 }
+
+describe('assertFreshBuild', () => {
+  it('no-ops when no build stamp is present (dev, via tsx)', () => {
+    assert.doesNotThrow(() =>
+      assertFreshBuild({ buildVersion: undefined, packageVersion: '0.16.1' })
+    )
+  })
+
+  it('no-ops when the stamped version matches package.json', () => {
+    assert.doesNotThrow(() =>
+      assertFreshBuild({ buildVersion: '0.16.1', packageVersion: '0.16.1' })
+    )
+  })
+
+  it('throws on a stale dist/, naming both versions', () => {
+    assert.throws(
+      () =>
+        assertFreshBuild({ buildVersion: '0.15.0', packageVersion: '0.16.1' }),
+      /built from version 0\.15\.0 but package\.json is 0\.16\.1/
+    )
+  })
+})
 
 describe('parseServerUrl', () => {
   it('requires SERVER_URL (unset, empty, and whitespace-only all throw)', () => {
