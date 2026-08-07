@@ -25,8 +25,6 @@ import {
   KeyIdConflictError,
   DuplicateRevocationError
 } from '../errors.js'
-import * as tar from 'tar-stream'
-import YAML from 'yaml'
 import {
   DEFAULT_MAX_UPLOAD_BYTES,
   DEFAULT_MAX_SPACES_PER_CONTROLLER,
@@ -38,25 +36,35 @@ import {
 import {
   extractTarEntries,
   buildImportPlan,
+  assertImportBodiesFit,
   metaSidecarFileId
 } from '../lib/importTar.js'
-import { collectionPath, collectionsPath, resourcePath } from '../lib/paths.js'
+import { collectionPath, collectionsPath } from '../lib/paths.js'
 import {
   encodeFilenameSegment,
   fileNameFor,
   parseResourceFileName,
   chunkDirName,
   CHUNK_DIR_PREFIX,
-  isRepresentationFileName
+  isRepresentationFileName,
+  spaceDescriptionFileName,
+  collectionDescriptionFileName,
+  policyFileName,
+  metaSidecarFileName
 } from '../lib/resourceFileName.js'
-import { sanitizeBackendRecord } from '../lib/backends.js'
-import { backendUsageFields } from '../lib/backendUsage.js'
-import { assertEncryptedWriteConforms } from '../lib/encryption.js'
-import { encodeCursor, decodeCursor } from '../lib/cursor.js'
+import type { MetaSidecar } from '../lib/metaSidecar.js'
 import {
-  buildExportManifest,
-  EXPORT_ENTRY_MTIME
-} from '../lib/exportManifest.js'
+  sanitizeBackendRecord,
+  serverBackendDescriptor
+} from '../lib/backends.js'
+import { backendUsageFieldsFor } from '../lib/backendUsage.js'
+import {
+  collectionListingItem,
+  collectionResourcesList,
+  suppressesItemNames
+} from '../lib/collectionListing.js'
+import { packSpaceArchive } from '../lib/exportTar.js'
+import type { ArchiveEntry, ArchiveFile } from '../lib/exportTar.js'
 import { revocationFileName } from '../lib/revocations.js'
 import { policyGrants } from '../policy.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
@@ -69,9 +77,11 @@ import {
   commitTempFile
 } from '../lib/atomicFile.js'
 import {
-  DEFAULT_PAGE_SIZE,
   clampPageSize,
-  compareCodeUnits
+  compareCodeUnits,
+  nextPageUrl,
+  resolvePageSize,
+  seekPage
 } from '../lib/pagination.js'
 import {
   runBlindedIndexQuery,
@@ -136,77 +146,6 @@ const execFileAsync = promisify(execFile)
  * `fastify.log` in, or in tests).
  */
 const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
-
-/**
- * The on-disk shape of a Resource's metadata sidecar (`.meta.<resourceId>.json`,
- * see `metaSidecarFileName`). Only the server-managed timestamps, the monotonic
- * `version`, and the user-writable `custom` object are persisted; `contentType`
- * / `size` are always derived from the stored representation, never duplicated
- * here.
- *
- * `createdBy` is the DID of whoever created the Resource (spec "Resource
- * Metadata Data Model"): an OPTIONAL server-managed property, absent when no
- * creator was recorded.
- *
- * `version` is the per-Resource monotonic counter that backs the HTTP `ETag`
- * strong validator (see `formatEtag`): it starts at 1 on first content write and
- * increments on each subsequent content write. It is `undefined` only for a
- * Resource written before versioning existed (a legacy sidecar), in which case
- * the backend treats the current version as 0.
- *
- * `metaVersion` is the independent monotonic counter for the `/meta`
- * sub-resource (spec V2 metadata versioning): it starts at 1 on first metadata
- * write and increments on each subsequent one, backing the `/meta` ETag. It is
- * kept separate from `version` so a metadata-only edit does not bump the content
- * ETag (preserving the content-ETag contract), and is `undefined` until the
- * first metadata write. A content write preserves it unchanged.
- *
- * `deleted` marks a **tombstone**: a soft delete that drops the content
- * representation but keeps the sidecar so the change feed (replication) still
- * surfaces it. A
- * tombstone has no `r.<id>...` content file, so it is invisible to every normal
- * read path (which gates on the content file via `#findFile`); only the
- * (future) change feed reads it. `contentType` records the representation's
- * last-known content-type, which the content filename no longer carries once it
- * is gone -- present only on a tombstone (a live Resource derives its
- * content-type from the filename).
- */
-interface MetaSidecar {
-  createdAt: string
-  updatedAt: string
-  // DID of the Resource's creator, set from the invoker of the first content
-  // write and thereafter preserved verbatim (as `createdAt` is), including
-  // across a tombstone. Server-managed: never sourced from the request body,
-  // and not reachable from the user-writable `custom`. Absent on a sidecar
-  // written before `createdBy` was recorded, or by a caller with no invoker.
-  createdBy?: IDID
-  version?: number
-  metaVersion?: number
-  // On a plaintext Collection `custom` is `{ name, tags }`; on an encrypted
-  // Collection it is the opaque encryption envelope (an arbitrary JSON object),
-  // stored verbatim -- the server never decrypts it.
-  custom?: ResourceMetadataCustom | Record<string, unknown>
-  // The client-declared key epoch the current content was encrypted under (the
-  // `key-epochs` feature). Stored opaquely: a content write sets it from the
-  // `WAS-Key-Epoch` header (clearing it when absent -- the new ciphertext's
-  // epoch is unknown), while a metadata write PRESERVES it unless the `/meta`
-  // body supplies a new value. The server never computes or verifies it.
-  epoch?: string
-  deleted?: boolean
-  contentType?: string
-}
-
-/**
- * Builds the on-disk filename for a Resource's metadata sidecar:
- * `.meta.<resourceId>.json`. A dot-file kept alongside the resource
- * representation in the Collection dir (the same convention as `.policy.` /
- * `.collection.`), holding the timestamps and user-writable `custom` object.
- * @param resourceId {string}
- * @returns {string}
- */
-export function metaSidecarFileName(resourceId: string): string {
-  return `.meta.${resourceId}.json`
-}
 
 /**
  * Opens a read stream for a file, resolving once the stream has opened (and
@@ -381,50 +320,14 @@ export class FileSystemBackend implements StorageBackend {
    * filesystem backend is the single server-configured default: it stores both
    * JSON documents and binary blobs on disk, so its data survives restarts.
    *
-   * It advertises the `conditional-writes` affordance: it exposes a per-Resource
-   * `version` as an HTTP `ETag` validator and honors `If-Match` / `If-None-Match`
-   * write preconditions atomically (returning `412 precondition-failed` on a
-   * mismatch). It also advertises `chunked-streams`: chunk addressing for large
-   * Resources (`/{resourceId}/chunks/{n}`), each chunk stored opaquely like a
-   * binary Resource representation.
-   * (Client-side encryption is deliberately not a backend feature: encrypted
-   * documents are opaque client-encrypted JSON this backend already stores
-   * faithfully, with no server cooperation.)
+   * Its affordances (chunk addressing here stores each chunk opaquely, like a
+   * binary Resource representation) are the shared server-backend feature set
+   * -- see `SERVER_BACKEND_FEATURES` in `lib/backends.ts`, which also documents
+   * why client-side encryption is deliberately not among them.
    * @returns {Required<Omit<BackendDescriptor, 'provider' | 'connection'>>}
    */
   describe(): Required<Omit<BackendDescriptor, 'provider' | 'connection'>> {
-    // The wire type only REQUIRES `id`; this backend always populates every
-    // field except the `external`-only `provider` / `connection` (the default
-    // backend is server-managed), so its return is the stricter
-    // `Required<Omit<..., 'provider' | 'connection'>>` (which also lets
-    // `reportUsage` read a non-optional `managedBy` off `describe()`).
-    return {
-      id: 'default',
-      name: 'Server Filesystem',
-      managedBy: 'server',
-      storageMode: ['document', 'blob'],
-      persistence: 'durable',
-      // `changes-query`: serves the `changes` profile of the reserved `query`
-      // endpoint -- the replication change feed (`changesSince`).
-      // `blinded-index-query`: serves the `blinded-index` profile -- EDV
-      // blinded-attribute queries (`queryByBlindedIndex`).
-      // `key-epochs`: multi-recipient encrypted Collections -- per-epoch wrapped
-      // keys on the `encryption` descriptor, a client-declared `epoch` stamp on
-      // Resources, and conditional (`If-Match`) Collection Description writes.
-      // `chunked-streams`: chunk addressing (`/{resourceId}/chunks/{n}`) for a
-      // large Resource, each chunk stored opaquely (bytes + content-type).
-      // `equality-query`: serves the `equality` profile -- server-extracted
-      // plaintext attribute equality over a Collection's declared `indexes`
-      // (`queryByEquality`), plus the GET `filter[attr]=value` equality filter.
-      features: [
-        'conditional-writes',
-        'changes-query',
-        'blinded-index-query',
-        'equality-query',
-        'key-epochs',
-        'chunked-streams'
-      ]
-    }
+    return serverBackendDescriptor({ name: 'Server Filesystem' })
   }
 
   /**
@@ -521,7 +424,11 @@ export class FileSystemBackend implements StorageBackend {
       await this.#diskUsage(spaceDir)
 
     return {
-      ...this.#backendUsageFields({ usageBytes, spaceTotalBytes: usageBytes }),
+      ...backendUsageFieldsFor({
+        backend: this,
+        usageBytes,
+        spaceTotalBytes: usageBytes
+      }),
       measuredAt,
       ...(includeCollections && { usageByCollection })
     }
@@ -557,40 +464,9 @@ export class FileSystemBackend implements StorageBackend {
       byCollection.find(entry => entry.id === collectionId)?.usageBytes ?? 0
 
     return {
-      ...this.#backendUsageFields({ usageBytes, spaceTotalBytes }),
+      ...backendUsageFieldsFor({ backend: this, usageBytes, spaceTotalBytes }),
       measuredAt
     }
-  }
-
-  /**
-   * Builds the backend-identity and condition fields shared by the Space and
-   * per-Collection quota reports. `usageBytes` is what the report shows (the
-   * Space total or a single Collection's slice); `spaceTotalBytes` drives the
-   * `state` / `restrictedActions`, which are backend-wide (the quota is a
-   * per-Space limit) and so always measured against the Space total. The
-   * `constraints.maxUploadBytes` cap is advertised when configured.
-   * @param options {object}
-   * @param options.usageBytes {number}   the usage figure to report
-   * @param options.spaceTotalBytes {number}   the Space total, for state
-   * @returns {Omit<BackendUsage, 'measuredAt' | 'usageByCollection'>}
-   */
-  #backendUsageFields({
-    usageBytes,
-    spaceTotalBytes
-  }: {
-    usageBytes: number
-    spaceTotalBytes: number
-  }): Omit<BackendUsage, 'measuredAt' | 'usageByCollection'> {
-    const { id, name, managedBy } = this.describe()
-    return backendUsageFields({
-      usageBytes,
-      spaceTotalBytes,
-      capacityBytes: this.capacityBytes,
-      maxUploadBytes: this.maxUploadBytes,
-      id,
-      name,
-      managedBy
-    })
   }
 
   /**
@@ -603,7 +479,7 @@ export class FileSystemBackend implements StorageBackend {
    *
    * This is a soft limit under concurrency: two simultaneous writes can each pass
    * against the same usage snapshot and jointly overshoot. The per-write
-   * streaming guard (`#quotaGuard`) still bounds each individual write.
+   * streaming guard (`#byteLimitGuard`) still bounds each individual write.
    *
    * The `du` measurement (a whole-Space tree walk) is cached per Space for
    * `QUOTA_USAGE_CACHE_TTL` ms (see `#usageCache`): between re-measurements
@@ -644,57 +520,64 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * A pass-through `Transform` that counts the bytes flowing through it and
-   * aborts the pipeline with `QuotaExceededError` (507) once the cumulative total
-   * would exceed `headroomBytes`. Hard-caps a streamed blob write whose size is
-   * not known up front (so the pre-flight check alone cannot catch it), e.g. a
-   * multipart upload or a body without `Content-Length`.
+   * Pre-flight per-upload size cap (413 `PayloadTooLargeError`): rejects a body
+   * whose known size exceeds the configured `maxUploadBytes`. A no-op when the
+   * backend sets no cap, or when the size is not known up front (a streamed body
+   * without `Content-Length` -- `#byteLimitGuard` catches that one mid-stream).
+   * Shared by every write path that admits bytes: the JSON and blob Resource
+   * writes and the import pre-flight.
    * @param options {object}
-   * @param options.spaceId {string}
-   * @param options.capacityBytes {number}   the configured per-Space limit
-   * @param options.headroomBytes {number}   max bytes this write may add
+   * @param [options.maxUploadBytes] {number}   the per-upload cap in bytes
+   * @param [options.uploadBytes] {number}   the known size of the pending body
+   * @returns {void}
+   */
+  #assertUploadSize({
+    maxUploadBytes,
+    uploadBytes
+  }: {
+    maxUploadBytes?: number
+    uploadBytes?: number
+  }): void {
+    if (
+      maxUploadBytes !== undefined &&
+      uploadBytes !== undefined &&
+      uploadBytes > maxUploadBytes
+    ) {
+      throw new PayloadTooLargeError({
+        maxUploadBytes,
+        backendId: this.describe().id,
+        uploadBytes
+      })
+    }
+  }
+
+  /**
+   * A pass-through `Transform` that counts the bytes flowing through it and
+   * aborts the pipeline with `error` once the cumulative total would exceed
+   * `limitBytes`. Hard-caps a streamed write whose size is not known up front
+   * (so the pre-flight check alone cannot catch it), e.g. a multipart upload or
+   * a body without `Content-Length`. The caller supplies the error the overflow
+   * surfaces, so the same counter serves both limits: `PayloadTooLargeError`
+   * (413) for the per-upload cap and `QuotaExceededError` (507) for the
+   * remaining Space headroom.
+   * @param options {object}
+   * @param options.limitBytes {number}   max bytes this write may add
+   * @param options.error {Error}   aborts the pipeline once the limit is passed
    * @returns {Transform}
    */
-  #quotaGuard({
-    spaceId,
-    capacityBytes,
-    headroomBytes
+  #byteLimitGuard({
+    limitBytes,
+    error
   }: {
-    spaceId: string
-    capacityBytes: number
-    headroomBytes: number
+    limitBytes: number
+    error: Error
   }): Transform {
     let written = 0
     return new Transform({
       transform(chunk, _encoding, callback) {
         written += chunk.length
-        if (written > headroomBytes) {
-          callback(new QuotaExceededError({ spaceId, capacityBytes }))
-          return
-        }
-        callback(null, chunk)
-      }
-    })
-  }
-
-  /**
-   * A pass-through `Transform` that counts the bytes flowing through it and
-   * aborts the pipeline with `PayloadTooLargeError` (413) once the cumulative
-   * total exceeds `maxUploadBytes`. Caps a single streamed upload whose size is
-   * not known up front (e.g. a multipart part or a body without
-   * `Content-Length`), independently of the cumulative Space quota.
-   * @param options {object}
-   * @param options.maxUploadBytes {number}   the per-upload cap in bytes
-   * @returns {Transform}
-   */
-  #uploadCapGuard({ maxUploadBytes }: { maxUploadBytes: number }): Transform {
-    const backendId = this.describe().id
-    let written = 0
-    return new Transform({
-      transform(chunk, _encoding, callback) {
-        written += chunk.length
-        if (written > maxUploadBytes) {
-          callback(new PayloadTooLargeError({ maxUploadBytes, backendId }))
+        if (written > limitBytes) {
+          callback(error)
           return
         }
         callback(null, chunk)
@@ -808,6 +691,46 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * Reads a directory's entries (as `Dirent`s), treating an absent directory as
+   * an empty one: `ENOENT` resolves `[]` rather than rejecting, since a
+   * directory that was never created simply holds nothing. Any other error is
+   * rethrown. Shared by the enumeration paths whose target may legitimately not
+   * exist yet (a Collection dir, a chunk dir).
+   * @param dir {string}
+   * @returns {Promise<fs.Dirent[]>}
+   */
+  async #readDirEntries(dir: string): Promise<fs.Dirent[]> {
+    try {
+      return await fs.promises.readdir(dir, { withFileTypes: true })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return []
+      }
+      throw err
+    }
+  }
+
+  /**
+   * The Resource representations in a directory listing, parsed: keeps only the
+   * files named `r.<id>.<type>.<ext>` -- which drops the `.meta.` /
+   * `.collection.` / `.policy.` dot-files and every subdirectory -- and resolves
+   * each one's `resourceId` / `contentType` alongside the `fileName` it was read
+   * from.
+   * @param entries {fs.Dirent[]}
+   * @returns {Array<{ fileName: string, resourceId: string, contentType: string }>}
+   */
+  #representationEntries(
+    entries: fs.Dirent[]
+  ): Array<{ fileName: string; resourceId: string; contentType: string }> {
+    return entries
+      .filter(entry => entry.isFile() && isRepresentationFileName(entry.name))
+      .map(entry => ({
+        fileName: entry.name,
+        ...parseResourceFileName(entry.name)
+      }))
+  }
+
+  /**
    * Lists every on-disk file belonging to a single Resource: the
    * representation(s) whose name starts with `r.<encodedResourceId>.` in the
    * Collection dir. The trailing `.` anchors to the filename's segment boundary
@@ -821,28 +744,23 @@ export class FileSystemBackend implements StorageBackend {
    * @param options {object}
    * @param options.collectionDir {string}
    * @param options.resourceId {string}
+   * @param [options.entries] {fs.Dirent[]}   an already-read listing of
+   *   `collectionDir` to match against, so a caller holding the write lock can
+   *   scan the directory once and reuse the result
    * @returns {Promise<string[]>}   full paths, in directory order
    */
   async #resourceFilesFor({
     collectionDir,
-    resourceId
+    resourceId,
+    entries
   }: {
     collectionDir: string
     resourceId: string
+    entries?: fs.Dirent[]
   }): Promise<string[]> {
     const prefix = `r.${encodeFilenameSegment(resourceId)}.`
-    let entries: fs.Dirent[]
-    try {
-      entries = await fs.promises.readdir(collectionDir, {
-        withFileTypes: true
-      })
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return []
-      }
-      throw err
-    }
-    return entries
+    const dirEntries = entries ?? (await this.#readDirEntries(collectionDir))
+    return dirEntries
       .filter(entry => entry.isFile() && entry.name.startsWith(prefix))
       .map(entry => path.join(collectionDir, entry.name))
   }
@@ -851,18 +769,23 @@ export class FileSystemBackend implements StorageBackend {
    * @param options {object}
    * @param options.collectionDir {string}
    * @param options.resourceId {string}
+   * @param [options.entries] {fs.Dirent[]}   an already-read listing of
+   *   `collectionDir` (see `#resourceFilesFor`)
    * @returns {Promise<string|undefined>} First matching resource file path.
    */
   async #findFile({
     collectionDir,
-    resourceId
+    resourceId,
+    entries
   }: {
     collectionDir: string
     resourceId: string
+    entries?: fs.Dirent[]
   }): Promise<string | undefined> {
     const [filePath] = await this.#resourceFilesFor({
       collectionDir,
-      resourceId
+      resourceId,
+      entries
     })
     return filePath
   }
@@ -920,7 +843,7 @@ export class FileSystemBackend implements StorageBackend {
     const creator = prior ? prior.createdBy : createdBy
 
     const spaceDir = await this.#ensureSpaceDir({ spaceId })
-    const filename = `.space.${spaceId}.json`
+    const filename = spaceDescriptionFileName(spaceId)
     // Durable full replacement: `MetadataJsonStore.read` parses plain JSON, so
     // an atomically-written JSON string round-trips through the same read path.
     await atomicWriteFile({
@@ -944,7 +867,7 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
   }): Promise<SpaceDescription | undefined> {
     const spaceDir = this.#spaceDir(spaceId)
-    const filename = `.space.${spaceId}.json`
+    const filename = spaceDescriptionFileName(spaceId)
     const metaStore = new MetadataJsonStore<SpaceDescription>({
       file: path.join(spaceDir, filename)
     })
@@ -995,16 +918,17 @@ export class FileSystemBackend implements StorageBackend {
     const spaceEntries = rootEntries
       .filter(entry => entry.isDirectory())
       .sort((a, b) => a.name.localeCompare(b.name))
-    const spaces: SpaceDescription[] = []
-    for (const entry of spaceEntries) {
-      const spaceDescription = await this.getSpaceDescription({
-        spaceId: entry.name
-      })
-      if (spaceDescription) {
-        spaces.push(spaceDescription)
-      }
-    }
-    return spaces
+    // Each description is an independent file read, so read them in parallel;
+    // `Promise.all` preserves the sorted order.
+    const descriptions = await Promise.all(
+      spaceEntries.map(entry =>
+        this.getSpaceDescription({ spaceId: entry.name })
+      )
+    )
+    return descriptions.filter(
+      (spaceDescription): spaceDescription is SpaceDescription =>
+        Boolean(spaceDescription)
+    )
   }
 
   /**
@@ -1108,59 +1032,53 @@ export class FileSystemBackend implements StorageBackend {
     // `totalItems` -- the count of every Collection, not the page.
     const totalItems = ids.length
 
-    // Seek to the first id strictly after the cursor's anchor. Keyset stability:
-    // a missing anchor (deleted between pages) does not break the scan, since we
-    // resume at the first id greater than it.
-    let startIndex = 0
-    if (cursor !== undefined) {
-      const { after } = decodeCursor(cursor)
-      const found = ids.findIndex(id => id > after)
-      startIndex = found === -1 ? ids.length : found
-    }
+    // Clamp `limit` to `[1, MAX_PAGE_SIZE]`, defaulting when absent, then cut
+    // the page out at the cursor's seek point (the Collection id is the keyset).
+    const pageSize = resolvePageSize(limit)
+    const { page: pageIds, hasMore } = seekPage({
+      items: ids,
+      cursor,
+      pageSize,
+      keyOf: id => id
+    })
 
-    // Clamp `limit` to `[1, MAX_PAGE_SIZE]`, defaulting when absent.
-    const pageSize =
-      limit === undefined ? DEFAULT_PAGE_SIZE : clampPageSize(limit)
-
-    // Take `pageSize + 1` from the seek point to detect a further page without a
-    // second pass; the page is the first `pageSize`.
-    const window = ids.slice(startIndex, startIndex + pageSize + 1)
-    const hasMore = window.length > pageSize
-    const pageIds = hasMore ? window.slice(0, pageSize) : window
-
-    const items: CollectionSummary[] = []
-    for (const collectionId of pageIds) {
-      const collectionDescription = await this.getCollectionDescription({
-        spaceId,
-        collectionId
+    // Each Collection's reads are independent, so the page is assembled in
+    // parallel; `Promise.all` preserves the keyset order of `pageIds`.
+    const items: CollectionSummary[] = await Promise.all(
+      pageIds.map(async collectionId => {
+        const collectionDescription = await this.getCollectionDescription({
+          spaceId,
+          collectionId
+        })
+        // Probe the collection-level policy inline so a client need not issue one
+        // policy request per listed Collection (an N+1). Only page items are read,
+        // so this stays O(page size). `public` is true iff a `PublicCanRead`
+        // policy is attached (via the shared `policyGrants` recognizer, which
+        // fail-closes any other/unrecognized policy type to false).
+        const policy = await this.getPolicy({ spaceId, collectionId })
+        return {
+          id: collectionId,
+          url: collectionPath({ spaceId, collectionId }),
+          // `name` is optional on the wire type; a stored Collection normally has
+          // one (create defaults it to the id). Fall back to the dir name for a
+          // description-less directory too (e.g. one left by a policy write to a
+          // never-created Collection) -- reading `.name` off `undefined` here would
+          // 500 the entire Space listing.
+          name: collectionDescription?.name ?? collectionId,
+          public: policyGrants({ policy, action: 'read', logger: this.logger })
+        }
       })
-      // Probe the collection-level policy inline so a client need not issue one
-      // policy request per listed Collection (an N+1). Only page items are read,
-      // so this stays O(page size). `public` is true iff a `PublicCanRead`
-      // policy is attached (via the shared `policyGrants` recognizer, which
-      // fail-closes any other/unrecognized policy type to false).
-      const policy = await this.getPolicy({ spaceId, collectionId })
-      items.push({
-        id: collectionId,
-        url: collectionPath({ spaceId, collectionId }),
-        // `name` is optional on the wire type; a stored Collection normally has
-        // one (create defaults it to the id). Fall back to the dir name for a
-        // description-less directory too (e.g. one left by a policy write to a
-        // never-created Collection) -- reading `.name` off `undefined` here would
-        // 500 the entire Space listing.
-        name: collectionDescription?.name ?? collectionId,
-        public: policyGrants({ policy, action: 'read', logger: this.logger })
-      })
-    }
+    )
 
     // `next` is present iff a further page may follow; its absence marks the last
-    // page (the authoritative end-of-list signal). The cursor (the last id on
-    // this page) and the page size are baked into the URL so the client follows
-    // it verbatim without constructing query parameters.
+    // page (the authoritative end-of-list signal).
     let next: string | undefined
     if (hasMore) {
-      const lastId = pageIds[pageIds.length - 1]!
-      next = `${collectionsPath({ spaceId })}?limit=${pageSize}&cursor=${encodeCursor(lastId)}`
+      next = nextPageUrl({
+        path: collectionsPath({ spaceId }),
+        limit: pageSize,
+        after: pageIds[pageIds.length - 1]!
+      })
     }
 
     return {
@@ -1194,42 +1112,59 @@ export class FileSystemBackend implements StorageBackend {
     )
     spaceEntries.sort((a, b) => a.name.localeCompare(b.name))
 
-    const collectionEntriesByDir: Record<string, typeof spaceEntries> = {}
-    // Per-Resource chunk directories (`.chunks.<encId>/`; the `chunked-streams`
-    // feature) are subdirectories of a Collection dir, so the file filter below
-    // skips them. Gather each one's files here so a chunked Resource's chunks
-    // travel in the export, keyed by Collection then by chunk-directory name.
-    const chunkDirsByCollection: Record<
-      string,
-      Array<{ dirName: string; files: string[] }>
-    > = {}
+    // The archive's top-level entries, in pack order: a Space-level file, or a
+    // Collection directory holding its files and, per chunked Resource, a
+    // `.chunks.<encId>/` subdirectory. Every file entry carries a lazy `read()`
+    // so the bytes are still fetched one file at a time while packing (an
+    // export never buffers the whole Space).
+    const archiveEntries: ArchiveEntry[] = []
     for (const entry of spaceEntries) {
-      if (!entry.isDirectory()) {
+      const entryPath = path.join(sourceSpaceDir, entry.name)
+
+      if (entry.isDirectory()) {
+        const collectionEntries = await fs.promises.readdir(entryPath, {
+          withFileTypes: true
+        })
+        const files: ArchiveEntry[] = collectionEntries
+          .filter(child => child.isFile())
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map(child => ({
+            name: child.name,
+            read: () => fs.promises.readFile(path.join(entryPath, child.name))
+          }))
+        // Per-Resource chunk directories (`.chunks.<encId>/`; the
+        // `chunked-streams` feature) are subdirectories of a Collection dir, so
+        // the file filter above skips them. Append each one's files here so a
+        // chunked Resource's chunks travel in the export.
+        for (const sub of collectionEntries
+          .filter(
+            child =>
+              child.isDirectory() && child.name.startsWith(CHUNK_DIR_PREFIX)
+          )
+          .sort((a, b) => a.name.localeCompare(b.name))) {
+          const chunkDir = path.join(entryPath, sub.name)
+          const chunkFiles = (
+            await fs.promises.readdir(chunkDir, { withFileTypes: true })
+          )
+            .filter(child => child.isFile())
+            .map(child => child.name)
+            .sort((a, b) => a.localeCompare(b))
+            .map(name => ({
+              name,
+              read: () => fs.promises.readFile(path.join(chunkDir, name))
+            }))
+          files.push({ name: sub.name, files: chunkFiles })
+        }
+        archiveEntries.push({ name: entry.name, files })
         continue
       }
-      const entries = await fs.promises.readdir(
-        path.join(sourceSpaceDir, entry.name),
-        { withFileTypes: true }
-      )
-      collectionEntriesByDir[entry.name] = entries
-        .filter(e => e.isFile())
-        .sort((a, b) => a.name.localeCompare(b.name))
-      const chunkDirs: Array<{ dirName: string; files: string[] }> = []
-      for (const sub of entries
-        .filter(e => e.isDirectory() && e.name.startsWith(CHUNK_DIR_PREFIX))
-        .sort((a, b) => a.name.localeCompare(b.name))) {
-        const files = (
-          await fs.promises.readdir(
-            path.join(sourceSpaceDir, entry.name, sub.name),
-            { withFileTypes: true }
-          )
-        )
-          .filter(e => e.isFile())
-          .map(e => e.name)
-          .sort((a, b) => a.localeCompare(b))
-        chunkDirs.push({ dirName: sub.name, files })
+
+      if (entry.isFile()) {
+        archiveEntries.push({
+          name: entry.name,
+          read: () => fs.promises.readFile(entryPath)
+        })
       }
-      chunkDirsByCollection[entry.name] = chunkDirs
     }
 
     // Space-scoped zcap revocations travel with the export. They live in the
@@ -1238,103 +1173,25 @@ export class FileSystemBackend implements StorageBackend {
     // `revocations/` dir -- outside `space/<spaceId>/`, where a subdirectory
     // would read as a Collection on import.
     const revocationsDir = this.#spaceRevocationDir(spaceId)
-    let revocationFiles: string[] = []
+    let revocations: ArchiveFile[] = []
     try {
-      revocationFiles = (
+      revocations = (
         await fs.promises.readdir(revocationsDir, { withFileTypes: true })
       )
         .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
         .map(entry => entry.name)
         .sort((a, b) => a.localeCompare(b))
+        .map(name => ({
+          name,
+          read: () => fs.promises.readFile(path.join(revocationsDir, name))
+        }))
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
         throw new StorageError({ cause: err as Error })
       }
     }
 
-    const manifest = buildExportManifest({
-      spaceId,
-      entries: spaceEntries.map(entry =>
-        entry.isDirectory()
-          ? {
-              name: entry.name,
-              // The Collection's own files, then each chunked Resource's chunk
-              // files listed by their `.chunks.<encId>/<file>` relative path
-              // (the manifest mirrors the pack order below).
-              files: [
-                ...(collectionEntriesByDir[entry.name] ?? []).map(
-                  file => file.name
-                ),
-                ...(chunkDirsByCollection[entry.name] ?? []).flatMap(
-                  ({ dirName, files }) =>
-                    files.map(file => `${dirName}/${file}`)
-                )
-              ]
-            }
-          : // top-level files in space (e.g. .space.<spaceId>.json)
-            { name: entry.name }
-      ),
-      revocationFiles
-    })
-
-    // Fixed mtime on every entry so the archive is byte-reproducible (see
-    // EXPORT_ENTRY_MTIME).
-    const mtime = EXPORT_ENTRY_MTIME
-    const pack = tar.pack()
-    pack.entry({ name: 'manifest.yml', mtime }, YAML.stringify(manifest))
-    pack.entry({ name: 'space/', type: 'directory', mtime })
-    pack.entry({ name: `space/${spaceId}/`, type: 'directory', mtime })
-
-    for (const entry of spaceEntries) {
-      const entryTarget = `space/${spaceId}/${entry.name}`
-
-      if (entry.isDirectory()) {
-        pack.entry({ name: `${entryTarget}/`, type: 'directory', mtime })
-        for (const file of collectionEntriesByDir[entry.name] ?? []) {
-          const bytes = await fs.promises.readFile(
-            path.join(sourceSpaceDir, entry.name, file.name)
-          )
-          pack.entry({ name: `${entryTarget}/${file.name}`, mtime }, bytes)
-        }
-        // A chunked Resource's chunk directory and its files, packed under the
-        // Collection so `.chunks.<encId>/<file>` round-trips on import.
-        for (const { dirName, files } of chunkDirsByCollection[entry.name] ??
-          []) {
-          pack.entry({
-            name: `${entryTarget}/${dirName}/`,
-            type: 'directory',
-            mtime
-          })
-          for (const file of files) {
-            const bytes = await fs.promises.readFile(
-              path.join(sourceSpaceDir, entry.name, dirName, file)
-            )
-            pack.entry(
-              { name: `${entryTarget}/${dirName}/${file}`, mtime },
-              bytes
-            )
-          }
-        }
-      } else if (entry.isFile()) {
-        const bytes = await fs.promises.readFile(
-          path.join(sourceSpaceDir, entry.name)
-        )
-        pack.entry({ name: entryTarget, mtime }, bytes)
-      }
-    }
-
-    if (revocationFiles.length > 0) {
-      pack.entry({ name: 'revocations/', type: 'directory', mtime })
-      for (const name of revocationFiles) {
-        const bytes = await fs.promises.readFile(
-          path.join(revocationsDir, name)
-        )
-        pack.entry({ name: `revocations/${name}`, mtime }, bytes)
-      }
-    }
-
-    pack.finalize()
-    return pack
+    return packSpaceArchive({ spaceId, entries: archiveEntries, revocations })
   }
 
   /**
@@ -1355,76 +1212,26 @@ export class FileSystemBackend implements StorageBackend {
     const entries = await extractTarEntries(tarStream)
     const { spacePolicy, collections, revocations } = buildImportPlan(entries)
 
-    // Pre-flight pass over every staged resource, before writing anything, so a
-    // rejected import leaves the Space untouched. Three checks, each of which the
-    // PUT/POST write routes already enforce and which import MUST inherit too:
-    //  - per-upload size cap (413): reject any single body over `maxUploadBytes`;
-    //  - fail-closed encryption (422): when the target Collection declares a
-    //    recognized `encryption` scheme, every incoming resource body MUST be a
-    //    conforming envelope of it (a plaintext body under an encrypted
-    //    Collection would otherwise store server-visible plaintext);
-    //  - cumulative quota (507): sum bodies and check remaining Space headroom.
-    // The effective encryption descriptor is the merged-into Collection's existing
-    // one, else the import's own Collection description (a new Collection). Skips
-    // (existing ids) are counted conservatively, as for the quota estimate.
+    // Shared pre-flight over every staged body (`assertImportBodiesFit`): the
+    // per-upload 413 cap and the fail-closed encryption check, run before
+    // anything is written so a rejected import leaves the Space untouched. It
+    // returns the summed incoming bytes for the third invariant, the cumulative
+    // quota (507), which stays here because the headroom check is this
+    // backend's own (a `du` snapshot).
     const {
       capacityBytes,
       maxUploadBytes,
       maxCollectionsPerSpace,
       maxResourcesPerSpace
     } = this
-    let incomingBytes = 0
-    for (const {
-      collectionId,
-      collectionDescription,
-      resources,
-      chunkFiles
-    } of collections) {
-      const existing = await this.getCollectionDescription({
-        spaceId,
-        collectionId
-      })
-      const effectiveEncryption = existing
-        ? existing.encryption
-        : collectionDescription.encryption
-      for (const { fileName, body } of resources) {
-        if (maxUploadBytes !== undefined && body.length > maxUploadBytes) {
-          throw new PayloadTooLargeError({
-            maxUploadBytes,
-            backendId: this.describe().id,
-            uploadBytes: body.length
-          })
-        }
-        if (effectiveEncryption?.scheme !== undefined) {
-          const { contentType } = parseResourceFileName(fileName)
-          let parsedBody: unknown
-          try {
-            parsedBody = JSON.parse(body.toString('utf8'))
-          } catch {
-            parsedBody = undefined
-          }
-          assertEncryptedWriteConforms({
-            collectionDescription: { encryption: effectiveEncryption },
-            contentType,
-            body: parsedBody
-          })
-        }
-        incomingBytes += body.length
-      }
-      // Chunk files (the `chunked-streams` feature) inherit the per-upload cap
-      // and quota estimate, but NOT the encryption-conformance check: a chunk is
-      // opaque bytes, not a JSON envelope of the Collection's scheme.
-      for (const { body } of chunkFiles) {
-        if (maxUploadBytes !== undefined && body.length > maxUploadBytes) {
-          throw new PayloadTooLargeError({
-            maxUploadBytes,
-            backendId: this.describe().id,
-            uploadBytes: body.length
-          })
-        }
-        incomingBytes += body.length
-      }
-    }
+    const incomingBytes = await assertImportBodiesFit({
+      collections,
+      existingCollection: collectionId =>
+        this.getCollectionDescription({ spaceId, collectionId }),
+      assertUploadSize: uploadBytes =>
+        this.#assertUploadSize({ maxUploadBytes, uploadBytes }),
+      chunkBodiesFor: collection => collection.chunkFiles
+    })
     if (capacityBytes !== undefined) {
       await this.#assertSpaceHeadroom({
         spaceId,
@@ -1833,7 +1640,7 @@ export class FileSystemBackend implements StorageBackend {
       spaceId,
       collectionId
     })
-    const filename = `.collection.${collectionId}.json`
+    const filename = collectionDescriptionFileName(collectionId)
     // Shared normalization (lib/collectionDescription.ts): strip the
     // version-bearing members from the incoming body and re-stamp -- an
     // explicit `descriptionVersion` wins, else a `_version` already on the
@@ -1866,7 +1673,7 @@ export class FileSystemBackend implements StorageBackend {
     (CollectionDescription & { descriptionVersion?: number }) | undefined
   > {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
-    const filename = `.collection.${collectionId}.json`
+    const filename = collectionDescriptionFileName(collectionId)
     const metaStore = new MetadataJsonStore<
       CollectionDescription & { _version?: number }
     >({
@@ -1960,9 +1767,7 @@ export class FileSystemBackend implements StorageBackend {
     } catch (err) {
       this.logger.error({ err }, 'Error reading collection directory')
     }
-    const resources = entries
-      .filter(entry => entry.isFile() && isRepresentationFileName(entry.name))
-      .map(entry => parseResourceFileName(entry.name))
+    const resources = this.#representationEntries(entries)
       // Sort by `resourceId` ascending in code-unit order -- the SAME ordering
       // the cursor seek (`resourceId > after`) uses, so the keyset is consistent
       // (localeCompare could disagree with the `>` operator and break paging).
@@ -1974,83 +1779,47 @@ export class FileSystemBackend implements StorageBackend {
     // returning `totalItems` -- the count of the entire Collection, not the page.
     const totalItems = resources.length
 
-    // Seek to the first entry strictly after the cursor's anchor id. Keyset
-    // stability: a missing anchor (deleted between pages) does not break the
-    // scan, since we resume at the first id greater than it.
-    let startIndex = 0
-    if (cursor !== undefined) {
-      const { after } = decodeCursor(cursor)
-      const found = resources.findIndex(({ resourceId }) => resourceId > after)
-      startIndex = found === -1 ? resources.length : found
-    }
-
-    // Clamp `limit` to `[1, MAX_PAGE_SIZE]`, defaulting when absent.
-    const pageSize =
-      limit === undefined ? DEFAULT_PAGE_SIZE : clampPageSize(limit)
-
-    // Take `pageSize + 1` from the seek point to detect a further page without a
-    // second pass; the page is the first `pageSize`, and `hasMore` is whether we
-    // got the extra one (so a page that exactly fills the Collection has no
-    // spurious empty trailing page).
-    const window = resources.slice(startIndex, startIndex + pageSize + 1)
-    const hasMore = window.length > pageSize
-    const pageEntries = hasMore ? window.slice(0, pageSize) : window
+    // Clamp `limit` to `[1, MAX_PAGE_SIZE]`, defaulting when absent, then cut
+    // the page out at the cursor's seek point (`resourceId` is the keyset).
+    const pageSize = resolvePageSize(limit)
+    const { page: pageEntries, hasMore } = seekPage({
+      items: resources,
+      cursor,
+      pageSize,
+      keyOf: ({ resourceId }) => resourceId
+    })
 
     // Read `.meta` sidecars ONLY for the items on this page (the previous
-    // implementation read a sidecar for every resource on every list). Surface
-    // the user-writable `custom.name` (spec: updating it updates the name shown
-    // in Collection listings) -- but only for a plaintext Collection. On an
-    // encrypted Collection `custom` is the opaque encryption envelope, so the
-    // server cannot project a `name`; the listing omits it (spec "List
-    // Collection", encrypted-Collection note). (A bare `custom?.name` on a JWE
-    // envelope already yields `undefined`; the guard makes that explicit.)
-    const encrypted = collectionDescription?.encryption !== undefined
+    // implementation read a sidecar for every resource on every list); the
+    // shared item builder projects each one onto the wire shape.
+    const encrypted = suppressesItemNames({ collectionDescription })
     const items = await Promise.all(
       pageEntries.map(async ({ resourceId, contentType }) => {
         const sidecar = await this.readMetaSidecar({
           collectionDir,
           resourceId
         })
-        const name = encrypted
-          ? undefined
-          : (sidecar?.custom as ResourceMetadataCustom | undefined)?.name
-        return {
-          id: resourceId,
-          url: resourcePath({ spaceId, collectionId, resourceId }),
+        return collectionListingItem({
+          spaceId,
+          collectionId,
+          resourceId,
           contentType,
-          ...(name !== undefined && { name }),
-          // The client-declared key epoch (the `key-epochs` feature) rides each
-          // listing item so a reader can pick the right epoch key without a
-          // `/meta` fetch per Resource.
-          ...(sidecar?.epoch !== undefined && { epoch: sidecar.epoch })
-        }
+          custom: sidecar?.custom as ResourceMetadataCustom | undefined,
+          epoch: sidecar?.epoch,
+          encrypted
+        })
       })
     )
 
-    // `next` is present iff a further page may follow; its absence marks the last
-    // page (the authoritative end-of-list signal). The cursor (the last id on
-    // this page) and the page size are baked into the URL so the client follows
-    // it verbatim without constructing query parameters.
-    let next: string | undefined
-    if (hasMore) {
-      const lastId = pageEntries[pageEntries.length - 1]!.resourceId
-      const base = collectionPath({
-        spaceId,
-        collectionId,
-        trailingSlash: true
-      })
-      next = `${base}?limit=${pageSize}&cursor=${encodeCursor(lastId)}`
-    }
-
-    return {
-      id: collectionId,
-      url: collectionPath({ spaceId, collectionId }),
-      name: collectionDescription?.name ?? collectionId,
-      type: collectionDescription?.type || ['Collection'],
+    return collectionResourcesList({
+      spaceId,
+      collectionId,
+      collectionDescription,
       totalItems,
       items,
-      ...(next !== undefined && { next })
-    }
+      hasMore,
+      pageSize
+    })
   }
 
   // Resources
@@ -2145,14 +1914,34 @@ export class FileSystemBackend implements StorageBackend {
       return this.#writeMutex.run(
         this.#collectionLockKey({ spaceId, collectionId }),
         async () => {
-          if (blindedUnique) {
-            assertNoUniqueBlindedConflict({
-              document: input.kind === 'json' ? input.data : undefined,
-              candidates: await this.#readJsonCandidates({
+          // A write carrying BOTH claims scans the Collection once, not twice:
+          // the equality candidate set is the richer of the two (it also carries
+          // blobs and each sidecar's `custom`), so the blinded candidates -- the
+          // live, parsable JSON documents -- are derived from it rather than
+          // re-read. A write carrying one claim reads only that claim's set.
+          const equalityCandidates = equalityUnique
+            ? await this.#readEqualityCandidates({
                 spaceId,
                 collectionId,
                 excludeResourceId: resourceId
               })
+            : undefined
+          if (blindedUnique) {
+            assertNoUniqueBlindedConflict({
+              document: input.kind === 'json' ? input.data : undefined,
+              candidates:
+                equalityCandidates !== undefined
+                  ? equalityCandidates
+                      .filter(candidate => candidate.content !== undefined)
+                      .map(candidate => ({
+                        resourceId: candidate.resourceId,
+                        document: candidate.content
+                      }))
+                  : await this.#readJsonCandidates({
+                      spaceId,
+                      collectionId,
+                      excludeResourceId: resourceId
+                    })
             })
           }
           if (equalityUnique) {
@@ -2166,11 +1955,7 @@ export class FileSystemBackend implements StorageBackend {
               indexes: uniqueIndexes!,
               content: input.kind === 'json' ? input.data : undefined,
               custom: priorSidecar?.custom,
-              candidates: await this.#readEqualityCandidates({
-                spaceId,
-                collectionId,
-                excludeResourceId: resourceId
-              })
+              candidates: equalityCandidates!
             })
           }
           return write()
@@ -2210,6 +1995,19 @@ export class FileSystemBackend implements StorageBackend {
     const filePath = path.join(collectionDir, filename)
     this.#assertContained(filePath)
 
+    // One directory scan and one sidecar read serve every step below. Nothing
+    // else mutates this Resource while the lock is held, so the precondition
+    // check, the create-path liveness probe, the prune, and the version bump all
+    // work from this single pre-write snapshot. The prune is unaffected by the
+    // representation written in between: the file it must keep is `keepPath`
+    // (excluded either way), and the stale representations to remove are exactly
+    // the ones this pre-write listing holds.
+    const entries = await this.#readDirEntries(collectionDir)
+    const isLive =
+      (await this.#findFile({ collectionDir, resourceId, entries })) !==
+      undefined
+    const prior = await this.readMetaSidecar({ collectionDir, resourceId })
+
     // Evaluate any conditional-write precondition against the current state
     // before writing (still inside the lock, so the check and write are atomic).
     if (ifMatch !== undefined || ifNoneMatch) {
@@ -2217,7 +2015,8 @@ export class FileSystemBackend implements StorageBackend {
         collectionDir,
         resourceId,
         ifMatch,
-        ifNoneMatch
+        ifNoneMatch,
+        state: { exists: isLive, prior }
       })
     }
 
@@ -2225,17 +2024,13 @@ export class FileSystemBackend implements StorageBackend {
     // Space past `maxResourcesPerSpace`. A write over an existing live
     // representation is an update (never trips it); a write over a tombstone
     // (no `r.` file) is a create and does count. Soft under concurrency.
-    if (this.maxResourcesPerSpace !== undefined) {
-      const isLive =
-        (await this.#findFile({ collectionDir, resourceId })) !== undefined
-      if (!isLive) {
-        const liveCount = await this.#countLiveResources({ spaceId })
-        if (liveCount >= this.maxResourcesPerSpace) {
-          throw new CountQuotaExceededError({
-            scope: 'Resources per Space',
-            limit: this.maxResourcesPerSpace
-          })
-        }
+    if (this.maxResourcesPerSpace !== undefined && !isLive) {
+      const liveCount = await this.#countLiveResources({ spaceId })
+      if (liveCount >= this.maxResourcesPerSpace) {
+        throw new CountQuotaExceededError({
+          scope: 'Resources per Space',
+          limit: this.maxResourcesPerSpace
+        })
       }
     }
 
@@ -2246,7 +2041,8 @@ export class FileSystemBackend implements StorageBackend {
     await this.#pruneStaleRepresentations({
       collectionDir,
       resourceId,
-      keepPath: filePath
+      keepPath: filePath,
+      entries
     })
 
     // Maintain the server-managed timestamps and the monotonic `version`: a
@@ -2265,6 +2061,7 @@ export class FileSystemBackend implements StorageBackend {
     return this.#bumpSidecarVersion({
       collectionDir,
       resourceId,
+      prior,
       build: ({ prior, version, now }) => {
         const creator = prior ? prior.createdBy : createdBy
         return {
@@ -2321,13 +2118,7 @@ export class FileSystemBackend implements StorageBackend {
       // Serialize once and reuse for both the size pre-flight and the write.
       const serialized = JSON.stringify(input.data)
       const incomingBytes = Buffer.byteLength(serialized)
-      if (maxUploadBytes !== undefined && incomingBytes > maxUploadBytes) {
-        throw new PayloadTooLargeError({
-          maxUploadBytes,
-          backendId: this.describe().id,
-          uploadBytes: incomingBytes
-        })
-      }
+      this.#assertUploadSize({ maxUploadBytes, uploadBytes: incomingBytes })
       if (capacityBytes !== undefined) {
         await this.#assertSpaceHeadroom({
           spaceId,
@@ -2355,20 +2146,21 @@ export class FileSystemBackend implements StorageBackend {
       // understated: the upload cap (413) and, when a quota is configured, the
       // Space headroom (507). On overflow either guard removes the partial file
       // before surfacing the error.
-      if (
-        maxUploadBytes !== undefined &&
-        input.declaredBytes !== undefined &&
-        input.declaredBytes > maxUploadBytes
-      ) {
-        throw new PayloadTooLargeError({
-          maxUploadBytes,
-          backendId: this.describe().id,
-          uploadBytes: input.declaredBytes
-        })
-      }
+      this.#assertUploadSize({
+        maxUploadBytes,
+        uploadBytes: input.declaredBytes
+      })
       const guards: Transform[] = []
       if (maxUploadBytes !== undefined) {
-        guards.push(this.#uploadCapGuard({ maxUploadBytes }))
+        guards.push(
+          this.#byteLimitGuard({
+            limitBytes: maxUploadBytes,
+            error: new PayloadTooLargeError({
+              maxUploadBytes,
+              backendId: this.describe().id
+            })
+          })
+        )
       }
       if (capacityBytes !== undefined) {
         const headroomBytes = await this.#assertSpaceHeadroom({
@@ -2376,7 +2168,12 @@ export class FileSystemBackend implements StorageBackend {
           capacityBytes,
           incomingBytes: input.declaredBytes ?? 0
         })
-        guards.push(this.#quotaGuard({ spaceId, capacityBytes, headroomBytes }))
+        guards.push(
+          this.#byteLimitGuard({
+            limitBytes: headroomBytes,
+            error: new QuotaExceededError({ spaceId, capacityBytes })
+          })
+        )
       }
       // Stream into a temp file in the same directory, then durably commit it
       // (fsync + rename + dir fsync) once the whole body has been written and
@@ -2417,18 +2214,28 @@ export class FileSystemBackend implements StorageBackend {
    *   the stringified chunk index)
    * @param options.keepPath {string}   full path of the just-written
    *   representation to keep
+   * @param [options.entries] {fs.Dirent[]}   a listing of `collectionDir` read
+   *   before the new representation was written: it holds exactly the stale
+   *   representations to remove (the kept one is filtered out either way), so a
+   *   caller holding the lock can scan the directory once
    * @returns {Promise<void>}
    */
   async #pruneStaleRepresentations({
     collectionDir,
     resourceId,
-    keepPath
+    keepPath,
+    entries
   }: {
     collectionDir: string
     resourceId: string
     keepPath: string
+    entries?: fs.Dirent[]
   }): Promise<void> {
-    const existing = await this.#resourceFilesFor({ collectionDir, resourceId })
+    const existing = await this.#resourceFilesFor({
+      collectionDir,
+      resourceId,
+      entries
+    })
     await Promise.all(
       existing
         .filter(name => path.resolve(name) !== path.resolve(keepPath))
@@ -2437,18 +2244,21 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * The read-bump-write sidecar tail shared by `#writeResourceLocked` and
-   * `#writeChunkLocked`: reads the item's current metadata sidecar, computes the
-   * next monotonic `version` (bumped from the prior value, so a first write
-   * lands at 1), builds the new sidecar via `build`, writes it, and returns the
-   * new version. The two write paths fill in different fields -- a chunk carries
-   * no user Metadata / `createdBy` / epoch stamp -- so `build` supplies the
-   * sidecar body from the shared `{ prior, version, now }` inputs.
+   * The bump-write sidecar tail shared by `#writeResourceLocked` and
+   * `#writeChunkLocked`: computes the next monotonic `version` (bumped from the
+   * prior value, so a first write lands at 1), builds the new sidecar via
+   * `build`, writes it, and returns the new version. The two write paths fill in
+   * different fields -- a chunk carries no user Metadata / `createdBy` / epoch
+   * stamp -- so `build` supplies the sidecar body from the shared
+   * `{ prior, version, now }` inputs. The caller passes the item's current
+   * sidecar in, since it has already read it under the same lock.
    * @param options {object}
    * @param options.collectionDir {string}   the dir the sidecar lives in (a
    *   Collection dir, or a chunk dir for a chunk)
    * @param options.resourceId {string}   the sidecar id (a resourceId, or the
    *   stringified chunk index)
+   * @param [options.prior] {MetaSidecar}   the item's current sidecar, absent
+   *   when it has none yet
    * @param options.build {(context: { prior?: MetaSidecar, version: number,
    *   now: string }) => MetaSidecar}   builds the sidecar to persist from the
    *   prior sidecar, the bumped `version`, and the write timestamp
@@ -2457,10 +2267,12 @@ export class FileSystemBackend implements StorageBackend {
   async #bumpSidecarVersion({
     collectionDir,
     resourceId,
+    prior,
     build
   }: {
     collectionDir: string
     resourceId: string
+    prior?: MetaSidecar
     build: (context: {
       prior?: MetaSidecar
       version: number
@@ -2468,7 +2280,6 @@ export class FileSystemBackend implements StorageBackend {
     }) => MetaSidecar
   }): Promise<{ version: number }> {
     const now = new Date().toISOString()
-    const prior = await this.readMetaSidecar({ collectionDir, resourceId })
     const version = (prior?.version ?? 0) + 1
     await this.#writeMetaSidecar({
       collectionDir,
@@ -2529,28 +2340,39 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.resourceId {string}
    * @param [options.ifMatch] {string}   a quoted ETag (`If-Match`)
    * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *` (create-if-absent)
+   * @param [options.state] {{ exists: boolean, prior?: MetaSidecar }}   the
+   *   Resource's current state, when the caller has already read it under the
+   *   same lock; read here otherwise
    * @returns {Promise<void>}
    */
   async #assertWritePrecondition({
     collectionDir,
     resourceId,
     ifMatch,
-    ifNoneMatch
+    ifNoneMatch,
+    state
   }: {
     collectionDir: string
     resourceId: string
     ifMatch?: string
     ifNoneMatch?: boolean
+    state?: { exists: boolean; prior?: MetaSidecar }
   }): Promise<void> {
-    const exists =
-      (await this.#findFile({ collectionDir, resourceId })) !== undefined
-    const prior = exists
-      ? await this.readMetaSidecar({ collectionDir, resourceId })
-      : undefined
+    const exists = state
+      ? state.exists
+      : (await this.#findFile({ collectionDir, resourceId })) !== undefined
+    const prior = state
+      ? state.prior
+      : exists
+        ? await this.readMetaSidecar({ collectionDir, resourceId })
+        : undefined
     assertWritePrecondition({
       resourceId,
       exists,
-      currentVersion: prior?.version ?? 0,
+      // A tombstone's sidecar survives its content, so the version it carries
+      // counts only when the Resource is live -- as it did when the sidecar was
+      // read only in that case.
+      currentVersion: exists ? (prior?.version ?? 0) : 0,
       ifMatch,
       ifNoneMatch
     })
@@ -3205,9 +3027,14 @@ export class FileSystemBackend implements StorageBackend {
 
     // Bump the chunk's monotonic `version` (its ETag validator), preserving its
     // `createdAt`. A chunk carries no user Metadata / `createdBy` / epoch stamp.
+    const priorChunkSidecar = await this.readMetaSidecar({
+      collectionDir: chunkDir,
+      resourceId: chunkId
+    })
     return this.#bumpSidecarVersion({
       collectionDir: chunkDir,
       resourceId: chunkId,
+      prior: priorChunkSidecar,
       build: ({ prior, version, now }) => ({
         createdAt: prior?.createdAt ?? now,
         updatedAt: now,
@@ -3388,39 +3215,30 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<ChunkListing> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
     const chunkDir = this.#chunkDir({ collectionDir, resourceId })
-    let entries: fs.Dirent[]
-    try {
-      entries = await fs.promises.readdir(chunkDir, { withFileTypes: true })
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { count: 0, chunks: [] }
-      }
-      throw err
-    }
+    // An absent chunk directory lists no chunks (`#readDirEntries` resolves it
+    // as empty).
+    const entries = await this.#readDirEntries(chunkDir)
 
     // Keep only chunk representations (`r.<index>.<type>.<ext>`), dropping the
     // `.meta.<index>.json` version sidecars.
-    const chunkEntries = entries.filter(
-      entry => entry.isFile() && isRepresentationFileName(entry.name)
-    )
+    const chunkEntries = this.#representationEntries(entries)
     const chunks = await Promise.all(
-      chunkEntries.map(async entry => {
-        const { resourceId: indexStr, contentType } = parseResourceFileName(
-          entry.name
-        )
-        const filePath = path.join(chunkDir, entry.name)
-        const stats = await fsStat(filePath)
-        const sidecar = await this.readMetaSidecar({
-          collectionDir: chunkDir,
-          resourceId: indexStr
-        })
-        return {
-          index: Number(indexStr),
-          size: stats.size,
-          contentType,
-          ...(sidecar?.version !== undefined && { version: sidecar.version })
+      chunkEntries.map(
+        async ({ resourceId: indexStr, contentType, fileName }) => {
+          const filePath = path.join(chunkDir, fileName)
+          const stats = await fsStat(filePath)
+          const sidecar = await this.readMetaSidecar({
+            collectionDir: chunkDir,
+            resourceId: indexStr
+          })
+          return {
+            index: Number(indexStr),
+            size: stats.size,
+            contentType,
+            ...(sidecar?.version !== undefined && { version: sidecar.version })
+          }
         }
-      })
+      )
     )
     chunks.sort((left, right) => left.index - right.index)
     return { count: chunks.length, chunks }
@@ -3469,16 +3287,7 @@ export class FileSystemBackend implements StorageBackend {
   }> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
 
-    let entries: fs.Dirent[] = []
-    try {
-      entries = await fs.promises.readdir(collectionDir, {
-        withFileTypes: true
-      })
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw err
-      }
-    }
+    const entries = await this.#readDirEntries(collectionDir)
 
     // Index the dir: live content files by id, and the set of ids that have a
     // `.meta.` sidecar (a sidecar with no live file is a tombstone candidate).
@@ -3631,20 +3440,17 @@ export class FileSystemBackend implements StorageBackend {
     const pageDescriptors = descriptors.slice(startIndex, startIndex + pageSize)
 
     // Read JSON bodies only for this page. A tombstone carries no `data` (the
-    // delete replicates on `deleted: true` alone).
+    // delete replicates on `deleted: true` alone), and no `fileName` either, so
+    // it already IS its feed document. A live descriptor is its feed document
+    // plus the `fileName` its body was read from -- including the `custom`
+    // (opaque envelope on an encrypted Collection) that replicates a
+    // metadata-only edit and the client-declared key epoch (the `key-epochs`
+    // feature) -- so the document is the descriptor minus `fileName`, plus
+    // `data`.
     const documents = await Promise.all(
       pageDescriptors.map(async desc => {
         if (desc.deleted) {
-          return {
-            resourceId: desc.resourceId,
-            version: desc.version,
-            ...(desc.metaVersion !== undefined && {
-              metaVersion: desc.metaVersion
-            }),
-            ...(desc.createdBy !== undefined && { createdBy: desc.createdBy }),
-            updatedAt: desc.updatedAt,
-            deleted: true
-          }
+          return desc
         }
         let data: unknown
         try {
@@ -3657,22 +3463,8 @@ export class FileSystemBackend implements StorageBackend {
         } catch {
           data = undefined
         }
-        return {
-          resourceId: desc.resourceId,
-          version: desc.version,
-          ...(desc.metaVersion !== undefined && {
-            metaVersion: desc.metaVersion
-          }),
-          ...(desc.createdBy !== undefined && { createdBy: desc.createdBy }),
-          updatedAt: desc.updatedAt,
-          deleted: false,
-          data,
-          // Surface the user-writable `custom` (opaque envelope on an encrypted
-          // Collection) so a metadata-only edit replicates.
-          ...(desc.custom !== undefined && { custom: desc.custom }),
-          // Surface the client-declared key epoch (the `key-epochs` feature).
-          ...(desc.epoch !== undefined && { epoch: desc.epoch })
-        }
+        const { fileName: _fileName, ...rest } = desc
+        return { ...rest, data }
       })
     )
 
@@ -3750,27 +3542,11 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<Array<{ resourceId: string; document: unknown }>> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
 
-    let entries: fs.Dirent[] = []
-    try {
-      entries = await fs.promises.readdir(collectionDir, {
-        withFileTypes: true
-      })
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw err
-      }
-    }
+    const entries = await this.#readDirEntries(collectionDir)
 
     return (
       await Promise.all(
-        entries
-          .filter(
-            entry => entry.isFile() && isRepresentationFileName(entry.name)
-          )
-          .map(entry => ({
-            fileName: entry.name,
-            ...parseResourceFileName(entry.name)
-          }))
+        this.#representationEntries(entries)
           .filter(
             ({ resourceId, contentType }) =>
               resourceId !== excludeResourceId && isJson({ contentType })
@@ -3903,24 +3679,10 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<EqualityCandidate[]> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
 
-    let entries: fs.Dirent[] = []
-    try {
-      entries = await fs.promises.readdir(collectionDir, {
-        withFileTypes: true
-      })
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw err
-      }
-    }
+    const entries = await this.#readDirEntries(collectionDir)
 
     return await Promise.all(
-      entries
-        .filter(entry => entry.isFile() && isRepresentationFileName(entry.name))
-        .map(entry => ({
-          fileName: entry.name,
-          ...parseResourceFileName(entry.name)
-        }))
+      this.#representationEntries(entries)
         .filter(({ resourceId }) => resourceId !== excludeResourceId)
         .map(async ({ resourceId, fileName, contentType }) => {
           // Parse the content only for a JSON representation; a blob contributes
@@ -4009,7 +3771,7 @@ export class FileSystemBackend implements StorageBackend {
       collectionId !== undefined
         ? this.#collectionDir({ spaceId, collectionId })
         : this.#spaceDir(spaceId)
-    const filename = `.policy.${resourceId ?? collectionId ?? spaceId}.json`
+    const filename = policyFileName(resourceId ?? collectionId ?? spaceId)
     const filePath = path.join(dir, filename)
     this.#assertContained(filePath)
     return filePath
@@ -4340,14 +4102,14 @@ export class FileSystemBackend implements StorageBackend {
     const keystoreEntries = rootEntries
       .filter(entry => entry.isDirectory())
       .sort((a, b) => a.name.localeCompare(b.name))
-    const configs: KeystoreConfig[] = []
-    for (const entry of keystoreEntries) {
-      const config = await this.getKeystore({ keystoreId: entry.name })
-      if (config && config.controller === controller) {
-        configs.push(config)
-      }
-    }
+    // Each config is an independent file read, so read them in parallel;
+    // `Promise.all` preserves the sorted order.
+    const configs = await Promise.all(
+      keystoreEntries.map(entry => this.getKeystore({ keystoreId: entry.name }))
+    )
     return configs
+      .filter((config): config is KeystoreConfig => Boolean(config))
+      .filter(config => config.controller === controller)
   }
 
   /**
@@ -4466,16 +4228,17 @@ export class FileSystemBackend implements StorageBackend {
       .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
       .map(entry => entry.name.slice(0, -'.json'.length))
       .sort((a, b) => a.localeCompare(b))
-    const keys: Array<{ localId: string; record: KmsKeyRecord }> = []
-    for (const localId of localIds) {
-      const record = await this.getKey({ keystoreId, localId })
-      // A record readable at readdir time but gone by getKey (a concurrent
-      // prune) is simply skipped; the listing is a snapshot, not a lock.
-      if (record) {
-        keys.push({ localId, record })
-      }
-    }
-    return keys
+    // Each record is an independent file read, so read them in parallel;
+    // `Promise.all` preserves the sorted order.
+    const keys = await Promise.all(
+      localIds.map(async localId => {
+        const record = await this.getKey({ keystoreId, localId })
+        // A record readable at readdir time but gone by getKey (a concurrent
+        // prune) is simply skipped; the listing is a snapshot, not a lock.
+        return record ? { localId, record } : undefined
+      })
+    )
+    return keys.filter(key => key !== undefined)
   }
 
   /**

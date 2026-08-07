@@ -8,6 +8,7 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndVerify } from './spaceContext.js'
+import { hasAuthHeaders } from '../auth-header-hooks.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { policyPath } from '../lib/paths.js'
 import {
@@ -22,21 +23,6 @@ interface PolicyParams {
   spaceId: string
   collectionId?: string
   resourceId?: string
-}
-
-/**
- * Asserts the request carries auth headers, throwing MissingAuthError (401)
- * otherwise. Needed for the GET handler, which the `requireAuthHeaders` hook
- * lets through unauthenticated (it is a safe method); PUT/DELETE are already
- * gated by the hook.
- * @param request {FastifyRequest}
- * @returns {void}
- */
-function requireAuth(request: FastifyRequest): void {
-  const { headers } = request
-  if (!(headers.authorization && headers['capability-invocation'])) {
-    throw new MissingAuthError()
-  }
 }
 
 export class PolicyRequest {
@@ -57,7 +43,12 @@ export class PolicyRequest {
     const requestName = 'Get Policy'
 
     assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
-    requireAuth(request)
+    // The hook lets this safe method through unauthenticated; a policy is not
+    // public data, so demand the auth headers here (401). PUT/DELETE are
+    // already gated by the hook.
+    if (!hasAuthHeaders(request)) {
+      throw new MissingAuthError()
+    }
 
     // Verify (capability-only): a policy is controller-managed metadata, so
     // reading it requires a valid capability invocation -- no policy fallback.

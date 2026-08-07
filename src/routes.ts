@@ -29,7 +29,58 @@ import {
   requireAuthHeadersOrPublicRead
 } from './auth-header-hooks.js'
 import { captureRawBody, verifyBodyDigest } from './digest.js'
-import { provisioningGate } from './provisioning.js'
+import { provisioningGateFor } from './provisioning.js'
+
+/**
+ * Installs the `handleError` error handler and the hook chain every route group
+ * shares, in the one order they all rely on: the optional provisioning gate,
+ * the auth-header requirement, `parseAuthHeaders`, `captureRawBody`, then
+ * `verifyBodyDigest`.
+ * @param app {import('fastify').FastifyInstance}
+ * @param options {object}
+ * @param [options.provisioningRoutes] {string[]}   route URLs (exactly as
+ *   registered in this group) whose POSTs go through the provisioning gate;
+ *   omit for groups with no provisioning endpoint
+ * @param [options.strictAuth] {boolean}   require auth headers on every method
+ *   (`requireAuthHeaders`) rather than letting safe reads through
+ *   (`requireAuthHeadersOrPublicRead`, the default)
+ * @returns {void}
+ */
+function installGroupHooks(
+  app: FastifyInstance,
+  {
+    provisioningRoutes,
+    strictAuth = false
+  }: { provisioningRoutes?: string[]; strictAuth?: boolean } = {}
+): void {
+  app.setErrorHandler(handleError)
+
+  if (provisioningRoutes) {
+    // Gate provisioning (Create Space / Create Keystore): the configured policy
+    // may grant/deny, or (the default) allow -- in which case the normal zcap
+    // path below runs.
+    app.addHook('onRequest', provisioningGateFor(provisioningRoutes))
+  }
+  if (strictAuth) {
+    // Every operation is privileged: 401 when auth headers are absent.
+    app.addHook('onRequest', requireAuthHeaders)
+  } else {
+    // Writes require auth; reads (GET/HEAD) may proceed unauthenticated so the
+    // handler can fall back to an access-control policy (e.g. a public Space,
+    // Collection or Resource). In the SpacesRepository group that fallback is
+    // the spec's empty-items 200 for an anonymous List Spaces, never an error
+    // (the exception to 404 masking).
+    app.addHook('onRequest', requireAuthHeadersOrPublicRead)
+  }
+  // Parse the relevant request headers, set the request.zcap parameter
+  app.addHook('onRequest', parseAuthHeaders)
+  // Capture raw body bytes (JSON/text) so the digest can be recomputed against
+  // exactly what the client signed (spec "Request Body Integrity").
+  app.addHook('preParsing', captureRawBody)
+  // Enforce the Digest header binding: require it covered by the signature and,
+  // when the raw body is available, recompute and compare it.
+  app.addHook('preValidation', verifyBodyDigest)
+}
 
 /**
  * Toggles the trailing slash on the request's actual path (preserving any query
@@ -97,23 +148,10 @@ export async function initSpacesRepositoryRoutes(
   app: FastifyInstance,
   _options: FastifyPluginOptions
 ): Promise<void> {
-  app.setErrorHandler(handleError)
-
-  // Gate provisioning (Create Space): the configured policy may grant/deny, or
-  // (the default) allow -- in which case the normal zcap path below runs.
-  app.addHook('onRequest', provisioningGate)
-  // Create Space (POST) requires auth-related headers (401 otherwise); a List
-  // Spaces read may proceed unauthenticated -- an anonymous list is the spec's
-  // empty-items 200, never an error (the exception to 404 masking).
-  app.addHook('onRequest', requireAuthHeadersOrPublicRead)
-  // Parse the relevant request headers, set the request.zcap parameter
-  app.addHook('onRequest', parseAuthHeaders)
-  // Capture raw body bytes (JSON/text) so the digest can be recomputed against
-  // exactly what the client signed (spec "Request Body Integrity").
-  app.addHook('preParsing', captureRawBody)
-  // Enforce the Digest header binding: require it covered by the signature and,
-  // when the raw body is available, recompute and compare it.
-  app.addHook('preValidation', verifyBodyDigest)
+  // `/spaces` (no trailing slash) is gated too, so a token-authorized request
+  // reaches the canonical-slash 308 redirect below instead of failing the
+  // auth-header check first.
+  installGroupHooks(app, { provisioningRoutes: ['/spaces', '/spaces/'] })
 
   // Add a Space to a SpacesRepository (Create Space)
   app.post('/spaces', redirectAddSlash)
@@ -135,19 +173,7 @@ export async function initSpaceRoutes(
   app: FastifyInstance,
   _options: FastifyPluginOptions
 ): Promise<void> {
-  app.setErrorHandler(handleError)
-
-  // Writes require auth; reads (GET/HEAD) may proceed unauthenticated so the
-  // handler can fall back to an access-control policy (e.g. a public Space).
-  app.addHook('onRequest', requireAuthHeadersOrPublicRead)
-  // Parse the relevant request headers, set the request.zcap parameter
-  app.addHook('onRequest', parseAuthHeaders)
-  // Capture raw body bytes (JSON/text) so the digest can be recomputed against
-  // exactly what the client signed (spec "Request Body Integrity").
-  app.addHook('preParsing', captureRawBody)
-  // Enforce the Digest header binding: require it covered by the signature and,
-  // when the raw body is available, recompute and compare it.
-  app.addHook('preValidation', verifyBodyDigest)
+  installGroupHooks(app)
 
   // Get Space description object
   app.get('/space/:spaceId', SpaceRequest.get)
@@ -225,19 +251,7 @@ export async function initCollectionRoutes(
   app: FastifyInstance,
   _options: FastifyPluginOptions
 ): Promise<void> {
-  app.setErrorHandler(handleError)
-
-  // Writes require auth; reads (GET/HEAD) may proceed unauthenticated so the
-  // handler can fall back to an access-control policy (e.g. a public Collection).
-  app.addHook('onRequest', requireAuthHeadersOrPublicRead)
-  // Parse the relevant request headers, set the request.zcap parameter
-  app.addHook('onRequest', parseAuthHeaders)
-  // Capture raw body bytes (JSON/text) so the digest can be recomputed against
-  // exactly what the client signed (spec "Request Body Integrity").
-  app.addHook('preParsing', captureRawBody)
-  // Enforce the Digest header binding: require it covered by the signature and,
-  // when the raw body is available, recompute and compare it.
-  app.addHook('preValidation', verifyBodyDigest)
+  installGroupHooks(app)
 
   // Get Collection description
   app.get('/space/:spaceId/:collectionId', CollectionRequest.get)
@@ -298,19 +312,7 @@ export async function initResourceRoutes(
   app: FastifyInstance,
   _options: FastifyPluginOptions
 ): Promise<void> {
-  app.setErrorHandler(handleError)
-
-  // Writes require auth; reads (GET/HEAD) may proceed unauthenticated so the
-  // handler can fall back to an access-control policy (e.g. a public Resource).
-  app.addHook('onRequest', requireAuthHeadersOrPublicRead)
-  // Parse the relevant request headers, set the request.zcap parameter
-  app.addHook('onRequest', parseAuthHeaders)
-  // Capture raw body bytes (JSON/text) so the digest can be recomputed against
-  // exactly what the client signed (spec "Request Body Integrity").
-  app.addHook('preParsing', captureRawBody)
-  // Enforce the Digest header binding: require it covered by the signature and,
-  // when the raw body is available, recompute and compare it.
-  app.addHook('preValidation', verifyBodyDigest)
+  installGroupHooks(app)
 
   // Create a Resource by Id
   app.put(
@@ -414,21 +416,10 @@ export async function initKmsRoutes(
   app: FastifyInstance,
   _options: FastifyPluginOptions
 ): Promise<void> {
-  app.setErrorHandler(handleError)
-
-  // Gate provisioning (Create Keystore): the configured policy may grant/deny,
-  // or (the default) allow -- in which case the normal zcap path below runs.
-  app.addHook('onRequest', provisioningGate)
-  // Every operation is privileged: 401 when auth headers are absent.
-  app.addHook('onRequest', requireAuthHeaders)
-  // Parse the relevant request headers, set the request.zcap parameter
-  app.addHook('onRequest', parseAuthHeaders)
-  // Capture raw body bytes (JSON/text) so the digest can be recomputed against
-  // exactly what the client signed (spec "Request Body Integrity").
-  app.addHook('preParsing', captureRawBody)
-  // Enforce the Digest header binding: require it covered by the signature and,
-  // when the raw body is available, recompute and compare it.
-  app.addHook('preValidation', verifyBodyDigest)
+  installGroupHooks(app, {
+    provisioningRoutes: ['/kms/keystores'],
+    strictAuth: true
+  })
 
   // Create Keystore
   app.post('/kms/keystores', KeystoreRequest.post)

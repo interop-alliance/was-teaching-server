@@ -27,8 +27,6 @@ import { Readable } from 'node:stream'
 import pg from 'pg'
 import pino from 'pino'
 import type { FastifyBaseLogger } from 'fastify'
-import * as tar from 'tar-stream'
-import YAML from 'yaml'
 import {
   StorageError,
   ResourceNotFoundError,
@@ -42,27 +40,45 @@ import {
   DuplicateRevocationError
 } from '../errors.js'
 import { applyMigrations } from './postgresSchema.js'
-import { extractTarEntries, buildImportPlan } from '../lib/importTar.js'
+import {
+  extractTarEntries,
+  buildImportPlan,
+  assertImportBodiesFit
+} from '../lib/importTar.js'
 import type { ImportPlanCollection } from '../lib/importTar.js'
-import { collectionPath, collectionsPath, resourcePath } from '../lib/paths.js'
+import { collectionPath, collectionsPath } from '../lib/paths.js'
 import {
   fileNameFor,
   parseResourceFileName,
-  chunkDirName
+  chunkDirName,
+  spaceDescriptionFileName,
+  collectionDescriptionFileName,
+  policyFileName,
+  metaSidecarFileName
 } from '../lib/resourceFileName.js'
-import { sanitizeBackendRecord } from '../lib/backends.js'
-import { backendUsageFields } from '../lib/backendUsage.js'
-import { assertEncryptedWriteConforms } from '../lib/encryption.js'
-import { encodeCursor, decodeCursor } from '../lib/cursor.js'
-import { policyGrants } from '../policy.js'
+import type { MetaSidecar } from '../lib/metaSidecar.js'
 import {
-  buildExportManifest,
-  EXPORT_ENTRY_MTIME
-} from '../lib/exportManifest.js'
+  sanitizeBackendRecord,
+  serverBackendDescriptor
+} from '../lib/backends.js'
+import { backendUsageFieldsFor } from '../lib/backendUsage.js'
+import {
+  collectionListingItem,
+  collectionResourcesList,
+  suppressesItemNames
+} from '../lib/collectionListing.js'
+import { decodeCursor } from '../lib/cursor.js'
+import { policyGrants } from '../policy.js'
+import { packSpaceArchive } from '../lib/exportTar.js'
+import type { ArchiveEntry, ArchiveFile } from '../lib/exportTar.js'
 import { revocationFileName } from '../lib/revocations.js'
 import { isJson } from '../lib/isJson.js'
 import { normalizeDescriptionWrite } from '../lib/collectionDescription.js'
-import { DEFAULT_PAGE_SIZE, clampPageSize } from '../lib/pagination.js'
+import {
+  clampPageSize,
+  nextPageUrl,
+  resolvePageSize
+} from '../lib/pagination.js'
 import {
   runBlindedIndexQuery,
   collectUniqueBlindedTerms,
@@ -160,27 +176,10 @@ interface ResourceRow {
 }
 
 /**
- * The synthesized `.meta.<resourceId>.json` sidecar shape used by
- * export/import -- the same on-disk shape the filesystem backend persists
- * (`MetaSidecar` there), so archives stay interchangeable.
- */
-interface SidecarShape {
-  createdAt: string
-  updatedAt: string
-  createdBy?: IDID
-  version?: number
-  metaVersion?: number
-  custom?: ResourceMetadataCustom | Record<string, unknown>
-  epoch?: string
-  deleted?: boolean
-  contentType?: string
-}
-
-/**
  * Buffers a byte stream fully into memory, aborting with
  * `PayloadTooLargeError` (413) the moment the cumulative size exceeds
  * `maxUploadBytes` -- the buffered-`bytea` analogue of the filesystem
- * backend's streaming `_uploadCapGuard`.
+ * backend's streaming `#byteLimitGuard`.
  * @param options {object}
  * @param options.stream {Readable}
  * @param options.maxUploadBytes {number}
@@ -214,14 +213,14 @@ async function bufferStreamCapped({
  * shared sidecar shape; unparseable (or absent) bytes yield `undefined`, and
  * the import falls back to fresh-write defaults.
  * @param bytes {Buffer|undefined}
- * @returns {SidecarShape|undefined}
+ * @returns {MetaSidecar|undefined}
  */
-function parseSidecar(bytes: Buffer | undefined): SidecarShape | undefined {
+function parseSidecar(bytes: Buffer | undefined): MetaSidecar | undefined {
   if (!bytes) {
     return undefined
   }
   try {
-    return JSON.parse(bytes.toString('utf8')) as SidecarShape
+    return JSON.parse(bytes.toString('utf8')) as MetaSidecar
   } catch {
     return undefined
   }
@@ -427,35 +426,14 @@ export class PostgresBackend implements StorageBackend {
 
   /**
    * Self-description advertised at `GET /space/:spaceId/backends`. Same
-   * affordances as the filesystem backend: conditional writes (ETag
-   * validators, row-locked preconditions) and the `changes` and
-   * `blinded-index` query profiles.
+   * affordances as the filesystem backend -- the shared server-backend feature
+   * set (`SERVER_BACKEND_FEATURES` in `lib/backends.ts`), realized here by
+   * row-locked preconditions with ETag validators and opaque per-chunk raw-bytes
+   * storage in the `chunks` table.
    * @returns {Required<Omit<BackendDescriptor, 'provider' | 'connection'>>}
    */
   describe(): Required<Omit<BackendDescriptor, 'provider' | 'connection'>> {
-    return {
-      id: 'default',
-      name: 'Server PostgreSQL',
-      managedBy: 'server',
-      storageMode: ['document', 'blob'],
-      persistence: 'durable',
-      // `key-epochs`: multi-recipient encrypted Collections -- per-epoch wrapped
-      // keys on the `encryption` descriptor, a client-declared `epoch` stamp on
-      // Resources, and conditional (`If-Match`) Collection Description writes.
-      // `chunked-streams`: chunk addressing at `/{resourceId}/chunks/{n}`, opaque
-      // per-chunk raw-bytes storage in the `chunks` table.
-      // `equality-query`: serves the `equality` profile -- server-extracted
-      // plaintext attribute equality over a Collection's declared `indexes`
-      // (`queryByEquality`), plus the GET `filter[attr]=value` equality filter.
-      features: [
-        'conditional-writes',
-        'changes-query',
-        'blinded-index-query',
-        'equality-query',
-        'key-epochs',
-        'chunked-streams'
-      ]
-    }
+    return serverBackendDescriptor({ name: 'Server PostgreSQL' })
   }
 
   /**
@@ -587,14 +565,10 @@ export class PostgresBackend implements StorageBackend {
    * Locks a create-or-update target row and returns its prior state (or
    * `undefined` when absent), running `lockingSelect` -- a `SELECT ... FOR
    * UPDATE` on the row -- once, and, when it finds no row, taking the same-key
-   * create lock (`#lockSameKeyCreate`) and re-running it. Under READ COMMITTED a
-   * `FOR UPDATE` on an absent row locks nothing (no gap locks), so two
-   * concurrent creators would both read "no prior row" and both apply their full
-   * byte size as the usage delta; blocking on the create lock and re-reading
-   * makes the second creator see the first's committed row, so its precondition,
-   * version, and usage delta are computed from accurate state. Shared by the
-   * Resource (`writeResource`) and chunk (`writeChunk`) write paths, which pass
-   * their own table-specific select and row-identity key.
+   * create lock (`#lockSameKeyCreate`, whose doc comment states why the re-read
+   * is required) and re-running it. Shared by the Resource (`writeResource`) and
+   * chunk (`writeChunk`) write paths, which pass their own table-specific select
+   * and row-identity key.
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
@@ -618,13 +592,41 @@ export class PostgresBackend implements StorageBackend {
   }): Promise<T | undefined> {
     let prior = await lockingSelect()
     if (prior === undefined) {
-      // The lock-nothing case: serialize with any concurrent creator of the
-      // same key and re-read, so the caller's precondition / version / usage
-      // delta reflect the row it committed (see `#lockSameKeyCreate`).
+      // The lock-nothing case -- see `#lockSameKeyCreate`.
       await this.#lockSameKeyCreate({ client, spaceId, rowKey })
       prior = await lockingSelect()
     }
     return prior
+  }
+
+  /**
+   * Serializes concurrent claimants of a per-Collection uniqueness invariant --
+   * the EDV unique-blinded attributes and the plaintext `unique`-declared
+   * equality indexes -- on a transaction-scoped advisory lock keyed by the
+   * `(spaceId, collectionId)` pair. Held to commit, so a loser's conflict scan
+   * sees the winner's committed row, and taken without entering the row-lock
+   * ordering of plain writes. The bare `(spaceId, collectionId)` key domain is
+   * deliberately distinct from the `create:`-prefixed same-key create lock
+   * (`#lockSameKeyCreate`).
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<void>}
+   */
+  async #lockCollectionUniqueness({
+    client,
+    spaceId,
+    collectionId
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId: string
+  }): Promise<void> {
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+      [spaceId, collectionId]
+    )
   }
 
   /**
@@ -720,7 +722,11 @@ export class PostgresBackend implements StorageBackend {
     }
 
     return {
-      ...this.#backendUsageFields({ usageBytes, spaceTotalBytes: usageBytes }),
+      ...backendUsageFieldsFor({
+        backend: this,
+        usageBytes,
+        spaceTotalBytes: usageBytes
+      }),
       measuredAt,
       ...(includeCollections && { usageByCollection })
     }
@@ -759,36 +765,9 @@ export class PostgresBackend implements StorageBackend {
     const spaceTotalBytes = Number(rows[0]?.space_total ?? 0)
     const usageBytes = Number(rows[0]?.collection_total ?? 0)
     return {
-      ...this.#backendUsageFields({ usageBytes, spaceTotalBytes }),
+      ...backendUsageFieldsFor({ backend: this, usageBytes, spaceTotalBytes }),
       measuredAt
     }
-  }
-
-  /**
-   * Builds the shared quota-report condition fields (see
-   * `lib/backendUsage.ts`).
-   * @param options {object}
-   * @param options.usageBytes {number}
-   * @param options.spaceTotalBytes {number}
-   * @returns {Omit<BackendUsage, 'measuredAt' | 'usageByCollection'>}
-   */
-  #backendUsageFields({
-    usageBytes,
-    spaceTotalBytes
-  }: {
-    usageBytes: number
-    spaceTotalBytes: number
-  }): Omit<BackendUsage, 'measuredAt' | 'usageByCollection'> {
-    const { id, name, managedBy } = this.describe()
-    return backendUsageFields({
-      usageBytes,
-      spaceTotalBytes,
-      capacityBytes: this.capacityBytes,
-      maxUploadBytes: this.maxUploadBytes,
-      id,
-      name,
-      managedBy
-    })
   }
 
   // Spaces
@@ -1236,30 +1215,32 @@ export class PostgresBackend implements StorageBackend {
     cursor?: string
   }): Promise<CollectionsList> {
     const after = cursor !== undefined ? decodeCursor(cursor).after : undefined
-    const pageSize =
-      limit === undefined ? DEFAULT_PAGE_SIZE : clampPageSize(limit)
+    const pageSize = resolvePageSize(limit)
 
-    const { rows: countRows } = await this.#pool.query<{ total: string }>(
-      `SELECT COUNT(*) AS total FROM collections WHERE space_id = $1`,
-      [spaceId]
-    )
-    const totalItems = Number(countRows[0]?.total ?? 0)
-
-    // Take `pageSize + 1` from the seek point to detect a further page without
-    // a second query; `hasMore` is whether the extra row arrived. The
-    // `collection_id > $2` seek relies on the column's byte collation, the same
-    // ordering the cursor codec's code-unit comparison assumes.
-    const { rows } = await this.#pool.query<{
-      collection_id: string
-      description: CollectionDescription | null
-    }>(
-      `SELECT collection_id, description FROM collections
+    // The total count and the page itself are independent reads: issue both on
+    // the pool at once rather than paying the two round trips serially.
+    const [{ rows: countRows }, { rows }] = await Promise.all([
+      this.#pool.query<{ total: string }>(
+        `SELECT COUNT(*) AS total FROM collections WHERE space_id = $1`,
+        [spaceId]
+      ),
+      // Take `pageSize + 1` from the seek point to detect a further page without
+      // a second query; `hasMore` is whether the extra row arrived. The
+      // `collection_id > $2` seek relies on the column's byte collation, the same
+      // ordering the cursor codec's code-unit comparison assumes.
+      this.#pool.query<{
+        collection_id: string
+        description: CollectionDescription | null
+      }>(
+        `SELECT collection_id, description FROM collections
         WHERE space_id = $1
           AND ($2::text IS NULL OR collection_id > $2)
         ORDER BY collection_id
         LIMIT $3`,
-      [spaceId, after ?? null, pageSize + 1]
-    )
+        [spaceId, after ?? null, pageSize + 1]
+      )
+    ])
+    const totalItems = Number(countRows[0]?.total ?? 0)
     const hasMore = rows.length > pageSize
     const pageRows = hasMore ? rows.slice(0, pageSize) : rows
 
@@ -1303,8 +1284,11 @@ export class PostgresBackend implements StorageBackend {
 
     let next: string | undefined
     if (hasMore) {
-      const lastId = pageRows[pageRows.length - 1]!.collection_id
-      next = `${collectionsPath({ spaceId })}?limit=${pageSize}&cursor=${encodeCursor(lastId)}`
+      next = nextPageUrl({
+        path: collectionsPath({ spaceId }),
+        limit: pageSize,
+        after: pageRows[pageRows.length - 1]!.collection_id
+      })
     }
 
     return {
@@ -1345,76 +1329,60 @@ export class PostgresBackend implements StorageBackend {
       (await this.getCollectionDescription({ spaceId, collectionId }))
 
     const after = cursor !== undefined ? decodeCursor(cursor).after : undefined
-    const pageSize =
-      limit === undefined ? DEFAULT_PAGE_SIZE : clampPageSize(limit)
+    const pageSize = resolvePageSize(limit)
 
-    const { rows: countRows } = await this.#pool.query<{ total: string }>(
-      `SELECT COUNT(*) AS total FROM resources
+    // The total count and the page itself are independent reads: issue both on
+    // the pool at once rather than paying the two round trips serially.
+    const [{ rows: countRows }, { rows }] = await Promise.all([
+      this.#pool.query<{ total: string }>(
+        `SELECT COUNT(*) AS total FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND NOT deleted`,
-      [spaceId, collectionId]
-    )
-    const totalItems = Number(countRows[0]?.total ?? 0)
-
-    // Take `pageSize + 1` from the seek point to detect a further page without
-    // a second query; `hasMore` is whether the extra row arrived.
-    const { rows } = await this.#pool.query<{
-      resource_id: string
-      content_type: string
-      custom: ResourceMetadataCustom | null
-      epoch: string | null
-    }>(
-      `SELECT resource_id, content_type, custom, epoch FROM resources
+        [spaceId, collectionId]
+      ),
+      // Take `pageSize + 1` from the seek point to detect a further page without
+      // a second query; `hasMore` is whether the extra row arrived.
+      this.#pool.query<{
+        resource_id: string
+        content_type: string
+        custom: ResourceMetadataCustom | null
+        epoch: string | null
+      }>(
+        `SELECT resource_id, content_type, custom, epoch FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND NOT deleted
           AND ($3::text IS NULL OR resource_id > $3)
         ORDER BY resource_id
         LIMIT $4`,
-      [spaceId, collectionId, after ?? null, pageSize + 1]
-    )
+        [spaceId, collectionId, after ?? null, pageSize + 1]
+      )
+    ])
+    const totalItems = Number(countRows[0]?.total ?? 0)
     const hasMore = rows.length > pageSize
     const pageRows = hasMore ? rows.slice(0, pageSize) : rows
 
-    // Surface the user-writable `custom.name` only for a plaintext Collection;
-    // on an encrypted one `custom` is the opaque envelope, so the listing
-    // omits `name` (spec "List Collection", encrypted-Collection note).
-    const encrypted = collectionDescription?.encryption !== undefined
-    const items = pageRows.map(row => {
-      const name = encrypted ? undefined : row.custom?.name
-      return {
-        id: row.resource_id,
-        url: resourcePath({
-          spaceId,
-          collectionId,
-          resourceId: row.resource_id
-        }),
-        contentType: row.content_type,
-        ...(name !== undefined && { name }),
-        // The client-declared key epoch (the `key-epochs` feature) rides each
-        // listing item so a reader picks the right epoch key without a `/meta`
-        // fetch per Resource.
-        ...(row.epoch !== null && { epoch: row.epoch })
-      }
-    })
-
-    let next: string | undefined
-    if (hasMore) {
-      const lastId = pageRows[pageRows.length - 1]!.resource_id
-      const base = collectionPath({
+    // The shared item builder projects each row onto the wire shape (including
+    // the encrypted-Collection name suppression).
+    const encrypted = suppressesItemNames({ collectionDescription })
+    const items = pageRows.map(row =>
+      collectionListingItem({
         spaceId,
         collectionId,
-        trailingSlash: true
+        resourceId: row.resource_id,
+        contentType: row.content_type,
+        custom: row.custom ?? undefined,
+        epoch: row.epoch ?? undefined,
+        encrypted
       })
-      next = `${base}?limit=${pageSize}&cursor=${encodeCursor(lastId)}`
-    }
+    )
 
-    return {
-      id: collectionId,
-      url: collectionPath({ spaceId, collectionId }),
-      name: collectionDescription?.name ?? collectionId,
-      type: collectionDescription?.type || ['Collection'],
+    return collectionResourcesList({
+      spaceId,
+      collectionId,
+      collectionDescription,
       totalItems,
       items,
-      ...(next !== undefined && { next })
-    }
+      hasMore,
+      pageSize
+    })
   }
 
   // Resources
@@ -1480,38 +1448,16 @@ export class PostgresBackend implements StorageBackend {
         uniqueIndexes !== undefined &&
         uniqueIndexes.length > 0
       if (blindedUnique || equalityUnique) {
-        await client.query(
-          'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
-          [spaceId, collectionId]
-        )
+        await this.#lockCollectionUniqueness({ client, spaceId, collectionId })
       }
       if (blindedUnique) {
-        const { rows: candidateRows } = await client.query<{
-          resource_id: string
-          content: Buffer | null
-        }>(
-          `SELECT resource_id, content FROM resources
-            WHERE space_id = $1 AND collection_id = $2 AND is_json
-              AND NOT deleted AND resource_id <> $3`,
-          [spaceId, collectionId, resourceId]
-        )
-        const candidates: Array<{ resourceId: string; document: unknown }> = []
-        for (const row of candidateRows) {
-          if (!row.content) {
-            continue
-          }
-          try {
-            candidates.push({
-              resourceId: row.resource_id,
-              document: JSON.parse(row.content.toString('utf8')) as unknown
-            })
-          } catch {
-            // skip an unparsable body
-          }
-        }
         assertNoUniqueBlindedConflict({
           document: input.kind === 'json' ? input.data : undefined,
-          candidates
+          candidates: await this.#readBlindedCandidates(client, {
+            spaceId,
+            collectionId,
+            excludeResourceId: resourceId
+          })
         })
       }
       if (equalityUnique) {
@@ -1914,10 +1860,7 @@ export class PostgresBackend implements StorageBackend {
       const equalityUnique =
         uniqueIndexes !== undefined && uniqueIndexes.length > 0
       if (equalityUnique) {
-        await client.query(
-          'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
-          [spaceId, collectionId]
-        )
+        await this.#lockCollectionUniqueness({ client, spaceId, collectionId })
       }
       const { rows } = await client.query<ResourceRow>(
         `SELECT meta_version, deleted FROM resources
@@ -2468,16 +2411,52 @@ export class PostgresBackend implements StorageBackend {
     limit?: number
     cursor?: string
   }): Promise<{ count: number } | BlindedIndexQueryPage> {
-    const { rows } = await this.#pool.query<{
+    const candidates = await this.#readBlindedCandidates(this.#pool, {
+      spaceId,
+      collectionId
+    })
+    return runBlindedIndexQuery({ candidates, query, count, limit, cursor })
+  }
+
+  /**
+   * Reads every live JSON Resource of a Collection as a blinded-index
+   * candidate -- the candidate set for the blinded-index query and the
+   * unique-blinded-attribute conflict scan. Each row resolves
+   * `{ resourceId, document }`, where `document` is the parsed JSON body; blob
+   * rows are excluded in SQL (`is_json`) and an unparsable body is skipped.
+   * Tombstones are excluded (`NOT deleted`); an optional excluded Resource is
+   * skipped. Runs on the given executor -- the pool for a read-only query, or
+   * the write transaction's client for a uniqueness scan (so the scan shares
+   * the advisory lock and sees a consistent snapshot).
+   * @param executor {pg.Pool | pg.PoolClient}
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param [options.excludeResourceId] {string}
+   * @returns {Promise<Array<{ resourceId: string, document: unknown }>>}
+   */
+  async #readBlindedCandidates(
+    executor: pg.Pool | pg.PoolClient,
+    {
+      spaceId,
+      collectionId,
+      excludeResourceId
+    }: {
+      spaceId: string
+      collectionId: string
+      excludeResourceId?: string
+    }
+  ): Promise<Array<{ resourceId: string; document: unknown }>> {
+    const { rows } = await executor.query<{
       resource_id: string
       content: Buffer | null
     }>(
       `SELECT resource_id, content FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND is_json AND NOT deleted
+          AND ($3::text IS NULL OR resource_id <> $3)
         ORDER BY resource_id`,
-      [spaceId, collectionId]
+      [spaceId, collectionId, excludeResourceId ?? null]
     )
-
     const candidates: Array<{ resourceId: string; document: unknown }> = []
     for (const row of rows) {
       if (!row.content) {
@@ -2492,8 +2471,7 @@ export class PostgresBackend implements StorageBackend {
         // skip an unparsable body
       }
     }
-
-    return runBlindedIndexQuery({ candidates, query, count, limit, cursor })
+    return candidates
   }
 
   /**
@@ -3191,9 +3169,9 @@ export class PostgresBackend implements StorageBackend {
    * `.meta.<id>.json` shape), field order matching the filesystem writer so
    * archives stay as close to byte-compatible as jsonb round-tripping allows.
    * @param row {Omit<ResourceRow, 'content'>}
-   * @returns {SidecarShape}
+   * @returns {MetaSidecar}
    */
-  #sidecarFor(row: Omit<ResourceRow, 'content'>): SidecarShape {
+  #sidecarFor(row: Omit<ResourceRow, 'content'>): MetaSidecar {
     if (row.deleted) {
       return {
         createdAt: row.created_at,
@@ -3303,42 +3281,29 @@ export class PostgresBackend implements StorageBackend {
       row => row.collection_id === '' && row.resource_id === ''
     )?.policy
 
-    // A file entry carries its bytes inline (the small JSON dot-files), a lazy
-    // reference to a resource representation, or a chunk directory (the
-    // `chunked-streams` feature) whose files are likewise inline (the per-chunk
-    // `.meta.<index>.json` sidecar) or lazy (the chunk `r.<index>...`
-    // representation, resolved at pack time). `name` is the entry's sort key
-    // within its dir; a chunk directory sorts by its `.chunks.<encId>` dir name.
-    type ChunkFile =
-      | { name: string; bytes: Buffer }
-      | {
-          name: string
-          chunk: {
-            collectionId: string
-            resourceId: string
-            chunkIndex: number
-          }
-        }
-    type FileEntry =
-      | { name: string; bytes: Buffer }
-      | { name: string; resource: { collectionId: string; resourceId: string } }
-      | { name: string; chunkDir: ChunkFile[] }
+    // The shared archive entry shapes (`lib/exportTar.ts`): a file entry carries
+    // its bytes inline (the small JSON dot-files) or a lazy `read()` resolved at
+    // pack time (a resource representation, and a chunk of a chunked Resource --
+    // the `chunked-streams` feature), and a chunk directory is a nested
+    // directory entry whose files follow the same rule. `name` is the entry's
+    // sort key within its dir; a chunk directory sorts by its `.chunks.<encId>`
+    // dir name.
     // Space-level dot-files are always small JSON, carried inline.
-    const spaceFiles: Array<{ name: string; bytes: Buffer }> = [
+    const spaceFiles: ArchiveFile[] = [
       {
-        name: `.space.${spaceId}.json`,
+        name: spaceDescriptionFileName(spaceId),
         bytes: Buffer.from(JSON.stringify(spaceDescription))
       }
     ]
     if (spacePolicy) {
       spaceFiles.push({
-        name: `.policy.${spaceId}.json`,
+        name: policyFileName(spaceId),
         bytes: Buffer.from(JSON.stringify(spacePolicy))
       })
     }
 
-    const collectionsById = new Map<string, FileEntry[]>()
-    const filesFor = (collectionId: string): FileEntry[] => {
+    const collectionsById = new Map<string, ArchiveEntry[]>()
+    const filesFor = (collectionId: string): ArchiveEntry[] => {
       let files = collectionsById.get(collectionId)
       if (!files) {
         files = []
@@ -3354,7 +3319,7 @@ export class PostgresBackend implements StorageBackend {
         // the ETag validator survives an export/import round trip and archives
         // stay interchangeable between the two backends.
         files.push({
-          name: `.collection.${row.collection_id}.json`,
+          name: collectionDescriptionFileName(row.collection_id),
           bytes: Buffer.from(
             JSON.stringify({
               ...row.description,
@@ -3372,26 +3337,27 @@ export class PostgresBackend implements StorageBackend {
       // resource id -- same dot-file convention, distinct keying ids.
       const keyId = row.resource_id === '' ? row.collection_id : row.resource_id
       filesFor(row.collection_id).push({
-        name: `.policy.${keyId}.json`,
+        name: policyFileName(keyId),
         bytes: Buffer.from(JSON.stringify(row.policy))
       })
     }
     for (const row of resourceRows) {
       const files = filesFor(row.collection_id)
       files.push({
-        name: `.meta.${row.resource_id}.json`,
+        name: metaSidecarFileName(row.resource_id),
         bytes: Buffer.from(JSON.stringify(this.#sidecarFor(row)))
       })
       if (!row.deleted) {
+        const resource = {
+          collectionId: row.collection_id,
+          resourceId: row.resource_id
+        }
         files.push({
           name: fileNameFor({
             resourceId: row.resource_id,
             contentType: row.content_type
           }),
-          resource: {
-            collectionId: row.collection_id,
-            resourceId: row.resource_id
-          }
+          read: () => this.#resourceContent({ spaceId, ...resource })
         })
       }
     }
@@ -3403,7 +3369,7 @@ export class PostgresBackend implements StorageBackend {
     // plus a `.meta.<index>.json` version sidecar. Files within a chunk dir are
     // sorted by name (the filesystem's readdir sort). Rows arrive ordered by
     // `(collection, resource, index)`.
-    const chunkDirsByResource = new Map<string, ChunkFile[]>()
+    const chunkDirsByResource = new Map<string, ArchiveFile[]>()
     for (const row of chunkRows) {
       const dirKey = `${row.collection_id}/${row.resource_id}`
       let chunkFiles = chunkDirsByResource.get(dirKey)
@@ -3412,20 +3378,21 @@ export class PostgresBackend implements StorageBackend {
         chunkDirsByResource.set(dirKey, chunkFiles)
         filesFor(row.collection_id).push({
           name: chunkDirName(row.resource_id),
-          chunkDir: chunkFiles
+          files: chunkFiles
         })
       }
       const chunkId = String(row.chunk_index)
+      const chunk = {
+        collectionId: row.collection_id,
+        resourceId: row.resource_id,
+        chunkIndex: row.chunk_index
+      }
       chunkFiles.push({
         name: fileNameFor({
           resourceId: chunkId,
           contentType: row.content_type
         }),
-        chunk: {
-          collectionId: row.collection_id,
-          resourceId: row.resource_id,
-          chunkIndex: row.chunk_index
-        }
+        read: () => this.#chunkContent({ spaceId, ...chunk })
       })
       // The chunk-metadata sidecar (`.chunks.<encId>/.meta.<index>.json`) the
       // filesystem backend writes per chunk. Only the monotonic `version` (the
@@ -3434,7 +3401,7 @@ export class PostgresBackend implements StorageBackend {
       // holds no chunk timestamps, so it emits (and on import reads) only
       // `version`.
       chunkFiles.push({
-        name: `.meta.${chunkId}.json`,
+        name: metaSidecarFileName(chunkId),
         bytes: Buffer.from(
           JSON.stringify({ version: row.version } satisfies {
             version?: number
@@ -3448,13 +3415,9 @@ export class PostgresBackend implements StorageBackend {
 
     // Top-level order: space-level files and collection dirs interleaved,
     // sorted by name -- the same order the filesystem's readdir+sort yields.
-    const topLevel: Array<
-      | { kind: 'file'; name: string; bytes: Buffer }
-      | { kind: 'collection'; name: string; files: FileEntry[] }
-    > = [
-      ...spaceFiles.map(file => ({ kind: 'file' as const, ...file })),
+    const topLevel: ArchiveEntry[] = [
+      ...spaceFiles,
       ...[...collectionsById].map(([collectionId, files]) => ({
-        kind: 'collection' as const,
         name: collectionId,
         files: files.sort((a, b) => a.name.localeCompare(b.name))
       }))
@@ -3464,7 +3427,7 @@ export class PostgresBackend implements StorageBackend {
     // top-level `revocations/` dir and named by the shared file-name codec so
     // both backends produce the same archive entries. Pretty-printed to match
     // the filesystem's stored records.
-    const revocationFiles = revocationRows
+    const revocations: ArchiveFile[] = revocationRows
       .map(row => ({
         name: revocationFileName({
           delegator: row.delegator,
@@ -3474,75 +3437,7 @@ export class PostgresBackend implements StorageBackend {
       }))
       .sort((a, b) => a.name.localeCompare(b.name))
 
-    const manifest = buildExportManifest({
-      spaceId,
-      entries: topLevel.map(entry =>
-        entry.kind === 'collection'
-          ? {
-              name: entry.name,
-              // A chunk directory expands to its `.chunks.<encId>/<file>`
-              // relative paths (mirroring the pack order), so the manifest
-              // matches the filesystem backend's for the same Space.
-              files: entry.files.flatMap(file =>
-                'chunkDir' in file
-                  ? file.chunkDir.map(child => `${file.name}/${child.name}`)
-                  : [file.name]
-              )
-            }
-          : { name: entry.name }
-      ),
-      revocationFiles: revocationFiles.map(file => file.name)
-    })
-
-    // Fixed mtime on every entry so the archive is byte-reproducible (see
-    // EXPORT_ENTRY_MTIME).
-    const mtime = EXPORT_ENTRY_MTIME
-    const pack = tar.pack()
-    pack.entry({ name: 'manifest.yml', mtime }, YAML.stringify(manifest))
-    pack.entry({ name: 'space/', type: 'directory', mtime })
-    pack.entry({ name: `space/${spaceId}/`, type: 'directory', mtime })
-    for (const entry of topLevel) {
-      const entryTarget = `space/${spaceId}/${entry.name}`
-      if (entry.kind === 'collection') {
-        pack.entry({ name: `${entryTarget}/`, type: 'directory', mtime })
-        for (const file of entry.files) {
-          if ('chunkDir' in file) {
-            // A chunked Resource's `.chunks.<encId>/` subdirectory: emit the
-            // directory entry, then each file -- an inline `.meta.<index>.json`
-            // sidecar, or a chunk representation whose bytes are fetched one at
-            // a time.
-            const dirTarget = `${entryTarget}/${file.name}`
-            pack.entry({ name: `${dirTarget}/`, type: 'directory', mtime })
-            for (const chunkFile of file.chunkDir) {
-              const bytes =
-                'bytes' in chunkFile
-                  ? chunkFile.bytes
-                  : await this.#chunkContent({ spaceId, ...chunkFile.chunk })
-              pack.entry(
-                { name: `${dirTarget}/${chunkFile.name}`, mtime },
-                bytes
-              )
-            }
-            continue
-          }
-          const bytes =
-            'bytes' in file
-              ? file.bytes
-              : await this.#resourceContent({ spaceId, ...file.resource })
-          pack.entry({ name: `${entryTarget}/${file.name}`, mtime }, bytes)
-        }
-      } else {
-        pack.entry({ name: entryTarget, mtime }, entry.bytes)
-      }
-    }
-    if (revocationFiles.length > 0) {
-      pack.entry({ name: 'revocations/', type: 'directory', mtime })
-      for (const file of revocationFiles) {
-        pack.entry({ name: `revocations/${file.name}`, mtime }, file.bytes)
-      }
-    }
-    pack.finalize()
-    return pack
+    return packSpaceArchive({ spaceId, entries: topLevel, revocations })
   }
 
   /**
@@ -3683,57 +3578,32 @@ export class PostgresBackend implements StorageBackend {
         liveResourceCount = liveRows[0]!.count
       }
 
-      // Pre-flight pass over every staged resource, before writing anything.
-      // Skips (existing ids) are counted conservatively for the quota
-      // estimate, as on the filesystem.
-      let incomingBytes = 0
-      for (const {
-        collectionId,
-        collectionDescription,
-        resources
-      } of collections) {
-        const existing = descriptionsById.get(collectionId) ?? undefined
-        const effectiveEncryption = existing
-          ? existing.encryption
-          : collectionDescription.encryption
-        for (const { fileName, body } of resources) {
-          if (body.length > maxUploadBytes) {
+      // Shared pre-flight over every staged body (`assertImportBodiesFit`):
+      // the per-body 413 cap and the fail-closed encryption check, before
+      // anything is written. Skips (existing ids) are counted conservatively
+      // for the quota estimate, as on the filesystem. Chunks (the
+      // `chunked-streams` feature) are opaque bytes -- no encryption-conformance
+      // check applies -- but they count the same per-body 413 and the
+      // (conservative) capacity pre-flight as Resource bodies, tallied after
+      // every Collection because this backend merges each chunk's files into
+      // one row up front.
+      const incomingBytes = await assertImportBodiesFit({
+        collections,
+        existingCollection: collectionId =>
+          descriptionsById.get(collectionId) ?? undefined,
+        assertUploadSize: uploadBytes => {
+          if (uploadBytes > maxUploadBytes) {
             throw new PayloadTooLargeError({
               maxUploadBytes,
               backendId: this.describe().id,
-              uploadBytes: body.length
+              uploadBytes
             })
           }
-          if (effectiveEncryption?.scheme !== undefined) {
-            const { contentType } = parseResourceFileName(fileName)
-            let parsedBody: unknown
-            try {
-              parsedBody = JSON.parse(body.toString('utf8'))
-            } catch {
-              parsedBody = undefined
-            }
-            assertEncryptedWriteConforms({
-              collectionDescription: { encryption: effectiveEncryption },
-              contentType,
-              body: parsedBody
-            })
-          }
-          incomingBytes += body.length
-        }
-      }
-      // Chunks (the `chunked-streams` feature) are opaque bytes -- no
-      // encryption-conformance check applies -- but they count the same per-body
-      // 413 and the (conservative) capacity pre-flight as Resource bodies.
-      for (const chunk of chunkEntries) {
-        if (chunk.body.length > maxUploadBytes) {
-          throw new PayloadTooLargeError({
-            maxUploadBytes,
-            backendId: this.describe().id,
-            uploadBytes: chunk.body.length
-          })
-        }
-        incomingBytes += chunk.body.length
-      }
+        },
+        trailingChunkBodies: chunkEntries
+      })
+      // The cumulative quota (507) stays here: the headroom check is this
+      // backend's own, against the transactional usage counter read above.
       if (
         capacityBytes !== undefined &&
         currentUsage + incomingBytes > capacityBytes
@@ -4039,7 +3909,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options.resourceId {string}
    * @param options.contentType {string}
    * @param options.body {Buffer|null}   `null` re-creates a tombstone
-   * @param [options.sidecar] {SidecarShape}
+   * @param [options.sidecar] {MetaSidecar}
    * @returns {Promise<void>}
    */
   async #insertImportedResource({
@@ -4057,7 +3927,7 @@ export class PostgresBackend implements StorageBackend {
     resourceId: string
     contentType: string
     body: Buffer | null
-    sidecar: SidecarShape | undefined
+    sidecar: MetaSidecar | undefined
   }): Promise<void> {
     const now = new Date().toISOString()
     const deleted = body === null

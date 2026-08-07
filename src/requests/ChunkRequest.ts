@@ -11,9 +11,11 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
-import { getCollectionOrThrow } from './collectionContext.js'
+import {
+  fetchCollectionAndBackend,
+  getResourceMetadataOrThrow
+} from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
-import { resolveBackend } from '../lib/backendRegistry.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { parseChunkIndexSegment } from '../lib/resourceFileName.js'
 import { chunkPath, chunksContainerPath } from '../lib/paths.js'
@@ -75,7 +77,6 @@ export class ChunkRequest {
     const {
       params: { spaceId, collectionId, resourceId }
     } = request
-    const { storage } = request.server
     const requestName = 'Put Chunk'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -95,20 +96,13 @@ export class ChunkRequest {
 
     // zCap checks out, continue
 
-    // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
-      storage,
-      spaceId,
-      collectionId,
-      requestName
-    })
-
-    // Route chunk bytes to the Collection's selected (data-plane) backend.
-    const dataBackend = await resolveBackend({
+    // Fetch collection by id, and route chunk bytes to the Collection's
+    // selected (data-plane) backend.
+    const { dataBackend } = await fetchCollectionAndBackend({
       request,
       spaceId,
       collectionId,
-      collectionDescription
+      requestName
     })
     const input = await resolveResourceInput(request, dataBackend)
     // Surface any `If-Match` / `If-None-Match` write precondition to the
@@ -149,7 +143,6 @@ export class ChunkRequest {
     const {
       params: { spaceId, collectionId, resourceId }
     } = request
-    const { storage } = request.server
     const requestName = 'Get Chunk'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -171,20 +164,13 @@ export class ChunkRequest {
 
     // authorized, continue
 
-    // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
-      storage,
-      spaceId,
-      collectionId,
-      requestName
-    })
-
-    // Read the bytes from the Collection's selected (data-plane) backend.
-    const dataBackend = await resolveBackend({
+    // Fetch collection by id, and read the bytes from the Collection's selected
+    // (data-plane) backend.
+    const { dataBackend } = await fetchCollectionAndBackend({
       request,
       spaceId,
       collectionId,
-      collectionDescription
+      requestName
     })
     let result
     try {
@@ -192,14 +178,13 @@ export class ChunkRequest {
       // its chunks to be readable: an orphan chunk left behind by
       // out-of-band state 404s here exactly like the Resource route and the
       // chunk listing do -- checked via its metadata, never its byte stream.
-      const parent = await dataBackend.getResourceMetadata({
+      await getResourceMetadataOrThrow({
+        dataBackend,
         spaceId,
         collectionId,
-        resourceId
+        resourceId,
+        requestName
       })
-      if (!parent) {
-        throw new ResourceNotFoundError({ requestName })
-      }
       result = await dataBackend.getChunk({
         spaceId,
         collectionId,
@@ -236,7 +221,6 @@ export class ChunkRequest {
     const {
       params: { spaceId, collectionId, resourceId }
     } = request
-    const { storage } = request.server
     const requestName = 'Head Chunk'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -258,33 +242,25 @@ export class ChunkRequest {
 
     // authorized, continue
 
-    // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
-      storage,
-      spaceId,
-      collectionId,
-      requestName
-    })
-
-    // Read chunk metadata from the Collection's selected (data-plane) backend.
-    const dataBackend = await resolveBackend({
+    // Fetch collection by id, and read chunk metadata from the Collection's
+    // selected (data-plane) backend.
+    const { dataBackend } = await fetchCollectionAndBackend({
       request,
       spaceId,
       collectionId,
-      collectionDescription
+      requestName
     })
     let metadata
     try {
       // The same parent-Resource existence gate as Get Chunk: an orphan
       // chunk's headers reveal what a GET would.
-      const parent = await dataBackend.getResourceMetadata({
+      await getResourceMetadataOrThrow({
+        dataBackend,
         spaceId,
         collectionId,
-        resourceId
+        resourceId,
+        requestName
       })
-      if (!parent) {
-        throw new ResourceNotFoundError({ requestName })
-      }
       metadata = await dataBackend.getChunkMetadata({
         spaceId,
         collectionId,
@@ -328,7 +304,6 @@ export class ChunkRequest {
     const {
       params: { spaceId, collectionId, resourceId }
     } = request
-    const { storage } = request.server
     const requestName = 'Delete Chunk'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -346,9 +321,10 @@ export class ChunkRequest {
       requestName
     })
 
-    // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
-      storage,
+    // Fetch collection by id, and delete from the Collection's selected
+    // (data-plane) backend.
+    const { dataBackend } = await fetchCollectionAndBackend({
+      request,
       spaceId,
       collectionId,
       requestName
@@ -357,25 +333,18 @@ export class ChunkRequest {
     // zCap checks out, continue. An `If-Match` precondition is evaluated by
     // the storage layer atomically with the removal (412 on mismatch).
     const { ifMatch } = parseWritePreconditions(request.headers)
-    const dataBackend = await resolveBackend({
-      request,
-      spaceId,
-      collectionId,
-      collectionDescription
-    })
     let removed: boolean
     try {
       // The same parent-Resource existence gate as the read handlers: a
       // chunk of an absent (or tombstoned) parent is a 404, not a deletable
       // orphan.
-      const parent = await dataBackend.getResourceMetadata({
+      await getResourceMetadataOrThrow({
+        dataBackend,
         spaceId,
         collectionId,
-        resourceId
+        resourceId,
+        requestName
       })
-      if (!parent) {
-        throw new ResourceNotFoundError({ requestName })
-      }
       removed = await dataBackend.deleteChunk({
         spaceId,
         collectionId,
@@ -415,7 +384,6 @@ export class ChunkRequest {
     const {
       params: { spaceId, collectionId, resourceId }
     } = request
-    const { storage } = request.server
     const requestName = 'List Chunks'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -434,22 +402,15 @@ export class ChunkRequest {
 
     // authorized, continue
 
-    // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
-      storage,
-      spaceId,
-      collectionId,
-      requestName
-    })
-
-    // List from the Collection's selected (data-plane) backend. The parent
-    // Resource must exist for its chunk listing to (an absent Resource has no
-    // `chunks/` container) -- checked via its metadata, never its byte stream.
-    const dataBackend = await resolveBackend({
+    // Fetch collection by id, and list from the Collection's selected
+    // (data-plane) backend. The parent Resource must exist for its chunk
+    // listing to (an absent Resource has no `chunks/` container) -- checked via
+    // its metadata, never its byte stream.
+    const { dataBackend } = await fetchCollectionAndBackend({
       request,
       spaceId,
       collectionId,
-      collectionDescription
+      requestName
     })
     let listing
     try {

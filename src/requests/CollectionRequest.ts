@@ -8,17 +8,22 @@ import type { ChangeDocument } from '@interop/storage-core'
 
 import { buildLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
-import { getCollectionOrThrow } from './collectionContext.js'
+import {
+  fetchCollectionAndBackend,
+  getCollectionOrThrow
+} from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidIds } from '../lib/validateId.js'
 import type { CollectionDescription, StorageBackend } from '../types.js'
 import { parseBlindedIndexQueryBody } from '../lib/blindedIndex.js'
 import {
+  assertIndexesNotEncrypted,
   assertSupportedIndexes,
   normalizeIndexes,
   parseEqualityQueryBody,
-  parseListFilter
+  parseListFilter,
+  uniqueIndexesOf
 } from '../lib/equalityIndex.js'
 import {
   assertSupportedBackend,
@@ -31,11 +36,9 @@ import {
   assertEncryptedWriteConforms
 } from '../lib/encryption.js'
 import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
+import { parsePageParams } from '../lib/pagination.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
-import {
-  invalidateResolvedWebvhDid,
-  WEBVH_LOG_COLLECTION_ID
-} from '../lib/webvhController.js'
+import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
 import {
   collectionPath,
   resourcePath,
@@ -171,14 +174,11 @@ export class CollectionRequest {
       headers: request.headers,
       requestName
     })
-    // When the Collection declares any `unique: true` index entries (the
-    // `equality-query` feature), pass the normalized unique entries so the
-    // backend enforces the plaintext uniqueness claim atomically with the write
-    // (409). Write authorization has already run, so the existence-revealing 409
-    // is observable only to a caller authorized to write here.
-    const uniqueIndexes = normalizeIndexes({
+    // Any `unique: true` index entries the Collection declares ride along, so
+    // the backend enforces the uniqueness claim atomically with the write (409).
+    const uniqueIndexes = uniqueIndexesOf({
       indexes: collectionDescription.indexes
-    }).filter(declaration => declaration.unique)
+    })
     try {
       written = await dataBackend.writeResource({
         spaceId,
@@ -356,18 +356,11 @@ export class CollectionRequest {
     // envelope. Enforced in BOTH directions (adding `indexes` to an encrypted
     // Collection, or `encryption` to an indexed one) against the merged
     // description, so a pre-existing value on the other field is caught too.
-    if (
-      Array.isArray(collectionDescription.indexes) &&
-      collectionDescription.indexes.length > 0 &&
-      collectionDescription.encryption !== undefined
-    ) {
-      throw new InvalidRequestBodyError({
-        requestName,
-        detail:
-          'Collection "indexes" must not be combined with an "encryption" descriptor.',
-        pointer: '#/indexes'
-      })
-    }
+    assertIndexesNotEncrypted({
+      indexes: collectionDescription.indexes,
+      encryption: collectionDescription.encryption,
+      requestName
+    })
 
     // Adding a `unique: true` claim for a name that was not unique before MUST
     // be rejected if the Collection's already-stored Resources already violate
@@ -639,7 +632,6 @@ export class CollectionRequest {
     const {
       params: { spaceId, collectionId }
     } = request
-    const { storage } = request.server
     const requestName = 'Get Collection Quota'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -655,22 +647,14 @@ export class CollectionRequest {
       requestName
     })
 
-    // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
-      storage,
-      spaceId,
-      collectionId,
-      requestName
-    })
-
-    // Report against the Collection's selected (data-plane) backend. A backend
-    // that cannot account per-Collection omits `reportCollectionUsage`; the spec
-    // sanctions a 501 there.
-    const dataBackend = await resolveBackend({
+    // Fetch collection by id, and report against the Collection's selected
+    // (data-plane) backend. A backend that cannot account per-Collection omits
+    // `reportCollectionUsage`; the spec sanctions a 501 there.
+    const { dataBackend } = await fetchCollectionAndBackend({
       request,
       spaceId,
       collectionId,
-      collectionDescription
+      requestName
     })
     if (!dataBackend.reportCollectionUsage) {
       throw new UnsupportedOperationError({ requestName })
@@ -738,7 +722,6 @@ export class CollectionRequest {
       params: { spaceId, collectionId },
       body
     } = request
-    const { storage } = request.server
     const requestName = 'Collection Query'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -755,21 +738,15 @@ export class CollectionRequest {
       requestName
     })
 
-    // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
-      storage,
-      spaceId,
-      collectionId,
-      requestName
-    })
-
-    // Serve the query from the Collection's selected (data-plane) backend.
-    const dataBackend = await resolveBackend({
-      request,
-      spaceId,
-      collectionId,
-      collectionDescription
-    })
+    // Fetch collection by id, and serve the query from the Collection's
+    // selected (data-plane) backend.
+    const { collectionDescription, dataBackend } =
+      await fetchCollectionAndBackend({
+        request,
+        spaceId,
+        collectionId,
+        requestName
+      })
 
     // "You did not say which profile" is a malformed request (the Query
     // Profile Registry marks `profile` REQUIRED), not an unsupported feature:
@@ -782,7 +759,7 @@ export class CollectionRequest {
       })
     }
 
-    if (body?.profile === 'changes' && dataBackend.changesSince) {
+    if (body.profile === 'changes' && dataBackend.changesSince) {
       return CollectionRequest.#queryChanges({
         reply,
         dataBackend,
@@ -792,7 +769,7 @@ export class CollectionRequest {
         requestName
       })
     }
-    if (body?.profile === 'blinded-index' && dataBackend.queryByBlindedIndex) {
+    if (body.profile === 'blinded-index' && dataBackend.queryByBlindedIndex) {
       // Validate/normalize the EDV query body fields (400 on a malformed
       // query), then let the backend evaluate and paginate.
       const parsed = parseBlindedIndexQueryBody({ body, requestName })
@@ -806,7 +783,7 @@ export class CollectionRequest {
         .type('application/json')
         .send(JSON.stringify(result))
     }
-    if (body?.profile === 'equality' && dataBackend.queryByEquality) {
+    if (body.profile === 'equality' && dataBackend.queryByEquality) {
       // The `equality` profile applies only to plaintext Collections: an
       // encrypted Collection's documents are opaque envelopes the server cannot
       // extract attributes from, so it answers `unsupported-operation` (501).
@@ -969,9 +946,7 @@ export class CollectionRequest {
       await storage.deleteCollection({ spaceId, collectionId })
       // Deleting the `id` collection drops the history log a self-hosted
       // did:webvh controller resolves from; bust any document cached from it.
-      if (collectionId === WEBVH_LOG_COLLECTION_ID) {
-        invalidateResolvedWebvhDid({ storage, spaceId })
-      }
+      invalidateResolvedWebvhDid({ storage, spaceId, collectionId })
     } catch (err) {
       // Rethrow a typed ProblemError from the data-plane backend unchanged
       // (e.g. a 507 quota / 412 precondition) rather than flattening it to a
@@ -1013,13 +988,7 @@ export class CollectionRequest {
     const {
       params: { spaceId, collectionId }
     } = request
-    // `limit` / `cursor` are single-valued pagination params; a repeated value
-    // (an array) is ignored here and falls back to the backend default.
-    const rawLimit = request.query.limit
-    const rawCursor = request.query.cursor
-    const limit = typeof rawLimit === 'string' ? rawLimit : undefined
-    const cursor = typeof rawCursor === 'string' ? rawCursor : undefined
-    const { storage } = request.server
+    const { limit, cursor } = parsePageParams({ query: request.query })
     const requestName = 'List Collection'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -1045,21 +1014,15 @@ export class CollectionRequest {
       allowTargetQuery: true
     })
 
-    // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
-      storage,
-      spaceId,
-      collectionId,
-      requestName
-    })
-
-    // List (or filter-query) from the Collection's selected (data-plane) backend.
-    const dataBackend = await resolveBackend({
-      request,
-      spaceId,
-      collectionId,
-      collectionDescription
-    })
+    // Fetch collection by id, and list (or filter-query) from the Collection's
+    // selected (data-plane) backend.
+    const { collectionDescription, dataBackend } =
+      await fetchCollectionAndBackend({
+        request,
+        spaceId,
+        collectionId,
+        requestName
+      })
 
     // GET equality filter: `filter[<attr>]=<value>` maps to the equality profile
     // over the same machinery. Present filters take this cacheable path; their
@@ -1088,15 +1051,12 @@ export class CollectionRequest {
       // The canonical GET semantics: a single-element `equals` conjunction over
       // string values. Reuse the already-parsed `limit` / `cursor` params and
       // answer the same page shape as the POST profile.
-      const parsedFilterLimit = limit !== undefined ? Number(limit) : NaN
       const result = await dataBackend.queryByEquality({
         spaceId,
         collectionId,
         indexes,
         query: { equals: [{ ...filters }] },
-        ...(Number.isFinite(parsedFilterLimit) && parsedFilterLimit >= 1
-          ? { limit: parsedFilterLimit }
-          : {}),
+        ...(limit !== undefined && { limit }),
         ...(cursor !== undefined && { cursor })
       })
       return reply
@@ -1105,20 +1065,13 @@ export class CollectionRequest {
         .send(JSON.stringify(result))
     }
 
-    // Coerce `limit` (a query string) to a positive integer; a non-numeric or
-    // `< 1` value is ignored so the backend applies its own default. `cursor` is
-    // opaque and passed through verbatim -- the backend validates it and rejects
-    // a malformed one with `invalid-cursor` (400).
-    const parsedLimit = limit !== undefined ? Number(limit) : NaN
     const collectionItems = await dataBackend.listCollectionItems({
       spaceId,
       collectionId,
       // Pass the control-plane description: a data-plane (external) backend does
       // not hold it, and the listing's `name`/`type`/encryption flag come from it.
       collectionDescription,
-      ...(Number.isFinite(parsedLimit) && parsedLimit >= 1
-        ? { limit: parsedLimit }
-        : {}),
+      ...(limit !== undefined && { limit }),
       ...(cursor !== undefined && { cursor })
     })
 

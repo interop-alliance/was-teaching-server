@@ -4,7 +4,11 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
-import { getCollectionOrThrow } from './collectionContext.js'
+import {
+  fetchCollectionAndBackend,
+  getCollectionOrThrow,
+  getResourceMetadataOrThrow
+} from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
@@ -13,14 +17,11 @@ import {
   assertEncryptedMetaConforms
 } from '../lib/encryption.js'
 import { assertValidIds } from '../lib/validateId.js'
-import { normalizeIndexes } from '../lib/equalityIndex.js'
+import { uniqueIndexesOf } from '../lib/equalityIndex.js'
 import { resourcePath, metaPath } from '../lib/paths.js'
 import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
 import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
-import {
-  invalidateResolvedWebvhDid,
-  WEBVH_LOG_COLLECTION_ID
-} from '../lib/webvhController.js'
+import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
 import {
   InvalidRequestBodyError,
   ResourceNotFoundError,
@@ -176,14 +177,11 @@ export class ResourceRequest {
       headers: request.headers,
       requestName
     })
-    // When the Collection declares any `unique: true` index entries (the
-    // `equality-query` feature), pass the normalized unique entries so the
-    // backend enforces the plaintext uniqueness claim atomically with the write
-    // (409). Authorization has already run above, so the existence-revealing 409
-    // is observable only to a caller authorized to write here.
-    const uniqueIndexes = normalizeIndexes({
+    // Any `unique: true` index entries the Collection declares ride along, so
+    // the backend enforces the uniqueness claim atomically with the write (409).
+    const uniqueIndexes = uniqueIndexesOf({
       indexes: collectionDescription.indexes
-    }).filter(declaration => declaration.unique)
+    })
     // Surface any `If-Match` / `If-None-Match` write precondition to the storage
     // layer, which evaluates it atomically with the write (returning 412
     // `precondition-failed` on a mismatch -- rethrown unchanged below).
@@ -205,9 +203,7 @@ export class ResourceRequest {
     // A write into the `id` collection may replace the history log a
     // self-hosted did:webvh controller resolves from, so any document cached
     // from the previous log is stale as of this write.
-    if (collectionId === WEBVH_LOG_COLLECTION_ID) {
-      invalidateResolvedWebvhDid({ storage, spaceId })
-    }
+    invalidateResolvedWebvhDid({ storage, spaceId, collectionId })
     // Return the new ETag so a client can chain a subsequent conditional write.
     return reply.status(204).header('etag', formatEtag(written.version)).send()
   }
@@ -233,7 +229,6 @@ export class ResourceRequest {
     const {
       params: { spaceId, collectionId, resourceId }
     } = request
-    const { storage } = request.server
     const requestName = 'Get Resource'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -253,20 +248,13 @@ export class ResourceRequest {
 
     // authorized, continue
 
-    // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
-      storage,
-      spaceId,
-      collectionId,
-      requestName
-    })
-
-    // Read the bytes from the Collection's selected (data-plane) backend.
-    const dataBackend = await resolveBackend({
+    // Fetch collection by id, and read the bytes from the Collection's selected
+    // (data-plane) backend.
+    const { dataBackend } = await fetchCollectionAndBackend({
       request,
       spaceId,
       collectionId,
-      collectionDescription
+      requestName
     })
     const contentType = request.headers['content-type']
     let result
@@ -320,7 +308,6 @@ export class ResourceRequest {
     const {
       params: { spaceId, collectionId, resourceId }
     } = request
-    const { storage } = request.server
     const requestName = 'Head Resource'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -339,36 +326,21 @@ export class ResourceRequest {
 
     // authorized, continue
 
-    // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
-      storage,
+    // Fetch collection by id, and read Metadata from the Collection's selected
+    // (data-plane) backend.
+    const { dataBackend } = await fetchCollectionAndBackend({
+      request,
       spaceId,
       collectionId,
       requestName
     })
-
-    // Read Metadata from the Collection's selected (data-plane) backend.
-    const dataBackend = await resolveBackend({
-      request,
+    const metadata = await getResourceMetadataOrThrow({
+      dataBackend,
       spaceId,
       collectionId,
-      collectionDescription
+      resourceId,
+      requestName
     })
-    let metadata
-    try {
-      metadata = await dataBackend.getResourceMetadata({
-        spaceId,
-        collectionId,
-        resourceId
-      })
-    } catch (err) {
-      // Rethrow a typed ProblemError from the data-plane backend unchanged;
-      // wrap anything unexpected as a 500.
-      rethrowOrWrapStorageError({ err, requestName })
-    }
-    if (!metadata) {
-      throw new ResourceNotFoundError({ requestName })
-    }
 
     // Set the payload headers a GET would send, but send no body. Fastify keeps
     // a manually-set `Content-Length` on a bodyless send (it is not recomputed
@@ -406,7 +378,6 @@ export class ResourceRequest {
     const {
       params: { spaceId, collectionId, resourceId }
     } = request
-    const { storage } = request.server
     const requestName = 'Get Resource Metadata'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -426,36 +397,21 @@ export class ResourceRequest {
 
     // authorized, continue
 
-    // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
-      storage,
+    // Fetch collection by id, and read Metadata from the Collection's selected
+    // (data-plane) backend.
+    const { dataBackend } = await fetchCollectionAndBackend({
+      request,
       spaceId,
       collectionId,
       requestName
     })
-
-    // Read Metadata from the Collection's selected (data-plane) backend.
-    const dataBackend = await resolveBackend({
-      request,
+    const metadata = await getResourceMetadataOrThrow({
+      dataBackend,
       spaceId,
       collectionId,
-      collectionDescription
+      resourceId,
+      requestName
     })
-    let metadata
-    try {
-      metadata = await dataBackend.getResourceMetadata({
-        spaceId,
-        collectionId,
-        resourceId
-      })
-    } catch (err) {
-      // Rethrow a typed ProblemError from the data-plane backend unchanged;
-      // wrap anything unexpected as a 500.
-      rethrowOrWrapStorageError({ err, requestName })
-    }
-    if (!metadata) {
-      throw new ResourceNotFoundError({ requestName })
-    }
 
     // `version` (content) and `metaVersion` (metadata) are out-of-band ETag
     // validators, not part of the Resource Metadata wire body, so strip both
@@ -571,15 +527,12 @@ export class ResourceRequest {
       collectionId,
       collectionDescription
     })
-    // When the Collection declares any `unique: true` index entries (the
-    // `equality-query` feature), pass the normalized unique entries so the
-    // backend enforces the plaintext uniqueness claim for custom-sourced
-    // attributes atomically with this metadata write (409). Authorization has
-    // already run, so the existence-revealing 409 is observable only to a caller
-    // authorized to write here.
-    const uniqueIndexes = normalizeIndexes({
+    // Any `unique: true` index entries the Collection declares ride along, so
+    // the backend enforces the uniqueness claim for custom-sourced attributes
+    // atomically with this metadata write (409).
+    const uniqueIndexes = uniqueIndexesOf({
       indexes: collectionDescription.indexes
-    }).filter(declaration => declaration.unique)
+    })
     let written
     try {
       written = await dataBackend.writeResourceMetadata({
@@ -644,9 +597,10 @@ export class ResourceRequest {
       requestName
     })
 
-    // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
-      storage,
+    // Fetch collection by id, and delete from the Collection's selected
+    // (data-plane) backend.
+    const { dataBackend } = await fetchCollectionAndBackend({
+      request,
       spaceId,
       collectionId,
       requestName
@@ -656,13 +610,6 @@ export class ResourceRequest {
     // storage layer atomically with the removal; a mismatch surfaces as 412
     // `precondition-failed` (rethrown unchanged below).
     const { ifMatch } = parseWritePreconditions(request.headers)
-    // Delete from the Collection's selected (data-plane) backend.
-    const dataBackend = await resolveBackend({
-      request,
-      spaceId,
-      collectionId,
-      collectionDescription
-    })
     try {
       await dataBackend.deleteResource({
         spaceId,
@@ -675,9 +622,7 @@ export class ResourceRequest {
     }
     // Removing the history log makes a self-hosted did:webvh controller
     // unresolvable; drop any document still cached from it.
-    if (collectionId === WEBVH_LOG_COLLECTION_ID) {
-      invalidateResolvedWebvhDid({ storage, spaceId })
-    }
+    invalidateResolvedWebvhDid({ storage, spaceId, collectionId })
 
     return reply.status(204).send()
   }

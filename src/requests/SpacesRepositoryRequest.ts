@@ -11,11 +11,12 @@ import { verifyBodyControllerConsent } from './controllerConsent.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidId } from '../lib/validateId.js'
 import { spacePath, spacesPath } from '../lib/paths.js'
-import { encodeCursor, decodeCursor } from '../lib/cursor.js'
+import { decodeCursor } from '../lib/cursor.js'
 import {
-  DEFAULT_PAGE_SIZE,
-  clampPageSize,
-  compareCodeUnits
+  compareCodeUnits,
+  nextPageUrl,
+  parsePageParams,
+  resolvePageSize
 } from '../lib/pagination.js'
 import { assertValidController } from '../lib/validateDid.js'
 import {
@@ -85,12 +86,7 @@ export class SpacesRepositoryRequest {
     const rootInvocation = isRootInvocation({ invocation })
     const allowedTarget = new URL(spacesPath(), serverUrl).toString()
 
-    // `limit` / `cursor` are single-valued pagination params; a repeated value
-    // (an array) is ignored and falls back to the default page size.
-    const rawLimit = request.query.limit
-    const rawCursor = request.query.cursor
-    const limit = typeof rawLimit === 'string' ? rawLimit : undefined
-    const cursor = typeof rawCursor === 'string' ? rawCursor : undefined
+    const { limit, cursor } = parsePageParams({ query: request.query })
 
     // Decode the cursor now -- after the anonymous early-return, so an anonymous
     // caller never trips it. The per-space verification below is the
@@ -99,13 +95,7 @@ export class SpacesRepositoryRequest {
     // per-controller-filtered operation allows).
     const after = cursor !== undefined ? decodeCursor(cursor).after : undefined
 
-    // Coerce `limit` to a positive integer, clamped; a non-numeric or `< 1`
-    // value falls back to the default page size.
-    const parsedLimit = limit !== undefined ? Number(limit) : NaN
-    const pageSize =
-      Number.isFinite(parsedLimit) && parsedLimit >= 1
-        ? clampPageSize(parsedLimit)
-        : DEFAULT_PAGE_SIZE
+    const pageSize = resolvePageSize(limit)
 
     // Sort by `id` ascending in code-unit order -- the keyset order the cursor
     // seeks within; do not rely on backend ordering.
@@ -184,8 +174,11 @@ export class SpacesRepositoryRequest {
 
     const listing: SpaceListing = { url: spacesPath(), items }
     if (hasMore) {
-      const lastId = items[items.length - 1]!.id
-      listing.next = `${spacesPath()}?limit=${pageSize}&cursor=${encodeCursor(lastId)}`
+      listing.next = nextPageUrl({
+        path: spacesPath(),
+        limit: pageSize,
+        after: items[items.length - 1]!.id
+      })
     }
     // `totalItems` is the full authorized count only when this response IS the
     // complete authorized set: no cursor was supplied AND the scan reached the

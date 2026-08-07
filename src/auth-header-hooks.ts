@@ -114,6 +114,21 @@ export function invokerDid(request: FastifyRequest): IDID | undefined {
 }
 
 /**
+ * True when the request presents both auth-related headers a capability
+ * invocation needs (`Authorization` and `Capability-Invocation`). The presence
+ * test the hooks below gate on, and the one a handler re-applies when its route
+ * was let through unauthenticated as a safe method (see `PolicyRequest.get`).
+ * Presence only -- neither header is parsed or verified here.
+ *
+ * @param request {import('fastify').FastifyRequest}
+ * @returns {boolean}
+ */
+export function hasAuthHeaders(request: FastifyRequest): boolean {
+  const { headers } = request
+  return Boolean(headers.authorization && headers['capability-invocation'])
+}
+
+/**
  * onRequest hook that enforces presence of the auth-related headers. Throws
  * MissingAuthError (401) when `Authorization` or `Capability-Invocation` is
  * absent. For route groups where every operation, reads included, is
@@ -134,8 +149,7 @@ export async function requireAuthHeaders(
   if (request.provisioningAuthorized) {
     return
   }
-  const { headers } = request
-  if (!(headers.authorization && headers['capability-invocation'])) {
+  if (!hasAuthHeaders(request)) {
     throw new MissingAuthError()
   }
 }
@@ -160,11 +174,11 @@ export async function requireAuthHeadersOrPublicRead(
   if (request.provisioningAuthorized) {
     return
   }
-  const { headers, method } = request
-  if (headers.authorization && headers['capability-invocation']) {
+  if (hasAuthHeaders(request)) {
     return
   }
   // Safe methods may proceed unauthenticated; authorize() decides via policy.
+  const { method } = request
   if (method === 'GET' || method === 'HEAD') {
     return
   }

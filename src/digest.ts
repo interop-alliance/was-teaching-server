@@ -19,7 +19,7 @@
  *   `invalid-authorization-header` (400).
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
-import { verifyHeaderValue } from '@interop/http-digest-header'
+import { verifyDigest, verifyHeaderValue } from '@interop/http-digest-header'
 import { PassThrough, Transform, type Readable } from 'node:stream'
 import { createHash } from 'node:crypto'
 import { isJson } from './lib/isJson.js'
@@ -38,36 +38,6 @@ function isBufferableBody(contentType: string | undefined): boolean {
     isJson({ contentType }) ||
     (typeof contentType === 'string' && contentType.startsWith('text/'))
   )
-}
-
-/**
- * Compares an incrementally-computed SHA-256 digest against a `Digest` header
- * value, mirroring `@interop/http-digest-header`'s encodings without buffering
- * the body: the multihash form (`mh=u<base64url(0x12 0x20 <digest>)>`, what WAS
- * clients send) and the RFC 9651 `SHA-256=<base64>` form (colons stripped).
- * @param options {object}
- * @param options.sha256Digest {Buffer}   the computed 32-byte SHA-256 digest
- * @param options.headerValue {string}   the request's `Digest` header value
- * @returns {boolean}
- */
-function digestMatches({
-  sha256Digest,
-  headerValue
-}: {
-  sha256Digest: Buffer
-  headerValue: string
-}): boolean {
-  const [key = '', rawValue] = headerValue.split(/=(.+)/)
-  if (key === 'mh') {
-    const multihash = Buffer.concat([Buffer.from([0x12, 0x20]), sha256Digest])
-    return rawValue === `u${multihash.toString('base64url')}`
-  }
-  if (key.replace('-', '').toLowerCase() === 'sha256') {
-    const expected = (rawValue ?? '').replace(/^:(.*):$/, '$1')
-    return expected === sha256Digest.toString('base64')
-  }
-  // Only SHA-256 is supported (as in the library); anything else cannot match.
-  return false
 }
 
 /**
@@ -95,12 +65,15 @@ class DigestVerifyStream extends Transform {
     callback(null, chunk)
   }
   override _flush(callback: (error?: Error | null) => void): void {
-    const matched = digestMatches({
-      sha256Digest: this.#hash.digest(),
+    // A malformed/unsupported header also reports unverified; it surfaces as
+    // the same mismatch error either way (matching this hook's historical
+    // behavior for streamed bodies).
+    const { verified } = verifyDigest({
+      digest: this.#hash.digest(),
       headerValue: this.#digestHeader
     })
     callback(
-      matched
+      verified
         ? null
         : new InvalidDigestError({
             detail: 'The `Digest` header does not match the request body.'
@@ -139,15 +112,21 @@ export async function captureRawBody(
     payload.on('error', err => verify.destroy(err))
     return payload.pipe(verify)
   }
+  // Buffer the body once: the chunks are collected but never mirrored into the
+  // passthrough as they arrive -- the single concatenated buffer is handed to
+  // Fastify's parser at end-of-stream, and is the same buffer `rawBody` keeps.
+  // The chunk list is released at that point, so the steady-state cost is one
+  // copy of the body rather than three.
   const chunks: Buffer[] = []
   const passthrough = new PassThrough()
   payload.on('data', chunk => {
     chunks.push(chunk as Buffer)
-    passthrough.write(chunk)
   })
   payload.on('end', () => {
-    request.rawBody = Buffer.concat(chunks)
-    passthrough.end()
+    const rawBody = Buffer.concat(chunks)
+    chunks.length = 0
+    request.rawBody = rawBody
+    passthrough.end(rawBody)
   })
   payload.on('error', err => passthrough.destroy(err))
   return passthrough

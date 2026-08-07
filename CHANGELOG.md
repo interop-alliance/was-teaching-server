@@ -1,5 +1,29 @@
 # History
 
+## 0.17.1 - TBD
+
+### Changed
+
+- **Internal refactor: deduplicated shared logic across layers; no wire
+  changes.** The Space tar-archive contract (entry names, meta-sidecar shape,
+  import pre-flight, tar packing), cursor-pagination shaping, the List
+  Collection response body, and the default backend descriptor now each live
+  once in `src/lib/` and are consumed by both storage backends. Request handlers
+  share `fetchCollectionAndBackend` / `getResourceMetadataOrThrow` preludes and
+  one route-group hook installer; the provisioning gate takes its route list
+  from `routes.ts` instead of a parallel hardcoded set; query-index body parsing
+  shares one envelope validator.
+- **Streamed-body `Digest` verification now uses `@interop/http-digest-header`'s
+  new `verifyDigest`** (3.1.0), replacing the hand-rolled multihash comparison
+  in `src/digest.ts`.
+- **Performance.** The JSON-LD document loader is built once and cloned per zcap
+  verification (previously rebuilt with ~22 cloned contexts on every
+  authenticated request), and the DID resolver cache now survives across
+  requests. The filesystem write path does one directory scan and one sidecar
+  read per locked write (was three and two); listings, policy-level lookups, and
+  Postgres COUNT+page queries run concurrently; JSON/text request bodies are
+  buffered once instead of three times.
+
 ## 0.17.0 - 2026-08-06
 
 ### Added

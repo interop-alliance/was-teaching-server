@@ -13,7 +13,12 @@ import {
   POLICY_URL,
   META_URL
 } from '../config.default.js'
-import { isRepresentationFileName } from './resourceFileName.js'
+import {
+  isRepresentationFileName,
+  COLLECTION_FILE_PREFIX,
+  POLICY_FILE_PREFIX,
+  META_FILE_PREFIX
+} from './resourceFileName.js'
 
 /**
  * Fixed `mtime` for every entry in an export archive. `tar-stream` defaults a
@@ -44,13 +49,13 @@ export interface ExportSpaceEntry {
  * @returns {unknown}
  */
 function collectionManifestEntry(fileName: string): unknown {
-  if (fileName.startsWith('.collection.')) {
+  if (fileName.startsWith(COLLECTION_FILE_PREFIX)) {
     return { [fileName]: { url: COLLECTION_URL } }
   }
-  if (fileName.startsWith('.policy.')) {
+  if (fileName.startsWith(POLICY_FILE_PREFIX)) {
     return { [fileName]: { url: POLICY_URL } }
   }
-  if (fileName.startsWith('.meta.')) {
+  if (fileName.startsWith(META_FILE_PREFIX)) {
     return { [fileName]: { url: META_URL } }
   }
   if (isRepresentationFileName(fileName)) {

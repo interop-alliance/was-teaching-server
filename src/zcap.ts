@@ -64,6 +64,29 @@ didKeyDriver.use({
 })
 
 /**
+ * `jsonld-document-loader`'s `clone()` -- a copy of the loader carrying the
+ * same static documents and protocol handlers, so the copy can be configured
+ * without touching the original. It is not part of the loader type
+ * `@interop/security-document-loader` publishes, so it is restated here.
+ */
+type CloneableLoader = ReturnType<typeof securityLoader> & {
+  clone: () => CloneableLoader
+}
+
+/**
+ * The shared base document loader, built once: `securityLoader()` registers
+ * (and `structuredClone`s) the whole security context set on every call, which
+ * is per-verification work that never varies. Every verification takes a
+ * `clone()` of this loader and configures that instead, so nothing
+ * request-specific -- the `urn` root-capability handler, a `did:webvh`-backed
+ * DID resolver -- is ever set on this instance and no state can leak from one
+ * request to the next. Its `did` protocol handler is the security loader's own
+ * default resolver, a single cached did:key / did:web resolver reused across
+ * requests (the no-`did:webvh` path).
+ */
+const baseDocumentLoader = securityLoader() as CloneableLoader
+
+/**
  * The root capability id convention: `urn:zcap:root:` + the url-encoded
  * invocation target (shared by WAS and webkms).
  * @param target {string}   the root invocation target (full URL)
@@ -109,6 +132,10 @@ function activeWebvhContext({
  * expects (per `expectedRootCapability`), so `controllerFor` sees expected
  * targets only -- it may still throw to refuse one outright.
  *
+ * The loader is a clone of the shared `baseDocumentLoader`, so this handler and
+ * the `did:webvh` resolver below are set on the clone alone and cannot outlive
+ * the verification.
+ *
  * When a `did:webvh` context is supplied, the loader's DID resolver also serves
  * the locally resolved controller document (and its verification-method
  * fragments), which is what lets the jsigs purpose check confirm the signing
@@ -130,9 +157,10 @@ function rootCapabilityLoader({
   controllerFor: (target: string) => IDID | string[]
   webvh?: WebvhResolverContext
 }): IDocumentLoader {
-  const loader = webvh
-    ? securityLoader({ didResolver: didResolverWithWebvh(webvh) })
-    : securityLoader()
+  const loader = baseDocumentLoader.clone()
+  if (webvh) {
+    loader.setDidResolver(didResolverWithWebvh(webvh))
+  }
   loader.setProtocolHandler({
     protocol: 'urn',
     handler: {
@@ -491,13 +519,16 @@ export async function verifyZcap({
 }): Promise<VerifyCapabilityInvocationResult> {
   const fullRequestUrl = new URL(url, serverUrl).toString()
   let expected
-  if (allowTargetQuery || attenuatedRootTarget) {
+  if (allowTargetQuery || attenuatedRootTarget || allowTargetAttenuation) {
     // The acceptable roots: the ancestor's root capability (a delegated chain
     // rooted at e.g. the Space URL, narrowing to the request URL), the
     // `allowedTarget`'s own (a root invocation, or a delegated chain for the
     // exact target -- the pre-existing shapes, unchanged), and, under
     // `allowTargetQuery`, the query-bearing request URL's own (a controller
-    // invoking the query URL directly).
+    // invoking the query URL directly). Under `allowTargetAttenuation` alone
+    // that leaves `allowedTarget`'s own as the only acceptable root: a
+    // path-extended request URL is never itself one. A one-element list is
+    // matched exactly as the bare string form the option also accepts.
     const rootTargets = [
       ...(attenuatedRootTarget ? [attenuatedRootTarget] : []),
       allowedTarget,
@@ -508,24 +539,11 @@ export async function verifyZcap({
       expectedHost: new URL(serverUrl).host,
       expectedRootCapability: [...new Set(rootTargets.map(rootCapabilityId))],
       // The proof's invocationTarget is the invoked URL: `allowedTarget`
-      // itself, or (under `allowTargetQuery`) the query-bearing request URL.
+      // itself, a path under it (accepted as a RESTful attenuation), or
+      // (under `allowTargetQuery`) the query-bearing request URL.
       // The array form is narrowed to `string` by the verify fork's option
       // type, but the underlying `@interop/zcap` CapabilityInvocation
       // accepts `string | string[]` -- hence the cast.
-      expectedTarget: [
-        ...new Set([allowedTarget, fullRequestUrl])
-      ] as unknown as string,
-      allowTargetAttenuation: true
-    }
-  } else if (allowTargetAttenuation) {
-    expected = {
-      expectedAction: allowedAction,
-      expectedHost: new URL(serverUrl).host,
-      // The proof's invocationTarget is the invoked URL: `allowedTarget`
-      // itself, or a path under it (accepted as a RESTful attenuation).
-      // The only acceptable root capability is `allowedTarget`'s. (Same
-      // array-form cast as above.)
-      expectedRootCapability: rootCapabilityId(allowedTarget),
       expectedTarget: [
         ...new Set([allowedTarget, fullRequestUrl])
       ] as unknown as string,

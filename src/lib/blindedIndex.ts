@@ -23,8 +23,16 @@
  * protocol gap: `cursor` names the keyset position (ascending `resourceId`)
  * to resume from.
  */
-import { decodeCursor, encodeCursor } from './cursor.js'
-import { clampPageSize, DEFAULT_PAGE_SIZE } from './pagination.js'
+import { encodeCursor } from './cursor.js'
+import { compareCodeUnits, resolvePageSize, seekPage } from './pagination.js'
+import {
+  assertCountIsBoolean,
+  assertEqualsIsNonEmptyArray,
+  assertExactlyOneOfEqualsOrHas,
+  assertHasIsNonEmptyStringArray,
+  coerceQueryLimit,
+  parseOptionalCursor
+} from './queryProfile.js'
 import {
   InvalidRequestBodyError,
   UniqueAttributeConflictError
@@ -105,23 +113,17 @@ export function parseBlindedIndexQueryBody({
 
   // Exactly one of `equals` / `has` (the EDV client never sends both; the
   // reference server schema requires at least one).
-  if ((equals === undefined) === (has === undefined)) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: 'A blinded-index query requires exactly one of "equals" or "has".'
-    })
-  }
+  assertExactlyOneOfEqualsOrHas({
+    equals,
+    has,
+    detail: 'A blinded-index query requires exactly one of "equals" or "has".',
+    requestName
+  })
 
   const query: BlindedIndexQuery = { index }
   if (equals !== undefined) {
-    if (!Array.isArray(equals) || equals.length === 0) {
-      throw new InvalidRequestBodyError({
-        requestName,
-        detail: '"equals" must be a non-empty array of objects.',
-        pointer: '#/equals'
-      })
-    }
-    for (const element of equals) {
+    const elements = assertEqualsIsNonEmptyArray({ equals, requestName })
+    for (const element of elements) {
       if (
         typeof element !== 'object' ||
         element === null ||
@@ -139,47 +141,24 @@ export function parseBlindedIndexQueryBody({
     query.equals = equals as Array<Record<string, string>>
   }
   if (has !== undefined) {
-    if (
-      !Array.isArray(has) ||
-      has.length === 0 ||
-      has.some(name => typeof name !== 'string')
-    ) {
-      throw new InvalidRequestBodyError({
-        requestName,
-        detail: '"has" must be a non-empty array of blinded attribute names.',
-        pointer: '#/has'
-      })
-    }
-    query.has = has as string[]
-  }
-
-  if (count !== undefined && typeof count !== 'boolean') {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: '"count" must be a boolean.',
-      pointer: '#/count'
+    query.has = assertHasIsNonEmptyStringArray({
+      has,
+      detail: '"has" must be a non-empty array of blinded attribute names.',
+      requestName
     })
   }
 
-  if (cursor !== undefined && typeof cursor !== 'string') {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: '"cursor" must be a string.',
-      pointer: '#/cursor'
-    })
-  }
+  assertCountIsBoolean({ count, requestName })
 
-  // Lenient `limit` coercion, same as the `changes` profile: a non-numeric or
-  // `< 1` value is ignored so the backend applies its own default/clamp.
-  const parsedLimit = Number(limit)
-  const resolvedLimit =
-    Number.isFinite(parsedLimit) && parsedLimit >= 1 ? parsedLimit : undefined
+  const resolvedCursor = parseOptionalCursor({ cursor, requestName })
+
+  const resolvedLimit = coerceQueryLimit({ limit })
 
   return {
     query,
     count: count === true,
     ...(resolvedLimit !== undefined && { limit: resolvedLimit }),
-    ...(cursor !== undefined && { cursor })
+    ...(resolvedCursor !== undefined && { cursor: resolvedCursor })
   }
 }
 
@@ -323,33 +302,18 @@ export function runBlindedIndexQuery({
     )
     // Ascending `resourceId` in code-unit order -- the SAME ordering the
     // cursor seek (`resourceId > after`) uses, so the keyset is stable.
-    .sort((left, right) =>
-      left.resourceId < right.resourceId
-        ? -1
-        : left.resourceId > right.resourceId
-          ? 1
-          : 0
-    )
+    .sort((left, right) => compareCodeUnits(left.resourceId, right.resourceId))
 
   if (count === true) {
     return { count: matches.length }
   }
 
-  // Seek strictly past the cursor's anchor id.
-  let startIndex = 0
-  if (cursor !== undefined) {
-    const { after } = decodeCursor(cursor)
-    const found = matches.findIndex(({ resourceId }) => resourceId > after)
-    startIndex = found === -1 ? matches.length : found
-  }
-
-  const pageSize =
-    limit === undefined ? DEFAULT_PAGE_SIZE : clampPageSize(limit)
-
-  // Take `pageSize + 1` to detect a further page without a second pass.
-  const window = matches.slice(startIndex, startIndex + pageSize + 1)
-  const hasMore = window.length > pageSize
-  const page = hasMore ? window.slice(0, pageSize) : window
+  const { page, hasMore } = seekPage({
+    items: matches,
+    cursor,
+    pageSize: resolvePageSize(limit),
+    keyOf: ({ resourceId }) => resourceId
+  })
 
   return {
     documents: page.map(({ document }) => document),

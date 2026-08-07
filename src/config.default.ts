@@ -405,7 +405,7 @@ export function parsePort(raw: string | undefined): number {
  * @param raw {string|undefined}   the raw env value
  * @returns {string|undefined}   the trimmed connection string, or `undefined`
  */
-export function parseDatabaseUrl(raw: string | undefined): string | undefined {
+function parseDatabaseUrl(raw: string | undefined): string | undefined {
   if (raw === undefined || raw.trim() === '') {
     return undefined
   }
@@ -546,6 +546,40 @@ function resolveCurrentKekId(
 }
 
 /**
+ * The shared body of the three limit parsers below: an unset or empty value
+ * returns `undefined`, the literal `unlimited` (case-insensitive, trimmed)
+ * returns `Infinity`, and anything else must be a non-negative integer. A
+ * malformed value throws, naming the variable, the quantity it expects, and the
+ * `unlimited` escape hatch. Private: each env variable keeps its own exported
+ * parser (and its own error wording) below.
+ * @param raw {string|undefined}   the raw env value
+ * @param name {string}   the env variable name, for the error message
+ * @param quantity {string}   the expected quantity as it reads in the error
+ *   message (e.g. `a non-negative integer number of bytes`)
+ * @returns {number|undefined}   the parsed value, `Infinity` for `unlimited`,
+ *   or `undefined` when unset
+ */
+function parseLimit(
+  raw: string | undefined,
+  name: string,
+  quantity: string
+): number | undefined {
+  if (raw === undefined || raw.trim() === '') {
+    return undefined
+  }
+  if (raw.trim().toLowerCase() === 'unlimited') {
+    return Infinity
+  }
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(
+      `${name} must be ${quantity}, or "unlimited"; got "${raw}".`
+    )
+  }
+  return value
+}
+
+/**
  * Parses the `STORAGE_LIMIT_PER_SPACE` env value into a per-Space capacity in
  * bytes (spec "Quotas"). Accepts a plain non-negative integer number of bytes,
  * or the literal `unlimited` (case-insensitive, trimmed) which returns
@@ -558,20 +592,11 @@ function resolveCurrentKekId(
  *   or `undefined` when unset
  */
 export function parseStorageLimit(raw: string | undefined): number | undefined {
-  if (raw === undefined || raw.trim() === '') {
-    return undefined
-  }
-  if (raw.trim().toLowerCase() === 'unlimited') {
-    return Infinity
-  }
-  const value = Number(raw)
-  if (!Number.isInteger(value) || value < 0) {
-    throw new Error(
-      `STORAGE_LIMIT_PER_SPACE must be a non-negative integer number of ` +
-        `bytes, or "unlimited"; got "${raw}".`
-    )
-  }
-  return value
+  return parseLimit(
+    raw,
+    'STORAGE_LIMIT_PER_SPACE',
+    'a non-negative integer number of bytes'
+  )
 }
 
 /**
@@ -591,20 +616,11 @@ export function parseStorageLimit(raw: string | undefined): number | undefined {
 export function parseMaxUploadBytes(
   raw: string | undefined
 ): number | undefined {
-  if (raw === undefined || raw.trim() === '') {
-    return undefined
-  }
-  if (raw.trim().toLowerCase() === 'unlimited') {
-    return Infinity
-  }
-  const value = Number(raw)
-  if (!Number.isInteger(value) || value < 0) {
-    throw new Error(
-      `MAX_UPLOAD_BYTES must be a non-negative integer number of bytes, or ` +
-        `"unlimited"; got "${raw}".`
-    )
-  }
-  return value
+  return parseLimit(
+    raw,
+    'MAX_UPLOAD_BYTES',
+    'a non-negative integer number of bytes'
+  )
 }
 
 /**
@@ -625,19 +641,7 @@ export function parseCountLimit(
   raw: string | undefined,
   name: string
 ): number | undefined {
-  if (raw === undefined || raw.trim() === '') {
-    return undefined
-  }
-  if (raw.trim().toLowerCase() === 'unlimited') {
-    return Infinity
-  }
-  const value = Number(raw)
-  if (!Number.isInteger(value) || value < 0) {
-    throw new Error(
-      `${name} must be a non-negative integer, or "unlimited"; got "${raw}".`
-    )
-  }
-  return value
+  return parseLimit(raw, name, 'a non-negative integer')
 }
 
 /**
@@ -673,9 +677,7 @@ export function normalizeCountLimit(
  * @param raw {string|undefined}   the raw env value
  * @returns {string[]|undefined}   the allowed provider names, or `undefined`
  */
-export function parseEnabledBackends(
-  raw: string | undefined
-): string[] | undefined {
+function parseEnabledBackends(raw: string | undefined): string[] | undefined {
   if (raw === undefined) {
     return undefined
   }
@@ -697,9 +699,7 @@ export function parseEnabledBackends(
  * @param raw {string|undefined}   the raw env value
  * @returns {string|undefined}   the trimmed token, or `undefined` when unset
  */
-export function parseOnboardingToken(
-  raw: string | undefined
-): string | undefined {
+function parseOnboardingToken(raw: string | undefined): string | undefined {
   if (raw === undefined || raw.trim() === '') {
     return undefined
   }

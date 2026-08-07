@@ -28,7 +28,10 @@ import {
   listRegisteredBackends
 } from '../lib/backends.js'
 import { assertSupportedEncryption } from '../lib/encryption.js'
-import { assertSupportedIndexes } from '../lib/equalityIndex.js'
+import {
+  assertIndexesNotEncrypted,
+  assertSupportedIndexes
+} from '../lib/equalityIndex.js'
 import { formatEtag } from '../lib/etag.js'
 import {
   spacePath,
@@ -40,9 +43,9 @@ import {
   backendsPath,
   quotasPath
 } from '../lib/paths.js'
+import { parsePageParams } from '../lib/pagination.js'
 import {
   ProblemError,
-  InvalidSpaceIdError,
   InvalidImportError,
   InvalidRequestBodyError,
   IdConflictError,
@@ -176,9 +179,6 @@ export class SpaceRequest {
       body
     } = request
     const { serverUrl, storage } = request.server
-    // PUT is a non-safe method, so `requireAuthHeaders` guarantees auth headers
-    // were present and `parseAuthHeaders` set `request.zcap` before this handler.
-    const { keyId } = request.zcap!
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId }, { requestName: 'Update Space' })
@@ -216,24 +216,9 @@ export class SpaceRequest {
       spaceId
     })
 
-    const [zcapSigningDid] = keyId.split('#')
-
-    request.log.info(
-      `Handling PUT request for spaceId: ${spaceId}, zcapSigningDid: ${zcapSigningDid}, existingSpaceDescription: ${existingSpaceDescription ? 'exists' : 'does not exist'}`
-    )
-
     // Perform zCap signature verification (throws appropriate errors)
-    let spaceUrl
-    try {
-      spaceUrl = new URL(spacePath({ spaceId }), serverUrl).toString()
-    } catch (err) {
-      request.log.error(
-        `Failed to construct spaceUrl for spaceId: ${spaceId}, serverUrl: ${serverUrl}, error: ${(err as Error).message}`
-      )
-      throw new InvalidSpaceIdError({ requestName: 'Update Space' })
-    }
+    const spaceUrl = new URL(spacePath({ spaceId }), serverUrl).toString()
 
-    request.log.info(`spaceUrl: ${spaceUrl}, serverUrl: ${serverUrl}`)
     // Important. For existing Spaces, the request must carry authorization
     // matching the *stored* controller (the body's controller is just the
     // proposed new value). On create there is no stored controller yet, so --
@@ -262,8 +247,6 @@ export class SpaceRequest {
         MismatchError: SpaceControllerMismatchError
       })
     }
-
-    request.log.info('zCap verified')
 
     // A proposed `did:webvh` controller must resolve -- and fully verify --
     // against its history log in this server's storage BEFORE it is stored.
@@ -372,18 +355,7 @@ export class SpaceRequest {
       indexes: body?.indexes,
       requestName
     })
-    if (
-      indexes !== undefined &&
-      indexes.length > 0 &&
-      encryption !== undefined
-    ) {
-      throw new InvalidRequestBodyError({
-        requestName,
-        detail:
-          'Collection "indexes" must not be combined with an "encryption" descriptor.',
-        pointer: '#/indexes'
-      })
-    }
+    assertIndexesNotEncrypted({ indexes, encryption, requestName })
 
     // Verify (capability-only): creating a Collection requires a valid
     // capability invocation; no access-control-policy fallback.
@@ -613,12 +585,7 @@ export class SpaceRequest {
     const {
       params: { spaceId }
     } = request
-    // `limit` / `cursor` are single-valued pagination params; a repeated value
-    // (an array) is ignored here and falls back to the backend default.
-    const rawLimit = request.query.limit
-    const rawCursor = request.query.cursor
-    const limit = typeof rawLimit === 'string' ? rawLimit : undefined
-    const cursor = typeof rawCursor === 'string' ? rawCursor : undefined
+    const { limit, cursor } = parsePageParams({ query: request.query })
     const { storage } = request.server
     const requestName = 'List Collections'
 
@@ -641,16 +608,9 @@ export class SpaceRequest {
       allowTargetQuery: true
     })
 
-    // Coerce `limit` (a query string) to a positive integer; a non-numeric or
-    // `< 1` value is ignored so the backend applies its own default. `cursor` is
-    // opaque and passed through verbatim -- the backend validates it and rejects
-    // a malformed one with `invalid-cursor` (400).
-    const parsedLimit = limit !== undefined ? Number(limit) : NaN
     const collections = await storage.listCollections({
       spaceId,
-      ...(Number.isFinite(parsedLimit) && parsedLimit >= 1
-        ? { limit: parsedLimit }
-        : {}),
+      ...(limit !== undefined && { limit }),
       ...(cursor !== undefined && { cursor })
     })
     return reply

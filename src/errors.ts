@@ -699,6 +699,49 @@ export class UnresolvableControllerError extends ProblemError {
 }
 
 /**
+ * The shared body of the two body-controller consent failures below (Create
+ * Space and Create Keystore): one `detail` template, one `#/controller`
+ * problem entry, one 400. Module-private -- callers throw one of the two
+ * exported subclasses, which differ only in their `title`.
+ * @param options {object}
+ * @param options.title {string}   the problem title of the concrete request
+ * @param options.zcapSigningDid {string}   DID that signed the invocation
+ * @param options.controller {string}   controller DID supplied in the body
+ * @param [options.causeDetail] {string}   the differentiated failure cause,
+ *   appended to the non-normative `detail` (spec SHOULD)
+ * @param [options.cause] {Error}   the underlying chain-verification failure
+ */
+class ControllerMismatchError extends ProblemError {
+  constructor({
+    title,
+    zcapSigningDid,
+    controller,
+    causeDetail,
+    cause
+  }: {
+    title: string
+    zcapSigningDid: string
+    controller: string
+    causeDetail?: string
+    cause?: Error
+  }) {
+    const detail =
+      `The invocation must be authorized by the 'controller' DID in the` +
+      ` request body ("${controller}"): signed by it, or via a delegation` +
+      ` chain rooted in it (invocation signed by "${zcapSigningDid}").` +
+      (causeDetail ? ` Cause: ${causeDetail}.` : '')
+    super({
+      type: ProblemTypes.CONTROLLER_MISMATCH,
+      title,
+      detail,
+      statusCode: 400,
+      problems: [{ detail, pointer: '#/controller' }],
+      cause
+    })
+  }
+}
+
+/**
  * 400 — the capability invocation on a Create Space request (via POST or
  * create-via-PUT) is not *authorized by* the `controller` in the request body:
  * it is neither signed directly by that DID nor accompanied by a delegation
@@ -712,31 +755,14 @@ export class UnresolvableControllerError extends ProblemError {
  * @param [options.cause] {Error}   the underlying chain-verification failure,
  *   for a delegated invocation rejected at verification time
  */
-export class SpaceControllerMismatchError extends ProblemError {
-  constructor({
-    zcapSigningDid,
-    controller,
-    causeDetail,
-    cause
-  }: {
+export class SpaceControllerMismatchError extends ControllerMismatchError {
+  constructor(options: {
     zcapSigningDid: string
     controller: string
     causeDetail?: string
     cause?: Error
   }) {
-    const detail =
-      `The invocation must be authorized by the 'controller' DID in the` +
-      ` request body ("${controller}"): signed by it, or via a delegation` +
-      ` chain rooted in it (invocation signed by "${zcapSigningDid}").` +
-      (causeDetail ? ` Cause: ${causeDetail}.` : '')
-    super({
-      type: ProblemTypes.CONTROLLER_MISMATCH,
-      title: 'Invalid Create Space request',
-      detail,
-      statusCode: 400,
-      problems: [{ detail, pointer: '#/controller' }],
-      cause
-    })
+    super({ ...options, title: 'Invalid Create Space request' })
   }
 }
 
@@ -1011,31 +1037,14 @@ export class KeystoreNotFoundError extends ProblemError {
  * @param [options.cause] {Error}   the underlying chain-verification failure,
  *   for a delegated invocation rejected at verification time
  */
-export class KeystoreControllerMismatchError extends ProblemError {
-  constructor({
-    zcapSigningDid,
-    controller,
-    causeDetail,
-    cause
-  }: {
+export class KeystoreControllerMismatchError extends ControllerMismatchError {
+  constructor(options: {
     zcapSigningDid: string
     controller: string
     causeDetail?: string
     cause?: Error
   }) {
-    const detail =
-      `The invocation must be authorized by the 'controller' DID in the` +
-      ` request body ("${controller}"): signed by it, or via a delegation` +
-      ` chain rooted in it (invocation signed by "${zcapSigningDid}").` +
-      (causeDetail ? ` Cause: ${causeDetail}.` : '')
-    super({
-      type: ProblemTypes.CONTROLLER_MISMATCH,
-      title: 'Invalid Create Keystore request',
-      detail,
-      statusCode: 400,
-      problems: [{ detail, pointer: '#/controller' }],
-      cause
-    })
+    super({ ...options, title: 'Invalid Create Keystore request' })
   }
 }
 

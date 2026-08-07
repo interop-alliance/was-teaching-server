@@ -6,21 +6,20 @@ import {
   parseChunkDirName,
   parseChunkIndexSegment,
   parseResourceFileName,
-  isRepresentationFileName
+  isRepresentationFileName,
+  collectionDescriptionFileName,
+  policyFileName,
+  JSON_FILE_SUFFIX,
+  POLICY_FILE_PREFIX,
+  META_FILE_PREFIX
 } from './resourceFileName.js'
+import { assertEncryptedWriteConforms } from './encryption.js'
 import { InvalidImportError } from '../errors.js'
 import type {
   CollectionDescription,
   PolicyDocument,
   RevocationRecord
 } from '../types.js'
-
-/** Suffix shared by the description / policy / metadata dot-files. */
-const JSON_SUFFIX = '.json'
-/** Prefix of a policy dot-file (`.policy.<id>.json`). */
-const POLICY_PREFIX = '.policy.'
-/** Prefix of a resource metadata sidecar (`.meta.<id>.json`). */
-const META_PREFIX = '.meta.'
 
 /**
  * If `fileName` is a dot-file with the given prefix and `.json` suffix, returns
@@ -31,10 +30,10 @@ const META_PREFIX = '.meta.'
  * @returns {string | undefined}
  */
 function dotFileId(fileName: string, prefix: string): string | undefined {
-  if (!fileName.startsWith(prefix) || !fileName.endsWith(JSON_SUFFIX)) {
+  if (!fileName.startsWith(prefix) || !fileName.endsWith(JSON_FILE_SUFFIX)) {
     return undefined
   }
-  const id = fileName.slice(prefix.length, -JSON_SUFFIX.length)
+  const id = fileName.slice(prefix.length, -JSON_FILE_SUFFIX.length)
   return id.length > 0 ? id : undefined
 }
 
@@ -45,7 +44,7 @@ function dotFileId(fileName: string, prefix: string): string | undefined {
  * @returns {string | undefined}
  */
 function policyFileId(fileName: string): string | undefined {
-  return dotFileId(fileName, POLICY_PREFIX)
+  return dotFileId(fileName, POLICY_FILE_PREFIX)
 }
 
 /**
@@ -55,7 +54,7 @@ function policyFileId(fileName: string): string | undefined {
  * @returns {string | undefined}
  */
 export function metaSidecarFileId(fileName: string): string | undefined {
-  return dotFileId(fileName, META_PREFIX)
+  return dotFileId(fileName, META_FILE_PREFIX)
 }
 
 /**
@@ -330,7 +329,9 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
   const prefix = `space/${sourceSpaceId}/`
 
   // Space-level policy (`.policy.<sourceSpaceId>.json` at the space root).
-  const spacePolicyEntry = entries.get(`${prefix}.policy.${sourceSpaceId}.json`)
+  const spacePolicyEntry = entries.get(
+    `${prefix}${policyFileName(sourceSpaceId)}`
+  )
   const spacePolicy: PolicyDocument | undefined = spacePolicyEntry?.body
     ? JSON.parse(spacePolicyEntry.body.toString('utf8'))
     : undefined
@@ -352,7 +353,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
   }
 
   const collections = [...collectionIds].sort().map(collectionId => {
-    const collectionMetaKey = `${prefix}${collectionId}/.collection.${collectionId}.json`
+    const collectionMetaKey = `${prefix}${collectionId}/${collectionDescriptionFileName(collectionId)}`
     const metaEntry = entries.get(collectionMetaKey)
     const collectionDescription: CollectionDescription = metaEntry?.body
       ? JSON.parse(metaEntry.body.toString('utf8'))
@@ -480,6 +481,109 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
   })
 
   return { spacePolicy, collections, revocations: revocationRecords(entries) }
+}
+
+/**
+ * Pre-flight pass over every staged body of an import plan, run before anything
+ * is written so a rejected import leaves the Space untouched. Two of the three
+ * invariants the PUT/POST write routes enforce and which import MUST inherit
+ * too are checked here, per body:
+ *  - per-upload size cap (413): reject any single body over `maxUploadBytes`
+ *    (the caller supplies `assertUploadSize`, so each backend throws its own
+ *    `PayloadTooLargeError` exactly as its write path does);
+ *  - fail-closed encryption (422): when the target Collection declares a
+ *    recognized `encryption` scheme, every incoming resource body MUST be a
+ *    conforming envelope of it (a plaintext body under an encrypted Collection
+ *    would otherwise store server-visible plaintext).
+ * The third -- the cumulative quota (507) -- is the caller's: this returns the
+ * summed `incomingBytes` for the backend's own capacity/headroom check, which
+ * is engine-specific (a `du` snapshot vs. a transactional usage counter).
+ *
+ * The effective encryption descriptor is the merged-into Collection's existing
+ * one, else the import's own Collection description (a new Collection); how an
+ * existing Collection is looked up differs per backend, hence
+ * `existingCollection`. Skips (existing ids) are counted conservatively, as for
+ * the quota estimate.
+ *
+ * Chunk bodies (the `chunked-streams` feature) inherit the per-upload cap and
+ * the quota estimate, but NOT the encryption-conformance check: a chunk is
+ * opaque bytes, not a JSON envelope of the Collection's scheme. Each backend
+ * tallies them where its own import does today -- `chunkBodiesFor` interleaves
+ * them per Collection (the filesystem's verbatim chunk files),
+ * `trailingChunkBodies` tallies them once after all Collections (Postgres's
+ * merged chunk rows) -- so the order in which violations surface is unchanged
+ * for each backend.
+ *
+ * @param options {object}
+ * @param options.collections {ImportPlanCollection[]}   the staged plan
+ * @param options.existingCollection {(collectionId: string) =>
+ *   Promise<CollectionDescription | undefined> | CollectionDescription |
+ *   undefined}   the destination's current description for a Collection id,
+ *   falsy when it does not exist
+ * @param options.assertUploadSize {(uploadBytes: number) => void}   throws the
+ *   backend's 413 when one body exceeds its per-upload cap
+ * @param [options.chunkBodiesFor] {(collection: ImportPlanCollection) =>
+ *   Iterable<{ body: Buffer }>}   chunk bodies tallied right after their own
+ *   Collection's resources
+ * @param [options.trailingChunkBodies] {Iterable<{ body: Buffer }>}   chunk
+ *   bodies tallied once, after every Collection
+ * @returns {Promise<number>}   the total incoming bytes
+ */
+export async function assertImportBodiesFit({
+  collections,
+  existingCollection,
+  assertUploadSize,
+  chunkBodiesFor,
+  trailingChunkBodies
+}: {
+  collections: ImportPlanCollection[]
+  existingCollection: (
+    collectionId: string
+  ) =>
+    | Promise<CollectionDescription | undefined>
+    | CollectionDescription
+    | undefined
+  assertUploadSize: (uploadBytes: number) => void
+  chunkBodiesFor?: (
+    collection: ImportPlanCollection
+  ) => Iterable<{ body: Buffer }>
+  trailingChunkBodies?: Iterable<{ body: Buffer }>
+}): Promise<number> {
+  let incomingBytes = 0
+  for (const collection of collections) {
+    const { collectionId, collectionDescription, resources } = collection
+    const existing = await existingCollection(collectionId)
+    const effectiveEncryption = existing
+      ? existing.encryption
+      : collectionDescription.encryption
+    for (const { fileName, body } of resources) {
+      assertUploadSize(body.length)
+      if (effectiveEncryption?.scheme !== undefined) {
+        const { contentType } = parseResourceFileName(fileName)
+        let parsedBody: unknown
+        try {
+          parsedBody = JSON.parse(body.toString('utf8'))
+        } catch {
+          parsedBody = undefined
+        }
+        assertEncryptedWriteConforms({
+          collectionDescription: { encryption: effectiveEncryption },
+          contentType,
+          body: parsedBody
+        })
+      }
+      incomingBytes += body.length
+    }
+    for (const { body } of chunkBodiesFor?.(collection) ?? []) {
+      assertUploadSize(body.length)
+      incomingBytes += body.length
+    }
+  }
+  for (const { body } of trailingChunkBodies ?? []) {
+    assertUploadSize(body.length)
+    incomingBytes += body.length
+  }
+  return incomingBytes
 }
 
 /** Prefix of the archive's Space-scoped revocation entries. */

@@ -20,7 +20,7 @@ import type pg from 'pg'
  * Ordered migration scripts. Version `n` is `MIGRATIONS[n - 1]`; append only,
  * never edit an applied entry.
  */
-export const MIGRATIONS: string[] = [
+const MIGRATIONS: string[] = [
   // v1: the full WAS + WebKMS + chunked-storage surface.
   `
   -- The Spaces tree. 'description' is NULL for a placeholder row created by a

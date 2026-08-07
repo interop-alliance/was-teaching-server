@@ -48,7 +48,7 @@
     "@interop/did-method-webvh": "^5.0.0",
     "@interop/ed25519-signature": "^7.1.4",
     "@interop/ed25519-verification-key": "^8.0.3",
-    "@interop/http-digest-header": "^3.0.0",
+    "@interop/http-digest-header": "^3.1.0",
     "@interop/http-signature-header": "^5.0.2",
     "@interop/http-signature-zcap-verify": "^12.2.0",
     "@interop/jsonld-signatures": "^11.8.4",

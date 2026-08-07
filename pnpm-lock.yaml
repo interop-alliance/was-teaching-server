@@ -39,8 +39,8 @@ importers:
         specifier: ^8.0.3
         version: 8.0.3
       '@interop/http-digest-header':
-        specifier: ^3.0.0
-        version: 3.0.0
+        specifier: ^3.1.0
+        version: 3.1.0
       '@interop/http-signature-header':
         specifier: ^5.0.2
         version: 5.0.2
@@ -628,8 +628,8 @@ packages:
     resolution: {integrity: sha512-ceCNf8f7ktcMIyPILINzqrleejdzpIaFGoQKZYTWthIC0i1fxSBt5VHC7Sy8MmSomc3tPk2OMI7KqjnF3Ng/XQ==}
     engines: {node: '>=22.12'}
 
-  '@interop/http-digest-header@3.0.0':
-    resolution: {integrity: sha512-TImKkogQnjiQrqSQ/ZD8OZEGfB7sFy8qFl26mR5IAutzXi8n4vRkz7pUqGOjvpWRY5Xb9stHOqxV5kgKKjcG1g==}
+  '@interop/http-digest-header@3.1.0':
+    resolution: {integrity: sha512-rlcXBuKk9YHu2btFTIQOAOSi2FtBpL7SKQVkG4wzxpwMIa0wPIeA9hz4wj4QZrbbpqBPDGZRXXsLZ2ozEYTuaA==}
     engines: {node: '>=24.0'}
     peerDependencies:
       expo-crypto: '>=13'
@@ -3401,14 +3401,14 @@ snapshots:
       ky: 1.14.3
       undici: 7.28.0
 
-  '@interop/http-digest-header@3.0.0': {}
+  '@interop/http-digest-header@3.1.0': {}
 
   '@interop/http-signature-header@5.0.2': {}
 
   '@interop/http-signature-zcap-invoke@6.2.4':
     dependencies:
       '@interop/data-integrity-core': 8.3.0
-      '@interop/http-digest-header': 3.0.0
+      '@interop/http-digest-header': 3.1.0
       '@interop/http-signature-header': 5.0.2
       pako: 2.2.0
     transitivePeerDependencies:
@@ -3519,7 +3519,7 @@ snapshots:
       '@interop/ed25519-signature': 7.1.4(@interop/jsonld-signatures@11.8.4)
       '@interop/ed25519-verification-key': 8.0.3
       '@interop/ezcap': 7.4.1
-      '@interop/http-digest-header': 3.0.0
+      '@interop/http-digest-header': 3.1.0
       '@interop/http-signature-zcap-invoke': 6.2.4
       '@interop/was-client': 0.27.0(@interop/jsonld-signatures@11.8.4)
       assert: 2.1.0
@@ -3565,7 +3565,7 @@ snapshots:
       '@jest/schemas': 29.6.3
       '@types/istanbul-lib-coverage': 2.0.6
       '@types/istanbul-reports': 3.0.4
-      '@types/node': 24.13.3
+      '@types/node': 26.1.2
       '@types/yargs': 17.0.35
       chalk: 4.1.2
 
@@ -4155,7 +4155,7 @@ snapshots:
 
   chrome-launcher@0.15.2(supports-color@8.1.1):
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 26.1.2
       escape-string-regexp: 4.0.0
       is-wsl: 2.2.0
       lighthouse-logger: 1.4.2(supports-color@8.1.1)
@@ -4164,7 +4164,7 @@ snapshots:
 
   chromium-edge-launcher@0.3.0(supports-color@8.1.1):
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 26.1.2
       escape-string-regexp: 4.0.0
       is-wsl: 2.2.0
       lighthouse-logger: 1.4.2(supports-color@8.1.1)
@@ -4740,7 +4740,7 @@ snapshots:
   jest-util@29.7.0:
     dependencies:
       '@jest/types': 29.6.3
-      '@types/node': 24.13.3
+      '@types/node': 26.1.2
       chalk: 4.1.2
       ci-info: 3.9.0
       graceful-fs: 4.2.11
@@ -4757,7 +4757,7 @@ snapshots:
 
   jest-worker@29.7.0:
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 26.1.2
       jest-util: 29.7.0
       merge-stream: 2.0.0
       supports-color: 8.1.1

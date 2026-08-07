@@ -35,7 +35,8 @@ import {
 } from '../lib/kmsRecordCipher.js'
 import { isUrlSafeSegment } from '../lib/validateId.js'
 import { kmsKeysPath } from '../lib/paths.js'
-import { encodeCursor, decodeCursor } from '../lib/cursor.js'
+import { decodeCursor } from '../lib/cursor.js'
+import { nextPageUrl } from '../lib/pagination.js'
 import { KEY_LIST_LIMIT } from '../config.default.js'
 import {
   InvalidRequestBodyError,
@@ -608,8 +609,10 @@ export class KeyRequest {
 
     let next: string | undefined
     if (hasMore) {
-      const lastId = page[page.length - 1]!.localId
-      next = `${kmsKeysPath({ keystoreId })}?cursor=${encodeCursor(lastId)}`
+      next = nextPageUrl({
+        path: kmsKeysPath({ keystoreId }),
+        after: page[page.length - 1]!.localId
+      })
     }
 
     return reply.send({ results, ...(next !== undefined && { next }) })

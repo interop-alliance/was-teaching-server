@@ -28,8 +28,16 @@
  * (`lib/cursor.ts`), keyset-ordered by ascending `resourceId`.
  */
 import type { CollectionIndexDeclaration } from '../types.js'
-import { decodeCursor, encodeCursor } from './cursor.js'
-import { clampPageSize, DEFAULT_PAGE_SIZE } from './pagination.js'
+import { encodeCursor } from './cursor.js'
+import { compareCodeUnits, resolvePageSize, seekPage } from './pagination.js'
+import {
+  assertCountIsBoolean,
+  assertEqualsIsNonEmptyArray,
+  assertExactlyOneOfEqualsOrHas,
+  assertHasIsNonEmptyStringArray,
+  coerceQueryLimit,
+  parseOptionalCursor
+} from './queryProfile.js'
 import {
   InvalidRequestBodyError,
   UniqueAttributeConflictError
@@ -148,6 +156,73 @@ export function normalizeIndexes({
       unique: entry.unique === true
     }
   })
+}
+
+/**
+ * The normalized `unique: true` entries of a Collection's declared `indexes`
+ * (an absent or index-free declaration yields an empty array). A write path
+ * passes these to the backend so it enforces the plaintext uniqueness claim
+ * atomically with the write (`UniqueAttributeConflictError`, 409); a read path
+ * uses them to scope a uniqueness scan. Because the existence-revealing 409 is
+ * raised only after a handler has authorized the write, it is observable only
+ * to a caller already authorized there.
+ *
+ * Accepts either a raw declaration (bare strings and objects, as stored) or an
+ * already-normalized one -- {@link normalizeIndexes} is idempotent.
+ *
+ * @param options {object}
+ * @param [options.indexes] {Array<string | CollectionIndexDeclaration>}   the
+ *   Collection Description's declared `indexes`
+ * @returns {NormalizedIndexDeclaration[]}
+ */
+export function uniqueIndexesOf({
+  indexes
+}: {
+  indexes?: Array<string | CollectionIndexDeclaration>
+}): NormalizedIndexDeclaration[] {
+  return normalizeIndexes({ indexes }).filter(declaration => declaration.unique)
+}
+
+/**
+ * Enforces the indexes-vs-encryption mutual exclusion (spec "Collection Data
+ * Model"): a Collection Description MUST NOT carry both a non-empty `indexes`
+ * declaration and an `encryption` descriptor -- the server cannot extract
+ * plaintext attributes from an opaque envelope. Rejects with
+ * `invalid-request-body` (400) pointing at `#/indexes`.
+ *
+ * Callers pass the values about to be PERSISTED (not merely the ones the
+ * request supplied), so a pre-existing value on the other field is caught too:
+ * the rail holds in both directions (adding `indexes` to an encrypted
+ * Collection, or `encryption` to an indexed one).
+ *
+ * @param options {object}
+ * @param [options.indexes] {unknown}   the `indexes` about to be persisted
+ * @param [options.encryption] {unknown}   the `encryption` descriptor about to
+ *   be persisted
+ * @param [options.requestName] {string}   request name for the 400 error title
+ * @returns {void}
+ */
+export function assertIndexesNotEncrypted({
+  indexes,
+  encryption,
+  requestName
+}: {
+  indexes?: unknown
+  encryption?: unknown
+  requestName?: string
+}): void {
+  if (
+    Array.isArray(indexes) &&
+    indexes.length > 0 &&
+    encryption !== undefined
+  ) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail:
+        'Collection "indexes" must not be combined with an "encryption" descriptor.',
+      pointer: '#/indexes'
+    })
+  }
 }
 
 /**
@@ -292,23 +367,17 @@ export function parseEqualityQueryBody({
   const declared = new Set(indexes.map(entry => entry.name))
 
   // Exactly one of `equals` / `has`: supplying neither, or both, is a 400.
-  if ((equals === undefined) === (has === undefined)) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: 'An equality query requires exactly one of "equals" or "has".'
-    })
-  }
+  assertExactlyOneOfEqualsOrHas({
+    equals,
+    has,
+    detail: 'An equality query requires exactly one of "equals" or "has".',
+    requestName
+  })
 
   const query: EqualityQuery = {}
   if (equals !== undefined) {
-    if (!Array.isArray(equals) || equals.length === 0) {
-      throw new InvalidRequestBodyError({
-        requestName,
-        detail: '"equals" must be a non-empty array of objects.',
-        pointer: '#/equals'
-      })
-    }
-    equals.forEach((element, elementIndex) => {
+    const elements = assertEqualsIsNonEmptyArray({ equals, requestName })
+    elements.forEach((element, elementIndex) => {
       const pointer = `#/equals/${elementIndex}`
       if (!isPlainObject(element)) {
         throw new InvalidRequestBodyError({
@@ -339,18 +408,12 @@ export function parseEqualityQueryBody({
     query.equals = equals as Array<Record<string, EqualityValue>>
   }
   if (has !== undefined) {
-    if (
-      !Array.isArray(has) ||
-      has.length === 0 ||
-      has.some(name => typeof name !== 'string')
-    ) {
-      throw new InvalidRequestBodyError({
-        requestName,
-        detail: '"has" must be a non-empty array of declared attribute names.',
-        pointer: '#/has'
-      })
-    }
-    for (const name of has as string[]) {
+    const names = assertHasIsNonEmptyStringArray({
+      has,
+      detail: '"has" must be a non-empty array of declared attribute names.',
+      requestName
+    })
+    for (const name of names) {
       if (!declared.has(name)) {
         throw new InvalidRequestBodyError({
           requestName,
@@ -359,37 +422,20 @@ export function parseEqualityQueryBody({
         })
       }
     }
-    query.has = has as string[]
+    query.has = names
   }
 
-  if (count !== undefined && typeof count !== 'boolean') {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: '"count" must be a boolean.',
-      pointer: '#/count'
-    })
-  }
+  assertCountIsBoolean({ count, requestName })
 
-  if (cursor !== undefined && typeof cursor !== 'string') {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: '"cursor" must be a string.',
-      pointer: '#/cursor'
-    })
-  }
+  const resolvedCursor = parseOptionalCursor({ cursor, requestName })
 
-  // Lenient `limit` coercion, same as the `changes` / `blinded-index` profiles:
-  // a non-numeric or `< 1` value is ignored so the backend applies its own
-  // default/clamp.
-  const parsedLimit = Number(limit)
-  const resolvedLimit =
-    Number.isFinite(parsedLimit) && parsedLimit >= 1 ? parsedLimit : undefined
+  const resolvedLimit = coerceQueryLimit({ limit })
 
   return {
     query,
     count: count === true,
     ...(resolvedLimit !== undefined && { limit: resolvedLimit }),
-    ...(cursor !== undefined && { cursor })
+    ...(resolvedCursor !== undefined && { cursor: resolvedCursor })
   }
 }
 
@@ -530,33 +576,18 @@ export function runEqualityQuery({
     .filter(candidate => matchesEqualityQuery({ candidate, query, indexes }))
     // Ascending `resourceId` in code-unit order -- the SAME ordering the cursor
     // seek (`resourceId > after`) uses, so the keyset is stable.
-    .sort((left, right) =>
-      left.resourceId < right.resourceId
-        ? -1
-        : left.resourceId > right.resourceId
-          ? 1
-          : 0
-    )
+    .sort((left, right) => compareCodeUnits(left.resourceId, right.resourceId))
 
   if (count === true) {
     return { count: matches.length }
   }
 
-  // Seek strictly past the cursor's anchor id.
-  let startIndex = 0
-  if (cursor !== undefined) {
-    const { after } = decodeCursor(cursor)
-    const found = matches.findIndex(({ resourceId }) => resourceId > after)
-    startIndex = found === -1 ? matches.length : found
-  }
-
-  const pageSize =
-    limit === undefined ? DEFAULT_PAGE_SIZE : clampPageSize(limit)
-
-  // Take `pageSize + 1` to detect a further page without a second pass.
-  const window = matches.slice(startIndex, startIndex + pageSize + 1)
-  const hasMore = window.length > pageSize
-  const page = hasMore ? window.slice(0, pageSize) : window
+  const { page, hasMore } = seekPage({
+    items: matches,
+    cursor,
+    pageSize: resolvePageSize(limit),
+    keyOf: ({ resourceId }) => resourceId
+  })
 
   return {
     documents: page.map(candidate => ({
@@ -595,7 +626,7 @@ export function collectUniqueEqualityTerms({
   content?: unknown
   custom?: unknown
 }): Array<{ name: string; value: EqualityValue }> {
-  const uniqueDeclarations = indexes.filter(declaration => declaration.unique)
+  const uniqueDeclarations = uniqueIndexesOf({ indexes })
   if (uniqueDeclarations.length === 0) {
     return []
   }
@@ -693,7 +724,7 @@ export function findEqualityUniqueViolation({
   indexes: NormalizedIndexDeclaration[]
   candidates: EqualityCandidate[]
 }): { name: string; value: EqualityValue } | undefined {
-  const uniqueDeclarations = indexes.filter(declaration => declaration.unique)
+  const uniqueDeclarations = uniqueIndexesOf({ indexes })
   if (uniqueDeclarations.length === 0) {
     return undefined
   }

@@ -100,18 +100,31 @@ function cacheKey({ spaceId, did }: { spaceId: string; did: string }): string {
  * write that could change (or remove) that Space's `id` collection, so the next
  * verification resolves the current log rather than a stale document -- the
  * `invalidateSpaceDescription` pattern.
+ *
+ * A Collection-scoped write path may pass the `collectionId` it wrote and call
+ * this unconditionally: only the log collection carries a history log, so any
+ * other Collection returns early. A Space-scoped write path (delete, import)
+ * omits it and always invalidates.
+ *
  * @param options {object}
  * @param options.storage {StorageBackend}   the request's storage backend
  * @param options.spaceId {string}
+ * @param [options.collectionId] {string}   the Collection that was written; when
+ *   given, invalidation happens only for the `id` log collection
  * @returns {void}
  */
 export function invalidateResolvedWebvhDid({
   storage,
-  spaceId
+  spaceId,
+  collectionId
 }: {
   storage: StorageBackend
   spaceId: string
+  collectionId?: string
 }): void {
+  if (collectionId !== undefined && collectionId !== WEBVH_LOG_COLLECTION_ID) {
+    return
+  }
   // Only touch a cache that already exists for this backend.
   const cache = documentCaches.get(storage)
   if (!cache) {

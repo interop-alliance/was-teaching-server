@@ -14,10 +14,6 @@ const MAX_REDIRECTS = 5
  */
 const PROXY_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 
-interface CorsProxyQuery {
-  url?: string
-}
-
 /**
  * True for an IPv4 address in a private, loopback, link-local, or otherwise
  * non-public range -- the SSRF-sensitive destinations the proxy must refuse
@@ -208,7 +204,7 @@ export async function initCorsProxyRoutes(
   app: FastifyInstance,
   _options: FastifyPluginOptions
 ): Promise<void> {
-  app.get<{ Querystring: CorsProxyQuery }>(
+  app.get<{ Querystring: { url?: string } }>(
     '/api/cors',
     async (request, reply) => {
       const target = request.query.url

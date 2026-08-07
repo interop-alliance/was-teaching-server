@@ -1,9 +1,14 @@
 /**
- * On-disk resource-filename codec: the single shared home for encoding a
- * Resource's representation file name (`r.<resourceId>.<encodedContentType>.<ext>`)
- * and decoding it back. Kept low-level (no imports from `src/backends/` or
- * `importTar.ts`) so both the filesystem backend and the tar importer can depend
- * on it without an import cycle.
+ * On-disk file-name codec: the single shared home for the names that make up
+ * the filesystem backend's on-disk layout -- which is also the dialect a Space
+ * export archive speaks, so both backends and the tar importer/exporter build
+ * and parse the same names here. Covers a Resource's representation file name
+ * (`r.<resourceId>.<encodedContentType>.<ext>`), a chunk directory
+ * (`.chunks.<encodedResourceId>/`), and the JSON dot-files that carry the
+ * Space / Collection descriptions, the access-control policies, and the
+ * Resource metadata sidecars. Kept low-level (no imports from `src/backends/`
+ * or `importTar.ts`) so every consumer can depend on it without an import
+ * cycle.
  */
 import * as mime from 'mime-types'
 
@@ -156,4 +161,79 @@ export function parseChunkDirName(dirName: string): string | undefined {
   }
   const encodedId = dirName.slice(CHUNK_DIR_PREFIX.length)
   return encodedId.length > 0 ? decodeURIComponent(encodedId) : undefined
+}
+
+/**
+ * Suffix shared by the description / policy / metadata dot-files.
+ */
+export const JSON_FILE_SUFFIX = '.json'
+
+/**
+ * Prefix of a Space description dot-file (`.space.<spaceId>.json`).
+ */
+export const SPACE_FILE_PREFIX = '.space.'
+
+/**
+ * Prefix of a Collection description dot-file
+ * (`.collection.<collectionId>.json`).
+ */
+export const COLLECTION_FILE_PREFIX = '.collection.'
+
+/**
+ * Prefix of a policy dot-file (`.policy.<id>.json`), keyed by the id of the
+ * entity the policy governs (Space, Collection, or Resource).
+ */
+export const POLICY_FILE_PREFIX = '.policy.'
+
+/**
+ * Prefix of a Resource metadata sidecar (`.meta.<resourceId>.json`) -- and,
+ * inside a chunk directory, of a chunk's version sidecar (`.meta.<index>.json`).
+ */
+export const META_FILE_PREFIX = '.meta.'
+
+/**
+ * Builds the file name of a Space description document:
+ * `.space.<spaceId>.json`.
+ * @param spaceId {string}
+ * @returns {string}
+ */
+export function spaceDescriptionFileName(spaceId: string): string {
+  return `${SPACE_FILE_PREFIX}${spaceId}${JSON_FILE_SUFFIX}`
+}
+
+/**
+ * Builds the file name of a Collection description document:
+ * `.collection.<collectionId>.json`.
+ * @param collectionId {string}
+ * @returns {string}
+ */
+export function collectionDescriptionFileName(collectionId: string): string {
+  return `${COLLECTION_FILE_PREFIX}${collectionId}${JSON_FILE_SUFFIX}`
+}
+
+/**
+ * Builds the file name of an access-control policy document:
+ * `.policy.<entityId>.json`. Kept alongside the description of the entity it
+ * governs: a Space policy is keyed by the space id (in the Space dir), a
+ * Collection policy by the collection id and a Resource policy by the resource
+ * id (both in the Collection dir), so they never collide.
+ * @param entityId {string}
+ * @returns {string}
+ */
+export function policyFileName(entityId: string): string {
+  return `${POLICY_FILE_PREFIX}${entityId}${JSON_FILE_SUFFIX}`
+}
+
+/**
+ * Builds the file name of a Resource's metadata sidecar:
+ * `.meta.<resourceId>.json`. A dot-file kept alongside the resource
+ * representation in the Collection dir (the same convention as `.policy.` /
+ * `.collection.`), holding the timestamps and user-writable `custom` object.
+ * Inside a chunk directory the same builder names a chunk's version sidecar,
+ * keyed by the stringified chunk index.
+ * @param resourceId {string}
+ * @returns {string}
+ */
+export function metaSidecarFileName(resourceId: string): string {
+  return `${META_FILE_PREFIX}${resourceId}${JSON_FILE_SUFFIX}`
 }

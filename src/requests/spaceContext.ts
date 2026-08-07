@@ -25,7 +25,7 @@ import {
   SPACE_DESCRIPTION_CACHE_MAX,
   SPACE_DESCRIPTION_CACHE_TTL
 } from '../config.default.js'
-import type { IDID, SpaceDescription, StorageBackend } from '../types.js'
+import type { SpaceDescription, StorageBackend } from '../types.js'
 
 /**
  * One short-TTL memoization cache per storage backend, keyed by `spaceId`. The
@@ -142,11 +142,9 @@ export async function fetchSpace({
 }
 
 /** The verified context every handler builds before touching storage. */
-export interface VerifiedSpaceContext {
+interface VerifiedSpaceContext {
   /** the fetched Space Description (its controller authorized the request) */
   spaceDescription: SpaceDescription
-  /** the DID that controls the Space (a did:key, or a promoted did:webvh) */
-  spaceController: IDID
   /** the resolved invocationTarget URL the request was authorized against */
   allowedTarget: string
   /**
@@ -188,10 +186,9 @@ async function fetchSpaceContext({
     spaceId,
     requestName
   })
-  const spaceController = spaceDescription.controller
   const allowedTarget = new URL(targetPath, serverUrl).toString()
   const spaceRootTarget = new URL(spacePath({ spaceId }), serverUrl).toString()
-  return { spaceDescription, spaceController, allowedTarget, spaceRootTarget }
+  return { spaceDescription, allowedTarget, spaceRootTarget }
 }
 
 /**
@@ -249,7 +246,7 @@ export async function fetchSpaceAndAuthorize({
     spaceId,
     collectionId,
     resourceId,
-    spaceController: context.spaceController,
+    spaceController: context.spaceDescription.controller,
     requestName,
     allowTargetQuery,
     attenuatedRootTarget: context.spaceRootTarget
@@ -301,7 +298,7 @@ export async function fetchSpaceAndVerify({
     method,
     headers,
     serverUrl,
-    spaceController: context.spaceController,
+    spaceController: context.spaceDescription.controller,
     webvh: { storage, serverUrl },
     requestName,
     logger: request.log,

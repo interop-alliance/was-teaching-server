@@ -17,50 +17,54 @@ import {
 } from './errors.js'
 
 /**
- * The exact route URLs the provisioning gate acts on. `/spaces` (no trailing
- * slash) is included so a token-authorized request reaches the canonical-slash
- * 308 redirect instead of failing the auth-header check first.
+ * Builds the provisioning-gate onRequest hook, closed over the exact route URLs
+ * it acts on. The caller is routes.ts, which passes the URLs of the very routes
+ * it registers in that group -- so the gated set cannot drift from the
+ * registered set.
+ *
+ * The hook runs first in the hook chain of the SpacesRepository and `/kms`
+ * route groups. For a `POST` to one of the gated route URLs it consults the
+ * configured `authorizeProvisioning` callback: `verify` proceeds to normal zcap
+ * verification, `grant` marks the request as provisioning-authorized (skipping
+ * zcap verification downstream), and `deny` refuses with a 403. Every other
+ * request (and every deployment with no callback configured) passes straight
+ * through, so the default zcap path is unchanged.
+ * @param routeUrls {Iterable<string>}   the exact route URLs (as registered,
+ *   matched against `request.routeOptions.url`) this gate acts on
+ * @returns {(request: FastifyRequest, reply: FastifyReply) => Promise<void>}
  */
-const PROVISIONING_ROUTES = new Set(['/spaces', '/spaces/', '/kms/keystores'])
+export function provisioningGateFor(
+  routeUrls: Iterable<string>
+): (request: FastifyRequest, reply: FastifyReply) => Promise<void> {
+  const gatedRoutes = new Set(routeUrls)
 
-/**
- * onRequest hook: the provisioning gate. Runs first in the hook chain of the
- * SpacesRepository and `/kms` route groups. For a `POST` to one of the two
- * provisioning endpoints it consults the configured `authorizeProvisioning`
- * callback: `verify` proceeds to normal zcap verification, `grant` marks the
- * request as provisioning-authorized (skipping zcap verification downstream),
- * and `deny` refuses with a 403. Every other request (and every deployment with
- * no callback configured) passes straight through, so the default zcap path is
- * unchanged.
- * @param request {import('fastify').FastifyRequest}
- * @param reply {import('fastify').FastifyReply}
- * @returns {Promise<void>}
- */
-export async function provisioningGate(
-  request: FastifyRequest,
-  _reply: FastifyReply
-): Promise<void> {
-  // Only the two provisioning POST endpoints are gated; everything else passes.
-  if (
-    request.method !== 'POST' ||
-    !PROVISIONING_ROUTES.has(request.routeOptions.url ?? '')
-  ) {
-    return
+  return async function provisioningGate(
+    request: FastifyRequest,
+    _reply: FastifyReply
+  ): Promise<void> {
+    // Only provisioning POSTs to the gated routes are gated; everything else
+    // passes.
+    if (
+      request.method !== 'POST' ||
+      !gatedRoutes.has(request.routeOptions.url ?? '')
+    ) {
+      return
+    }
+    const authorize = request.server.authorizeProvisioning
+    // No policy configured: default allow -- the zcap path is unchanged.
+    if (!authorize) {
+      return
+    }
+    const decision = await authorize({ request })
+    if (decision === 'grant') {
+      request.provisioningAuthorized = true
+      return
+    }
+    if (decision === 'deny') {
+      throw new ProvisioningNotAuthorizedError()
+    }
+    // 'verify': fall through to the normal zcap capability-invocation path.
   }
-  const authorize = request.server.authorizeProvisioning
-  // No policy configured: default allow -- the zcap path is unchanged.
-  if (!authorize) {
-    return
-  }
-  const decision = await authorize({ request })
-  if (decision === 'grant') {
-    request.provisioningAuthorized = true
-    return
-  }
-  if (decision === 'deny') {
-    throw new ProvisioningNotAuthorizedError()
-  }
-  // 'verify': fall through to the normal zcap capability-invocation path.
 }
 
 /**

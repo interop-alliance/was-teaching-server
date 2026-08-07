@@ -8,6 +8,7 @@
 import { QUOTA_NEAR_LIMIT_FRACTION } from '../config.default.js'
 import type {
   Action,
+  BackendDescriptor,
   BackendState,
   BackendUsage,
   StorageLimit
@@ -76,4 +77,41 @@ export function backendUsageFields({
     }),
     restrictedActions
   }
+}
+
+/**
+ * The `backendUsageFields` call a server backend makes for its own reports:
+ * takes the reporting backend and reads its identity off its `describe()` and
+ * its configured caps off its properties, so both the Space and per-Collection
+ * quota paths in both backends share one wiring rather than each backend
+ * carrying an identical private wrapper.
+ * @param options {object}
+ * @param options.backend {object}   the backend building the report
+ * @param options.usageBytes {number}   the usage figure to report
+ * @param options.spaceTotalBytes {number}   the Space total, for state
+ * @returns {Omit<BackendUsage, 'measuredAt' | 'usageByCollection'>}
+ */
+export function backendUsageFieldsFor({
+  backend,
+  usageBytes,
+  spaceTotalBytes
+}: {
+  backend: {
+    describe(): Required<Omit<BackendDescriptor, 'provider' | 'connection'>>
+    capacityBytes?: number
+    maxUploadBytes?: number
+  }
+  usageBytes: number
+  spaceTotalBytes: number
+}): Omit<BackendUsage, 'measuredAt' | 'usageByCollection'> {
+  const { id, name, managedBy } = backend.describe()
+  return backendUsageFields({
+    usageBytes,
+    spaceTotalBytes,
+    capacityBytes: backend.capacityBytes,
+    maxUploadBytes: backend.maxUploadBytes,
+    id,
+    name,
+    managedBy
+  })
 }

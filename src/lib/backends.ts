@@ -24,6 +24,70 @@ import { isUrlSafeSegment } from './validateId.js'
 /** The conventional id of the server-assigned default backend (spec). */
 export const DEFAULT_BACKEND_ID = 'default'
 
+/**
+ * The affordances every server-configured backend advertises from `describe()`
+ * (spec "Backends"). This list is wire contract, so the backends share one
+ * constant rather than each maintaining its own copy:
+ *
+ * - `conditional-writes`: exposes a per-Resource `version` as an HTTP `ETag`
+ *   validator and honors `If-Match` / `If-None-Match` write preconditions
+ *   atomically (returning `412 precondition-failed` on a mismatch).
+ * - `changes-query`: serves the `changes` profile of the reserved `query`
+ *   endpoint -- the replication change feed (`changesSince`).
+ * - `blinded-index-query`: serves the `blinded-index` profile -- EDV
+ *   blinded-attribute queries (`queryByBlindedIndex`).
+ * - `equality-query`: serves the `equality` profile -- server-extracted
+ *   plaintext attribute equality over a Collection's declared `indexes`
+ *   (`queryByEquality`), plus the GET `filter[attr]=value` equality filter.
+ * - `key-epochs`: multi-recipient encrypted Collections -- per-epoch wrapped
+ *   keys on the `encryption` descriptor, a client-declared `epoch` stamp on
+ *   Resources, and conditional (`If-Match`) Collection Description writes.
+ * - `chunked-streams`: chunk addressing (`/{resourceId}/chunks/{n}`) for a
+ *   large Resource, each chunk stored opaquely (raw bytes plus content type).
+ *
+ * (Client-side encryption is deliberately not a backend feature: encrypted
+ * documents are opaque client-encrypted JSON a backend already stores
+ * faithfully, with no server cooperation.)
+ */
+export const SERVER_BACKEND_FEATURES: string[] = [
+  'conditional-writes',
+  'changes-query',
+  'blinded-index-query',
+  'equality-query',
+  'key-epochs',
+  'chunked-streams'
+]
+
+/**
+ * Builds the self-description a server-configured backend advertises at
+ * `GET /space/:spaceId/backends`. Every such backend is the server's `default`,
+ * is server-managed, stores both JSON documents and binary blobs, survives
+ * restarts, and offers {@link SERVER_BACKEND_FEATURES} -- only the display
+ * `name` distinguishes them.
+ *
+ * The wire type only REQUIRES `id`; a server backend always populates every
+ * field except the `external`-only `provider` / `connection`, so the return is
+ * the stricter `Required<Omit<..., 'provider' | 'connection'>>` (which also
+ * lets the quota reports read a non-optional `managedBy` off `describe()`).
+ * @param options {object}
+ * @param options.name {string}   the backend's display name
+ * @returns {Required<Omit<BackendDescriptor, 'provider' | 'connection'>>}
+ */
+export function serverBackendDescriptor({
+  name
+}: {
+  name: string
+}): Required<Omit<BackendDescriptor, 'provider' | 'connection'>> {
+  return {
+    id: DEFAULT_BACKEND_ID,
+    name,
+    managedBy: 'server',
+    storageMode: ['document', 'blob'],
+    persistence: 'durable',
+    features: [...SERVER_BACKEND_FEATURES]
+  }
+}
+
 // `listRegisteredBackends` (defined below, with the registration helpers) is the
 // single source of a Space's selectable backends -- the server `default` plus
 // its registered `external` records -- used by both the selection-validation

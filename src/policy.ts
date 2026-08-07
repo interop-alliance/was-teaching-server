@@ -53,23 +53,19 @@ export async function resolveEffectivePolicy({
   collectionId?: string
   resourceId?: string
 }): Promise<PolicyDocument | undefined> {
-  if (collectionId !== undefined && resourceId !== undefined) {
-    const resourcePolicy = await storage.getPolicy({
-      spaceId,
-      collectionId,
-      resourceId
-    })
-    if (resourcePolicy) {
-      return resourcePolicy
-    }
-  }
-  if (collectionId !== undefined) {
-    const collectionPolicy = await storage.getPolicy({ spaceId, collectionId })
-    if (collectionPolicy) {
-      return collectionPolicy
-    }
-  }
-  return await storage.getPolicy({ spaceId })
+  // The three levels are independent reads combined by a pure precedence rule,
+  // so they are issued concurrently rather than one round trip at a time; a
+  // level that does not apply to this target is not looked up at all.
+  const [resourcePolicy, collectionPolicy, spacePolicy] = await Promise.all([
+    collectionId !== undefined && resourceId !== undefined
+      ? storage.getPolicy({ spaceId, collectionId, resourceId })
+      : undefined,
+    collectionId !== undefined
+      ? storage.getPolicy({ spaceId, collectionId })
+      : undefined,
+    storage.getPolicy({ spaceId })
+  ])
+  return resourcePolicy || collectionPolicy || spacePolicy
 }
 
 /**
