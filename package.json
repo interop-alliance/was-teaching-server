@@ -75,7 +75,7 @@
     "@interop/ezcap": "^7.4.1",
     "@interop/http-signature-zcap-invoke": "^6.2.4",
     "@interop/was-client": "^0.27.0",
-    "@interop/was-conformance-suite": "^0.4.1",
+    "@interop/was-conformance-suite": "^0.4.2",
     "@interop/webkms-client": "^14.7.1",
     "@types/mime-types": "3.0.1",
     "@types/node": "^26.1.2",

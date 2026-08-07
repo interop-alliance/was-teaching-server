@@ -439,38 +439,6 @@ writes via `src/lib/preconditions.ts` -- but no read path ever evaluates
 `Cache-Control` semantics in an editor's note, so keep the `no-store` marking
 minimal and revisit if the spec text firms up.
 
-## Authorization profile
-
-### WAS-38: Conformance tests for the delegated Create Space failure shapes
-
-- status: todo
-- priority: medium
-- labels: authz, conformance-suite
-- acceptance:
-  - [ ] Chain rooted in a different DID than the body's controller: 400,
-        `controller-mismatch`, Space not created
-  - [ ] Expired delegation (proof backdated via ezcap's `now` override, past the
-        verifier's clock-skew tolerance): 400, `controller-mismatch`, Space not
-        created
-  - [ ] Tampered delegation proof: 400, `controller-mismatch`, Space not created
-  - [ ] Optional-tier test: the three responses' `detail` strings are pairwise
-        distinct (the differentiation SHOULD), asserting nothing about wording
-
-Suite-side work (lands in `@interop/was-conformance-suite`, tracked here per
-convention); discovered-from: WAS-8. The error registry folds all three
-delegated Create Space verification failures into `controller-mismatch` as a
-MUST, but the suite currently only exercises the basic signer-mismatch case -- a
-server that 500s or 404-masks an expired delegation or a tampered proof would
-pass today. All three shapes are black-box constructible because the suite mints
-its own zcaps. The detail-differentiation SHOULD goes in the optional tier only,
-as a wording-agnostic pairwise-distinctness check: `detail` is non-normative
-free text, so asserting on phrasing (or requiring differentiation at all in the
-normative tier) would over-constrain conforming servers. Note the distinctness
-check is a signal, not proof -- per-request echo content (e.g. a request id) in
-`detail` could mask an undifferentiated implementation.
-
----
-
 ## Test coverage gaps (conformance suite + server `test/`)
 
 Produced by a 2026-07-22 coverage analysis: an inventory of the spec's 324
