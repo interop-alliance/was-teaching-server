@@ -1101,11 +1101,16 @@ fails on decrypt.
 - priority: medium
 - labels: spec-side, encryption
 - acceptance:
-  - [ ] The Encryption Scheme Registry gains a scheme-version column
+  - [x] The Encryption Scheme Registry gains a scheme-version column
   - [ ] Migration guidance written: only key-wrap material is rewritten, never
         ciphertext bodies (the rewrap path), with the cached-CEK caveat
-  - [ ] The never-backwards rail documented (once set, never decreases, never
+  - [x] The never-backwards rail documented (once set, never decreases, never
         removed)
+
+Spec update 2026-08: the Encryption Scheme Registry now carries a `version`
+column (`edv`/`1`) and the descriptor text documents the set-once,
+version-monotonic rail (absent `version` means `1`; raising permitted). Only the
+rewrap migration guidance (with the cached-CEK caveat) remains unwritten.
 
 The server now validates an optional positive-integer `version` on the
 `encryption` descriptor and enforces that, once set, it never decreases and is
@@ -1115,28 +1120,6 @@ means moving a Resource to a new epoch only rewraps the JWE `recipients` --
 which suggests a future client-driven bulk **rewrap** operation as a cheap
 post-removal migration (honest caveat: rewrapping does not help against a reader
 that cached the CEKs themselves).
-
-### WAS-51: Reconcile the `encryption.version` descriptor text with the implementation
-
-- status: todo
-- priority: medium
-- labels: spec-side, encryption
-- acceptance:
-  - [ ] The Collection Data Model descriptor definition and the implementation
-        agree on `version`'s type and optionality (spec today: a required
-        string, e.g. `"0.1"`; server: an optional positive integer)
-  - [ ] The error surface for a version transition is reconciled: the spec today
-        folds any `version` change or removal into 409 `encryption-immutable`,
-        while the server allows increases (a future scheme migration) and
-        rejects decreases/removals with 400 `invalid-request-body`
-        (`#/encryption/version`) -- amend one side and update the error-registry
-        row to match
-  - [ ] Conformance coverage for the reconciled version-transition behavior
-        added (deliberately left out of WAS-43 because of this divergence)
-
-Discovered while implementing WAS-43 (discovered-from: WAS-43). Touches the same
-descriptor text WAS-33 extends (the scheme-version registry column and the
-never-backwards rail), so the two should land as one spec edit.
 
 ### WAS-53: Reconcile chunk-capability exact-match text with target attenuation
 

@@ -234,6 +234,109 @@ describe('Encryption descriptor API', () => {
     assert.deepStrictEqual(desc.encryption, { scheme: 'edv' })
   })
 
+  describe('scheme version (wire)', () => {
+    it('round-trips a descriptor with version 1 verbatim on create', async () => {
+      const collectionId = 'versioned'
+      const descriptor = { scheme: 'edv', version: 1 }
+      const response = await alice.was.request({
+        path: `/space/${spaceId}/`,
+        method: 'POST',
+        json: { id: collectionId, encryption: descriptor }
+      })
+      assert.equal(response.status, 201)
+      assert.deepStrictEqual(
+        (await readDesc(collectionId)).encryption,
+        descriptor
+      )
+    })
+
+    it('accepts adding an explicit version 1 to a versionless descriptor (absent means 1)', async () => {
+      const collectionId = 'version-late'
+      await alice.was.request({
+        path: `/space/${spaceId}/`,
+        method: 'POST',
+        json: { id: collectionId, encryption: { scheme: 'edv' } }
+      })
+      // Spec: re-declaring the standing values -- including an explicit
+      // `version: 1` on a descriptor that had omitted it -- is an idempotent
+      // no-op that MUST be accepted.
+      const put = await alice.was.request({
+        path: `/space/${spaceId}/${collectionId}`,
+        method: 'PUT',
+        json: { id: collectionId, encryption: { scheme: 'edv', version: 1 } }
+      })
+      assert.equal(put.status, 204)
+      assert.deepStrictEqual((await readDesc(collectionId)).encryption, {
+        scheme: 'edv',
+        version: 1
+      })
+    })
+
+    it('rejects removing the version once set (409 encryption-immutable, descriptor unchanged)', async () => {
+      const collectionId = 'version-locked'
+      await alice.was.request({
+        path: `/space/${spaceId}/`,
+        method: 'POST',
+        json: { id: collectionId, encryption: { scheme: 'edv', version: 1 } }
+      })
+      // The only version regression reachable over the wire in v1: a DECREASE
+      // needs a stored version >= 2, which the recognition gate (only `edv` 1)
+      // never stores -- the lib transition tests cover that path directly.
+      const err = await rejection(
+        alice.was.request({
+          path: `/space/${spaceId}/${collectionId}`,
+          method: 'PUT',
+          json: { id: collectionId, encryption: { scheme: 'edv' } }
+        })
+      )
+      assert.equal(err.response.status, 409)
+      assert.match(err.data.type, /#encryption-immutable/)
+      assert.equal(err.data.errors?.[0]?.pointer, '#/encryption/version')
+      assert.deepStrictEqual((await readDesc(collectionId)).encryption, {
+        scheme: 'edv',
+        version: 1
+      })
+    })
+
+    it('rejects an unrecognized version on create (400 unsupported-encryption-scheme)', async () => {
+      const err = await rejection(
+        alice.was.request({
+          path: `/space/${spaceId}/`,
+          method: 'POST',
+          json: { id: 'bad-version', encryption: { scheme: 'edv', version: 2 } }
+        })
+      )
+      assert.equal(err.response.status, 400)
+      assert.match(err.data.type, /#unsupported-encryption-scheme/)
+      assert.equal(err.data.errors?.[0]?.pointer, '#/encryption/version')
+    })
+
+    it('rejects raising to an unrecognized version on update (400, not 409; descriptor unchanged)', async () => {
+      const collectionId = 'version-raise'
+      await alice.was.request({
+        path: `/space/${spaceId}/`,
+        method: 'POST',
+        json: { id: collectionId, encryption: { scheme: 'edv', version: 1 } }
+      })
+      // Raising is permitted by the transition rail (never `encryption-immutable`)
+      // but subject to the recognition gate, which fires first here since the
+      // registry recognizes only `edv` version 1.
+      const err = await rejection(
+        alice.was.request({
+          path: `/space/${spaceId}/${collectionId}`,
+          method: 'PUT',
+          json: { id: collectionId, encryption: { scheme: 'edv', version: 2 } }
+        })
+      )
+      assert.equal(err.response.status, 400)
+      assert.match(err.data.type, /#unsupported-encryption-scheme/)
+      assert.deepStrictEqual((await readDesc(collectionId)).encryption, {
+        scheme: 'edv',
+        version: 1
+      })
+    })
+  })
+
   describe('key-epoch descriptor validation', () => {
     it('accepts a valid multi-epoch descriptor and round-trips it verbatim on GET', async () => {
       const collectionId = 'epochs-ok'

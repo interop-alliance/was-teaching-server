@@ -332,7 +332,7 @@ describe('assertSupportedEncryption (scheme version)', () => {
       descriptor
     )
   })
-  it('accepts a versionless descriptor (legacy) unchanged', () => {
+  it('accepts a versionless descriptor (absent means version 1) unchanged', () => {
     assert.deepStrictEqual(
       assertSupportedEncryption({ encryption: { scheme: 'edv' } }),
       { scheme: 'edv' }
@@ -353,6 +353,24 @@ describe('assertSupportedEncryption (scheme version)', () => {
       )
     })
   }
+  it('rejects an unrecognized version of a recognized scheme (400 unsupported-encryption-scheme)', () => {
+    // The registry recognizes only `edv` version 1; the fail-closed
+    // accept-only-what-you-enforce gate applies to versions like schemes.
+    assert.throws(
+      () =>
+        assertSupportedEncryption({
+          encryption: { scheme: 'edv', version: 2 }
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof UnsupportedEncryptionSchemeError)
+        assert.equal(
+          (err as { problems?: { pointer?: string }[] }).problems?.[0]?.pointer,
+          '#/encryption/version'
+        )
+        return true
+      }
+    )
+  })
 })
 
 describe('assertEncryptionDescriptorTransition (scheme version)', () => {
@@ -365,6 +383,8 @@ describe('assertEncryptionDescriptorTransition (scheme version)', () => {
     )
   })
   it('allows raising the version (a future migration)', () => {
+    // The transition rail alone: whether the raised version is actually
+    // storable is the recognition gate's call (`assertSupportedEncryption`).
     assert.doesNotThrow(() =>
       assertEncryptionDescriptorTransition({
         existing: { scheme: 'edv', version: 1 } as CollectionEncryption,
@@ -388,8 +408,8 @@ describe('assertEncryptionDescriptorTransition (scheme version)', () => {
       })
     )
   })
-  it('rejects lowering the version (400, pointer #/encryption/version)', () => {
-    throwsInvalidBodyPointer(
+  it('rejects lowering the version (409 encryption-immutable, pointer #/encryption/version)', () => {
+    throwsImmutablePointer(
       () =>
         assertEncryptionDescriptorTransition({
           existing: { scheme: 'edv', version: 2 } as CollectionEncryption,
@@ -398,8 +418,8 @@ describe('assertEncryptionDescriptorTransition (scheme version)', () => {
       '#/encryption/version'
     )
   })
-  it('rejects dropping the version once set (400, pointer #/encryption/version)', () => {
-    throwsInvalidBodyPointer(
+  it('rejects dropping the version once set (409 encryption-immutable, pointer #/encryption/version)', () => {
+    throwsImmutablePointer(
       () =>
         assertEncryptionDescriptorTransition({
           existing: { scheme: 'edv', version: 1 } as CollectionEncryption,
@@ -409,6 +429,18 @@ describe('assertEncryptionDescriptorTransition (scheme version)', () => {
     )
   })
 })
+
+/** Asserts `fn` throws an EncryptionImmutableError carrying `pointer`. */
+function throwsImmutablePointer(fn: () => void, pointer: string): void {
+  assert.throws(fn, (err: unknown) => {
+    assert.ok(err instanceof EncryptionImmutableError)
+    assert.equal(
+      (err as { problems?: { pointer?: string }[] }).problems?.[0]?.pointer,
+      pointer
+    )
+    return true
+  })
+}
 
 describe('assertEncryptionEpochsTransition', () => {
   it('is a no-op when the existing descriptor has no epochs', () => {

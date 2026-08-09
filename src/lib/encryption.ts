@@ -32,16 +32,23 @@ import { isValidEdvDocument } from './edvEnvelope.js'
  * "Marked with a recognized scheme" structurally implies "non-conforming writes
  * rejected here" -- the fail-closed guarantee: a plaintext object under
  * `application/json` passes the media-type gate but fails the structural
- * `jwe` gate, so it is still rejected. Extending the registry (a new scheme, or
- * a new media type for an existing one) is the only place a scheme becomes
- * acceptable.
+ * `jwe` gate, so it is still rejected. `versions` pins the wire-format
+ * versions recognized for the scheme (spec: a positive integer per registered
+ * revision, starting at `1`; an absent descriptor `version` means `1`).
+ * Extending the registry (a new scheme, a new version, or a new media type for
+ * an existing one) is the only place a scheme/version pair becomes acceptable.
  */
 export const SUPPORTED_ENCRYPTION_SCHEMES: Record<
   string,
-  { mediaType: string; validateEnvelope: (body: unknown) => boolean }
+  {
+    mediaType: string
+    versions: ReadonlySet<number>
+    validateEnvelope: (body: unknown) => boolean
+  }
 > = {
   edv: {
     mediaType: 'application/json',
+    versions: new Set([1]),
     validateEnvelope: isValidEdvDocument
   }
 }
@@ -104,8 +111,9 @@ export function assertSupportedEncryption({
     requestName
   })
 
-  // Validate the OPTIONAL scheme-version field when present (shape only).
-  assertValidEncryptionVersion({ descriptor: encryption, requestName })
+  // Validate the OPTIONAL scheme-version field when present: shape, then the
+  // same fail-closed recognition gate as the scheme itself.
+  assertValidEncryptionVersion({ descriptor: encryption, scheme, requestName })
 
   // Preserve the whole descriptor (only `scheme` is typed today; keep any extra
   // forward-compat fields on a recognized scheme).
@@ -114,23 +122,30 @@ export function assertSupportedEncryption({
 
 /**
  * Validates the OPTIONAL `version` member of a Collection `encryption` descriptor --
- * the encryption scheme's version, a sibling of `scheme`. Shape-only: when
- * present it MUST be a positive safe integer, else `invalid-request-body` (400,
- * pointer `#/encryption/version`). Absent is a legacy/unversioned descriptor and
- * passes unchanged. Read from the still-`unknown`-shaped descriptor value: `version`
- * is a forward-compatibility field the server preserves opaquely, not part of
- * the typed `CollectionEncryption` shape.
+ * the encryption scheme's wire-format version, a sibling of `scheme`. Two
+ * gates: (1) shape -- when present it MUST be a positive safe integer, else
+ * `invalid-request-body` (400, pointer `#/encryption/version`); (2) fail-closed
+ * recognition -- it MUST name a version of the (already-recognized) scheme this
+ * server can enforce on write (`SUPPORTED_ENCRYPTION_SCHEMES[scheme].versions`),
+ * else `unsupported-encryption-scheme` (400, pointer `#/encryption/version`) --
+ * the spec's accept-only-what-you-enforce SHOULD, applied to versions on the
+ * same terms as schemes. Absent means version `1` (spec) and passes unchanged.
+ * Read from the still-`unknown`-shaped descriptor value: `version` is preserved
+ * opaquely, not part of the typed `CollectionEncryption` shape.
  *
  * @param options {object}
  * @param options.descriptor {unknown}   the shape-validated descriptor value
+ * @param options.scheme {string}   the descriptor's recognized `scheme`
  * @param [options.requestName] {string}   request name for the 400 error title
  * @returns {void}
  */
 function assertValidEncryptionVersion({
   descriptor,
+  scheme,
   requestName
 }: {
   descriptor: unknown
+  scheme: string
   requestName?: string
 }): void {
   const { version } = descriptor as { version?: unknown }
@@ -148,6 +163,9 @@ function assertValidEncryptionVersion({
         'Collection "encryption.version" must be a positive safe integer.',
       pointer: '#/encryption/version'
     })
+  }
+  if (!SUPPORTED_ENCRYPTION_SCHEMES[scheme]!.versions.has(version)) {
+    throw new UnsupportedEncryptionSchemeError({ scheme, version })
   }
 }
 
@@ -387,7 +405,9 @@ export function assertEncryptionDescriptorTransition({
  * Once set, the descriptor's `version` follows the same never-backwards philosophy
  * as `currentEpoch`: an update may not REMOVE it and may not DECREASE it
  * (increasing is allowed, a future scheme migration). Either violation is
- * `invalid-request-body` (400, pointer `#/encryption/version`). A descriptor that
+ * `encryption-immutable` (409, pointer `#/encryption/version`) -- the spec folds
+ * version regressions into the same set-once conflict as a scheme change, since
+ * both would corrupt the stored, client-encrypted Resources. A descriptor that
  * had no prior `version` is unrestricted (a first declaration -- including
  * ADDING a version to a versionless descriptor -- has nothing to move backwards
  * from). Both values are read from the still-`unknown`-shaped descriptor: `version`
@@ -413,14 +433,14 @@ export function assertEncryptionVersionTransition({
   }
   const incomingVersion = (incoming as { version?: unknown }).version
   if (incomingVersion === undefined) {
-    throw new InvalidRequestBodyError({
+    throw new EncryptionImmutableError({
       detail:
         'Collection "encryption.version" may not be removed once it has been set.',
       pointer: '#/encryption/version'
     })
   }
   if ((incomingVersion as number) < existingVersion) {
-    throw new InvalidRequestBodyError({
+    throw new EncryptionImmutableError({
       detail: `Collection "encryption.version" may not decrease (from ${existingVersion} to ${incomingVersion as number}).`,
       pointer: '#/encryption/version'
     })

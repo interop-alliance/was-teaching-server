@@ -265,47 +265,67 @@ export class UnsupportedBackendError extends ProblemError {
 
 /**
  * 409 — a Collection update tried to change or clear an existing client-side
- * `encryption` descriptor. The descriptor is set-once (spec): declaring it on a
- * Collection that lacks one is allowed, but changing its scheme (or clearing
- * it) on a populated Collection would corrupt the stored, client-encrypted
- * Resources. Like the other state-conflict 409s (`id-conflict`,
- * `unsupported-backend`), it is only observable by a caller already authorized
- * to update the Collection -- it is checked after capability verification.
+ * `encryption` descriptor, or move its scheme `version` backwards. The
+ * descriptor is set-once, version-monotonic (spec): declaring it on a
+ * Collection that lacks one is allowed, but changing its scheme, decreasing or
+ * removing its `version`, or clearing it on a populated Collection would
+ * corrupt the stored, client-encrypted Resources. Like the other
+ * state-conflict 409s (`id-conflict`, `unsupported-backend`), it is only
+ * observable by a caller already authorized to update the Collection -- it is
+ * checked after capability verification.
+ * @param options {object}
+ * @param [options.detail] {string}   which rail was violated
+ * @param [options.pointer] {string}   JSON pointer to the offending member
  */
 export class EncryptionImmutableError extends ProblemError {
-  constructor() {
-    const detail =
+  constructor({ detail, pointer }: { detail?: string; pointer?: string } = {}) {
+    const resolvedDetail =
+      detail ??
       "A Collection's 'encryption' descriptor is set-once and cannot be changed or cleared."
     super({
       type: ProblemTypes.ENCRYPTION_IMMUTABLE,
       title: 'Collection encryption descriptor is immutable.',
-      detail,
+      detail: resolvedDetail,
       statusCode: 409,
-      problems: [{ detail, pointer: '#/encryption' }]
+      problems: [{ detail: resolvedDetail, pointer: pointer ?? '#/encryption' }]
     })
   }
 }
 
 /**
  * 400 — a Collection create/update supplied an `encryption` descriptor naming a
- * `scheme` this server does not recognize and therefore cannot enforce on write.
- * Taking the spec's fail-closed SHOULD path ("Encryption Scheme Registry"), the
- * reference server rejects such a descriptor rather than storing it opaquely, so
- * every accepted descriptor is one whose non-conforming (e.g. plaintext) writes it
- * will reject. A pure body-shape rejection, checked before capability
- * verification like the other `invalid`-shaped 400s.
+ * `scheme` -- or a `version` of a recognized scheme -- this server does not
+ * recognize and therefore cannot enforce on write. Taking the spec's
+ * fail-closed SHOULD path ("Encryption Scheme Registry"), the reference server
+ * rejects such a descriptor rather than storing it opaquely, so every accepted
+ * descriptor is one whose non-conforming (e.g. plaintext) writes it will
+ * reject. A pure body-shape rejection, checked before capability verification
+ * like the other `invalid`-shaped 400s.
  * @param options {object}
- * @param options.scheme {string}   the unrecognized scheme token
+ * @param options.scheme {string}   the scheme token
+ * @param [options.version] {number}   the unrecognized version of a recognized
+ *   scheme (absent when the scheme itself is unrecognized)
  */
 export class UnsupportedEncryptionSchemeError extends ProblemError {
-  constructor({ scheme }: { scheme: string }) {
-    const detail = `This server does not support the '${scheme}' encryption scheme.`
+  constructor({ scheme, version }: { scheme: string; version?: number }) {
+    const detail =
+      version === undefined
+        ? `This server does not support the '${scheme}' encryption scheme.`
+        : `This server does not support version ${version} of the '${scheme}' encryption scheme.`
     super({
       type: ProblemTypes.UNSUPPORTED_ENCRYPTION_SCHEME,
       title: 'Unsupported encryption scheme.',
       detail,
       statusCode: 400,
-      problems: [{ detail, pointer: '#/encryption/scheme' }]
+      problems: [
+        {
+          detail,
+          pointer:
+            version === undefined
+              ? '#/encryption/scheme'
+              : '#/encryption/version'
+        }
+      ]
     })
   }
 }

@@ -1,5 +1,17 @@
 # History
 
+## 0.17.2 - TBD
+
+### Changed
+
+- Encryption descriptor `version` regressions (a decrease, or removing a set
+  version) are now rejected with 409 `encryption-immutable` (pointer
+  `#/encryption/version`) instead of 400 `invalid-request-body`, matching the
+  spec's error registry.
+- An unrecognized `version` of a recognized encryption scheme is now rejected
+  with 400 `unsupported-encryption-scheme` rather than accepted unenforced; the
+  scheme registry pins the recognized versions per scheme (`edv`: 1).
+
 ## 0.17.1 - 2026-08-06
 
 ### Changed

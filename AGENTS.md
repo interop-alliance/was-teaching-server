@@ -76,8 +76,10 @@ Rules:
 - Work discovered mid-implementation gets its own item immediately, noting
   `discovered-from: WAS-N` in its prose, plus a `blocked-by` link if it blocks
   anything.
-- Reference item ids in commit messages and PR descriptions where relevant (e.g.
-  `WAS-12: add SSE changes endpoint`).
+- Reference item ids only in the roadmap documents (ROADMAP.md and
+  archived-roadmap.md). Do not put them in commit messages, PR descriptions, or
+  CHANGELOG.md entries -- those describe the change itself, not the tracking
+  item.
 - `blocked-by` links only express dependencies implied by the work itself; do
   not invent orderings.
 

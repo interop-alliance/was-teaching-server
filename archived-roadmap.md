@@ -40,3 +40,49 @@ free text, so asserting on phrasing (or requiring differentiation at all in the
 normative tier) would over-constrain conforming servers. Note the distinctness
 check is a signal, not proof -- per-request echo content (e.g. a request id) in
 `detail` could mask an undifferentiated implementation.
+
+---
+
+### WAS-51: Reconcile the `encryption.version` descriptor text with the implementation
+
+- status: done
+- done: 2026-08-09
+- priority: medium
+- labels: spec-side, encryption
+- acceptance:
+  - [x] The Collection Data Model descriptor definition and the implementation
+        agree on `version`'s type and optionality (spec today: a required
+        string, e.g. `"0.1"`; server: an optional positive integer)
+  - [x] The error surface for a version transition is reconciled: the spec today
+        folds any `version` change or removal into 409 `encryption-immutable`,
+        while the server allows increases (a future scheme migration) and
+        rejects decreases/removals with 400 `invalid-request-body`
+        (`#/encryption/version`) -- amend one side and update the error-registry
+        row to match
+  - [x] The server rejects an unrecognized `version` of a recognized scheme with
+        `unsupported-encryption-scheme`, per the spec's
+        accept-only-what-you-enforce SHOULD (registry defines only `edv`/`1`;
+        the server today accepts any positive integer)
+  - [x] Conformance coverage for the reconciled version-transition behavior
+        added (deliberately left out of WAS-43 because of this divergence)
+
+Discovered while implementing WAS-43 (discovered-from: WAS-43). Touches the same
+descriptor text WAS-33 extends (the scheme-version registry column and the
+never-backwards rail), so the two should land as one spec edit.
+
+Spec update 2026-08: the spec side has moved and made the calls. `version` is
+now an optional positive integer (absent means `1`), matching the server --
+first criterion met. On the error surface the spec kept 409
+`encryption-immutable` for a decrease or removal (its error-registry row now
+says so explicitly), so the remaining reconciliation is server-side: swap the
+400 `invalid-request-body` throws in `assertEncryptionVersionTransition`
+(`src/lib/encryption.ts`) for `EncryptionImmutableError`, then add the
+conformance coverage.
+
+Resolution 2026-08-09: server-side reconciliation landed. Version decreases and
+removals now throw `encryption-immutable` (409, pointer `#/encryption/version`);
+the registry entry pins recognized `versions` per scheme (`edv`: 1) and an
+unrecognized version of a recognized scheme is rejected with
+`unsupported-encryption-scheme` (400, pointer `#/encryption/version`).
+Conformance coverage added in `@interop/was-conformance-suite` 0.4.3
+(`encryption.version-*`, six tests incl. one optional-tier).
