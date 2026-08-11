@@ -58,7 +58,7 @@ export interface MetaSidecar {
   custom?: ResourceMetadataCustom | Record<string, unknown>
   // The client-declared key epoch the current content was encrypted under (the
   // `key-epochs` feature). Stored opaquely: a content write sets it from the
-  // `WAS-Key-Epoch` header (clearing it when absent -- the new ciphertext's
+  // `Key-Epoch` header (clearing it when absent -- the new ciphertext's
   // epoch is unknown), while a metadata write PRESERVES it unless the `/meta`
   // body supplies a new value. The server never computes or verifies it.
   epoch?: string

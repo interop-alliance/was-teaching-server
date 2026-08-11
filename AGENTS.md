@@ -92,10 +92,9 @@ Two separate test directories serve different purposes:
   i.e. `vitest run`); config in `vite.config.ts`.
 - Protocol conformance tests live in their own package,
   `@interop/was-conformance-suite` (repo:
-  `interop-alliance/was-conformance-suite`, local checkout at
-  `~/code/Interop/was-conformance-suite`), installed here as a devDependency.
-  Its `was-conformance` CLI runs against any WAS server by URL
-  (`pnpm conformance <url>`; `TEST_SERVER_URL` / `TEST_ONBOARDING_TOKEN` env
+  <https://github.com/interop-alliance/was-conformance-suite>), installed here
+  as a devDependency. Its `was-conformance` CLI runs against any WAS server by
+  URL (`pnpm conformance <url>`; `TEST_SERVER_URL` / `TEST_ONBOARDING_TOKEN` env
   vars work as fallbacks). To run it against a freshly-spawned local server in
   one step, use `pnpm conformance:local` (see Conformance Test Usage below).
 

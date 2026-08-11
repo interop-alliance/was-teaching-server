@@ -1026,7 +1026,7 @@ consumer signal, and acceptance criteria for the core spec's section list.
   - [ ] The optional `epoch` member added to the `changes` profile registry
         entry (or `key-epochs` documented as an extension)
   - [ ] The descriptor/stamp surface (`encryption.epochs` / `currentEpoch`
-        rails, `WAS-Key-Epoch` Resource stamp) covered
+        rails, `Key-Epoch` Resource stamp) covered
 
 The `changes` profile's registry entry omits the `epoch` member the server emits
 on feed documents (the `key-epochs` stamp, carried so a replicating reader picks

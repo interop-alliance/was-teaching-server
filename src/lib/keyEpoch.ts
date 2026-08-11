@@ -5,7 +5,7 @@
  * attempting decryption; the value is advisory metadata the server stores
  * opaquely and never computes or verifies (a write may race a rotation).
  *
- * On a **content** write the epoch is declared via the `WAS-Key-Epoch` request
+ * On a **content** write the epoch is declared via the `Key-Epoch` request
  * header -- one mechanism that works uniformly for JSON, raw-stream binary, and
  * multipart writes. It is deliberately NOT signature-covered (like `If-Match`):
  * it is advisory client-declared metadata, not part of the capability
@@ -22,10 +22,10 @@
 import { InvalidRequestBodyError } from '../errors.js'
 
 /** The request header carrying the client-declared key-epoch on a content write. */
-export const KEY_EPOCH_HEADER = 'was-key-epoch'
+export const KEY_EPOCH_HEADER = 'key-epoch'
 
 /**
- * Parses the OPTIONAL `WAS-Key-Epoch` request header into the epoch stamp for a
+ * Parses the OPTIONAL `Key-Epoch` request header into the epoch stamp for a
  * content write. Resolves `{ epoch: string }` for a non-empty single-valued
  * header, `{ epoch: undefined }` when absent (the content write clears any
  * stored stamp), and throws `invalid-request-body` (400) for an empty or
@@ -49,7 +49,7 @@ export function parseKeyEpochHeader({
   if (typeof value !== 'string' || value.length === 0) {
     throw new InvalidRequestBodyError({
       requestName,
-      detail: 'The "WAS-Key-Epoch" header must be a non-empty string.'
+      detail: 'The "Key-Epoch" header must be a non-empty string.'
     })
   }
   return { epoch: value }

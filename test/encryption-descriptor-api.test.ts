@@ -529,7 +529,7 @@ describe('Encryption descriptor API', () => {
     })
   })
 
-  describe('key-epoch stamping (WAS-Key-Epoch header + /meta epoch)', () => {
+  describe('key-epoch stamping (Key-Epoch header + /meta epoch)', () => {
     const collectionId = 'epoch-stamp'
     const resUrl = (rid: string) => `/space/${spaceId}/${collectionId}/${rid}`
     const metaOf = async (rid: string) =>
@@ -550,7 +550,7 @@ describe('Encryption descriptor API', () => {
         path: resUrl('r1'),
         method: 'PUT',
         json: { id: 'r1', hello: 'world' },
-        headers: { 'was-key-epoch': 'urn:epoch:1' }
+        headers: { 'key-epoch': 'urn:epoch:1' }
       })
       assert.equal(put.status, 204)
 
@@ -598,13 +598,13 @@ describe('Encryption descriptor API', () => {
       assert.equal((await metaOf('r1')).epoch, undefined)
     })
 
-    it('rejects an empty WAS-Key-Epoch header (400)', async () => {
+    it('rejects an empty Key-Epoch header (400)', async () => {
       const err = await rejection(
         alice.was.request({
           path: resUrl('r-bad'),
           method: 'PUT',
           json: { id: 'r-bad' },
-          headers: { 'was-key-epoch': '' }
+          headers: { 'key-epoch': '' }
         })
       )
       assert.equal(err.response.status, 400)

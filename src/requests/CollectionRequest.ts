@@ -167,7 +167,7 @@ export class CollectionRequest {
     })
     const input = await resolveResourceInput(request, dataBackend)
     // A content write into an encrypted Collection MAY declare the key epoch it
-    // encrypted under via the `WAS-Key-Epoch` header (the `key-epochs` feature);
+    // encrypted under via the `Key-Epoch` header (the `key-epochs` feature);
     // the server stores it opaquely and clears it when absent (the new
     // ciphertext's epoch is unknown). Advisory, non-signature-covered metadata.
     const { epoch } = parseKeyEpochHeader({

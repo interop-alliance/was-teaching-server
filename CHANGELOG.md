@@ -1,5 +1,15 @@
 # History
 
+## 0.18.0 - TBD
+
+### Changed
+
+- **Breaking: the key-epoch request header is renamed from `WAS-Key-Epoch` to
+  `Key-Epoch`.** Only the new spelling is accepted; there is no dual-read
+  tolerance for the old one. Pairs with the client-side rename in
+  `@interop/was-client` 0.32.0 (`WAS_KEY_EPOCH_HEADER` to `KEY_EPOCH_HEADER`),
+  so client and server flip together.
+
 ## 0.17.2 - 2026-08-09
 
 ### Changed
