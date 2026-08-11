@@ -32,6 +32,10 @@ import {
   assertIndexesNotEncrypted,
   assertSupportedIndexes
 } from '../lib/equalityIndex.js'
+import {
+  assertValidGenerator,
+  assertValidGeneratorOrigin
+} from '../lib/generator.js'
 import { formatEtag } from '../lib/etag.js'
 import {
   spacePath,
@@ -324,6 +328,8 @@ export class SpaceRequest {
         backend?: unknown
         encryption?: unknown
         indexes?: unknown
+        generator?: unknown
+        generatorOrigin?: unknown
       }
     }>,
     reply: FastifyReply
@@ -356,6 +362,17 @@ export class SpaceRequest {
       requestName
     })
     assertIndexesNotEncrypted({ indexes, encryption, requestName })
+    // Validate the optional app-attribution members (shape only). Both are the
+    // controller's assertions: stored verbatim, echoed on reads, never an
+    // authorization input and never defaulted by the server.
+    const generator = assertValidGenerator({
+      generator: body?.generator,
+      requestName
+    })
+    const generatorOrigin = assertValidGeneratorOrigin({
+      generatorOrigin: body?.generatorOrigin,
+      requestName
+    })
 
     // Verify (capability-only): creating a Collection requires a valid
     // capability invocation; no access-control-policy fallback.
@@ -401,7 +418,9 @@ export class SpaceRequest {
       name,
       backend,
       ...(encryption !== undefined && { encryption }),
-      ...(indexes !== undefined && { indexes })
+      ...(indexes !== undefined && { indexes }),
+      ...(generator !== undefined && { generator }),
+      ...(generatorOrigin !== undefined && { generatorOrigin })
     }
 
     const createdBy = invokerDid(request)

@@ -1,5 +1,25 @@
 # History
 
+## 0.19.0 - TBD
+
+### Added
+
+- **Round-trips the Collection Description's `generator` and `generatorOrigin`
+  members** (spec "Collection Data Model"), pairing with the new wire types in
+  `@interop/storage-core` 0.6.0. `generator` names the DID of the application a
+  Collection was provisioned for and `generatorOrigin` the Web origin that DID
+  was bound to at provisioning time. Both are assertions by the Space
+  controller: writable at Create Collection AND on Update Collection (so a
+  wallet can backfill Collections provisioned earlier), persisted verbatim, and
+  echoed on reads. Neither is verified, defaulted, or computed by the server,
+  and neither is ever an authorization input -- unlike the server-observed,
+  read-only `createdBy`, which these writes leave untouched. They merge like
+  `name`: a supplied value overwrites, an absent one preserves the stored value.
+- Shape validation for both members, rejected with 400 `invalid-request-body`:
+  `generator` must be a DID string (pointer `#/generator`), and
+  `generatorOrigin` must be the ASCII serialization of a Web origin -- a path,
+  query, fragment, or trailing slash is refused (pointer `#/generatorOrigin`).
+
 ## 0.18.0 - 2026-08-10
 
 ### Changed

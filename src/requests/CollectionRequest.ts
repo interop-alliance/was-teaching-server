@@ -35,6 +35,10 @@ import {
   assertEncryptionDescriptorTransition,
   assertEncryptedWriteConforms
 } from '../lib/encryption.js'
+import {
+  assertValidGenerator,
+  assertValidGeneratorOrigin
+} from '../lib/generator.js'
 import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
 import { parsePageParams } from '../lib/pagination.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
@@ -231,6 +235,8 @@ export class CollectionRequest {
         backend?: unknown
         encryption?: unknown
         indexes?: unknown
+        generator?: unknown
+        generatorOrigin?: unknown
       }
     }>,
     reply: FastifyReply
@@ -275,6 +281,19 @@ export class CollectionRequest {
     // enforced below, against the description about to be persisted.
     const suppliedIndexes = assertSupportedIndexes({
       indexes: body.indexes,
+      requestName
+    })
+    // Validate the optional app-attribution members (shape only). Both are the
+    // controller's assertions -- stored verbatim, never an authorization input --
+    // and both are updatable, so a controller can backfill a Collection
+    // provisioned before an application recorded its attribution. An absent
+    // value leaves the stored one untouched, like `name`.
+    const suppliedGenerator = assertValidGenerator({
+      generator: body.generator,
+      requestName
+    })
+    const suppliedGeneratorOrigin = assertValidGeneratorOrigin({
+      generatorOrigin: body.generatorOrigin,
       requestName
     })
 
@@ -336,7 +355,13 @@ export class CollectionRequest {
           ...(suppliedEncryption !== undefined && {
             encryption: suppliedEncryption
           }),
-          ...(suppliedIndexes !== undefined && { indexes: suppliedIndexes })
+          ...(suppliedIndexes !== undefined && { indexes: suppliedIndexes }),
+          ...(suppliedGenerator !== undefined && {
+            generator: suppliedGenerator
+          }),
+          ...(suppliedGeneratorOrigin !== undefined && {
+            generatorOrigin: suppliedGeneratorOrigin
+          })
         }
       : // New Collection
         {
@@ -347,7 +372,13 @@ export class CollectionRequest {
           ...(suppliedEncryption !== undefined && {
             encryption: suppliedEncryption
           }),
-          ...(suppliedIndexes !== undefined && { indexes: suppliedIndexes })
+          ...(suppliedIndexes !== undefined && { indexes: suppliedIndexes }),
+          ...(suppliedGenerator !== undefined && {
+            generator: suppliedGenerator
+          }),
+          ...(suppliedGeneratorOrigin !== undefined && {
+            generatorOrigin: suppliedGeneratorOrigin
+          })
         }
 
     // Mutual exclusion (spec "Collection Data Model"): the description about to
