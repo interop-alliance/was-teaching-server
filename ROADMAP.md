@@ -446,7 +446,7 @@ minimal and revisit if the spec text firms up.
 - labels: http-api, data-model, encryption
 - touches:
   - wallet-attached-storage-spec -- normative text tracked as WASS-9 in that
-    repo's `_spec/ROADMAP.md`
+    repo's `_spec/ROADMAP.md` (done, moved to archive)
   - was-teaching-server -- routes, both backends, `metaVersion` validators,
     server tests + conformance-suite coverage
   - was-client -- consumer, tracked as WCL-8 in that repo's ROADMAP.md

@@ -13,8 +13,10 @@
  * the stamp when absent -- the new ciphertext's epoch is unknown, and a stale
  * stamp is worse than none (a reader falls back to `currentEpoch` and can try
  * other epochs). A `PUT .../meta` may also declare `epoch` as a top-level member
- * of the body (a sibling of `custom`), where omitting it PRESERVES the stored
- * value -- see the `putMeta` handler.
+ * of the body (a sibling of `custom`); what omitting it means differs by level
+ * -- a Resource metadata write PRESERVES the stored stamp (it describes the
+ * content write, not the metadata write) while a Collection metadata write
+ * CLEARS it -- see {@link parseMetaEpoch} and the `putMeta` handlers.
  *
  * The only validation is that a present value is a non-empty string (400
  * otherwise); the server never checks it against the Collection descriptor's epochs.
