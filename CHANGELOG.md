@@ -1,5 +1,29 @@
 # History
 
+## 0.20.0 - TBD
+
+### Added
+
+- **An ephemeral exchanges facet at `/workflows/ephemeral/exchanges`**, a
+  transient, unauthenticated rendezvous for cross-device flows.
+  `POST /workflows/ephemeral/exchanges` with `{ "request": <opaque JSON> }`
+  mints an exchange and returns `201` with its URL in both the `Location` header
+  and a `{ "location": ... }` body (`400` when `request` is absent, `429` once
+  the server holds its cap of 1000 live exchanges).
+  `POST /workflows/ephemeral/exchanges/:exchangeId` with no body or `{}` returns
+  the stored request verbatim, and with any other body stores that body as the
+  exchange's response and echoes it (last write wins).
+  `GET /workflows/ephemeral/exchanges/:exchangeId` returns
+  `{ id, sequence: 0, state: "pending" }` until a response is posted, then
+  `{ id, sequence: 1, state: "complete", response }`.
+  `GET /workflows/ephemeral/exchanges/:exchangeId/protocols` returns
+  `{ "protocols": { "vcapi": <exchange URL> } }` for a QR-carried interaction
+  URL. Every route answers `404` for an unknown or expired id. The exchange URL
+  is a capability URL -- possession of it is the only access control -- and the
+  relayed payloads are opaque JSON the server never inspects. Exchanges are held
+  in memory only, expire ~10 minutes after creation, and are lost on restart;
+  both `POST` bodies are capped at 64 KiB.
+
 ## 0.19.0 - 2026-08-11
 
 ### Added

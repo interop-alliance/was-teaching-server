@@ -35,6 +35,12 @@ it before making changes.
 on the matching `*Request` class. Always go through `request.server.storage` —
 never import or instantiate a backend directly from a handler.
 
+Two facets sit outside that structure, each in its own self-contained module
+with no auth hooks and no storage access: the CORS proxy (`src/corsProxy.ts`,
+`/api/cors`) and the ephemeral exchanges rendezvous (`src/exchanges.ts`,
+`/workflows/ephemeral/exchanges`). Both are unauthenticated by design; keep
+anything touching Spaces out of them.
+
 ## Conventions
 
 Code style, refactoring, JSDoc, comment, and error-handling conventions live in
@@ -54,10 +60,17 @@ Each work item follows this schema:
 - A heading `### WAS-N: Title`, then a field block, then free prose context.
 - Fields: `status` (`todo` / `in-progress` / `draft` / `done`), `priority`
   (`high` / `medium` / `low`), `labels` (comma-separated), optional `blocked-by`
-  (other `WAS-N` ids), and an `acceptance:` checklist.
+  (other `WAS-N` ids), a `touches:` list where it applies, and an `acceptance:`
+  checklist.
 - `draft` marks items with no actionable done-state yet (spec-blocked or parking
   records); a draft states _why_ instead of acceptance criteria and must gain
   acceptance criteria when promoted to `todo`.
+- `touches:` is the field defined in the canonical schema in
+  isomorphic-lib-template's AGENTS.md ("Roadmap & Task Conventions"): required
+  for any item changing a spec, a wire contract, or a shared `@interop/*` API,
+  it lists the affected repos and their ARCHITECTURE/AGENTS files, and each
+  entry must be resolved (shipped or explicitly waived) before the item may go
+  `done`. See that file for the full definition.
 
 Rules:
 

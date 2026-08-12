@@ -24,6 +24,7 @@ import {
   initSpaceRoutes,
   initSpacesRepositoryRoutes
 } from './routes.js'
+import { initExchangeRoutes } from './exchanges.js'
 import { assertValidServerUrl } from './config.default.js'
 import { defaultBackend } from './storage.js'
 import { onboardingTokenAuthorizer } from './provisioning.js'
@@ -283,6 +284,9 @@ async function wasPlugin(
   fastify.register(initCollectionRoutes)
   fastify.register(initResourceRoutes)
   fastify.register(initKmsRoutes)
+  // The ephemeral exchanges facet: unauthenticated by design (no zcap hook
+  // chain), so it stays a sibling of the route groups rather than one of them.
+  fastify.register(initExchangeRoutes)
 }
 
 export const fastifyWas = fp(wasPlugin, {
