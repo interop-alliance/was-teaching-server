@@ -392,9 +392,9 @@ between parties):
   to the client, without storing it.
 - **Signed changes-feed checkpoints** -- promoted to its own item, WAS-36.
 - **Epoch anti-rollback** -- a signed current-epoch statement for
-  multi-recipient collections; `epochsMac` binds epoch state but is only
-  server-verifiable, a signature makes the freshness claim third-party- and
-  offline-verifiable.
+  multi-recipient collections; with `epochsMac` retired (client 0.32.0), epoch
+  configuration is bound by log-chain verification, and a server signature would
+  additionally make the freshness claim third-party- and offline-verifiable.
 - **Server as zcap delegatee** -- the receiving direction: a user delegates a
   read capability to the server's DID so it can pull from a peer server
   unattended (server-to-server backup / replication / migration). Any future
@@ -1054,8 +1054,7 @@ pulled (the server ships both halves: zcap revocation and key epochs). The same
 section should own the trust model: WAS deliberately verifies against one
 authoritative chain at request time, so the server _is_ the revocation
 checkpoint and offline / pure-P2P operation is out of scope -- an architectural
-advantage over coordination-free designs (cite Keyhive as the contrast). Pairs
-with the epochsMac item (WAS-34).
+advantage over coordination-free designs (cite Keyhive as the contrast).
 
 ### WAS-31: Server-knowledge section for encrypted Collections
 
@@ -1140,28 +1139,6 @@ paths) and the chunk text inherits it, or the server enforces exact-match on
 chunk URLs and breaks ancestor-cap workflows. Draft until the spec decision is
 made; the conformance suite meanwhile covers the URL-binding MUST with a
 non-ancestor (sibling-chunk) probe, which both readings reject.
-
-### WAS-34: Spec the `epochsMac` authenticated epoch configuration
-
-- status: todo
-- priority: medium
-- labels: spec-side, encryption
-- acceptance:
-  - [ ] The descriptor member `epochsMac: { v: 1, alg: "HS256", mac }` and its
-        MAC/HKDF construction defined
-  - [ ] The whole-config replay limitation owned in the text
-
-Shipped in the client stack, 2026-07-20; the server stores it opaquely. The spec
-should define: an HMAC-SHA256 over
-`"was-epoch-config/v1." + JSON.stringify({ scheme, version, currentEpoch, epochs })`
-(epoch ids in descriptor order, `version` null when absent), keyed via
-HKDF-SHA256 from the current epoch's 32-byte secret with info
-`"was-epoch-config-mac/v1"` -- a key the server never holds. Writers verify it
-before encrypting, so a server that points `currentEpoch` back at an epoch a
-revoked reader still holds fails to authenticate. The text must also own the
-limitation: a replay of an _entire_ old consistent configuration (old list plus
-its old MAC) is only detectable with client-side monotonic state, out of scope
-for the descriptor itself. Pairs with the layered-revocation item (WAS-30).
 
 ### WAS-35: Spec the chunked-stream encryption profile (`caad`)
 

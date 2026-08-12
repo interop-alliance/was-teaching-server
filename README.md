@@ -119,6 +119,36 @@ minimal canned-policy approach (cf. S3 `public-read`, `chmod o+r`) covers the
 dominant public-read case; a richer policy language (e.g. Cedar) is left as a
 future, separate tier.
 
+#### Ephemeral Exchanges
+
+A transient rendezvous for cross-device flows: one page creates an exchange
+holding an opaque request, shows its URL as a QR code, and polls it until
+another device (a phone wallet, say) posts the answer back. This is not part of
+the WAS protocol; it is a small convenience facet the teaching server hosts
+alongside it.
+
+- `POST /workflows/ephemeral/exchanges` — body `{ "request": <opaque JSON> }`;
+  returns `201` with the exchange URL in both the `Location` header and a
+  `{ "location": ... }` body. Refused with `429` once the server is holding its
+  cap of live exchanges.
+- `POST /workflows/ephemeral/exchanges/:exchangeId` — with no body (or `{}`),
+  returns the stored `request` verbatim ("begin"); with any other body, stores
+  that body as the exchange's response and echoes it back (last write wins).
+- `GET /workflows/ephemeral/exchanges/:exchangeId` — polls:
+  `{ id, sequence: 0, state: "pending" }` until a response has been posted, then
+  `{ id, sequence: 1, state: "complete", response }`.
+- `GET /workflows/ephemeral/exchanges/:exchangeId/protocols` — the interaction
+  endpoint a QR encodes; returns `{ "protocols": { "vcapi": <exchange URL> } }`.
+
+**Security posture.** These routes are unauthenticated by design: the exchange
+URL is a **capability URL**, and possession of that unguessable URL is the only
+access control, so it must be handled as a secret (and only ever passed over a
+channel that keeps it one). The server never inspects the relayed payloads —
+they are opaque JSON to it. Every exchange is transient: in memory only,
+expiring about ten minutes after creation, bounded in number, and lost on
+restart. Nothing here reads or writes a Space, and no capability is granted.
+Both `POST` bodies are capped at 64 KiB.
+
 ## Install
 
 Requires Node.js 24.x and [`pnpm`](https://pnpm.io/).

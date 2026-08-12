@@ -52,6 +52,17 @@ start.ts → server.ts → routes.ts → requests/*Request.ts → storage.ts →
   implementation (`implements StorageBackend` from `src/types.ts`).
 - **`src/errors.ts`** — custom error classes plus `handleError`, the Fastify
   error handler installed by each route group.
+- **`src/exchanges.ts`** — the ephemeral exchanges facet
+  (`/workflows/ephemeral/exchanges`), a self-contained sibling of the WAS route
+  groups rather than one of them: a transient rendezvous for cross-device flows
+  (a desktop page mints an exchange, a phone scans its QR and posts the answer
+  back). It installs none of the auth/digest hooks and is unauthenticated by
+  design — it is a **capability URL**, where possession of the unguessable
+  exchange URL is the only access control. The relayed `request` and `response`
+  are opaque JSON the server never inspects; exchanges live in memory only,
+  expire ~10 minutes after creation, are capped in number (429 past the cap),
+  and are lost on restart. It holds no wallet data and grants no access to any
+  Space.
 - **`src/types.ts`** — shared domain types and the Fastify module augmentation
   (`FastifyInstance.serverUrl`, `FastifyInstance.storage`,
   `FastifyRequest.zcap`); reuses `@interop/data-integrity-core` types where they

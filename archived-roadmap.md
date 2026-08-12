@@ -86,3 +86,32 @@ unrecognized version of a recognized scheme is rejected with
 `unsupported-encryption-scheme` (400, pointer `#/encryption/version`).
 Conformance coverage added in `@interop/was-conformance-suite` 0.4.3
 (`encryption.version-*`, six tests incl. one optional-tier).
+
+### WAS-34: Spec the `epochsMac` authenticated epoch configuration
+
+- status: retired
+- priority: medium
+- labels: spec-side, encryption
+- retired: 2026-08-12
+- acceptance:
+  - [ ] The descriptor member `epochsMac: { v: 1, alg: "HS256", mac }` and its
+        MAC/HKDF construction defined
+  - [ ] The whole-config replay limitation owned in the text
+
+Shipped in the client stack, 2026-07-20; the server stores it opaquely. The spec
+should define: an HMAC-SHA256 over
+`"was-epoch-config/v1." + JSON.stringify({ scheme, version, currentEpoch, epochs })`
+(epoch ids in descriptor order, `version` null when absent), keyed via
+HKDF-SHA256 from the current epoch's 32-byte secret with info
+`"was-epoch-config-mac/v1"` -- a key the server never holds. Writers verify it
+before encrypting, so a server that points `currentEpoch` back at an epoch a
+revoked reader still holds fails to authenticate. The text must also own the
+limitation: a replay of an _entire_ old consistent configuration (old list plus
+its old MAC) is only detectable with client-side monotonic state, out of scope
+for the descriptor itself. Pairs with the layered-revocation item (WAS-30).
+
+Retired 2026-08-12: `epochsMac` was removed stack-wide in was-client 0.32.0 --
+on a log-governed descriptor its coverage is a strict subset of log-chain
+verification (the entry proof covers the full epoch configuration), so there is
+no mechanism left to spec. The construction above is preserved verbatim as the
+historical record.
