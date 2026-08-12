@@ -115,3 +115,34 @@ on a log-governed descriptor its coverage is a strict subset of log-chain
 verification (the entry proof covers the full epoch configuration), so there is
 no mechanism left to spec. The construction above is preserved verbatim as the
 historical record.
+
+### WAS-55: Collection-level metadata endpoints (`/space/{s}/{c}/meta`)
+
+- status: done
+- done: 2026-08-12
+- priority: medium
+- labels: http-api, data-model, encryption
+- touches:
+  - wallet-attached-storage-spec -- normative text tracked as WASS-9 in that
+    repo's `_spec/ROADMAP.md` (done, moved to archive)
+  - was-teaching-server -- routes, both backends, `metaVersion` validators,
+    server tests + conformance-suite coverage (done; suite tests published in
+    `@interop/was-conformance-suite` 0.5.0)
+  - was-client -- consumer, tracked as WCL-8 in that repo's ROADMAP.md (done)
+- acceptance:
+  - [x] `GET`/`PUT` `/space/{space_id}/{collection_id}/meta` mirroring the
+        Resource metadata operations: server-managed members plus user-writable
+        `custom`, full-replacement PUT
+  - [x] An independent `metaVersion` ETag with the same conditional-request
+        semantics as the Resource `/meta` one
+  - [x] The reserved-segment collision behavior for a Resource whose id is
+        `meta` matches the Resource-level rule
+  - [x] Filesystem + postgres backends, storage-backend contract tests, and
+        conformance-suite coverage (suite tests land in
+        `@interop/was-conformance-suite` 0.5.0, pending publish)
+
+The server half of WASS-9 (see that item for motivation and the rejected
+blind-derived-id alternative): was-client's WCL-1 persists the blinded-index
+schema in this envelope, and encrypted Collections gain client-encrypted
+name/tags. The Resource-level `/meta` machinery (validators, full-replacement
+semantics, encrypted-`custom` passthrough) is the template.
