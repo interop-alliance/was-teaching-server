@@ -610,6 +610,264 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       })
     })
 
+    describe('Collection Metadata', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-collection-meta'
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId)
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      /** Creates a fresh Collection in this suite's Space and returns its id. */
+      async function freshCollection(createdBy?: IDID): Promise<string> {
+        const collectionId = `col-${crypto.randomUUID()}`
+        await harness.backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionDescription: {
+            id: collectionId,
+            type: ['Collection'],
+            name: collectionId
+          },
+          ...(createdBy !== undefined && { createdBy })
+        })
+        return collectionId
+      }
+
+      it('round-trips custom, with metaVersion monotonic from 1', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+
+        // Before any write: the Collection exists, so metadata reads resolve --
+        // with no `metaVersion` (nothing has been written).
+        const fresh = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        assert.ok(fresh, 'an existing Collection resolves a Metadata object')
+        assert.equal(fresh.metaVersion, undefined)
+        assert.equal(fresh.custom, undefined)
+
+        const first = await backend.writeCollectionMetadata({
+          spaceId,
+          collectionId,
+          custom: { name: 'First', tags: { a: 'b' } }
+        })
+        assert.deepEqual(first, { metaVersion: 1 })
+
+        const stored = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        assert.deepEqual(stored?.custom, { name: 'First', tags: { a: 'b' } })
+        assert.equal(stored?.metaVersion, 1)
+        assert.ok(!Number.isNaN(Date.parse(stored!.createdAt!)))
+        assert.ok(!Number.isNaN(Date.parse(stored!.updatedAt!)))
+
+        const second = await backend.writeCollectionMetadata({
+          spaceId,
+          collectionId,
+          custom: { name: 'Second' }
+        })
+        assert.deepEqual(second, { metaVersion: 2 })
+        // A full replacement: the tags of the first write are gone.
+        const replaced = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        assert.deepEqual(replaced?.custom, { name: 'Second' })
+
+        // An empty custom clears it (and still bumps the version).
+        await backend.writeCollectionMetadata({
+          spaceId,
+          collectionId,
+          custom: {}
+        })
+        const cleared = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        assert.equal(cleared?.custom, undefined)
+        assert.equal(cleared?.metaVersion, 3)
+      })
+
+      it('resolves undefined for a Collection that does not exist', async () => {
+        const { backend } = harness
+        assert.equal(
+          await backend.getCollectionMetadata({
+            spaceId,
+            collectionId: 'absent'
+          }),
+          undefined
+        )
+        // ...and a write does not create one.
+        assert.equal(
+          await backend.writeCollectionMetadata({
+            spaceId,
+            collectionId: 'absent',
+            custom: { name: 'x' }
+          }),
+          undefined
+        )
+      })
+
+      it('evaluates If-Match / If-None-Match on the metaVersion', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+
+        // `If-None-Match: *` writes once...
+        await backend.writeCollectionMetadata({
+          spaceId,
+          collectionId,
+          custom: { name: 'Created' },
+          ifNoneMatch: true
+        })
+        // ...and rejects a second create-if-absent.
+        await expect(
+          backend.writeCollectionMetadata({
+            spaceId,
+            collectionId,
+            custom: { name: 'Again' },
+            ifNoneMatch: true
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+
+        // A stale `If-Match` is rejected; the matching one succeeds.
+        await expect(
+          backend.writeCollectionMetadata({
+            spaceId,
+            collectionId,
+            custom: { name: 'Stale' },
+            ifMatch: formatEtag(99)
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        assert.deepEqual(
+          await backend.writeCollectionMetadata({
+            spaceId,
+            collectionId,
+            custom: { name: 'Fresh' },
+            ifMatch: formatEtag(1)
+          }),
+          { metaVersion: 2 }
+        )
+      })
+
+      it('an omitted epoch CLEARS the stored stamp', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        await backend.writeCollectionMetadata({
+          spaceId,
+          collectionId,
+          custom: { name: 'Stamped' },
+          epoch: 'epoch-1'
+        })
+        assert.equal(
+          (await backend.getCollectionMetadata({ spaceId, collectionId }))
+            ?.epoch,
+          'epoch-1'
+        )
+        // Unlike `writeResourceMetadata` (which preserves the content stamp), a
+        // Collection metadata write with no epoch clears it: it replaces the
+        // very `custom` envelope the stamp described.
+        await backend.writeCollectionMetadata({
+          spaceId,
+          collectionId,
+          custom: { name: 'Restamped' }
+        })
+        assert.equal(
+          (await backend.getCollectionMetadata({ spaceId, collectionId }))
+            ?.epoch,
+          undefined
+        )
+      })
+
+      it('metaVersion and descriptionVersion are independent', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+
+        // A metadata write leaves the description version alone.
+        await backend.writeCollectionMetadata({
+          spaceId,
+          collectionId,
+          custom: { name: 'Meta' }
+        })
+        const described = await backend.getCollectionDescription({
+          spaceId,
+          collectionId
+        })
+        assert.equal(described?.descriptionVersion, 1)
+
+        // ...and a description write leaves the metadata version alone.
+        const { version } = await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionDescription: {
+            id: collectionId,
+            type: ['Collection'],
+            name: 'Renamed'
+          }
+        })
+        assert.equal(version, 2)
+        const metadata = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        assert.equal(metadata?.metaVersion, 1)
+        assert.deepEqual(metadata?.custom, { name: 'Meta' })
+      })
+
+      it('surfaces createdBy but never lets a custom write set it', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection(CREATOR_ONE)
+        await backend.writeCollectionMetadata({
+          spaceId,
+          collectionId,
+          // A forged `createdBy` inside `custom` stays inside `custom`; the
+          // server-managed one is read from the description.
+          custom: { createdBy: CREATOR_TWO } as never
+        })
+        const metadata = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        assert.equal(metadata?.createdBy, CREATOR_ONE)
+      })
+
+      it('deleting the Collection removes its metadata', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        await backend.writeCollectionMetadata({
+          spaceId,
+          collectionId,
+          custom: { name: 'Doomed' }
+        })
+        await backend.deleteCollection({ spaceId, collectionId })
+        assert.equal(
+          await backend.getCollectionMetadata({ spaceId, collectionId }),
+          undefined
+        )
+        // A Collection re-created under the same id starts with no metadata.
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionDescription: {
+            id: collectionId,
+            type: ['Collection'],
+            name: collectionId
+          }
+        })
+        const revived = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        assert.equal(revived?.metaVersion, undefined)
+        assert.equal(revived?.custom, undefined)
+      })
+    })
+
     describe('createdBy provenance', () => {
       let harness: BackendHarness
       const spaceId = 'space-created-by'
@@ -3571,6 +3829,43 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             await target.backend.getBackend({ spaceId, backendId: 'ext' }),
             undefined
           )
+        } finally {
+          await source.cleanup()
+          await target.cleanup()
+        }
+      })
+
+      it('carries Collection Metadata onto a newly-created Collection', async () => {
+        const source = await makeBackend()
+        const target = await makeBackend()
+        try {
+          const spaceId = 'space-exp-collection-meta'
+          await provisionSpace(source.backend, spaceId)
+          await source.backend.writeCollectionMetadata({
+            spaceId,
+            collectionId: 'col',
+            custom: { name: 'Collection Label', tags: { kind: 'demo' } },
+            epoch: 'epoch-exp'
+          })
+
+          const tarStream = await source.backend.exportSpace({ spaceId })
+          // Provision the destination Space around a DIFFERENT Collection, so
+          // the archived 'col' is created rather than skipped (an existing
+          // Collection keeps its own metadata, like its description and policy).
+          await provisionSpace(target.backend, spaceId, 'other')
+          await target.backend.importSpace({ spaceId, tarStream })
+
+          const metadata = await target.backend.getCollectionMetadata({
+            spaceId,
+            collectionId: 'col'
+          })
+          assert.deepEqual(metadata?.custom, {
+            name: 'Collection Label',
+            tags: { kind: 'demo' }
+          })
+          assert.equal(metadata?.epoch, 'epoch-exp')
+          assert.equal(metadata?.metaVersion, 1)
+          assert.ok(!Number.isNaN(Date.parse(metadata!.createdAt!)))
         } finally {
           await source.cleanup()
           await target.cleanup()

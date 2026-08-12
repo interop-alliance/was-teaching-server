@@ -50,9 +50,10 @@ import {
   spaceDescriptionFileName,
   collectionDescriptionFileName,
   policyFileName,
-  metaSidecarFileName
+  metaSidecarFileName,
+  collectionMetaFileName
 } from '../lib/resourceFileName.js'
-import type { MetaSidecar } from '../lib/metaSidecar.js'
+import type { MetaSidecar, CollectionMetaSidecar } from '../lib/metaSidecar.js'
 import {
   sanitizeBackendRecord,
   serverBackendDescriptor
@@ -107,7 +108,8 @@ import type {
 import {
   assertWritePrecondition,
   assertMetaWritePrecondition,
-  assertCollectionWritePrecondition
+  assertCollectionWritePrecondition,
+  assertCollectionMetaWritePrecondition
 } from '../lib/preconditions.js'
 import type {
   SpaceDescription,
@@ -120,6 +122,7 @@ import type {
   ChunkListing,
   ResourceMetadata,
   ResourceMetadataCustom,
+  CollectionMetadata,
   ResourceInput,
   ImportStats,
   PolicyDocument,
@@ -1277,6 +1280,7 @@ export class FileSystemBackend implements StorageBackend {
       collectionId,
       collectionDescription,
       collectionPolicy,
+      collectionMetadata,
       resources,
       resourcePolicies,
       resourceMetadata,
@@ -1309,6 +1313,17 @@ export class FileSystemBackend implements StorageBackend {
           collectionDescription
         })
         stats.collectionsCreated++
+      }
+
+      // The Collection's own metadata sidecar travels with a newly-created
+      // Collection (preserving its timestamps, `metaVersion`, and user-writable
+      // `custom`); for an existing (skipped) Collection, leave its metadata
+      // untouched, exactly as its policy and description are left alone.
+      if (collectionMetadata && !collectionExisted) {
+        await atomicWriteFile({
+          filePath: this.#collectionMetaPath({ spaceId, collectionId }),
+          data: collectionMetadata
+        })
       }
 
       // A collection-level policy travels with a newly-created collection; for
@@ -1711,10 +1726,214 @@ export class FileSystemBackend implements StorageBackend {
     // `force: true` keeps delete idempotent (spec / `StorageBackend` contract):
     // removing an absent (or already-deleted) Collection resolves rather than
     // rejecting with `ENOENT` (which the request layer would wrap as a 500).
+    // The Collection's metadata sidecar lives inside that dir, so it goes with
+    // it -- a re-created Collection of the same id starts with no metadata.
     return await rm(this.#collectionDir({ spaceId, collectionId }), {
       recursive: true,
       force: true
     })
+  }
+
+  /**
+   * Builds the per-Collection-metadata serialization key for `#writeMutex`
+   * (`cmeta:<spaceId>/<collectionId>`). A namespace of its own, disjoint from
+   * the `desc:` description lock: a metadata write and a description write touch
+   * different files and are versioned independently, so they must not block one
+   * another.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {string}
+   */
+  #collectionMetaLockKey({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): string {
+    return `cmeta:${spaceId}/${collectionId}`
+  }
+
+  /**
+   * Builds the on-disk path for a Collection's metadata sidecar
+   * (`.collectionmeta.<collectionId>.json`) in its own Collection dir.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {string}
+   */
+  #collectionMetaPath({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): string {
+    const filePath = path.join(
+      this.#collectionDir({ spaceId, collectionId }),
+      collectionMetaFileName(collectionId)
+    )
+    this.#assertContained(filePath)
+    return filePath
+  }
+
+  /**
+   * Reads a Collection's metadata sidecar. Resolves `undefined` when no metadata
+   * has been written for the Collection yet.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<CollectionMetaSidecar|undefined>}
+   */
+  async #readCollectionMetaSidecar({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<CollectionMetaSidecar | undefined> {
+    const metaStore = new MetadataJsonStore<CollectionMetaSidecar>({
+      file: this.#collectionMetaPath({ spaceId, collectionId })
+    })
+    return await metaStore.read()
+  }
+
+  /**
+   * Reads a Collection's Metadata object: the server-managed timestamps and the
+   * user-writable `custom` object from the sidecar, plus `createdBy` merged in
+   * from the stored Collection Description (where the creator is recorded; it is
+   * never duplicated into the sidecar). Resolves `undefined` when the Collection
+   * does not exist. A Collection with no metadata written yet resolves an object
+   * carrying only what is known -- and no `metaVersion`, so the request layer
+   * emits no `ETag`.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<(CollectionMetadata & { metaVersion?: number })
+   *   | undefined>}
+   */
+  async getCollectionMetadata({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<(CollectionMetadata & { metaVersion?: number }) | undefined> {
+    const collectionDescription = await this.getCollectionDescription({
+      spaceId,
+      collectionId
+    })
+    if (!collectionDescription) {
+      return undefined
+    }
+    const sidecar = await this.#readCollectionMetaSidecar({
+      spaceId,
+      collectionId
+    })
+    const hasCustom = sidecar?.custom && Object.keys(sidecar.custom).length > 0
+    return {
+      ...(sidecar?.createdAt !== undefined && { createdAt: sidecar.createdAt }),
+      ...(sidecar?.updatedAt !== undefined && { updatedAt: sidecar.updatedAt }),
+      // The creator lives on the description (server-managed, set on create);
+      // absent for a Collection written before `createdBy` was recorded.
+      ...(collectionDescription.createdBy !== undefined && {
+        createdBy: collectionDescription.createdBy
+      }),
+      // `custom` is returned verbatim -- `{ name, tags }` on a plaintext
+      // Collection, the opaque encryption envelope on an encrypted one.
+      ...(hasCustom && { custom: sidecar!.custom as ResourceMetadataCustom }),
+      // The client-declared key epoch (the `key-epochs` feature), when stamped.
+      ...(sidecar?.epoch !== undefined && { epoch: sidecar.epoch }),
+      ...(sidecar?.metaVersion !== undefined && {
+        metaVersion: sidecar.metaVersion
+      })
+    }
+  }
+
+  /**
+   * Replaces the user-writable `custom` object of a Collection's metadata
+   * sidecar (full replacement; `{}` clears it), bumping `updatedAt` and the
+   * monotonic `metaVersion` (the `/meta` ETag). Does not create a Collection:
+   * resolves `undefined` when it does not exist so the handler can 404. The
+   * Collection Description -- and therefore its `descriptionVersion` ETag and
+   * its `createdBy` -- is untouched.
+   *
+   * An omitted `epoch` CLEARS the stored stamp (unlike the Resource-level
+   * write, which preserves it): the stamp describes the `custom` envelope this
+   * write replaces wholesale, so carrying it forward would label the new
+   * envelope with the old envelope's epoch.
+   *
+   * Runs under the Collection's own metadata lock, so an `If-Match` /
+   * `If-None-Match` precondition (evaluated on `metaVersion`) is atomic with the
+   * write. A mismatch throws `PreconditionFailedError` (412).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.custom {ResourceMetadataCustom | Record<string, unknown>}
+   * @param [options.epoch] {string}   the key-epoch stamp; omitted clears it
+   * @param [options.ifMatch] {string}   `If-Match` on the current `metaVersion`
+   * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *` -- write only if
+   *   no metadata has been written yet (`metaVersion` unset)
+   * @returns {Promise<{ metaVersion: number } | undefined>}   the new
+   *   `metaVersion`, or `undefined` when the Collection does not exist
+   */
+  async writeCollectionMetadata({
+    spaceId,
+    collectionId,
+    custom,
+    epoch,
+    ifMatch,
+    ifNoneMatch
+  }: {
+    spaceId: string
+    collectionId: string
+    custom: ResourceMetadataCustom | Record<string, unknown>
+    epoch?: string
+    ifMatch?: string
+    ifNoneMatch?: boolean
+  }): Promise<{ metaVersion: number } | undefined> {
+    return this.#writeMutex.run(
+      this.#collectionMetaLockKey({ spaceId, collectionId }),
+      async () => {
+        const collectionDescription = await this.getCollectionDescription({
+          spaceId,
+          collectionId
+        })
+        if (!collectionDescription) {
+          return undefined
+        }
+        const prior = await this.#readCollectionMetaSidecar({
+          spaceId,
+          collectionId
+        })
+        // Evaluate the `/meta` precondition against the current `metaVersion`
+        // atomically under the lock, before writing.
+        assertCollectionMetaWritePrecondition({
+          collectionId,
+          metaVersion: prior?.metaVersion,
+          ifMatch,
+          ifNoneMatch
+        })
+
+        const now = new Date().toISOString()
+        const metaVersion = (prior?.metaVersion ?? 0) + 1
+        const hasCustom = Object.keys(custom).length > 0
+        await atomicWriteFile({
+          filePath: this.#collectionMetaPath({ spaceId, collectionId }),
+          data: JSON.stringify({
+            // `createdAt` is stamped by the first metadata write and preserved
+            // thereafter; `updatedAt` tracks this one.
+            createdAt: prior?.createdAt ?? now,
+            updatedAt: now,
+            metaVersion,
+            ...(hasCustom && { custom }),
+            ...(epoch !== undefined && { epoch })
+          } satisfies CollectionMetaSidecar)
+        })
+        return { metaVersion }
+      }
+    )
   }
 
   /**

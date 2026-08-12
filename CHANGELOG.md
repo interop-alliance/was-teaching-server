@@ -1,5 +1,34 @@
 # History
 
+## 0.21.0 - TBD
+
+### Added
+
+- **Collection Metadata at `GET`/`PUT /space/{spaceId}/{collectionId}/meta`**,
+  the Collection-level sibling of Resource Metadata. `GET` returns the
+  server-managed `createdAt` / `updatedAt` / `createdBy` (read from the
+  Collection Description), the opaque `epoch` stamp, and the user-writable
+  `custom` object, with the `metaVersion` ETag once metadata has been written;
+  authorization is capability-or-policy, so a `PublicCanRead` Collection may be
+  read anonymously, and a missing or unauthorized Collection is a `404`. `PUT`
+  fully replaces `custom` (`400 invalid-request-body` on a malformed one), is
+  capability-only, never creates (`404`), honors `If-Match` / `If-None-Match` on
+  the `metaVersion` (`412`), and returns `204` with the new ETag. On an
+  encrypted Collection `custom` is the opaque envelope, structurally validated
+  (`422 encryption-scheme-mismatch`). The Collection's `metaVersion` is
+  independent of its `descriptionVersion` and of every Resource's versions.
+  Collection Metadata travels in a Space export and is restored on import for a
+  newly-created Collection, on both backends.
+- `meta` is now a reserved Resource id (`409 reserved-id`): Collection Metadata
+  occupies the `{resource_id}` position.
+
+### Changed
+
+- Collection Metadata `epoch` semantics differ from the Resource-level rule: an
+  update that omits `epoch` CLEARS the stored stamp rather than preserving it,
+  because the stamp describes the `custom` envelope the write replaces
+  wholesale.
+
 ## 0.20.0 - 2026-08-12
 
 ### Added

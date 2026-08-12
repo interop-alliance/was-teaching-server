@@ -99,7 +99,14 @@ describe('assertValidId', () => {
     })
   }
 
-  const reservedResourceIds = ['backend', 'linkset', 'policy', 'query', 'quota']
+  const reservedResourceIds = [
+    'backend',
+    'linkset',
+    'meta',
+    'policy',
+    'query',
+    'quota'
+  ]
   for (const id of reservedResourceIds) {
     it(`rejects reserved resource id "${id}" with a typed 409`, () => {
       let thrown: any
@@ -123,6 +130,9 @@ describe('assertValidId', () => {
     // ...and collection-level-only segments are fine as collection ids.
     assert.doesNotThrow(() => assertValidId('backend', { kind: 'collection' }))
     assert.doesNotThrow(() => assertValidId('quota', { kind: 'collection' }))
+    // `meta` is reserved at the resource position (Collection Metadata sits
+    // there), but a Collection may still be named `meta`.
+    assert.doesNotThrow(() => assertValidId('meta', { kind: 'collection' }))
   })
 
   it('throws the error class matching the id kind', () => {

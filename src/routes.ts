@@ -267,6 +267,14 @@ export async function initCollectionRoutes(
   // Collection linkset (RFC9264 policy discovery)
   app.get('/space/:spaceId/:collectionId/linkset', CollectionRequest.linkset)
 
+  // Collection Metadata (reserved segment). Unlike the Resource-level `/meta`,
+  // this one sits at the `:resourceId` position, so `meta` is a reserved
+  // Resource id; static-beats-parametric routing keeps it ahead of the
+  // `:resourceId` parameter in Resource routes.
+  app.get('/space/:spaceId/:collectionId/meta', CollectionRequest.getMeta)
+  // Update Collection Metadata (full replacement of the user-writable `custom`).
+  app.put('/space/:spaceId/:collectionId/meta', CollectionRequest.putMeta)
+
   // Collection Backend Selected (reserved segment; static-beats-parametric
   // routing keeps this ahead of the `:resourceId` parameter in Resource routes).
   app.get('/space/:spaceId/:collectionId/backend', CollectionRequest.getBackend)
@@ -357,8 +365,9 @@ export async function initResourceRoutes(
 
   // Chunked Resource chunks (the `chunked-streams` feature). The member form
   // (`chunks/:chunkIndex`) addresses one stored chunk; the container form
-  // (`chunks/`) is the discovery/reassembly listing. Like `meta`, the `chunks`
-  // segment sits below the Resource level, so it needs no reserved-id entry.
+  // (`chunks/`) is the discovery/reassembly listing. The `chunks` segment sits
+  // below the Resource level, so it needs no reserved-id entry (`meta` does,
+  // because it is also addressed one level up, on a Collection).
 
   // Store a chunk by index
   app.put(

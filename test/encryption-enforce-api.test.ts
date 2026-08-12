@@ -273,6 +273,40 @@ describe('Encryption enforcement API', () => {
     assert.equal(response.status, 204)
   })
 
+  it('PUT the Collection /meta of an edv Collection rejects a plaintext custom (422)', async () => {
+    // Collection Metadata takes the same branch as Resource Metadata: on an
+    // encrypted Collection its `custom` IS the opaque envelope.
+    const err = await rejection(
+      alice.was.request({
+        path: `/space/${spaceId}/${edvCollection}/meta`,
+        method: 'PUT',
+        json: { custom: { name: 'labeled' } }
+      })
+    )
+    assert.equal(err.response.status, 422)
+    assert.match(err.data.type, /#encryption-scheme-mismatch/)
+  })
+
+  it('PUT the Collection /meta of an edv Collection accepts an envelope custom', async () => {
+    const put = await alice.was.request({
+      path: `/space/${spaceId}/${edvCollection}/meta`,
+      method: 'PUT',
+      json: { custom: envelope }
+    })
+    assert.equal(put.status, 204)
+    const metaEtag = put.headers.get('etag')
+    assert.ok(metaEtag, 'PUT the Collection /meta returns a metaVersion ETag')
+
+    // The envelope is returned verbatim (no plaintext name leaked).
+    const read = await alice.was.request({
+      path: `/space/${spaceId}/${edvCollection}/meta`,
+      method: 'GET'
+    })
+    assert.equal(read.status, 200)
+    assert.deepEqual(read.data.custom, envelope)
+    assert.equal(read.headers.get('etag'), metaEtag)
+  })
+
   it('scope: PUT .../policy on an edv Collection still accepts application/json', async () => {
     const response = await alice.was.request({
       path: `/space/${spaceId}/${edvCollection}/policy`,

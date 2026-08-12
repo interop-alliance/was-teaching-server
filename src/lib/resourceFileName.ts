@@ -192,6 +192,16 @@ export const POLICY_FILE_PREFIX = '.policy.'
 export const META_FILE_PREFIX = '.meta.'
 
 /**
+ * Prefix of a Collection metadata sidecar (`.collectionmeta.<collectionId>.json`).
+ * Deliberately NOT `.meta.<collectionId>.json`: a Collection's metadata sidecar
+ * lives in the same directory as the Resource sidecars of that Collection, where
+ * `.meta.<id>.json` already means "the Resource `<id>`'s metadata", so a shared
+ * prefix would make a Collection's own metadata indistinguishable from that of a
+ * Resource whose id happens to equal the Collection id.
+ */
+export const COLLECTION_META_FILE_PREFIX = '.collectionmeta.'
+
+/**
  * Builds the file name of a Space description document:
  * `.space.<spaceId>.json`.
  * @param spaceId {string}
@@ -236,4 +246,15 @@ export function policyFileName(entityId: string): string {
  */
 export function metaSidecarFileName(resourceId: string): string {
   return `${META_FILE_PREFIX}${resourceId}${JSON_FILE_SUFFIX}`
+}
+
+/**
+ * Builds the file name of a Collection's metadata sidecar:
+ * `.collectionmeta.<collectionId>.json`. A dot-file kept in the Collection dir
+ * alongside the Collection description it is versioned independently of.
+ * @param collectionId {string}
+ * @returns {string}
+ */
+export function collectionMetaFileName(collectionId: string): string {
+  return `${COLLECTION_META_FILE_PREFIX}${collectionId}${JSON_FILE_SUFFIX}`
 }

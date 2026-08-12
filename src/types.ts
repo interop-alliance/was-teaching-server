@@ -60,6 +60,7 @@ import type {
   CollectionResourcesList,
   ResourceMetadata,
   ResourceMetadataCustom,
+  CollectionMetadata,
   BackendDescriptor,
   BackendConnectionInput,
   BackendUsage,
@@ -115,6 +116,7 @@ export type {
   CollectionEncryptionRecipient,
   ResourceMetadata,
   ResourceMetadataCustom,
+  CollectionMetadata,
   BackendDescriptor,
   BackendConnectionPublic,
   BackendConnectionInput,
@@ -783,6 +785,52 @@ export interface StorageBackend {
      * `custom`. Unlike `custom` (full replacement), an OMITTED `epoch`
      * PRESERVES the stored value -- the stamp describes the content write, not
      * the metadata write -- while a supplied value replaces it. Stored opaquely.
+     */
+    epoch?: string
+    ifMatch?: string
+    ifNoneMatch?: boolean
+  }): Promise<{ metaVersion: number } | undefined>
+
+  /**
+   * Reads a Collection's Metadata object -- the Collection-level sibling of
+   * `getResourceMetadata`. Resolves `undefined` when the Collection does not
+   * exist; a Collection that exists but has never had metadata written resolves
+   * an object carrying only whatever server-managed members are known (its
+   * `createdBy`, read from the stored description), with no `metaVersion`.
+   *
+   * `metaVersion` is the out-of-band ETag validator (the handler strips it from
+   * the wire body), independent of the Collection's `descriptionVersion`.
+   */
+  getCollectionMetadata(options: {
+    spaceId: string
+    collectionId: string
+  }): Promise<(CollectionMetadata & { metaVersion?: number }) | undefined>
+  /**
+   * Replaces the user-writable `custom` object of a Collection's Metadata (full
+   * replacement; pass `{}` to clear). Resolves `undefined` when the Collection
+   * does not exist (this operation does not create one) so the handler can 404,
+   * else the Collection's new `metaVersion` -- bumped on each metadata write and
+   * independent of both `descriptionVersion` and every Resource's versions.
+   *
+   * On an encrypted Collection `custom` is the opaque encryption envelope (an
+   * arbitrary JSON object) rather than a `{ name, tags }` object; the backend
+   * stores it verbatim. When `ifMatch` / `ifNoneMatch` is supplied
+   * (`conditional-writes`), the write is gated on the current `metaVersion`
+   * atomically, rejecting a mismatch with `precondition-failed` (412).
+   *
+   * Unlike `writeResourceMetadata` there are no `uniqueIndexes`: an equality
+   * index indexes Resources, and a Collection is not one of its own items.
+   */
+  writeCollectionMetadata(options: {
+    spaceId: string
+    collectionId: string
+    custom: ResourceMetadataCustom | Record<string, unknown>
+    /**
+     * The client-declared key epoch (the `key-epochs` feature), a sibling of
+     * `custom`. Unlike the Resource-level stamp, an OMITTED `epoch` CLEARS the
+     * stored value: it describes the `custom` envelope this write replaces
+     * wholesale, so preserving it would mislabel the new envelope. Stored
+     * opaquely.
      */
     epoch?: string
     ifMatch?: string

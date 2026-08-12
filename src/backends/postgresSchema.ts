@@ -189,6 +189,28 @@ const MIGRATIONS: string[] = [
     expires       text COLLATE "C",
     PRIMARY KEY (keystore_id, delegator, capability_id)
   );
+  `,
+  // v2: Collection Metadata (the reserved 'meta' segment of a Collection) --
+  // the Collection-level sibling of the resource metadata columns. Kept on the
+  // 'collections' row rather than in its own table: it is exactly one optional
+  // metadata object per Collection, and it dies with the Collection.
+  // 'meta_version' is its monotonic ETag validator, NULL until the first
+  // metadata write and deliberately INDEPENDENT of 'description_version' (a
+  // description write never touches it, and vice versa). 'meta_custom' is the
+  // user-writable object (or the opaque encryption envelope on an encrypted
+  // Collection), 'meta_epoch' the client-declared key epoch the envelope was
+  // encrypted under (stored opaquely; NULL when unstamped -- and, unlike the
+  // resource path, cleared by a metadata write that omits it, since the write
+  // replaces the envelope the stamp describes). 'meta_created_at' /
+  // 'meta_updated_at' are the metadata object's own timestamps, COLLATE "C"
+  // like every other ISO-8601 column here.
+  `
+  ALTER TABLE collections
+    ADD COLUMN meta_version    integer,
+    ADD COLUMN meta_custom     jsonb,
+    ADD COLUMN meta_epoch      text,
+    ADD COLUMN meta_created_at text COLLATE "C",
+    ADD COLUMN meta_updated_at text COLLATE "C";
   `
 ]
 

@@ -439,6 +439,35 @@ writes via `src/lib/preconditions.ts` -- but no read path ever evaluates
 `Cache-Control` semantics in an editor's note, so keep the `no-store` marking
 minimal and revisit if the spec text firms up.
 
+### WAS-55: Collection-level metadata endpoints (`/space/{s}/{c}/meta`)
+
+- status: in-progress (server side completed)
+- priority: medium
+- labels: http-api, data-model, encryption
+- touches:
+  - wallet-attached-storage-spec -- normative text tracked as WASS-9 in that
+    repo's `_spec/ROADMAP.md`
+  - was-teaching-server -- routes, both backends, `metaVersion` validators,
+    server tests + conformance-suite coverage
+  - was-client -- consumer, tracked as WCL-8 in that repo's ROADMAP.md
+- acceptance:
+  - [x] `GET`/`PUT` `/space/{space_id}/{collection_id}/meta` mirroring the
+        Resource metadata operations: server-managed members plus user-writable
+        `custom`, full-replacement PUT
+  - [x] An independent `metaVersion` ETag with the same conditional-request
+        semantics as the Resource `/meta` one
+  - [x] The reserved-segment collision behavior for a Resource whose id is
+        `meta` matches the Resource-level rule
+  - [x] Filesystem + postgres backends, storage-backend contract tests, and
+        conformance-suite coverage (suite tests land in
+        `@interop/was-conformance-suite` 0.5.0, pending publish)
+
+The server half of WASS-9 (see that item for motivation and the rejected
+blind-derived-id alternative): was-client's WCL-1 persists the blinded-index
+schema in this envelope, and encrypted Collections gain client-encrypted
+name/tags. The Resource-level `/meta` machinery (validators, full-replacement
+semantics, encrypted-`custom` passthrough) is the template.
+
 ## Test coverage gaps (conformance suite + server `test/`)
 
 Produced by a 2026-07-22 coverage analysis: an inventory of the spec's 324

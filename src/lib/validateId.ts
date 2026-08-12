@@ -77,6 +77,10 @@ export const RESERVED_COLLECTION_IDS = new Set([
 export const RESERVED_RESOURCE_IDS = new Set([
   'backend',
   'linkset',
+  // Collection Metadata is addressed at `/space/{id}/{collectionId}/meta`,
+  // which occupies the `{resourceId}` position; the Resource-level `/meta`
+  // sits one level lower and shadows nothing.
+  'meta',
   'policy',
   'query',
   'quota'

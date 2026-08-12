@@ -1,9 +1,11 @@
 /**
- * The shape of a Resource's metadata sidecar (`.meta.<resourceId>.json`),
- * declared once for every consumer: the filesystem backend persists it on disk
- * verbatim, and the Postgres backend synthesizes the same document from its
- * rows on export (and reads it back on import), so archives stay interchangeable
- * between the two backends.
+ * The shapes of the metadata sidecars -- a Resource's
+ * (`.meta.<resourceId>.json`) and a Collection's
+ * (`.collectionmeta.<collectionId>.json`) -- declared once for every consumer:
+ * the filesystem backend persists them on disk verbatim, and the Postgres
+ * backend synthesizes the same documents from its rows on export (and reads
+ * them back on import), so archives stay interchangeable between the two
+ * backends.
  */
 import type { IDID, ResourceMetadataCustom } from '../types.js'
 
@@ -64,4 +66,36 @@ export interface MetaSidecar {
   epoch?: string
   deleted?: boolean
   contentType?: string
+}
+
+/**
+ * The on-disk shape of a Collection's metadata sidecar
+ * (`.collectionmeta.<collectionId>.json`, see `collectionMetaFileName`): the
+ * server-managed timestamps of the metadata object itself, the monotonic
+ * `metaVersion` backing its ETag, and the user-writable `custom` object.
+ *
+ * `createdAt` is stamped by the FIRST metadata write and `updatedAt` by the
+ * latest one; both describe the metadata object, not the Collection (the
+ * Collection's own creator is read from its description, where `createdBy`
+ * lives, and is never duplicated here).
+ *
+ * `metaVersion` starts at 1 on the first metadata write and increments on each
+ * subsequent one. It is independent of the Collection's `descriptionVersion`:
+ * a description write never bumps it, and a metadata write never bumps the
+ * description's.
+ *
+ * `custom` is `{ name, tags }` on a plaintext Collection and the opaque
+ * encryption envelope on an encrypted one, stored verbatim either way.
+ *
+ * `epoch` is the client-declared key epoch the `custom` envelope was encrypted
+ * under. Unlike the Resource sidecar's stamp -- which describes the content
+ * write and so survives a metadata-only write -- this one describes the
+ * envelope this very write replaces, so an update that omits it CLEARS it.
+ */
+export interface CollectionMetaSidecar {
+  createdAt: string
+  updatedAt: string
+  metaVersion: number
+  custom?: ResourceMetadataCustom | Record<string, unknown>
+  epoch?: string
 }

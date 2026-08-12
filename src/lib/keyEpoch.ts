@@ -56,12 +56,16 @@ export function parseKeyEpochHeader({
 }
 
 /**
- * Validates and extracts the OPTIONAL top-level `epoch` member of an Update
- * Resource Metadata (`PUT .../meta`) body. Unlike a content write, a metadata
- * write PRESERVES the stored epoch when the member is omitted (the stamp
- * describes the content write, not the metadata write); a present value must be
- * a non-empty string (400 otherwise). Returns `{ epoch: string }` when supplied,
- * or `{}` when the member is absent (preserve).
+ * Validates and extracts the OPTIONAL top-level `epoch` member of a Metadata
+ * update (`PUT .../meta`) body, at either level. A present value must be a
+ * non-empty string (400 otherwise); returns `{ epoch: string }` when supplied,
+ * or `{}` when the member is absent.
+ *
+ * What an absent member MEANS is the caller's to decide, and the two levels
+ * differ: an Update Resource Metadata write PRESERVES the stored stamp (it
+ * describes the content write, not the metadata write), while an Update
+ * Collection Metadata write CLEARS it (a Collection has no separate content --
+ * the stamp describes the `custom` envelope the write replaces wholesale).
  * @param options {object}
  * @param options.body {object}   the parsed request body (already known to be an object)
  * @param [options.requestName] {string}   request name for the 400 error title

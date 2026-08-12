@@ -19,6 +19,7 @@ import {
   resourcePath,
   policyPath,
   metaPath,
+  collectionMetaPath,
   backendsPath,
   quotasPath,
   linksetPath
@@ -108,6 +109,15 @@ describe('policyPath', () => {
     assert.equal(
       policyPath({ spaceId: 's1', collectionId: 'c1', resourceId: 'r1' }),
       '/space/s1/c1/r1/policy'
+    )
+  })
+})
+
+describe('collectionMetaPath', () => {
+  it('builds the collection metadata path', () => {
+    assert.equal(
+      collectionMetaPath({ spaceId: 's1', collectionId: 'c1' }),
+      '/space/s1/c1/meta'
     )
   })
 })

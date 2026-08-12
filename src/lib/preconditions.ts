@@ -1,8 +1,9 @@
 /**
  * Backend-agnostic conditional-write precondition evaluation (the
  * `conditional-writes` feature). Both storage backends evaluate `If-Match` /
- * `If-None-Match` against a Resource's current state through these two
- * helpers, so the 412 semantics cannot drift between them. Callers MUST invoke
+ * `If-None-Match` against the current state of a Resource, a Collection
+ * Description, or a Metadata object through these helpers, so the 412 semantics
+ * cannot drift between them. Callers MUST invoke
  * them atomically with the write that follows (under the filesystem backend's
  * per-Resource lock, or inside the Postgres backend's row-locking
  * transaction).
@@ -128,17 +129,83 @@ export function assertMetaWritePrecondition({
   ifMatch?: string
   ifNoneMatch?: boolean
 }): void {
+  assertMetaPrecondition({
+    subject: `Resource '${resourceId}'`,
+    metaVersion,
+    ifMatch,
+    ifNoneMatch
+  })
+}
+
+/**
+ * Evaluates a metadata-write (`/meta`) precondition against a **Collection's**
+ * current `metaVersion` -- the Collection-level sibling of
+ * {@link assertMetaWritePrecondition}, with identical 412 semantics. The
+ * Collection's metadata version is independent of its description version, so
+ * this never consults `descriptionVersion` (see
+ * {@link assertCollectionWritePrecondition} for that one).
+ * @param options {object}
+ * @param options.collectionId {string}   for the error detail
+ * @param [options.metaVersion] {number}   the current `metaVersion`
+ *   (`undefined` until the first metadata write)
+ * @param [options.ifMatch] {string}   a quoted ETag (`If-Match`)
+ * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *`
+ * @returns {void}
+ */
+export function assertCollectionMetaWritePrecondition({
+  collectionId,
+  metaVersion,
+  ifMatch,
+  ifNoneMatch
+}: {
+  collectionId: string
+  metaVersion?: number
+  ifMatch?: string
+  ifNoneMatch?: boolean
+}): void {
+  assertMetaPrecondition({
+    subject: `Collection '${collectionId}'`,
+    metaVersion,
+    ifMatch,
+    ifNoneMatch
+  })
+}
+
+/**
+ * The shared body of the two metadata-write precondition asserts, parameterized
+ * only by the phrase naming the subject in the 412 detail (`Resource '<id>'` /
+ * `Collection '<id>'`). `If-None-Match: *` means "only if no metadata has been
+ * written yet" (`metaVersion` unset); `If-Match` pins the current `metaVersion`
+ * ETag, with an unwritten metadata object comparing as version 0.
+ * @param options {object}
+ * @param options.subject {string}   the subject phrase for the error detail
+ * @param [options.metaVersion] {number}   the current `metaVersion`
+ * @param [options.ifMatch] {string}   a quoted ETag (`If-Match`)
+ * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *`
+ * @returns {void}
+ */
+function assertMetaPrecondition({
+  subject,
+  metaVersion,
+  ifMatch,
+  ifNoneMatch
+}: {
+  subject: string
+  metaVersion?: number
+  ifMatch?: string
+  ifNoneMatch?: boolean
+}): void {
   if (ifNoneMatch) {
     if (metaVersion !== undefined) {
       throw new PreconditionFailedError({
-        detail: `Resource '${resourceId}' metadata already exists (If-None-Match: *).`
+        detail: `${subject} metadata already exists (If-None-Match: *).`
       })
     }
   } else if (ifMatch !== undefined) {
     const currentEtag = formatEtag(metaVersion ?? 0)
     if (currentEtag !== ifMatch) {
       throw new PreconditionFailedError({
-        detail: `Resource '${resourceId}' metadata ETag ${currentEtag} does not match If-Match ${ifMatch}.`
+        detail: `${subject} metadata ETag ${currentEtag} does not match If-Match ${ifMatch}.`
       })
     }
   }

@@ -188,9 +188,28 @@ export function quotasPath({ spaceId }: { spaceId: string }): string {
 }
 
 /**
+ * `/space/:spaceId/:collectionId/meta` -- the Collection Metadata (reserved
+ * `meta` segment) path. It sits at the `:resourceId` position, so `meta` is a
+ * reserved Resource id (see `lib/validateId.ts`).
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @returns {string}
+ */
+export function collectionMetaPath({
+  spaceId,
+  collectionId
+}: {
+  spaceId: string
+  collectionId: string
+}): string {
+  return `${collectionPath({ spaceId, collectionId })}/meta`
+}
+
+/**
  * `/space/:spaceId/:collectionId/:resourceId/meta` -- the Resource Metadata
- * (reserved `meta` segment) path. Reserved only at the Resource level, so it
- * takes the full id triple.
+ * (reserved `meta` segment) path, one level below its Collection-level sibling
+ * {@link collectionMetaPath}, so it takes the full id triple.
  * @param options {object}
  * @param options.spaceId {string}
  * @param options.collectionId {string}
@@ -212,8 +231,10 @@ export function metaPath({
 /**
  * `/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex` -- a single
  * chunk of a chunked Resource (the `chunked-streams` feature). Chunks are
- * addressed under their parent Resource; like `meta`, the `chunks` segment
- * needs no reserved-id entry (it sits a level below any Resource route).
+ * addressed under their parent Resource, so the `chunks` segment needs no
+ * reserved-id entry (it sits a level below any Resource route) -- unlike
+ * `meta`, which is also addressed at the Collection level and so occupies the
+ * `:resourceId` position there.
  * @param options {object}
  * @param options.spaceId {string}
  * @param options.collectionId {string}

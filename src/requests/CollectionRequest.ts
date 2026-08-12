@@ -15,6 +15,7 @@ import {
 import { resolveResourceInput } from './resourceInput.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidIds } from '../lib/validateId.js'
+import { parseCustomMetadata } from '../lib/customMetadata.js'
 import type { CollectionDescription, StorageBackend } from '../types.js'
 import { parseBlindedIndexQueryBody } from '../lib/blindedIndex.js'
 import {
@@ -33,13 +34,14 @@ import {
 import {
   assertSupportedEncryption,
   assertEncryptionDescriptorTransition,
-  assertEncryptedWriteConforms
+  assertEncryptedWriteConforms,
+  assertEncryptedMetaConforms
 } from '../lib/encryption.js'
 import {
   assertValidGenerator,
   assertValidGeneratorOrigin
 } from '../lib/generator.js'
-import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
+import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
 import { parsePageParams } from '../lib/pagination.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
@@ -48,11 +50,13 @@ import {
   resourcePath,
   linksetPath,
   backendPath,
+  collectionMetaPath,
   quotaPath,
   queryPath
 } from '../lib/paths.js'
 import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
 import {
+  CollectionNotFoundError,
   InvalidCollectionError,
   InvalidRequestBodyError,
   UnsupportedOperationError,
@@ -61,7 +65,8 @@ import {
 } from '../errors.js'
 import type {
   CollectionIndexDeclaration,
-  NormalizedIndexDeclaration
+  NormalizedIndexDeclaration,
+  ResourceMetadataCustom
 } from '../types.js'
 
 /**
@@ -636,6 +641,208 @@ export class CollectionRequest {
       collectionDescription
     })
     return reply.status(200).type('application/json').send(backend)
+  }
+
+  /**
+   * GET /space/:spaceId/:collectionId/meta
+   * Request handler for "Read Collection Metadata": the Collection-level
+   * sibling of Read Resource Metadata. Returns the OPTIONAL server-managed
+   * `createdAt` / `updatedAt` timestamps, the read-only `createdBy` (from the
+   * stored Collection Description), the opaque `epoch` stamp, and the
+   * user-writable `custom` object (omitted when empty). There is no
+   * `contentType` / `size`: a Collection is a container, with no stored
+   * representation to describe.
+   *
+   * Before any metadata has been written this still returns 200 -- carrying
+   * whatever server-managed members are known -- and no `ETag`, since the
+   * `metaVersion` validator only exists once a metadata write has happened.
+   *
+   * Authorization is capability-or-policy, the same as Get Collection: Metadata
+   * reveals nothing the Collection Description does not, so a public-readable
+   * Collection may also read its Metadata.
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async getMeta(
+    request: FastifyRequest<{
+      Params: { spaceId: string; collectionId: string }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId, collectionId }
+    } = request
+    const { storage } = request.server
+    const requestName = 'Get Collection Metadata'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId, collectionId }, { requestName })
+
+    // Authorize (capability-or-policy): the capability's `invocationTarget` is
+    // the full `/meta` URL (matching the request URL), and the policy level
+    // resolves at the Collection as for Get Collection.
+    await fetchSpaceAndAuthorize({
+      request,
+      spaceId,
+      collectionId,
+      targetPath: collectionMetaPath({ spaceId, collectionId }),
+      requestName
+    })
+
+    // authorized, continue
+
+    // Collection Metadata is control-plane state, stored beside the Collection
+    // Description rather than in the Collection's selected data-plane backend.
+    let metadata
+    try {
+      metadata = await storage.getCollectionMetadata({ spaceId, collectionId })
+    } catch (err) {
+      rethrowOrWrapStorageError({ err, requestName })
+    }
+    // Metadata cannot exist apart from its Collection: an absent Collection is
+    // a 404, conflated with an unauthorized read exactly as Get Collection is.
+    if (!metadata) {
+      throw new CollectionNotFoundError({ requestName })
+    }
+
+    // `metaVersion` is the out-of-band ETag validator, not part of the
+    // Collection Metadata wire body, so strip it before serializing and surface
+    // it as the `ETag` header. It is present only once metadata has been
+    // written, and is independent of the Collection Description's ETag
+    // (`descriptionVersion`), so a metadata edit never disturbs that one.
+    const { metaVersion, ...metadataBody } = metadata
+    const metaReply = reply.status(200).type('application/json')
+    if (metaVersion !== undefined) {
+      metaReply.header('etag', formatEtag(metaVersion))
+    }
+    return metaReply.send(JSON.stringify(metadataBody))
+  }
+
+  /**
+   * PUT /space/:spaceId/:collectionId/meta
+   * Request handler for "Update Collection Metadata". A full replacement of the
+   * Metadata object's user-writable `custom` object (any property omitted is
+   * cleared; a body with no `custom` clears them all). Server-managed properties
+   * are untouched, and any top-level property other than `custom` / `epoch` in
+   * the body is ignored (so a client may GET-modify-PUT the whole object). Does
+   * NOT create: a `PUT` to the `/meta` of a nonexistent Collection is a 404.
+   * Authorization is capability-only (the `PUT` action), the same as Put
+   * Collection. Returns 204.
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async putMeta(
+    request: FastifyRequest<{
+      Params: { spaceId: string; collectionId: string }
+      Body: unknown
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId, collectionId }
+    } = request
+    const { storage } = request.server
+    const requestName = 'Update Collection Metadata'
+
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId, collectionId }, { requestName })
+
+    // Pre-auth body shape (400): the body MUST be a JSON object. The deeper
+    // `custom` shape check is deferred until after authorization, where the
+    // Collection's `encryption` descriptor decides whether `custom` is a
+    // plaintext `{ name, tags }` (validated by `parseCustomMetadata`) or an
+    // opaque envelope (validated structurally by `assertEncryptedMetaConforms`)
+    // -- neither is knowable before reading the Collection Description, and
+    // gating the check on auth keeps a 422/400 observable only to a caller
+    // authorized to write here.
+    if (
+      typeof request.body !== 'object' ||
+      request.body === null ||
+      Array.isArray(request.body)
+    ) {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail: 'Request body must be a JSON object.'
+      })
+    }
+
+    // Verify (capability-only): writing metadata requires a valid capability
+    // invocation (the `PUT` action); no access-control-policy fallback.
+    await fetchSpaceAndVerify({
+      request,
+      spaceId,
+      targetPath: collectionMetaPath({ spaceId, collectionId }),
+      requestName
+    })
+
+    // zCap checks out, continue
+
+    // Fetch collection by id (404 when absent -- this operation does not create)
+    const collectionDescription = await getCollectionOrThrow({
+      storage,
+      spaceId,
+      collectionId,
+      requestName
+    })
+
+    // Branch on the Collection's encryption descriptor. On an encrypted
+    // Collection the `custom` value MUST be a conforming envelope of the scheme
+    // (stored opaquely, `422` on a plaintext/malformed value); on a plaintext
+    // Collection it MUST be a well-formed `{ name, tags }` object (`400`).
+    let custom: ResourceMetadataCustom | Record<string, unknown>
+    if (collectionDescription.encryption?.scheme !== undefined) {
+      const rawCustom = (request.body as Record<string, unknown>).custom
+      assertEncryptedMetaConforms({ collectionDescription, custom: rawCustom })
+      custom = rawCustom as Record<string, unknown>
+    } else {
+      custom = parseCustomMetadata({ body: request.body, requestName })
+    }
+
+    // The key-epoch stamp (the `key-epochs` feature) MAY also be declared as a
+    // top-level `epoch` member (a sibling of `custom`); a present value must be
+    // a non-empty string (400). An OMITTED `epoch` CLEARS the stored stamp here
+    // -- the opposite of the Resource-level rule, deliberately. At the Resource
+    // level the stamp describes the CONTENT write, which a metadata write does
+    // not touch, so it survives. A Collection has no separate content: this PUT
+    // replaces the whole `custom` envelope, so carrying the previous stamp
+    // forward would label the new envelope with the epoch of the old one.
+    const { epoch } = parseMetaEpoch({
+      body: request.body as Record<string, unknown>,
+      requestName
+    })
+
+    // An `If-Match` / `If-None-Match` precondition (the `conditional-writes`
+    // feature) is evaluated on the Collection's `metaVersion` atomically with
+    // the write; a mismatch surfaces as 412 `precondition-failed` (rethrown
+    // unchanged).
+    let written
+    try {
+      written = await storage.writeCollectionMetadata({
+        spaceId,
+        collectionId,
+        custom,
+        epoch,
+        ...parseWritePreconditions(request.headers)
+      })
+    } catch (err) {
+      rethrowOrWrapStorageError({ err, requestName })
+    }
+    // The Collection was read above, so this only loses a race with a
+    // concurrent Delete Collection -- still a 404, never a create.
+    if (!written) {
+      throw new CollectionNotFoundError({ requestName })
+    }
+
+    // Return the new `/meta` ETag (`metaVersion`) so a client can chain a
+    // subsequent conditional metadata write.
+    return reply
+      .status(204)
+      .header('etag', formatEtag(written.metaVersion))
+      .send()
   }
 
   /**

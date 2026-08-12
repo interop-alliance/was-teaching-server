@@ -11,7 +11,8 @@ import {
   policyFileName,
   JSON_FILE_SUFFIX,
   POLICY_FILE_PREFIX,
-  META_FILE_PREFIX
+  META_FILE_PREFIX,
+  COLLECTION_META_FILE_PREFIX
 } from './resourceFileName.js'
 import { assertEncryptedWriteConforms } from './encryption.js'
 import { InvalidImportError } from '../errors.js'
@@ -55,6 +56,17 @@ function policyFileId(fileName: string): string | undefined {
  */
 export function metaSidecarFileId(fileName: string): string | undefined {
   return dotFileId(fileName, META_FILE_PREFIX)
+}
+
+/**
+ * If `fileName` is a Collection metadata sidecar
+ * (`.collectionmeta.<collectionId>.json`), returns the `<collectionId>` it is
+ * keyed by; otherwise undefined.
+ * @param fileName {string}
+ * @returns {string | undefined}
+ */
+export function collectionMetaFileId(fileName: string): string | undefined {
+  return dotFileId(fileName, COLLECTION_META_FILE_PREFIX)
 }
 
 /**
@@ -189,6 +201,12 @@ export interface ImportPlanCollection {
   resourcePolicies: Map<string, PolicyDocument>
   /** Resource metadata sidecars (raw `.meta.<id>.json` bytes), keyed by resourceId. */
   resourceMetadata: Map<string, Buffer>
+  /**
+   * The Collection's own metadata sidecar (raw `.collectionmeta.<id>.json`
+   * bytes), when the archive carries one. Travels with a newly-created
+   * Collection, like its description and policy.
+   */
+  collectionMetadata?: Buffer
   /** Chunk files of chunked Resources in this Collection, carried verbatim. */
   chunkFiles: ImportPlanChunkFile[]
 }
@@ -296,6 +314,8 @@ export function validateManifest(entries: Map<string, TarEntry>): void {
  * - space/<sourceSpaceId>/.policy.<sourceSpaceId>.json (space-level policy)
  * - space/<sourceSpaceId>/<collectionId>/
  * - space/<sourceSpaceId>/<collectionId>/.collection.<collectionId>.json
+ * - space/<sourceSpaceId>/<collectionId>/.collectionmeta.<collectionId>.json
+ *   (collection metadata)
  * - space/<sourceSpaceId>/<collectionId>/.policy.<collectionId>.json (collection policy)
  * - space/<sourceSpaceId>/<collectionId>/.policy.<resourceId>.json (resource policy)
  * - space/<sourceSpaceId>/<collectionId>/r.<resourceId>.<encodedContentType>.<ext>
@@ -362,6 +382,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     const collectionPrefix = `${prefix}${collectionId}/`
     const resources: ImportPlanResource[] = []
     let collectionPolicy: PolicyDocument | undefined
+    let collectionMetadata: Buffer | undefined
     const resourcePolicies = new Map<string, PolicyDocument>()
     const resourceMetadata = new Map<string, Buffer>()
     const chunkFiles: ImportPlanChunkFile[] = []
@@ -428,6 +449,19 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
         continue
       }
 
+      // The Collection's own metadata sidecar
+      // (`.collectionmeta.<collectionId>.json`): carried as raw bytes. Checked
+      // before the Resource sidecar branch below, though the two prefixes are
+      // disjoint by construction. A sidecar keyed by any other id is a stray
+      // file and is dropped.
+      const collectionMetaId = collectionMetaFileId(fileName)
+      if (collectionMetaId !== undefined) {
+        if (collectionMetaId === collectionId) {
+          collectionMetadata = entry.body
+        }
+        continue
+      }
+
       // Metadata sidecar (`.meta.<resourceId>.json`): carried as raw bytes,
       // keyed by resourceId. Written alongside a newly-created resource
       // (preserving its timestamps and user-writable `custom`), or -- for a
@@ -473,6 +507,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       collectionId,
       collectionDescription,
       collectionPolicy,
+      ...(collectionMetadata !== undefined && { collectionMetadata }),
       resources,
       resourcePolicies,
       resourceMetadata,

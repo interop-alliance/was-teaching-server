@@ -54,9 +54,10 @@ import {
   spaceDescriptionFileName,
   collectionDescriptionFileName,
   policyFileName,
-  metaSidecarFileName
+  metaSidecarFileName,
+  collectionMetaFileName
 } from '../lib/resourceFileName.js'
-import type { MetaSidecar } from '../lib/metaSidecar.js'
+import type { MetaSidecar, CollectionMetaSidecar } from '../lib/metaSidecar.js'
 import {
   sanitizeBackendRecord,
   serverBackendDescriptor
@@ -110,7 +111,8 @@ import {
 import {
   assertWritePrecondition,
   assertMetaWritePrecondition,
-  assertCollectionWritePrecondition
+  assertCollectionWritePrecondition,
+  assertCollectionMetaWritePrecondition
 } from '../lib/preconditions.js'
 import type {
   SpaceDescription,
@@ -123,6 +125,7 @@ import type {
   ChunkListing,
   ResourceMetadata,
   ResourceMetadataCustom,
+  CollectionMetadata,
   ResourceInput,
   ImportStats,
   PolicyDocument,
@@ -1142,6 +1145,144 @@ export class PostgresBackend implements StorageBackend {
     // the `ETag` header from it); it is stored in its own column, never the
     // wire body.
     return { ...row.description, descriptionVersion: row.description_version }
+  }
+
+  /**
+   * Reads a Collection's Metadata object from its `meta_*` columns, merging in
+   * `createdBy` from the stored description (where the creator lives; it is
+   * never duplicated onto the metadata columns). Resolves `undefined` when the
+   * Collection does not exist -- a placeholder (NULL-description) row counts as
+   * absent, exactly as `getCollectionDescription` treats it. `metaVersion` is
+   * spread only when non-NULL, so a Collection with no metadata written yet
+   * yields no ETag.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<(CollectionMetadata & { metaVersion?: number })
+   *   | undefined>}
+   */
+  async getCollectionMetadata({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<(CollectionMetadata & { metaVersion?: number }) | undefined> {
+    const { rows } = await this.#pool.query<{
+      description: CollectionDescription | null
+      meta_version: number | null
+      meta_custom: Record<string, unknown> | null
+      meta_epoch: string | null
+      meta_created_at: string | null
+      meta_updated_at: string | null
+    }>(
+      `SELECT description, meta_version, meta_custom, meta_epoch,
+              meta_created_at, meta_updated_at
+         FROM collections
+        WHERE space_id = $1 AND collection_id = $2`,
+      [spaceId, collectionId]
+    )
+    const row = rows[0]
+    if (!row?.description) {
+      return undefined
+    }
+    const hasCustom =
+      row.meta_custom !== null && Object.keys(row.meta_custom).length > 0
+    return {
+      ...(row.meta_created_at !== null && { createdAt: row.meta_created_at }),
+      ...(row.meta_updated_at !== null && { updatedAt: row.meta_updated_at }),
+      // Absent for a Collection created before `createdBy` was recorded.
+      ...(row.description.createdBy !== undefined && {
+        createdBy: row.description.createdBy
+      }),
+      ...(hasCustom && { custom: row.meta_custom as ResourceMetadataCustom }),
+      ...(row.meta_epoch !== null && { epoch: row.meta_epoch }),
+      ...(row.meta_version !== null && { metaVersion: row.meta_version })
+    }
+  }
+
+  /**
+   * Replaces the user-writable `custom` object of a Collection's Metadata (full
+   * replacement; `{}` clears), bumping `updatedAt` and the monotonic
+   * `metaVersion` -- one row-locked transaction, preconditions evaluated on the
+   * current `metaVersion` via the shared helper. Resolves `undefined` (no
+   * create) for an absent Collection or a placeholder (NULL-description) row.
+   * The `description` and `description_version` columns are untouched, so the
+   * two ETags stay independent.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.custom {ResourceMetadataCustom | Record<string, unknown>}
+   * @param [options.epoch] {string}   the key-epoch stamp; omitted clears it
+   * @param [options.ifMatch] {string}
+   * @param [options.ifNoneMatch] {boolean}
+   * @returns {Promise<{ metaVersion: number } | undefined>}
+   */
+  async writeCollectionMetadata({
+    spaceId,
+    collectionId,
+    custom,
+    epoch,
+    ifMatch,
+    ifNoneMatch
+  }: {
+    spaceId: string
+    collectionId: string
+    custom: ResourceMetadataCustom | Record<string, unknown>
+    epoch?: string
+    ifMatch?: string
+    ifNoneMatch?: boolean
+  }): Promise<{ metaVersion: number } | undefined> {
+    return this.#withTransaction(async client => {
+      const { rows } = await client.query<{
+        description: CollectionDescription | null
+        meta_version: number | null
+        meta_created_at: string | null
+      }>(
+        `SELECT description, meta_version, meta_created_at FROM collections
+          WHERE space_id = $1 AND collection_id = $2
+          FOR UPDATE`,
+        [spaceId, collectionId]
+      )
+      const prior = rows[0]
+      // A missing row and a placeholder (NULL-description) row are both "no
+      // Collection here", so neither gets metadata written to it.
+      if (!prior?.description) {
+        return undefined
+      }
+      assertCollectionMetaWritePrecondition({
+        collectionId,
+        metaVersion: prior.meta_version ?? undefined,
+        ifMatch,
+        ifNoneMatch
+      })
+      const metaVersion = (prior.meta_version ?? 0) + 1
+      const hasCustom = Object.keys(custom).length > 0
+      const now = new Date().toISOString()
+      // `meta_epoch = $6` assigns the parameter DIRECTLY -- deliberately not
+      // the `COALESCE($n, epoch)` preserve pattern the resource path uses -- so
+      // an omitted stamp clears it. The stamp describes the `custom` envelope
+      // this write replaces wholesale; preserving it would label the new
+      // envelope with the old one's epoch.
+      await client.query(
+        `UPDATE collections SET
+           meta_version    = $3,
+           meta_custom     = $4::jsonb,
+           meta_epoch      = $6,
+           meta_created_at = COALESCE(meta_created_at, $5),
+           meta_updated_at = $5
+         WHERE space_id = $1 AND collection_id = $2`,
+        [
+          spaceId,
+          collectionId,
+          metaVersion,
+          hasCustom ? JSON.stringify(custom) : null,
+          now,
+          epoch ?? null
+        ]
+      )
+      return { metaVersion }
+    })
   }
 
   /**
@@ -3230,9 +3371,15 @@ export class PostgresBackend implements StorageBackend {
         collection_id: string
         description: CollectionDescription | null
         description_version: number
+        meta_version: number | null
+        meta_custom: Record<string, unknown> | null
+        meta_epoch: string | null
+        meta_created_at: string | null
+        meta_updated_at: string | null
       }>(
-        `SELECT collection_id, description, description_version FROM collections
-            WHERE space_id = $1`,
+        `SELECT collection_id, description, description_version, meta_version,
+                meta_custom, meta_epoch, meta_created_at, meta_updated_at
+           FROM collections WHERE space_id = $1`,
         [spaceId]
       ),
       // Metadata only -- content bytes are fetched one resource at a time
@@ -3325,6 +3472,25 @@ export class PostgresBackend implements StorageBackend {
               ...row.description,
               _version: row.description_version
             })
+          )
+        })
+      }
+      // The Collection's metadata sidecar, synthesized from the `meta_*`
+      // columns in the filesystem backend's on-disk shape (only once metadata
+      // has actually been written, which `meta_version` marks). `createdBy` is
+      // NOT carried here: it lives on the archived description, which is where
+      // both backends read it back from.
+      if (row.meta_version !== null) {
+        files.push({
+          name: collectionMetaFileName(row.collection_id),
+          bytes: Buffer.from(
+            JSON.stringify({
+              createdAt: row.meta_created_at ?? '',
+              updatedAt: row.meta_updated_at ?? '',
+              metaVersion: row.meta_version,
+              ...(row.meta_custom !== null && { custom: row.meta_custom }),
+              ...(row.meta_epoch !== null && { epoch: row.meta_epoch })
+            } satisfies CollectionMetaSidecar)
           )
         })
       }
@@ -3644,6 +3810,7 @@ export class PostgresBackend implements StorageBackend {
         collectionId,
         collectionDescription,
         collectionPolicy,
+        collectionMetadata,
         resources,
         resourcePolicies,
         resourceMetadata
@@ -3682,6 +3849,18 @@ export class PostgresBackend implements StorageBackend {
             collectionRowCount++
           }
           descriptionsById.set(collectionId, collectionDescription)
+          // The Collection's own metadata sidecar travels with a newly-created
+          // Collection, restored into the `meta_*` columns; for an existing
+          // (skipped) Collection its metadata is left untouched, exactly as its
+          // description and policy are.
+          if (collectionMetadata) {
+            await this.#applyImportedCollectionMetadata({
+              client,
+              spaceId,
+              collectionId,
+              metadataBytes: collectionMetadata
+            })
+          }
           stats.collectionsCreated++
         }
 
@@ -3894,6 +4073,60 @@ export class PostgresBackend implements StorageBackend {
 
       return stats
     })
+  }
+
+  /**
+   * Restores an archived Collection metadata sidecar into the Collection row's
+   * `meta_*` columns, for the import apply loop. A sidecar that is not parseable
+   * JSON is skipped rather than failing the import, matching how the filesystem
+   * backend tolerates a malformed archived sidecar. The Collection row was just
+   * created by the caller, so this is always an update of NULL columns.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.metadataBytes {Buffer}   the raw sidecar bytes
+   * @returns {Promise<void>}
+   */
+  async #applyImportedCollectionMetadata({
+    client,
+    spaceId,
+    collectionId,
+    metadataBytes
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId: string
+    metadataBytes: Buffer
+  }): Promise<void> {
+    let sidecar: CollectionMetaSidecar | undefined
+    try {
+      sidecar = JSON.parse(metadataBytes.toString('utf8'))
+    } catch {
+      return
+    }
+    if (!sidecar?.metaVersion) {
+      return
+    }
+    const now = new Date().toISOString()
+    await client.query(
+      `UPDATE collections SET
+         meta_version    = $3,
+         meta_custom     = $4::jsonb,
+         meta_epoch      = $5,
+         meta_created_at = $6,
+         meta_updated_at = $7
+       WHERE space_id = $1 AND collection_id = $2`,
+      [
+        spaceId,
+        collectionId,
+        sidecar.metaVersion,
+        sidecar.custom !== undefined ? JSON.stringify(sidecar.custom) : null,
+        sidecar.epoch ?? null,
+        sidecar.createdAt || now,
+        sidecar.updatedAt || now
+      ]
+    )
   }
 
   /**
