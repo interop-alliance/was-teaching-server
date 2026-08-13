@@ -146,3 +146,39 @@ blind-derived-id alternative): was-client's WCL-1 persists the blinded-index
 schema in this envelope, and encrypted Collections gain client-encrypted
 name/tags. The Resource-level `/meta` machinery (validators, full-replacement
 semantics, encrypted-`custom` passthrough) is the template.
+
+### WAS-56: Codec-path blinded-index conformance coverage + Reverse-gap cross-link
+
+- status: done
+- done: 2026-08-12
+- priority: medium
+- labels: tests, conformance-suite, encryption, query
+- touches:
+  - "@interop/was-conformance-suite" -- the `blinded-index-api` suite gains the
+    codec-path cases (suite-side items are tracked here per convention, like
+    WAS-38) (done; three codec-path tests land in 0.6.0, pending publish)
+  - was-teaching-server ROADMAP.md -- the Reverse gaps section gains the
+    blinded-index cross-link (second acceptance box) (done 2026-08-12)
+- acceptance:
+  - [x] The conformance suite exercises blinded-index queries against
+        envelopes produced by the was-client codec path
+        (`createEdvEncryption` + `Collection.declareIndex()` / `find()`):
+        codec-written `indexed` entries match on the server and `find()`
+        round-trips, including a `unique` conflict case. Today the
+        `blinded-index-api` suite seeds documents by direct PUT of hand-built
+        envelopes only, so nothing proves the two writers produce
+        server-matchable tokens for the same content. (2026-08-12: `codec path`
+        group in `blinded-index-api` -- equals round-trip, has + count, unique
+        409 conflict -- 183/183 conformant against this server)
+  - [x] The Reverse gaps section cross-links the blinded-index envelope and
+        descriptor semantics the server already serves (the `hmac` member,
+        `indexed` entries, persisted index schema) to their spec home, ECS-2
+        in the encrypted-collections spec roadmap -- the WAS spec's Query
+        Profile Registry covers only the `/query` wire shape. (2026-08-12)
+
+Follow-on from was-client WCL-1 (codec-path content search, client side
+shipped in was-client 0.35.x): the server's `blinded-index-query` matches
+`indexed` entries regardless of who wrote them, but conformance coverage
+never writes through the codec path, and the spec-side envelope semantics
+live in the encrypted-collections spec, which this ROADMAP's Reverse gaps
+section does not yet point at.

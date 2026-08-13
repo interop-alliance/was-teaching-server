@@ -492,10 +492,6 @@ against _no_ backend at all, since the filesystem harness sets both flags false
 
 `src/start.ts` currently has zero test coverage.
 
----
-
-## Upstream Issues to Open
-
 Two upstream issues at Digital Bazaar describing the AEAD gaps the `@interop`
 forks of `minimal-cipher` and `edv-client` fixed on 2026-07-20 (extra
 authenticated protected-header params, per-chunk stream AAD, authenticated
@@ -903,6 +899,14 @@ Collections) vs the implementers guide -- is recorded in freewallet's
 `_spec/additional-spec-roadmap.md`; its FW-60 triage table (freewallet's
 `_spec/fw-60-triage-table.md`, 2026-07-31) is the superset work queue the items
 below are mapped into.
+
+One encryption gap lives in a companion roadmap rather than as an item below:
+the blinded-index envelope and descriptor semantics the server already serves
+(the `hmac` descriptor member, the `indexed` entries the `blinded-index-query`
+feature matches, the persisted index schema) are Encrypted Collections
+territory, tracked as ECS-2 in the encrypted-collections spec roadmap
+(`encrypted-collections-spec/_spec/ROADMAP.md`). The WAS spec's Query Profile
+Registry covers only the `/query` wire shape.
 
 ### WAS-26: Spec the Import operation
 
