@@ -110,7 +110,12 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   proposed controller must resolve _before_ it is stored, or the Space would be
   deadlocked. Key validity is the **current-key-set rule**: an invocation or
   delegation verifies iff its verification method is in the currently resolved
-  document, under the right verification relationship.
+  document, under the right verification relationship. Path-hosting is not
+  endorsement: a resolvable log under some Space's path proves only that
+  something wrote it there. A DID is self-certified by its own SCID and log,
+  and acquires authority only by being referenced -- as a Space's stored
+  controller, or by a capability delegated to it -- never by where its log
+  happens to live.
 
 **Trailing slashes:** the spec assigns distinct meaning to `.../` vs `...`. By
 convention, "create/update by id" (`PUT`) uses the no-trailing-slash form, while
