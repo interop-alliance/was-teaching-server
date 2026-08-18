@@ -1,6 +1,6 @@
 # History
 
-## 0.21.1 - TBD
+## 0.21.1 - 2026-08-18
 
 ### Changed
 - Update to latest `@interop/data-integrity-core@8.7.1`.
