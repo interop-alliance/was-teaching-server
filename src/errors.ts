@@ -685,9 +685,9 @@ export class InvalidControllerError extends ProblemError {
  * been deactivated.
  *
  * Refused before the promotion is stored, because after it both Update Space
- * and writes to the log's `id` collection are authorized by the very controller
- * being named -- so storing an unresolvable one would deadlock the Space with
- * no break-glass.
+ * and writes to the Collection holding the log are authorized by the very
+ * controller being named -- so storing an unresolvable one would deadlock the
+ * Space with no break-glass.
  *
  * @param options {object}
  * @param options.did {string}   the proposed controller DID

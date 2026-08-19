@@ -20,6 +20,11 @@ import {
 } from '../lib/pagination.js'
 import { assertValidController } from '../lib/validateDid.js'
 import {
+  assertValidSpaceType,
+  defaultSpaceType,
+  isAuxiliarySpace
+} from '../lib/spaceType.js'
+import {
   SpaceControllerMismatchError,
   InvalidRequestBodyError,
   IdConflictError
@@ -42,6 +47,10 @@ export class SpacesRepositoryRequest {
    * the controller, so those candidates are filtered before any signature
    * work; a delegated invocation reveals the Spaces of whichever controller
    * roots its capability chain.
+   *
+   * Spaces typed `AuxiliarySpace` are omitted: they hold bookkeeping rather
+   * than user data, and a wallet finds them through the account document's
+   * service entry instead. `totalItems` therefore counts listed Spaces only.
    *
    * OPTIONALLY cursor-paginated (spec "Pagination"): pagination happens here in
    * the handler, not the backend, because the page is a page of AUTHORIZED
@@ -123,6 +132,13 @@ export class SpacesRepositoryRequest {
     let hasMore = false
     for (let index = startIndex; index < spaces.length; index++) {
       const space = spaces[index]!
+      // Auxiliary Spaces hold bookkeeping rather than user data, so they are
+      // not part of this listing. Skipped before any verification work: a
+      // wallet reaches its auxiliary Space through the account document's
+      // service entry, so there is no opt-in listing parameter to honor.
+      if (isAuxiliarySpace(space)) {
+        continue
+      }
       const { controller } = space
       if (rootInvocation && controller !== zcapSigningDid) {
         continue // a bare-root invocation cannot verify for another controller
@@ -203,7 +219,12 @@ export class SpacesRepositoryRequest {
    */
   static async post(
     request: FastifyRequest<{
-      Body: { id?: string; name?: string; controller: IDID }
+      Body: {
+        id?: string
+        name?: string
+        type?: unknown
+        controller: IDID
+      }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
@@ -221,6 +242,11 @@ export class SpacesRepositoryRequest {
     }
     // Reject a malformed / non-`did:key` controller before it is stored.
     assertValidController(body.controller, { requestName: 'Create Space' })
+    // The OPTIONAL `type` array subtypes `Space` (e.g. an auxiliary Space).
+    // Settable here only: it is immutable once the Space exists.
+    const type =
+      assertValidSpaceType(body.type, { requestName: 'Create Space' }) ??
+      defaultSpaceType()
     // Reject a path-traversal / non-URL-safe client-supplied space id.
     if (body.id !== undefined) {
       assertValidId(body.id, { kind: 'space', requestName: 'Create Space' })
@@ -234,7 +260,9 @@ export class SpacesRepositoryRequest {
     }
 
     const spaceId = body.id || uuidv4()
-    const spaceDescription = { ...body, id: spaceId, type: ['Space'] }
+    // The server-decided members are applied after the body, so the validated
+    // `type` wins over whatever shape the body carried under that name.
+    const spaceDescription = { ...body, id: spaceId, type }
 
     // The invocation must be *authorized by* the body's controller (spec:
     // Create Space): signed directly by it, or via a delegation chain rooted

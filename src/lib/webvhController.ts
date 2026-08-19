@@ -1,27 +1,37 @@
 /**
  * Local resolution of a self-hosted `did:webvh` Space controller.
  *
- * A controller of the form `did:webvh:<scid>:<host>:space:<spaceId>:id`
- * publishes its history log as `did.jsonl` in the `id` collection of the named
- * Space on *this* server, so the log is read straight out of storage -- never
- * fetched over the network. There is therefore no liveness, SSRF, or bootstrap
- * surface (the `id` collection is world-readable, so the read needs no
- * authorization).
+ * A controller of the form
+ * `did:webvh:<scid>:<host>:space:<spaceId>:<collectionId>` publishes its
+ * history log as `did.jsonl` in that Collection of that Space on *this* server,
+ * so the log is read straight out of storage -- never fetched over the network.
+ * There is therefore no liveness, SSRF, or bootstrap surface. The read is the
+ * server reading its own storage, so it happens regardless of the Collection's
+ * read policy: a capability-gated (non-public) Collection's DID still resolves
+ * for authorization while staying unreadable to anyone without a capability.
  *
- * The log is **verified, not trusted**: writes to that collection are
+ * The log's Space need not be the Space an invocation targets. The DID string
+ * carries the log's own `spaceId`, and every read below is keyed off the parsed
+ * location, so a Space controlled by a DID whose log lives elsewhere resolves
+ * with no special casing.
+ *
+ * The log is **verified, not trusted**: writes to that Collection are
  * authorized by the Space controller, which after promotion is the very
  * document being resolved, so a compromised delegated write must not be able to
  * forge a controller document. The SCID pinned in the DID string plus full log
  * verification (hash chain, prerotation, update-key signatures) is what rules
  * that out, and both are done by `@interop/did-method-webvh` -- no resolver
- * logic grows here.
+ * logic grows here. Hosting a resolvable log under some Space's path confers no
+ * authority on its own; a DID gains authority only by being referenced, as a
+ * Space's stored controller or as a delegation's controller.
  *
  * Verified documents are memoized per storage backend (the same shape as the
- * Space Description cache), invalidated by writes to an `id` collection.
+ * Space Description cache), keyed by the log's location and invalidated by
+ * writes that could change a log at that location.
  *
  * NOTE: the log is read through the control-plane `storage` (the default data
- * plane). Pointing an `id` collection at a non-default data-plane backend is
- * out of scope; such a log would not be found here.
+ * plane). Pointing a log Collection at a non-default data-plane backend is out
+ * of scope; such a log would not be found here.
  */
 import { text } from 'node:stream/consumers'
 import { LruCache } from '@interop/lru-memoize'
@@ -37,13 +47,6 @@ import {
 } from '../config.default.js'
 import { parseSelfHostedWebvh, WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
 import type { StorageBackend } from '../types.js'
-
-/**
- * The `id` collection: the world-readable Collection a self-hosted `did:webvh`
- * publishes its history log into. Exported so write paths can cheaply gate
- * their cache invalidation on it.
- */
-export const WEBVH_LOG_COLLECTION_ID = 'id'
 
 /**
  * What the resolver needs from the request layer: the storage backend the log
@@ -82,47 +85,75 @@ function documentCacheFor(storage: StorageBackend): LruCache {
 }
 
 /**
- * Cache key: the anchoring Space plus the DID. The Space prefix is what makes
- * invalidation by Space possible; the DID is part of the key because the same
- * log resolves differently for a different requested DID (a mismatched SCID
- * must not be served a document resolved for another one).
+ * Cache key: the log's location (Space plus Collection) followed by the DID.
+ * The location prefix is what makes invalidation by log location possible; the
+ * DID is part of the key because the same log resolves differently for a
+ * different requested DID (a mismatched SCID must not be served a document
+ * resolved for another one).
  * @param options {object}
  * @param options.spaceId {string}
+ * @param options.collectionId {string}
  * @param options.did {string}
  * @returns {string}
  */
-function cacheKey({ spaceId, did }: { spaceId: string; did: string }): string {
-  return `${spaceId}|${did}`
+function cacheKey({
+  spaceId,
+  collectionId,
+  did
+}: {
+  spaceId: string
+  collectionId: string
+  did: string
+}): string {
+  return `${spaceId}|${collectionId}|${did}`
 }
 
 /**
- * Drops every cached controller document anchored in a Space. Call after any
- * write that could change (or remove) that Space's `id` collection, so the next
- * verification resolves the current log rather than a stale document -- the
- * `invalidateSpaceDescription` pattern.
+ * Drops cached controller documents whose history log a write could have
+ * changed (or removed), so the next verification resolves the current log
+ * rather than a stale document -- the `invalidateSpaceDescription` pattern.
  *
- * A Collection-scoped write path may pass the `collectionId` it wrote and call
- * this unconditionally: only the log collection carries a history log, so any
- * other Collection returns early. A Space-scoped write path (delete, import)
- * omits it and always invalidates.
+ * Invalidation is keyed by the log's location. A Resource-scoped write path
+ * passes both the `collectionId` and the `resourceId` it wrote: any Resource
+ * other than `did.jsonl` returns early, and otherwise only that Collection's
+ * entries are dropped. A Collection-scoped path (delete Collection) passes the
+ * `collectionId` alone. A Space-scoped path (delete Space, import) passes
+ * neither and drops every entry anchored in the Space.
+ *
+ * Cost bound: entries exist only for DIDs that were actually resolved for
+ * authorization, i.e. DIDs some Space's stored controller or some delegation's
+ * controller names. Scoping invalidation to the written Collection therefore
+ * means a `did.jsonl` PUT into a Collection hosting no referenced DID deletes
+ * nothing and forces no re-verification. Widening the gate from one magic
+ * Collection to `did.jsonl`-in-any-Collection is not, as a result, an
+ * amplification lever an ordinary Collection grant can pull.
+ *
+ * A capability-gated (non-public) Collection is treated no differently: its DID
+ * resolves for authorization because the server reads its own storage
+ * regardless of read policy, so its cached documents need the same
+ * invalidation.
  *
  * @param options {object}
  * @param options.storage {StorageBackend}   the request's storage backend
  * @param options.spaceId {string}
- * @param [options.collectionId] {string}   the Collection that was written; when
- *   given, invalidation happens only for the `id` log collection
+ * @param [options.collectionId] {string}   the Collection that was written;
+ *   when given, only that Collection's entries are invalidated
+ * @param [options.resourceId] {string}   the Resource that was written; when
+ *   given and not the history-log Resource, nothing is invalidated
  * @returns {void}
  */
 export function invalidateResolvedWebvhDid({
   storage,
   spaceId,
-  collectionId
+  collectionId,
+  resourceId
 }: {
   storage: StorageBackend
   spaceId: string
   collectionId?: string
+  resourceId?: string
 }): void {
-  if (collectionId !== undefined && collectionId !== WEBVH_LOG_COLLECTION_ID) {
+  if (resourceId !== undefined && resourceId !== WEBVH_LOG_RESOURCE_ID) {
     return
   }
   // Only touch a cache that already exists for this backend.
@@ -130,7 +161,8 @@ export function invalidateResolvedWebvhDid({
   if (!cache) {
     return
   }
-  const prefix = `${spaceId}|`
+  const prefix =
+    collectionId !== undefined ? `${spaceId}|${collectionId}|` : `${spaceId}|`
   for (const key of [...cache.cache.keys()]) {
     if (key.startsWith(prefix)) {
       cache.delete(key)
@@ -139,22 +171,25 @@ export function invalidateResolvedWebvhDid({
 }
 
 /**
- * Reads a Space's `id/did.jsonl` history log from storage.
+ * Reads a `<spaceId>/<collectionId>/did.jsonl` history log from storage.
  * @param options {object}
  * @param options.storage {StorageBackend}
  * @param options.spaceId {string}
+ * @param options.collectionId {string}
  * @returns {Promise<string>}   the raw JSON Lines log
  */
 async function readLogText({
   storage,
-  spaceId
+  spaceId,
+  collectionId
 }: {
   storage: StorageBackend
   spaceId: string
+  collectionId: string
 }): Promise<string> {
   const { resourceStream } = await storage.getResource({
     spaceId,
-    collectionId: WEBVH_LOG_COLLECTION_ID,
+    collectionId,
     resourceId: WEBVH_LOG_RESOURCE_ID
   })
   return await text(resourceStream)
@@ -187,11 +222,17 @@ export async function resolveWebvhController({
         'self-hosted did:webvh controllers are resolvable here.'
     )
   }
-  const { scid, spaceId } = parsed
+  const { scid, spaceId, collectionId } = parsed
   return await documentCacheFor(storage).memoize<DIDDoc>({
-    key: cacheKey({ spaceId, did }),
+    key: cacheKey({ spaceId, collectionId, did }),
     fn: async () =>
-      await resolveVerifiedDocument({ storage, did, scid, spaceId })
+      await resolveVerifiedDocument({
+        storage,
+        did,
+        scid,
+        spaceId,
+        collectionId
+      })
   })
 }
 
@@ -208,25 +249,29 @@ export async function resolveWebvhController({
  * @param options.did {string}   the full controller DID
  * @param options.scid {string}   the SCID embedded in the DID
  * @param options.spaceId {string}   the Space the log is published in
+ * @param options.collectionId {string}   the Collection the log is published in
  * @returns {Promise<DIDDoc>}
  */
 async function resolveVerifiedDocument({
   storage,
   did,
   scid,
-  spaceId
+  spaceId,
+  collectionId
 }: {
   storage: StorageBackend
   did: string
   scid: string
   spaceId: string
+  collectionId: string
 }): Promise<DIDDoc> {
   let logText: string
   try {
-    logText = await readLogText({ storage, spaceId })
+    logText = await readLogText({ storage, spaceId, collectionId })
   } catch (err) {
     throw new Error(
-      `No did:webvh history log is published at "${spaceId}/id/${WEBVH_LOG_RESOURCE_ID}".`,
+      `No did:webvh history log is published at ` +
+        `"${spaceId}/${collectionId}/${WEBVH_LOG_RESOURCE_ID}".`,
       { cause: err }
     )
   }

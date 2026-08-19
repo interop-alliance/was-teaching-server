@@ -481,6 +481,29 @@ error in `src/zcap.ts` / `src/authorize.ts`; the revocation cause
 originates in `revocationChainInspector` (`src/lib/revocations.ts`) and is
 distinguishable at that point.
 
+### WAS-58: Aggregate quota reporting across an account's auxiliary Spaces
+
+- status: todo
+- priority: medium
+- labels: server, quotas, webvh
+- acceptance:
+  - [ ] Decide the aggregation payload shape and direction with Dmitri
+        (wire-level)
+  - [ ] Implement the decided shape, with server `test/` coverage and
+        conformance tests where the payload is spec-facing
+
+Typed auxiliary Spaces (see the wallet-attached-storage-spec decision record
+`decisions/0001-typed-auxiliary-spaces.md`) split an account's data across the
+account Space and its auxiliary companion Space. `GET /space/{spaceId}/quotas`
+reports per-Space only, so neither number is the account's usage on its own.
+
+Two questions are deliberately open. The direction: does a query on the account
+Space fold in its auxiliary Spaces, or does a client sum the Spaces it knows
+about? The payload: fold the auxiliary usage into `usageBytes`, or report a
+per-Space breakdown in a new member (which would need an addition to
+`@interop/storage-core`'s quota types). Both are permanent wire choices and need
+deciding with Dmitri before implementation.
+
 ## Test coverage gaps (conformance suite + server `test/`)
 
 Produced by a 2026-07-22 coverage analysis: an inventory of the spec's 324

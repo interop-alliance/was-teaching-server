@@ -24,6 +24,11 @@ import {
   resolveWebvhController
 } from '../lib/webvhController.js'
 import {
+  assertValidSpaceType,
+  defaultSpaceType,
+  isSameTypeSet
+} from '../lib/spaceType.js'
+import {
   assertSupportedBackend,
   listRegisteredBackends
 } from '../lib/backends.js'
@@ -171,7 +176,7 @@ export class SpaceRequest {
   static async put(
     request: FastifyRequest<{
       Params: { spaceId: string }
-      Body: { id?: string; name?: string; controller: IDID }
+      Body: { id?: string; name?: string; type?: unknown; controller: IDID }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
@@ -214,6 +219,12 @@ export class SpaceRequest {
       serverUrl,
       requestName: 'Update Space'
     })
+    // The OPTIONAL `type` array subtypes `Space`. Shape-checked here; whether
+    // it may be applied is decided after authorization (it is immutable once
+    // the Space exists).
+    const requestedType = assertValidSpaceType(body.type, {
+      requestName: 'Update Space'
+    })
 
     // Check to see if space already exists (if yes, this will be an Update)
     const existingSpaceDescription = await storage.getSpaceDescription({
@@ -254,10 +265,10 @@ export class SpaceRequest {
 
     // A proposed `did:webvh` controller must resolve -- and fully verify --
     // against its history log in this server's storage BEFORE it is stored.
-    // After the promotion, both this request and writes to that log's `id`
-    // collection are authorized by the very controller being named, so storing
-    // an unresolvable DID (a typo, a not-yet-published log) would deadlock the
-    // Space with no break-glass.
+    // After the promotion, both this request and writes to the Collection
+    // holding that log are authorized by the very controller being named, so
+    // storing an unresolvable DID (a typo, a not-yet-published log) would
+    // deadlock the Space with no break-glass.
     if (isSelfHostedWebvhController(body.controller, { serverUrl })) {
       try {
         await resolveWebvhController({
@@ -274,6 +285,25 @@ export class SpaceRequest {
       }
     }
 
+    // A Space Description's `type` is set at creation and immutable after it,
+    // so a Space cannot change role under a consumer that already classified
+    // it. An absent (or set-equal) `type` preserves the stored value.
+    if (
+      existingSpaceDescription &&
+      requestedType &&
+      !isSameTypeSet({
+        left: requestedType,
+        right: existingSpaceDescription.type
+      })
+    ) {
+      throw new InvalidRequestBodyError({
+        requestName: 'Update Space',
+        detail:
+          'The Space Description "type" is immutable once the Space exists.',
+        pointer: '#/type'
+      })
+    }
+
     // Compose Space Description object body, new or updated. `name` is
     // optional, so only include it when the request supplies one.
     const spaceDescription = existingSpaceDescription
@@ -287,7 +317,7 @@ export class SpaceRequest {
       : // New Space
         {
           id: spaceId,
-          type: ['Space'],
+          type: requestedType ?? defaultSpaceType(),
           controller: body.controller,
           ...(body.name !== undefined && { name: body.name })
         }
@@ -485,8 +515,8 @@ export class SpaceRequest {
     await storage.deleteSpace({ spaceId })
     // Bust the cached description so the next read sees the Space as gone (404).
     invalidateSpaceDescription({ storage, spaceId })
-    // The Space's `id` collection went with it, so any controller document
-    // resolved out of its history log is stale too.
+    // Every Collection in the Space went with it, so any controller document
+    // resolved out of a history log there is stale too.
     invalidateResolvedWebvhDid({ storage, spaceId })
 
     return reply.status(204).send()
@@ -563,8 +593,9 @@ export class SpaceRequest {
         spaceId,
         tarStream: request.body
       })
-      // An import may add or replace the Space's `id` collection contents, so
-      // drop any controller document resolved from the previous history log.
+      // An import may add or replace the contents of any Collection in the
+      // Space, so drop any controller document resolved from a history log
+      // there.
       invalidateResolvedWebvhDid({ storage, spaceId })
       return reply.status(200).send(summary)
     } catch (err) {
