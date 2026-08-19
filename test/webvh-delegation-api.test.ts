@@ -9,9 +9,7 @@
  * - a capability whose `invocationTarget` is a Space's trailing-slash subtree
  *   URL, invoked against a Collection's `policy` resource underneath it.
  *
- * Invocations are raw `@interop/ezcap` requests (and, where the ezcap client's
- * own RESTful-prefix check would refuse a subtree target, a hand-signed
- * invocation via `@interop/http-signature-zcap-invoke`): these are wire-level
+ * Invocations are raw `@interop/ezcap` requests: these are wire-level
  * authorization shapes, not the high-level `@interop/was-client` surface.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
@@ -29,7 +27,6 @@ import {
 } from '@interop/did-method-webvh'
 import type { DIDLog, Signer } from '@interop/did-method-webvh'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
-import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
@@ -377,52 +374,18 @@ describe('did:webvh delegation and chain depth', () => {
       })
     })
 
-    /**
-     * Invokes `subtreeCap` by hand: the ezcap client refuses to pair a URL
-     * with a capability whose `invocationTarget` already ends in `/` (its own
-     * prefix check appends another `/`), while the server's zcap layer accepts
-     * exactly that shape.
-     *
-     * @param options {object}
-     * @param options.url {string}   the absolute URL to invoke
-     * @param options.method {string}
-     * @param [options.json] {object}   a JSON request body
-     * @returns {Promise<Response>}
-     */
-    async function invokeSubtree({
-      url,
-      method,
-      json
-    }: {
-      url: string
-      method: string
-      json?: object
-    }): Promise<Response> {
-      const headers = await signCapabilityInvocation({
-        url,
-        method,
-        headers:
-          json === undefined ? {} : { 'content-type': 'application/json' },
-        json,
-        capability: subtreeCap,
-        capabilityAction: method,
-        invocationSigner: aliceDelegatedApp.signer
-      })
-      return fetch(url, {
-        method,
-        headers,
-        body: json === undefined ? undefined : JSON.stringify(json)
-      })
-    }
-
     it('the delegate PUTs a Collection policy under the subtree target', async () => {
       const policyUrl = new URL(
         `/space/${spaceId}/${collectionId}/policy`,
         serverUrl
       ).toString()
-      const response = await invokeSubtree({
+      const response = await client({
+        signer: aliceDelegatedApp.signer
+      }).request({
         url: policyUrl,
         method: 'PUT',
+        action: 'PUT',
+        capability: subtreeCap,
         json: { type: 'PublicCanRead' }
       })
       assert.equal(response.status, 201)
@@ -441,9 +404,16 @@ describe('did:webvh delegation and chain depth', () => {
         `/space/${spaceId}/${collectionId}/policy`,
         serverUrl
       ).toString()
-      const response = await invokeSubtree({ url: policyUrl, method: 'GET' })
+      const response = await client({
+        signer: aliceDelegatedApp.signer
+      }).request({
+        url: policyUrl,
+        method: 'GET',
+        action: 'GET',
+        capability: subtreeCap
+      })
       assert.equal(response.status, 200)
-      assert.deepStrictEqual(await response.json(), { type: 'PublicCanRead' })
+      assert.deepStrictEqual(response.data, { type: 'PublicCanRead' })
     })
   })
 })
