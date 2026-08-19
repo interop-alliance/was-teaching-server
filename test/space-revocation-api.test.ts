@@ -388,6 +388,74 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       assert.equal(response.status, 204)
     })
 
+    it('a capability whose delegation proof does not verify is refused (400)', async () => {
+      // The chain roots in this Space and the submitter is its controller, so
+      // the submission is authorized -- what fails is the chain verification
+      // itself: the body was altered after signing, so the delegation proof no
+      // longer covers it. A revocation submission requires a *verifying*
+      // chain; a capability that never verified cannot be recorded as revoked.
+      const zcap = await delegate()
+      const tampered = structuredClone(zcap)
+      tampered.allowedAction = ['GET', 'HEAD', 'PUT', 'POST', 'DELETE', 'PATCH']
+
+      const err = await requestError(
+        revoke({
+          capabilityToRevoke: tampered,
+          signer: alice.signer,
+          capability: rootZcap(spaceUrl),
+          url: revocationUrl(tampered.id)
+        })
+      )
+      assert.equal(err.status, 400)
+      assert.equal(
+        err.data.errors[0].detail,
+        'The provided capability delegation is invalid.'
+      )
+
+      // Nothing was stored under that capability id: the untampered original
+      // still works.
+      const response = await readDoc({
+        zcap,
+        signer: aliceDelegatedApp.signer
+      })
+      assert.equal(response.status, 200)
+    })
+
+    it('a capability whose delegation proof was signed by the wrong key is refused (400)', async () => {
+      // A second-hop delegation signed by someone who does not control the
+      // parent capability: structurally a chain rooted in this Space, but the
+      // middle proof does not verify.
+      const parent = await delegate()
+      const forged = await client({ signer: bob.signer }).delegate({
+        capability: parent,
+        invocationTarget: collectionUrl,
+        controller: bob.did,
+        allowedActions: ['GET'],
+        expires: new Date(Date.now() + 60 * 60 * 1000)
+      })
+
+      const err = await requestError(
+        revoke({
+          capabilityToRevoke: forged,
+          signer: alice.signer,
+          capability: rootZcap(spaceUrl),
+          url: revocationUrl(forged.id)
+        })
+      )
+      assert.equal(err.status, 400)
+      assert.equal(
+        err.data.errors[0].detail,
+        'The provided capability delegation is invalid.'
+      )
+
+      // The parent, which was never revoked, still works.
+      const response = await readDoc({
+        zcap: parent,
+        signer: aliceDelegatedApp.signer
+      })
+      assert.equal(response.status, 200)
+    })
+
     it('an unknown Space is a masked 404', async () => {
       const zcap = await delegate()
       const unknownSpaceId = randomUUID()

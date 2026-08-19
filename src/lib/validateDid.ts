@@ -6,11 +6,11 @@
  *   `0xed01` Ed25519-pub multicodec prefix) followed by base58btc characters.
  *   This is the only shape Space create, and the keystore routes, accept.
  * - Additionally, on Update Space only: a **self-hosted** `did:webvh` --
- *   `did:webvh:<scid>:<didDomainComponent>:space:<spaceId>:id`, whose embedded
- *   host is this server. Its history log lives in that Space's world-readable
- *   `id` collection, so it resolves from local storage and never over the
- *   network. A cross-host `did:webvh`, a `did:web`, and every other DID method
- *   stay refused.
+ *   `did:webvh:<scid>:<didDomainComponent>:space:<spaceId>:<collectionId>`,
+ *   whose embedded host is this server. Its history log lives at
+ *   `<host>/space/<spaceId>/<collectionId>/did.jsonl`, so it resolves from
+ *   local storage and never over the network. A cross-host `did:webvh`, a
+ *   `did:web`, and every other DID method stay refused.
  *
  * Both are syntactic checks at the request layer, so a malformed or
  * unsupported controller is rejected on the way in, rather than being stored
@@ -34,11 +34,10 @@ const SCID_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{16,}$/
 
 /**
  * The method-specific path a self-hosted controller DID must carry: the log is
- * published as `did.jsonl` in the `id` collection of the Space named by the
- * DID, i.e. `<host>/space/<spaceId>/id/did.jsonl`.
+ * published as `did.jsonl` in a Collection of the Space named by the DID, i.e.
+ * `<host>/space/<spaceId>/<collectionId>/did.jsonl`.
  */
 const WEBVH_SPACE_SEGMENT = 'space'
-const WEBVH_COLLECTION_ID = 'id'
 
 /** The Resource holding a self-hosted DID's history log. */
 export const WEBVH_LOG_RESOURCE_ID = 'did.jsonl'
@@ -53,47 +52,64 @@ export function isValidController(value: unknown): value is IDID {
 }
 
 /**
- * Parses a self-hosted `did:webvh` controller into the two parts the resolver
+ * Parses a self-hosted `did:webvh` controller into the three parts the resolver
  * needs, or returns `undefined` when `value` is not one.
  *
  * The accepted form is exactly
- * `did:webvh:<scid>:<didDomainComponent>:space:<spaceId>:id`, where the
- * `didDomainComponent` is the DID-method encoding of a host (a port is
+ * `did:webvh:<scid>:<didDomainComponent>:space:<spaceId>:<collectionId>`, where
+ * the `didDomainComponent` is the DID-method encoding of a host (a port is
  * percent-encoded as `%3A`, since `:` is the method's own separator) and must
  * decode to this server's own host. Nothing else -- no extra path segments, no
- * cross-host domain, no other DID method -- parses.
+ * cross-host domain, no other DID method -- parses. The log is read from
+ * `<spaceId>/<collectionId>/did.jsonl`.
+ *
+ * The `collectionId` may be any Collection whose name round-trips the DID path
+ * encoding. WAS Collection ids are restricted to the RFC 3986 unreserved
+ * charset ({@link isUrlSafeSegment}), and unreserved characters are never
+ * percent-encoded, so that encoding is the identity and the round-trip rule
+ * collapses to the same check: a segment carrying `%` or any other reserved
+ * character fails the pattern and is refused here.
  *
  * @param value {unknown}   the candidate controller DID
  * @param options {object}
  * @param options.serverUrl {string}   this server's base URL
- * @returns {{ scid: string, spaceId: string } | undefined}
+ * @returns {{ scid: string, spaceId: string, collectionId: string } |
+ *   undefined}
  */
 export function parseSelfHostedWebvh(
   value: unknown,
   { serverUrl }: { serverUrl: string }
-): { scid: string; spaceId: string } | undefined {
+): { scid: string; spaceId: string; collectionId: string } | undefined {
   if (typeof value !== 'string') {
     return undefined
   }
-  // `did`, `webvh`, scid, didDomainComponent, `space`, spaceId, `id`.
+  // `did`, `webvh`, scid, didDomainComponent, `space`, spaceId, collectionId.
   const segments = value.split(':')
   if (segments.length !== 7) {
     return undefined
   }
-  const [scheme, method, scid, didDomainComponent, spaceSegment, spaceId, cid] =
-    segments as [string, string, string, string, string, string, string]
+  const [
+    scheme,
+    method,
+    scid,
+    didDomainComponent,
+    spaceSegment,
+    spaceId,
+    collectionId
+  ] = segments as [string, string, string, string, string, string, string]
   if (scheme !== 'did' || method !== 'webvh') {
     return undefined
   }
-  if (spaceSegment !== WEBVH_SPACE_SEGMENT || cid !== WEBVH_COLLECTION_ID) {
+  if (spaceSegment !== WEBVH_SPACE_SEGMENT) {
     return undefined
   }
   if (!SCID_PATTERN.test(scid)) {
     return undefined
   }
-  // The spaceId lands in a storage path, so it gets the same URL-safe-segment
+  // Both ids land in a storage path, so they get the same URL-safe-segment
   // check every id parsed off a request URL gets (path-traversal defense).
-  if (!isUrlSafeSegment(spaceId)) {
+  // For the collectionId this doubles as the round-trip rule described above.
+  if (!isUrlSafeSegment(spaceId) || !isUrlSafeSegment(collectionId)) {
     return undefined
   }
   let didHost: string
@@ -106,7 +122,7 @@ export function parseSelfHostedWebvh(
   if (didHost !== new URL(serverUrl).host.toLowerCase()) {
     return undefined
   }
-  return { scid, spaceId }
+  return { scid, spaceId, collectionId }
 }
 
 /**

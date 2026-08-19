@@ -84,8 +84,9 @@ export const SPACE_DESCRIPTION_CACHE_MAX = 1_000
  * Resolved `did:webvh` controller-document cache (see
  * src/lib/webvhController.ts). Verifying a history log is the most expensive
  * step on a promoted Space's hot path, so the verified document is memoized per
- * storage backend. Writes to the log's `id` collection invalidate the entry
- * explicitly; the short TTL mirrors the Space Description cache's backstop for
+ * storage backend. Writes that could change a log at the cached location
+ * invalidate the entry explicitly (the cache is keyed by that location); the
+ * short TTL mirrors the Space Description cache's backstop for
  * multi-process deployments sharing one storage backend.
  */
 export const WEBVH_DOCUMENT_CACHE_TTL = 5_000 // milliseconds

@@ -75,7 +75,12 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
 - **SpacesRepository** — the top-level container the server hosts. New Spaces
   are created under it via `POST /spaces/`.
 - **Space** — a storage area identified by `spaceId`. Has a `controller` (a DID)
-  that owns it and authorizes access. Contains Collections.
+  that owns it and authorizes access. Contains Collections. Its Space
+  Description carries a `type` array subtyping `Space`, set at creation and
+  immutable afterwards. A Space typed `AuxiliarySpace` (e.g.
+  `['Space', 'AuxiliarySpace', 'DelegatedClientsSpace']`) holds bookkeeping
+  rather than user data and is excluded from List Spaces; a wallet reaches its
+  auxiliary Space through the account document's service entry instead.
 - **Collection** — a named grouping of Resources within a Space
   (`/space/:spaceId/:collectionId`). Has a description object.
 - **Resource** — an individual stored item, JSON object or binary blob, within a
@@ -98,24 +103,38 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
 - **Self-hosted `did:webvh`** — the second accepted Space-controller shape, so a
   wallet can carry one stable user identity whose DID document lists a
   verification method per enrolled client. The DID must be anchored on _this_
-  server: `did:webvh:<scid>:<host>:space:<spaceId>:id`, whose history log is the
-  `did.jsonl` Resource in that Space's world-readable `id` Collection. A Space
-  is **promoted** to one by PUTting its Space Description with the new
-  `controller`, still authorized by the stored `did:key` — creation stays
-  `did:key`-only. Resolution is a **local storage read, never a network fetch**:
-  cross-host `did:webvh`, `did:web`, and every other method are refused. The log
-  is verified, not trusted (SCID pinning plus full hash-chain / update-key
-  verification via `@interop/did-method-webvh`), because after promotion the
-  writes to that log are authorized by the very document being resolved. The
-  proposed controller must resolve _before_ it is stored, or the Space would be
-  deadlocked. Key validity is the **current-key-set rule**: an invocation or
-  delegation verifies iff its verification method is in the currently resolved
-  document, under the right verification relationship. Path-hosting is not
-  endorsement: a resolvable log under some Space's path proves only that
-  something wrote it there. A DID is self-certified by its own SCID and log,
-  and acquires authority only by being referenced -- as a Space's stored
-  controller, or by a capability delegated to it -- never by where its log
-  happens to live.
+  server: `did:webvh:<scid>:<host>:space:<spaceId>:<collectionId>`, whose
+  history log is the `did.jsonl` Resource in that Collection of that Space. Any
+  Collection may host one, as long as its name round-trips the DID path
+  encoding. WAS Collection ids are restricted to the RFC 3986 unreserved
+  charset, which is never percent-encoded, so the rule is just that check; a
+  final DID segment carrying `%` or another reserved character is refused by the
+  parser. A Space is **promoted** to one by PUTting its Space Description with
+  the new `controller`, still authorized by the stored `did:key` — creation
+  stays `did:key`-only. Resolution is a **local storage read, never a network
+  fetch**: cross-host `did:webvh`, `did:web`, and every other method are
+  refused. The log's Space need not be the Space an invocation targets: the DID
+  string carries the log's own `spaceId`, so a cross-Space controller resolves
+  through the same path as any other. A capability-gated Collection works too —
+  the server reads its own storage regardless of read policy, so such a DID
+  resolves for authorization while its log stays unreadable without a
+  capability. The log is verified, not trusted (SCID pinning plus full
+  hash-chain / update-key verification via `@interop/did-method-webvh`), because
+  after promotion the writes to that log are authorized by the very document
+  being resolved. The proposed controller must resolve _before_ it is stored, or
+  the Space would be deadlocked. Key validity is the **current-key-set rule**:
+  an invocation or delegation verifies iff its verification method is in the
+  currently resolved document, under the right verification relationship.
+  Resolved documents are cached, keyed by the log's location (Space plus
+  Collection), and a write that could change a log at that location drops the
+  entry. Entries exist only for DIDs actually resolved for authorization, so a
+  `did.jsonl` written into a Collection no reference names drops nothing and
+  costs no re-verification. Path-hosting is not endorsement: anyone with a write
+  grant on a user's Space can put a resolvable log under that Space's path, and
+  it proves only that something wrote it there. A DID is self-certified by its
+  own SCID and log, and acquires authority only by being referenced -- as a
+  Space's stored controller, or by a capability delegated to it -- never by
+  where its log happens to live.
 
 **Trailing slashes:** the spec assigns distinct meaning to `.../` vs `...`. By
 convention, "create/update by id" (`PUT`) uses the no-trailing-slash form, while

@@ -4,12 +4,17 @@
  * both.
  *
  * The flow under test is "promotion by ordering": a Space is created with a
- * `did:key` controller, its history log is published into its world-readable
- * `id` collection, and a PUT of the Space Description -- still authorized by the
+ * `did:key` controller, its history log is published into one of its
+ * Collections, and a PUT of the Space Description -- still authorized by the
  * stored `did:key` -- swaps the controller to the `did:webvh` that log resolves
  * to. From then on every invocation is verified against the *currently
  * resolved* document, read out of local storage and fully verified (never
  * fetched, never trusted).
+ *
+ * The log's location is carried by the DID string, so it is not restricted to
+ * the conventional world-readable `id` Collection: the later sections cover an
+ * arbitrarily named, capability-gated log Collection and a controller whose log
+ * lives in a different Space than the one it controls.
  *
  * Logs are built in-test with the same `@interop/did-method-webvh` the server
  * resolves with, signed by a locally generated update key.
@@ -46,6 +51,8 @@ import {
 /** A Space promoted to (or being prepared for) a did:webvh controller. */
 interface WebvhSpace {
   spaceId: string
+  /** the Collection the DID's history log is published in */
+  logCollectionId: string
   did: string
   log: DIDLog
   /** signs history-log entries (the DID's update key) */
@@ -76,21 +83,25 @@ describe('did:webvh Space controller', () => {
   })
 
   /**
-   * Builds a `did:webvh` whose log is anchored at `<serverUrl>/space/<id>/id`,
-   * with one enrolled client key listed for every verification relationship a
-   * zcap needs.
+   * Builds a `did:webvh` whose log is anchored at
+   * `<serverUrl>/space/<id>/<collectionId>`, with one enrolled client key listed
+   * for every verification relationship a zcap needs.
    *
    * @param options {object}
    * @param options.spaceId {string}   the Space the log will be published in
+   * @param [options.collectionId] {string}   the Collection the log will be
+   *   published in (any URL-safe Collection name; defaults to `id`)
    * @param [options.address] {string}   override the anchoring address (used by
    *   the cross-host case)
    * @returns {Promise<object>}
    */
   async function mintWebvhDid({
     spaceId,
+    collectionId = 'id',
     address
   }: {
     spaceId: string
+    collectionId?: string
     address?: string
   }) {
     const updateKeyPair = await Ed25519VerificationKey.generate()
@@ -105,7 +116,7 @@ describe('did:webvh Space controller', () => {
     const clientKeyPair = await Ed25519VerificationKey.generate()
 
     const created = await createDID({
-      address: address ?? `${serverUrl}/space/${spaceId}/id`,
+      address: address ?? `${serverUrl}/space/${spaceId}/${collectionId}`,
       signer: logSigner,
       updateKeys: [updateKeyPair.publicKeyMultibase!],
       vmIdFragment: 'multibase',
@@ -136,25 +147,28 @@ describe('did:webvh Space controller', () => {
   }
 
   /**
-   * Publishes a history log as `did.jsonl` in a Space's `id` collection.
+   * Publishes a history log as `did.jsonl` in a Collection of a Space.
    *
    * @param options {object}
    * @param options.signerClient {any}   the WAS client authorized to write
    * @param options.spaceId {string}
+   * @param [options.collectionId] {string}   defaults to `id`
    * @param options.jsonl {string}   the JSON Lines log
    * @returns {Promise<any>}
    */
   async function publishLog({
     signerClient,
     spaceId,
+    collectionId = 'id',
     jsonl
   }: {
     signerClient: any
     spaceId: string
+    collectionId?: string
     jsonl: string
   }) {
     return signerClient.request({
-      path: `/space/${spaceId}/id/did.jsonl`,
+      path: `/space/${spaceId}/${collectionId}/did.jsonl`,
       method: 'PUT',
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([jsonl], { type: 'text/jsonl' })
@@ -163,32 +177,50 @@ describe('did:webvh Space controller', () => {
 
   /**
    * Provisions a Space controlled by Alice's `did:key`, with a private
-   * `credentials` Collection and a world-readable `id` Collection carrying a
-   * freshly minted DID's history log. Stops short of the promotion PUT so the
-   * refusal cases can use the same setup.
+   * `credentials` Collection and a log Collection carrying a freshly minted
+   * DID's history log. Stops short of the promotion PUT so the refusal cases can
+   * use the same setup.
    *
+   * @param [options] {object}
+   * @param [options.logCollectionId] {string}   which Collection hosts the log
+   *   (defaults to the conventional world-readable `id`)
+   * @param [options.publicLogCollection] {boolean}   attach a `PublicCanRead`
+   *   policy to the log Collection (defaults to true)
    * @returns {Promise<WebvhSpace>}
    */
-  async function provisionSpace(): Promise<WebvhSpace> {
+  async function provisionSpace({
+    logCollectionId = 'id',
+    publicLogCollection = true
+  }: {
+    logCollectionId?: string
+    publicLogCollection?: boolean
+  } = {}): Promise<WebvhSpace> {
     const spaceId = randomUUID()
     const space = alice.was.space(spaceId)
     await space.configure({ name: 'Promotable Space', controller: alice.did })
     await space.collection('credentials').configure({ force: true })
     await space.collection('credentials').put('doc-1', { hello: 'world' })
-    const idCollection = space.collection('id')
-    await idCollection.configure({ force: true })
-    await idCollection.setPublic()
+    const logCollection = space.collection(logCollectionId)
+    await logCollection.configure({ force: true })
+    if (publicLogCollection) {
+      await logCollection.setPublic()
+    }
 
-    const minted = await mintWebvhDid({ spaceId })
+    const minted = await mintWebvhDid({
+      spaceId,
+      collectionId: logCollectionId
+    })
     const published = await publishLog({
       signerClient: alice.was,
       spaceId,
+      collectionId: logCollectionId,
       jsonl: logToJsonlString(minted.log)
     })
     assert.equal(published.status, 204)
 
     return {
       spaceId,
+      logCollectionId,
       did: minted.did,
       log: minted.log,
       logSigner: minted.logSigner,
@@ -596,6 +628,187 @@ describe('did:webvh Space controller', () => {
 
       const err = await requestError(readDoc())
       assert.equal(err.status, 404)
+    })
+  })
+
+  describe('a log in an arbitrarily named Collection', () => {
+    // The DID form carries the log's Collection, so the log may live in any
+    // Collection whose name round-trips the DID path encoding -- not only the
+    // conventional `id`. This one is also capability-gated (no public-read
+    // policy): the server resolves it by reading its own storage, so a DID
+    // resolves for authorization while its log stays unreadable to outsiders.
+    let space: WebvhSpace
+
+    beforeAll(async () => {
+      space = await provisionSpace({
+        logCollectionId: 'companion-0',
+        publicLogCollection: false
+      })
+    })
+
+    it('the minted DID names that Collection', () => {
+      assert.equal(space.did.split(':').length, 7)
+      assert.equal(space.did.split(':')[6], 'companion-0')
+    })
+
+    it('promotes the Space to it (204)', async () => {
+      const response = await promote({
+        signerClient: alice.was,
+        spaceId: space.spaceId,
+        controller: space.did
+      })
+      assert.equal(response.status, 204)
+      const description = await space.was.space(space.spaceId).describe()
+      assert.equal(description.controller, space.did)
+    })
+
+    it('the enrolled client key invokes against the promoted Space', async () => {
+      const doc = await space.was
+        .space(space.spaceId)
+        .collection('credentials')
+        .get('doc-1')
+      assert.deepStrictEqual(doc, { hello: 'world' })
+      await space.was
+        .space(space.spaceId)
+        .collection('credentials')
+        .put('doc-3', { written: 'by webvh' })
+    })
+
+    it('an anonymous read of the log itself is still refused (404)', async () => {
+      const response = await fetch(
+        new URL(
+          `/space/${space.spaceId}/companion-0/did.jsonl`,
+          serverUrl
+        ).toString()
+      )
+      assert.equal(response.status, 404)
+    })
+
+    it('a log rotation takes effect on the next verification', async () => {
+      // Rotate the enrolled client key and republish the log. The write lands
+      // in the log's own Collection, so the cached document is dropped by that
+      // very write -- no stale key set survives it.
+      const replacementKey = await Ed25519VerificationKey.generate()
+      const updated = await updateDID({
+        log: space.log,
+        signer: space.logSigner,
+        vmIdFragment: 'multibase',
+        verificationMethods: [
+          {
+            type: 'Multikey',
+            publicKeyMultibase: replacementKey.publicKeyMultibase!,
+            purpose: [
+              'authentication',
+              'assertionMethod',
+              'capabilityInvocation',
+              'capabilityDelegation'
+            ]
+          }
+        ]
+      })
+      // The still-current client key authorizes the write of its own removal.
+      const published = await publishLog({
+        signerClient: space.was,
+        spaceId: space.spaceId,
+        collectionId: 'companion-0',
+        jsonl: logToJsonlString(updated.log)
+      })
+      assert.equal(published.status, 204)
+
+      // The rotated-in key is the one that verifies now...
+      replacementKey.id = `${space.did}#${replacementKey.publicKeyMultibase}`
+      replacementKey.controller = space.did
+      const rotatedClient = wasClient({
+        signer: replacementKey.signer(),
+        serverUrl
+      })
+      assert.deepStrictEqual(
+        await rotatedClient
+          .space(space.spaceId)
+          .collection('credentials')
+          .get('doc-1'),
+        { hello: 'world' }
+      )
+
+      // ...and the rotated-out one no longer does.
+      const err = await requestError(
+        space.was.request({
+          path: `/space/${space.spaceId}/credentials/doc-1`,
+          method: 'GET'
+        })
+      )
+      assert.equal(err.status, 400)
+    })
+  })
+
+  describe('a controller whose log lives in another Space', () => {
+    // The DID string carries its own log location, so the Space a DID controls
+    // need not be the Space its log is published in.
+    let logSpace: WebvhSpace
+    let controlledSpaceId: string
+
+    beforeAll(async () => {
+      logSpace = await provisionSpace({ logCollectionId: 'companion-1' })
+      controlledSpaceId = randomUUID()
+      await alice.was
+        .space(controlledSpaceId)
+        .configure({ name: 'Controlled Space', controller: alice.did })
+    })
+
+    it('promotes a second Space to a DID anchored in the first (204)', async () => {
+      const response = await promote({
+        signerClient: alice.was,
+        spaceId: controlledSpaceId,
+        controller: logSpace.did
+      })
+      assert.equal(response.status, 204)
+      const description = await logSpace.was.space(controlledSpaceId).describe()
+      assert.equal(description.controller, logSpace.did)
+      // The DID's log is anchored in the *other* Space.
+      assert.equal(logSpace.did.split(':')[5], logSpace.spaceId)
+      assert.notEqual(logSpace.spaceId, controlledSpaceId)
+    })
+
+    it('the cross-Space controller key invokes on the controlled Space', async () => {
+      const response = await logSpace.was.request({
+        path: `/space/${controlledSpaceId}/`,
+        method: 'POST',
+        json: { id: 'cross-space-collection', name: 'Made by webvh' }
+      })
+      assert.equal(response.status, 201)
+    })
+
+    it('deleting the log in the hosting Space stops those invocations', async () => {
+      // The hosting Space is still controlled by Alice's did:key, so she may
+      // remove the log -- which is the controlled Space's only key material.
+      const deleted = await alice.was.request({
+        path: `/space/${logSpace.spaceId}/companion-1/did.jsonl`,
+        method: 'DELETE'
+      })
+      assert.equal(deleted.status, 204)
+
+      // The invalidation is keyed by the log's location, in the OTHER Space, so
+      // the cross-Space cache entry must go with it.
+      const err = await requestError(
+        logSpace.was.request({
+          path: `/space/${controlledSpaceId}/`,
+          method: 'POST',
+          json: { id: 'after-log-deletion' }
+        })
+      )
+      assert.equal(err.status, 400)
+
+      // Reads are refused on the same terms: with no resolvable controller
+      // document there is no key to verify against, which surfaces as the 400
+      // every verification error yields (not the 404 an unauthorized-but-
+      // verified invocation is masked as).
+      const readErr = await requestError(
+        logSpace.was.request({
+          path: `/space/${controlledSpaceId}`,
+          method: 'GET'
+        })
+      )
+      assert.equal(readErr.status, 400)
     })
   })
 

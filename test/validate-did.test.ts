@@ -41,11 +41,23 @@ describe('isValidController', () => {
 })
 
 describe('parseSelfHostedWebvh', () => {
-  it('parses a well-formed self-hosted DID into its scid and spaceId', () => {
+  it('parses a well-formed self-hosted DID into its three parts', () => {
     assert.deepEqual(parseSelfHostedWebvh(selfHosted, { serverUrl }), {
       scid,
-      spaceId
+      spaceId,
+      collectionId: 'id'
     })
+  })
+
+  it('parses an arbitrary URL-safe Collection as the log location', () => {
+    for (const collectionId of ['companion-3', 'c.0_x~y', 'id', 'Keys', '9']) {
+      const did = `did:webvh:${scid}:localhost%3A3000:space:${spaceId}:${collectionId}`
+      assert.deepEqual(parseSelfHostedWebvh(did, { serverUrl }), {
+        scid,
+        spaceId,
+        collectionId
+      })
+    }
   })
 
   it('decodes the percent-encoded port in the domain component', () => {
@@ -63,7 +75,7 @@ describe('parseSelfHostedWebvh', () => {
     const did = `did:webvh:${scid}:was.example:space:${spaceId}:id`
     assert.deepEqual(
       parseSelfHostedWebvh(did, { serverUrl: 'https://was.example' }),
-      { scid, spaceId }
+      { scid, spaceId, collectionId: 'id' }
     )
   })
 
@@ -71,7 +83,7 @@ describe('parseSelfHostedWebvh', () => {
     const did = `did:webvh:${scid}:WAS.Example:space:${spaceId}:id`
     assert.deepEqual(
       parseSelfHostedWebvh(did, { serverUrl: 'https://was.example' }),
-      { scid, spaceId }
+      { scid, spaceId, collectionId: 'id' }
     )
   })
 
@@ -96,8 +108,37 @@ describe('parseSelfHostedWebvh', () => {
       `did:webvh:${scid}:localhost%3A3000:space:a%2Fb:id`
     ],
     [
-      'a collection other than `id`',
-      `did:webvh:${scid}:localhost%3A3000:space:${spaceId}:keys`
+      'a percent-encoded separator in the collectionId',
+      `did:webvh:${scid}:localhost%3A3000:space:${spaceId}:a%2Fb`
+    ],
+    [
+      'any percent-escape in the collectionId (it would not round-trip)',
+      `did:webvh:${scid}:localhost%3A3000:space:${spaceId}:a%41b`
+    ],
+    [
+      'a bare percent sign in the collectionId',
+      `did:webvh:${scid}:localhost%3A3000:space:${spaceId}:a%b`
+    ],
+    [
+      'path-traversal characters in the collectionId',
+      `did:webvh:${scid}:localhost%3A3000:space:${spaceId}:..`
+    ],
+    [
+      'a single-dot collectionId',
+      `did:webvh:${scid}:localhost%3A3000:space:${spaceId}:.`
+    ],
+    [
+      'an empty collectionId',
+      `did:webvh:${scid}:localhost%3A3000:space:${spaceId}:`
+    ],
+    ['an empty spaceId', `did:webvh:${scid}:localhost%3A3000:space::id`],
+    [
+      'reserved characters in the collectionId',
+      `did:webvh:${scid}:localhost%3A3000:space:${spaceId}:a+b`
+    ],
+    [
+      'a path separator in the collectionId',
+      `did:webvh:${scid}:localhost%3A3000:space:${spaceId}:a/b`
     ],
     [
       'a path root other than `space`',

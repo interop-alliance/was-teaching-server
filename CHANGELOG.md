@@ -1,5 +1,25 @@
 # History
 
+## 0.22.0 - TBD
+
+### Added
+
+- Space Descriptions accept a `type` array subtyping `Space` at creation
+  (`POST /spaces/` and the create branch of `PUT /space/{spaceId}`), defaulting
+  to `['Space']`. A malformed `type` is `400 invalid-request-body` on `#/type`.
+  `type` is immutable once the Space exists: an Update Space body carrying a
+  different set is a `400`, and an absent one preserves the stored value. Spaces
+  typed `AuxiliarySpace` are excluded from `GET /spaces/`.
+
+### Changed
+
+- Self-hosted `did:webvh` resolution is generalized: the history log may live in
+  any Collection whose name round-trips the DID path encoding
+  (`did:webvh:<scid>:<host>:space:<spaceId>:<collectionId>`), not only the `id`
+  Collection. A Space's controller log may live in a different Space. The
+  resolved-document cache is re-keyed by the log's location, so invalidation
+  targets the written Collection.
+
 ## 0.21.1 - 2026-08-18
 
 ### Changed

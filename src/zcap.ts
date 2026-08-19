@@ -13,8 +13,10 @@
  * On a Space promoted to a self-hosted `did:webvh` controller, both the
  * signature keyId and the jsigs purpose check resolve instead through
  * `lib/webvhController.ts`, which verifies the DID's history log out of local
- * storage. That branch is engaged per verification (never module-global), and
- * only when the controller the chain roots in is such a DID.
+ * storage. The log's location comes from the DID string itself, so it may live
+ * in a Collection of a Space other than the one being invoked on. That branch
+ * is engaged per verification (never module-global), and only when the
+ * controller the chain roots in is such a DID.
  */
 import type { IncomingHttpHeaders } from 'node:http'
 import {

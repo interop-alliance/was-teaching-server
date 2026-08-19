@@ -1182,8 +1182,9 @@ export class CollectionRequest {
 
     try {
       await storage.deleteCollection({ spaceId, collectionId })
-      // Deleting the `id` collection drops the history log a self-hosted
-      // did:webvh controller resolves from; bust any document cached from it.
+      // Deleting a Collection drops any history log a self-hosted did:webvh
+      // controller resolves from it; bust every document cached from that
+      // Collection.
       invalidateResolvedWebvhDid({ storage, spaceId, collectionId })
     } catch (err) {
       // Rethrow a typed ProblemError from the data-plane backend unchanged
