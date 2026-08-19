@@ -10,6 +10,18 @@
   `type` is immutable once the Space exists: an Update Space body carrying a
   different set is a `400`, and an absent one preserves the stored value. Spaces
   typed `AuxiliarySpace` are excluded from `GET /spaces/`.
+- Ladder-signed delegations are bounded by a second capability-chain inspector
+  beside the revocation one, on both route families (the companion profile's
+  delegation clause). A delegation signed by a delegation-only verification
+  method of a self-hosted `did:webvh` document (`capabilityDelegation` without
+  `capabilityInvocation`) is admitted only when its `controller` equals the
+  companion DID named by the document's
+  `https://w3id.org/byoe#DelegatedClients` service entry, or when its
+  `invocationTarget` is the account log resource URL with `allowedAction`
+  within `PUT`, or the trailing-slash URL of a `DelegatedClientsSpace`-typed
+  Space with `allowedAction` within `GET`/`PUT`. A refused delegation does not
+  authorize; the refusal falls through to access-control policy, so
+  world-readable reads still serve.
 
 ### Changed
 

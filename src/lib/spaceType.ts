@@ -23,11 +23,24 @@ const BASE_SPACE_TYPE = 'Space'
 export const AUXILIARY_SPACE_TYPE = 'AuxiliarySpace'
 
 /**
+ * The auxiliary-Space subtype naming a wallet's delegated-clients bookkeeping
+ * Space. The companion-chain inspector (`lib/companionClause.ts`) admits a
+ * ladder-signed delegation whose `invocationTarget` is the trailing-slash URL
+ * of a Space so typed. Because that widens what a ladder VM may delegate, the
+ * subtype is only valid alongside `AuxiliarySpace` ({@link
+ * assertValidSpaceType}): a Space carrying it is bookkeeping by declaration
+ * and excluded from List Spaces, so it cannot double as a listed data Space.
+ */
+export const DELEGATED_CLIENTS_SPACE_TYPE = 'DelegatedClientsSpace'
+
+/**
  * Validates a client-supplied Space Description `type` and returns it, or
  * `undefined` when the request body carries none (the caller defaults it).
  *
  * A supplied `type` MUST be a non-empty array of non-empty strings that
- * includes the base `Space` type; anything else is a 400 on `#/type`.
+ * includes the base `Space` type; anything else is a 400 on `#/type`. A type
+ * naming `DelegatedClientsSpace` MUST also name `AuxiliarySpace` (see the
+ * constant's note), refused the same way.
  *
  * @param type {unknown}   the `type` value from the request body
  * @param options {object}
@@ -55,7 +68,20 @@ export function assertValidSpaceType(
       pointer: '#/type'
     })
   }
-  return type as string[]
+  const typeArray = type as string[]
+  if (
+    typeArray.includes(DELEGATED_CLIENTS_SPACE_TYPE) &&
+    !typeArray.includes(AUXILIARY_SPACE_TYPE)
+  ) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail:
+        `A Space Description "type" naming "${DELEGATED_CLIENTS_SPACE_TYPE}"` +
+        ` must also name "${AUXILIARY_SPACE_TYPE}".`,
+      pointer: '#/type'
+    })
+  }
+  return typeArray
 }
 
 /**
@@ -105,4 +131,23 @@ export function isAuxiliarySpace(
 ): boolean {
   const { type } = spaceDescription ?? {}
   return Array.isArray(type) && type.includes(AUXILIARY_SPACE_TYPE)
+}
+
+/**
+ * Whether a Space Description declares itself a delegated-clients bookkeeping
+ * Space: typed with both `AuxiliarySpace` and `DelegatedClientsSpace`, the
+ * only combination {@link assertValidSpaceType} admits for the latter. The
+ * membership check behind the companion clause's whole-Space branch.
+ * @param spaceDescription {{ type?: unknown } | undefined}
+ * @returns {boolean}
+ */
+export function isDelegatedClientsSpace(
+  spaceDescription: { type?: unknown } | undefined
+): boolean {
+  const { type } = spaceDescription ?? {}
+  return (
+    Array.isArray(type) &&
+    type.includes(AUXILIARY_SPACE_TYPE) &&
+    type.includes(DELEGATED_CLIENTS_SPACE_TYPE)
+  )
 }

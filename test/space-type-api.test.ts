@@ -144,6 +144,10 @@ describe('Space Description type', () => {
       ['an array missing the base Space type', ['AuxiliarySpace']],
       ['an array with a non-string member', ['Space', 42]],
       ['an array with an empty-string member', ['Space', '']],
+      [
+        'DelegatedClientsSpace without AuxiliarySpace',
+        ['Space', 'DelegatedClientsSpace']
+      ],
       ['a null type', null]
     ]
 

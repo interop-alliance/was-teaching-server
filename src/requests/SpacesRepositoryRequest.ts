@@ -6,7 +6,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
 import { isRootInvocation, verifyZcap } from '../zcap.js'
-import { invalidateSpaceDescription } from './spaceContext.js'
+import { invalidateSpaceDescription } from '../lib/spaceDescriptionCache.js'
 import { verifyBodyControllerConsent } from './controllerConsent.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidId } from '../lib/validateId.js'

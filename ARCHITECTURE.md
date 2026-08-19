@@ -10,8 +10,8 @@ conventions see [CONTRIBUTING.md](CONTRIBUTING.md); for agent-facing rules
 A request flows through these layers, in order:
 
 ```
-start.ts → server.ts → routes.ts → requests/*Request.ts → storage.ts → backends/*.ts
- (env,      (createApp,  (URL→handler   (per-operation       (storage     (persistence:
+start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/*.ts
+ (env,      (createApp,  (URL>handler   (per-operation       (storage     (persistence:
   listen)    plugins,     mapping +      handlers; auth       facade)       filesystem)
              decorate)    auth hooks)    verify + storage)
 ```
@@ -55,7 +55,7 @@ start.ts → server.ts → routes.ts → requests/*Request.ts → storage.ts →
 - **`src/exchanges.ts`** — the ephemeral exchanges facet
   (`/workflows/ephemeral/exchanges`), a self-contained sibling of the WAS route
   groups rather than one of them: a transient rendezvous for cross-device flows
-  (a desktop page mints an exchange, a phone scans its QR and posts the answer
+  (a desktop page mints an exchange, a phone scans its QR, and posts the answer
   back). It installs none of the auth/digest hooks and is unauthenticated by
   design — it is a **capability URL**, where possession of the unguessable
   exchange URL is the only access control. The relayed `request` and `response`
@@ -77,7 +77,7 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
 - **Space** — a storage area identified by `spaceId`. Has a `controller` (a DID)
   that owns it and authorizes access. Contains Collections. Its Space
   Description carries a `type` array subtyping `Space`, set at creation and
-  immutable afterwards. A Space typed `AuxiliarySpace` (e.g.
+  immutable afterward. A Space typed `AuxiliarySpace` (e.g.
   `['Space', 'AuxiliarySpace', 'DelegatedClientsSpace']`) holds bookkeeping
   rather than user data and is excluded from List Spaces; a wallet reaches its
   auxiliary Space through the account document's service entry instead.
@@ -160,6 +160,34 @@ synthesizes the root capability on demand (its controller is the Space
 controller). For a bare root invocation that _is_ the capability; for a
 delegated invocation it's the terminal `parentCapability` at the base of the
 chain, which the verifier walks down to.
+
+**Chain inspection:** after signature verification, the dereferenced chain
+passes through two composed inspectors. The revocation inspector
+(`lib/revocations.ts`) fails a chain containing any capability with a stored
+revocation. The companion-chain inspector (`lib/companionClause.ts`) bounds
+what a _ladder_ verification method may delegate. A ladder VM is the stable,
+credential-derived method a wallet publishes on a client-less account
+document, recognized by relation asymmetry: a `capabilityDelegation` member of
+the resolved self-hosted `did:webvh` document that is absent from
+`capabilityInvocation`. A delegation signed by one is admitted only when its
+sole `controller` equals the companion DID named by the account document's
+`https://w3id.org/byoe#DelegatedClients` service entry (a self-hosted
+`did:webvh` string, compared by pointer equality), or when its
+`invocationTarget` is bridge-shaped: the delegator account's own history log
+resource URL (derived from the account DID, which carries its log's Space and
+Collection) with `allowedAction` within {PUT}, or the trailing-slash URL of a
+Space whose Description declares it delegated-clients bookkeeping (typed
+`AuxiliarySpace` + `DelegatedClientsSpace`, the only combination Create Space
+accepts for the latter) with `allowedAction` within {GET, PUT}. The
+trailing-slash (subtree) form is required: it keeps Update Space Description
+outside ladder reach, so companion-profile grants pass the subtree target
+explicitly rather than the client's no-slash default. Both
+inspectors bind the capability decision only. A refusal falls through to the
+target's access-control policy like any other failed verification, so a
+world-readable read still serves. The clause is fail-open across servers: a
+server running unmodified verification accepts exactly what this clause
+refuses, so a wallet publishes a ladder VM only on a host it has confirmed
+enforces the companion profile.
 
 **Signing:** requests are signed with Cavage HTTP Signatures Draft 12 (not yet
 RFC 9421). The `Authorization` header signs

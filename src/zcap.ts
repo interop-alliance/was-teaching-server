@@ -45,6 +45,11 @@ import {
   capabilitySummaries,
   revocationChainInspector
 } from './lib/revocations.js'
+import {
+  capabilityControllers,
+  companionChainInspector,
+  composeChainInspectors
+} from './lib/companionClause.js'
 import { isSelfHostedWebvhController } from './lib/validateDid.js'
 import {
   resolveWebvhController,
@@ -388,10 +393,19 @@ export async function handleZcapVerify({
   maxChainLength?: number
   maxDelegationTtl?: number
 }): Promise<VerifyCapabilityInvocationResult> {
+  // The chain inspectors, composed into the zcap library's single hook: the
+  // revocation-store check (whenever the target has a scope), then the
+  // companion-chain clause bounding ladder-signed delegations (whenever the
+  // did:webvh resolver is engaged -- without it no did:webvh proof verifies,
+  // so there is no ladder delegation to bound).
+  const inspectors = [
+    ...(revocation === 'no-revocation-scope'
+      ? []
+      : [revocationChainInspector(revocation)]),
+    ...(webvh ? [companionChainInspector(webvh)] : [])
+  ]
   const inspectCapabilityChain =
-    revocation === 'no-revocation-scope'
-      ? undefined
-      : revocationChainInspector(revocation)
+    inspectors.length > 0 ? composeChainInspectors(inspectors) : undefined
   let zcapVerifyResult: VerifyCapabilityInvocationResult
   try {
     zcapVerifyResult = await verifyZcap({
@@ -477,9 +491,10 @@ export async function handleZcapVerify({
  *   never who can access.
  * @param [options.inspectCapabilityChain] {InspectCapabilityChain}   hook run
  *   against the dereferenced chain after signature verification -- the
- *   revocation-check extension point (a stored revocation of any capability
- *   in the chain fails the verification). Both route families pass one, scoped
- *   to the keystore or the Space the request roots in.
+ *   extension point for the revocation check (a stored revocation of any
+ *   capability in the chain fails the verification, scoped to the keystore or
+ *   the Space the request roots in) and the companion-chain clause
+ *   (`lib/companionClause.ts`), composed by `handleZcapVerify`.
  * @param [options.maxChainLength] {number}   max delegation chain length,
  *   root included (the `/kms` families pass `KMS_MAX_CHAIN_LENGTH`; absent,
  *   the zcap library's own default applies)
@@ -595,22 +610,6 @@ export async function verifyZcap({
     maxDelegationTtl,
     suite: new Ed25519Signature2020()
   })
-}
-
-/**
- * Extracts the controller DIDs of one capability (`controller` may be a
- * single value or an array on a synthesized root).
- * @param capability {object}   a capability from a dereferenced chain
- * @returns {string[]}
- */
-function capabilityControllers(capability: {
-  controller?: string | string[]
-}): string[] {
-  const { controller } = capability
-  if (controller === undefined) {
-    return []
-  }
-  return Array.isArray(controller) ? controller : [controller]
 }
 
 /**

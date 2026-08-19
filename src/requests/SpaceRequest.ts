@@ -7,11 +7,8 @@ import type { Readable } from 'node:stream'
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { buildLinkset } from '../policy.js'
-import {
-  fetchSpaceAndAuthorize,
-  fetchSpaceAndVerify,
-  invalidateSpaceDescription
-} from './spaceContext.js'
+import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
+import { invalidateSpaceDescription } from '../lib/spaceDescriptionCache.js'
 import { verifyBodyControllerConsent } from './controllerConsent.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidIds, assertValidId } from '../lib/validateId.js'
