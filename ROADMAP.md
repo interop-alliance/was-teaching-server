@@ -439,6 +439,48 @@ writes via `src/lib/preconditions.ts` -- but no read path ever evaluates
 `Cache-Control` semantics in an editor's note, so keep the `no-store` marking
 minimal and revisit if the spec text firms up.
 
+### WAS-57: Typed denial reasons on zcap authorization failures
+
+- status: todo
+- priority: low
+- labels: zcap, errors
+- touches:
+  - storage-core: new problem types in the shared error registry (their
+    spellings are permanent wire values and need maintainer sign-off
+    before coding)
+  - conformance-suite: negative-path assertions on the new types
+- acceptance:
+  - [ ] An authorization denial distinguishes, at minimum, a revoked
+        capability in the chain, an expired capability, and a generic
+        verification failure, as distinct problem types in the error
+        response (today every cause collapses into one generic
+        unauthorized response)
+  - [ ] A security-considerations pass decides which reasons are safe to
+        expose to which callers: reason detail must not become an oracle
+        (e.g. confirming to an unauthorized prober that a given
+        capability exists or was revoked); reasons may need to be
+        limited to callers presenting the affected chain
+  - [ ] The problem-type spellings are recorded (registry + spec-side
+        note, joining the WAS-27 revocation spec text when that lands)
+  - [ ] Server `test/` coverage for each distinguished cause
+
+The diagnosability half of the revocation-observability question, minted
+2026-08-19; the read/status-probe half (a client-queryable revocation
+endpoint) is deliberately deferred until a use case needs it -- revocation
+records are retention-bounded internal enforcement state
+(`capability.expires + 24h`, then prunable), so a query surface would
+promote them into a contract with retention and authorization questions of
+their own. Motivating case, from wallet-side ceremony design: a chain that
+stops verifying is opaque to its holder and to the Space owner alike --
+"revoked" is indistinguishable from "expired", a policy denial, or a
+verification-clause refusal, which hurts incident response and forces
+grantee apps to treat every 403 as ambiguous. Typed denial reasons give
+the holder the answer at exactly the moment it matters, without a new
+query surface. Denials currently funnel through the generic authorization
+error in `src/zcap.ts` / `src/authorize.ts`; the revocation cause
+originates in `revocationChainInspector` (`src/lib/revocations.ts`) and is
+distinguishable at that point.
+
 ## Test coverage gaps (conformance suite + server `test/`)
 
 Produced by a 2026-07-22 coverage analysis: an inventory of the spec's 324
