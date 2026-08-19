@@ -19,6 +19,9 @@
   Collection. A Space's controller log may live in a different Space. The
   resolved-document cache is re-keyed by the log's location, so invalidation
   targets the written Collection.
+- Update to `@interop/ezcap@7.4.3` (its client now pairs a url with a
+  trailing-slash subtree `invocationTarget`); the subtree delegation tests
+  invoke through the ezcap client instead of hand-signing.
 
 ## 0.21.1 - 2026-08-18
 
