@@ -26,6 +26,10 @@ import {
   verifyRevocationChain
 } from '../zcap.js'
 import { revocationChainInspector } from '../lib/revocations.js'
+import {
+  companionChainInspector,
+  composeChainInspectors
+} from '../lib/companionClause.js'
 import { spacePath } from '../lib/paths.js'
 import {
   KMS_MAX_CHAIN_LENGTH,
@@ -144,8 +148,12 @@ async function submitRevocation({
     chainControllers,
     expectedAction,
     // The *invoking* chain is checked against the store as on every other
-    // route: a revoked capability cannot authorize a revocation.
-    inspectCapabilityChain: revocationChainInspector({ storage, scope }),
+    // route -- a revoked capability cannot authorize a revocation -- and
+    // against the companion-chain clause, as in `handleZcapVerify`.
+    inspectCapabilityChain: composeChainInspectors([
+      revocationChainInspector({ storage, scope }),
+      companionChainInspector({ storage, serverUrl })
+    ]),
     maxChainLength,
     maxDelegationTtl,
     requestName,

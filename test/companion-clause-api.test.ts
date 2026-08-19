@@ -1,0 +1,776 @@
+/**
+ * Companion-clause tests (Vitest): the bound on what a *ladder* verification
+ * method of a self-hosted `did:webvh` account document may delegate.
+ *
+ * A ladder VM is recognized by relation asymmetry alone -- listed under
+ * `capabilityDelegation`, absent from `capabilityInvocation`. A delegation it
+ * signs is admitted only when it names the account document's companion DID as
+ * controller, or when its target is bridge-shaped (the account's own history
+ * log with `PUT`, or the subtree URL of a delegated-clients bookkeeping Space
+ * with `GET`/`PUT`). Everything
+ * else is refused, and the refusal is masked as a 404 like any other
+ * unauthorized invocation -- while still falling through to the access-control
+ * policy, so a world-readable target keeps serving.
+ *
+ * Invocations are raw `@interop/ezcap` requests: these are wire-level
+ * authorization shapes, not the high-level `@interop/was-client` surface.
+ */
+import { it, describe, beforeAll, afterAll } from 'vitest'
+import assert from 'node:assert'
+import { randomUUID } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import type { FastifyInstance } from 'fastify'
+import { KmsClient } from '@interop/webkms-client'
+
+import {
+  createDID,
+  logToJsonlString,
+  signerFromExternalKey
+} from '@interop/did-method-webvh'
+import type { DIDLog, ServiceEndpoint } from '@interop/did-method-webvh'
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
+
+import { FileSystemBackend } from '../src/backends/filesystem.js'
+import {
+  client,
+  requestError,
+  rootZcap,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
+
+/** The service-entry type IRI naming an account's current companion DID. */
+const DELEGATED_CLIENTS_SERVICE_TYPE = 'https://w3id.org/byoe#DelegatedClients'
+
+/** The auxiliary Space's full type array, as a wallet would send it. */
+const AUXILIARY_TYPE = ['Space', 'AuxiliarySpace', 'DelegatedClientsSpace']
+
+/** One hour out, the expiry every delegation in this suite carries. */
+function anHourFromNow(): Date {
+  return new Date(Date.now() + 60 * 60 * 1000)
+}
+
+/** A minted, published self-hosted `did:webvh` and the keys it lists. */
+interface WebvhIdentity {
+  spaceId: string
+  did: string
+  log: DIDLog
+  /** the ordinary client key: invocation *and* delegation */
+  clientKeyPair: any
+  /** the delegation-only (ladder) key, when the document lists one */
+  ladderKeyPair?: any
+}
+
+describe('companion clause (ladder-VM delegation bounds)', () => {
+  let fastify: FastifyInstance,
+    serverUrl: string,
+    dataDir: string,
+    alice: any,
+    bob: any
+
+  /** The account identity every ladder delegation below is signed under. */
+  let account: WebvhIdentity
+  /** The companion DID the account document's service entry names. */
+  let companion: WebvhIdentity
+  let accountSpaceUrl: string
+  let accountLogUrl: string
+  let credentialsUrl: string
+  let openCollectionUrl: string
+
+  beforeAll(async () => {
+    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
+    ;({ fastify, serverUrl } = await startTestServer({
+      backend: new FileSystemBackend({ dataDir })
+    }))
+    ;({ alice, bob } = await zcapClients({ serverUrl }))
+
+    // The companion is provisioned first: the account document's service entry
+    // has to name it, and a DID string is only known once its log is minted.
+    companion = await provisionWebvhIdentity({ withLadderKey: false })
+    account = await provisionWebvhIdentity({
+      withLadderKey: true,
+      services: [
+        {
+          id: '#delegated-clients',
+          type: DELEGATED_CLIENTS_SERVICE_TYPE,
+          serviceEndpoint: companion.did
+        }
+      ]
+    })
+
+    accountSpaceUrl = new URL(`/space/${account.spaceId}`, serverUrl).toString()
+    accountLogUrl = `${accountSpaceUrl}/id/did.jsonl`
+    credentialsUrl = `${accountSpaceUrl}/credentials`
+    openCollectionUrl = `${accountSpaceUrl}/open`
+
+    const accountSpace = alice.was.space(account.spaceId)
+    await accountSpace.collection('credentials').configure({ force: true })
+    await accountSpace
+      .collection('credentials')
+      .put('doc-1', { hello: 'world' })
+    // A log-shaped target outside the `id` Collection, for the branch-one
+    // refusal case.
+    await accountSpace.collection('other').configure({ force: true })
+    const openCollection = accountSpace.collection('open')
+    await openCollection.configure({ force: true })
+    await openCollection.put('note-1', { open: true })
+    await openCollection.setPublic()
+
+    // Promotion by ordering: the Space is created under Alice's `did:key`,
+    // populated, and only then handed to the account DID.
+    const promoted = await alice.was.request({
+      path: `/space/${account.spaceId}`,
+      method: 'PUT',
+      json: {
+        id: account.spaceId,
+        name: 'Account Space',
+        controller: account.did
+      }
+    })
+    assert.equal(promoted.status, 204)
+  })
+
+  afterAll(async () => {
+    await fastify.close()
+    await rm(dataDir, { recursive: true, force: true })
+  })
+
+  /**
+   * Provisions a Space controlled by Alice's `did:key`, mints a `did:webvh`
+   * anchored in a Collection of that Space (`id` unless overridden), and
+   * publishes its history log there. The log Collection is deliberately *not*
+   * world-readable: local resolution is a storage read, and a public policy
+   * would mask the refusals this suite asserts on the log URL. Promotion is
+   * left to the caller.
+   *
+   * @param options {object}
+   * @param options.withLadderKey {boolean}   also list a delegation-only
+   *   verification method (the ladder VM)
+   * @param [options.collectionId] {string}   the Collection anchoring the log
+   * @param [options.services] {ServiceEndpoint[]}   service entries for the
+   *   created document
+   * @returns {Promise<WebvhIdentity>}
+   */
+  async function provisionWebvhIdentity({
+    withLadderKey,
+    collectionId = 'id',
+    services
+  }: {
+    withLadderKey: boolean
+    collectionId?: string
+    services?: ServiceEndpoint[]
+  }): Promise<WebvhIdentity> {
+    const spaceId = randomUUID()
+    const space = alice.was.space(spaceId)
+    await space.configure({ name: 'Identity Space', controller: alice.did })
+    await space.collection(collectionId).configure({ force: true })
+
+    const updateKeyPair = await Ed25519VerificationKey.generate()
+    updateKeyPair.id =
+      `did:key:${updateKeyPair.publicKeyMultibase}` +
+      `#${updateKeyPair.publicKeyMultibase}`
+    const logSigner = signerFromExternalKey({
+      publicKeyMultibase: updateKeyPair.publicKeyMultibase!,
+      sign: async ({ data }: { data: Uint8Array }) =>
+        await updateKeyPair.signer().sign({ data })
+    })
+
+    const clientKeyPair = await Ed25519VerificationKey.generate()
+    const ladderKeyPair = withLadderKey
+      ? await Ed25519VerificationKey.generate()
+      : undefined
+
+    // Relationship wiring is driven entirely through `purpose`: passing
+    // explicit relationship arrays alongside would override it wholesale.
+    const verificationMethods = [
+      {
+        type: 'Multikey',
+        publicKeyMultibase: clientKeyPair.publicKeyMultibase!,
+        purpose: [
+          'authentication',
+          'assertionMethod',
+          'capabilityInvocation',
+          'capabilityDelegation'
+        ]
+      }
+    ]
+    if (ladderKeyPair) {
+      verificationMethods.push({
+        type: 'Multikey',
+        publicKeyMultibase: ladderKeyPair.publicKeyMultibase!,
+        purpose: ['assertionMethod', 'capabilityDelegation']
+      })
+    }
+
+    const created = await createDID({
+      address: `${serverUrl}/space/${spaceId}/${collectionId}`,
+      signer: logSigner,
+      updateKeys: [updateKeyPair.publicKeyMultibase!],
+      vmIdFragment: 'multibase',
+      verificationMethods: verificationMethods as any,
+      ...(services ? { services } : {})
+    })
+
+    clientKeyPair.id = `${created.did}#${clientKeyPair.publicKeyMultibase}`
+    clientKeyPair.controller = created.did
+    if (ladderKeyPair) {
+      ladderKeyPair.id = `${created.did}#${ladderKeyPair.publicKeyMultibase}`
+      ladderKeyPair.controller = created.did
+    }
+
+    const published = await alice.was.request({
+      path: `/space/${spaceId}/${collectionId}/did.jsonl`,
+      method: 'PUT',
+      headers: { 'content-type': 'text/jsonl' },
+      body: new Blob([logToJsonlString(created.log)], { type: 'text/jsonl' })
+    })
+    assert.equal(published.status, 204)
+
+    return {
+      spaceId,
+      did: created.did,
+      log: created.log,
+      clientKeyPair,
+      ladderKeyPair
+    }
+  }
+
+  /**
+   * Delegates from a parent capability, signed by one of the account's keys.
+   *
+   * @param options {object}
+   * @param options.signerKeyPair {any}   the key signing the delegation proof
+   * @param options.capability {any}   the parent capability (or its root id)
+   * @param options.invocationTarget {string}
+   * @param options.controller {string}
+   * @param options.allowedActions {string[]}
+   * @returns {Promise<any>}
+   */
+  async function delegate({
+    signerKeyPair,
+    capability,
+    invocationTarget,
+    controller,
+    allowedActions
+  }: {
+    signerKeyPair: any
+    capability: any
+    invocationTarget: string
+    controller: string
+    allowedActions: string[]
+  }): Promise<any> {
+    return client({ signer: signerKeyPair.signer() }).delegate({
+      capability,
+      invocationTarget,
+      controller,
+      allowedActions,
+      expires: anHourFromNow()
+    })
+  }
+
+  /** The account Space's root capability id, the parent of every WAS-route
+   * delegation below. */
+  function accountSpaceRoot(): string {
+    return `urn:zcap:root:${encodeURIComponent(accountSpaceUrl)}`
+  }
+
+  describe('control: a non-ladder chain is untouched', () => {
+    it('an ordinary client VM delegates an arbitrary target end to end', async () => {
+      const delegated = await delegate({
+        signerKeyPair: account.clientKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: credentialsUrl,
+        controller: bob.did,
+        allowedActions: ['GET']
+      })
+      const response = await client({ signer: bob.signer }).request({
+        url: `${credentialsUrl}/doc-1`,
+        method: 'GET',
+        action: 'GET',
+        capability: delegated
+      })
+      assert.equal(response.status, 200)
+      assert.deepStrictEqual(response.data, { hello: 'world' })
+    })
+  })
+
+  describe('predicate (i): the companion DID as controller', () => {
+    it('admits a ladder delegation controlled by the companion DID', async () => {
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: credentialsUrl,
+        controller: companion.did,
+        allowedActions: ['GET']
+      })
+      const response = await client({
+        signer: companion.clientKeyPair.signer()
+      }).request({
+        url: `${credentialsUrl}/doc-1`,
+        method: 'GET',
+        action: 'GET',
+        capability: delegated
+      })
+      assert.equal(response.status, 200)
+      assert.deepStrictEqual(response.data, { hello: 'world' })
+    })
+
+    it('refuses a ladder delegation to some other controller (404)', async () => {
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: credentialsUrl,
+        controller: bob.did,
+        allowedActions: ['GET']
+      })
+      const err = await requestError(
+        client({ signer: bob.signer }).request({
+          url: `${credentialsUrl}/doc-1`,
+          method: 'GET',
+          action: 'GET',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('the refused delegation cannot write either, and nothing lands', async () => {
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: credentialsUrl,
+        controller: bob.did,
+        allowedActions: ['GET', 'PUT']
+      })
+      const err = await requestError(
+        client({ signer: bob.signer }).request({
+          url: `${credentialsUrl}/doc-1`,
+          method: 'PUT',
+          action: 'PUT',
+          capability: delegated,
+          json: { escape: true }
+        })
+      )
+      assert.equal(err.status, 404)
+
+      const readBack = await client({
+        signer: account.clientKeyPair.signer()
+      }).request({
+        url: `${credentialsUrl}/doc-1`,
+        method: 'GET',
+        action: 'GET',
+        capability: rootZcap({
+          target: accountSpaceUrl,
+          controller: account.did
+        })
+      })
+      assert.deepStrictEqual(readBack.data, { hello: 'world' })
+    })
+  })
+
+  describe('a refusal still falls through to the access-control policy', () => {
+    it('a world-readable target serves a refused ladder invocation (200)', async () => {
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: openCollectionUrl,
+        controller: bob.did,
+        allowedActions: ['GET']
+      })
+      const response = await client({ signer: bob.signer }).request({
+        url: `${openCollectionUrl}/note-1`,
+        method: 'GET',
+        action: 'GET',
+        capability: delegated
+      })
+      assert.equal(response.status, 200)
+      assert.deepStrictEqual(response.data, { open: true })
+    })
+
+    it('but the policy grants reads only -- a write is still refused', async () => {
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: openCollectionUrl,
+        controller: bob.did,
+        allowedActions: ['GET', 'PUT']
+      })
+      const err = await requestError(
+        client({ signer: bob.signer }).request({
+          url: `${openCollectionUrl}/note-1`,
+          method: 'PUT',
+          action: 'PUT',
+          capability: delegated,
+          json: { open: false }
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+  })
+
+  describe("predicate (ii), branch one: the account's own log target", () => {
+    /** PUTs an account's log bytes back, under `capability`. */
+    async function putLog({
+      signer,
+      capability,
+      url = accountLogUrl,
+      log = account.log
+    }: {
+      signer: any
+      capability: any
+      url?: string
+      log?: DIDLog
+    }): Promise<any> {
+      const jsonl = logToJsonlString(log)
+      return client({ signer }).request({
+        url,
+        method: 'PUT',
+        action: 'PUT',
+        capability,
+        headers: { 'content-type': 'text/jsonl' },
+        body: new Blob([jsonl], { type: 'text/jsonl' })
+      })
+    }
+
+    it("admits a PUT-only delegation of the account's own log", async () => {
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: accountLogUrl,
+        controller: bob.did,
+        allowedActions: ['PUT']
+      })
+      const response = await putLog({
+        signer: bob.signer,
+        capability: delegated
+      })
+      assert.equal(response.status, 204)
+    })
+
+    it('refuses the same target granted GET (404)', async () => {
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: accountLogUrl,
+        controller: bob.did,
+        allowedActions: ['GET']
+      })
+      const err = await requestError(
+        client({ signer: bob.signer }).request({
+          url: accountLogUrl,
+          method: 'GET',
+          action: 'GET',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('refuses actions outside {PUT} (404)', async () => {
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: accountLogUrl,
+        controller: bob.did,
+        allowedActions: ['PUT', 'DELETE']
+      })
+      const err = await requestError(
+        putLog({ signer: bob.signer, capability: delegated })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it("refuses a log-shaped target that is not the account's own log (404)", async () => {
+      const otherLogUrl = `${accountSpaceUrl}/other/did.jsonl`
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: otherLogUrl,
+        controller: bob.did,
+        allowedActions: ['PUT']
+      })
+      const err = await requestError(
+        putLog({
+          signer: bob.signer,
+          capability: delegated,
+          url: otherLogUrl
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it("refuses another Space's `id/did.jsonl`, even account-controlled (404)", async () => {
+      // A second Space promoted to the same account DID, with a Collection
+      // named `id`: the exact shape a hardcoded `<S>/id/did.jsonl` match
+      // would admit, but not the log the account DID itself is anchored in.
+      const decoySpaceId = randomUUID()
+      const decoySpace = alice.was.space(decoySpaceId)
+      await decoySpace.configure({ name: 'Decoy', controller: alice.did })
+      await decoySpace.collection('id').configure({ force: true })
+      const promoted = await alice.was.request({
+        path: `/space/${decoySpaceId}`,
+        method: 'PUT',
+        json: { id: decoySpaceId, name: 'Decoy', controller: account.did }
+      })
+      assert.equal(promoted.status, 204)
+
+      const decoySpaceUrl = new URL(
+        `/space/${decoySpaceId}`,
+        serverUrl
+      ).toString()
+      const decoyLogUrl = `${decoySpaceUrl}/id/did.jsonl`
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: `urn:zcap:root:${encodeURIComponent(decoySpaceUrl)}`,
+        invocationTarget: decoyLogUrl,
+        controller: bob.did,
+        allowedActions: ['PUT']
+      })
+      const err = await requestError(
+        putLog({ signer: bob.signer, capability: delegated, url: decoyLogUrl })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('admits the bridge for an account anchored outside `id`', async () => {
+      // The DID string carries its own log Collection, so an account anchored
+      // in a `keys` Collection reaches the same bridge.
+      const keysAccount = await provisionWebvhIdentity({
+        withLadderKey: true,
+        collectionId: 'keys'
+      })
+      const promoted = await alice.was.request({
+        path: `/space/${keysAccount.spaceId}`,
+        method: 'PUT',
+        json: {
+          id: keysAccount.spaceId,
+          name: 'Keys Account Space',
+          controller: keysAccount.did
+        }
+      })
+      assert.equal(promoted.status, 204)
+
+      const keysSpaceUrl = new URL(
+        `/space/${keysAccount.spaceId}`,
+        serverUrl
+      ).toString()
+      const keysLogUrl = `${keysSpaceUrl}/keys/did.jsonl`
+      const delegated = await delegate({
+        signerKeyPair: keysAccount.ladderKeyPair,
+        capability: `urn:zcap:root:${encodeURIComponent(keysSpaceUrl)}`,
+        invocationTarget: keysLogUrl,
+        controller: bob.did,
+        allowedActions: ['PUT']
+      })
+      const response = await putLog({
+        signer: bob.signer,
+        capability: delegated,
+        url: keysLogUrl,
+        log: keysAccount.log
+      })
+      assert.equal(response.status, 204)
+    })
+  })
+
+  describe('predicate (ii), branch two: a delegated-clients Space', () => {
+    let auxSpaceId: string
+    let auxSpaceUrl: string
+    let auxSpaceRoot: string
+
+    beforeAll(async () => {
+      // Creation is `did:key`-only, so the auxiliary Space is created (and its
+      // Collection provisioned) under Alice, then promoted to the account DID.
+      auxSpaceId = randomUUID()
+      auxSpaceUrl = new URL(`/space/${auxSpaceId}`, serverUrl).toString()
+      auxSpaceRoot = `urn:zcap:root:${encodeURIComponent(auxSpaceUrl)}`
+
+      const created = await alice.was.request({
+        url: new URL('/spaces/', serverUrl).toString(),
+        method: 'POST',
+        json: {
+          id: auxSpaceId,
+          name: 'Delegated Clients',
+          controller: alice.did,
+          type: AUXILIARY_TYPE
+        }
+      })
+      assert.equal(created.status, 201)
+      await alice.was
+        .space(auxSpaceId)
+        .collection('clients')
+        .configure({ force: true })
+
+      const promoted = await alice.was.request({
+        path: `/space/${auxSpaceId}`,
+        method: 'PUT',
+        json: {
+          id: auxSpaceId,
+          name: 'Delegated Clients',
+          controller: account.did
+        }
+      })
+      assert.equal(promoted.status, 204)
+    })
+
+    it('admits a GET/PUT grant on the whole auxiliary Space', async () => {
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: auxSpaceRoot,
+        invocationTarget: `${auxSpaceUrl}/`,
+        controller: bob.did,
+        allowedActions: ['GET', 'PUT']
+      })
+      const recordUrl = `${auxSpaceUrl}/clients/rec-1`
+      const written = await client({ signer: bob.signer }).request({
+        url: recordUrl,
+        method: 'PUT',
+        action: 'PUT',
+        capability: delegated,
+        json: { clientId: 'client-1' }
+      })
+      assert.equal(written.status, 204)
+
+      const read = await client({ signer: bob.signer }).request({
+        url: recordUrl,
+        method: 'GET',
+        action: 'GET',
+        capability: delegated
+      })
+      assert.equal(read.status, 200)
+      assert.deepStrictEqual(read.data, { clientId: 'client-1' })
+    })
+
+    it('refuses the no-slash form of the same Space URL (404)', async () => {
+      // Only the subtree (trailing-slash) target is admitted: a no-slash
+      // grant would also cover Update Space Description under target
+      // attenuation. Companion-profile grants pass the subtree target
+      // explicitly (was-client `GrantOptions.target`).
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: auxSpaceRoot,
+        invocationTarget: auxSpaceUrl,
+        controller: bob.did,
+        allowedActions: ['GET', 'PUT']
+      })
+      const err = await requestError(
+        client({ signer: bob.signer }).request({
+          url: `${auxSpaceUrl}/clients/rec-1`,
+          method: 'GET',
+          action: 'GET',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('refuses actions outside {GET, PUT} on the same Space (404)', async () => {
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: auxSpaceRoot,
+        invocationTarget: `${auxSpaceUrl}/`,
+        controller: bob.did,
+        allowedActions: ['GET', 'PUT', 'DELETE']
+      })
+      const err = await requestError(
+        client({ signer: bob.signer }).request({
+          url: `${auxSpaceUrl}/clients/rec-1`,
+          method: 'GET',
+          action: 'GET',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('refuses the same shape over an ordinary Space (404)', async () => {
+      // The account's own Space is typed `['Space']` and controlled by the same
+      // DID: only the Description type separates it from the case above.
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: `${accountSpaceUrl}/`,
+        controller: bob.did,
+        allowedActions: ['GET', 'PUT']
+      })
+      const err = await requestError(
+        client({ signer: bob.signer }).request({
+          url: `${credentialsUrl}/doc-1`,
+          method: 'GET',
+          action: 'GET',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+  })
+
+  describe('the clause also runs on the /kms route family', () => {
+    let keystoreId: string
+
+    beforeAll(async () => {
+      const config = await KmsClient.createKeystore({
+        url: `${serverUrl}/kms/keystores`,
+        config: { sequence: 0, controller: alice.did },
+        invocationSigner: alice.signer
+      })
+      keystoreId = config.id!
+      // Promote the keystore to the account DID, still authorized by the
+      // stored `did:key`.
+      const kmsClient = new KmsClient({ keystoreId })
+      await kmsClient.updateKeystore({
+        config: {
+          id: keystoreId,
+          sequence: 1,
+          controller: account.did,
+          kmsModule: 'local-v1'
+        },
+        invocationSigner: alice.signer
+      })
+    })
+
+    it('an ordinary client VM still delegates keystore reads (200)', async () => {
+      const delegated = await delegate({
+        signerKeyPair: account.clientKeyPair,
+        capability: rootZcap({
+          target: keystoreId,
+          controller: account.did
+        }),
+        invocationTarget: keystoreId,
+        controller: bob.did,
+        allowedActions: ['read']
+      })
+      const response = await client({ signer: bob.signer }).request({
+        url: keystoreId,
+        method: 'GET',
+        action: 'read',
+        capability: delegated
+      })
+      assert.equal(response.status, 200)
+    })
+
+    it('a ladder-signed keystore delegation is refused (404)', async () => {
+      // No kms target can be bridge-shaped, so neither predicate can hold.
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: rootZcap({
+          target: keystoreId,
+          controller: account.did
+        }),
+        invocationTarget: keystoreId,
+        controller: bob.did,
+        allowedActions: ['read']
+      })
+      const err = await requestError(
+        client({ signer: bob.signer }).request({
+          url: keystoreId,
+          method: 'GET',
+          action: 'read',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+  })
+})
