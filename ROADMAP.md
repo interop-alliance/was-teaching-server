@@ -481,6 +481,52 @@ error in `src/zcap.ts` / `src/authorize.ts`; the revocation cause
 originates in `revocationChainInspector` (`src/lib/revocations.ts`) and is
 distinguishable at that point.
 
+### WAS-59: Enforce the reserved-path authorization classes (bounded target attenuation)
+
+- status: todo
+- priority: high
+- labels: security, zcap, authorization
+- touches:
+  - wallet-attached-storage-spec: WASS-1 in that repo's ROADMAP.md defines
+    the classes (the "Target Attenuation and Contained Data" subsection and
+    the `Authorization` column on the Reserved Path Segment Registry); this
+    item is the enforcement half and follows the spec text
+  - was-teaching-server: `src/requests/spaceContext.ts` (the
+    `attenuatedRootTarget` it hands every space-family route), `src/zcap.ts`,
+    `src/authorize.ts`, AGENTS.md
+  - conformance-suite: negative-path assertions per class (a Space- or
+    Collection-scoped capability invoked at an exact-target or
+    controller-only reserved endpoint beneath it is denied with the
+    maximum-privacy 404)
+- acceptance:
+  - [ ] A capability whose `invocationTarget` is a Space or Collection URL
+        authorizes requests at contained data paths beneath it and at
+        reserved endpoints classed "inherits prefix authority" (`query`,
+        `linkset` GET, `quota`/`quotas` GET, resource-level `meta`), and
+        nothing else beneath it
+  - [ ] "Exact-target required" endpoints (`policy` at all levels,
+        `collections` for create) accept only a capability whose
+        `invocationTarget` is that endpoint's own URL; a chain attenuating
+        from an ancestor is refused
+  - [ ] "Controller-only" endpoints (`import`, unsafe methods on
+        `backends`, and `export` once WASS-1 decides it) accept only direct
+        root-capability invocation by the Space controller
+  - [ ] Delegation-time attenuation is unchanged: this bounds only which
+        request URLs a given `invocationTarget` covers at invocation time
+  - [ ] Server `test/` coverage per class, plus the conformance assertions
+        above
+
+Split out of wallet-attached-storage-spec WASS-1 (2026-08-20), which keeps the
+spec half; freewallet FW-39 carries the full rationale (the zcap core spec
+makes invocation-time prefix attenuation conditional on the target API
+supplying a permission statement, which WASS-1 supplies). Today every
+space-family route passes `attenuatedRootTarget: context.spaceRootTarget`
+into the verifier, so a Space-scoped delegated capability reaches every
+reserved endpoint beneath the Space, `policy` included, exactly as it reaches
+data paths. The "inherits" class is load-bearing and must keep working:
+freewallet's replication invokes `<collection>/query` and resource `meta`
+under a collection-scoped grant.
+
 ### WAS-58: Aggregate quota reporting across an account's auxiliary Spaces
 
 - status: todo
