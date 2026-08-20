@@ -182,3 +182,84 @@ shipped in was-client 0.35.x): the server's `blinded-index-query` matches
 never writes through the codec path, and the spec-side envelope semantics
 live in the encrypted-collections spec, which this ROADMAP's Reverse gaps
 section does not yet point at.
+
+### WAS-29: Spec the key-epochs surface (`epoch` feed member, descriptor/stamp rails)
+
+- status: done
+- done: 2026-08-20
+- priority: medium
+- labels: spec-side, encryption
+- acceptance:
+  - [x] The optional `epoch` member added to the `changes` profile registry
+        entry (or `key-epochs` documented as an extension)
+  - [x] The descriptor/stamp surface (`encryption.epochs` / `currentEpoch`
+        rails, `Key-Epoch` Resource stamp) covered
+
+The `changes` profile's registry entry omits the `epoch` member the server emits
+on feed documents (the `key-epochs` stamp, carried so a replicating reader picks
+the right epoch key without a `/meta` fetch per Resource) -- and more broadly
+the served key-epochs surface is unspecified: the EDV-over-WAS appendix
+currently declares epoch bookkeeping deliberately client-side.
+
+Closed 2026-08-20 by the roadmap reconciliation: the spec now carries `epoch`
+in item summaries (mirroring the Resource Metadata property), the `Key-Epoch`
+header and `epoch` stamping, and the Key Epochs section with its server
+validation and epoch-stamping text; nothing remains unspecified.
+
+### WAS-32: Spec the `was` envelope-binding protected-header parameter
+
+- status: done
+- done: 2026-08-20
+- priority: medium
+- labels: spec-side, encryption
+- acceptance:
+  - [x] The private JWE protected-header member `was: { v, resource?, epoch? }`
+        specified in the EDV-over-WAS appendix
+  - [x] The rules carried into the text: `resource` omitted for content-derived
+        ids, pre-binding vintage accepted, `v` greater than supported is a
+        refusal
+  - [x] The metadata (`custom`) envelope's `{ v, resource }` binding covered
+
+Shipped in the client stack, 2026-07-20. Writers now emit and readers verify
+this member -- the scheme version, the resource id the envelope was written
+under, and the key-epoch id, all AEAD-covered by the JWE, so a server-side
+envelope swap between ids, an epoch relabel, or a per-envelope scheme downgrade
+fails on decrypt.
+
+Closed 2026-08-20 by the roadmap reconciliation: the Encrypted Collections spec
+defines the binding (`#was-binding`, `#binding-verification`, `#content-ids`),
+including the metadata envelope's binding and the greater-than-version refusal.
+The "pre-binding vintage accepted" rule no longer applies: the profile admits no
+unbound envelope.
+
+### WAS-33: Spec the `encryption.version` descriptor member
+
+- status: done
+- done: 2026-08-20
+- priority: medium
+- labels: spec-side, encryption
+- acceptance:
+  - [x] The Encryption Scheme Registry gains a scheme-version column
+  - [ ] Migration guidance written: only key-wrap material is rewritten, never
+        ciphertext bodies (the rewrap path), with the cached-CEK caveat
+  - [x] The never-backwards rail documented (once set, never decreases, never
+        removed)
+
+Spec update 2026-08: the Encryption Scheme Registry now carries a `version`
+column (`edv`/`1`) and the descriptor text documents the set-once,
+version-monotonic rail (absent `version` means `1`; raising permitted). Only the
+rewrap migration guidance (with the cached-CEK caveat) remains unwritten.
+
+The server now validates an optional positive-integer `version` on the
+`encryption` descriptor and enforces that, once set, it never decreases and is
+never removed (the same never-backwards rail as `currentEpoch`); clients stamp
+`version: 1` when declaring epochs. The per-resource-CEK-under-epoch-key layout
+means moving a Resource to a new epoch only rewraps the JWE `recipients` --
+which suggests a future client-driven bulk **rewrap** operation as a cheap
+post-removal migration (honest caveat: rewrapping does not help against a reader
+that cached the CEKs themselves).
+
+Closed on the server side 2026-08-20: the registry column and the
+never-backwards text shipped in the spec; the remaining rewrap migration
+guidance is Encrypted Collections territory and was re-homed as ECS-5 in that
+spec's roadmap.

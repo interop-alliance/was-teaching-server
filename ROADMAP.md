@@ -373,11 +373,11 @@ read-only) but no way to _authenticate_ that claim once the data leaves the
 server, nor a server DID to anchor it. Resolution: the WAS spec itself gains
 only (a) a server-DID anchor -- how a server advertises its DID, via the
 well-known DID log route -- and (b) a normative reference from the Export/Import
-operations to a separate reusable **container spec** (WAS-37, draft) that owns
-the envelope format, manifest, and verification procedure. The Keyhive "concap"
-format check moves to WAS-37's design phase. Implementation does not wait on
-either: WAS-7 ships against the de facto format, and the spec text is extracted
-from it (this repo's existing pattern).
+operations to a separate reusable **container spec** (WASS-25 in the spec
+roadmap, draft) that owns the envelope format, manifest, and verification
+procedure. The Keyhive "concap" format check moves to WASS-25's design phase.
+Implementation does not wait on either: WAS-7 ships against the de facto
+format, and the spec text is extracted from it (this repo's existing pattern).
 
 _Option value._ Once the server has a DID and signing key, other uses become
 cheap; recorded here so the option value is not lost (razor: TLS already
@@ -461,7 +461,7 @@ minimal and revisit if the spec text firms up.
         capability exists or was revoked); reasons may need to be
         limited to callers presenting the affected chain
   - [ ] The problem-type spellings are recorded (registry + spec-side
-        note, joining the WAS-27 revocation spec text when that lands)
+        note, joining the WASS-4 revocation spec text when that lands)
   - [ ] Server `test/` coverage for each distinguished cause
 
 The diagnosability half of the revocation-observability question, minted
@@ -526,6 +526,89 @@ reserved endpoint beneath the Space, `policy` included, exactly as it reaches
 data paths. The "inherits" class is load-bearing and must keep working:
 freewallet's replication invokes `<collection>/query` and resource `meta`
 under a collection-scoped grant.
+
+### WAS-60: Enforce the container rule (unsafe methods at a container URL are controller-only)
+
+- status: todo
+- priority: high
+- labels: security, zcap, authorization
+- touches:
+  - wallet-attached-storage-spec: WASS-2 in that repo's ROADMAP.md defines
+    the rule (Delete Space, Update Space Description, Delete Collection,
+    Update Collection Description become direct-root-invocation only, and
+    Collection creation is routed through the reserved `collections`
+    endpoint); this item is the enforcement half and follows the spec text
+  - was-teaching-server: `src/requests/SpaceRequest.ts` (`put`, `delete`,
+    `post`), `src/requests/CollectionRequest.ts` (`put`, `delete`),
+    `src/routes.ts` (the `collections` create route), AGENTS.md
+  - was-client: its Collection-create binding moves to the `collections`
+    endpoint once the spec routes it there
+  - conformance-suite: negative-path assertions (a delegated capability with
+    `allowedAction` covering `PUT`/`DELETE` invoked at a Space or Collection
+    URL is denied with the maximum-privacy 404) and a positive assertion for
+    exact-target delegated Collection creation
+- acceptance:
+  - [ ] `DELETE /space/{id}`, `PUT /space/{id}`, `DELETE .../{collectionId}`,
+        and `PUT .../{collectionId}` accept only direct root-capability
+        invocation by the Space controller; a delegated capability is refused
+        regardless of its `allowedAction`
+  - [ ] Collection creation is served at the reserved `collections` endpoint
+        and accepts an exact-target delegated capability (per the WASS-1 /
+        WAS-59 classes); the `POST /space/{id}/` create route is retired
+  - [ ] The Update Space Description path keeps its body-controller consent
+        check (`verifyBodyControllerConsent`) on top of the new rule
+  - [ ] Server `test/` coverage for each refused and permitted case, plus the
+        conformance assertions above
+
+Split out of wallet-attached-storage-spec WASS-2 (2026-08-20), which keeps the
+spec half. Today all four container unsafe handlers run capability-only
+verification (`fetchSpaceAndVerify` / `handleZcapVerify`) that accepts a
+delegated chain attenuating from the Space root, so a Space-scoped grant
+carrying `DELETE` can delete the Space or any Collection in it; and Collection
+creation is `POST /space/{id}/` (`SpaceRequest.post`), which the container rule
+would make controller-only unless it moves to `collections`. Sequence after
+WAS-59, since the `collections` create route relies on its exact-target class.
+
+### WAS-61: Separate `/policy` control from data writes (exposure test + enforcement)
+
+- status: todo
+- priority: high
+- labels: security, consent, zcap, authorization
+- touches:
+  - wallet-attached-storage-spec: WASS-3 in that repo's ROADMAP.md specifies
+    the `/policy` CRUD operations and assigns them the exact-target-required
+    class from WASS-1; this item is the enforcement half and follows the
+    spec text
+  - was-teaching-server: `src/requests/PolicyRequest.ts` (all three levels),
+    `src/requests/spaceContext.ts`, `test/policy.test.ts`, AGENTS.md
+  - conformance-suite: negative-path assertions (a Space- or
+    Collection-scoped delegated capability carrying `PUT`/`DELETE` invoked at
+    a `/policy` endpoint beneath it is denied with the maximum-privacy 404)
+    and a positive assertion for an exact-target `/policy` delegation
+- acceptance:
+  - [ ] Confirm-first exposure test in `test/policy.test.ts`: a delegated
+        zcap on `<collection>` carrying `PUT`, invoked at
+        `<collection>/policy`, currently verifies (by code reading it does:
+        `PolicyRequest` goes through `fetchSpaceAndVerify`, which accepts a
+        chain attenuating from the Space root). The test lands first, red,
+        and documents the exposure
+  - [ ] `/policy` at all three levels accepts only a capability whose
+        `invocationTarget` is that `/policy` URL itself, or direct root
+        invocation by the controller; a container-prefix grant never reaches
+        it (the exact-target class of WAS-59)
+  - [ ] The exposure test flips green; server `test/` covers the refused and
+        permitted cases at each level, plus the conformance assertions above
+  - [ ] `RESERVED_COLLECTION_IDS` / `RESERVED_RESOURCE_IDS` in
+        `src/lib/validateId.ts` already reserve `policy`; the drift-guard
+        test keeps them aligned with the spec's naming rule once WASS-3
+        states it
+
+Split out of wallet-attached-storage-spec WASS-3 (2026-08-20), which keeps the
+spec half; freewallet FW-41 carries the consent rationale ("make this
+collection publicly readable" must appear on a consent screen in those words,
+and must not be implied by a verb list). Without this item every collection
+write grant silently includes the power to flip that collection public.
+Sequence after WAS-59, whose exact-target class this rides on.
 
 ### WAS-58: Aggregate quota reporting across an account's auxiliary Spaces
 
@@ -808,8 +891,9 @@ work rather than an implicit property: client-chosen opaque ids (deterministic
 AES-SIV name encryption -- Cryptomator's filename scheme -- is the concrete
 lookup-preserving technique) and padded / bucketed sizes. The blinded-index
 query profile already covers the _query_ axis; this item is the _namespace_
-axis. Feeds the "server knowledge" spec section (WAS-31): whatever stays visible
-should be listed there as a documented, deliberate residue.
+axis. Feeds the "server knowledge" spec section (ECS-4 in the Encrypted
+Collections spec roadmap): whatever stays visible should be listed there as a
+documented, deliberate residue.
 
 ### WAS-17: BYOS beyond My-Drive OAuth
 
@@ -996,282 +1080,3 @@ regardless; (c) _path-valued index names_ -- extending the `name` grammar to
 JSON Pointer for nested attributes.
 
 ---
-
-## Reverse gaps (server features the spec does not yet describe)
-
-Spec-side follow-ups noticed during the comparison; tracked here so the two
-documents converge. All of these are edits to `spec.md` in the
-[w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
-repo, not server code.
-
-The venue-and-method plan for the wider BYOE-layer spec extraction -- what lands
-in the WAS spec proper vs the companion CCG work items (App Connect, Encrypted
-Collections) vs the implementers guide -- is recorded in freewallet's
-`_spec/additional-spec-roadmap.md`; its FW-60 triage table (freewallet's
-`_spec/fw-60-triage-table.md`, 2026-07-31) is the superset work queue the items
-below are mapped into.
-
-One encryption gap lives in a companion roadmap rather than as an item below:
-the blinded-index envelope and descriptor semantics the server already serves
-(the `hmac` descriptor member, the `indexed` entries the `blinded-index-query`
-feature matches, the persisted index schema) are Encrypted Collections
-territory, tracked as ECS-2 in the encrypted-collections spec roadmap
-(`encrypted-collections-spec/_spec/ROADMAP.md`). The WAS spec's Query Profile
-Registry covers only the `/query` wire shape.
-
-### WAS-26: Spec the Import operation
-
-- status: todo
-- priority: medium
-- labels: spec-side
-- acceptance:
-  - [ ] An Import operation is defined in the spec
-  - [x] `import` added to the Reserved Path Segment Registry (2026-07-31,
-        alongside a "Reserved / not yet specified" API-summary row next to
-        `export`)
-  - [ ] The `invalid-import` error type is no longer orphaned (interim
-        2026-07-31: its registry row now points at the reserved path and states
-        the operation is not yet specified; fully closed by the first box)
-
-`POST /space/{id}/import` is implemented (tar merge with FEP-6fcd manifest,
-`ImportStats` summary, `invalid-import` errors) but the spec defines no Import
-operation.
-
-If WAS-37 proceeds, this operation thins out to profile-plus-reference: the
-accepted container format moves to the container spec, and the WAS spec keeps
-the HTTP operation, the WAS profile, and the import-specific semantics (merge
-behavior, `ImportStats`, provenance verification outcomes).
-
-### WAS-27: Spec the zcap revocation operation
-
-- status: todo
-- priority: medium
-- labels: spec-side
-- acceptance:
-  - [ ] The spec adopts (or replaces) the `/zcaps/revocations/` convention as a
-        defined revocation operation
-
-ZCap revocation is presupposed but never specified: the spec calls the
-authorization profile "delegatable, revocable, secure, flexible" and its
-`controller-mismatch` privacy note names "capability revocation status" as
-provider-defined state, yet defines no revocation operation. The server follows
-the ezcap-express `/zcaps/revocations/` convention
-(`POST /space/{space_id}/zcaps/revocations/{revocation_id}`), which the spec
-should either adopt or replace. Interim (2026-07-31): the spec's Delegation
-section now carries an ednote acknowledging the gap and naming the shipped
-convention; the defined operation remains this item.
-
-### WAS-28: Spec the Export operation
-
-- status: todo
-- priority: medium
-- labels: spec-side
-- acceptance:
-  - [ ] Export format, manifest, and response shape documented (the server's
-        tar + manifest format is the de facto definition)
-  - [ ] Chunk entries described backend-neutrally in the export manifest
-        (index/contentType/version)
-
-Export has no detailed spec section (format, manifest, response shape) -- the
-API summary and the Reserved Path Segment Registry both still mark
-`POST /space/{space_id}/export` "Reserved / not yet specified". When specifying
-it, also describe chunk entries neutrally in the export manifest: today the
-archive chunk layout is the filesystem backend's on-disk encoding
-(`chunkDirName` + `fileNameFor` + `.meta.<n>.json` sidecars), which the Postgres
-export synthesizes and any non-filesystem backend must emulate to interoperate.
-
-If WAS-37 proceeds, this operation thins out to profile-plus-reference: the
-container format (layout, manifest, provenance envelope) moves to the container
-spec, and the WAS spec keeps the HTTP operation plus the WAS profile
-(space/collection structure, reserved sidecar names, chunk layout). The
-chunk-neutrality acceptance item above is really a container-spec requirement.
-
-### WAS-37: Reusable signed-container spec for exports (WAS + wallet backups)
-
-- status: draft
-- priority: low
-- labels: spec-side
-
-Raised 2026-07-22, while resolving WAS-7's spec-status question
-(discovered-from: WAS-7). Draft because the actionable scope depends on two
-decisions not yet made: whether to raise it as a CCG work item, and whether
-wallet implementations (Freewallet, DCW) commit to consuming it -- without that
-buy-in, a WAS-spec appendix delivers everything except the reuse.
-
-_The idea._ The artifact WAS-7 defines is a container, not protocol: "a set of
-items + metadata sidecars + a completeness manifest + signed provenance by the
-exporting party." Nothing in it requires WAS -- and it is exactly the shape of a
-wallet backup. A separate spec would own the archive layout conventions, the
-FEP-6fcd-style manifest, the metadata sidecar model, and the provenance
-envelope + verification procedure (verified / unverified / content-mismatch
-semantics). The attester is just "a DID": a WAS server's `did:webvh` for WAS
-exports, the wallet's own DID for a wallet export -- WAS-7's
-signing-time-agnostic envelope (no export- or WAS-specific context in the signed
-bytes) is precisely what makes that generalization possible. The
-embedded-DID-log-snapshot offline-verification feature becomes an optional
-capability for DID methods with logs (`did:webvh`), plain DID resolution the
-fallback (a wallet on `did:key` simply gets no key history).
-
-_Layering._ (1) Core container spec, as above. (2) WAS profile: space/collection
-structure, reserved names, chunk layout, and the Export/Import HTTP operations
-(WAS-26/WAS-28 thin out to profile-plus-reference). (3) Wallet profile(s),
-later, mapping Freewallet/DCW items.
-
-_Scope discipline._ Container encryption is OUT of scope for the core: wallet
-backups need at-rest passphrase protection, WAS exports do not (their contents
-may already be EDV ciphertext), and a wrapping layer (e.g. JWE around the whole
-archive) is orthogonal. Say so early or the wallet use case will drag it in.
-
-_Sequencing._ Implementation-first: WAS-7 ships against the de facto server
-format and this spec is extracted from it -- WAS-7 must NOT acquire a dependency
-on a CCG work-item lifecycle. Design-phase checks: the Keyhive "concap" envelope
-comparison (moved here from WAS-7), and a WAS-neutral name (something in the
-vein of "verifiable content archive" -- "space contents export" undersells the
-reuse).
-
-Promotion to `todo` requires: the CCG-work-item decision, at least one wallet
-consumer signal, and acceptance criteria for the core spec's section list.
-
-### WAS-29: Spec the key-epochs surface (`epoch` feed member, descriptor/stamp rails)
-
-- status: todo
-- priority: medium
-- labels: spec-side, encryption
-- acceptance:
-  - [ ] The optional `epoch` member added to the `changes` profile registry
-        entry (or `key-epochs` documented as an extension)
-  - [ ] The descriptor/stamp surface (`encryption.epochs` / `currentEpoch`
-        rails, `Key-Epoch` Resource stamp) covered
-
-The `changes` profile's registry entry omits the `epoch` member the server emits
-on feed documents (the `key-epochs` stamp, carried so a replicating reader picks
-the right epoch key without a `/meta` fetch per Resource) -- and more broadly
-the served key-epochs surface is unspecified: the EDV-over-WAS appendix
-currently declares epoch bookkeeping deliberately client-side.
-
-### WAS-30: Layered-revocation security-considerations text
-
-- status: todo
-- priority: low
-- labels: spec-side
-- acceptance:
-  - [ ] The two-layer revocation model stated explicitly (authorization
-        revocation vs. cryptographic revocation via epoch rotation)
-  - [ ] The trust model owned: the server is the revocation checkpoint; offline
-        / pure-P2P operation out of scope, Keyhive cited as contrast
-
-(Keyhive item 4.) The spec should state the two-layer revocation model
-explicitly: revoking a delegated zcap is _authorization_ revocation -- immediate
-and total at the server checkpoint -- while _cryptographic_ revocation for
-encrypted Collections additionally requires rotating the key epoch, because a
-revoked reader still holds the old epoch key and can decrypt anything already
-pulled (the server ships both halves: zcap revocation and key epochs). The same
-section should own the trust model: WAS deliberately verifies against one
-authoritative chain at request time, so the server _is_ the revocation
-checkpoint and offline / pure-P2P operation is out of scope -- an architectural
-advantage over coordination-free designs (cite Keyhive as the contrast).
-
-### WAS-31: Server-knowledge section for encrypted Collections
-
-- status: todo
-- priority: low
-- labels: spec-side, encryption
-- acceptance:
-  - [ ] Plaintext residue enumerated (resource ids, sizes, timestamps,
-        `createdBy`, epoch ids and recipient `kid`s, changes-feed metadata,
-        access patterns)
-  - [ ] Tamper-detectable vs. explicitly-accepted risks split out, Cryptomator
-        security-target style
-
-(Keyhive item 1.) The planned "server knowledge" section for encrypted
-Collections should follow the Cryptomator threat-model documentation style:
-plainly enumerate what stays plaintext, what tampering is client-detectable
-(per-object AEAD), and what is an explicitly accepted risk (ciphertext rollback,
-listing truncation, plaintext-metadata forgery). Their security-target page is
-the template.
-
-### WAS-32: Spec the `was` envelope-binding protected-header parameter
-
-- status: todo
-- priority: medium
-- labels: spec-side, encryption
-- acceptance:
-  - [ ] The private JWE protected-header member `was: { v, resource?, epoch? }`
-        specified in the EDV-over-WAS appendix
-  - [ ] The rules carried into the text: `resource` omitted for content-derived
-        ids, pre-binding vintage accepted, `v` greater than supported is a
-        refusal
-  - [ ] The metadata (`custom`) envelope's `{ v, resource }` binding covered
-
-Shipped in the client stack, 2026-07-20. Writers now emit and readers verify
-this member -- the scheme version, the resource id the envelope was written
-under, and the key-epoch id, all AEAD-covered by the JWE, so a server-side
-envelope swap between ids, an epoch relabel, or a per-envelope scheme downgrade
-fails on decrypt.
-
-### WAS-33: Spec the `encryption.version` descriptor member
-
-- status: todo
-- priority: medium
-- labels: spec-side, encryption
-- acceptance:
-  - [x] The Encryption Scheme Registry gains a scheme-version column
-  - [ ] Migration guidance written: only key-wrap material is rewritten, never
-        ciphertext bodies (the rewrap path), with the cached-CEK caveat
-  - [x] The never-backwards rail documented (once set, never decreases, never
-        removed)
-
-Spec update 2026-08: the Encryption Scheme Registry now carries a `version`
-column (`edv`/`1`) and the descriptor text documents the set-once,
-version-monotonic rail (absent `version` means `1`; raising permitted). Only the
-rewrap migration guidance (with the cached-CEK caveat) remains unwritten.
-
-The server now validates an optional positive-integer `version` on the
-`encryption` descriptor and enforces that, once set, it never decreases and is
-never removed (the same never-backwards rail as `currentEpoch`); clients stamp
-`version: 1` when declaring epochs. The per-resource-CEK-under-epoch-key layout
-means moving a Resource to a new epoch only rewraps the JWE `recipients` --
-which suggests a future client-driven bulk **rewrap** operation as a cheap
-post-removal migration (honest caveat: rewrapping does not help against a reader
-that cached the CEKs themselves).
-
-### WAS-53: Reconcile chunk-capability exact-match text with target attenuation
-
-- status: draft
-- priority: medium
-- labels: spec-side, authorization
-
-Discovered while writing the chunked-resources conformance suite
-(discovered-from: WAS-45). The spec's Chunk Authorization text says a
-chunk-write capability's `invocationTarget` MUST be the chunk's own full URL
-under "the same exact-match target rule that governs every WAS URL" -- but the
-server deliberately verifies chunk (and other descendant) writes with
-space-rooted RESTful target attenuation (`attenuatedRootTarget`), so a
-capability scoped to the Space, Collection, or parent Resource authorizes a
-descendant chunk write. One side has to move: either the spec's authorization
-profile describes attenuation (an ancestor-scoped capability covers descendant
-paths) and the chunk text inherits it, or the server enforces exact-match on
-chunk URLs and breaks ancestor-cap workflows. Draft until the spec decision is
-made; the conformance suite meanwhile covers the URL-binding MUST with a
-non-ancestor (sibling-chunk) probe, which both readings reject.
-
-### WAS-35: Spec the chunked-stream encryption profile (`caad`)
-
-- status: todo
-- priority: medium
-- labels: spec-side, encryption
-- acceptance:
-  - [ ] The `caad: 1` AAD construction adopted in the EDV-over-WAS chunked
-        profile (encoded header || `0x2E` || uint64-BE chunk index)
-  - [ ] Sealed stream state (`{ sequence, chunks }`) inside the document
-        envelope, so truncation is detected from authenticated state
-  - [ ] Legacy streams stay readable; readers-before-writers deployment note
-        included
-
-Shipped in the client stack, 2026-07-20; chunks stay opaque to the server. The
-profile should adopt what stream writes now produce by default: per-chunk AAD
-defeating within-Resource chunk reordering and substitution (the per-stream
-random CEK already blocks cross-Resource transplants), and the stream state
-sealed inside the document envelope so readers take the chunk count from
-authenticated state. Legacy streams without the `caad` member remain readable;
-readers must be upgraded before writers when deploying.
