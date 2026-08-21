@@ -1,5 +1,14 @@
 # History
 
+## 0.22.1 - TBD
+
+### Changed
+
+- The ladder-delegation bound formerly called the companion clause is renamed
+  the client-annex clause (`clientAnnexChainInspector`,
+  `lib/clientAnnexClause.ts`); the refusal message wording follows. Internal
+  rename only; no wire or protocol behavior changes.
+
 ## 0.22.0 - 2026-08-19
 
 ### Added
@@ -15,13 +24,12 @@
   delegation clause). A delegation signed by a delegation-only verification
   method of a self-hosted `did:webvh` document (`capabilityDelegation` without
   `capabilityInvocation`) is admitted only when its `controller` equals the
-  companion DID named by the document's
-  `https://w3id.org/byoe#DelegatedClients` service entry, or when its
-  `invocationTarget` is the account log resource URL with `allowedAction`
-  within `PUT`, or the trailing-slash URL of a `DelegatedClientsSpace`-typed
-  Space with `allowedAction` within `GET`/`PUT`. A refused delegation does not
-  authorize; the refusal falls through to access-control policy, so
-  world-readable reads still serve.
+  companion DID named by the document's `https://w3id.org/byoe#DelegatedClients`
+  service entry, or when its `invocationTarget` is the account log resource URL
+  with `allowedAction` within `PUT`, or the trailing-slash URL of a
+  `DelegatedClientsSpace`-typed Space with `allowedAction` within `GET`/`PUT`. A
+  refused delegation does not authorize; the refusal falls through to
+  access-control policy, so world-readable reads still serve.
 
 ### Changed
 
@@ -38,6 +46,7 @@
 ## 0.21.1 - 2026-08-18
 
 ### Changed
+
 - Update to latest `@interop/data-integrity-core@8.7.1`.
 
 ## 0.21.0 - 2026-08-12

@@ -160,28 +160,28 @@ semantics, encrypted-`custom` passthrough) is the template.
   - was-teaching-server ROADMAP.md -- the Reverse gaps section gains the
     blinded-index cross-link (second acceptance box) (done 2026-08-12)
 - acceptance:
-  - [x] The conformance suite exercises blinded-index queries against
-        envelopes produced by the was-client codec path
-        (`createEdvEncryption` + `Collection.declareIndex()` / `find()`):
-        codec-written `indexed` entries match on the server and `find()`
-        round-trips, including a `unique` conflict case. Today the
-        `blinded-index-api` suite seeds documents by direct PUT of hand-built
-        envelopes only, so nothing proves the two writers produce
-        server-matchable tokens for the same content. (2026-08-12: `codec path`
-        group in `blinded-index-api` -- equals round-trip, has + count, unique
-        409 conflict -- 183/183 conformant against this server)
+  - [x] The conformance suite exercises blinded-index queries against envelopes
+        produced by the was-client codec path (`createEdvEncryption` +
+        `Collection.declareIndex()` / `find()`): codec-written `indexed` entries
+        match on the server and `find()` round-trips, including a `unique`
+        conflict case. Today the `blinded-index-api` suite seeds documents by
+        direct PUT of hand-built envelopes only, so nothing proves the two
+        writers produce server-matchable tokens for the same content.
+        (2026-08-12: `codec path` group in `blinded-index-api` -- equals
+        round-trip, has + count, unique 409 conflict -- 183/183 conformant
+        against this server)
   - [x] The Reverse gaps section cross-links the blinded-index envelope and
         descriptor semantics the server already serves (the `hmac` member,
-        `indexed` entries, persisted index schema) to their spec home, ECS-2
-        in the encrypted-collections spec roadmap -- the WAS spec's Query
-        Profile Registry covers only the `/query` wire shape. (2026-08-12)
+        `indexed` entries, persisted index schema) to their spec home, ECS-2 in
+        the encrypted-collections spec roadmap -- the WAS spec's Query Profile
+        Registry covers only the `/query` wire shape. (2026-08-12)
 
-Follow-on from was-client WCL-1 (codec-path content search, client side
-shipped in was-client 0.35.x): the server's `blinded-index-query` matches
-`indexed` entries regardless of who wrote them, but conformance coverage
-never writes through the codec path, and the spec-side envelope semantics
-live in the encrypted-collections spec, which this ROADMAP's Reverse gaps
-section does not yet point at.
+Follow-on from was-client WCL-1 (codec-path content search, client side shipped
+in was-client 0.35.x): the server's `blinded-index-query` matches `indexed`
+entries regardless of who wrote them, but conformance coverage never writes
+through the codec path, and the spec-side envelope semantics live in the
+encrypted-collections spec, which this ROADMAP's Reverse gaps section does not
+yet point at.
 
 ### WAS-29: Spec the key-epochs surface (`epoch` feed member, descriptor/stamp rails)
 
@@ -201,8 +201,8 @@ the right epoch key without a `/meta` fetch per Resource) -- and more broadly
 the served key-epochs surface is unspecified: the EDV-over-WAS appendix
 currently declares epoch bookkeeping deliberately client-side.
 
-Closed 2026-08-20 by the roadmap reconciliation: the spec now carries `epoch`
-in item summaries (mirroring the Resource Metadata property), the `Key-Epoch`
+Closed 2026-08-20 by the roadmap reconciliation: the spec now carries `epoch` in
+item summaries (mirroring the Resource Metadata property), the `Key-Epoch`
 header and `epoch` stamping, and the Key Epochs section with its server
 validation and epoch-stamping text; nothing remains unspecified.
 

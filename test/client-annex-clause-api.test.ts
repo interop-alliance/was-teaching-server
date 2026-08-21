@@ -1,10 +1,10 @@
 /**
- * Companion-clause tests (Vitest): the bound on what a *ladder* verification
+ * Client-annex-clause tests (Vitest): the bound on what a *ladder* verification
  * method of a self-hosted `did:webvh` account document may delegate.
  *
  * A ladder VM is recognized by relation asymmetry alone -- listed under
  * `capabilityDelegation`, absent from `capabilityInvocation`. A delegation it
- * signs is admitted only when it names the account document's companion DID as
+ * signs is admitted only when it names the account document's annex DID as
  * controller, or when its target is bridge-shaped (the account's own history
  * log with `PUT`, or the subtree URL of a delegated-clients bookkeeping Space
  * with `GET`/`PUT`). Everything
@@ -41,7 +41,7 @@ import {
   zcapClients
 } from './helpers.js'
 
-/** The service-entry type IRI naming an account's current companion DID. */
+/** The service-entry type IRI naming an account's current annex DID. */
 const DELEGATED_CLIENTS_SERVICE_TYPE = 'https://w3id.org/byoe#DelegatedClients'
 
 /** The auxiliary Space's full type array, as a wallet would send it. */
@@ -63,7 +63,7 @@ interface WebvhIdentity {
   ladderKeyPair?: any
 }
 
-describe('companion clause (ladder-VM delegation bounds)', () => {
+describe('client-annex clause (ladder-VM delegation bounds)', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
     dataDir: string,
@@ -72,8 +72,8 @@ describe('companion clause (ladder-VM delegation bounds)', () => {
 
   /** The account identity every ladder delegation below is signed under. */
   let account: WebvhIdentity
-  /** The companion DID the account document's service entry names. */
-  let companion: WebvhIdentity
+  /** The annex DID the account document's service entry names. */
+  let clientAnnex: WebvhIdentity
   let accountSpaceUrl: string
   let accountLogUrl: string
   let credentialsUrl: string
@@ -86,16 +86,16 @@ describe('companion clause (ladder-VM delegation bounds)', () => {
     }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
 
-    // The companion is provisioned first: the account document's service entry
+    // The annex identity is provisioned first: the account document's service entry
     // has to name it, and a DID string is only known once its log is minted.
-    companion = await provisionWebvhIdentity({ withLadderKey: false })
+    clientAnnex = await provisionWebvhIdentity({ withLadderKey: false })
     account = await provisionWebvhIdentity({
       withLadderKey: true,
       services: [
         {
           id: '#delegated-clients',
           type: DELEGATED_CLIENTS_SERVICE_TYPE,
-          serviceEndpoint: companion.did
+          serviceEndpoint: clientAnnex.did
         }
       ]
     })
@@ -296,17 +296,17 @@ describe('companion clause (ladder-VM delegation bounds)', () => {
     })
   })
 
-  describe('predicate (i): the companion DID as controller', () => {
-    it('admits a ladder delegation controlled by the companion DID', async () => {
+  describe('predicate (i): the annex DID as controller', () => {
+    it('admits a ladder delegation controlled by the annex DID', async () => {
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: accountSpaceRoot(),
         invocationTarget: credentialsUrl,
-        controller: companion.did,
+        controller: clientAnnex.did,
         allowedActions: ['GET']
       })
       const response = await client({
-        signer: companion.clientKeyPair.signer()
+        signer: clientAnnex.clientKeyPair.signer()
       }).request({
         url: `${credentialsUrl}/doc-1`,
         method: 'GET',
@@ -645,7 +645,7 @@ describe('companion clause (ladder-VM delegation bounds)', () => {
     it('refuses the no-slash form of the same Space URL (404)', async () => {
       // Only the subtree (trailing-slash) target is admitted: a no-slash
       // grant would also cover Update Space Description under target
-      // attenuation. Companion-profile grants pass the subtree target
+      // attenuation. Annex-profile grants pass the subtree target
       // explicitly (was-client `GrantOptions.target`).
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,

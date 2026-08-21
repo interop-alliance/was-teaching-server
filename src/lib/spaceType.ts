@@ -24,7 +24,7 @@ export const AUXILIARY_SPACE_TYPE = 'AuxiliarySpace'
 
 /**
  * The auxiliary-Space subtype naming a wallet's delegated-clients bookkeeping
- * Space. The companion-chain inspector (`lib/companionClause.ts`) admits a
+ * Space. The annex-chain inspector (`lib/clientAnnexClause.ts`) admits a
  * ladder-signed delegation whose `invocationTarget` is the trailing-slash URL
  * of a Space so typed. Because that widens what a ladder VM may delegate, the
  * subtype is only valid alongside `AuxiliarySpace` ({@link
@@ -137,7 +137,7 @@ export function isAuxiliarySpace(
  * Whether a Space Description declares itself a delegated-clients bookkeeping
  * Space: typed with both `AuxiliarySpace` and `DelegatedClientsSpace`, the
  * only combination {@link assertValidSpaceType} admits for the latter. The
- * membership check behind the companion clause's whole-Space branch.
+ * membership check behind the annex clause's whole-Space branch.
  * @param spaceDescription {{ type?: unknown } | undefined}
  * @returns {boolean}
  */

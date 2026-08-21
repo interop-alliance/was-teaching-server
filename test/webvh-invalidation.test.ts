@@ -169,12 +169,12 @@ describe('did:webvh resolution cache invalidation', () => {
 
   beforeAll(async () => {
     first = {
-      collectionId: 'companion-0',
-      ...(await publishDid({ collectionId: 'companion-0' }))
+      collectionId: 'clientAnnex-0',
+      ...(await publishDid({ collectionId: 'clientAnnex-0' }))
     }
     second = {
-      collectionId: 'companion-1',
-      ...(await publishDid({ collectionId: 'companion-1' }))
+      collectionId: 'clientAnnex-1',
+      ...(await publishDid({ collectionId: 'clientAnnex-1' }))
     }
   })
 

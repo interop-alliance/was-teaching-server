@@ -641,14 +641,14 @@ describe('did:webvh Space controller', () => {
 
     beforeAll(async () => {
       space = await provisionSpace({
-        logCollectionId: 'companion-0',
+        logCollectionId: 'clientAnnex-0',
         publicLogCollection: false
       })
     })
 
     it('the minted DID names that Collection', () => {
       assert.equal(space.did.split(':').length, 7)
-      assert.equal(space.did.split(':')[6], 'companion-0')
+      assert.equal(space.did.split(':')[6], 'clientAnnex-0')
     })
 
     it('promotes the Space to it (204)', async () => {
@@ -677,7 +677,7 @@ describe('did:webvh Space controller', () => {
     it('an anonymous read of the log itself is still refused (404)', async () => {
       const response = await fetch(
         new URL(
-          `/space/${space.spaceId}/companion-0/did.jsonl`,
+          `/space/${space.spaceId}/clientAnnex-0/did.jsonl`,
           serverUrl
         ).toString()
       )
@@ -710,7 +710,7 @@ describe('did:webvh Space controller', () => {
       const published = await publishLog({
         signerClient: space.was,
         spaceId: space.spaceId,
-        collectionId: 'companion-0',
+        collectionId: 'clientAnnex-0',
         jsonl: logToJsonlString(updated.log)
       })
       assert.equal(published.status, 204)
@@ -748,7 +748,7 @@ describe('did:webvh Space controller', () => {
     let controlledSpaceId: string
 
     beforeAll(async () => {
-      logSpace = await provisionSpace({ logCollectionId: 'companion-1' })
+      logSpace = await provisionSpace({ logCollectionId: 'clientAnnex-1' })
       controlledSpaceId = randomUUID()
       await alice.was
         .space(controlledSpaceId)
@@ -782,7 +782,7 @@ describe('did:webvh Space controller', () => {
       // The hosting Space is still controlled by Alice's did:key, so she may
       // remove the log -- which is the controlled Space's only key material.
       const deleted = await alice.was.request({
-        path: `/space/${logSpace.spaceId}/companion-1/did.jsonl`,
+        path: `/space/${logSpace.spaceId}/clientAnnex-1/did.jsonl`,
         method: 'DELETE'
       })
       assert.equal(deleted.status, 204)

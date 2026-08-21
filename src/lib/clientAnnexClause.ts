@@ -1,18 +1,18 @@
 /**
- * The companion-chain inspection hook -- the second `inspectCapabilityChain`
+ * The client-annex chain-inspection hook -- the second `inspectCapabilityChain`
  * inspector beside the revocation one (`lib/revocations.ts`), wired into every
  * verification on both route families that engages the local `did:webvh`
  * resolver.
  *
  * It bounds what a *ladder* verification method may delegate. The ladder VM is
- * the stable, credential-derived method a wallet publishes on a client-less
- * account document; it is recognized purely by relation asymmetry -- a
+ * the stable, credential-derived method a wallet publishes on a
+ * ladder-anchored account document; it is recognized purely by relation asymmetry -- a
  * `capabilityDelegation` member absent from `capabilityInvocation` -- so no
  * marker vocabulary is consulted. A delegation whose proof VM resolves to a
  * ladder VM is admitted iff one of two predicates holds:
  *
- * 1. Companion-DID controller, by pointer equality: the delegation's sole
- *    `controller` equals the companion DID named by the
+ * 1. Annex-DID controller, by pointer equality: the delegation's sole
+ *    `controller` equals the annex DID named by the
  *    `https://w3id.org/byoe#DelegatedClients` service entry of the account
  *    document the chain already resolved as delegator (a memoized read, so no
  *    extra I/O), behind the syntactic gate that the string parses as a
@@ -26,13 +26,13 @@
  *    within {GET, PUT} (one memoized Space Description read).
  *
  * The locked property: no ladder authority whose exercise leaves no record --
- * every admitted ladder delegation either resolves through a loud companion
+ * every admitted ladder delegation either resolves through a loud annex
  * entry or can only write a log. The clause binds the capability decision
  * only: a refused delegation does not authorize, and the refusal falls through
  * to the access-control policy like any other failed verification (a
  * world-readable read still serves). The clause is fail-open across servers --
  * one running unmodified verification accepts what this refuses -- so a wallet
- * publishes a ladder VM only on a host advertising the companion profile.
+ * publishes a ladder VM only on a host advertising the client-annex profile.
  */
 import type { InspectCapabilityChain } from '@interop/zcap'
 import type { DIDDoc } from '@interop/did-method-webvh'
@@ -49,7 +49,7 @@ import { isUrlSafeSegment } from './validateId.js'
 import { resourcePath, spacePath } from './paths.js'
 
 /**
- * The service-entry type IRI naming the account's current companion DID.
+ * The service-entry type IRI naming the account's current annex DID.
  * Readers dispatch on this IRI -- fragment ids on service entries are
  * non-semantic.
  */
@@ -183,22 +183,26 @@ function isLadderVerificationMethod({
 }): boolean {
   const docId = doc.id ?? ''
   return (
-    relationshipMethodIds({ entries: doc.capabilityDelegation, docId })
-      .includes(verificationMethod) &&
-    !relationshipMethodIds({ entries: doc.capabilityInvocation, docId })
-      .includes(verificationMethod)
+    relationshipMethodIds({
+      entries: doc.capabilityDelegation,
+      docId
+    }).includes(verificationMethod) &&
+    !relationshipMethodIds({
+      entries: doc.capabilityInvocation,
+      docId
+    }).includes(verificationMethod)
   )
 }
 
 /**
- * The companion DID the account document currently points at: the
+ * The annex DID the account document currently points at: the
  * `serviceEndpoint` of the service entry whose `type` names (or includes) the
  * `DelegatedClients` IRI. Only a bare DID-string endpoint counts -- the
- * convention stores the companion DID itself, host-independent.
+ * convention stores the annex DID itself, host-independent.
  * @param doc {DIDDoc}   the resolved account document
  * @returns {string | undefined}
  */
-function companionDidOf(doc: DIDDoc): string | undefined {
+function clientAnnexDidOf(doc: DIDDoc): string | undefined {
   for (const entry of doc.service ?? []) {
     const types = Array.isArray(entry.type) ? entry.type : [entry.type]
     if (
@@ -232,9 +236,7 @@ function actionsWithin({
     return false
   }
   const actions = Array.isArray(allowedAction) ? allowedAction : [allowedAction]
-  return (
-    actions.length > 0 && actions.every(action => allowed.includes(action))
-  )
+  return actions.length > 0 && actions.every(action => allowed.includes(action))
 }
 
 /**
@@ -310,7 +312,7 @@ function isOwnAccountLogTarget({
  * only: it is the Space-subtree target a delegated chain attenuates under,
  * and it excludes `PUT <base>/space/<S>` (Update Space Description, which can
  * rewrite the Space's controller) -- a no-slash grant would cover that under
- * target attenuation. The companion profile therefore grants the bookkeeping
+ * target attenuation. The client-annex profile therefore grants the bookkeeping
  * Space with the subtree target; a `@interop/was-client` caller passes it via
  * the grant's `target` option rather than the `space.grant()` default.
  * @param options {object}
@@ -375,19 +377,19 @@ async function ladderDelegationAdmitted({
   logLocation: { spaceId: string; collectionId: string }
 } & WebvhResolverContext): Promise<boolean> {
   // Predicate 1: the delegation's sole controller is, by pointer equality,
-  // the companion DID the account document currently names -- so a GC pointer
+  // the annex DID the account document currently names -- so a GC pointer
   // swap instantly kills the prior generation's delegations. `controller` is
   // normalized from the array form first (spec-legal, even if in-ecosystem
   // clients emit a string), and exactly one entry is required: a second
   // controller could invoke too, outside the pointer. The syntactic
   // self-hosted gate keeps the admitted controller resolvable here.
   const controllers = capabilityControllers(capability)
-  const companionDid = companionDidOf(doc)
+  const clientAnnexDid = clientAnnexDidOf(doc)
   if (
     controllers.length === 1 &&
-    companionDid !== undefined &&
-    controllers[0] === companionDid &&
-    isSelfHostedWebvhController(companionDid, { serverUrl })
+    clientAnnexDid !== undefined &&
+    controllers[0] === clientAnnexDid &&
+    isSelfHostedWebvhController(clientAnnexDid, { serverUrl })
   ) {
     return true
   }
@@ -423,7 +425,7 @@ async function ladderDelegationAdmitted({
 }
 
 /**
- * Builds the companion-chain inspection hook for one verification: valid when
+ * Builds the annex-chain inspection hook for one verification: valid when
  * no delegated capability in the chain is ladder-signed, or when every
  * ladder-signed one satisfies an admission predicate. Non-`did:webvh` proof
  * methods (and cross-host ones, which could not have verified here) are
@@ -433,7 +435,7 @@ async function ladderDelegationAdmitted({
  *   the local `did:webvh` resolver
  * @returns {InspectCapabilityChain}
  */
-export function companionChainInspector({
+export function clientAnnexChainInspector({
   storage,
   serverUrl
 }: WebvhResolverContext): InspectCapabilityChain {
@@ -479,7 +481,7 @@ export function companionChainInspector({
           error: new Error(
             'A capability in the chain is delegated by a delegation-only ' +
               '(ladder) verification method and names neither the account ' +
-              'document\'s companion DID as controller nor a bridge-shaped ' +
+              "document's client-annex DID as controller nor a bridge-shaped " +
               'invocation target.'
           )
         }

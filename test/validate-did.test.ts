@@ -50,7 +50,13 @@ describe('parseSelfHostedWebvh', () => {
   })
 
   it('parses an arbitrary URL-safe Collection as the log location', () => {
-    for (const collectionId of ['companion-3', 'c.0_x~y', 'id', 'Keys', '9']) {
+    for (const collectionId of [
+      'clientAnnex-3',
+      'c.0_x~y',
+      'id',
+      'Keys',
+      '9'
+    ]) {
       const did = `did:webvh:${scid}:localhost%3A3000:space:${spaceId}:${collectionId}`
       assert.deepEqual(parseSelfHostedWebvh(did, { serverUrl }), {
         scid,

@@ -376,8 +376,8 @@ well-known DID log route -- and (b) a normative reference from the Export/Import
 operations to a separate reusable **container spec** (WASS-25 in the spec
 roadmap, draft) that owns the envelope format, manifest, and verification
 procedure. The Keyhive "concap" format check moves to WASS-25's design phase.
-Implementation does not wait on either: WAS-7 ships against the de facto
-format, and the spec text is extracted from it (this repo's existing pattern).
+Implementation does not wait on either: WAS-7 ships against the de facto format,
+and the spec text is extracted from it (this repo's existing pattern).
 
 _Option value._ Once the server has a DID and signing key, other uses become
 cheap; recorded here so the option value is not lost (razor: TLS already
@@ -446,40 +446,38 @@ minimal and revisit if the spec text firms up.
 - labels: zcap, errors
 - touches:
   - storage-core: new problem types in the shared error registry (their
-    spellings are permanent wire values and need maintainer sign-off
-    before coding)
+    spellings are permanent wire values and need maintainer sign-off before
+    coding)
   - conformance-suite: negative-path assertions on the new types
 - acceptance:
-  - [ ] An authorization denial distinguishes, at minimum, a revoked
-        capability in the chain, an expired capability, and a generic
-        verification failure, as distinct problem types in the error
-        response (today every cause collapses into one generic
-        unauthorized response)
-  - [ ] A security-considerations pass decides which reasons are safe to
-        expose to which callers: reason detail must not become an oracle
-        (e.g. confirming to an unauthorized prober that a given
-        capability exists or was revoked); reasons may need to be
-        limited to callers presenting the affected chain
-  - [ ] The problem-type spellings are recorded (registry + spec-side
-        note, joining the WASS-4 revocation spec text when that lands)
+  - [ ] An authorization denial distinguishes, at minimum, a revoked capability
+        in the chain, an expired capability, and a generic verification failure,
+        as distinct problem types in the error response (today every cause
+        collapses into one generic unauthorized response)
+  - [ ] A security-considerations pass decides which reasons are safe to expose
+        to which callers: reason detail must not become an oracle (e.g.
+        confirming to an unauthorized prober that a given capability exists or
+        was revoked); reasons may need to be limited to callers presenting the
+        affected chain
+  - [ ] The problem-type spellings are recorded (registry + spec-side note,
+        joining the WASS-4 revocation spec text when that lands)
   - [ ] Server `test/` coverage for each distinguished cause
 
 The diagnosability half of the revocation-observability question, minted
-2026-08-19; the read/status-probe half (a client-queryable revocation
-endpoint) is deliberately deferred until a use case needs it -- revocation
-records are retention-bounded internal enforcement state
-(`capability.expires + 24h`, then prunable), so a query surface would
-promote them into a contract with retention and authorization questions of
-their own. Motivating case, from wallet-side ceremony design: a chain that
-stops verifying is opaque to its holder and to the Space owner alike --
-"revoked" is indistinguishable from "expired", a policy denial, or a
-verification-clause refusal, which hurts incident response and forces
-grantee apps to treat every 403 as ambiguous. Typed denial reasons give
-the holder the answer at exactly the moment it matters, without a new
-query surface. Denials currently funnel through the generic authorization
-error in `src/zcap.ts` / `src/authorize.ts`; the revocation cause
-originates in `revocationChainInspector` (`src/lib/revocations.ts`) and is
-distinguishable at that point.
+2026-08-19; the read/status-probe half (a client-queryable revocation endpoint)
+is deliberately deferred until a use case needs it -- revocation records are
+retention-bounded internal enforcement state (`capability.expires + 24h`, then
+prunable), so a query surface would promote them into a contract with retention
+and authorization questions of their own. Motivating case, from wallet-side
+ceremony design: a chain that stops verifying is opaque to its holder and to the
+Space owner alike -- "revoked" is indistinguishable from "expired", a policy
+denial, or a verification-clause refusal, which hurts incident response and
+forces grantee apps to treat every 403 as ambiguous. Typed denial reasons give
+the holder the answer at exactly the moment it matters, without a new query
+surface. Denials currently funnel through the generic authorization error in
+`src/zcap.ts` / `src/authorize.ts`; the revocation cause originates in
+`revocationChainInspector` (`src/lib/revocations.ts`) and is distinguishable at
+that point.
 
 ### WAS-59: Enforce the reserved-path authorization classes (bounded target attenuation)
 
@@ -487,45 +485,41 @@ distinguishable at that point.
 - priority: high
 - labels: security, zcap, authorization
 - touches:
-  - wallet-attached-storage-spec: WASS-1 in that repo's ROADMAP.md defines
-    the classes (the "Target Attenuation and Contained Data" subsection and
-    the `Authorization` column on the Reserved Path Segment Registry); this
-    item is the enforcement half and follows the spec text
+  - wallet-attached-storage-spec: WASS-1 in that repo's ROADMAP.md defines the
+    classes (the "Target Attenuation and Contained Data" subsection and the
+    `Authorization` column on the Reserved Path Segment Registry); this item is
+    the enforcement half and follows the spec text
   - was-teaching-server: `src/requests/spaceContext.ts` (the
     `attenuatedRootTarget` it hands every space-family route), `src/zcap.ts`,
     `src/authorize.ts`, AGENTS.md
   - conformance-suite: negative-path assertions per class (a Space- or
-    Collection-scoped capability invoked at an exact-target or
-    controller-only reserved endpoint beneath it is denied with the
-    maximum-privacy 404)
+    Collection-scoped capability invoked at an exact-target or controller-only
+    reserved endpoint beneath it is denied with the maximum-privacy 404)
 - acceptance:
   - [ ] A capability whose `invocationTarget` is a Space or Collection URL
-        authorizes requests at contained data paths beneath it and at
-        reserved endpoints classed "inherits prefix authority" (`query`,
-        `linkset` GET, `quota`/`quotas` GET, resource-level `meta`), and
-        nothing else beneath it
-  - [ ] "Exact-target required" endpoints (`policy` at all levels,
-        `collections` for create) accept only a capability whose
-        `invocationTarget` is that endpoint's own URL; a chain attenuating
-        from an ancestor is refused
-  - [ ] "Controller-only" endpoints (`import`, unsafe methods on
-        `backends`, and `export` once WASS-1 decides it) accept only direct
-        root-capability invocation by the Space controller
-  - [ ] Delegation-time attenuation is unchanged: this bounds only which
-        request URLs a given `invocationTarget` covers at invocation time
-  - [ ] Server `test/` coverage per class, plus the conformance assertions
-        above
+        authorizes requests at contained data paths beneath it and at reserved
+        endpoints classed "inherits prefix authority" (`query`, `linkset` GET,
+        `quota`/`quotas` GET, resource-level `meta`), and nothing else beneath
+        it
+  - [ ] "Exact-target required" endpoints (`policy` at all levels, `collections`
+        for create) accept only a capability whose `invocationTarget` is that
+        endpoint's own URL; a chain attenuating from an ancestor is refused
+  - [ ] "Controller-only" endpoints (`import`, unsafe methods on `backends`, and
+        `export` once WASS-1 decides it) accept only direct root-capability
+        invocation by the Space controller
+  - [ ] Delegation-time attenuation is unchanged: this bounds only which request
+        URLs a given `invocationTarget` covers at invocation time
+  - [ ] Server `test/` coverage per class, plus the conformance assertions above
 
 Split out of wallet-attached-storage-spec WASS-1 (2026-08-20), which keeps the
-spec half; freewallet FW-39 carries the full rationale (the zcap core spec
-makes invocation-time prefix attenuation conditional on the target API
-supplying a permission statement, which WASS-1 supplies). Today every
-space-family route passes `attenuatedRootTarget: context.spaceRootTarget`
-into the verifier, so a Space-scoped delegated capability reaches every
-reserved endpoint beneath the Space, `policy` included, exactly as it reaches
-data paths. The "inherits" class is load-bearing and must keep working:
-freewallet's replication invokes `<collection>/query` and resource `meta`
-under a collection-scoped grant.
+spec half; freewallet FW-39 carries the full rationale (the zcap core spec makes
+invocation-time prefix attenuation conditional on the target API supplying a
+permission statement, which WASS-1 supplies). Today every space-family route
+passes `attenuatedRootTarget: context.spaceRootTarget` into the verifier, so a
+Space-scoped delegated capability reaches every reserved endpoint beneath the
+Space, `policy` included, exactly as it reaches data paths. The "inherits" class
+is load-bearing and must keep working: freewallet's replication invokes
+`<collection>/query` and resource `meta` under a collection-scoped grant.
 
 ### WAS-60: Enforce the container rule (unsafe methods at a container URL are controller-only)
 
@@ -533,28 +527,28 @@ under a collection-scoped grant.
 - priority: high
 - labels: security, zcap, authorization
 - touches:
-  - wallet-attached-storage-spec: WASS-2 in that repo's ROADMAP.md defines
-    the rule (Delete Space, Update Space Description, Delete Collection,
-    Update Collection Description become direct-root-invocation only, and
-    Collection creation is routed through the reserved `collections`
-    endpoint); this item is the enforcement half and follows the spec text
+  - wallet-attached-storage-spec: WASS-2 in that repo's ROADMAP.md defines the
+    rule (Delete Space, Update Space Description, Delete Collection, Update
+    Collection Description become direct-root-invocation only, and Collection
+    creation is routed through the reserved `collections` endpoint); this item
+    is the enforcement half and follows the spec text
   - was-teaching-server: `src/requests/SpaceRequest.ts` (`put`, `delete`,
     `post`), `src/requests/CollectionRequest.ts` (`put`, `delete`),
     `src/routes.ts` (the `collections` create route), AGENTS.md
   - was-client: its Collection-create binding moves to the `collections`
     endpoint once the spec routes it there
   - conformance-suite: negative-path assertions (a delegated capability with
-    `allowedAction` covering `PUT`/`DELETE` invoked at a Space or Collection
-    URL is denied with the maximum-privacy 404) and a positive assertion for
+    `allowedAction` covering `PUT`/`DELETE` invoked at a Space or Collection URL
+    is denied with the maximum-privacy 404) and a positive assertion for
     exact-target delegated Collection creation
 - acceptance:
   - [ ] `DELETE /space/{id}`, `PUT /space/{id}`, `DELETE .../{collectionId}`,
         and `PUT .../{collectionId}` accept only direct root-capability
         invocation by the Space controller; a delegated capability is refused
         regardless of its `allowedAction`
-  - [ ] Collection creation is served at the reserved `collections` endpoint
-        and accepts an exact-target delegated capability (per the WASS-1 /
-        WAS-59 classes); the `POST /space/{id}/` create route is retired
+  - [ ] Collection creation is served at the reserved `collections` endpoint and
+        accepts an exact-target delegated capability (per the WASS-1 / WAS-59
+        classes); the `POST /space/{id}/` create route is retired
   - [ ] The Update Space Description path keeps its body-controller consent
         check (`verifyBodyControllerConsent`) on top of the new rule
   - [ ] Server `test/` coverage for each refused and permitted case, plus the
@@ -575,40 +569,37 @@ WAS-59, since the `collections` create route relies on its exact-target class.
 - priority: high
 - labels: security, consent, zcap, authorization
 - touches:
-  - wallet-attached-storage-spec: WASS-3 in that repo's ROADMAP.md specifies
-    the `/policy` CRUD operations and assigns them the exact-target-required
-    class from WASS-1; this item is the enforcement half and follows the
-    spec text
+  - wallet-attached-storage-spec: WASS-3 in that repo's ROADMAP.md specifies the
+    `/policy` CRUD operations and assigns them the exact-target-required class
+    from WASS-1; this item is the enforcement half and follows the spec text
   - was-teaching-server: `src/requests/PolicyRequest.ts` (all three levels),
     `src/requests/spaceContext.ts`, `test/policy.test.ts`, AGENTS.md
-  - conformance-suite: negative-path assertions (a Space- or
-    Collection-scoped delegated capability carrying `PUT`/`DELETE` invoked at
-    a `/policy` endpoint beneath it is denied with the maximum-privacy 404)
-    and a positive assertion for an exact-target `/policy` delegation
+  - conformance-suite: negative-path assertions (a Space- or Collection-scoped
+    delegated capability carrying `PUT`/`DELETE` invoked at a `/policy` endpoint
+    beneath it is denied with the maximum-privacy 404) and a positive assertion
+    for an exact-target `/policy` delegation
 - acceptance:
-  - [ ] Confirm-first exposure test in `test/policy.test.ts`: a delegated
-        zcap on `<collection>` carrying `PUT`, invoked at
-        `<collection>/policy`, currently verifies (by code reading it does:
-        `PolicyRequest` goes through `fetchSpaceAndVerify`, which accepts a
-        chain attenuating from the Space root). The test lands first, red,
-        and documents the exposure
+  - [ ] Confirm-first exposure test in `test/policy.test.ts`: a delegated zcap
+        on `<collection>` carrying `PUT`, invoked at `<collection>/policy`,
+        currently verifies (by code reading it does: `PolicyRequest` goes
+        through `fetchSpaceAndVerify`, which accepts a chain attenuating from
+        the Space root). The test lands first, red, and documents the exposure
   - [ ] `/policy` at all three levels accepts only a capability whose
         `invocationTarget` is that `/policy` URL itself, or direct root
-        invocation by the controller; a container-prefix grant never reaches
-        it (the exact-target class of WAS-59)
+        invocation by the controller; a container-prefix grant never reaches it
+        (the exact-target class of WAS-59)
   - [ ] The exposure test flips green; server `test/` covers the refused and
         permitted cases at each level, plus the conformance assertions above
   - [ ] `RESERVED_COLLECTION_IDS` / `RESERVED_RESOURCE_IDS` in
-        `src/lib/validateId.ts` already reserve `policy`; the drift-guard
-        test keeps them aligned with the spec's naming rule once WASS-3
-        states it
+        `src/lib/validateId.ts` already reserve `policy`; the drift-guard test
+        keeps them aligned with the spec's naming rule once WASS-3 states it
 
 Split out of wallet-attached-storage-spec WASS-3 (2026-08-20), which keeps the
-spec half; freewallet FW-41 carries the consent rationale ("make this
-collection publicly readable" must appear on a consent screen in those words,
-and must not be implied by a verb list). Without this item every collection
-write grant silently includes the power to flip that collection public.
-Sequence after WAS-59, whose exact-target class this rides on.
+spec half; freewallet FW-41 carries the consent rationale ("make this collection
+publicly readable" must appear on a consent screen in those words, and must not
+be implied by a verb list). Without this item every collection write grant
+silently includes the power to flip that collection public. Sequence after
+WAS-59, whose exact-target class this rides on.
 
 ### WAS-58: Aggregate quota reporting across an account's auxiliary Spaces
 
@@ -623,7 +614,7 @@ Sequence after WAS-59, whose exact-target class this rides on.
 
 Typed auxiliary Spaces (see the wallet-attached-storage-spec decision record
 `decisions/0001-typed-auxiliary-spaces.md`) split an account's data across the
-account Space and its auxiliary companion Space. `GET /space/{spaceId}/quotas`
+account Space and its auxiliary annex Space. `GET /space/{spaceId}/quotas`
 reports per-Space only, so neither number is the account's usage on its own.
 
 Two questions are deliberately open. The direction: does a query on the account
@@ -632,6 +623,106 @@ about? The payload: fold the auxiliary usage into `usageBytes`, or report a
 per-Space breakdown in a new member (which would need an addition to
 `@interop/storage-core`'s quota types). Both are permanent wire choices and need
 deciding with Dmitri before implementation.
+
+### WAS-62: Validate the `hmac` descriptor member (shape + permanence)
+
+- status: todo
+- priority: medium
+- labels: encryption, data-model, validation
+- touches:
+  - was-teaching-server: `src/lib/encryption.ts` (a new `hmac` shape check
+    beside `assertValidEncryptionEpochs`, and a permanence check inside
+    `assertEncryptionDescriptorTransition`), `src/errors.ts` if the
+    `encryption-immutable` detail text is widened; ARCHITECTURE.md / AGENTS.md
+    unaffected (neither documents the descriptor members)
+  - wallet-attached-storage-spec: the rules are shipped text (WASS-20,
+    2026-08-20): `#blinding-key-member` and `#key-epoch-server-validation`
+  - was-conformance-suite: `encryption-descriptor-api` gains the hmac cases
+    listed in the acceptance below (suite-side items are tracked here, not in a
+    separate roadmap)
+  - was-client: unaffected (already mints `hmac` through the descriptor CAS and
+    never changes `id`/`type` or drops the member)
+- acceptance:
+  - [ ] On a create or update that supplies `encryption.hmac` for a recognized
+        `edv` descriptor: `hmac` MUST be an object with non-empty string `id`
+        and `type` and a non-empty `recipients` array whose entries have the
+        epoch entry shape (`header.kid`, `header.alg` non-empty strings, string
+        `encrypted_key`); a violation is `invalid-request-body` with a JSON
+        pointer
+  - [ ] On an update of a stored descriptor that carries `hmac`: the member MUST
+        remain present with `id` and `type` unchanged (`recipients` entries may
+        change); a change or removal is `encryption-immutable` (409).
+        Introducing `hmac` on a stored descriptor that lacks it is accepted (the
+        WAS-EC provisioning-time rule stays client-side)
+  - [ ] The whole descriptor still round-trips unmodified (`hmac` included)
+  - [ ] Server `test/` coverage for each accepted and refused case
+  - [ ] was-conformance-suite `encryption-descriptor-api` cases: hmac round-trip
+        (`encryption.hmac-persist-echo`), malformed hmac 400 (missing
+        `id`/`type`, empty `recipients`, bad entry shape), hmac `id` change 409,
+        hmac removal 409, hmac `recipients` change accepted, late hmac
+        introduction accepted
+
+Today `hmac` rides through the descriptor as an unknown extra member
+(`encryption.ts` preserves unknown fields and
+`assertEncryptionDescriptorTransition` has no `hmac` branch), so a client bug
+can drop or replace the blinding key and orphan every blinded index in the
+Collection. The spec now requires the shape check and the permanence invariant;
+this item implements both.
+
+### WAS-63: Move the Collection `indexes` declaration under `plaintext`
+
+- status: todo
+- priority: medium
+- labels: data-model, query, breaking
+- blocked-by: storage-core SC-1 (the shared type moves first)
+- touches:
+  - was-teaching-server: `src/lib/equalityIndex.ts` (`assertSupportedIndexes`,
+    `normalizeIndexes`, `assertIndexesNotEncrypted` -- the exclusion becomes
+    presence-based: `plaintext` and `encryption` both present is
+    `invalid-request-body`, pointer `#/plaintext`),
+    `src/requests/SpaceRequest.ts` (create body `plaintext`),
+    `src/requests/CollectionRequest.ts` (update path, the added-unique-index
+    scan, the `equality` query and `GET ?filter[...]` routes reading
+    `plaintext.indexes`), ARCHITECTURE.md / AGENTS.md unaffected (neither
+    documents `indexes`)
+  - storage-core: SC-1 supplies `CollectionDescription.plaintext`
+  - wallet-attached-storage-spec: shape of record is decision record
+    `_spec/decisions/0004-plaintext-and-encryption-counterparts.md`
+    (2026-08-20); the spec text lands with the `equality` profile under WASS-26
+  - was-conformance-suite: the `plaintext` declaration cases listed in the
+    acceptance below (the `equality` query suite itself waits on spec WASS-26);
+    suite-side items are tracked here
+  - was-client: unaffected (no `indexes` producer or `equality` binding)
+- acceptance:
+  - [ ] A Collection description carries `plaintext: { indexes: [...] }`; a
+        top-level `indexes` is no longer read or stored (no compatibility
+        fallback -- greenfield)
+  - [ ] `plaintext` and `encryption` both present on the resulting description
+        is rejected with `invalid-request-body` on create and update, regardless
+        of whether `plaintext.indexes` is empty
+  - [ ] `plaintext` is updatable (add, change, remove) on an existing
+        Collection; a malformed `plaintext` (non-object, non-array `indexes`,
+        bad entry, empty or duplicate `name`, unknown `source`) is
+        `invalid-request-body`
+  - [ ] The `equality` profile and `GET ?filter[...]` read their declarations
+        from `plaintext.indexes`; existing `test/` coverage is moved to the new
+        shape
+  - [ ] was-conformance-suite cases (a new `plaintext-declaration-api` suite or
+        additions to `collection-api`): `plaintext.indexes` persist/echo,
+        `plaintext` + `encryption` both present 400 on create and update,
+        malformed `plaintext` 400, `plaintext` add/change/remove on an existing
+        Collection, `unique` index conflict 409
+
+The spec settled server-side indexing as `plaintext.indexes` (decision 0004,
+2026-08-20; text ships with WASS-26): the two mutually exclusive top-level
+Collection members are `encryption` and `plaintext`, so the exclusion is a
+structural fact rather than a cross-reference, and "indexes" stops colliding
+with the blinded indexes of an encrypted Collection. The server shipped the flat
+`indexes` ahead of the spec text; this item moves it. Note for WAS-25 (b): with
+the presence-based exclusion, "`custom`-only indexes on `encryption`-marked
+Collections" would need a `plaintext` member beside `encryption`, which the spec
+forbids; and the spec already makes an encrypted Collection's `custom` metadata
+an envelope, so that extension is superseded as written.
 
 ## Test coverage gaps (conformance suite + server `test/`)
 
@@ -1068,7 +1159,9 @@ Collection-property section.
         `{ "names": ["parentId", "author"],     "unique": true }`) with zero
         changes to the query wire shape
   - [ ] `custom`-only indexes permitted on `encryption`-marked Collections, with
-        a pointed privacy warning
+        a pointed privacy warning (superseded as written, see WAS-63: the spec's
+        `plaintext`/`encryption` exclusion is presence-based and an encrypted
+        Collection's `custom` metadata is itself an envelope)
   - [ ] Path-valued index names (JSON Pointer) for nested attributes
 
 Follow-ons deliberately deferred from the v1 `equality` profile: (a) _compound

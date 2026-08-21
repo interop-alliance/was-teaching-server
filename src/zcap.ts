@@ -47,9 +47,9 @@ import {
 } from './lib/revocations.js'
 import {
   capabilityControllers,
-  companionChainInspector,
+  clientAnnexChainInspector,
   composeChainInspectors
-} from './lib/companionClause.js'
+} from './lib/clientAnnexClause.js'
 import { isSelfHostedWebvhController } from './lib/validateDid.js'
 import {
   resolveWebvhController,
@@ -395,14 +395,14 @@ export async function handleZcapVerify({
 }): Promise<VerifyCapabilityInvocationResult> {
   // The chain inspectors, composed into the zcap library's single hook: the
   // revocation-store check (whenever the target has a scope), then the
-  // companion-chain clause bounding ladder-signed delegations (whenever the
+  // annex-chain clause bounding ladder-signed delegations (whenever the
   // did:webvh resolver is engaged -- without it no did:webvh proof verifies,
   // so there is no ladder delegation to bound).
   const inspectors = [
     ...(revocation === 'no-revocation-scope'
       ? []
       : [revocationChainInspector(revocation)]),
-    ...(webvh ? [companionChainInspector(webvh)] : [])
+    ...(webvh ? [clientAnnexChainInspector(webvh)] : [])
   ]
   const inspectCapabilityChain =
     inspectors.length > 0 ? composeChainInspectors(inspectors) : undefined
@@ -493,8 +493,8 @@ export async function handleZcapVerify({
  *   against the dereferenced chain after signature verification -- the
  *   extension point for the revocation check (a stored revocation of any
  *   capability in the chain fails the verification, scoped to the keystore or
- *   the Space the request roots in) and the companion-chain clause
- *   (`lib/companionClause.ts`), composed by `handleZcapVerify`.
+ *   the Space the request roots in) and the annex-chain clause
+ *   (`lib/clientAnnexClause.ts`), composed by `handleZcapVerify`.
  * @param [options.maxChainLength] {number}   max delegation chain length,
  *   root included (the `/kms` families pass `KMS_MAX_CHAIN_LENGTH`; absent,
  *   the zcap library's own default applies)

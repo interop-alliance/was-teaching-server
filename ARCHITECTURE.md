@@ -164,13 +164,13 @@ chain, which the verifier walks down to.
 **Chain inspection:** after signature verification, the dereferenced chain
 passes through two composed inspectors. The revocation inspector
 (`lib/revocations.ts`) fails a chain containing any capability with a stored
-revocation. The companion-chain inspector (`lib/companionClause.ts`) bounds
-what a _ladder_ verification method may delegate. A ladder VM is the stable,
-credential-derived method a wallet publishes on a client-less account
+revocation. The annex-chain inspector (`lib/clientAnnexClause.ts`) bounds what a
+_ladder_ verification method may delegate. A ladder VM is the stable,
+credential-derived method a wallet publishes on a ladder-anchored account
 document, recognized by relation asymmetry: a `capabilityDelegation` member of
 the resolved self-hosted `did:webvh` document that is absent from
 `capabilityInvocation`. A delegation signed by one is admitted only when its
-sole `controller` equals the companion DID named by the account document's
+sole `controller` equals the client-annex DID named by the account document's
 `https://w3id.org/byoe#DelegatedClients` service entry (a self-hosted
 `did:webvh` string, compared by pointer equality), or when its
 `invocationTarget` is bridge-shaped: the delegator account's own history log
@@ -180,14 +180,13 @@ Space whose Description declares it delegated-clients bookkeeping (typed
 `AuxiliarySpace` + `DelegatedClientsSpace`, the only combination Create Space
 accepts for the latter) with `allowedAction` within {GET, PUT}. The
 trailing-slash (subtree) form is required: it keeps Update Space Description
-outside ladder reach, so companion-profile grants pass the subtree target
-explicitly rather than the client's no-slash default. Both
-inspectors bind the capability decision only. A refusal falls through to the
-target's access-control policy like any other failed verification, so a
-world-readable read still serves. The clause is fail-open across servers: a
-server running unmodified verification accepts exactly what this clause
-refuses, so a wallet publishes a ladder VM only on a host it has confirmed
-enforces the companion profile.
+outside ladder reach, so annex-profile grants pass the subtree target explicitly
+rather than the client's no-slash default. Both inspectors bind the capability
+decision only. A refusal falls through to the target's access-control policy
+like any other failed verification, so a world-readable read still serves. The
+clause is fail-open across servers: a server running unmodified verification
+accepts exactly what this clause refuses, so a wallet publishes a ladder VM only
+on a host it has confirmed enforces the client-annex profile.
 
 **Signing:** requests are signed with Cavage HTTP Signatures Draft 12 (not yet
 RFC 9421). The `Authorization` header signs

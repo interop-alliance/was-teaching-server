@@ -1,7 +1,7 @@
 /**
  * The memoized Space Description read shared by the request layer
- * (`requests/spaceContext.ts`) and the verification layer (the companion-chain
- * inspector in `lib/companionClause.ts`, which runs deep inside capability
+ * (`requests/spaceContext.ts`) and the verification layer (the annex-chain
+ * inspector in `lib/clientAnnexClause.ts`, which runs deep inside capability
  * verification with no request in hand). One short-TTL cache per storage
  * backend, keyed by `spaceId`; writes invalidate via
  * `invalidateSpaceDescription` so both consumers always read the same state.
