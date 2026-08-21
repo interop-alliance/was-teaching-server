@@ -106,6 +106,12 @@ Rules:
 - Cross-repo decisions are recorded as `decisions/NNNN-slug.md` in the repo that
   owns the contract; the convention and template are canonical in
   [isomorphic-lib-template's `decisions/`](https://github.com/interop-alliance/isomorphic-lib-template/tree/main/decisions).
+- The domain vocabulary is @ARCHITECTURE.md's Glossary; the refinement rules and
+  the mapping for skills that expect `CONTEXT.md` or `docs/adr/` are canonical in
+  [isomorphic-lib-template's AGENTS.md](https://github.com/interop-alliance/isomorphic-lib-template/blob/main/AGENTS.md)
+  ("Domain language") and
+  [`decisions/README.md`](https://github.com/interop-alliance/isomorphic-lib-template/blob/main/decisions/README.md)
+  ("Qualifying test").
 
 ## Test Suite
 

@@ -724,6 +724,60 @@ Collections" would need a `plaintext` member beside `encryption`, which the spec
 forbids; and the spec already makes an encrypted Collection's `custom` metadata
 an envelope, so that extension is superseded as written.
 
+## Public collection serving (agent storage demo next steps, 2026-08-21)
+
+Context: freewallet's agent storage demo (FW-227) has a CLI agent publish
+`index.html` into a `PublicCanRead` collection. Nothing here is required for
+the MVP: the server already stores and streams a resource under its own
+content type (`ResourceRequest.ts`, `reply.type(storedResourceType)`), so
+`GET /space/{s}/web/index.html` renders in a browser. The demo's write grant
+also reaches `<collection>/policy` today; WAS-59, WAS-60, and WAS-61 are the
+hardening items the demo depends on and stay where they are.
+
+### WAS-64: Default document for public collections (`index.html`)
+
+- status: todo
+- priority: medium
+- labels: spec-side, policy, serving
+- touches:
+  - wallet-attached-storage-spec -- which URL serves the default document
+    and how it interacts with the JSON listing is a spec decision; the
+    server implements the decided text
+- acceptance:
+  - [ ] Decide, in the spec, the URL and precedence: whether the collection
+        URL (`.../{collectionId}` and/or `.../{collectionId}/`) serves a
+        resource named `index.html` when present and the collection is
+        `PublicCanRead`, and how a client still reaches the JSON item
+        listing (content negotiation, a query parameter, or the listing
+        staying on the bare URL with the trailing-slash form serving the
+        document)
+  - [ ] Server implements the decided rule for public collections only;
+        an authenticated listing keeps working unchanged
+  - [ ] Conformance or server tests cover: document present, absent,
+        collection not public, and the listing path
+
+Relative links inside the page already resolve to sibling single-segment
+resource ids in the same collection (no path nesting), which is enough for
+a flat site; nested directories are out of scope here.
+
+### WAS-65: Response hardening on public resource serving (helmet, CSP, nosniff)
+
+- status: todo
+- priority: medium
+- labels: security, serving
+- acceptance:
+  - [ ] `fastify-helmet` (the `TODO` in `src/server.ts`) or an equivalent
+        header set on resource responses: `X-Content-Type-Options: nosniff`
+        at minimum
+  - [ ] A decided `Content-Security-Policy` for world-readable resources: a
+        public HTML resource is same-origin script on the WAS host and
+        CORS is `*`, so the policy must bound what such a page can do
+        against the host while still letting a plain page with inline
+        styles render (the demo page must keep working; document the
+        tradeoff)
+  - [ ] Tests assert the headers on a public `text/html` GET and that the
+        existing JSON API responses are unaffected
+
 ## Test coverage gaps (conformance suite + server `test/`)
 
 Produced by a 2026-07-22 coverage analysis: an inventory of the spec's 324

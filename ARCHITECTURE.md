@@ -70,6 +70,16 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
 
 ## Glossary
 
+This is the repo's ubiquitous language: one canonical term per concept, used
+identically in code, tests, docs, and conversation. An `Avoid:` line lists the
+synonyms this repo does not use, so a term that drifts can be challenged in
+review. The convention is canonical in isomorphic-lib-template's
+ARCHITECTURE.md Glossary section. The protocol terms -- Space, Collection,
+Resource, controller, zcap, root capability, invocation target -- are owned by
+the [WAS spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)'s
+Terminology section; entries below restate one only to say how this server
+uses it, and otherwise cover this repo's own concepts.
+
 Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
 
 - **SpacesRepository** — the top-level container the server hosts. New Spaces
@@ -88,10 +98,13 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
 - **Controller** — the DID that owns a Space; its Ed25519 key signs capability
   invocations and is checked during ZCap verification. Two shapes are accepted:
   a `did:key` (the only one a Space may be _created_ with), or a **self-hosted
-  `did:webvh`** a Space may be _updated_ to (see below).
+  `did:webvh`** a Space may be _updated_ to (see below). Distinct from the
+  wallet repos' `clientId`: an enrolled client appears here as a verification
+  method inside the controller's document, not as the controller itself.
 - **ZCap (Authorization Capability)** — the authorization model. Clients sign
   HTTP requests; the server verifies the signature against the Space
-  controller's key rather than using sessions or bearer tokens.
+  controller's key rather than using sessions or bearer tokens. Avoid: session,
+  bearer token, access token.
 - **`invocationTarget`** — the full URL (including host and port) a capability
   authorizes. Must exactly match the server's `serverUrl`-derived URL — see the
   ZCap constraint under Test Suite in [AGENTS.md](AGENTS.md).
