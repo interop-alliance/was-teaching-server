@@ -724,6 +724,60 @@ Collections" would need a `plaintext` member beside `encryption`, which the spec
 forbids; and the spec already makes an encrypted Collection's `custom` metadata
 an envelope, so that extension is superseded as written.
 
+### WAS-66: Accept ids beyond the unreserved charset (percent-encoding on disk, real webvh round-trip)
+
+- status: todo
+- priority: medium
+- labels: data-model, backend, webvh
+- touches:
+  - was-teaching-server: `src/lib/validateId.ts` (the charset gate),
+    `src/backends/*` (on-disk segment encoding, glob escaping, sidecar and
+    archive entry names), `src/lib/validateDid.ts` (`parseSelfHostedWebvh`
+    round-trip), `src/lib/importTar.ts`, ARCHITECTURE.md Glossary (the
+    self-hosted `did:webvh` entry leans on the identity shortcut)
+  - was-client: stop pre-rejecting (or mirroring) the unreserved-only rule;
+    confirm every path builder `encodeURIComponent`s segments consistently
+  - was-conformance-suite: create/read/list/delete cases for ids containing
+    reserved and non-ASCII characters, plus export/import round-trip
+- acceptance:
+  - [ ] The id validators accept any single decoded path segment: non-empty,
+        not `.` or `..`, containing no `/` (the spec's only syntax rule) and no
+        `\`; the unreserved-only pattern is gone from the accept path
+  - [ ] The filesystem backend maps ids to on-disk names through an injective,
+        path- and glob-safe segment encoding; the encoding choice (and any
+        change to export tar entry names, which are a wire artifact) gets
+        maintainer sign-off before coding
+  - [ ] Derived on-disk names (`.meta.<id>.json` sidecars, `.space.` /
+        `.collection.` description files, chunk directories) and every glob the
+        backend builds use the encoded form; a hostile id can no longer reach a
+        glob metacharacter or path separator
+  - [ ] Export/import round-trips such ids; `importTar.ts` validates the
+        decoded id, and the reserved-path-segment registry is compared against
+        the decoded id
+  - [ ] `parseSelfHostedWebvh` replaces the identity shortcut with a real
+        encode/decode round-trip check: a Collection id that survives the DID
+        path encoding hosts a resolvable log; one that cannot round-trip (e.g.
+        it decodes ambiguously) is refused as a log host without affecting its
+        validity as a Collection
+  - [ ] Server `test/` coverage for hostile ids (traversal, glob, `%`-tricks,
+        non-ASCII) on both accept and storage paths, plus the conformance cases
+        above
+
+Raised 2026-08-21 by a was-client integration failure: the client
+`encodeURIComponent`s each path segment, but this server validates the decoded
+id against the unreserved-only pattern and 400s anything else. The spec puts no
+syntax requirement on ids beyond "no `/`", so the restriction is this server's
+own: ids flow into filesystem paths and glob patterns, and constraining the
+charset was cheaper than encoding on disk. The restriction has since become
+load-bearing for self-hosted `did:webvh` controllers -- `parseSelfHostedWebvh`
+relies on "unreserved characters are never percent-encoded" to collapse the DID
+path round-trip rule to the same check. Relaxing the charset therefore means
+two coupled changes: an on-disk segment encoding in the storage layer, and a
+genuine round-trip check in the webvh parser. Watch the platform edge cases the
+old charset ruled out for free: case-insensitive filesystems (two ids differing
+only by case), Windows reserved names, and Unicode normalization (two byte
+sequences rendering identically) may each need an explicit stance.
+
 ## Public collection serving (agent storage demo next steps, 2026-08-21)
 
 Context: freewallet's agent storage demo (FW-227) has a CLI agent publish
