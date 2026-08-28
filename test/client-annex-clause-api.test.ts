@@ -12,6 +12,10 @@
  * unauthorized invocation -- while still falling through to the access-control
  * policy, so a world-readable target keeps serving.
  *
+ * A method holding both `capabilityInvocation` and `capabilityDelegation` --
+ * the shape a per-visit annex verification method publishes under -- is not
+ * ladder authority, so the clause skips the link it signed.
+ *
  * Invocations are raw `@interop/ezcap` requests: these are wire-level
  * authorization shapes, not the high-level `@interop/was-client` surface.
  */
@@ -61,6 +65,8 @@ interface WebvhIdentity {
   clientKeyPair: any
   /** the delegation-only (ladder) key, when the document lists one */
   ladderKeyPair?: any
+  /** the invocation-and-delegation (transient annex) key, when listed */
+  transientKeyPair?: any
 }
 
 describe('client-annex clause (ladder-VM delegation bounds)', () => {
@@ -88,7 +94,10 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     // The annex identity is provisioned first: the account document's service entry
     // has to name it, and a DID string is only known once its log is minted.
-    clientAnnex = await provisionWebvhIdentity({ withLadderKey: false })
+    clientAnnex = await provisionWebvhIdentity({
+      withLadderKey: false,
+      withTransientKey: true
+    })
     account = await provisionWebvhIdentity({
       withLadderKey: true,
       services: [
@@ -148,6 +157,9 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
    * @param options {object}
    * @param options.withLadderKey {boolean}   also list a delegation-only
    *   verification method (the ladder VM)
+   * @param [options.withTransientKey] {boolean}   also list a method under
+   *   `capabilityInvocation` *and* `capabilityDelegation`, the shape a
+   *   per-visit annex verification method publishes under
    * @param [options.collectionId] {string}   the Collection anchoring the log
    * @param [options.services] {ServiceEndpoint[]}   service entries for the
    *   created document
@@ -155,10 +167,12 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
    */
   async function provisionWebvhIdentity({
     withLadderKey,
+    withTransientKey = false,
     collectionId = 'id',
     services
   }: {
     withLadderKey: boolean
+    withTransientKey?: boolean
     collectionId?: string
     services?: ServiceEndpoint[]
   }): Promise<WebvhIdentity> {
@@ -179,6 +193,9 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     const clientKeyPair = await Ed25519VerificationKey.generate()
     const ladderKeyPair = withLadderKey
+      ? await Ed25519VerificationKey.generate()
+      : undefined
+    const transientKeyPair = withTransientKey
       ? await Ed25519VerificationKey.generate()
       : undefined
 
@@ -203,6 +220,13 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         purpose: ['assertionMethod', 'capabilityDelegation']
       })
     }
+    if (transientKeyPair) {
+      verificationMethods.push({
+        type: 'Multikey',
+        publicKeyMultibase: transientKeyPair.publicKeyMultibase!,
+        purpose: ['capabilityInvocation', 'capabilityDelegation']
+      })
+    }
 
     const created = await createDID({
       address: `${serverUrl}/space/${spaceId}/${collectionId}`,
@@ -219,6 +243,10 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       ladderKeyPair.id = `${created.did}#${ladderKeyPair.publicKeyMultibase}`
       ladderKeyPair.controller = created.did
     }
+    if (transientKeyPair) {
+      transientKeyPair.id = `${created.did}#${transientKeyPair.publicKeyMultibase}`
+      transientKeyPair.controller = created.did
+    }
 
     const published = await alice.was.request({
       path: `/space/${spaceId}/${collectionId}/did.jsonl`,
@@ -233,7 +261,8 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       did: created.did,
       log: created.log,
       clientKeyPair,
-      ladderKeyPair
+      ladderKeyPair,
+      transientKeyPair
     }
   }
 
@@ -246,6 +275,8 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
    * @param options.invocationTarget {string}
    * @param options.controller {string}
    * @param options.allowedActions {string[]}
+   * @param [options.expires] {Date}   an expiry within the parent's, for a
+   *   sub-delegation
    * @returns {Promise<any>}
    */
   async function delegate({
@@ -253,20 +284,22 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     capability,
     invocationTarget,
     controller,
-    allowedActions
+    allowedActions,
+    expires = anHourFromNow()
   }: {
     signerKeyPair: any
     capability: any
     invocationTarget: string
     controller: string
     allowedActions: string[]
+    expires?: Date
   }): Promise<any> {
     return client({ signer: signerKeyPair.signer() }).delegate({
       capability,
       invocationTarget,
       controller,
       allowedActions,
-      expires: anHourFromNow()
+      expires
     })
   }
 
@@ -367,6 +400,43 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         })
       })
       assert.deepStrictEqual(readBack.data, { hello: 'world' })
+    })
+  })
+
+  describe('a two-relation annex VM is outside the clause', () => {
+    it('skips the grant link that annex VM signed, so it serves (200)', async () => {
+      // The chain a transient wallet session mints: the root, then the
+      // ladder-signed generation delegation the clause judges and admits
+      // under predicate (i), then the grant the annex's own per-visit
+      // verification method signs. That method holds `capabilityInvocation`
+      // *and* `capabilityDelegation`, so the relation asymmetry does not
+      // match and the clause skips its link. Were the link judged as ladder
+      // authority, neither predicate could hold -- the controller is Bob, not
+      // the annex DID, and the target is an ordinary Collection -- and this
+      // read would be a 404.
+      const generationDelegation = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: credentialsUrl,
+        controller: clientAnnex.did,
+        allowedActions: ['GET']
+      })
+      const grant = await delegate({
+        signerKeyPair: clientAnnex.transientKeyPair,
+        capability: generationDelegation,
+        invocationTarget: credentialsUrl,
+        controller: bob.did,
+        allowedActions: ['GET'],
+        expires: new Date(generationDelegation.expires)
+      })
+      const response = await client({ signer: bob.signer }).request({
+        url: `${credentialsUrl}/doc-1`,
+        method: 'GET',
+        action: 'GET',
+        capability: grant
+      })
+      assert.equal(response.status, 200)
+      assert.deepStrictEqual(response.data, { hello: 'world' })
     })
   })
 

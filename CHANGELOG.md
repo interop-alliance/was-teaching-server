@@ -9,6 +9,21 @@
   `lib/clientAnnexClause.ts`); the refusal message wording follows. Internal
   rename only; no wire or protocol behavior changes.
 
+### Notes
+
+- **Minimum server version for a wallet's transient-session grants: 0.22.0.** A
+  wallet running the transient-VM delegation fix (wallet-core 0.58.0 and later)
+  mints App Connect and share grants signed by a per-visit verification method
+  of its client annex. Verifying such a grant means resolving that annex
+  `did:webvh`, whose history log lives in a per-generation Collection rather
+  than in `id`. Self-hosted resolution reached only the `id` Collection before
+  0.22.0, so an older deployment cannot resolve the delegator and refuses the
+  grant. The refusal is masked as a 404, byte-identical to the symptom of the
+  wallet bug the fix removes, so a wallet that still sees 404s after upgrading
+  should check the server version. (The webvh context itself has been threaded
+  on the WAS routes since 0.16.0, widened in 0.16.1; 0.22.0 is the binding
+  requirement.)
+
 ## 0.22.0 - 2026-08-19
 
 ### Added

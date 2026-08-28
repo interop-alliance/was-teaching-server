@@ -740,9 +740,9 @@ an envelope, so that extension is superseded as written.
   - was-conformance-suite: create/read/list/delete cases for ids containing
     reserved and non-ASCII characters, plus export/import round-trip
 - acceptance:
-  - [ ] The id validators accept any single decoded path segment: non-empty,
-        not `.` or `..`, containing no `/` (the spec's only syntax rule) and no
-        `\`; the unreserved-only pattern is gone from the accept path
+  - [ ] The id validators accept any single decoded path segment: non-empty, not
+        `.` or `..`, containing no `/` (the spec's only syntax rule) and no `\`;
+        the unreserved-only pattern is gone from the accept path
   - [ ] The filesystem backend maps ids to on-disk names through an injective,
         path- and glob-safe segment encoding; the encoding choice (and any
         change to export tar entry names, which are a wire artifact) gets
@@ -751,9 +751,9 @@ an envelope, so that extension is superseded as written.
         `.collection.` description files, chunk directories) and every glob the
         backend builds use the encoded form; a hostile id can no longer reach a
         glob metacharacter or path separator
-  - [ ] Export/import round-trips such ids; `importTar.ts` validates the
-        decoded id, and the reserved-path-segment registry is compared against
-        the decoded id
+  - [ ] Export/import round-trips such ids; `importTar.ts` validates the decoded
+        id, and the reserved-path-segment registry is compared against the
+        decoded id
   - [ ] `parseSelfHostedWebvh` replaces the identity shortcut with a real
         encode/decode round-trip check: a Collection id that survives the DID
         path encoding hosts a resolvable log; one that cannot round-trip (e.g.
@@ -771,19 +771,19 @@ own: ids flow into filesystem paths and glob patterns, and constraining the
 charset was cheaper than encoding on disk. The restriction has since become
 load-bearing for self-hosted `did:webvh` controllers -- `parseSelfHostedWebvh`
 relies on "unreserved characters are never percent-encoded" to collapse the DID
-path round-trip rule to the same check. Relaxing the charset therefore means
-two coupled changes: an on-disk segment encoding in the storage layer, and a
-genuine round-trip check in the webvh parser. Watch the platform edge cases the
-old charset ruled out for free: case-insensitive filesystems (two ids differing
-only by case), Windows reserved names, and Unicode normalization (two byte
-sequences rendering identically) may each need an explicit stance.
+path round-trip rule to the same check. Relaxing the charset therefore means two
+coupled changes: an on-disk segment encoding in the storage layer, and a genuine
+round-trip check in the webvh parser. Watch the platform edge cases the old
+charset ruled out for free: case-insensitive filesystems (two ids differing only
+by case), Windows reserved names, and Unicode normalization (two byte sequences
+rendering identically) may each need an explicit stance.
 
 ## Public collection serving (agent storage demo next steps, 2026-08-21)
 
 Context: freewallet's agent storage demo (FW-227) has a CLI agent publish
-`index.html` into a `PublicCanRead` collection. Nothing here is required for
-the MVP: the server already stores and streams a resource under its own
-content type (`ResourceRequest.ts`, `reply.type(storedResourceType)`), so
+`index.html` into a `PublicCanRead` collection. Nothing here is required for the
+MVP: the server already stores and streams a resource under its own content type
+(`ResourceRequest.ts`, `reply.type(storedResourceType)`), so
 `GET /space/{s}/web/index.html` renders in a browser. The demo's write grant
 also reaches `<collection>/policy` today; WAS-59, WAS-60, and WAS-61 are the
 hardening items the demo depends on and stay where they are.
@@ -794,25 +794,24 @@ hardening items the demo depends on and stay where they are.
 - priority: medium
 - labels: spec-side, policy, serving
 - touches:
-  - wallet-attached-storage-spec -- which URL serves the default document
-    and how it interacts with the JSON listing is a spec decision; the
-    server implements the decided text
+  - wallet-attached-storage-spec -- which URL serves the default document and
+    how it interacts with the JSON listing is a spec decision; the server
+    implements the decided text
 - acceptance:
-  - [ ] Decide, in the spec, the URL and precedence: whether the collection
-        URL (`.../{collectionId}` and/or `.../{collectionId}/`) serves a
-        resource named `index.html` when present and the collection is
-        `PublicCanRead`, and how a client still reaches the JSON item
-        listing (content negotiation, a query parameter, or the listing
-        staying on the bare URL with the trailing-slash form serving the
-        document)
-  - [ ] Server implements the decided rule for public collections only;
-        an authenticated listing keeps working unchanged
-  - [ ] Conformance or server tests cover: document present, absent,
-        collection not public, and the listing path
+  - [ ] Decide, in the spec, the URL and precedence: whether the collection URL
+        (`.../{collectionId}` and/or `.../{collectionId}/`) serves a resource
+        named `index.html` when present and the collection is `PublicCanRead`,
+        and how a client still reaches the JSON item listing (content
+        negotiation, a query parameter, or the listing staying on the bare URL
+        with the trailing-slash form serving the document)
+  - [ ] Server implements the decided rule for public collections only; an
+        authenticated listing keeps working unchanged
+  - [ ] Conformance or server tests cover: document present, absent, collection
+        not public, and the listing path
 
 Relative links inside the page already resolve to sibling single-segment
-resource ids in the same collection (no path nesting), which is enough for
-a flat site; nested directories are out of scope here.
+resource ids in the same collection (no path nesting), which is enough for a
+flat site; nested directories are out of scope here.
 
 ### WAS-65: Response hardening on public resource serving (helmet, CSP, nosniff)
 
@@ -820,15 +819,13 @@ a flat site; nested directories are out of scope here.
 - priority: medium
 - labels: security, serving
 - acceptance:
-  - [ ] `fastify-helmet` (the `TODO` in `src/server.ts`) or an equivalent
-        header set on resource responses: `X-Content-Type-Options: nosniff`
-        at minimum
+  - [ ] `fastify-helmet` (the `TODO` in `src/server.ts`) or an equivalent header
+        set on resource responses: `X-Content-Type-Options: nosniff` at minimum
   - [ ] A decided `Content-Security-Policy` for world-readable resources: a
-        public HTML resource is same-origin script on the WAS host and
-        CORS is `*`, so the policy must bound what such a page can do
-        against the host while still letting a plain page with inline
-        styles render (the demo page must keep working; document the
-        tradeoff)
+        public HTML resource is same-origin script on the WAS host and CORS is
+        `*`, so the policy must bound what such a page can do against the host
+        while still letting a plain page with inline styles render (the demo
+        page must keep working; document the tradeoff)
   - [ ] Tests assert the headers on a public `text/html` GET and that the
         existing JSON API responses are unaffected
 

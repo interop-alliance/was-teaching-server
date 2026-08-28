@@ -27,12 +27,22 @@
  *
  * The locked property: no ladder authority whose exercise leaves no record --
  * every admitted ladder delegation either resolves through a loud annex
- * entry or can only write a log. The clause binds the capability decision
- * only: a refused delegation does not authorize, and the refusal falls through
- * to the access-control policy like any other failed verification (a
- * world-readable read still serves). The clause is fail-open across servers --
- * one running unmodified verification accepts what this refuses -- so a wallet
- * publishes a ladder VM only on a host advertising the client-annex profile.
+ * entry or can only write a log. The two disjuncts carry different grades of
+ * record. Disjunct 2 is exact: all the delegation can do is write a log, and
+ * the write is the record. Disjunct 1 is narrower than it reads. The annex
+ * entry is loud that a per-visit key exists and may delegate; it is silent
+ * about what that key subsequently delegates, to whom, and for how long. A
+ * per-visit annex verification method publishes under `capabilityDelegation`
+ * beside `capabilityInvocation` (wallet-core decision 0013), so an admitted
+ * delegation to the annex DID reaches onward grants no annex entry records.
+ * What bounds those grants is target attenuation, the action limitations, and
+ * the parent's expiry, not the annex log. The clause binds the capability
+ * decision only: a refused delegation does not authorize, and the refusal
+ * falls through to the access-control policy like any other failed
+ * verification (a world-readable read still serves). The clause is fail-open
+ * across servers -- one running unmodified verification accepts what this
+ * refuses -- so a wallet publishes a ladder VM only on a host advertising the
+ * client-annex profile.
  */
 import type { InspectCapabilityChain } from '@interop/zcap'
 import type { DIDDoc } from '@interop/did-method-webvh'
