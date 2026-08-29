@@ -778,6 +778,45 @@ charset ruled out for free: case-insensitive filesystems (two ids differing only
 by case), Windows reserved names, and Unicode normalization (two byte sequences
 rendering identically) may each need an explicit stance.
 
+### WAS-68: Import trusts the tarball's Collection Description `id`
+
+- status: todo
+- priority: medium
+- labels: data-model, import, validation
+- acceptance:
+  - [ ] An imported Collection Description whose `id` is absent, or names a
+        collection other than the one its tar path places it in, is either
+        rejected or normalized to the path-derived id
+  - [ ] Whichever is chosen, it matches what the three write handlers already do
+        (they set `id` from the URL segment unconditionally)
+  - [ ] A test imports a hand-crafted tar carrying both shapes
+
+Every other write path to a Collection Description sets `id` from the URL
+segment, so a client can neither omit it nor choose it: `CollectionRequest` does
+it on create and update (`src/requests/CollectionRequest.ts:357`, `:373`), and
+the POST-to-space handler does the same
+(`src/requests/SpaceRequest.ts:442-443`). A body whose `id` disagrees with the
+URL is refused as `invalid-request-body`.
+
+Import is the exception. It parses the Collection Description out of the tarball
+verbatim -- `JSON.parse(metaEntry.body.toString('utf8'))` at
+`src/lib/importTar.ts:376-380` -- and synthesizes
+`{ id: collectionId, type, name }` only when the tar carries no description
+entry at all. So a hand-crafted tar can plant a Collection Description whose
+`id` is missing, or whose `id` names a different collection than the tar path it
+is stored under. Neither shape is reachable through any other route, and nothing
+downstream re-derives the id.
+
+Space Descriptions are not affected: import merges into a pre-existing Space and
+never rewrites its description.
+
+Discovered 2026-08-28 while confirming, for a was-client change, that `id` is
+guaranteed present in a served Description. It is -- through the handlers.
+Import is the one path that does not enforce it, which makes the guarantee
+weaker than the handlers suggest. The consumer side now depends on it:
+was-client 0.45.0's `ensureSpaceAndCollection` refuses a caller-supplied Space
+description whose `id` does not name the Space being provisioned.
+
 ## Public collection serving (agent storage demo next steps, 2026-08-21)
 
 Context: freewallet's agent storage demo (FW-227) has a CLI agent publish
@@ -828,6 +867,121 @@ flat site; nested directories are out of scope here.
         page must keep working; document the tradeoff)
   - [ ] Tests assert the headers on a public `text/html` GET and that the
         existing JSON API responses are unaffected
+
+### WAS-67: Narrow the client-annex clause's first predicate to the account Space's items subtree
+
+- status: todo
+- priority: high
+- labels: security, zcap, client-annex
+- discovered-from: freewallet FW-356 design pass (2026-08-26), re-decided as
+  blocking 2026-08-28 once FW-359 shipped
+- touches:
+  - `src/lib/clientAnnexClause.ts` -- the first admission predicate and the
+    header comment's locked-property statement
+  - `test/client-annex-clause-api.test.ts` -- the admission cases
+  - `ARCHITECTURE.md:177-202` -- the only prose description of the clause
+  - app-connect-spec `decisions/0003-ladder-authority-clauses.md` -- the
+    normative home of the rule this predicate implements
+  - wallet-core `decisions/0013` -- its Revisit Criteria 1 names this narrowing
+    as a trigger, and `decisions/0004` states the wallet-side convention the
+    narrowing would make enforced
+- acceptance:
+  - [ ] The first predicate gains a target bound: a ladder-signed delegation
+        whose grantee is the pointed annex DID is admitted only when its
+        `invocationTarget` is within the account Space's items subtree -- the
+        target a generation delegation already carries. A Space-level target,
+        which reaches Update Space Description and so the Space's controller, is
+        refused
+  - [ ] Keystore targets are refused by the same bound, stated explicitly rather
+        than left to fall out of the subtree test
+  - [ ] The action bound is decided on the record: either the full verb set
+        (matching what a generation delegation needs) or a narrower set, with
+        the reason written down. Today the predicate reads no action at all
+  - [ ] Tests drive both directions: the generation-delegation shape stays
+        admitted, and a ladder-signed delegation to the same grantee with a
+        Space-level target is refused
+  - [ ] The header comment's locked-property paragraph is rewritten. It
+        currently concedes that the first disjunct "is silent about what that
+        key subsequently delegates" and names "target attenuation, the action
+        limitations, and the parent's expiry" as the bound -- while the
+        predicate itself applies no target attenuation
+  - [ ] `ARCHITECTURE.md:177-202` is updated to describe two bounded predicates
+        rather than one bounded and one grantee-keyed
+  - [ ] A minimum-version note in CHANGELOG.md, since a wallet minting a wider
+        ladder-signed delegation than the items subtree would start being
+        refused. No shipped wallet does: freewallet's generation delegation
+        targets exactly that subtree
+
+Context: the clause admits a ladder-signed delegation under two disjuncts. The
+second is exact -- a `PUT` on the signing DID's own account log, or `GET`/`PUT`
+on the delegated-clients auxiliary Space in the trailing-slash form that
+excludes Update Space Description -- and its stated safety property holds: all
+the delegation can do is write a log, and the write is the record.
+
+The first is bounded by grantee identity alone. It admits on sole-`controller`
+equality against the account document's `#DelegatedClients` annex DID behind a
+syntactic self-hosted-`did:webvh` gate, and returns before
+`capability.invocationTarget` is ever read. So a ladder verification method may
+delegate anything the account controls, the Space-level target included, so long
+as the grantee is the pointed annex DID.
+
+That was tolerable while the annex verification method held
+`capabilityInvocation` only: whatever it received, it could exercise but not
+pass on. Freewallet's FW-359 (2026-08-28, wallet-core `decisions/0013`) gave the
+per-visit annex method `capabilityDelegation` beside `capabilityInvocation` so
+that a transient session can mint App Connect grants. The chain is now root ->
+ladder-signed delegation to the annex DID -> annex-signed grant to an arbitrary
+third party, and this repo's own test pins that the third link is skipped by the
+inspector ("a two-relation annex VM is outside the clause"). The onward step is
+offline signing and leaves no entry in any log.
+
+The clause's header comment was revised in the same change and states the
+consequence honestly, but the predicate was not touched. What bounds those
+onward grants today is a wallet-side convention -- freewallet scopes its
+generation delegation to the items subtree -- rather than anything this server
+enforces. This item moves that bound server-side.
+
+Two things sharpen the priority. The exposure is live now on every
+ladder-anchored account, which is most passphrase accounts on a wallet whose
+default signup is credential-anchored. And freewallet FW-356 proposes to keep a
+standing ladder verification method for the life of each unlock credential,
+which would make the surface permanent and multiply it by the number of standing
+credentials; that item's design records this narrowing as blocking its approval.
+
+Adjacent, not in scope: the clause is fail-open across implementations -- a
+server running unmodified zcap verification accepts what this one refuses -- and
+nothing is served that a client could read to learn the clause is enforced,
+while the clause's own header says a wallet publishes a ladder verification
+method only on a host advertising the profile. That standing contradiction is
+freewallet FW-357's subject.
+
+### WAS-69: Drop `Ed25519Signature2020` from the delegation-proof verify side
+
+- status: draft
+- priority: low
+- labels: zcap, authorization, cleanup
+- discovered-from: the 2026-08-29 move of delegation proofs to `eddsa-jcs-2022`
+  (freewallet FW-395), whose server half accepts both suites
+- touches:
+  - `src/zcap.ts` -- `delegationProofSuites()` and its header comment
+  - `test/delegation-suite-api.test.ts` -- the old-suite and mixed-chain cases
+  - `ARCHITECTURE.md` -- the "ZCap Structure" signing paragraph
+  - the conformance suite, whose helpers assert both suites are accepted
+
+Draft rather than todo: the done-state is a condition on the deployed world, not
+on this repo, so there is nothing to accept yet. Two things must both hold
+before this becomes actionable. No client still signs delegation proofs with
+`Ed25519Signature2020` -- which covers wallet-core, was-client and the apps on
+them, dcw, and did-cli-typescript's `di was request-grant` agent path. And no
+stored grant signed under the old suite is still submitted for re-verification:
+a wallet records the full capability, proof included, on each login activity,
+and revoking an app or an agent POSTs that recorded capability back. Dropping
+the suite while such a grant is on file reads to the user as a broken revoke
+button rather than as a migration.
+
+Promote this to `todo` when both hold, with acceptance criteria naming how each
+was confirmed. Until then the cost of carrying the old suite is one extra suite
+instance per verification, which only ever matches proofs of its own type.
 
 ## Test coverage gaps (conformance suite + server `test/`)
 

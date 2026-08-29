@@ -207,3 +207,13 @@ RFC 9421). The `Authorization` header signs
 `content-type digest` when there's a body. The `Digest` header is a multihash
 (`mh=`, sha256). See the
 [zCap Developer Guide](https://github.com/interop-alliance/zcap-developer-guide).
+
+A delegated capability's own `proof` is a separate signature, on the document
+rather than on the request. Clients sign it with `eddsa-jcs-2022`, which
+canonicalizes with JCS and so needs no JSON-LD document loader at signing time.
+The server accepts `Ed25519Signature2020` there as well, at all three sites that
+verify a delegation proof -- the invocation path, the revocation chain check,
+and the revocation's own invocation -- because clients upgrade on their own
+schedule and grants a wallet recorded before the switch are submitted back for
+revocation under the old suite. The two suites are told apart by `proof.type`
+and `proof.cryptosuite`, so the links of one chain may mix them.

@@ -1,5 +1,24 @@
 # History
 
+## 0.23.0 - TBD
+
+### Added
+
+- Delegation proofs signed with `eddsa-jcs-2022` are accepted, beside the
+  `Ed25519Signature2020` proofs accepted until now. Both suites are passed at
+  every site that verifies a delegation proof: the capability-invocation path,
+  the revocation chain check, and the revocation's own invocation. The links of
+  a single chain may mix the two suites in either order. Clients are moving
+  their delegation proofs to `eddsa-jcs-2022`, which canonicalizes with JCS and
+  so costs no JSON-LD canonicalization; this release ships the verify side
+  first, so a client can upgrade at any time afterward.
+
+### Notes
+
+- `Ed25519Signature2020` is not removed. Clients upgrade on their own schedule,
+  and grants a wallet recorded before the switch are submitted back for
+  revocation under the old suite. Removal waits until neither is true.
+
 ## 0.22.1 - 2026-08-28
 
 ### Changed

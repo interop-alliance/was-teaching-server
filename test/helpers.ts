@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify'
 import { ZcapClient } from '@interop/ezcap'
 import { WasClient } from '@interop/was-client'
 import { decodeSecretKeySeed } from '@digitalcredentials/bnid'
-import { Ed25519Signature2020 } from '@interop/ed25519-signature'
+import { EddsaJcs2022 } from '@interop/ed25519-signature/eddsa-jcs-2022'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import type { ISigner } from '@interop/data-integrity-core'
 
@@ -161,9 +161,20 @@ export const fixtures = {
 //   multibaseMultikeyHeader: 'z6Mk',
 //   fromMultibase: Ed25519VerificationKey.from
 // });
+/**
+ * The suite's default ZcapClient: delegation proofs are signed with
+ * `eddsa-jcs-2022`, matching what `WasClient.fromSigner` and wallet-core's
+ * clients emit, so every suite driving this helper exercises the suite real
+ * clients send. `Ed25519Signature2020` is still accepted by the server and is
+ * exercised on its own in `delegation-suite-api.test.ts`.
+ *
+ * @param options {object}
+ * @param options.signer {ISigner}
+ * @returns {ZcapClient}
+ */
 export function client({ signer }: { signer: ISigner }): ZcapClient {
   return new ZcapClient({
-    SuiteClass: Ed25519Signature2020,
+    SuiteClass: EddsaJcs2022,
     invocationSigner: signer,
     delegationSigner: signer
   })

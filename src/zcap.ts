@@ -34,6 +34,8 @@ import {
 } from '@interop/zcap'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { Ed25519Signature2020 } from '@interop/ed25519-signature'
+import { createVerifyCryptosuite } from '@interop/ed25519-signature/eddsa-jcs-2022'
+import { DataIntegrityProof } from '@interop/data-integrity-proof'
 import * as didKey from '@interop/did-method-key'
 import type { IDocumentLoader, IPublicKey } from '@interop/data-integrity-core'
 import {
@@ -92,6 +94,34 @@ type CloneableLoader = ReturnType<typeof securityLoader> & {
  * requests (the no-`did:webvh` path).
  */
 const baseDocumentLoader = securityLoader() as CloneableLoader
+
+/**
+ * The signature suites a delegation proof may be signed with, newest first.
+ *
+ * Clients sign delegation proofs with `eddsa-jcs-2022`, which canonicalizes as
+ * plain JSON and so costs no JSON-LD canonicalization. `Ed25519Signature2020`
+ * (URDNA2015) stays accepted because the server is the one party every client
+ * meets and clients upgrade on their own schedule, and because stored grants
+ * -- the capabilities a wallet records on a login activity and later submits
+ * for revocation -- were minted under it. It leaves the verify side once no
+ * deployed client still signs with it and no stored grant still needs
+ * re-verifying; a follow-up item carries the removal.
+ *
+ * The two never collide: `DataIntegrityProof.matchProof` keys on `proof.type`
+ * and `proof.cryptosuite`, so each suite in the array sees only its own proofs.
+ * Both `jsigs.verify` and `verifyCapabilityInvocation` take an array here, as
+ * does `CapabilityDelegation`'s `suite` option.
+ *
+ * @returns {[Ed25519Signature2020, DataIntegrityProof]}   a fresh instance of
+ *   each accepted suite (suites are stateful during verification, so callers
+ *   get their own pair rather than a shared one)
+ */
+function delegationProofSuites(): [Ed25519Signature2020, DataIntegrityProof] {
+  return [
+    new Ed25519Signature2020(),
+    new DataIntegrityProof({ cryptosuite: createVerifyCryptosuite() })
+  ]
+}
 
 /**
  * The root capability id convention: `urn:zcap:root:` + the url-encoded
@@ -608,7 +638,7 @@ export async function verifyZcap({
     inspectCapabilityChain,
     maxChainLength,
     maxDelegationTtl,
-    suite: new Ed25519Signature2020()
+    suite: delegationProofSuites()
   })
 }
 
@@ -678,7 +708,7 @@ export async function verifyRevocationChain({
     },
     webvh: activeWebvhContext({ webvh, controller: rootController })
   })
-  const suite = new Ed25519Signature2020()
+  const suite = delegationProofSuites()
   const result = (await jsigs.verify(capability, {
     documentLoader,
     suite,
@@ -833,7 +863,7 @@ export async function handleRevocationInvocationVerify({
       inspectCapabilityChain,
       maxChainLength,
       maxDelegationTtl,
-      suite: new Ed25519Signature2020()
+      suite: delegationProofSuites()
     })
   } catch (err) {
     logger.error({ err }, 'ZCAP revocation invocation verification failed')
