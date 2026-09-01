@@ -263,3 +263,114 @@ Closed on the server side 2026-08-20: the registry column and the
 never-backwards text shipped in the spec; the remaining rewrap migration
 guidance is Encrypted Collections territory and was re-homed as ECS-5 in that
 spec's roadmap.
+
+### WAS-72: Admit `capabilityDelegation` members as root invokers of a did:webvh-controlled Space's DELETE
+
+- status: retired
+- priority: high
+- labels: security, zcap, authorization, client-annex
+- retired: 2026-09-01
+- discovered-from: freewallet FW-400 design pass v3 (2026-08-31)
+- touches:
+  - `src/requests/SpaceRequest.ts:504-520` -- the Delete Space handler's
+    `fetchSpaceAndVerify` call, the one site the rule fires at
+  - `src/zcap.ts` `webvhVerifier` and `src/lib/webvhController.ts`
+    `dereferenceFragment` -- where the relation check lives, shared with
+    WAS-71
+  - `test/` -- the admission and refusal matrix below
+  - `ARCHITECTURE.md` -- the current-key-set rule's prose
+  - the spec's authorization profile (W2, co-designed as WASS-2)
+  - wallet-core `decisions/0004` -- amended wallet-side
+- acceptance:
+  - [ ] The rule fires in the Space DELETE handler and nowhere else
+  - [ ] A root-capability invocation signed by a `capabilityDelegation`
+        member of the resolved controller document is admitted: on the
+        account Space and on the auxiliary annex Space of that account.
+        An unlock Space is out of reach by construction, since its
+        controller is its own did:key rather than the account did:webvh
+        (corrected 2026-08-31 with FW-400 v4)
+  - [ ] The same verification method is refused on a resource DELETE, on
+        a collection DELETE, and on `PUT /space/{id}`
+  - [ ] A verification method belonging to another did:webvh's document
+        is refused, as is a signing key absent from the document
+  - [ ] Existing `capabilityInvocation` root DELETE behavior is unchanged
+  - [ ] A delegated capability still cannot authorize a Space DELETE
+        (WASS-2)
+  - [ ] The log is resolved and fully verified out of the Space being
+        deleted before the delete runs, and the caches are busted after
+  - [ ] Lands together with WAS-71
+  - [ ] A minimum-version note in CHANGELOG.md
+
+Context: freewallet's transient wallet must delete its own account and
+every Space that account owns, holding nothing but a standing unlock
+credential. What such a visit has is the credential's ladder verification
+method, published under `assertionMethod` and `capabilityDelegation`. It
+has no enrolled client, so it holds no `capabilityInvocation` method
+anywhere in the account document.
+
+The first design mechanism was a ladder-signed DELETE delegation on the
+bare Space URL, and it was rejected. A capability naming a bare Space URL
+attenuates over every path beneath it, so the delegation is far wider
+than the one verb it was minted for, and WASS-2 forbids a delegated
+container DELETE outright. Direct root invocation avoids both: nothing is
+minted, nothing is stored, and the authorization ends with the request.
+
+Why plain membership rather than a ladder-VM sub-clause. Every
+`capabilityDelegation` member of an account document is one of two
+things: an enrolled client, which already root-invokes today, or a ladder
+verification method of a standing unlock credential. Both are the
+account's own authority by construction, so a sub-clause would restate
+the membership test in narrower words with no security gained. (The
+freewallet design's Q1 reopens this on one ground the census misses: a
+retired credential whose ladder strike went unattributed leaves a
+verification method under `capabilityDelegation` that this rule would
+still admit.)
+
+Note 2026-08-31 (freewallet FW-400 v4). The v3 design assumed unlock
+Spaces would be promoted to the account did:webvh, which would have put
+them inside this rule. That structure was withdrawn. An unlock Space
+keeps its own did:key controller, so this rule reaches the account Space
+and the auxiliary annex Space(s) only. The sibling unlock Spaces are
+deleted through a ladder-signed child of the management capability the
+unlock did:key already delegated to the account, which needs two other
+server changes rather than this one: an explicit client-annex clause
+predicate for that child (landing beside WAS-67's narrowing of predicate
+1), and WAS-60's enforcement carrying the spec exception for an
+exact-target, exactly-`['DELETE']` delegated capability. Approved by the
+maintainer 2026-08-31, with the clause predicate admitting two exact
+action sets: `['DELETE']` for the delete itself, and `['GET']` for the
+Space Description read the deletion walk probes existence with. Both are
+target-exact against the parent capability's own `invocationTarget`.
+
+Retired 2026-09-01 (freewallet FW-400 v5). W1, the mechanism this item
+was the server half of, was withdrawn by the maintainer, and the design
+now deletes every Space of the account through a ladder-VM-signed
+delegation invoked by the visit's annex key. That shape works on today's
+server with no server change, so the item closes rather than shipping.
+
+Three measurements against main @ `6bd3e3f`, 2026-09-01, by in-process
+probes over `startTestServer` from `test/helpers.js` (the probes are not
+committed), settle why. The membership rule this item was thought to
+formalize is not a formalization but a net widening: root invocation
+already enforces `capabilityInvocation` (`webvhVerifier` restates
+`controller: did` on the reconstructed method at `src/zcap.ts:276`,
+routing jsigs' `ControllerProofPurpose` to the resolved document), so a
+ladder VM's root invocation is refused today -- 404 on both `GET` and
+`DELETE`, against 200 / 204 for a `capabilityInvocation` member. See the
+re-scoped WAS-71 for the full matrix. The delegated shape needs no rule at
+all: a `['DELETE']` delegation on a bare Space URL, invoked by its did:key
+delegatee, deleted the Space with a 204, because `isRootInvocation`
+(`src/zcap.ts:334-340`) is called at two sites and the Space DELETE
+handler is neither of them (`src/requests/SpaceRequest.ts:489-520` calls
+only `fetchSpaceAndVerify`). And a root invocation would have sat outside
+the client-annex clause entirely, since the chain inspector skips index 0
+(`src/lib/clientAnnexClause.ts:453-457`), where a delegation is inspected
+and can be bounded.
+
+The obligations move rather than vanish. WAS-60 must land carrying the
+exception for an exact-target, exactly-`['DELETE']` delegated Space DELETE
+(FW-400 W2), or it breaks every deletion the ceremony sends. The
+client-annex clause gains the third predicate that bounds the ladder-signed
+case (FW-400 W3), landing with WAS-67's narrowing of predicate 1. The
+context above is preserved verbatim as the historical record, including
+its rejection of the delegated shape, which the v5 measurements reverse.

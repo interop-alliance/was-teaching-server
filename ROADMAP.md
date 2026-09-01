@@ -531,10 +531,14 @@ is load-bearing and must keep working: freewallet's replication invokes
     rule (Delete Space, Update Space Description, Delete Collection, Update
     Collection Description become direct-root-invocation only, and Collection
     creation is routed through the reserved `collections` endpoint); this item
-    is the enforcement half and follows the spec text
+    is the enforcement half and follows the spec text, including the Space
+    DELETE exception below, which WASS-2's text must state before this item
+    enforces it
   - was-teaching-server: `src/requests/SpaceRequest.ts` (`put`, `delete`,
     `post`), `src/requests/CollectionRequest.ts` (`put`, `delete`),
-    `src/routes.ts` (the `collections` create route), AGENTS.md
+    `src/routes.ts` (the `collections` create route),
+    `src/lib/clientAnnexClause.ts` (the clause predicate covering the
+    exception's ladder-signed case, freewallet FW-400 W3), AGENTS.md
   - was-client: its Collection-create binding moves to the `collections`
     endpoint once the spec routes it there
   - conformance-suite: negative-path assertions (a delegated capability with
@@ -542,10 +546,20 @@ is load-bearing and must keep working: freewallet's replication invokes
     is denied with the maximum-privacy 404) and a positive assertion for
     exact-target delegated Collection creation
 - acceptance:
-  - [ ] `DELETE /space/{id}`, `PUT /space/{id}`, `DELETE .../{collectionId}`,
-        and `PUT .../{collectionId}` accept only direct root-capability
-        invocation by the Space controller; a delegated capability is refused
-        regardless of its `allowedAction`
+  - [ ] `PUT /space/{id}`, `DELETE .../{collectionId}`, and
+        `PUT .../{collectionId}` accept only direct root-capability invocation
+        by the Space controller; a delegated capability is refused regardless
+        of its `allowedAction`
+  - [ ] `DELETE /space/{id}` accepts direct root-capability invocation, and
+        additionally a delegated capability whose `invocationTarget` is exactly
+        that Space's URL and whose `allowedAction` is exactly `['DELETE']`.
+        This exception is mandatory (see below); it holds whatever DID method
+        the Space's controller uses
+  - [ ] Regression tests for the exception: an exactly-`['DELETE']` delegation
+        on the bare Space URL stays admitted, while a two-verb delegation
+        carrying `DELETE` (say `['GET', 'DELETE']`) is refused, as is a
+        `['DELETE']` delegation whose target is a prefix rather than that
+        Space's own URL
   - [ ] Collection creation is served at the reserved `collections` endpoint and
         accepts an exact-target delegated capability (per the WASS-1 / WAS-59
         classes); the `POST /space/{id}/` create route is retired
@@ -562,6 +576,28 @@ carrying `DELETE` can delete the Space or any Collection in it; and Collection
 creation is `POST /space/{id}/` (`SpaceRequest.post`), which the container rule
 would make controller-only unless it moves to `collections`. Sequence after
 WAS-59, since the `collections` create route relies on its exact-target class.
+
+The Space DELETE exception is mandatory, not a convenience (freewallet FW-400
+W2, decided 2026-08-31 and widened 2026-09-01 to every Space). Enforcement
+built from this item's original text would break three live paths at once.
+FW-400 v5 deletes the account Space and the auxiliary annex Space(s) through a
+ladder-VM-signed delegation invoked by the visit's annex key; it deletes each
+sibling unlock Space through a ladder-signed child of the `manageCapability`
+the unlock did:key already delegated to the account; and today's
+remembered-session unlock-Space delete rides that same `manageCapability`
+child. Every one of those is a delegated Space DELETE. Land the exception with
+the rule or those deletions all start failing.
+
+WASS-2's rationale is the prefix hazard: a data grant's `invocationTarget` IS
+the container URL, so no attenuation rule separates deleting a resource under a
+collection from deleting the collection itself. A capability whose whole action
+set is `['DELETE']` is not a data grant, which is why the exception is keyed on
+the exact action set rather than on the Space's kind or its controller's DID
+method. The root-only rule stands unchanged for `PUT /space/{id}` and for both
+collection container methods. The ladder-signed case is additionally bounded by
+the client-annex clause's third predicate (FW-400 W3, target-exact against the
+parent capability's own `invocationTarget`, admitting exactly `['DELETE']` and
+exactly `['GET']`), which lands with WAS-67's narrowing of predicate 1.
 
 ### WAS-61: Separate `/policy` control from data writes (exposure test + enforcement)
 
@@ -948,6 +984,28 @@ standing ladder verification method for the life of each unlock credential,
 which would make the surface permanent and multiply it by the number of standing
 credentials; that item's design records this narrowing as blocking its approval.
 
+Superseding note 2026-09-01 (freewallet FW-400 v5). An earlier note here
+described a third clause predicate for FW-400's account deletion, then
+withdrew it: FW-400 v3 deleted each Space by direct root invocation, so
+the clause was untouched and the replacement item was WAS-72. Both of
+those are now out of date. WAS-72 is retired, and v5 deletes every Space
+of the account through a delegation the ladder VM signs and the visit's
+annex key invokes. The third predicate is back, and under v5 it is that
+design's only server change.
+
+What it must admit: a ladder-signed delegation whose `invocationTarget`
+is a bare Space URL and whose `allowedAction` is exactly `['DELETE']`
+(the delete) or exactly `['GET']` (the Space Description read the
+deletion walk probes existence with), target-exact against the parent's
+own `invocationTarget` when the parent is delegated, and against the
+synthesized root's Space URL when it is not. It covers all three Space
+kinds -- the account Space, the auxiliary annex Space(s), and the sibling
+unlock Spaces. Predicate 1 admits those delegations target-blind today
+(`src/lib/clientAnnexClause.ts:396-405`), which is exactly what this item
+narrows, so the third predicate lands with the narrowing rather than
+after it. The paired server obligation is WAS-60, which must carry the
+same exception on the enforcement side.
+
 Adjacent, not in scope: the clause is fail-open across implementations -- a
 server running unmodified zcap verification accepts what this one refuses -- and
 nothing is served that a client could read to learn the clause is enforced,
@@ -982,6 +1040,161 @@ button rather than as a migration.
 Promote this to `todo` when both hold, with acceptance criteria naming how each
 was confirmed. Until then the cost of carrying the old suite is one extra suite
 instance per verification, which only ever matches proofs of its own type.
+
+### WAS-70: Keystore deletion (route, backend method, orphan GC)
+
+- status: todo
+- priority: medium
+- labels: kms, backend, cleanup
+- discovered-from: freewallet FW-400 design pass (2026-08-31), open question 3
+- touches:
+  - `src/routes.ts:423-466` -- `initKmsRoutes`, which has no `DELETE` route
+    under `/kms`
+  - `src/backends/postgres.ts:895-905` and `src/backends/filesystem.ts:889-900`
+    -- `deleteSpace` deliberately leaves keystores untouched
+  - `src/types.ts:1088-1124` -- the `StorageBackend` contract's keystore
+    section states the protocol defines no keystore delete
+  - `src/lib/webvhController.ts:213-237` -- why an orphaned keystore is
+    permanently unauthenticatable, not merely undeleted
+  - webkms-client -- a paired `KmsClient.deleteKeystore` method (in-house,
+    tracked in that repo, blocked-by this route)
+  - a later freewallet ceremony stage (out of scope here; lands as its own
+    item once this route exists)
+- acceptance:
+  - [ ] `DELETE /kms/keystores/:keystoreId`, verified with
+        `fetchKeystoreAndVerify({ allowedAction: 'write' })` against the
+        stored config's `controller`
+  - [ ] `StorageBackend.deleteKeystore` implemented on both backends,
+        idempotent to match `deleteSpace`'s contract (absent keystore
+        resolves rather than rejects)
+  - [ ] A decision recorded on orphan-keystore GC, keyed on "the config's
+        `controller` did:webvh no longer resolves" -- this also covers a
+        torn account deletion and an account Space deleted before this route
+        existed, not only the new route's own callers. The sweep that acts
+        on that decision is WAS-73
+  - [ ] webkms-client's `KmsClient.deleteKeystore` (tracked there)
+
+Note 2026-08-31 (freewallet FW-400 v3): freewallet's deletion ceremony
+calls this route in its keystore slot, ordered before the account-Space
+delete. Until the route exists that slot is skipped and reported, so the
+ceremony ships without it and gains it here.
+
+A Space delete deliberately leaves its keystores alone (a sibling tree,
+`postgres.ts:895-905`, `filesystem.ts:889-900`), there is no delete route
+under `/kms` (`routes.ts:423-466`), and the `StorageBackend` contract states
+the WebKMS protocol defines no keystore delete (`types.ts:1088-1124`). Once
+an account Space is deleted, a keystore whose controller was promoted to
+that account's did:webvh can never again resolve its controller
+(`webvhController.ts:213-237` reads the controller document out of the
+account Space's own `did.jsonl`), so the keystore is not merely leaked but
+permanently unauthenticatable: no request can reach it. With no orphan GC,
+these accumulate unboundedly -- plaintext at rest unless `KMS_RECORD_KEK` is
+set.
+
+### WAS-71: Pin the root-invocation `capabilityInvocation` relation check
+
+- status: todo
+- priority: high
+- labels: security, zcap, authorization, tests, docs
+- discovered-from: freewallet FW-400 research pass (2026-08-31); re-scoped
+  2026-09-01 once the suspected gap was measured and found not to exist
+- touches:
+  - `src/zcap.ts:253-285` -- `webvhVerifier`, where the check comes from: it
+    makes no comparison of its own, it restates `controller: did` on the
+    reconstructed method (`:276`), and that is what routes the purpose check
+    to the resolved document
+  - `src/lib/webvhController.ts:325-352` -- `dereferenceFragment`, reached
+    through `webvhDidResolverDriver`, which serves the `did#fragment` node
+    the proof-purpose comparison reads the relation out of
+  - `test/` -- the regression test pinning the measured matrix
+  - ARCHITECTURE.md -- the current-key-set rule's description, which states
+    the rule but not the mechanism that carries it on the invocation side
+- acceptance:
+  - [ ] A regression test pins the measured matrix on a promoted (did:webvh
+        controlled) Space: a verification method listed under
+        `assertionMethod` and `capabilityDelegation` only -- a ladder VM --
+        cannot root-invoke `GET` or `DELETE`, and neither can an
+        `authentication`-only method; a `capabilityInvocation` member can do
+        both, as can a method carrying all four relations
+  - [ ] The test asserts the refusal shape the server actually returns (404
+        at the route, from the maximum-privacy masking) and pins the
+        underlying verifier message, so a silent widening in a jsigs or
+        zcap upgrade fails the suite rather than passing quietly
+  - [ ] ARCHITECTURE.md's current-key-set paragraph names the mechanism on
+        the invocation side: the restated `controller` plus the
+        fragment-resolving driver route jsigs' `ControllerProofPurpose` to
+        read the relation out of the resolved document, so root invocation
+        and delegation proof are relation-scoped by the same code
+  - [ ] The bootstrap case is documented beside the test: requests that
+        invoke as a bare did:key Space controller before promotion take the
+        `did:key` branch, not the listed-VM lookup, so no relation applies
+        to them
+
+Filed on the suspicion that the root-invocation path did no relation check.
+The suspicion is wrong, measured 2026-09-01 against main @ `6bd3e3f` by
+in-process probes over `startTestServer` from `test/helpers.js` (the probe
+scripts are not committed). `webvhVerifier` does look the keyId up by
+membership in the flat `verificationMethod` array and compares no relation
+itself (`src/zcap.ts:260-269`). But it restates `controller: did` on the
+verification method it reconstructs (`src/zcap.ts:276`), and that routes
+jsigs' `ControllerProofPurpose` to fetch the controller document and read
+`capabilityInvocation` out of it. The relation check is therefore already
+enforced on root invocations, by the same code as on the delegation-proof
+path.
+
+The measured matrix, `GET` and `DELETE` on a promoted Space by root
+invocation: all four relations -> 200 / 204; `capabilityInvocation` only ->
+200 / 204; `assertionMethod` plus `capabilityDelegation`, the ladder VM ->
+404 / 404; `authentication` only -> 404 / 404. The verifier's refusal reads
+`Verification method ... not authorized by controller for proof purpose
+"capabilityInvocation"`.
+
+So there is nothing to enforce and the item becomes two obligations. First
+a regression test: the behavior is load-bearing for freewallet's FW-400,
+which depends on a ladder VM being unable to root-invoke anything, and it
+rests on an indirection (a restated `controller` string, resolved through
+the document loader) that an unrelated refactor could drop without any
+local signal. Second a wording fix, since this item's own premise text said
+the check "only runs on the delegation-proof path" and that claim traveled
+into two design docs before it was measured.
+
+Note 2026-09-01. WAS-72 held the one designed exception to the membership
+check this item was going to add. That item is retired: freewallet FW-400
+v5 replaced its mechanism with a delegation, so no exception is needed and
+nothing lands with this item.
+
+### WAS-73: Periodic sweep of Spaces and keystores whose did:webvh controller no longer resolves
+
+- status: todo
+- priority: medium
+- labels: cleanup, backend, kms
+- discovered-from: freewallet FW-400 design pass v3 (2026-08-31), the
+  eventual mender of its accepted (b4)-(b5) residue; also the sweep
+  WAS-70's orphan-GC decision calls for
+- touches:
+  - `src/backends/postgres.ts` and `src/backends/filesystem.ts` --
+    `listSpaces()` exists (`src/types.ts:553`); a by-controller scan or
+    an index is the open shape
+  - the keystore store, for the keystore half
+  - a scheduler or CLI entry point for the sweep itself
+  - `ARCHITECTURE.md`
+- acceptance:
+  - [ ] A Space whose stored controller is a did:webvh that no longer
+        resolves, because the Space holding its log is gone, is deleted
+        after a grace period
+  - [ ] The same rule applies to keystores
+  - [ ] Resolution failure and resolution absence are distinguished: a
+        did:webvh that fails to resolve for a transient reason, such as a
+        backend outage, is not swept
+  - [ ] A dry-run mode reports what would be deleted without deleting it
+  - [ ] Tests on both backends
+
+Context: no wallet depends on this sweep. Freewallet's deletion ceremony
+walks every Space of the account itself, so a clean run leaves nothing
+behind. What the sweep reaps is what a torn run leaves. An account Space
+whose unlock Spaces are all deleted is unreachable to every client, since
+nothing can locate it and nothing can authorize against it, so the server
+is the only party that can remove it.
 
 ## Test coverage gaps (conformance suite + server `test/`)
 
