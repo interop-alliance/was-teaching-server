@@ -6,17 +6,21 @@
  *
  * It bounds what a *ladder* verification method may delegate. The ladder VM is
  * the stable, credential-derived method a wallet publishes on a
- * ladder-anchored account document; it is recognized purely by relation asymmetry -- a
- * `capabilityDelegation` member absent from `capabilityInvocation` -- so no
- * marker vocabulary is consulted. A delegation whose proof VM resolves to a
+ * ladder-anchored account document. It is recognized purely by relation
+ * asymmetry -- a `capabilityDelegation` member absent from
+ * `capabilityInvocation` -- so no marker vocabulary is consulted. A delegation whose proof VM resolves to a
  * ladder VM is admitted iff one of three predicates holds:
  *
- * 1. Annex-DID controller, by pointer equality: the delegation's sole
- *    `controller` equals the annex DID named by the
- *    `https://w3id.org/byoe#DelegatedClients` service entry of the account
- *    document the chain already resolved as delegator (a memoized read, so no
- *    extra I/O), behind the syntactic gate that the string parses as a
- *    self-hosted did:webvh.
+ * 1. Annex-DID controller inside the account Space's items subtree. Three
+ *    bounds hold together. The delegation's sole `controller` equals the annex
+ *    DID named by the `https://w3id.org/byoe#DelegatedClients` service entry of
+ *    the account document the chain already resolved as delegator (a memoized
+ *    read, so no extra I/O), behind the syntactic gate that the string parses
+ *    as a self-hosted did:webvh. Its `invocationTarget` is the trailing-slash
+ *    URL of the Space carrying that account's log, or a path under that URL --
+ *    the bare Space URL is refused, and so is any keystore target. Its
+ *    `allowedAction` is present, non-empty, and within the closed WAS verb
+ *    vocabulary.
  * 2. Bridge-shaped target, two branches: the delegation's `invocationTarget`
  *    equals the delegator account's own history log resource URL -- derived
  *    from the account DID itself, which carries its log's Space and Collection
@@ -32,32 +36,36 @@
  *    that same Space URL. A two-verb set never qualifies.
  *
  * The locked property: no ladder authority whose exercise leaves no record --
- * every admitted ladder delegation either resolves through a loud annex entry,
- * can only write a log, or is a target-exact single-verb GET or DELETE on one
- * Space of the delegator's own account. That third shape is a read, or a
- * destruction whose account-Space case removes the log any record would live
- * in. A DELETE admitted under predicate 3 writes no log. Two bounds keep the
- * predicate narrow. On the `manageCapability` arm the parent already carries
- * DELETE on exactly that Space URL, so the predicate widens who signs the last
- * link rather than what the account may do. And the child's target is its
- * parent's unchanged, so the ladder VM cannot aim it anywhere new.
+ * every admitted ladder delegation either resolves through a loud annex entry
+ * and stays inside the account Space's items subtree, can only write a log, or
+ * is a target-exact single-verb GET or DELETE on one Space of the delegator's
+ * own account. That third shape is a read, or a destruction whose
+ * account-Space case removes the log any record would live in. A DELETE
+ * admitted under predicate 3 writes no log. Two bounds keep that predicate
+ * narrow. On the `manageCapability` arm the parent already carries DELETE on
+ * exactly that Space URL, so the predicate widens who signs the last link
+ * rather than what the account may do. And the child's target is its parent's
+ * unchanged, so the ladder VM cannot aim it anywhere new.
  *
  * The disjuncts carry different grades of record. Disjunct 2 is exact: all the
  * delegation can do is write a log, and the write is the record. Disjunct 1 is
- * narrower than it reads. The annex entry is loud that a per-visit key exists
- * and may delegate; it is silent about what that key subsequently delegates,
- * to whom, and for how long. A
- * per-visit annex verification method publishes under `capabilityDelegation`
- * beside `capabilityInvocation` (wallet-core decision 0013), so an admitted
- * delegation to the annex DID reaches onward grants no annex entry records.
- * What bounds those grants is target attenuation, the action limitations, and
- * the parent's expiry, not the annex log. The clause binds the capability
- * decision only: a refused delegation does not authorize, and the refusal
- * falls through to the access-control policy like any other failed
- * verification (a world-readable read still serves). The clause is fail-open
- * across servers -- one running unmodified verification accepts what this
- * refuses -- so a wallet publishes a ladder VM only on a host advertising the
- * client-annex profile.
+ * bounded by target as well as by grantee. A per-visit annex verification
+ * method publishes under `capabilityDelegation` beside `capabilityInvocation`
+ * (wallet-core decision 0013), so it can mint onward grants that no annex entry
+ * records. Every such grant is a child of the admitted delegation, so none of
+ * them can exceed the account Space's items subtree. The Space Description PUT
+ * that rewrites the Space's controller sits outside that subtree, and so does
+ * Space DELETE; both are out of reach by construction. Keystores are outside
+ * it too. What stays free is to whom an onward grant goes, and for how long
+ * within the parent's expiry. That freedom is the trade the annex entry's
+ * loudness covers: the entry says a per-visit key exists and may delegate.
+ *
+ * The clause binds the capability decision only: a refused delegation does not
+ * authorize, and the refusal falls through to the access-control policy like
+ * any other failed verification (a world-readable read still serves). The
+ * clause is fail-open across servers -- one running unmodified verification
+ * accepts what this refuses -- so a wallet publishes a ladder VM only on a host
+ * advertising the client-annex profile.
  */
 import type { InspectCapabilityChain } from '@interop/zcap'
 import type { DIDDoc } from '@interop/did-method-webvh'
@@ -79,6 +87,14 @@ import { resourcePath, spacePath } from './paths.js'
  * non-semantic.
  */
 const DELEGATED_CLIENTS_SERVICE_TYPE = 'https://w3id.org/byoe#DelegatedClients'
+
+/**
+ * The closed set of actions the WAS routes recognize. It is the whole
+ * vocabulary, not a chosen subset: predicate 1 uses it to refuse an absent or
+ * open `allowedAction` and any action outside the protocol, while the target
+ * bound does the narrowing.
+ */
+const WAS_ACTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
 
 /**
  * Runs inspectors in order, returning the first failure (any subsequent
@@ -399,6 +415,45 @@ function spaceUrlTargetId({
 }
 
 /**
+ * Whether a target lies within one Space's items subtree: a clean local URL
+ * whose path is `<base>/space/<S>/` or any path under it, with the Space id
+ * segment equal to `spaceId` as an exact string.
+ *
+ * The bare Space URL `<base>/space/<S>` is excluded. It addresses the Space
+ * Description, so a grant carrying it reaches Update Space Description -- which
+ * rewrites the Space's controller -- and Delete Space. The trailing-slash form
+ * is the Space-as-container view, and it is the target a generation delegation
+ * already carries.
+ *
+ * Keystore targets (`<base>/kms/...`) are outside the subtree: their second
+ * path segment is `kms`, so they never match the `/space/<S>/` shape.
+ *
+ * @param options {object}
+ * @param options.target {string}   the delegation's `invocationTarget`
+ * @param options.spaceId {string}   the Space the subtree belongs to
+ * @param options.serverUrl {string}   this server's base URL
+ * @returns {boolean}
+ */
+function isWithinSpaceItemsSubtree({
+  target,
+  spaceId,
+  serverUrl
+}: {
+  target: string
+  spaceId: string
+  serverUrl: string
+}): boolean {
+  const segments = localPathSegments({ target, serverUrl })
+  return (
+    segments !== undefined &&
+    segments.length >= 4 &&
+    segments[0] === '' &&
+    segments[1] === 'space' &&
+    segments[2] === spaceId
+  )
+}
+
+/**
  * Whether a target is a bare Space URL (`<base>/space/<S>`, no trailing
  * slash), matched by exact string equality against the canonical form. The
  * sibling of {@link spaceUrlTargetId}, which matches the trailing-slash
@@ -469,30 +524,52 @@ async function ladderDelegationAdmitted({
   logLocation: { spaceId: string; collectionId: string }
   parent: { invocationTarget?: string }
 } & WebvhResolverContext): Promise<boolean> {
-  // Predicate 1: the delegation's sole controller is, by pointer equality,
-  // the annex DID the account document currently names -- so a GC pointer
-  // swap instantly kills the prior generation's delegations. `controller` is
-  // normalized from the array form first (spec-legal, even if in-ecosystem
-  // clients emit a string), and exactly one entry is required: a second
-  // controller could invoke too, outside the pointer. The syntactic
+  const target = capability.invocationTarget
+  if (typeof target !== 'string') {
+    return false
+  }
+
+  // Predicate 1, bound one -- the grantee. The delegation's sole controller is,
+  // by pointer equality, the annex DID the account document currently names --
+  // so a GC pointer swap instantly kills the prior generation's delegations.
+  // `controller` is normalized from the array form first (spec-legal, even if
+  // in-ecosystem clients emit a string), and exactly one entry is required: a
+  // second controller could invoke too, outside the pointer. The syntactic
   // self-hosted gate keeps the admitted controller resolvable here.
+  //
+  // Bound two -- the target. The grant stays within the items subtree of the
+  // account Space, the Space carrying the delegator DID's own log. The bare
+  // Space URL is outside the subtree, so Update Space Description (a controller
+  // rewrite) and Delete Space stay out of reach. Keystore targets (`/kms/...`)
+  // are outside it as well, since they are not under `/space/<S>/` at all.
+  //
+  // Bound three -- the action. `allowedAction` must be present, non-empty, and
+  // drawn from the full closed WAS verb vocabulary. The full set is admitted
+  // rather than a narrower one: the generation delegation (app-connect-spec
+  // decision 0002) carries exactly that vocabulary, and a child capability may
+  // not exceed its parent, so any verb left out here would hold every
+  // transient-visit grant below the durable client's own shape. The bound is
+  // here to refuse an absent or open `allowedAction` and any verb outside the
+  // vocabulary. The target bound does the real narrowing.
   const controllers = capabilityControllers(capability)
   const clientAnnexDid = clientAnnexDidOf(doc)
   if (
     controllers.length === 1 &&
     clientAnnexDid !== undefined &&
     controllers[0] === clientAnnexDid &&
-    isSelfHostedWebvhController(clientAnnexDid, { serverUrl })
+    isSelfHostedWebvhController(clientAnnexDid, { serverUrl }) &&
+    isWithinSpaceItemsSubtree({
+      target,
+      spaceId: logLocation.spaceId,
+      serverUrl
+    }) &&
+    actionsWithin({ capability, allowed: WAS_ACTIONS })
   ) {
     return true
   }
 
   // Predicate 2, branch one: the delegation can only write the delegator
   // account's own history log.
-  const target = capability.invocationTarget
-  if (typeof target !== 'string') {
-    return false
-  }
   if (
     isOwnAccountLogTarget({ target, logLocation, serverUrl }) &&
     actionsWithin({ capability, allowed: ['PUT'] })
@@ -591,8 +668,9 @@ export function clientAnnexChainInspector({
             'A capability in the chain is delegated by a delegation-only ' +
               '(ladder) verification method and is none of the admitted ' +
               "shapes: it neither names the account document's client-annex " +
-              'DID as controller, nor carries a bridge-shaped invocation ' +
-              'target, nor is a single-verb GET or DELETE on the parent ' +
+              "DID as sole controller with a target inside the account Space's " +
+              'items subtree, nor carries a bridge-shaped invocation target, ' +
+              'nor is a single-verb GET or DELETE on the parent ' +
               "capability's own bare Space URL."
           )
         }

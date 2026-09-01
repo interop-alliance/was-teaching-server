@@ -367,3 +367,192 @@ third predicate that bounds the ladder-signed case (FW-400 W3), landing with
 WAS-67's narrowing of predicate 1. The context above is preserved verbatim as
 the historical record, including its rejection of the delegated shape, which the
 v5 measurements reverse.
+
+### WAS-67: Narrow the client-annex clause's first predicate to the account Space's items subtree
+
+- status: done
+- done: 2026-09-01
+- priority: high
+- labels: security, zcap, client-annex
+- discovered-from: freewallet FW-356 design pass (2026-08-26), re-decided as
+  blocking 2026-08-28 once FW-359 shipped
+- touches:
+  - `src/lib/clientAnnexClause.ts` -- the first admission predicate and the
+    header comment's locked-property statement (shipped: the predicate gains the
+    target and action bounds, the header comment is rewritten)
+  - `test/client-annex-clause-api.test.ts` -- the admission cases (shipped: both
+    directions covered)
+  - `ARCHITECTURE.md:177-202` -- the only prose description of the clause
+    (shipped: the Chain inspection text now describes two bounded shapes plus
+    the target-exact one)
+  - app-connect-spec `decisions/0003-ladder-authority-clauses.md` -- the
+    normative home of the rule this predicate implements (shipped: predicate 1
+    and the locked property amended in place, 2026-09-01)
+  - wallet-core `decisions/0013` -- its Revisit Criteria 1 names this narrowing
+    as a trigger, and `decisions/0004` states the wallet-side convention the
+    narrowing would make enforced (shipped: 0004 records the narrowing as
+    landed; 0013's criterion is not triggered, since the clause still skips a
+    link whose proof method carries both relations)
+- acceptance:
+  - [x] The first predicate gains a target bound: a ladder-signed delegation
+        whose grantee is the pointed annex DID is admitted only when its
+        `invocationTarget` is within the account Space's items subtree -- the
+        target a generation delegation already carries. A Space-level target,
+        which reaches Update Space Description and so the Space's controller, is
+        refused
+  - [x] Keystore targets are refused by the same bound, stated explicitly rather
+        than left to fall out of the subtree test
+  - [x] The action bound is decided on the record: either the full verb set
+        (matching what a generation delegation needs) or a narrower set, with
+        the reason written down. Today the predicate reads no action at all
+  - [x] Tests drive both directions: the generation-delegation shape stays
+        admitted, and a ladder-signed delegation to the same grantee with a
+        Space-level target is refused
+  - [x] The header comment's locked-property paragraph is rewritten. It
+        currently concedes that the first disjunct "is silent about what that
+        key subsequently delegates" and names "target attenuation, the action
+        limitations, and the parent's expiry" as the bound -- while the
+        predicate itself applies no target attenuation
+  - [x] `ARCHITECTURE.md:177-202` is updated to describe two bounded predicates
+        rather than one bounded and one grantee-keyed
+  - [x] A minimum-version note in CHANGELOG.md, since a wallet minting a wider
+        ladder-signed delegation than the items subtree would start being
+        refused. No shipped wallet does: freewallet's generation delegation
+        targets exactly that subtree
+
+Context: the clause admits a ladder-signed delegation under two disjuncts. The
+second is exact -- a `PUT` on the signing DID's own account log, or `GET`/`PUT`
+on the delegated-clients auxiliary Space in the trailing-slash form that
+excludes Update Space Description -- and its stated safety property holds: all
+the delegation can do is write a log, and the write is the record.
+
+The first is bounded by grantee identity alone. It admits on sole-`controller`
+equality against the account document's `#DelegatedClients` annex DID behind a
+syntactic self-hosted-`did:webvh` gate, and returns before
+`capability.invocationTarget` is ever read. So a ladder verification method may
+delegate anything the account controls, the Space-level target included, so long
+as the grantee is the pointed annex DID.
+
+That was tolerable while the annex verification method held
+`capabilityInvocation` only: whatever it received, it could exercise but not
+pass on. Freewallet's FW-359 (2026-08-28, wallet-core `decisions/0013`) gave the
+per-visit annex method `capabilityDelegation` beside `capabilityInvocation` so
+that a transient session can mint App Connect grants. The chain is now root ->
+ladder-signed delegation to the annex DID -> annex-signed grant to an arbitrary
+third party, and this repo's own test pins that the third link is skipped by the
+inspector ("a two-relation annex VM is outside the clause"). The onward step is
+offline signing and leaves no entry in any log.
+
+The clause's header comment was revised in the same change and states the
+consequence honestly, but the predicate was not touched. What bounds those
+onward grants today is a wallet-side convention -- freewallet scopes its
+generation delegation to the items subtree -- rather than anything this server
+enforces. This item moves that bound server-side.
+
+Two things sharpen the priority. The exposure is live now on every
+ladder-anchored account, which is most passphrase accounts on a wallet whose
+default signup is credential-anchored. And freewallet FW-356 proposes to keep a
+standing ladder verification method for the life of each unlock credential,
+which would make the surface permanent and multiply it by the number of standing
+credentials; that item's design records this narrowing as blocking its approval.
+
+Superseding note 2026-09-01 (freewallet FW-400 v5). An earlier note here
+described a third clause predicate for FW-400's account deletion, then withdrew
+it: FW-400 v3 deleted each Space by direct root invocation, so the clause was
+untouched and the replacement item was WAS-72. Both of those are now out of
+date. WAS-72 is retired, and v5 deletes every Space of the account through a
+delegation the ladder VM signs and the visit's annex key invokes. The third
+predicate is back, and under v5 it is that design's only server change.
+
+What it must admit: a ladder-signed delegation whose `invocationTarget` is a
+bare Space URL and whose `allowedAction` is exactly `['DELETE']` (the delete) or
+exactly `['GET']` (the Space Description read the deletion walk probes existence
+with), target-exact against the parent's own `invocationTarget` when the parent
+is delegated, and against the synthesized root's Space URL when it is not. It
+covers all three Space kinds -- the account Space, the auxiliary annex Space(s),
+and the sibling unlock Spaces. Predicate 1 admits those delegations target-blind
+today (`src/lib/clientAnnexClause.ts:396-405`), which is exactly what this item
+narrows, so the third predicate lands with the narrowing rather than after it.
+The paired server obligation is WAS-60, which must carry the same exception on
+the enforcement side.
+
+Adjacent, not in scope: the clause is fail-open across implementations -- a
+server running unmodified zcap verification accepts what this one refuses -- and
+nothing is served that a client could read to learn the clause is enforced,
+while the clause's own header says a wallet publishes a ladder verification
+method only on a host advertising the profile. That standing contradiction is
+freewallet FW-357's subject.
+
+### WAS-71: Pin the root-invocation `capabilityInvocation` relation check
+
+- status: done
+- done: 2026-09-01
+- priority: high
+- labels: security, zcap, authorization, tests, docs
+- discovered-from: freewallet FW-400 research pass (2026-08-31); re-scoped
+  2026-09-01 once the suspected gap was measured and found not to exist
+- touches:
+  - `src/zcap.ts:253-285` -- `webvhVerifier`, where the check comes from: it
+    makes no comparison of its own, it restates `controller: did` on the
+    reconstructed method (`:276`), and that is what routes the purpose check to
+    the resolved document (waived: no source change, the mechanism is pinned by
+    a test rather than modified)
+  - `src/lib/webvhController.ts:325-352` -- `dereferenceFragment`, reached
+    through `webvhDidResolverDriver`, which serves the `did#fragment` node the
+    proof-purpose comparison reads the relation out of (waived: no source
+    change, the mechanism is documented rather than modified)
+  - `test/` -- the regression test pinning the measured matrix (shipped:
+    `test/root-invocation-relation.test.ts`)
+  - ARCHITECTURE.md -- the current-key-set rule's description, which states the
+    rule but not the mechanism that carries it on the invocation side (shipped:
+    the entry now names the restated controller and the resolver driver)
+- acceptance:
+  - [x] A regression test pins the measured matrix on a promoted (did:webvh
+        controlled) Space: a verification method listed under `assertionMethod`
+        and `capabilityDelegation` only -- a ladder VM -- cannot root-invoke
+        `GET` or `DELETE`, and neither can an `authentication`-only method; a
+        `capabilityInvocation` member can do both, as can a method carrying all
+        four relations
+  - [x] The test asserts the refusal shape the server actually returns (404 at
+        the route, from the maximum-privacy masking) and pins the underlying
+        verifier message, so a silent widening in a jsigs or zcap upgrade fails
+        the suite rather than passing quietly
+  - [x] ARCHITECTURE.md's current-key-set paragraph names the mechanism on the
+        invocation side: the restated `controller` plus the fragment-resolving
+        driver route jsigs' `ControllerProofPurpose` to read the relation out of
+        the resolved document, so root invocation and delegation proof are
+        relation-scoped by the same code
+  - [x] The bootstrap case is documented beside the test: requests that invoke
+        as a bare did:key Space controller before promotion take the `did:key`
+        branch, not the listed-VM lookup, so no relation applies to them
+
+Filed on the suspicion that the root-invocation path did no relation check. The
+suspicion is wrong, measured 2026-09-01 against main @ `6bd3e3f` by in-process
+probes over `startTestServer` from `test/helpers.js` (the probe scripts are not
+committed). `webvhVerifier` does look the keyId up by membership in the flat
+`verificationMethod` array and compares no relation itself
+(`src/zcap.ts:260-269`). But it restates `controller: did` on the verification
+method it reconstructs (`src/zcap.ts:276`), and that routes jsigs'
+`ControllerProofPurpose` to fetch the controller document and read
+`capabilityInvocation` out of it. The relation check is therefore already
+enforced on root invocations, by the same code as on the delegation-proof path.
+
+The measured matrix, `GET` and `DELETE` on a promoted Space by root invocation:
+all four relations -> 200 / 204; `capabilityInvocation` only -> 200 / 204;
+`assertionMethod` plus `capabilityDelegation`, the ladder VM -> 404 / 404;
+`authentication` only -> 404 / 404. The verifier's refusal reads
+`Verification method ... not authorized by controller for proof purpose "capabilityInvocation"`.
+
+So there is nothing to enforce and the item becomes two obligations. First a
+regression test: the behavior is load-bearing for freewallet's FW-400, which
+depends on a ladder VM being unable to root-invoke anything, and it rests on an
+indirection (a restated `controller` string, resolved through the document
+loader) that an unrelated refactor could drop without any local signal. Second a
+wording fix, since this item's own premise text said the check "only runs on the
+delegation-proof path" and that claim traveled into two design docs before it
+was measured.
+
+Note 2026-09-01. WAS-72 held the one designed exception to the membership check
+this item was going to add. That item is retired: freewallet FW-400 v5 replaced
+its mechanism with a delegation, so no exception is needed and nothing lands
+with this item.

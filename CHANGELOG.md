@@ -1,5 +1,33 @@
 # History
 
+## 0.25.0 - TBD
+
+### Changed
+
+- The client-annex clause's first admission predicate gains a target bound and
+  an action bound. A ladder-signed delegation to the account's annex DID is
+  admitted only when its `invocationTarget` lies within the items subtree of the
+  Space carrying the delegator's own history log, meaning the trailing-slash
+  Space URL or a path under it. The bare Space URL is refused, since it reaches
+  Update Space Description (a controller rewrite) and Delete Space; keystore
+  (`/kms/...`) targets are refused as well. Its `allowedAction` must be present,
+  non-empty, and drawn from the closed WAS verb vocabulary (`GET`, `HEAD`,
+  `POST`, `PUT`, `DELETE`). The predicate previously admitted on grantee
+  identity alone and read neither target nor action.
+
+### Notes
+
+- **Wallet requirement from 0.25.0: a ladder-signed delegation to a client annex
+  must target the account Space's items subtree.** A wider one is refused, and
+  the refusal falls through to access-control policy like any other failed
+  verification. No shipped wallet mints a wider one: freewallet's generation
+  delegation targets exactly that subtree, with the full verb set the new action
+  bound admits.
+- Root invocations on a Space promoted to a self-hosted `did:webvh` were already
+  scoped by the resolved document's `capabilityInvocation` relation, so a
+  delegation-only verification method could not root-invoke. A regression suite
+  now pins that matrix and the verifier's refusal message. No behavior change.
+
 ## 0.24.0 - 2026-09-01
 
 ### Added

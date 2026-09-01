@@ -4,11 +4,13 @@
  *
  * A ladder VM is recognized by relation asymmetry alone -- listed under
  * `capabilityDelegation`, absent from `capabilityInvocation`. A delegation it
- * signs is admitted only when it names the account document's annex DID as
- * controller, when its target is bridge-shaped (the account's own history
- * log with `PUT`, or the subtree URL of a delegated-clients bookkeeping Space
- * with `GET`/`PUT`), or when its target is a bare Space URL equal to its
- * parent capability's own, granted exactly `GET` or exactly `DELETE`.
+ * signs is admitted only when it names the account document's annex DID as its
+ * sole controller with a target inside the account Space's items subtree and
+ * actions within the closed WAS verb vocabulary, when its target is
+ * bridge-shaped (the account's own history log with `PUT`, or the subtree URL
+ * of a delegated-clients bookkeeping Space with `GET`/`PUT`), or when its
+ * target is a bare Space URL equal to its parent capability's own, granted
+ * exactly `GET` or exactly `DELETE`.
  * Everything else is refused, and the refusal is masked as a 404 like any other
  * unauthorized invocation -- while still falling through to the access-control
  * policy, so a world-readable target keeps serving.
@@ -51,6 +53,9 @@ const DELEGATED_CLIENTS_SERVICE_TYPE = 'https://w3id.org/byoe#DelegatedClients'
 
 /** The auxiliary Space's full type array, as a wallet would send it. */
 const AUXILIARY_TYPE = ['Space', 'AuxiliarySpace', 'DelegatedClientsSpace']
+
+/** The closed WAS verb vocabulary a generation delegation carries. */
+const WAS_ACTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
 
 /** One hour out, the expiry every delegation in this suite carries. */
 function anHourFromNow(): Date {
@@ -402,6 +407,172 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       })
       assert.deepStrictEqual(readBack.data, { hello: 'world' })
     })
+
+    it('admits the generation-delegation shape on the Space subtree', async () => {
+      // The shape a wallet actually mints: the trailing-slash account Space
+      // URL with the full closed WAS verb vocabulary, granted to the annex
+      // DID. Both a read and a write under it land.
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: `${accountSpaceUrl}/`,
+        controller: clientAnnex.did,
+        allowedActions: WAS_ACTIONS
+      })
+      const annex = client({ signer: clientAnnex.clientKeyPair.signer() })
+
+      const read = await annex.request({
+        url: `${credentialsUrl}/doc-1`,
+        method: 'GET',
+        action: 'GET',
+        capability: delegated
+      })
+      assert.equal(read.status, 200)
+      assert.deepStrictEqual(read.data, { hello: 'world' })
+
+      const written = await annex.request({
+        url: `${credentialsUrl}/doc-generation`,
+        method: 'PUT',
+        action: 'PUT',
+        capability: delegated,
+        json: { minted: 'under-generation-delegation' }
+      })
+      assert.equal(written.status, 204)
+
+      const readBack = await annex.request({
+        url: `${credentialsUrl}/doc-generation`,
+        method: 'GET',
+        action: 'GET',
+        capability: delegated
+      })
+      assert.equal(readBack.status, 200)
+      assert.deepStrictEqual(readBack.data, {
+        minted: 'under-generation-delegation'
+      })
+    })
+
+    it('refuses a Space-level target to the same grantee (404)', async () => {
+      // The bare Space URL is outside the items subtree: it reaches Update
+      // Space Description, and so the Space's controller.
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: accountSpaceUrl,
+        controller: clientAnnex.did,
+        allowedActions: ['GET', 'PUT']
+      })
+      const err = await requestError(
+        client({ signer: clientAnnex.clientKeyPair.signer() }).request({
+          url: accountSpaceUrl,
+          method: 'PUT',
+          action: 'PUT',
+          capability: delegated,
+          json: {
+            id: account.spaceId,
+            name: 'Account Space',
+            controller: bob.did
+          }
+        })
+      )
+      assert.equal(err.status, 404)
+
+      // The controller rewrite did not land.
+      const description = await client({
+        signer: account.clientKeyPair.signer()
+      }).request({
+        url: accountSpaceUrl,
+        method: 'GET',
+        action: 'GET',
+        capability: rootZcap({
+          target: accountSpaceUrl,
+          controller: account.did
+        })
+      })
+      assert.equal(
+        (description.data as { controller: string }).controller,
+        account.did
+      )
+    })
+
+    it("refuses a subtree target in another of the account's Spaces (404)", async () => {
+      // A second Space promoted to the same account DID. The delegation hangs
+      // off that Space's own root, so the zcap library's target attenuation
+      // passes and the refusal is the clause's: the Space is not the one
+      // carrying the account DID's log.
+      const otherSpaceId = randomUUID()
+      const otherSpace = alice.was.space(otherSpaceId)
+      await otherSpace.configure({ name: 'Other', controller: alice.did })
+      await otherSpace.collection('notes').configure({ force: true })
+      await otherSpace.collection('notes').put('note-1', { other: true })
+      const promoted = await alice.was.request({
+        path: `/space/${otherSpaceId}`,
+        method: 'PUT',
+        json: { id: otherSpaceId, name: 'Other', controller: account.did }
+      })
+      assert.equal(promoted.status, 204)
+
+      const otherSpaceUrl = new URL(
+        `/space/${otherSpaceId}`,
+        serverUrl
+      ).toString()
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: `urn:zcap:root:${encodeURIComponent(otherSpaceUrl)}`,
+        invocationTarget: `${otherSpaceUrl}/`,
+        controller: clientAnnex.did,
+        allowedActions: WAS_ACTIONS
+      })
+      const err = await requestError(
+        client({ signer: clientAnnex.clientKeyPair.signer() }).request({
+          url: `${otherSpaceUrl}/notes/note-1`,
+          method: 'GET',
+          action: 'GET',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('refuses an action outside the WAS verb vocabulary (404)', async () => {
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: `${accountSpaceUrl}/`,
+        controller: clientAnnex.did,
+        allowedActions: ['GET', 'PATCH']
+      })
+      const err = await requestError(
+        client({ signer: clientAnnex.clientKeyPair.signer() }).request({
+          url: `${credentialsUrl}/doc-1`,
+          method: 'GET',
+          action: 'GET',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('refuses an absent `allowedAction` on a subtree target (404)', async () => {
+      // An empty `allowedActions` omits `allowedAction` from the delegation,
+      // which permits any action in the zcap model.
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: `${accountSpaceUrl}/`,
+        controller: clientAnnex.did,
+        allowedActions: []
+      })
+      assert.equal(delegated.allowedAction, undefined)
+      const err = await requestError(
+        client({ signer: clientAnnex.clientKeyPair.signer() }).request({
+          url: `${credentialsUrl}/doc-1`,
+          method: 'GET',
+          action: 'GET',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
   })
 
   describe('a two-relation annex VM is outside the clause', () => {
@@ -421,6 +592,36 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         invocationTarget: credentialsUrl,
         controller: clientAnnex.did,
         allowedActions: ['GET']
+      })
+      const grant = await delegate({
+        signerKeyPair: clientAnnex.transientKeyPair,
+        capability: generationDelegation,
+        invocationTarget: credentialsUrl,
+        controller: bob.did,
+        allowedActions: ['GET'],
+        expires: new Date(generationDelegation.expires)
+      })
+      const response = await client({ signer: bob.signer }).request({
+        url: `${credentialsUrl}/doc-1`,
+        method: 'GET',
+        action: 'GET',
+        capability: grant
+      })
+      assert.equal(response.status, 200)
+      assert.deepStrictEqual(response.data, { hello: 'world' })
+    })
+
+    it('still serves when the generation delegation targets the subtree', async () => {
+      // The same depth-3 chain, with the generation delegation in the shape a
+      // wallet mints it: the trailing-slash account Space URL and the full
+      // verb vocabulary. The clause admits the middle link on all three of its
+      // bounds, and skips the annex-signed link as before.
+      const generationDelegation = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: `${accountSpaceUrl}/`,
+        controller: clientAnnex.did,
+        allowedActions: WAS_ACTIONS
       })
       const grant = await delegate({
         signerKeyPair: clientAnnex.transientKeyPair,
@@ -1052,7 +1253,8 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     })
 
     it('a ladder-signed keystore delegation is refused (404)', async () => {
-      // No kms target can be bridge-shaped, so neither predicate can hold.
+      // No kms target can be bridge-shaped, and a `/kms/...` path is not
+      // inside any Space's items subtree, so no predicate can hold.
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: rootZcap({
@@ -1065,6 +1267,32 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       })
       const err = await requestError(
         client({ signer: bob.signer }).request({
+          url: keystoreId,
+          method: 'GET',
+          action: 'read',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('refuses a keystore delegation to the annex DID (404)', async () => {
+      // The grantee bound of predicate (i) holds -- the sole controller is the
+      // annex DID the account document names -- and the delegation is still
+      // refused: a `/kms/...` target is outside the account Space's items
+      // subtree.
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: rootZcap({
+          target: keystoreId,
+          controller: account.did
+        }),
+        invocationTarget: keystoreId,
+        controller: clientAnnex.did,
+        allowedActions: ['read']
+      })
+      const err = await requestError(
+        client({ signer: clientAnnex.clientKeyPair.signer() }).request({
           url: keystoreId,
           method: 'GET',
           action: 'read',

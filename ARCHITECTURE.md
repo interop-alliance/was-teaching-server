@@ -137,7 +137,16 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   being resolved. The proposed controller must resolve _before_ it is stored, or
   the Space would be deadlocked. Key validity is the **current-key-set rule**:
   an invocation or delegation verifies iff its verification method is in the
-  currently resolved document, under the right verification relationship.
+  currently resolved document, under the right verification relationship. One
+  piece of code carries that on both sides. `webvhVerifier` finds the invocation
+  key by membership in the flat `verificationMethod` array and restates
+  `controller: <did>` on the method it reconstructs. That string sends jsigs'
+  `ControllerProofPurpose` to dereference the controller document through the
+  local webvh resolver driver (`webvhDidResolverDriver` / `dereferenceFragment`)
+  and read `capabilityInvocation` out of it. So a root invocation and a
+  delegation proof are relation-scoped identically, and a delegation-only method
+  cannot root-invoke. Before promotion the Space controller is a `did:key` and
+  takes the `did:key` branch of `createGetVerifier`, where no relation applies.
   Resolved documents are cached, keyed by the log's location (Space plus
   Collection), and a write that could change a log at that location drops the
   entry. Entries exist only for DIDs actually resolved for authorization, so a
@@ -182,27 +191,46 @@ _ladder_ verification method may delegate. A ladder VM is the stable,
 credential-derived method a wallet publishes on a ladder-anchored account
 document, recognized by relation asymmetry: a `capabilityDelegation` member of
 the resolved self-hosted `did:webvh` document that is absent from
-`capabilityInvocation`. A delegation signed by one is admitted only when its
-sole `controller` equals the client-annex DID named by the account document's
+`capabilityInvocation`. A delegation signed by one is admitted only in one of
+three shapes.
+
+The first shape is bounded by grantee, target, and action together. Its sole
+`controller` equals the client-annex DID named by the account document's
 `https://w3id.org/byoe#DelegatedClients` service entry (a self-hosted
-`did:webvh` string, compared by pointer equality), or when its
-`invocationTarget` is bridge-shaped: the delegator account's own history log
-resource URL (derived from the account DID, which carries its log's Space and
-Collection) with `allowedAction` within {PUT}, or the trailing-slash URL of a
-Space whose Description declares it delegated-clients bookkeeping (typed
-`AuxiliarySpace` + `DelegatedClientsSpace`, the only combination Create Space
-accepts for the latter) with `allowedAction` within {GET, PUT}. The
-trailing-slash (subtree) form is required: it keeps Update Space Description
-outside ladder reach, so annex-profile grants pass the subtree target explicitly
-rather than the client's no-slash default. A third shape is admitted as well: a
-target-exact single-verb read or delete of one Space. Its `invocationTarget` is
-a bare (no-trailing-slash) Space URL, equal to the parent capability's own
-target unchanged -- whether that parent is a delegated capability or the Space's
-synthesized root -- and its `allowedAction` is exactly {GET} or exactly
-{DELETE}. A two-verb set never qualifies, so the ladder VM signs the last link
-of a grant its parent already carries rather than aiming one anywhere new. Both
-inspectors bind the capability decision only. A refusal falls through to the
-target's access-control policy like any other failed verification, so a
+`did:webvh` string, compared by pointer equality). Its `invocationTarget` lies
+within the items subtree of the Space that carries the delegator's own history
+log: the trailing-slash Space URL, or any path under it. Its `allowedAction` is
+present, non-empty, and drawn from the closed WAS verb vocabulary {GET, HEAD,
+POST, PUT, DELETE}. The bare Space URL sits outside that subtree, so Update
+Space Description -- which rewrites the Space's controller -- and Delete Space
+stay out of reach; keystore targets are outside it as well. The whole vocabulary
+is admitted rather than a chosen subset, because the generation delegation a
+wallet already mints carries exactly it, and a child capability may not exceed
+its parent. The target bound does the narrowing. An onward grant minted by a
+two-relation annex verification method is a child of the admitted delegation, so
+it cannot exceed that subtree either.
+
+The second shape is bridge-shaped, with two branches. The `invocationTarget` is
+the delegator account's own history log resource URL (derived from the account
+DID, which carries its log's Space and Collection) with `allowedAction` within
+{PUT}. Or it is the trailing-slash URL of a Space whose Description declares it
+delegated-clients bookkeeping (typed `AuxiliarySpace` + `DelegatedClientsSpace`,
+the only combination Create Space accepts for the latter) with `allowedAction`
+within {GET, PUT}. The trailing-slash (subtree) form is required in both bounded
+shapes: it keeps Update Space Description outside ladder reach, so annex-profile
+grants pass the subtree target explicitly rather than the client's no-slash
+default.
+
+The third shape is a target-exact single-verb read or delete of one Space. Its
+`invocationTarget` is a bare (no-trailing-slash) Space URL, equal to the parent
+capability's own target unchanged -- whether that parent is a delegated
+capability or the Space's synthesized root -- and its `allowedAction` is exactly
+{GET} or exactly {DELETE}. A two-verb set does not qualify, so the ladder VM
+signs the last link of a grant its parent already carries rather than aiming one
+anywhere new.
+
+Both inspectors bind the capability decision only. A refusal falls through to
+the target's access-control policy like any other failed verification, so a
 world-readable read still serves. The clause is fail-open across servers: a
 server running unmodified verification accepts exactly what this clause refuses,
 so a wallet publishes a ladder VM only on a host it has confirmed enforces the
