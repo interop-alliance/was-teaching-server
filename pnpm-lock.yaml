@@ -33,8 +33,8 @@ importers:
         specifier: ^7.3.5
         version: 7.3.5
       '@interop/did-method-webvh':
-        specifier: ^5.6.0
-        version: 5.6.0
+        specifier: ^5.6.1
+        version: 5.6.1
       '@interop/ed25519-signature':
         specifier: ^7.2.0
         version: 7.2.0(@interop/jsonld-signatures@11.8.5)
@@ -115,11 +115,11 @@ importers:
         specifier: ^6.2.6
         version: 6.2.6
       '@interop/was-client':
-        specifier: ^0.46.1
-        version: 0.46.1(@interop/jsonld-signatures@11.8.5)
+        specifier: ^0.47.0
+        version: 0.47.0(@interop/jsonld-signatures@11.8.5)
       '@interop/was-conformance-suite':
         specifier: ^0.7.0
-        version: 0.7.0(@interop/jsonld-signatures@11.8.5)(@interop/was-client@0.46.1(@interop/jsonld-signatures@11.8.5))(react-native@0.86.0(@babel/core@7.29.7(supports-color@8.1.1))(react@19.2.8)(supports-color@8.1.1))
+        version: 0.7.0(@interop/jsonld-signatures@11.8.5)(@interop/was-client@0.47.0(@interop/jsonld-signatures@11.8.5))(react-native@0.86.0(@babel/core@7.29.7(supports-color@8.1.1))(react@19.2.8)(supports-color@8.1.1))
       '@interop/webkms-client':
         specifier: ^14.7.4
         version: 14.7.4
@@ -575,6 +575,10 @@ packages:
     resolution: {integrity: sha512-vfQ+LcZ073RkIjZVxO2HmZzdNnDB19PYZJedTEMZyBBQZpRWa4ZyKYOCsYEQE60Pu8cuFz/4yKhr2UH7L/3IlQ==}
     engines: {node: '>=22'}
 
+  '@interop/did-method-webvh@5.6.1':
+    resolution: {integrity: sha512-4gud6s1vDq3uWEpvJ2hZ7S0zJiJWSPWCug0vfEA7nA+46ODwmGRO+0X9fWcW5PKAIy9XA6hZKWmOUWVB8y2ZTA==}
+    engines: {node: '>=22'}
+
   '@interop/did-web-resolver@6.3.1':
     resolution: {integrity: sha512-Qpa4kNUOpygwOUTOtM7Eg33Z6uE+2CQSWzw+q5bBcwKVb4edhnwLVUCz6U/7IBQRXKxQnoukMYPrhhXj/mQr9A==}
     engines: {node: '>=24.0'}
@@ -676,8 +680,8 @@ packages:
     resolution: {integrity: sha512-wP7/x9+TOo0DF9OmKgAhSRgOnvQrJlWReL3IsxX3/9jxyFEbdIZ+CV62uoplM3VbjYPSX9VJCzd0LZtHhNOPlQ==}
     engines: {node: '>=24.0'}
 
-  '@interop/was-client@0.46.1':
-    resolution: {integrity: sha512-XGFK4NRb2brlPj7YIRLffE30WFG0/G7gQ2ZbdddYR/O2lE07waWxZXpVtoBfBXeM1CmbZ44qIbEQWYe7QjvnIg==}
+  '@interop/was-client@0.47.0':
+    resolution: {integrity: sha512-5G8X/78q0aXYzDqnvG2L/l04VVR+0KZBBaojHDbmwWuJHpDzJErxpy7ihVQl3VGBEQv90M9UF/nxmaw8W+Xssg==}
     engines: {node: '>=24.0'}
 
   '@interop/was-conformance-suite@0.7.0':
@@ -3325,6 +3329,14 @@ snapshots:
       '@scure/base': 2.3.0
       json-canonicalize: 3.0.0
 
+  '@interop/did-method-webvh@5.6.1':
+    dependencies:
+      '@interop/data-integrity-core': 8.7.1
+      '@noble/curves': 2.2.0
+      '@noble/hashes': 2.3.0
+      '@scure/base': 2.3.0
+      json-canonicalize: 3.0.0
+
   '@interop/did-web-resolver@6.3.1':
     dependencies:
       '@interop/bnid': 6.0.2
@@ -3488,7 +3500,7 @@ snapshots:
       '@interop/did-method-webvh': 5.6.0
       '@interop/storage-core': 0.9.1
 
-  '@interop/was-client@0.46.1(@interop/jsonld-signatures@11.8.5)':
+  '@interop/was-client@0.47.0(@interop/jsonld-signatures@11.8.5)':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
       '@interop/ed25519-signature': 7.2.0(@interop/jsonld-signatures@11.8.5)
@@ -3507,7 +3519,7 @@ snapshots:
       - expo-crypto
       - react-native-get-random-values
 
-  '@interop/was-conformance-suite@0.7.0(@interop/jsonld-signatures@11.8.5)(@interop/was-client@0.46.1(@interop/jsonld-signatures@11.8.5))(react-native@0.86.0(@babel/core@7.29.7(supports-color@8.1.1))(react@19.2.8)(supports-color@8.1.1))':
+  '@interop/was-conformance-suite@0.7.0(@interop/jsonld-signatures@11.8.5)(@interop/was-client@0.47.0(@interop/jsonld-signatures@11.8.5))(react-native@0.86.0(@babel/core@7.29.7(supports-color@8.1.1))(react@19.2.8)(supports-color@8.1.1))':
     dependencies:
       '@digitalcredentials/bnid': 5.0.0(react-native@0.86.0(@babel/core@7.29.7(supports-color@8.1.1))(react@19.2.8)(supports-color@8.1.1))
       '@interop/data-integrity-core': 8.7.1
@@ -3516,7 +3528,7 @@ snapshots:
       '@interop/ezcap': 7.4.5
       '@interop/http-digest-header': 3.1.0
       '@interop/http-signature-zcap-invoke': 6.2.6
-      '@interop/was-client': 0.46.1(@interop/jsonld-signatures@11.8.5)
+      '@interop/was-client': 0.47.0(@interop/jsonld-signatures@11.8.5)
       '@interop/x25519-key-agreement-key': 5.2.2
       assert: 2.1.0
       uuid: 14.0.1

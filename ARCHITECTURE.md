@@ -194,12 +194,19 @@ Space whose Description declares it delegated-clients bookkeeping (typed
 accepts for the latter) with `allowedAction` within {GET, PUT}. The
 trailing-slash (subtree) form is required: it keeps Update Space Description
 outside ladder reach, so annex-profile grants pass the subtree target explicitly
-rather than the client's no-slash default. Both inspectors bind the capability
-decision only. A refusal falls through to the target's access-control policy
-like any other failed verification, so a world-readable read still serves. The
-clause is fail-open across servers: a server running unmodified verification
-accepts exactly what this clause refuses, so a wallet publishes a ladder VM only
-on a host it has confirmed enforces the client-annex profile.
+rather than the client's no-slash default. A third shape is admitted as well: a
+target-exact single-verb read or delete of one Space. Its `invocationTarget` is
+a bare (no-trailing-slash) Space URL, equal to the parent capability's own
+target unchanged -- whether that parent is a delegated capability or the Space's
+synthesized root -- and its `allowedAction` is exactly {GET} or exactly
+{DELETE}. A two-verb set never qualifies, so the ladder VM signs the last link
+of a grant its parent already carries rather than aiming one anywhere new. Both
+inspectors bind the capability decision only. A refusal falls through to the
+target's access-control policy like any other failed verification, so a
+world-readable read still serves. The clause is fail-open across servers: a
+server running unmodified verification accepts exactly what this clause refuses,
+so a wallet publishes a ladder VM only on a host it has confirmed enforces the
+client-annex profile.
 
 **Signing:** requests are signed with Cavage HTTP Signatures Draft 12 (not yet
 RFC 9421). The `Authorization` header signs

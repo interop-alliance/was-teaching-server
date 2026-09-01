@@ -5,10 +5,11 @@
  * A ladder VM is recognized by relation asymmetry alone -- listed under
  * `capabilityDelegation`, absent from `capabilityInvocation`. A delegation it
  * signs is admitted only when it names the account document's annex DID as
- * controller, or when its target is bridge-shaped (the account's own history
+ * controller, when its target is bridge-shaped (the account's own history
  * log with `PUT`, or the subtree URL of a delegated-clients bookkeeping Space
- * with `GET`/`PUT`). Everything
- * else is refused, and the refusal is masked as a 404 like any other
+ * with `GET`/`PUT`), or when its target is a bare Space URL equal to its
+ * parent capability's own, granted exactly `GET` or exactly `DELETE`.
+ * Everything else is refused, and the refusal is masked as a 404 like any other
  * unauthorized invocation -- while still falling through to the access-control
  * policy, so a world-readable target keeps serving.
  *
@@ -770,6 +771,236 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
           method: 'GET',
           action: 'GET',
           capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+  })
+
+  describe('predicate (iii): a target-exact single-verb GET or DELETE on a Space', () => {
+    /**
+     * The ladder VM's own bare `did:key` identity: the DID a predicate (iii)
+     * delegation names as controller, and the verification method the matching
+     * invocation is signed under. The deletion ceremony's delegatee is this key
+     * rather than the `did:webvh` fragment -- it is the one identity that keeps
+     * resolving while the walk deletes the Spaces every hosted document lives
+     * in. Predicate (i) can never admit these chains: the controller is a bare
+     * `did:key`, not the account document's annex `did:webvh`.
+     *
+     * @param keyPair {any}   the account's ladder key pair
+     * @returns {{ did: string, signer: any }}
+     */
+    function bareDidKeyOf(keyPair: any): { did: string; signer: any } {
+      const did = `did:key:${keyPair.publicKeyMultibase}`
+      return {
+        did,
+        signer: {
+          ...keyPair.signer(),
+          id: `${did}#${keyPair.publicKeyMultibase}`
+        }
+      }
+    }
+
+    /**
+     * Creates an ordinary Space under Alice's `did:key` and, when `controller`
+     * is given, promotes it to that DID (Space creation is `did:key`-only).
+     *
+     * @param [options] {object}
+     * @param [options.controller] {string}   promote the Space to this DID
+     * @returns {Promise<{ spaceId: string, url: string, root: string }>}
+     */
+    async function makeSpace({
+      controller
+    }: { controller?: string } = {}): Promise<{
+      spaceId: string
+      url: string
+      root: string
+    }> {
+      const spaceId = randomUUID()
+      await alice.was
+        .space(spaceId)
+        .configure({ name: 'Unlock Space', controller: alice.did })
+      if (controller !== undefined) {
+        const promoted = await alice.was.request({
+          path: `/space/${spaceId}`,
+          method: 'PUT',
+          json: { id: spaceId, name: 'Unlock Space', controller }
+        })
+        assert.equal(promoted.status, 204)
+      }
+      const url = new URL(`/space/${spaceId}`, serverUrl).toString()
+      return { spaceId, url, root: `urn:zcap:root:${encodeURIComponent(url)}` }
+    }
+
+    it('admits a DELETE under a manageCapability parent, and the Space goes', async () => {
+      // The three-link chain: a sibling unlock Space's root, the
+      // `manageCapability` its `did:key` controller delegated to the account
+      // DID, then the ladder-signed child that keeps the same bare target and
+      // narrows the actions to `DELETE` alone.
+      const unlock = await makeSpace()
+      const manage = await client({ signer: alice.signer }).delegate({
+        capability: unlock.root,
+        invocationTarget: unlock.url,
+        controller: account.did,
+        allowedActions: ['GET', 'PUT', 'DELETE'],
+        expires: anHourFromNow()
+      })
+      const ladder = bareDidKeyOf(account.ladderKeyPair)
+      const child = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: manage,
+        invocationTarget: unlock.url,
+        controller: ladder.did,
+        allowedActions: ['DELETE'],
+        expires: new Date(manage.expires)
+      })
+
+      const deleted = await client({ signer: ladder.signer }).request({
+        url: unlock.url,
+        method: 'DELETE',
+        action: 'DELETE',
+        capability: child
+      })
+      assert.equal(deleted.status, 204)
+
+      const gone = await requestError(
+        client({ signer: alice.signer }).request({
+          url: unlock.url,
+          method: 'GET',
+          action: 'GET',
+          capability: rootZcap({ target: unlock.url, controller: alice.did })
+        })
+      )
+      assert.equal(gone.status, 404)
+    })
+
+    it("admits a DELETE straight off an account Space's own root", async () => {
+      // The two-link chain: the synthesized root's own target is the bare
+      // Space URL, so the ladder-signed child matches it unchanged.
+      const space = await makeSpace({ controller: account.did })
+      const ladder = bareDidKeyOf(account.ladderKeyPair)
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: space.root,
+        invocationTarget: space.url,
+        controller: ladder.did,
+        allowedActions: ['DELETE']
+      })
+      const deleted = await client({ signer: ladder.signer }).request({
+        url: space.url,
+        method: 'DELETE',
+        action: 'DELETE',
+        capability: delegated
+      })
+      assert.equal(deleted.status, 204)
+    })
+
+    it('admits the GET half: a Space Description read (200)', async () => {
+      const space = await makeSpace({ controller: account.did })
+      const ladder = bareDidKeyOf(account.ladderKeyPair)
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: space.root,
+        invocationTarget: space.url,
+        controller: ladder.did,
+        allowedActions: ['GET']
+      })
+      const response = await client({ signer: ladder.signer }).request({
+        url: space.url,
+        method: 'GET',
+        action: 'GET',
+        capability: delegated
+      })
+      assert.equal(response.status, 200)
+      const description = response.data as { id: string; controller: string }
+      assert.equal(description.id, space.spaceId)
+      assert.equal(description.controller, account.did)
+    })
+
+    it("refuses a target under the parent's Space rather than the Space (404)", async () => {
+      const ladder = bareDidKeyOf(account.ladderKeyPair)
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: credentialsUrl,
+        controller: ladder.did,
+        allowedActions: ['GET']
+      })
+      const err = await requestError(
+        client({ signer: ladder.signer }).request({
+          url: `${credentialsUrl}/doc-1`,
+          method: 'GET',
+          action: 'GET',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('refuses the trailing-slash form under a bare parent (404)', async () => {
+      // The subtree URL is a different target from the parent's bare one, and
+      // the account Space is not delegated-clients bookkeeping either.
+      const ladder = bareDidKeyOf(account.ladderKeyPair)
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: `${accountSpaceUrl}/`,
+        controller: ladder.did,
+        allowedActions: ['GET']
+      })
+      const err = await requestError(
+        client({ signer: ladder.signer }).request({
+          url: `${credentialsUrl}/doc-1`,
+          method: 'GET',
+          action: 'GET',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('refuses a two-verb {GET, DELETE} set on the bare target (404)', async () => {
+      const ladder = bareDidKeyOf(account.ladderKeyPair)
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: accountSpaceUrl,
+        controller: ladder.did,
+        allowedActions: ['GET', 'DELETE']
+      })
+      const err = await requestError(
+        client({ signer: ladder.signer }).request({
+          url: accountSpaceUrl,
+          method: 'GET',
+          action: 'GET',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('refuses a single verb outside {GET} and {DELETE} (404)', async () => {
+      // `PUT` on the bare Space URL is Update Space Description, which could
+      // rewrite the Space's controller.
+      const ladder = bareDidKeyOf(account.ladderKeyPair)
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: accountSpaceUrl,
+        controller: ladder.did,
+        allowedActions: ['PUT']
+      })
+      const err = await requestError(
+        client({ signer: ladder.signer }).request({
+          url: accountSpaceUrl,
+          method: 'PUT',
+          action: 'PUT',
+          capability: delegated,
+          json: {
+            id: account.spaceId,
+            name: 'Account Space',
+            controller: account.did
+          }
         })
       )
       assert.equal(err.status, 404)

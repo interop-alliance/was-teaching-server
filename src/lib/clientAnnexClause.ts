@@ -9,7 +9,7 @@
  * ladder-anchored account document; it is recognized purely by relation asymmetry -- a
  * `capabilityDelegation` member absent from `capabilityInvocation` -- so no
  * marker vocabulary is consulted. A delegation whose proof VM resolves to a
- * ladder VM is admitted iff one of two predicates holds:
+ * ladder VM is admitted iff one of three predicates holds:
  *
  * 1. Annex-DID controller, by pointer equality: the delegation's sole
  *    `controller` equals the annex DID named by the
@@ -24,14 +24,29 @@
  *    a Space whose Description declares it delegated-clients bookkeeping
  *    (typed `AuxiliarySpace` + `DelegatedClientsSpace`), with `allowedAction`
  *    within {GET, PUT} (one memoized Space Description read).
+ * 3. Target-exact single-verb Space read or delete: the delegation's
+ *    `invocationTarget` is a bare (no-trailing-slash) Space URL, it equals the
+ *    parent capability's `invocationTarget` unchanged, and its `allowedAction`
+ *    is exactly `['GET']` or exactly `['DELETE']`. The parent is either a
+ *    delegated capability or the Space's synthesized root, whose own target is
+ *    that same Space URL. A two-verb set never qualifies.
  *
  * The locked property: no ladder authority whose exercise leaves no record --
- * every admitted ladder delegation either resolves through a loud annex
- * entry or can only write a log. The two disjuncts carry different grades of
- * record. Disjunct 2 is exact: all the delegation can do is write a log, and
- * the write is the record. Disjunct 1 is narrower than it reads. The annex
- * entry is loud that a per-visit key exists and may delegate; it is silent
- * about what that key subsequently delegates, to whom, and for how long. A
+ * every admitted ladder delegation either resolves through a loud annex entry,
+ * can only write a log, or is a target-exact single-verb GET or DELETE on one
+ * Space of the delegator's own account. That third shape is a read, or a
+ * destruction whose account-Space case removes the log any record would live
+ * in. A DELETE admitted under predicate 3 writes no log. Two bounds keep the
+ * predicate narrow. On the `manageCapability` arm the parent already carries
+ * DELETE on exactly that Space URL, so the predicate widens who signs the last
+ * link rather than what the account may do. And the child's target is its
+ * parent's unchanged, so the ladder VM cannot aim it anywhere new.
+ *
+ * The disjuncts carry different grades of record. Disjunct 2 is exact: all the
+ * delegation can do is write a log, and the write is the record. Disjunct 1 is
+ * narrower than it reads. The annex entry is loud that a per-visit key exists
+ * and may delegate; it is silent about what that key subsequently delegates,
+ * to whom, and for how long. A
  * per-visit annex verification method publishes under `capabilityDelegation`
  * beside `capabilityInvocation` (wallet-core decision 0013), so an admitted
  * delegation to the annex DID reaches onward grants no annex entry records.
@@ -250,6 +265,31 @@ function actionsWithin({
 }
 
 /**
+ * Whether a delegation's `allowedAction` is exactly one named action: present,
+ * and a single-member set holding it. Stricter than {@link actionsWithin},
+ * which admits any subset of its allowlist -- a single-verb predicate must
+ * refuse a two-verb grant that happens to contain the verb.
+ * @param options {object}
+ * @param options.capability {object}   the dereferenced capability
+ * @param options.action {string}   the one permitted action
+ * @returns {boolean}
+ */
+function actionsExactly({
+  capability,
+  action
+}: {
+  capability: { allowedAction?: string | string[] }
+  action: string
+}): boolean {
+  const { allowedAction } = capability
+  if (allowedAction === undefined) {
+    return false
+  }
+  const actions = Array.isArray(allowedAction) ? allowedAction : [allowedAction]
+  return actions.length === 1 && actions[0] === action
+}
+
+/**
  * Splits a candidate target into path segments when it is a clean URL on this
  * server -- same origin, no query, no fragment -- or returns `undefined`.
  * @param options {object}
@@ -359,7 +399,45 @@ function spaceUrlTargetId({
 }
 
 /**
- * Judges one ladder-signed delegation against the two admission predicates.
+ * Whether a target is a bare Space URL (`<base>/space/<S>`, no trailing
+ * slash), matched by exact string equality against the canonical form. The
+ * sibling of {@link spaceUrlTargetId}, which matches the trailing-slash
+ * subtree form instead; the two forms address different things, so neither
+ * helper is loosened to cover both.
+ * @param options {object}
+ * @param options.target {string}   the delegation's `invocationTarget`
+ * @param options.serverUrl {string}   this server's base URL
+ * @returns {boolean}
+ */
+function isBareSpaceUrlTarget({
+  target,
+  serverUrl
+}: {
+  target: string
+  serverUrl: string
+}): boolean {
+  const segments = localPathSegments({ target, serverUrl })
+  if (
+    !segments ||
+    segments.length !== 3 ||
+    segments[0] !== '' ||
+    segments[1] !== 'space'
+  ) {
+    return false
+  }
+  const spaceId = segments[2]!
+  if (!isUrlSafeSegment(spaceId)) {
+    return false
+  }
+  const canonical = new URL(
+    spacePath({ spaceId, trailingSlash: false }),
+    serverUrl
+  ).toString()
+  return target === canonical
+}
+
+/**
+ * Judges one ladder-signed delegation against the three admission predicates.
  * @param options {object}
  * @param options.capability {object}   the dereferenced delegation
  * @param options.doc {DIDDoc}   the resolved account document (the delegator)
@@ -367,6 +445,9 @@ function spaceUrlTargetId({
  *   location
  * @param options.logLocation.spaceId {string}
  * @param options.logLocation.collectionId {string}
+ * @param options.parent {object}   the chain link this delegation hangs from,
+ *   a delegated capability or the synthesized root
+ * @param [options.parent.invocationTarget] {string}
  * @param options.storage {StorageBackend}   for the Space Description read
  * @param options.serverUrl {string}   this server's base URL
  * @returns {Promise<boolean>}   true when admitted
@@ -375,6 +456,7 @@ async function ladderDelegationAdmitted({
   capability,
   doc,
   logLocation,
+  parent,
   storage,
   serverUrl
 }: {
@@ -385,6 +467,7 @@ async function ladderDelegationAdmitted({
   }
   doc: DIDDoc
   logLocation: { spaceId: string; collectionId: string }
+  parent: { invocationTarget?: string }
 } & WebvhResolverContext): Promise<boolean> {
   // Predicate 1: the delegation's sole controller is, by pointer equality,
   // the annex DID the account document currently names -- so a GC pointer
@@ -421,17 +504,32 @@ async function ladderDelegationAdmitted({
   // Description declares it delegated-clients bookkeeping -- a path-shape
   // match alone would hand the ladder VM any Space wholesale.
   const spaceId = spaceUrlTargetId({ target, serverUrl })
-  if (spaceId === undefined) {
-    return false
+  if (
+    spaceId !== undefined &&
+    actionsWithin({ capability, allowed: ['GET', 'PUT'] })
+  ) {
+    const spaceDescription = await getCachedSpaceDescription({
+      storage,
+      spaceId
+    })
+    if (isDelegatedClientsSpace(spaceDescription)) {
+      return true
+    }
   }
-  if (!actionsWithin({ capability, allowed: ['GET', 'PUT'] })) {
-    return false
-  }
-  const spaceDescription = await getCachedSpaceDescription({
-    storage,
-    spaceId
-  })
-  return isDelegatedClientsSpace(spaceDescription)
+
+  // Predicate 3: a target-exact single-verb read or delete of one Space. The
+  // target is a bare Space URL and is the parent's own target unchanged --
+  // whether the parent is a delegated capability or the Space's synthesized
+  // root -- so the ladder VM cannot aim the grant anywhere new, only sign the
+  // last link. Exactly one of GET or DELETE: a two-verb grant is refused.
+  // Reached only after the trailing-slash branch above declined, which a bare
+  // target does before any storage read.
+  return (
+    parent.invocationTarget === target &&
+    isBareSpaceUrlTarget({ target, serverUrl }) &&
+    (actionsExactly({ capability, action: 'GET' }) ||
+      actionsExactly({ capability, action: 'DELETE' }))
+  )
 }
 
 /**
@@ -482,6 +580,7 @@ export function clientAnnexChainInspector({
         capability,
         doc,
         logLocation,
+        parent: capabilityChain[index - 1] as { invocationTarget?: string },
         storage,
         serverUrl
       })
@@ -490,9 +589,11 @@ export function clientAnnexChainInspector({
           valid: false,
           error: new Error(
             'A capability in the chain is delegated by a delegation-only ' +
-              '(ladder) verification method and names neither the account ' +
-              "document's client-annex DID as controller nor a bridge-shaped " +
-              'invocation target.'
+              '(ladder) verification method and is none of the admitted ' +
+              "shapes: it neither names the account document's client-annex " +
+              'DID as controller, nor carries a bridge-shaped invocation ' +
+              'target, nor is a single-verb GET or DELETE on the parent ' +
+              "capability's own bare Space URL."
           )
         }
       }

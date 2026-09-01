@@ -1,5 +1,16 @@
 # History
 
+## 0.24.0 - TBD
+
+### Added
+
+- A third admission predicate in the client-annex clause: a ladder-signed
+  delegation is admitted when its `invocationTarget` is a bare Space URL (no
+  trailing slash) equal to its parent capability's target unchanged, and its
+  `allowedAction` is exactly `['GET']` or exactly `['DELETE']`. Both chain
+  lengths are covered -- a child of a delegated capability, and a child of a
+  Space's synthesized root. A two-verb set is refused.
+
 ## 0.23.0 - 2026-08-29
 
 ### Added
