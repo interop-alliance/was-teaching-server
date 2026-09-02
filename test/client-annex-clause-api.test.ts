@@ -34,7 +34,8 @@ import { KmsClient } from '@interop/webkms-client'
 import {
   createDID,
   logToJsonlString,
-  signerFromExternalKey
+  signerFromExternalKey,
+  updateDID
 } from '@interop/did-method-webvh'
 import type { DIDLog, ServiceEndpoint } from '@interop/did-method-webvh'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
@@ -67,6 +68,8 @@ interface WebvhIdentity {
   spaceId: string
   did: string
   log: DIDLog
+  /** the update-key signer every log entry of this identity is signed by */
+  logSigner: any
   /** the ordinary client key: invocation *and* delegation */
   clientKeyPair: any
   /** the delegation-only (ladder) key, when the document lists one */
@@ -266,6 +269,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       spaceId,
       did: created.did,
       log: created.log,
+      logSigner,
       clientKeyPair,
       ladderKeyPair,
       transientKeyPair
@@ -1205,6 +1209,103 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         })
       )
       assert.equal(err.status, 404)
+    })
+
+    it('stops verifying once the ladder VM leaves the account document', async () => {
+      // The current-key-set rule applied to the delegation link: the child is
+      // minted and exercised while the ladder VM stands, then one log entry
+      // drops that method from the document and the same still-unexpired child
+      // refuses. A fresh account identity, so the removal leaves the suite's
+      // shared one untouched.
+      const retiring = await provisionWebvhIdentity({ withLadderKey: true })
+      const space = await makeSpace({ controller: retiring.did })
+      const ladder = bareDidKeyOf(retiring.ladderKeyPair)
+      const deleteChild = await delegate({
+        signerKeyPair: retiring.ladderKeyPair,
+        capability: space.root,
+        invocationTarget: space.url,
+        controller: ladder.did,
+        allowedActions: ['DELETE']
+      })
+
+      // A GET child of the same shape proves the chain verifies right now,
+      // without spending the Space the DELETE child is aimed at.
+      const readChild = await delegate({
+        signerKeyPair: retiring.ladderKeyPair,
+        capability: space.root,
+        invocationTarget: space.url,
+        controller: ladder.did,
+        allowedActions: ['GET']
+      })
+      const before = await client({ signer: ladder.signer }).request({
+        url: space.url,
+        method: 'GET',
+        action: 'GET',
+        capability: readChild
+      })
+      assert.equal(before.status, 200)
+
+      // The removal entry restates the document with the ordinary client key
+      // alone, signed by the update key still in `updateKeys`. It lands in the
+      // log's own Collection, so that write drops the cached document too.
+      const removed = await updateDID({
+        log: retiring.log,
+        signer: retiring.logSigner,
+        vmIdFragment: 'multibase',
+        verificationMethods: [
+          {
+            type: 'Multikey',
+            publicKeyMultibase: retiring.clientKeyPair.publicKeyMultibase!,
+            purpose: [
+              'authentication',
+              'assertionMethod',
+              'capabilityInvocation',
+              'capabilityDelegation'
+            ]
+          }
+        ] as any
+      })
+      const published = await alice.was.request({
+        path: `/space/${retiring.spaceId}/id/did.jsonl`,
+        method: 'PUT',
+        headers: { 'content-type': 'text/jsonl' },
+        body: new Blob([logToJsonlString(removed.log)], { type: 'text/jsonl' })
+      })
+      assert.equal(published.status, 204)
+
+      const err = await requestError(
+        client({ signer: ladder.signer }).request({
+          url: space.url,
+          method: 'DELETE',
+          action: 'DELETE',
+          capability: deleteChild
+        })
+      )
+      assert.equal(err.status, 404)
+
+      // The Space the refused DELETE was aimed at is still there, read back
+      // under the client key the removal entry kept.
+      const description = await client({
+        signer: retiring.clientKeyPair.signer()
+      }).request({
+        url: space.url,
+        method: 'GET',
+        action: 'GET',
+        capability: rootZcap({ target: space.url, controller: retiring.did })
+      })
+      assert.equal(description.status, 200)
+
+      // The read half stops verifying with it, so nothing the ladder signed
+      // survives the removal.
+      const readErr = await requestError(
+        client({ signer: ladder.signer }).request({
+          url: space.url,
+          method: 'GET',
+          action: 'GET',
+          capability: readChild
+        })
+      )
+      assert.equal(readErr.status, 404)
     })
   })
 

@@ -1,5 +1,14 @@
 # History
 
+## 0.25.1 - TBD
+
+### Notes
+
+- Test-only. A regression test that a ladder-signed single-verb Space delegation
+  stops verifying once the ladder verification method leaves the account
+  document: the same unexpired child is refused (404) after one log entry
+  removes that method, and the Space it targeted survives.
+
 ## 0.25.0 - 2026-09-01
 
 ### Changed
