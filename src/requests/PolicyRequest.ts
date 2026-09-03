@@ -11,6 +11,7 @@ import { fetchSpaceAndVerify } from './spaceContext.js'
 import { hasAuthHeaders } from '../auth-header-hooks.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { policyPath } from '../lib/paths.js'
+import { invalidatePolicy } from '../lib/policyCache.js'
 import {
   InvalidPolicyError,
   MissingAuthError,
@@ -120,6 +121,9 @@ export class PolicyRequest {
       resourceId
     })
     await storage.writePolicy({ spaceId, collectionId, resourceId, policy })
+    // Bust the cached policy at this exact level so the next read sees this
+    // write (and does not keep serving a stale cached "no policy" negative).
+    invalidatePolicy({ storage, spaceId, collectionId, resourceId })
 
     reply.header('Location', policyUrl)
     return existing
@@ -155,6 +159,9 @@ export class PolicyRequest {
     })
 
     await storage.deletePolicy({ spaceId, collectionId, resourceId })
+    // Bust the cached policy at this exact level so the next read sees it gone
+    // rather than a stale cached grant.
+    invalidatePolicy({ storage, spaceId, collectionId, resourceId })
     return reply.status(204).send()
   }
 }

@@ -45,6 +45,7 @@ import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
 import { parsePageParams } from '../lib/pagination.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
+import { invalidateCollectionPolicies } from '../lib/policyCache.js'
 import {
   collectionPath,
   resourcePath,
@@ -1186,6 +1187,9 @@ export class CollectionRequest {
       // controller resolves from it; bust every document cached from that
       // Collection.
       invalidateResolvedWebvhDid({ storage, spaceId, collectionId })
+      // ...and every policy cached at the Collection level or under any of
+      // its Resources.
+      invalidateCollectionPolicies({ storage, spaceId, collectionId })
     } catch (err) {
       // Rethrow a typed ProblemError from the data-plane backend unchanged
       // (e.g. a 507 quota / 412 precondition) rather than flattening it to a

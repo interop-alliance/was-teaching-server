@@ -25,6 +25,7 @@ import {
   backendsPath,
   quotasPath
 } from './lib/paths.js'
+import { getCachedPolicy } from './lib/policyCache.js'
 
 /** The kind of access a request needs; derived from the HTTP method. */
 export type AccessAction = 'read' | 'write'
@@ -58,12 +59,12 @@ export async function resolveEffectivePolicy({
   // level that does not apply to this target is not looked up at all.
   const [resourcePolicy, collectionPolicy, spacePolicy] = await Promise.all([
     collectionId !== undefined && resourceId !== undefined
-      ? storage.getPolicy({ spaceId, collectionId, resourceId })
+      ? getCachedPolicy({ storage, spaceId, collectionId, resourceId })
       : undefined,
     collectionId !== undefined
-      ? storage.getPolicy({ spaceId, collectionId })
+      ? getCachedPolicy({ storage, spaceId, collectionId })
       : undefined,
-    storage.getPolicy({ spaceId })
+    getCachedPolicy({ storage, spaceId })
   ])
   return resourcePolicy || collectionPolicy || spacePolicy
 }
