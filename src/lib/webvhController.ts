@@ -108,17 +108,44 @@ interface WebvhFetchContext {
  * {@link resolveWebvhController} from each entry's monotonic `verifiedAt`
  * (a `ttl` would use the same clock but could not serve the stale entry to
  * the revalidation), and a stale entry is refreshed by a `forceRefresh` fetch.
+ *
+ * An invalidation can land while a fill or revalidation for the same slot is
+ * in flight (a `did.jsonl` PUT racing a resolve). The fetch may have read the
+ * log from before that write, so its result must not stay cached, yet the
+ * resolve waiting on it should still get the document it verified (the same
+ * one it would have got a moment earlier). `lru-cache` gives exactly that
+ * when the slot is deleted mid-fetch and `ignoreFetchAbort` is set: the
+ * waiting `fetch()` resolves with the fetched value, and the value is only
+ * written back if the slot still belongs to that fetch, which a deletion
+ * makes false. But `keys()` hides a slot whose fetch is in flight, so an
+ * invalidation walking only `keys()` would never delete it, and the
+ * pre-write document would be cached until it aged out. The `inFlight` map
+ * (key to the number of fetches running for it) is what lets
+ * {@link invalidateResolvedWebvhDid} reach those slots too.
  */
-const documentCaches = backendScoped(
-  () =>
-    new LRUCache<string, WebvhCacheEntry, WebvhFetchContext>({
-      max: WEBVH_DOCUMENT_CACHE_MAX,
-      fetchMethod: async (_key, staleEntry, { context }) =>
-        staleEntry
+const documentCaches = backendScoped(() => {
+  const inFlight = new Map<string, number>()
+  const cache = new LRUCache<string, WebvhCacheEntry, WebvhFetchContext>({
+    max: WEBVH_DOCUMENT_CACHE_MAX,
+    ignoreFetchAbort: true,
+    fetchMethod: async (key, staleEntry, { context }) => {
+      inFlight.set(key, (inFlight.get(key) ?? 0) + 1)
+      try {
+        return staleEntry
           ? await reviseEntry({ ...context, entry: staleEntry })
           : await resolveVerifiedEntry(context)
-    })
-)
+      } finally {
+        const remaining = (inFlight.get(key) ?? 1) - 1
+        if (remaining > 0) {
+          inFlight.set(key, remaining)
+        } else {
+          inFlight.delete(key)
+        }
+      }
+    }
+  })
+  return { cache, inFlight }
+})
 
 /**
  * Cache key: the log's location (Space plus Collection) followed by the DID.
@@ -193,13 +220,23 @@ export function invalidateResolvedWebvhDid({
     return
   }
   // Only touch a cache that already exists for this backend.
-  const cache = documentCaches.peek(storage)
-  if (!cache) {
+  const caches = documentCaches.peek(storage)
+  if (!caches) {
     return
   }
+  const { cache, inFlight } = caches
   const prefix =
     collectionId !== undefined ? `${spaceId}|${collectionId}|` : `${spaceId}|`
-  deleteByPrefix(cache, prefix)
+  // Settled slots and in-flight ones alike (see `documentCaches` for why the
+  // latter are listed separately); deleting an in-flight slot lets its fetch
+  // finish for whoever is waiting on it without writing the result back.
+  deleteByPrefix(
+    {
+      keys: () => [...cache.keys(), ...inFlight.keys()],
+      delete: key => cache.delete(key)
+    },
+    prefix
+  )
 }
 
 /**
@@ -280,7 +317,7 @@ export async function resolveWebvhController({
     )
   }
   const { scid, spaceId, collectionId } = parsed
-  const cache = documentCaches.for(storage)
+  const { cache } = documentCaches.for(storage)
   const key = cacheKey({ spaceId, collectionId, did })
   // `peek` sees through an in-flight refresh to the entry it is replacing, so
   // a caller arriving mid-revalidation still classifies the slot as stale and

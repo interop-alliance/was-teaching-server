@@ -98,6 +98,25 @@ function binaryInput(
   }
 }
 
+/**
+ * A binary input whose stream yields a few bytes and then errors, standing in
+ * for an upload the client abandons mid-body. The write must fail without
+ * leaving anything behind -- including a quota reservation.
+ */
+function abortedBinaryInput(declaredBytes: number): ResourceInput {
+  return {
+    kind: 'binary',
+    contentType: 'application/octet-stream',
+    stream: Readable.from(
+      (async function* () {
+        yield Buffer.alloc(16)
+        throw new Error('client went away')
+      })()
+    ),
+    declaredBytes
+  }
+}
+
 const CONTROLLER = 'did:key:z6MkContractSuiteController' as IDID
 const CREATOR_ONE = 'did:key:z6MkContractSuiteCreatorOne' as IDID
 const CREATOR_TWO = 'did:key:z6MkContractSuiteCreatorTwo' as IDID
@@ -2581,6 +2600,37 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         }
       })
 
+      it('gives a failed write its byte-quota reservation back', async () => {
+        const harness = await makeBackend({ capacityBytes: 200_000 })
+        try {
+          await provisionSpace(harness.backend, 'quota-rollback')
+          // Passes the pre-flight (150k of 200k) and reserves that much
+          // against the cached usage, then the body fails mid-stream.
+          await assert.rejects(
+            harness.backend.writeResource({
+              spaceId: 'quota-rollback',
+              collectionId: 'col',
+              resourceId: 'aborted',
+              input: abortedBinaryInput(150_000)
+            }),
+            /client went away/
+          )
+          // Nothing landed, so a write that fits the real usage is admitted;
+          // a reservation that outlived the failure would refuse it (100k on
+          // top of a phantom 150k exceeds 200k).
+          await harness.backend.writeResource({
+            spaceId: 'quota-rollback',
+            collectionId: 'col',
+            resourceId: 'fits',
+            input: binaryInput(Buffer.alloc(100_000), {
+              declaredBytes: 100_000
+            })
+          })
+        } finally {
+          await harness.cleanup()
+        }
+      })
+
       it('rejects an oversize upload with PayloadTooLargeError (413)', async () => {
         const harness = await makeBackend({ maxUploadBytes: 64 })
         try {
@@ -2920,6 +2970,40 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         } finally {
           await source.cleanup()
           await target.cleanup()
+        }
+      })
+
+      it('gives a failed create its count-quota reservation back', async () => {
+        const harness = await makeBackend({ maxResourcesPerSpace: 2 })
+        const write = (resourceId: string, input: ResourceInput) =>
+          harness.backend.writeResource({
+            spaceId: 'cq-rollback',
+            collectionId: 'col',
+            resourceId,
+            input
+          })
+        try {
+          await provisionSpace(harness.backend, 'cq-rollback')
+          await write('r1', jsonInput({ id: 'r1' }))
+          // Passes the count pre-flight (1 of 2) and reserves the second
+          // slot, then the body fails mid-stream.
+          await assert.rejects(
+            write('aborted', abortedBinaryInput(64)),
+            /client went away/
+          )
+          // Nothing landed, so the slot is still free; a reservation that
+          // outlived the failure would refuse this create.
+          await write('r2', jsonInput({ id: 'r2' }))
+          // And now the Space really is full.
+          let error: unknown
+          try {
+            await write('r3', jsonInput({ id: 'r3' }))
+          } catch (err) {
+            error = err
+          }
+          assertCountQuota(error)
+        } finally {
+          await harness.cleanup()
         }
       })
 

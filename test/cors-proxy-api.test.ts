@@ -631,9 +631,96 @@ describe('CORS proxy relayed headers and cache directives', () => {
       expect(response.headers['content-encoding']).toBeUndefined()
       expect(response.headers['transfer-encoding']).toBeUndefined()
       expect(response.headers['set-cookie']).toBeUndefined()
-      expect(response.headers.age).toBeUndefined()
       expect(response.headers.date).not.toBe('Mon, 01 Jan 2024 00:00:00 GMT')
       expect(response.headers['content-length']).toBe('11')
+    }
+    // The upstream's own Age is not relayed on the miss; the hit carries the
+    // proxy's Age, which starts from the upstream's (see the Age test below).
+    expect(first.headers.age).toBeUndefined()
+    expect(second.headers.age).toBe('12')
+  })
+
+  it('answers with its own CORS headers, never the upstream ones', async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response('{"ok":true}', {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'cache-control': 'max-age=600',
+            'access-control-allow-origin': 'https://only-upstream.example',
+            'access-control-allow-credentials': 'true',
+            'access-control-expose-headers': 'X-Upstream-Only'
+          }
+        })
+    )
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' + encodeURIComponent('https://registry.example/cors')
+    const first = await app.inject({
+      method: 'GET',
+      url,
+      headers: { origin: 'https://wallet.example' }
+    })
+    // The cached replay must not carry them either: the cache key ignores the
+    // requesting origin, so a relayed value would reach every later client.
+    const second = await app.inject({
+      method: 'GET',
+      url,
+      headers: { origin: 'https://another-wallet.example' }
+    })
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    for (const response of [first, second]) {
+      expect(response.statusCode).toBe(200)
+      expect(response.headers['access-control-allow-origin']).toBe('*')
+      expect(
+        response.headers['access-control-allow-credentials']
+      ).toBeUndefined()
+      expect(response.headers['access-control-expose-headers']).not.toContain(
+        'X-Upstream-Only'
+      )
+    }
+  })
+
+  it('replays a cached response with an Age counted from the upstream age', async () => {
+    // Freshness (lru-cache) runs on `performance.now()` and Age on
+    // `Date.now()`; drive both from one controlled clock.
+    let mockNow = 1_000
+    const nowSpy = vi
+      .spyOn(performance, 'now')
+      .mockImplementation(() => mockNow)
+    const dateSpy = vi.spyOn(Date, 'now').mockImplementation(() => mockNow)
+    try {
+      fetchMock.mockImplementation(
+        async () =>
+          new Response('{"a":1}', {
+            status: 200,
+            headers: { 'cache-control': 'max-age=100', age: '30' }
+          })
+      )
+
+      const app = createApp()
+      const url =
+        '/api/cors?url=' + encodeURIComponent('https://registry.example/age')
+
+      const miss = await app.inject({ method: 'GET', url })
+      expect(miss.headers.age).toBeUndefined()
+
+      mockNow += 10_000
+      const hit = await app.inject({ method: 'GET', url })
+      expect(fetchMock).toHaveBeenCalledOnce()
+      expect(hit.headers.age).toBe('40')
+
+      // The entry lives for what was left of the upstream lifetime (100 - 30
+      // seconds), not a full max-age restarted at storage time.
+      mockNow += 61_000
+      await app.inject({ method: 'GET', url })
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    } finally {
+      nowSpy.mockRestore()
+      dateSpy.mockRestore()
     }
   })
 

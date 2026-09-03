@@ -510,15 +510,22 @@ export class SpaceRequest {
     })
 
     // zCap checks out, continue
-    await storage.deleteSpace({ spaceId })
-    // Bust the cached description so the next read sees the Space as gone (404).
-    invalidateSpaceDescription({ storage, spaceId })
-    // Every Collection in the Space went with it, so any controller document
-    // resolved out of a history log there is stale too.
-    invalidateResolvedWebvhDid({ storage, spaceId })
-    // ...and so is every policy cached at the Space level or under any of its
-    // Collections/Resources.
-    invalidateSpacePolicies({ storage, spaceId })
+    try {
+      await storage.deleteSpace({ spaceId })
+    } finally {
+      // Invalidate in `finally` because a recursive delete is not atomic: a
+      // failure partway through has already removed some of what the caches
+      // describe.
+      // Bust the cached description so the next read sees the Space as gone
+      // (404).
+      invalidateSpaceDescription({ storage, spaceId })
+      // Every Collection in the Space went with it, so any controller document
+      // resolved out of a history log there is stale too.
+      invalidateResolvedWebvhDid({ storage, spaceId })
+      // ...and so is every policy cached at the Space level or under any of
+      // its Collections/Resources.
+      invalidateSpacePolicies({ storage, spaceId })
+    }
 
     return reply.status(204).send()
   }

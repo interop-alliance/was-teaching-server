@@ -43,7 +43,13 @@ const PROXY_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
  * origin and has no meaning on the proxy's own origin; relaying it would drop
  * one client's upstream cookie into every later client's jar once responses
  * are cached. `date` and `age` describe the moment the upstream answered;
- * Node emits a fresh `Date` for every reply.
+ * Node emits a fresh `Date` for every reply, and a cache hit gets its own
+ * `Age` (see {@link CachedResponse}). The upstream's `access-control-*`
+ * headers (matched by prefix in {@link isUnrelayedHeader}) are its own CORS
+ * answer for its own origin; the proxy's answer is the one `@fastify/cors`
+ * sets on this reply, and relaying the upstream's would overwrite it (an
+ * upstream `access-control-allow-origin` naming some other origin would shut
+ * the browser out of the very response the proxy exists to open up).
  */
 const UNRELAYED_HEADERS = new Set([
   'connection',
@@ -57,17 +63,42 @@ const UNRELAYED_HEADERS = new Set([
 ])
 
 /**
+ * Whether an upstream response header is dropped rather than relayed: one of
+ * {@link UNRELAYED_HEADERS}, or any `access-control-*` header.
+ * @param name {string}   the lower-cased header name
+ * @returns {boolean}
+ */
+function isUnrelayedHeader(name: string): boolean {
+  return UNRELAYED_HEADERS.has(name) || name.startsWith('access-control-')
+}
+
+/**
  * A relayed upstream response: the status, the headers the proxy copies to its
  * own reply (see {@link UNRELAYED_HEADERS} for the ones it drops), the
- * buffered body, and the upstream `Cache-Control` that decides whether it may
- * be cached. A cached entry is replayed with no new headers added, so a hit is
- * indistinguishable from a miss on the wire (apart from timing).
+ * buffered body, and the upstream `Cache-Control` and `Age` that decide
+ * whether, and for how long, it may be cached. `upstreamAge` is the seconds
+ * the response had already spent in caches upstream (0 when not stated), so
+ * its freshness lifetime is counted from when the origin produced it rather
+ * than restarted here.
  */
 interface RelayedResponse {
   status: number
   headers: [string, string][]
   body: Buffer
   cacheControl: string | null
+  upstreamAge: number
+}
+
+/**
+ * A {@link RelayedResponse} in the response cache, with the time it was
+ * stored. A hit is replayed with the relayed headers plus an `Age` of the
+ * upstream age at storage time plus the seconds since, so a downstream shared
+ * cache counts the upstream `max-age` / `s-maxage` down from where this one
+ * did instead of restarting it at replay time.
+ */
+interface CachedResponse {
+  response: RelayedResponse
+  storedAt: number
 }
 
 /**
@@ -474,7 +505,7 @@ function cacheTtlFromHeader(cacheControl: string | null): number | undefined {
  * A response that does not qualify is simply left uncached -- it is relayed
  * to the client either way.
  * @param options {object}
- * @param options.responseCache {LRUCache<string, RelayedResponse>}
+ * @param options.responseCache {LRUCache<string, CachedResponse>}
  * @param options.cacheKey {string}
  * @param options.response {RelayedResponse}
  * @returns {void}
@@ -484,7 +515,7 @@ function storeCachedResponse({
   cacheKey,
   response
 }: {
-  responseCache: LRUCache<string, RelayedResponse>
+  responseCache: LRUCache<string, CachedResponse>
   cacheKey: string
   response: RelayedResponse
 }): void {
@@ -494,11 +525,17 @@ function storeCachedResponse({
   if (response.body.byteLength > CORS_PROXY_RESPONSE_CACHE_MAX_ENTRY_BYTES) {
     return
   }
-  const ttl = cacheTtlFromHeader(response.cacheControl)
-  if (ttl === undefined) {
+  const lifetime = cacheTtlFromHeader(response.cacheControl)
+  if (lifetime === undefined) {
     return
   }
-  responseCache.set(cacheKey, response, { ttl })
+  // The lifetime counts from when the origin produced the response; what is
+  // left of it here is the lifetime less the age it arrived with.
+  const ttl = lifetime - response.upstreamAge * 1000
+  if (ttl <= 0) {
+    return
+  }
+  responseCache.set(cacheKey, { response, storedAt: Date.now() }, { ttl })
 }
 
 /**
@@ -623,15 +660,18 @@ async function fetchProxied({
       }
       const relayedHeaders: [string, string][] = []
       upstream.headers.forEach((value, name) => {
-        if (!UNRELAYED_HEADERS.has(name)) {
+        if (!isUnrelayedHeader(name)) {
           relayedHeaders.push([name, value])
         }
       })
+      const declaredAge = Number(upstream.headers.get('age'))
       return {
         status: upstream.status,
         headers: relayedHeaders,
         body: Buffer.concat(chunks),
-        cacheControl: upstream.headers.get('cache-control')
+        cacheControl: upstream.headers.get('cache-control'),
+        upstreamAge:
+          Number.isInteger(declaredAge) && declaredAge > 0 ? declaredAge : 0
       }
     }
   } catch (err) {
@@ -700,10 +740,10 @@ export async function initCorsProxyRoutes(
   // ttlResolution: 0 disables lru-cache's default ~1ms debounce of its
   // internal clock reads. These caches see nowhere near enough traffic for
   // that debounce to matter, and skipping it keeps every TTL exact.
-  const responseCache = new LRUCache<string, RelayedResponse>({
+  const responseCache = new LRUCache<string, CachedResponse>({
     max: CORS_PROXY_RESPONSE_CACHE_MAX,
     maxSize: CORS_PROXY_RESPONSE_CACHE_MAX_BYTES,
-    sizeCalculation: entry => entry.body.byteLength || 1,
+    sizeCalculation: entry => entry.response.body.byteLength || 1,
     ttlResolution: 0
   })
   const inFlightFetches = new LruCache({
@@ -766,8 +806,9 @@ export async function initCorsProxyRoutes(
           : undefined
       const cacheKey = `${url.href}\n${acceptHeader ?? ''}`
 
+      const hit = responseCache.get(cacheKey)
       const outcome =
-        responseCache.get(cacheKey) ??
+        hit?.response ??
         (await inFlightFetches.memoize<ProxyOutcome>({
           key: cacheKey,
           fn: async () => {
@@ -794,6 +835,10 @@ export async function initCorsProxyRoutes(
       }
       for (const [name, value] of outcome.headers) {
         reply.header(name, value)
+      }
+      if (hit) {
+        const residentSeconds = Math.floor((Date.now() - hit.storedAt) / 1000)
+        reply.header('age', String(outcome.upstreamAge + residentSeconds))
       }
       return reply.code(outcome.status).send(outcome.body)
     }
