@@ -1060,35 +1060,6 @@ did:key driver) and shipped the two cheap wins directly: preflight
 `Access-Control-Max-Age`, and a per-Space live Resource count cache on the
 filesystem create path. The items below are what remains from that review.
 
-### WAS-74: CORS proxy response cache and upstream connection reuse
-
-- status: todo
-- priority: medium
-- labels: performance, cors-proxy
-- acceptance:
-  - [ ] A 2xx GET response relayed by `/api/cors` is served from an in-memory
-        cache on a repeat request for the same URL within its TTL, taken from
-        the upstream `Cache-Control` `max-age` when present and otherwise a
-        short fixed default; non-2xx and non-GET responses are never cached
-  - [ ] The cache is bounded (LRU, capped entry count and per-entry size) so an
-        open endpoint cannot grow it without limit
-  - [ ] A host validated by `checkProxyTarget` within a short window skips the
-        DNS re-lookup, and the pinned undici `Agent` is reused across requests
-        to the same pinned addresses rather than built and destroyed per
-        request; the SSRF pinning guarantees are unchanged (a new pin set gets a
-        new Agent)
-  - [ ] Tests in `test/` for the cache hit, the TTL expiry, the no-cache cases,
-        and the Agent reuse
-
-Context: the signup log fetched ten distinct issuer-registry URLs (five
-registries, each a `.well-known/openid-federation` document and a `fetch?sub=`
-document) five times each through the proxy. Every proxied request today does a
-fresh DNS lookup, builds a new `Agent`, pays a full TLS handshake, and discards
-it all in `finally` (`src/corsProxy.ts`). Federation metadata changes rarely, so
-a short TTL removes most of that. The client side of the same pattern (the
-wallet fetches the five well-known URLs twice back to back in one signup) is a
-freewallet item, not this one.
-
 ### WAS-75: Cheap revalidation of cached did:webvh documents
 
 - status: todo
