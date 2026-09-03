@@ -49,7 +49,9 @@ import {
   isRepresentationFileName,
   spaceDescriptionFileName,
   collectionDescriptionFileName,
-  policyFileName,
+  COLLECTION_POLICY_FILE_NAME,
+  resourcePolicyFileName,
+  SPACE_POLICY_FILE_NAME,
   metaSidecarFileName,
   collectionMetaFileName
 } from '../lib/resourceFileName.js'
@@ -349,7 +351,7 @@ export class FileSystemBackend implements StorageBackend {
    * and a per-Collection breakdown in one pass. `du -d 1 -B 1` (GNU coreutils)
    * reports each immediate subdirectory (one per Collection) plus the Space dir
    * itself (the total, which also covers top-level Space files such as the
-   * `.space.` / `.policy.` documents), all in bytes. An absent Space dir (ENOENT
+   * `.space.` / policy documents), all in bytes. An absent Space dir (ENOENT
    * before the dir is provisioned) reports zero usage rather than throwing.
    * @param spaceDir {string}
    * @returns {Promise<{ total: number, byCollection: CollectionUsage[] }>}
@@ -767,7 +769,7 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * The Resource representations in a directory listing, parsed: keeps only the
    * files named `r.<id>.<type>.<ext>` -- which drops the `.meta.` /
-   * `.collection.` / `.policy.` dot-files and every subdirectory -- and resolves
+   * `.collection.` / policy dot-files and every subdirectory -- and resolves
    * each one's `resourceId` / `contentType` alongside the `fileName` it was read
    * from.
    * @param entries {fs.Dirent[]}
@@ -2039,7 +2041,7 @@ export class FileSystemBackend implements StorageBackend {
     // Enumerate the Collection dir directly rather than globbing: glob v13 does
     // not sort, so its order is nondeterministic -- pagination needs a stable
     // keyset. Keep only resource representations (`r.<id>.<type>.<ext>`), which
-    // drops the `.meta.` / `.collection.` / `.policy.` dot-files.
+    // drops the `.meta.` / `.collection.` / policy dot-files.
     let entries: fs.Dirent[] = []
     try {
       entries = await fs.promises.readdir(collectionDir, {
@@ -4028,10 +4030,13 @@ export class FileSystemBackend implements StorageBackend {
   // Policies
 
   /**
-   * Builds the on-disk path for a policy document. Stored as a dot-file keyed by
-   * the entity id, alongside the matching `.space.` / `.collection.` description:
-   * Space policy in the space dir, Collection and Resource policy in the
-   * collection dir (the keying id differs, so they never collide).
+   * Builds the on-disk path for a policy document. Stored as a dot-file
+   * alongside the matching `.space.` / `.collection.` description: the Space's
+   * own policy is `.space.policy.json` in the Space dir, the Collection's own
+   * policy is `.collection.policy.json` in the Collection dir, and a Resource's
+   * policy is `.r.<resourceId>.policy.json` in that same Collection dir. The
+   * per-level names are what keep a Resource named like its Collection from
+   * sharing the Collection's policy file.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}
@@ -4051,7 +4056,12 @@ export class FileSystemBackend implements StorageBackend {
       collectionId !== undefined
         ? this.#collectionDir({ spaceId, collectionId })
         : this.#spaceDir(spaceId)
-    const filename = policyFileName(resourceId ?? collectionId ?? spaceId)
+    const filename =
+      resourceId !== undefined
+        ? resourcePolicyFileName(resourceId)
+        : collectionId !== undefined
+          ? COLLECTION_POLICY_FILE_NAME
+          : SPACE_POLICY_FILE_NAME
     const filePath = path.join(dir, filename)
     this.#assertContained(filePath)
     return filePath
@@ -4137,7 +4147,8 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Builds the on-disk path for a registered backend record: a
    * `.backend.<backendId>.json` dot-file in the Space dir (the same per-file
-   * convention as `.policy.` / `.space.`). One file per backend id.
+   * convention as `.space.` and the policy dot-files). One file per backend
+   * id.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.backendId {string}

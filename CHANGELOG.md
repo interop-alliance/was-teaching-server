@@ -19,10 +19,20 @@
   revalidated by comparing the `did.jsonl` log Resource's stored version against
   the one it was verified from. The log is re-read and re-verified only when
   that version differs (or the Resource is gone); an unchanged log just extends
-  the entry's freshness window. Same-process writes still invalidate outright.
-  The DID resolver that carries the local `did:webvh` driver is built once per
-  storage backend instead of once per verification, with its own internal result
-  cache disabled so document caching lives in one invalidation-aware place.
+  the entry's freshness window, up to a hard re-verify age of 60 s after which
+  the log is fully re-verified regardless of version. Freshness is measured on
+  the monotonic clock, so a backward wall-clock step cannot revive a stale
+  entry. Same-process writes still invalidate outright. The cache is
+  `lru-cache`'s `fetch()` path, which supplies the concurrent-caller dedup, the
+  stale-entry hand-off, and the drop on rejection. The DID resolver that carries
+  the local `did:webvh` driver is built once per storage backend and base URL
+  instead of once per verification, with its own internal result cache disabled
+  (through `createDefaultDidResolver`'s new `cache` option in
+  `@interop/security-document-loader` 10.1.0) so document caching lives in one
+  invalidation-aware place.
+- The per-backend caches (Space Description, policy, `did:webvh` document, DID
+  resolver) share one backend-scoping factory and one prefix-delete helper in
+  `src/lib/backendCache.ts`.
 - The `/api/cors` proxy caches 2xx responses in memory, keyed by the target URL
   and the forwarded `Accept` header, so a wallet signup fetching the same
   issuer-registry federation documents over and over stops paying a fresh DNS
@@ -47,7 +57,16 @@
   documents through a per-backend short-TTL cache, in the same shape as the
   Space Description cache. Policy PUT and DELETE invalidate their own level;
   Delete Collection drops every entry under the Collection, and Delete Space and
-  Space import drop every entry under the Space.
+  Space import drop every entry under the Space. Those bulk invalidations run
+  even when the delete or import fails partway, since neither is atomic.
+- Access-control policy dot-files are named per level: a Space's own policy is
+  `.space.policy.json` in the Space dir, a Collection's own policy is
+  `.collection.policy.json` in the Collection dir, and a Resource's policy is
+  `.r.<resourceId>.policy.json` alongside its representation (was
+  `.policy.<id>.json` for all three, which made a Resource named like its
+  Collection share the Collection's policy file). The export archive carries the
+  same names. No migration: existing on-disk policy files under the old names
+  are not read.
 
 ### Notes
 

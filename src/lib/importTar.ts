@@ -8,9 +8,10 @@ import {
   parseResourceFileName,
   isRepresentationFileName,
   collectionDescriptionFileName,
-  policyFileName,
+  parseResourcePolicyFileName,
+  COLLECTION_POLICY_FILE_NAME,
+  SPACE_POLICY_FILE_NAME,
   JSON_FILE_SUFFIX,
-  POLICY_FILE_PREFIX,
   META_FILE_PREFIX,
   COLLECTION_META_FILE_PREFIX
 } from './resourceFileName.js'
@@ -36,16 +37,6 @@ function dotFileId(fileName: string, prefix: string): string | undefined {
   }
   const id = fileName.slice(prefix.length, -JSON_FILE_SUFFIX.length)
   return id.length > 0 ? id : undefined
-}
-
-/**
- * If `fileName` is a policy dot-file (`.policy.<id>.json`), returns the `<id>`
- * it is keyed by; otherwise undefined.
- * @param fileName {string}
- * @returns {string | undefined}
- */
-function policyFileId(fileName: string): string | undefined {
-  return dotFileId(fileName, POLICY_FILE_PREFIX)
 }
 
 /**
@@ -311,20 +302,20 @@ export function validateManifest(entries: Map<string, TarEntry>): void {
  * - space/
  * - space/<sourceSpaceId>/
  * - space/<sourceSpaceId>/.space.<sourceSpaceId>.json (space metadata; ignored on import)
- * - space/<sourceSpaceId>/.policy.<sourceSpaceId>.json (space-level policy)
+ * - space/<sourceSpaceId>/.space.policy.json (space-level policy)
  * - space/<sourceSpaceId>/<collectionId>/
  * - space/<sourceSpaceId>/<collectionId>/.collection.<collectionId>.json
  * - space/<sourceSpaceId>/<collectionId>/.collectionmeta.<collectionId>.json
  *   (collection metadata)
- * - space/<sourceSpaceId>/<collectionId>/.policy.<collectionId>.json (collection policy)
- * - space/<sourceSpaceId>/<collectionId>/.policy.<resourceId>.json (resource policy)
+ * - space/<sourceSpaceId>/<collectionId>/.collection.policy.json (collection policy)
+ * - space/<sourceSpaceId>/<collectionId>/.r.<resourceId>.policy.json (resource policy)
  * - space/<sourceSpaceId>/<collectionId>/r.<resourceId>.<encodedContentType>.<ext>
  * - space/<sourceSpaceId>/<collectionId>/.chunks.<encodedResourceId>/<chunkFile>
  *   (a chunked Resource's chunk files; the `chunked-streams` feature)
  *
  * The source space id in the path may differ from the import target; collection
- * metadata, r.* resource files, `.chunks.*` chunk files, and `.policy.*` policy
- * files are merged into the destination.
+ * metadata, r.* resource files, `.chunks.*` chunk files, and policy files are
+ * merged into the destination.
  *
  * @param entries {Map<string, TarEntry>}
  * @returns {ImportPlan}
@@ -348,10 +339,8 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
 
   const prefix = `space/${sourceSpaceId}/`
 
-  // Space-level policy (`.policy.<sourceSpaceId>.json` at the space root).
-  const spacePolicyEntry = entries.get(
-    `${prefix}${policyFileName(sourceSpaceId)}`
-  )
+  // Space-level policy (`.space.policy.json` at the space root).
+  const spacePolicyEntry = entries.get(`${prefix}${SPACE_POLICY_FILE_NAME}`)
   const spacePolicy: PolicyDocument | undefined = spacePolicyEntry?.body
     ? JSON.parse(spacePolicyEntry.body.toString('utf8'))
     : undefined
@@ -431,21 +420,24 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
         continue
       }
 
-      // Policy dot-files: `.policy.<collectionId>.json` is the Collection policy;
-      // `.policy.<resourceId>.json` is a Resource policy keyed by resource id.
-      const policyId = policyFileId(fileName)
-      if (policyId !== undefined) {
-        const policy: PolicyDocument = JSON.parse(entry.body.toString('utf8'))
-        if (policyId === collectionId) {
-          collectionPolicy = policy
-        } else {
-          // Reject a path-traversal / non-URL-safe id parsed from the archive.
-          assertValidId(policyId, {
-            kind: 'resource',
-            requestName: 'Import Space'
-          })
-          resourcePolicies.set(policyId, policy)
-        }
+      // Policy dot-files: `.collection.policy.json` is the Collection's own
+      // policy; `.r.<resourceId>.policy.json` is a Resource policy keyed by
+      // resource id.
+      if (fileName === COLLECTION_POLICY_FILE_NAME) {
+        collectionPolicy = JSON.parse(entry.body.toString('utf8'))
+        continue
+      }
+      const policyResourceId = parseResourcePolicyFileName(fileName)
+      if (policyResourceId !== undefined) {
+        // Reject a path-traversal / non-URL-safe id parsed from the archive.
+        assertValidId(policyResourceId, {
+          kind: 'resource',
+          requestName: 'Import Space'
+        })
+        resourcePolicies.set(
+          policyResourceId,
+          JSON.parse(entry.body.toString('utf8'))
+        )
         continue
       }
 

@@ -85,11 +85,22 @@ export const SPACE_DESCRIPTION_CACHE_MAX = 1_000
  * src/lib/webvhController.ts). Verifying a history log is the most expensive
  * step on a promoted Space's hot path, so the verified document is memoized per
  * storage backend. Writes that could change a log at the cached location
- * invalidate the entry explicitly (the cache is keyed by that location); the
- * short TTL is the same kind of backstop as the Space Description cache's, for
- * multi-process deployments sharing one storage backend.
+ * invalidate the entry explicitly (the cache is keyed by that location). The
+ * TTL is the freshness window: within it a cached document is served without
+ * any read; past it the entry is revalidated by comparing the log Resource's
+ * stored version against the one it was verified from, so a write from a
+ * sibling process sharing the backend is picked up within one TTL.
  */
 export const WEBVH_DOCUMENT_CACHE_TTL = 5_000 // milliseconds
+/**
+ * How long a cached `did:webvh` document may be kept alive by version matches
+ * alone before the log is fully re-verified regardless. The version compare
+ * is the multi-process backstop for ordinary writes, but an out-of-band
+ * rebuild of the log's Collection (delete and recreate, or an import carrying
+ * the archive's own sidecar) can land the same version number on different
+ * bytes; this age bounds how long such a rebuild can go unnoticed.
+ */
+export const WEBVH_DOCUMENT_REVERIFY_AGE = 60_000 // milliseconds
 /** Max number of resolved did:webvh documents held per backend cache. */
 export const WEBVH_DOCUMENT_CACHE_MAX = 1_000
 

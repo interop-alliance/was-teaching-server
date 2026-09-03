@@ -1183,18 +1183,20 @@ export class CollectionRequest {
 
     try {
       await storage.deleteCollection({ spaceId, collectionId })
-      // Deleting a Collection drops any history log a self-hosted did:webvh
-      // controller resolves from it; bust every document cached from that
-      // Collection.
-      invalidateResolvedWebvhDid({ storage, spaceId, collectionId })
-      // ...and every policy cached at the Collection level or under any of
-      // its Resources.
-      invalidateCollectionPolicies({ storage, spaceId, collectionId })
     } catch (err) {
       // Rethrow a typed ProblemError from the data-plane backend unchanged
       // (e.g. a 507 quota / 412 precondition) rather than flattening it to a
       // 500; wrap anything genuinely unexpected. `handleError` logs the 5xx once.
       rethrowOrWrapStorageError({ err, requestName })
+    } finally {
+      // Deleting a Collection drops any history log a self-hosted did:webvh
+      // controller resolves from it; bust every document cached from that
+      // Collection. Done in `finally` because a recursive delete is not
+      // atomic: a failure partway through has already removed some entries.
+      invalidateResolvedWebvhDid({ storage, spaceId, collectionId })
+      // ...and every policy cached at the Collection level or under any of
+      // its Resources.
+      invalidateCollectionPolicies({ storage, spaceId, collectionId })
     }
 
     return reply.status(204).send()

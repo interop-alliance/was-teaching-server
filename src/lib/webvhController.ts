@@ -25,21 +25,22 @@
  * authority on its own; a DID gains authority only by being referenced, as a
  * Space's stored controller or as a delegation's controller.
  *
- * Verified documents are cached per storage backend (the same WeakMap shape as
- * the Space Description cache), keyed by the log's location, and invalidated
- * by writes that could change a log at that location. Past the cache's TTL, a
- * cached entry is cheaply revalidated rather than unconditionally re-verified:
- * the log Resource's stored `version` is compared against the version the
- * entry was verified from, and the (expensive) log read and verification are
- * only repeated when that version has moved, the Resource is gone, or the
- * entry predates version tracking. See {@link resolveWebvhController}.
+ * Verified documents are cached per storage backend (the same backend-scoped
+ * shape as the Space Description cache), keyed by the log's location, and
+ * invalidated by writes that could change a log at that location. Past the
+ * cache's TTL, a cached entry is cheaply revalidated rather than
+ * unconditionally re-verified: the log Resource's stored `version` is compared
+ * against the version the entry was verified from, and the (expensive) log
+ * read and verification are only repeated when that version has moved, the
+ * Resource is gone, the entry predates version tracking, or the entry has
+ * reached the hard re-verify age. See {@link resolveWebvhController}.
  *
  * NOTE: the log is read through the control-plane `storage` (the default data
  * plane). Pointing a log Collection at a non-default data-plane backend is out
  * of scope; such a log would not be found here.
  */
 import { text } from 'node:stream/consumers'
-import { LruCache } from '@interop/lru-memoize'
+import { LRUCache } from 'lru-cache'
 import {
   defaultWebvhLogVerifier,
   readLogFromString,
@@ -48,8 +49,10 @@ import {
 import type { DIDDoc } from '@interop/did-method-webvh'
 import {
   WEBVH_DOCUMENT_CACHE_MAX,
-  WEBVH_DOCUMENT_CACHE_TTL
+  WEBVH_DOCUMENT_CACHE_TTL,
+  WEBVH_DOCUMENT_REVERIFY_AGE
 } from '../config.default.js'
+import { backendScoped, deleteByPrefix } from './backendCache.js'
 import { parseSelfHostedWebvh, WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
 import type { StorageBackend } from '../types.js'
 
@@ -69,8 +72,12 @@ export interface WebvhResolverContext {
  * needs: `version` is the log Resource's stored `version` as of the read that
  * produced `doc` (`undefined` for a legacy log with no version tracking, in
  * which case the entry is never cheaply revalidated -- see
- * {@link reviseEntry}); `verifiedAt` is when that read happened, the freshness
- * window's start.
+ * {@link reviseEntry}); `verifiedAt` is the `performance.now()` at which the
+ * log was last fully verified. It is a monotonic-clock reading rather than a
+ * wall-clock timestamp so a backward clock step cannot make a stale entry
+ * read as fresh, and it is *not* refreshed by a cheap revalidation, which is
+ * what lets {@link WEBVH_DOCUMENT_REVERIFY_AGE} bound how long a version
+ * match alone can keep an entry alive.
  */
 interface WebvhCacheEntry {
   doc: DIDDoc
@@ -79,31 +86,39 @@ interface WebvhCacheEntry {
 }
 
 /**
- * One LRU cache of verified controller documents per storage backend, scoped
- * via a WeakMap exactly like the Space Description cache: two backends in one
- * process (parallel test suites) never serve each other's documents, and a
- * cache is discarded with its backend. Unlike the Space Description cache,
- * this one carries no `lru-cache` `ttl` -- entries are evicted only by `max`
- * (LRU) or explicit invalidation; freshness and revalidation are handled
- * directly by {@link resolveWebvhController} against each entry's
- * `verifiedAt`, so a cache read can serve a stale entry across the boundary
- * that a bare `ttl` would otherwise drop it at.
+ * Everything the cache's `fetchMethod` needs to fill or revalidate one entry,
+ * handed to `fetch()` as its `context`.
  */
-const documentCaches = new WeakMap<StorageBackend, LruCache>()
+interface WebvhFetchContext {
+  storage: StorageBackend
+  did: string
+  scid: string
+  spaceId: string
+  collectionId: string
+}
 
 /**
- * Returns the (lazily created) resolved-document cache for a backend.
- * @param storage {StorageBackend}
- * @returns {LruCache}
+ * One LRU cache of verified controller documents per storage backend (see
+ * `backendCache.ts` for the scoping rationale). It is an `lru-cache`
+ * `LRUCache` used through `fetch()`, whose `fetchMethod` does both the cold
+ * fill and the revalidation: concurrent callers for one key dedup onto the
+ * single in-flight promise, a rejected fill or revalidation drops the slot,
+ * and a revalidation receives the entry it is replacing as `staleValue`. The
+ * cache carries no `lru-cache` `ttl`: freshness is decided by
+ * {@link resolveWebvhController} from each entry's monotonic `verifiedAt`
+ * (a `ttl` would use the same clock but could not serve the stale entry to
+ * the revalidation), and a stale entry is refreshed by a `forceRefresh` fetch.
  */
-function documentCacheFor(storage: StorageBackend): LruCache {
-  let cache = documentCaches.get(storage)
-  if (!cache) {
-    cache = new LruCache({ max: WEBVH_DOCUMENT_CACHE_MAX })
-    documentCaches.set(storage, cache)
-  }
-  return cache
-}
+const documentCaches = backendScoped(
+  () =>
+    new LRUCache<string, WebvhCacheEntry, WebvhFetchContext>({
+      max: WEBVH_DOCUMENT_CACHE_MAX,
+      fetchMethod: async (_key, staleEntry, { context }) =>
+        staleEntry
+          ? await reviseEntry({ ...context, entry: staleEntry })
+          : await resolveVerifiedEntry(context)
+    })
+)
 
 /**
  * Cache key: the log's location (Space plus Collection) followed by the DID.
@@ -178,28 +193,30 @@ export function invalidateResolvedWebvhDid({
     return
   }
   // Only touch a cache that already exists for this backend.
-  const cache = documentCaches.get(storage)
+  const cache = documentCaches.peek(storage)
   if (!cache) {
     return
   }
   const prefix =
     collectionId !== undefined ? `${spaceId}|${collectionId}|` : `${spaceId}|`
-  for (const key of [...cache.cache.keys()]) {
-    if (key.startsWith(prefix)) {
-      cache.delete(key)
-    }
-  }
+  deleteByPrefix(cache, prefix)
 }
 
 /**
- * Reads a `<spaceId>/<collectionId>/did.jsonl` history log from storage.
+ * Reads a `<spaceId>/<collectionId>/did.jsonl` history log from storage, along
+ * with the Resource's stored `version` as of that same read (absent for a
+ * legacy Resource written before versioning). One read yields both, so the
+ * version recorded on a cache entry is exactly the version of the log bytes
+ * that were verified -- there is no second read for a concurrent rewrite to
+ * slip between.
  * @param options {object}
  * @param options.storage {StorageBackend}
  * @param options.spaceId {string}
  * @param options.collectionId {string}
- * @returns {Promise<string>}   the raw JSON Lines log
+ * @returns {Promise<{ text: string, version: number | undefined }>}   the
+ *   raw JSON Lines log and its version
  */
-async function readLogText({
+async function readLog({
   storage,
   spaceId,
   collectionId
@@ -207,13 +224,13 @@ async function readLogText({
   storage: StorageBackend
   spaceId: string
   collectionId: string
-}): Promise<string> {
-  const { resourceStream } = await storage.getResource({
+}): Promise<{ text: string; version: number | undefined }> {
+  const { resourceStream, version } = await storage.getResource({
     spaceId,
     collectionId,
     resourceId: WEBVH_LOG_RESOURCE_ID
   })
-  return await text(resourceStream)
+  return { text: await text(resourceStream), version }
 }
 
 /**
@@ -225,18 +242,24 @@ async function readLogText({
  * DID is not self-hosted, the log is absent or unparseable, verification fails,
  * the resolved document names a different DID, or the DID is deactivated.
  *
- * Caching has two layers. Within {@link WEBVH_DOCUMENT_CACHE_TTL} of the last
- * verification, a cached entry is returned as-is -- nothing is read at all;
- * that TTL is a backstop for several server processes sharing one storage
- * backend, not the normal freshness signal. Past it, the entry is cheaply
- * revalidated: the log Resource's stored `version` (a metadata read, not a log
- * read) is compared against the version the entry was verified from. An
- * unchanged version refreshes the entry's freshness window without re-reading
- * or re-verifying the log; a changed version, an absent Resource, or an entry
+ * Caching has three tiers, all measured on the monotonic clock from the
+ * entry's last full verification. Within {@link WEBVH_DOCUMENT_CACHE_TTL} a
+ * cached entry is returned as-is -- nothing is read at all. Past it, the entry
+ * is cheaply revalidated: the log Resource's stored `version` (a metadata read,
+ * not a log read) is compared against the version the entry was verified from.
+ * An unchanged version returns the same document without re-reading or
+ * re-verifying the log; a changed version, an absent Resource, or an entry
  * that predates version tracking (`version` `undefined`) falls back to a full
- * re-verify. Concurrent callers that observe the same stale entry dedup onto
+ * re-verify. Past {@link WEBVH_DOCUMENT_REVERIFY_AGE} the log is fully
+ * re-verified regardless of its version: `version` is a change token for this
+ * process's own writes and for ordinary writes from a sibling process sharing
+ * the backend, but an out-of-band rebuild of the Collection (delete and
+ * recreate, or an import carrying its own sidecar) can land the same number on
+ * different bytes, and the hard age is what bounds how long that can pass
+ * unnoticed. Concurrent callers that observe the same stale entry dedup onto
  * one revalidation (or one full re-verify), the same way a concurrent cache
- * miss dedups onto one verification.
+ * miss dedups onto one verification; the dedup, the stale-entry hand-off, and
+ * the drop-on-rejection are `lru-cache`'s own `fetch()` behavior.
  *
  * @param options {object}
  * @param options.storage {StorageBackend}   the request's storage backend
@@ -257,105 +280,35 @@ export async function resolveWebvhController({
     )
   }
   const { scid, spaceId, collectionId } = parsed
-  const entry = await resolveCachedEntry({
-    storage,
-    did,
-    scid,
-    spaceId,
-    collectionId
+  const cache = documentCaches.for(storage)
+  const key = cacheKey({ spaceId, collectionId, did })
+  // `peek` sees through an in-flight refresh to the entry it is replacing, so
+  // a caller arriving mid-revalidation still classifies the slot as stale and
+  // joins that in-flight fetch (`forceRefresh` never starts a second one).
+  const current = cache.peek(key)
+  const stale =
+    current !== undefined &&
+    performance.now() - current.verifiedAt >= WEBVH_DOCUMENT_CACHE_TTL
+  const entry = await cache.fetch(key, {
+    forceRefresh: stale,
+    context: { storage, did, scid, spaceId, collectionId }
   })
+  if (!entry) {
+    // `fetchMethod` always resolves an entry or rejects; this is a type guard.
+    throw new Error(`The history log for "${did}" could not be resolved.`)
+  }
   return entry.doc
 }
 
 /**
- * The cached half of {@link resolveWebvhController}: serves a fresh entry as-is,
- * revalidates a stale one, or fills a missing one, always through the same
- * backend-scoped `LruCache` slot so concurrent callers dedup onto one another's
- * in-flight work.
- *
- * @param options {object}
- * @param options.storage {StorageBackend}
- * @param options.did {string}   the full controller DID
- * @param options.scid {string}   the SCID embedded in the DID
- * @param options.spaceId {string}   the Space the log is published in
- * @param options.collectionId {string}   the Collection the log is published in
- * @returns {Promise<WebvhCacheEntry>}
- */
-async function resolveCachedEntry({
-  storage,
-  did,
-  scid,
-  spaceId,
-  collectionId
-}: {
-  storage: StorageBackend
-  did: string
-  scid: string
-  spaceId: string
-  collectionId: string
-}): Promise<WebvhCacheEntry> {
-  const cache = documentCacheFor(storage)
-  const key = cacheKey({ spaceId, collectionId, did })
-  const cached = cache.cache.get(key) as Promise<WebvhCacheEntry> | undefined
-
-  if (!cached) {
-    return await storeEntry(cache, key, () =>
-      resolveVerifiedEntry({ storage, did, scid, spaceId, collectionId })
-    )
-  }
-
-  const entry = await cached
-  if (Date.now() - entry.verifiedAt < WEBVH_DOCUMENT_CACHE_TTL) {
-    return entry
-  }
-  // Stale. Only the caller that still finds its own read as the current cache
-  // slot spawns a revalidation; a caller that lost that race just awaits
-  // whatever replaced it (another revalidation, or an invalidation refill).
-  if (cache.cache.get(key) !== cached) {
-    return await (cache.cache.get(key) as Promise<WebvhCacheEntry>)
-  }
-  return await storeEntry(cache, key, () =>
-    reviseEntry({ storage, did, scid, spaceId, collectionId, entry })
-  )
-}
-
-/**
- * Computes a cache entry and stores its promise into the cache slot
- * unconditionally (a fill of an empty slot, or a replace of a stale one),
- * mirroring `LruCache.memoize`'s dedup-and-cleanup behavior without its
- * "return the existing entry" branch -- which is exactly the branch a
- * revalidating replace must not take. On rejection, the entry is dropped only
- * if the slot still holds the promise this call stored (a newer store already
- * replacing it is left alone).
- *
- * @param cache {LruCache}
- * @param key {string}
- * @param fn {() => Promise<WebvhCacheEntry>}
- * @returns {Promise<WebvhCacheEntry>}
- */
-async function storeEntry(
-  cache: LruCache,
-  key: string,
-  fn: () => Promise<WebvhCacheEntry>
-): Promise<WebvhCacheEntry> {
-  const promise = fn()
-  cache.cache.set(key, promise)
-  try {
-    return await promise
-  } catch (err) {
-    if (cache.cache.get(key) === promise) {
-      cache.cache.delete(key)
-    }
-    throw err
-  }
-}
-
-/**
- * Cheaply revalidates a stale cache entry: a legacy entry with no tracked
- * `version` is always fully re-verified (there is nothing to compare against).
- * Otherwise the log Resource's current `version` is read; a match refreshes
- * `verifiedAt` and returns the same document unchanged, while a mismatch (or
- * an absent Resource) falls back to a full re-verify.
+ * Cheaply revalidates a stale cache entry, as the cache's `fetchMethod` for a
+ * slot that already holds one. A legacy entry with no tracked `version`, or
+ * one whose last full verification is {@link WEBVH_DOCUMENT_REVERIFY_AGE} or
+ * older, is always fully re-verified. Otherwise the log Resource's current
+ * `version` is read; a match returns the entry unchanged (same document, same
+ * `verifiedAt`, so the hard age keeps counting from the last real
+ * verification), while a mismatch (or an absent Resource) falls back to a
+ * full re-verify.
  *
  * @param options {object}
  * @param options.storage {StorageBackend}
@@ -373,22 +326,17 @@ async function reviseEntry({
   spaceId,
   collectionId,
   entry
-}: {
-  storage: StorageBackend
-  did: string
-  scid: string
-  spaceId: string
-  collectionId: string
-  entry: WebvhCacheEntry
-}): Promise<WebvhCacheEntry> {
-  if (entry.version !== undefined) {
+}: WebvhFetchContext & { entry: WebvhCacheEntry }): Promise<WebvhCacheEntry> {
+  const dueForReverify =
+    performance.now() - entry.verifiedAt >= WEBVH_DOCUMENT_REVERIFY_AGE
+  if (entry.version !== undefined && !dueForReverify) {
     const metadata = await storage.getResourceMetadata({
       spaceId,
       collectionId,
       resourceId: WEBVH_LOG_RESOURCE_ID
     })
     if (metadata?.version === entry.version) {
-      return { ...entry, verifiedAt: Date.now() }
+      return entry
     }
   }
   return await resolveVerifiedEntry({
@@ -401,22 +349,11 @@ async function reviseEntry({
 }
 
 /**
- * Fully re-verifies a `did:webvh` controller and pairs the resolved document
- * with the log Resource's `version` as of that verification, for
+ * Fully verifies a `did:webvh` controller and pairs the resolved document with
+ * the log Resource's `version` as of the very read that was verified, for
  * {@link reviseEntry} to compare against later.
  *
- * The metadata read happens *before* the log read (see
- * {@link resolveVerifiedDocument}), not after: a concurrent rewrite landing
- * between the two reads can then only make the recorded `version` older than
- * the log actually verified, which costs an extra (safe) re-verify next time
- * around -- never a missed update.
- *
- * @param options {object}
- * @param options.storage {StorageBackend}
- * @param options.did {string}
- * @param options.scid {string}
- * @param options.spaceId {string}
- * @param options.collectionId {string}
+ * @param options {WebvhFetchContext}
  * @returns {Promise<WebvhCacheEntry>}
  */
 async function resolveVerifiedEntry({
@@ -425,43 +362,29 @@ async function resolveVerifiedEntry({
   scid,
   spaceId,
   collectionId
-}: {
-  storage: StorageBackend
-  did: string
-  scid: string
-  spaceId: string
-  collectionId: string
-}): Promise<WebvhCacheEntry> {
-  const metadata = await storage.getResourceMetadata({
-    spaceId,
-    collectionId,
-    resourceId: WEBVH_LOG_RESOURCE_ID
-  })
-  const doc = await resolveVerifiedDocument({
+}: WebvhFetchContext): Promise<WebvhCacheEntry> {
+  const { doc, version } = await resolveVerifiedDocument({
     storage,
     did,
     scid,
     spaceId,
     collectionId
   })
-  return { doc, version: metadata?.version, verifiedAt: Date.now() }
+  return { doc, version, verifiedAt: performance.now() }
 }
 
 /**
  * The uncached half of {@link resolveWebvhController}: read the log, verify it,
- * and check the resolved document against what was asked for.
+ * and check the resolved document against what was asked for. Returns the
+ * verified document together with the log Resource's `version` as of the read
+ * that was verified.
  *
  * `scid` and `requestedDid` are passed explicitly because they are the
  * SCID-pinning knobs -- `resolveDIDFromLog` does not infer them from the log,
  * and without them a log that verifies internally could resolve to any DID.
  *
- * @param options {object}
- * @param options.storage {StorageBackend}
- * @param options.did {string}   the full controller DID
- * @param options.scid {string}   the SCID embedded in the DID
- * @param options.spaceId {string}   the Space the log is published in
- * @param options.collectionId {string}   the Collection the log is published in
- * @returns {Promise<DIDDoc>}
+ * @param options {WebvhFetchContext}
+ * @returns {Promise<{ doc: DIDDoc, version: number | undefined }>}
  */
 async function resolveVerifiedDocument({
   storage,
@@ -469,16 +392,15 @@ async function resolveVerifiedDocument({
   scid,
   spaceId,
   collectionId
-}: {
-  storage: StorageBackend
-  did: string
-  scid: string
-  spaceId: string
-  collectionId: string
-}): Promise<DIDDoc> {
+}: WebvhFetchContext): Promise<{ doc: DIDDoc; version: number | undefined }> {
   let logText: string
+  let version: number | undefined
   try {
-    logText = await readLogText({ storage, spaceId, collectionId })
+    ;({ text: logText, version } = await readLog({
+      storage,
+      spaceId,
+      collectionId
+    }))
   } catch (err) {
     throw new Error(
       `No did:webvh history log is published at ` +
@@ -515,7 +437,7 @@ async function resolveVerifiedDocument({
       `The history log resolved to "${doc.id}", not the requested "${did}".`
     )
   }
-  return doc
+  return { doc, version }
 }
 
 /** JSON-LD context for `Multikey` verification methods. */

@@ -12,31 +12,19 @@ import {
   SPACE_DESCRIPTION_CACHE_TTL
 } from '../config.default.js'
 import type { SpaceDescription, StorageBackend } from '../types.js'
+import { backendScoped } from './backendCache.js'
 
 /**
- * One short-TTL memoization cache per storage backend, keyed by `spaceId`. The
- * cache is scoped to the backend instance (rather than module-global) via a
- * WeakMap so two backends in one process -- e.g. parallel test suites -- never
- * serve each other's descriptions, and a cache is discarded with its backend.
+ * One short-TTL memoization cache per storage backend, keyed by `spaceId`
+ * (see `backendCache.ts` for the scoping rationale).
  */
-const descriptionCaches = new WeakMap<StorageBackend, LruCache>()
-
-/**
- * Returns the (lazily created) Space Description cache for a backend.
- * @param storage {StorageBackend}
- * @returns {LruCache}
- */
-function descriptionCacheFor(storage: StorageBackend): LruCache {
-  let cache = descriptionCaches.get(storage)
-  if (!cache) {
-    cache = new LruCache({
+const descriptionCaches = backendScoped(
+  () =>
+    new LruCache({
       max: SPACE_DESCRIPTION_CACHE_MAX,
       ttl: SPACE_DESCRIPTION_CACHE_TTL
     })
-    descriptionCaches.set(storage, cache)
-  }
-  return cache
-}
+)
 
 /**
  * Drops the cached Space Description for a Space. Call after any write that
@@ -55,7 +43,7 @@ export function invalidateSpaceDescription({
   spaceId: string
 }): void {
   // Only touch a cache that already exists for this backend.
-  descriptionCaches.get(storage)?.delete(spaceId)
+  descriptionCaches.peek(storage)?.delete(spaceId)
 }
 
 /**
@@ -74,10 +62,10 @@ export async function getCachedSpaceDescription({
   storage: StorageBackend
   spaceId: string
 }): Promise<SpaceDescription | undefined> {
-  return await descriptionCacheFor(storage).memoize<
-    SpaceDescription | undefined
-  >({
-    key: spaceId,
-    fn: () => storage.getSpaceDescription({ spaceId })
-  })
+  return await descriptionCaches
+    .for(storage)
+    .memoize<SpaceDescription | undefined>({
+      key: spaceId,
+      fn: () => storage.getSpaceDescription({ spaceId })
+    })
 }
