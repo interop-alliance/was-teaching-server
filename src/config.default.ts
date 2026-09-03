@@ -76,7 +76,7 @@ export function assertFreshBuild({
  * bounds staleness when several server processes share one storage backend (so
  * one process's cache cannot serve another process's write indefinitely).
  */
-export const SPACE_DESCRIPTION_CACHE_TTL = 5_000 // milliseconds
+export const SPACE_DESCRIPTION_CACHE_TTL = 10_000 // milliseconds
 /** Max number of Space Descriptions held per backend cache (LRU-bounded). */
 export const SPACE_DESCRIPTION_CACHE_MAX = 1_000
 
@@ -86,12 +86,22 @@ export const SPACE_DESCRIPTION_CACHE_MAX = 1_000
  * step on a promoted Space's hot path, so the verified document is memoized per
  * storage backend. Writes that could change a log at the cached location
  * invalidate the entry explicitly (the cache is keyed by that location); the
- * short TTL mirrors the Space Description cache's backstop for
+ * short TTL is the same kind of backstop as the Space Description cache's, for
  * multi-process deployments sharing one storage backend.
  */
 export const WEBVH_DOCUMENT_CACHE_TTL = 5_000 // milliseconds
 /** Max number of resolved did:webvh documents held per backend cache. */
 export const WEBVH_DOCUMENT_CACHE_MAX = 1_000
+
+/**
+ * `Access-Control-Max-Age` (seconds) on CORS preflight responses. Without it
+ * browsers re-preflight the same URL every few seconds (Chrome's default is
+ * 5 s), and a signed-request client preflights nearly every call, so about
+ * half of a wallet's requests were preflights. Browsers cap the value on
+ * their side (Chrome at 7200 s, Firefox at 86400 s); the preflight answer
+ * never varies per request, so the longest useful value is safe.
+ */
+export const CORS_PREFLIGHT_MAX_AGE = 86_400 // seconds
 
 /**
  * Max number of resolved external-backend adapters held per provider-registry

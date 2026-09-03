@@ -1051,6 +1051,87 @@ are all deleted is unreachable to every client, since nothing can locate it and
 nothing can authorize against it, so the server is the only party that can
 remove it.
 
+## Performance (signup request-pattern review, 2026-09-03)
+
+A review of a freewallet signup ceremony's request log against the server (730
+requests to the production host across three runs) found the hot paths already
+memoized where it matters most (Space Descriptions, the base JSON-LD loader, the
+did:key driver) and shipped the two cheap wins directly: preflight
+`Access-Control-Max-Age`, and a per-Space live Resource count cache on the
+filesystem create path. The items below are what remains from that review.
+
+### WAS-74: CORS proxy response cache and upstream connection reuse
+
+- status: todo
+- priority: medium
+- labels: performance, cors-proxy
+- acceptance:
+  - [ ] A 2xx GET response relayed by `/api/cors` is served from an in-memory
+        cache on a repeat request for the same URL within its TTL, taken from
+        the upstream `Cache-Control` `max-age` when present and otherwise a
+        short fixed default; non-2xx and non-GET responses are never cached
+  - [ ] The cache is bounded (LRU, capped entry count and per-entry size) so an
+        open endpoint cannot grow it without limit
+  - [ ] A host validated by `checkProxyTarget` within a short window skips the
+        DNS re-lookup, and the pinned undici `Agent` is reused across requests
+        to the same pinned addresses rather than built and destroyed per
+        request; the SSRF pinning guarantees are unchanged (a new pin set gets a
+        new Agent)
+  - [ ] Tests in `test/` for the cache hit, the TTL expiry, the no-cache cases,
+        and the Agent reuse
+
+Context: the signup log fetched ten distinct issuer-registry URLs (five
+registries, each a `.well-known/openid-federation` document and a `fetch?sub=`
+document) five times each through the proxy. Every proxied request today does a
+fresh DNS lookup, builds a new `Agent`, pays a full TLS handshake, and discards
+it all in `finally` (`src/corsProxy.ts`). Federation metadata changes rarely, so
+a short TTL removes most of that. The client side of the same pattern (the
+wallet fetches the five well-known URLs twice back to back in one signup) is a
+freewallet item, not this one.
+
+### WAS-75: Cheap revalidation of cached did:webvh documents
+
+- status: todo
+- priority: low
+- labels: performance, webvh
+- acceptance:
+  - [ ] A cached verified document past its TTL is revalidated by comparing the
+        log Resource's stored version (or an equivalent cheap validator) against
+        the one it was verified from, and re-read and re-verified only when that
+        differs; the TTL backstop for multi-process deployments is kept
+  - [ ] The per-verification `createDefaultDidResolver()` in
+        `didResolverWithWebvh` (`src/zcap.ts`) is built once per storage backend
+        (a `WeakMap`, like the two existing caches) rather than per request
+  - [ ] Tests in `test/`: a log rewrite past the TTL is picked up; an unchanged
+        log past the TTL is not re-verified
+
+Context: after promotion every verification resolves the account log, and an
+annex-signed delegated invocation resolves the annex log as well. The cache in
+`src/lib/webvhController.ts` has a 5 s TTL, so a ceremony longer than that
+re-reads and re-verifies the whole log every 5 s. Measured on the signup log's
+2-entry account log, one verification is about 2.6 ms; the cost is linear in log
+length, and every enrollment or rotation appends an entry, so it grows with the
+account's age rather than with any one request.
+
+### WAS-76: Memoize access-control policy documents
+
+- status: todo
+- priority: low
+- labels: performance, policy
+- acceptance:
+  - [ ] `resolveEffectivePolicy` reads the Space, Collection, and Resource
+        policy documents through a per-backend short-TTL cache in the shape of
+        `lib/spaceDescriptionCache.ts`, keyed by the policy's level
+  - [ ] The policy PUT and DELETE handlers, Delete Collection, Delete Space, and
+        import invalidate the affected entries
+  - [ ] Tests in `test/`: a policy write is visible on the next anonymous read;
+        a deleted policy stops granting on the next read
+
+Context: every anonymous read that falls through to the policy path issues three
+policy reads before the Resource read itself (the signup log shows this on each
+public `did.jsonl` read). Policies change only through their own handlers, so
+they fit the Space Description cache pattern exactly.
+
 ## Test coverage gaps (conformance suite + server `test/`)
 
 Produced by a 2026-07-22 coverage analysis: an inventory of the spec's 324

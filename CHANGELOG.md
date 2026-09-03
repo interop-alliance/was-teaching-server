@@ -2,12 +2,26 @@
 
 ## 0.25.1 - TBD
 
+### Changed
+
+- CORS preflight responses now carry `Access-Control-Max-Age: 86400`, so
+  browsers cache the preflight answer instead of re-asking before nearly every
+  signed request (Chrome's default without the header is 5 s, and about half of
+  a wallet signup's requests were preflights).
+- The filesystem backend caches the per-Space live Resource count used by the
+  `MAX_RESOURCES_PER_SPACE` create-path check, in the same shape as the byte
+  quota's usage cache (short TTL, each accepted create adds one, deletes and
+  import invalidate). A Resource create no longer enumerates every Collection
+  directory of the Space.
+- The Space Description memoization TTL is 10 s (was 5 s). Writes still
+  invalidate explicitly; the TTL is only the multi-process backstop.
+
 ### Notes
 
-- Test-only. A regression test that a ladder-signed single-verb Space delegation
-  stops verifying once the ladder verification method leaves the account
-  document: the same unexpired child is refused (404) after one log entry
-  removes that method, and the Space it targeted survives.
+- A regression test that a ladder-signed single-verb Space delegation stops
+  verifying once the ladder verification method leaves the account document: the
+  same unexpired child is refused (404) after one log entry removes that method,
+  and the Space it targeted survives.
 
 ## 0.25.0 - 2026-09-01
 
