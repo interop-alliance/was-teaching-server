@@ -44,7 +44,10 @@ const PROXY_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
  * one client's upstream cookie into every later client's jar once responses
  * are cached. `date` and `age` describe the moment the upstream answered;
  * Node emits a fresh `Date` for every reply, and a cache hit gets its own
- * `Age` (see {@link CachedResponse}). The upstream's `access-control-*`
+ * `Age` (see {@link CachedResponse}). `link` is dropped because a browser acts
+ * on a `Link: rel=preload` header on the proxy's reply, resolving relative
+ * URLs against the proxy's own origin, so an upstream could make it fetch
+ * arbitrary paths here. The upstream's `access-control-*`
  * headers (matched by prefix in {@link isUnrelayedHeader}) are its own CORS
  * answer for its own origin; the proxy's answer is the one `@fastify/cors`
  * sets on this reply, and relaying the upstream's would overwrite it (an
@@ -58,6 +61,7 @@ const UNRELAYED_HEADERS = new Set([
   'content-encoding',
   'content-length',
   'set-cookie',
+  'link',
   'date',
   'age'
 ])

@@ -594,7 +594,7 @@ describe('CORS proxy relayed headers and cache directives', () => {
     lookupMock.mockReset()
   })
 
-  it('asks the upstream for an identity encoding and drops encoding, cookie, and timing headers', async () => {
+  it('asks the upstream for an identity encoding and drops encoding, cookie, link, and timing headers', async () => {
     fetchMock.mockImplementation(
       async () =>
         new Response('{"ok":true}', {
@@ -605,6 +605,7 @@ describe('CORS proxy relayed headers and cache directives', () => {
             'transfer-encoding': 'chunked',
             connection: 'keep-alive',
             'set-cookie': 'session=abc; Path=/',
+            link: '</build/assets/app.js>; rel="modulepreload"; crossorigin',
             date: 'Mon, 01 Jan 2024 00:00:00 GMT',
             age: '12',
             expires: 'Tue, 02 Jan 2024 00:00:00 GMT',
@@ -631,6 +632,7 @@ describe('CORS proxy relayed headers and cache directives', () => {
       expect(response.headers['content-encoding']).toBeUndefined()
       expect(response.headers['transfer-encoding']).toBeUndefined()
       expect(response.headers['set-cookie']).toBeUndefined()
+      expect(response.headers.link).toBeUndefined()
       expect(response.headers.date).not.toBe('Mon, 01 Jan 2024 00:00:00 GMT')
       expect(response.headers['content-length']).toBe('11')
     }

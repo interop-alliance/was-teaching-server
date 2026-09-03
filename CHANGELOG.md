@@ -1,5 +1,14 @@
 # History
 
+## 0.25.2 - TBD
+
+### Fixed
+
+- The CORS proxy no longer relays an upstream `Link` header. A browser acts on
+  `Link: rel=preload` on the proxy's reply and resolves relative URLs against
+  the proxy's origin, so an upstream 404 page was making wallets request
+  `/build/assets/...` from the storage host.
+
 ## 0.25.1 - 2026-09-03
 
 ### Changed
