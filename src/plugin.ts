@@ -25,7 +25,10 @@ import {
   initSpacesRepositoryRoutes
 } from './routes.js'
 import { initExchangeRoutes } from './exchanges.js'
-import { assertValidServerUrl } from './config.default.js'
+import {
+  assertValidServerUrl,
+  CORS_PREFLIGHT_MAX_AGE
+} from './config.default.js'
 import { defaultBackend } from './storage.js'
 import { onboardingTokenAuthorizer } from './provisioning.js'
 import type {
@@ -216,10 +219,13 @@ async function wasPlugin(
   // Disable CORS. `exposedHeaders` is required for browser clients: without
   // it, cross-origin JS cannot read `Location` (space/resource creation),
   // `ETag` (metaVersion concurrency), or `Link` (pagination, policy linksets).
+  // `maxAge` lets browsers cache the preflight answer instead of re-asking
+  // before nearly every signed request.
   fastify.register(cors, {
     origin: '*',
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    exposedHeaders: ['Location', 'ETag', 'Link']
+    exposedHeaders: ['Location', 'ETag', 'Link'],
+    maxAge: CORS_PREFLIGHT_MAX_AGE
   })
 
   // Multipart file uploading. The cap is `files: 2`, not `1`: a write MUST carry

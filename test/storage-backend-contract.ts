@@ -2848,6 +2848,32 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             resourceId: 'r1'
           })
           await writeResource('r3')
+          // Back at the limit: a further create is refused again (a cached
+          // count must have advanced with the create above).
+          error = undefined
+          try {
+            await writeResource('r4')
+          } catch (err) {
+            error = err
+          }
+          assertCountQuota(error)
+          // Deleting the whole Collection frees every slot at once: a
+          // re-created Collection admits a full complement again, then refuses
+          // the next create.
+          await harness.backend.deleteCollection({
+            spaceId: 'cq-res',
+            collectionId: 'col'
+          })
+          await provisionSpace(harness.backend, 'cq-res')
+          await writeResource('r5')
+          await writeResource('r6')
+          error = undefined
+          try {
+            await writeResource('r7')
+          } catch (err) {
+            error = err
+          }
+          assertCountQuota(error)
         } finally {
           await harness.cleanup()
         }

@@ -261,6 +261,17 @@ export class FileSystemBackend implements StorageBackend {
    */
   #usageCache = new Map<string, { usageBytes: number; expiresAt: number }>()
 
+  /**
+   * Per-Space live Resource counts for the create-path count quota, so
+   * `#assertResourceHeadroom` does not enumerate every Collection dir of the
+   * Space (`#countLiveResources`) on every Resource create. Same lifecycle as
+   * `#usageCache`: entries live `QUOTA_USAGE_CACHE_TTL` ms, each accepted
+   * create adds one to the cached count, and deletes (and an import, which
+   * writes Resources directly) invalidate the Space's entry. Single-instance
+   * only.
+   */
+  #liveCountCache = new Map<string, { count: number; expiresAt: number }>()
+
   constructor({
     dataDir,
     logger,
@@ -520,6 +531,46 @@ export class FileSystemBackend implements StorageBackend {
     // TTL accumulate rather than each re-admitting against the same snapshot.
     cached.usageBytes += incomingBytes
     return headroom
+  }
+
+  /**
+   * Pre-flight Resource count quota for one create (`maxResourcesPerSpace`,
+   * `CountQuotaExceededError`): the count counterpart of
+   * `#assertSpaceHeadroom`. The `#countLiveResources` enumeration is cached
+   * per Space for `QUOTA_USAGE_CACHE_TTL` ms (see `#liveCountCache`); between
+   * re-measurements each accepted create adds one to the cached count, so a
+   * burst of creates costs one enumeration, not one per create. Soft under
+   * concurrency, like the byte quota.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.maxResourcesPerSpace {number}   the configured per-Space cap
+   * @returns {Promise<void>}
+   */
+  async #assertResourceHeadroom({
+    spaceId,
+    maxResourcesPerSpace
+  }: {
+    spaceId: string
+    maxResourcesPerSpace: number
+  }): Promise<void> {
+    let cached = this.#liveCountCache.get(spaceId)
+    if (!cached || cached.expiresAt <= Date.now()) {
+      cached = {
+        count: await this.#countLiveResources({ spaceId }),
+        expiresAt: Date.now() + QUOTA_USAGE_CACHE_TTL
+      }
+      this.#liveCountCache.set(spaceId, cached)
+    }
+    if (cached.count >= maxResourcesPerSpace) {
+      throw new CountQuotaExceededError({
+        scope: 'Resources per Space',
+        limit: maxResourcesPerSpace
+      })
+    }
+    // Count the accepted create against the cached total so creates within
+    // the TTL accumulate rather than each re-admitting against the same
+    // snapshot.
+    cached.count++
   }
 
   /**
@@ -887,8 +938,10 @@ export class FileSystemBackend implements StorageBackend {
    * @returns {Promise<void>}
    */
   async deleteSpace({ spaceId }: { spaceId: string }): Promise<void> {
-    // Freed bytes: drop the cached quota usage so the next write re-measures.
+    // Freed bytes and slots: drop the cached quota figures so the next write
+    // re-measures.
     this.#usageCache.delete(spaceId)
+    this.#liveCountCache.delete(spaceId)
     // Remove this Space's revocations, which sit outside the Space dir.
     await rm(this.#spaceRevocationDir(spaceId), {
       recursive: true,
@@ -940,7 +993,8 @@ export class FileSystemBackend implements StorageBackend {
    * dir and counts distinct Resource ids that have a live representation file
    * (`r.<id>...`); a tombstone (a `.meta.` sidecar with no `r.` file) does not
    * count. An absent Space dir counts zero (not yet provisioned). Soft under
-   * concurrency, like the byte quota -- measured at check time by enumeration.
+   * concurrency, like the byte quota. The create path reads it through
+   * `#liveCountCache` (see `#assertResourceHeadroom`); import measures directly.
    * @param options {object}
    * @param options.spaceId {string}
    * @returns {Promise<number>}   the number of live Resources
@@ -1270,6 +1324,11 @@ export class FileSystemBackend implements StorageBackend {
     // `maxResourcesPerSpace`. Only brand-new items count -- a re-imported
     // existing id is skipped and does not -- mirroring the per-create
     // write-path guards without re-enumerating the Space per item.
+    // The import writes Resource files directly (not via `writeResource`), so
+    // it bypasses `#liveCountCache`: measure fresh here and drop the Space's
+    // entry, now and again once the apply loop has run, so the next create
+    // re-measures rather than trusting a count the import moved.
+    this.#liveCountCache.delete(spaceId)
     const collectionIds = new Set(await this.#collectionIds({ spaceId }))
     let liveResourceCount =
       maxResourcesPerSpace !== undefined
@@ -1496,6 +1555,7 @@ export class FileSystemBackend implements StorageBackend {
       }
     }
 
+    this.#liveCountCache.delete(spaceId)
     return stats
   }
 
@@ -1721,8 +1781,10 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
   }): Promise<void> {
-    // Freed bytes: drop the cached quota usage so the next write re-measures.
+    // Freed bytes and slots: drop the cached quota figures so the next write
+    // re-measures.
     this.#usageCache.delete(spaceId)
+    this.#liveCountCache.delete(spaceId)
     // `force: true` keeps delete idempotent (spec / `StorageBackend` contract):
     // removing an absent (or already-deleted) Collection resolves rather than
     // rejecting with `ENOENT` (which the request layer would wrap as a 500).
@@ -2244,13 +2306,10 @@ export class FileSystemBackend implements StorageBackend {
     // representation is an update (never trips it); a write over a tombstone
     // (no `r.` file) is a create and does count. Soft under concurrency.
     if (this.maxResourcesPerSpace !== undefined && !isLive) {
-      const liveCount = await this.#countLiveResources({ spaceId })
-      if (liveCount >= this.maxResourcesPerSpace) {
-        throw new CountQuotaExceededError({
-          scope: 'Resources per Space',
-          limit: this.maxResourcesPerSpace
-        })
-      }
+      await this.#assertResourceHeadroom({
+        spaceId,
+        maxResourcesPerSpace: this.maxResourcesPerSpace
+      })
     }
 
     await this.#writeRepresentationBytes({ spaceId, filePath, input })
@@ -3022,8 +3081,10 @@ export class FileSystemBackend implements StorageBackend {
     ifMatch?: string
   }): Promise<void> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
-    // Freed bytes: drop the cached quota usage so the next write re-measures.
+    // Freed bytes and slots: drop the cached quota figures so the next write
+    // re-measures.
     this.#usageCache.delete(spaceId)
+    this.#liveCountCache.delete(spaceId)
     const softDelete = async (): Promise<void> => {
       if (ifMatch !== undefined) {
         await this.#assertWritePrecondition({
