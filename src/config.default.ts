@@ -104,6 +104,63 @@ export const WEBVH_DOCUMENT_CACHE_MAX = 1_000
 export const CORS_PREFLIGHT_MAX_AGE = 86_400 // seconds
 
 /**
+ * CORS proxy response cache (see src/corsProxy.ts). A successful (2xx) GET
+ * relayed through `/api/cors` is cached by target URL plus the forwarded
+ * `Accept` header, so a repeat request for the same resource within its TTL
+ * is served without a fresh upstream fetch.
+ */
+export const CORS_PROXY_RESPONSE_CACHE_TTL = 60_000 // milliseconds
+/**
+ * Upper bound applied to an upstream `Cache-Control` `max-age`, so a very
+ * large (or malicious) value cannot pin a cache entry for an unreasonable
+ * length of time.
+ */
+export const CORS_PROXY_RESPONSE_CACHE_MAX_TTL = 3_600_000 // milliseconds
+/**
+ * Max number of cached proxy responses held at once (LRU-bounded). Also
+ * bounds the single-flight memo of upstream fetches in progress.
+ */
+export const CORS_PROXY_RESPONSE_CACHE_MAX = 500
+/**
+ * Max body size, in bytes, of a single proxied response eligible for
+ * caching; a larger response is still relayed but is never cached.
+ */
+export const CORS_PROXY_RESPONSE_CACHE_MAX_ENTRY_BYTES = 1024 * 1024 // 1 MiB
+/**
+ * Max combined body size, in bytes, held by the proxy response cache at once
+ * (lru-cache `maxSize`, measured via `sizeCalculation` over each entry's
+ * body length).
+ */
+export const CORS_PROXY_RESPONSE_CACHE_MAX_BYTES = 50 * 1024 * 1024 // 50 MiB
+
+/**
+ * CORS proxy host-validation cache (see src/corsProxy.ts). A hostname
+ * `checkProxyTarget` has already resolved and validated (public, not
+ * SSRF-blocked) is reused for this long before a fresh DNS lookup is made.
+ */
+export const CORS_PROXY_HOST_CHECK_CACHE_TTL = 30_000 // milliseconds
+/**
+ * Max number of validated hostnames held at once (LRU-bounded).
+ */
+export const CORS_PROXY_HOST_CHECK_CACHE_MAX = 1_000
+
+/**
+ * CORS proxy upstream connection cache (see src/corsProxy.ts). Rather than a
+ * fresh undici `Agent` (and TLS handshake) per proxied request, an Agent is
+ * reused across requests and redirect hops that dial the same host with the
+ * same validated addresses -- keyed by hostname plus those addresses, so a
+ * re-resolved host always gets a fresh Agent. An Agent is destroyed when it
+ * is evicted or its TTL expires, deferred until any fetch still using it has
+ * finished.
+ */
+export const CORS_PROXY_AGENT_CACHE_MAX = 100
+/**
+ * Time since its last use after which a cached upstream Agent is destroyed
+ * and evicted. Every use restarts the clock.
+ */
+export const CORS_PROXY_AGENT_CACHE_TTL = 300_000 // milliseconds
+
+/**
  * Max number of resolved external-backend adapters held per provider-registry
  * cache (see src/lib/backendRegistry.ts), LRU-bounded. One adapter instance is
  * memoized per selected `{spaceId}/{backendId}` and reused across requests;

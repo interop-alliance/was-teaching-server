@@ -3,6 +3,12 @@ import { Agent } from 'undici'
 
 import { createApp } from '../src/server.js'
 import { createPinnedLookup } from '../src/corsProxy.js'
+import {
+  CORS_PROXY_AGENT_CACHE_TTL,
+  CORS_PROXY_HOST_CHECK_CACHE_TTL,
+  CORS_PROXY_RESPONSE_CACHE_MAX_ENTRY_BYTES,
+  CORS_PROXY_RESPONSE_CACHE_TTL
+} from '../src/config.default.js'
 
 // The proxy uses undici's `fetch` (so its dispatcher comes from the same undici
 // build), so we mock the undici module -- keeping the real `Agent` -- and mock
@@ -271,6 +277,599 @@ describe('CORS proxy API', () => {
 
     expect(response.statusCode).toBe(502)
     expect(response.json()).toEqual({ error: 'Unable to fetch proxied URL' })
+  })
+})
+
+describe('CORS proxy response cache', () => {
+  beforeEach(() => {
+    lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }])
+  })
+  afterEach(() => {
+    fetchMock.mockReset()
+    lookupMock.mockReset()
+  })
+
+  it('serves a repeat GET for the same URL from the cache', async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response('{"ok":true}', {
+          status: 200,
+          headers: { 'content-type': 'application/json', etag: '"abc"' }
+        })
+    )
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' + encodeURIComponent('https://registry.example/cached')
+
+    const first = await app.inject({ method: 'GET', url })
+    const second = await app.inject({ method: 'GET', url })
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(second.statusCode).toBe(first.statusCode)
+    expect(second.body).toBe(first.body)
+    expect(second.headers['content-type']).toBe(first.headers['content-type'])
+    expect(second.headers.etag).toBe(first.headers.etag)
+  })
+
+  it('caches for the TTL from Cache-Control max-age, and refetches once it elapses', async () => {
+    // lru-cache reads elapsed time from `performance.now()`, captured as a
+    // module-level reference at import time -- `vi.useFakeTimers()` swaps out
+    // the global `performance` object wholesale, which that reference never
+    // sees. Spying on `performance.now` in place patches the very object
+    // lru-cache already holds, so a controlled clock actually reaches it.
+    let mockNow = 1_000 // nonzero: lru-cache treats a start timestamp of exactly 0 as unset
+    const nowSpy = vi
+      .spyOn(performance, 'now')
+      .mockImplementation(() => mockNow)
+    try {
+      fetchMock.mockImplementation(
+        async () =>
+          new Response('{"a":1}', {
+            status: 200,
+            headers: { 'cache-control': 'max-age=5' }
+          })
+      )
+
+      const app = createApp()
+      const url =
+        '/api/cors?url=' + encodeURIComponent('https://registry.example/ttl')
+
+      await app.inject({ method: 'GET', url })
+      await app.inject({ method: 'GET', url })
+      expect(fetchMock).toHaveBeenCalledOnce()
+
+      mockNow += 5_001
+
+      await app.inject({ method: 'GET', url })
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('caches for the default TTL when Cache-Control has no usable max-age', async () => {
+    let mockNow = 1_000 // nonzero: lru-cache treats a start timestamp of exactly 0 as unset
+    const nowSpy = vi
+      .spyOn(performance, 'now')
+      .mockImplementation(() => mockNow)
+    try {
+      fetchMock.mockImplementation(
+        async () => new Response('{"a":1}', { status: 200 })
+      )
+
+      const app = createApp()
+      const url =
+        '/api/cors?url=' +
+        encodeURIComponent('https://registry.example/default-ttl')
+
+      await app.inject({ method: 'GET', url })
+
+      mockNow += CORS_PROXY_RESPONSE_CACHE_TTL - 1_000
+      await app.inject({ method: 'GET', url })
+      expect(fetchMock).toHaveBeenCalledOnce()
+
+      mockNow += 2_000
+      await app.inject({ method: 'GET', url })
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('never caches a non-2xx response', async () => {
+    fetchMock.mockImplementation(
+      async () => new Response('not found', { status: 404 })
+    )
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' + encodeURIComponent('https://registry.example/missing')
+
+    await app.inject({ method: 'GET', url })
+    await app.inject({ method: 'GET', url })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('never caches a response whose Cache-Control is no-store', async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response('{"a":1}', {
+          status: 200,
+          headers: { 'cache-control': 'no-store' }
+        })
+    )
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' + encodeURIComponent('https://registry.example/no-store')
+
+    await app.inject({ method: 'GET', url })
+    await app.inject({ method: 'GET', url })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('never caches a response with Cache-Control max-age=0', async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response('{"a":1}', {
+          status: 200,
+          headers: { 'cache-control': 'max-age=0' }
+        })
+    )
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' +
+      encodeURIComponent('https://registry.example/max-age-0')
+
+    await app.inject({ method: 'GET', url })
+    await app.inject({ method: 'GET', url })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('relays but does not cache a body larger than the per-entry cap', async () => {
+    const bigBody = 'x'.repeat(CORS_PROXY_RESPONSE_CACHE_MAX_ENTRY_BYTES + 1024)
+    fetchMock.mockImplementation(
+      async () => new Response(bigBody, { status: 200 })
+    )
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' +
+      encodeURIComponent('https://registry.example/large-body')
+
+    const first = await app.inject({ method: 'GET', url })
+    const second = await app.inject({ method: 'GET', url })
+
+    expect(first.body).toBe(bigBody)
+    expect(second.body).toBe(bigBody)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('caches distinct Accept headers separately for the same URL', async () => {
+    fetchMock.mockImplementation(
+      async () => new Response('{"ok":true}', { status: 200 })
+    )
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' +
+      encodeURIComponent('https://registry.example/accept-varies')
+
+    await app.inject({
+      method: 'GET',
+      url,
+      headers: { accept: 'application/json' }
+    })
+    await app.inject({
+      method: 'GET',
+      url,
+      headers: { accept: 'application/ld+json' }
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    // A repeat of the first Accept value is a cache hit.
+    await app.inject({
+      method: 'GET',
+      url,
+      headers: { accept: 'application/json' }
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('CORS proxy upstream connection reuse', () => {
+  beforeEach(() => {
+    lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }])
+  })
+  afterEach(() => {
+    fetchMock.mockReset()
+    lookupMock.mockReset()
+  })
+
+  it('reuses the same Agent dispatcher across requests to the same pinned host', async () => {
+    fetchMock.mockImplementation(
+      async () => new Response('{"ok":true}', { status: 200 })
+    )
+
+    const app = createApp()
+    await app.inject({
+      method: 'GET',
+      url: '/api/cors?url=' + encodeURIComponent('https://registry.example/one')
+    })
+    await app.inject({
+      method: 'GET',
+      url: '/api/cors?url=' + encodeURIComponent('https://registry.example/two')
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const dispatcherA = fetchMock.mock.calls[0]?.[1]?.dispatcher
+    const dispatcherB = fetchMock.mock.calls[1]?.[1]?.dispatcher
+    expect(dispatcherA).toBeInstanceOf(Agent)
+    expect(dispatcherA).toBe(dispatcherB)
+  })
+
+  it('uses a different Agent dispatcher for a different pinned address set', async () => {
+    fetchMock.mockImplementation(
+      async () => new Response('{"ok":true}', { status: 200 })
+    )
+    lookupMock
+      .mockResolvedValueOnce([{ address: '93.184.216.34', family: 4 }])
+      .mockResolvedValueOnce([{ address: '203.0.113.7', family: 4 }])
+
+    const app = createApp()
+    await app.inject({
+      method: 'GET',
+      url:
+        '/api/cors?url=' + encodeURIComponent('https://registry-a.example/one')
+    })
+    await app.inject({
+      method: 'GET',
+      url:
+        '/api/cors?url=' + encodeURIComponent('https://registry-b.example/two')
+    })
+
+    const dispatcherA = fetchMock.mock.calls[0]?.[1]?.dispatcher
+    const dispatcherB = fetchMock.mock.calls[1]?.[1]?.dispatcher
+    expect(dispatcherA).not.toBe(dispatcherB)
+  })
+
+  it('skips the DNS lookup for a repeat request to the same host within the window', async () => {
+    fetchMock.mockImplementation(
+      async () => new Response('{"ok":true}', { status: 200 })
+    )
+
+    const app = createApp()
+    await app.inject({
+      method: 'GET',
+      url: '/api/cors?url=' + encodeURIComponent('https://registry.example/one')
+    })
+    await app.inject({
+      method: 'GET',
+      url: '/api/cors?url=' + encodeURIComponent('https://registry.example/two')
+    })
+
+    expect(lookupMock).toHaveBeenCalledOnce()
+  })
+
+  it('re-runs the DNS lookup once the host-check window elapses', async () => {
+    let mockNow = 1_000 // nonzero: lru-cache treats a start timestamp of exactly 0 as unset
+    const nowSpy = vi
+      .spyOn(performance, 'now')
+      .mockImplementation(() => mockNow)
+    try {
+      fetchMock.mockImplementation(
+        async () => new Response('{"ok":true}', { status: 200 })
+      )
+
+      const app = createApp()
+      await app.inject({
+        method: 'GET',
+        url:
+          '/api/cors?url=' + encodeURIComponent('https://registry.example/one')
+      })
+
+      mockNow += CORS_PROXY_HOST_CHECK_CACHE_TTL + 1_000
+
+      await app.inject({
+        method: 'GET',
+        url:
+          '/api/cors?url=' + encodeURIComponent('https://registry.example/two')
+      })
+
+      expect(lookupMock).toHaveBeenCalledTimes(2)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+})
+
+describe('CORS proxy relayed headers and cache directives', () => {
+  beforeEach(() => {
+    lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }])
+  })
+  afterEach(() => {
+    fetchMock.mockReset()
+    lookupMock.mockReset()
+  })
+
+  it('asks the upstream for an identity encoding and drops encoding, cookie, and timing headers', async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response('{"ok":true}', {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'content-encoding': 'gzip',
+            'transfer-encoding': 'chunked',
+            connection: 'keep-alive',
+            'set-cookie': 'session=abc; Path=/',
+            date: 'Mon, 01 Jan 2024 00:00:00 GMT',
+            age: '12',
+            expires: 'Tue, 02 Jan 2024 00:00:00 GMT',
+            'cache-control': 'max-age=600'
+          }
+        })
+    )
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' + encodeURIComponent('https://registry.example/headers')
+    const first = await app.inject({ method: 'GET', url })
+    const second = await app.inject({ method: 'GET', url })
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      headers: { 'accept-encoding': 'identity' }
+    })
+    for (const response of [first, second]) {
+      expect(response.statusCode).toBe(200)
+      expect(response.body).toBe('{"ok":true}')
+      expect(response.headers['content-type']).toContain('application/json')
+      expect(response.headers.expires).toBe('Tue, 02 Jan 2024 00:00:00 GMT')
+      expect(response.headers['content-encoding']).toBeUndefined()
+      expect(response.headers['transfer-encoding']).toBeUndefined()
+      expect(response.headers['set-cookie']).toBeUndefined()
+      expect(response.headers.age).toBeUndefined()
+      expect(response.headers.date).not.toBe('Mon, 01 Jan 2024 00:00:00 GMT')
+      expect(response.headers['content-length']).toBe('11')
+    }
+  })
+
+  it('prefers s-maxage over max-age, as a shared cache', async () => {
+    let mockNow = 1_000 // nonzero: lru-cache treats a start timestamp of exactly 0 as unset
+    const nowSpy = vi
+      .spyOn(performance, 'now')
+      .mockImplementation(() => mockNow)
+    try {
+      fetchMock.mockImplementation(
+        async () =>
+          new Response('{"a":1}', {
+            status: 200,
+            headers: { 'cache-control': 'max-age=600, s-maxage=5' }
+          })
+      )
+
+      const app = createApp()
+      const url =
+        '/api/cors?url=' + encodeURIComponent('https://registry.example/shared')
+
+      await app.inject({ method: 'GET', url })
+      await app.inject({ method: 'GET', url })
+      expect(fetchMock).toHaveBeenCalledOnce()
+
+      mockNow += 5_001
+      await app.inject({ method: 'GET', url })
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('never caches a response whose shared-cache lifetime is zero, even with a positive max-age', async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response('{"a":1}', {
+          status: 200,
+          headers: { 'cache-control': 'max-age=600, s-maxage=0' }
+        })
+    )
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' + encodeURIComponent('https://registry.example/s0')
+    await app.inject({ method: 'GET', url })
+    await app.inject({ method: 'GET', url })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('never caches a response with a negative max-age', async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response('{"a":1}', {
+          status: 200,
+          headers: { 'cache-control': 'max-age=-1' }
+        })
+    )
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' + encodeURIComponent('https://registry.example/neg')
+    await app.inject({ method: 'GET', url })
+    await app.inject({ method: 'GET', url })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('matches cache directives by name, not substring', async () => {
+    // `private` here is the value of an extension directive, not a directive
+    // itself, so the response is cacheable.
+    fetchMock.mockImplementation(
+      async () =>
+        new Response('{"a":1}', {
+          status: 200,
+          headers: { 'cache-control': 'max-age=60, x-scope="private"' }
+        })
+    )
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' + encodeURIComponent('https://registry.example/name')
+    await app.inject({ method: 'GET', url })
+    await app.inject({ method: 'GET', url })
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('shares one upstream fetch between concurrent requests for the same URL', async () => {
+    let releaseUpstream: () => void = () => {}
+    const upstreamGate = new Promise<void>(resolve => {
+      releaseUpstream = resolve
+    })
+    fetchMock.mockImplementation(async () => {
+      await upstreamGate
+      return new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    })
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' + encodeURIComponent('https://registry.example/flight')
+    const pending = [
+      app.inject({ method: 'GET', url }),
+      app.inject({ method: 'GET', url }),
+      app.inject({ method: 'GET', url })
+    ]
+    // Let all three reach the fetch before the upstream answers.
+    await new Promise(resolve => setImmediate(resolve))
+    releaseUpstream()
+    const responses = await Promise.all(pending)
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    for (const response of responses) {
+      expect(response.statusCode).toBe(200)
+      expect(response.body).toBe('{"ok":true}')
+    }
+  })
+})
+
+describe('CORS proxy Agent lifecycle', () => {
+  beforeEach(() => {
+    lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }])
+  })
+  afterEach(() => {
+    fetchMock.mockReset()
+    lookupMock.mockReset()
+  })
+
+  it('reuses one Agent for a host whether reached directly or via redirect', async () => {
+    fetchMock.mockImplementation(async (input: string) => {
+      if (input === 'https://a.example/start') {
+        return new Response(null, {
+          status: 302,
+          headers: { location: 'https://b.example/final' }
+        })
+      }
+      return new Response('{"ok":true}', { status: 200 })
+    })
+
+    const app = createApp()
+    await app.inject({
+      method: 'GET',
+      url: '/api/cors?url=' + encodeURIComponent('https://a.example/start')
+    })
+    await app.inject({
+      method: 'GET',
+      url: '/api/cors?url=' + encodeURIComponent('https://b.example/direct')
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    const hopA = fetchMock.mock.calls[0]?.[1]?.dispatcher
+    const hopB = fetchMock.mock.calls[1]?.[1]?.dispatcher
+    const directB = fetchMock.mock.calls[2]?.[1]?.dispatcher
+    expect(hopA).not.toBe(hopB)
+    expect(hopB).toBe(directB)
+  })
+
+  it('does not destroy an Agent that a fetch is still using when its cache entry expires', async () => {
+    let mockNow = 1_000 // nonzero: lru-cache treats a start timestamp of exactly 0 as unset
+    const nowSpy = vi
+      .spyOn(performance, 'now')
+      .mockImplementation(() => mockNow)
+    try {
+      let releaseUpstream: () => void = () => {}
+      const upstreamGate = new Promise<void>(resolve => {
+        releaseUpstream = resolve
+      })
+      const destroySpy = vi.spyOn(Agent.prototype, 'destroy')
+      fetchMock
+        .mockImplementationOnce(async () => {
+          await upstreamGate
+          return new Response('{"slow":true}', { status: 200 })
+        })
+        .mockImplementation(
+          async () => new Response('{"fast":true}', { status: 200 })
+        )
+
+      const app = createApp()
+      const slow = app.inject({
+        method: 'GET',
+        url:
+          '/api/cors?url=' + encodeURIComponent('https://registry.example/slow')
+      })
+      await new Promise(resolve => setImmediate(resolve))
+      expect(fetchMock).toHaveBeenCalledOnce()
+
+      // The slow fetch's Agent expires while it is still in flight; the next
+      // request to the same host evicts the stale entry and builds a new one.
+      mockNow += CORS_PROXY_AGENT_CACHE_TTL + 1_000
+      const fast = await app.inject({
+        method: 'GET',
+        url:
+          '/api/cors?url=' + encodeURIComponent('https://registry.example/fast')
+      })
+      expect(fast.statusCode).toBe(200)
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      const slowAgent = fetchMock.mock.calls[0]?.[1]?.dispatcher
+      const fastAgent = fetchMock.mock.calls[1]?.[1]?.dispatcher
+      expect(slowAgent).not.toBe(fastAgent)
+      // Not destroyed yet: the slow fetch still holds it. (undici's
+      // promise-form destroy() re-enters itself with a callback, so the spy
+      // is judged by which Agents it ran on, not by call count.)
+      expect(destroySpy.mock.contexts).not.toContain(slowAgent)
+
+      releaseUpstream()
+      const slowResponse = await slow
+      expect(slowResponse.statusCode).toBe(200)
+      expect(slowResponse.body).toBe('{"slow":true}')
+      // Released by its last user, the evicted Agent is destroyed now, and
+      // the live one is untouched.
+      expect(destroySpy.mock.contexts).toContain(slowAgent)
+      expect(destroySpy.mock.contexts).not.toContain(fastAgent)
+      destroySpy.mockRestore()
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('destroys every cached Agent on close', async () => {
+    const destroySpy = vi.spyOn(Agent.prototype, 'destroy')
+    fetchMock.mockImplementation(
+      async () => new Response('{"ok":true}', { status: 200 })
+    )
+
+    const app = createApp()
+    await app.inject({
+      method: 'GET',
+      url: '/api/cors?url=' + encodeURIComponent('https://registry.example/one')
+    })
+    await app.close()
+
+    const agent = fetchMock.mock.calls[0]?.[1]?.dispatcher
+    expect(agent).toBeInstanceOf(Agent)
+    expect(destroySpy.mock.contexts).toContain(agent)
+    destroySpy.mockRestore()
   })
 })
 

@@ -15,6 +15,26 @@
   directory of the Space.
 - The Space Description memoization TTL is 10 s (was 5 s). Writes still
   invalidate explicitly; the TTL is only the multi-process backstop.
+- The `/api/cors` proxy caches 2xx responses in memory, keyed by the target URL
+  and the forwarded `Accept` header, so a wallet signup fetching the same
+  issuer-registry federation documents over and over stops paying a fresh DNS
+  lookup and TLS handshake each time. TTL comes from the upstream
+  `Cache-Control` `max-age`, capped at 1 hour and defaulting to 60 s when
+  absent; `no-store`, `no-cache`, `private`, and non-positive `max-age`
+  responses are not cached, nor are non-2xx responses or bodies over 1 MiB. The
+  cache is an LRU bounded to 500 entries and 50 MiB (`lru-cache` is now a direct
+  dependency). `s-maxage` takes precedence over `max-age`, as it does for any
+  shared cache. Concurrent requests for the same uncached URL share one upstream
+  fetch.
+- The proxy's SSRF check reuses a hostname's resolved addresses for 30 s instead
+  of doing a fresh DNS lookup, and the pinned undici `Agent` is now reused
+  across requests that dial the same host with the same resolved addresses
+  instead of being built and torn down per request. An Agent is dropped after 5
+  minutes without use, once any request still on it has finished. A re-resolved
+  host still gets its own Agent.
+- The proxy asks upstreams for an identity encoding and no longer relays
+  hop-by-hop headers, `content-encoding` (the body is relayed decoded),
+  `content-length`, `set-cookie`, `date`, or `age`.
 
 ### Notes
 
