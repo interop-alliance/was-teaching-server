@@ -15,6 +15,14 @@
   directory of the Space.
 - The Space Description memoization TTL is 10 s (was 5 s). Writes still
   invalidate explicitly; the TTL is only the multi-process backstop.
+- A cached, verified `did:webvh` controller document past its TTL is now
+  revalidated by comparing the `did.jsonl` log Resource's stored version against
+  the one it was verified from. The log is re-read and re-verified only when
+  that version differs (or the Resource is gone); an unchanged log just extends
+  the entry's freshness window. Same-process writes still invalidate outright.
+  The DID resolver that carries the local `did:webvh` driver is built once per
+  storage backend instead of once per verification, with its own internal result
+  cache disabled so document caching lives in one invalidation-aware place.
 - The `/api/cors` proxy caches 2xx responses in memory, keyed by the target URL
   and the forwarded `Accept` header, so a wallet signup fetching the same
   issuer-registry federation documents over and over stops paying a fresh DNS
@@ -35,6 +43,11 @@
 - The proxy asks upstreams for an identity encoding and no longer relays
   hop-by-hop headers, `content-encoding` (the body is relayed decoded),
   `content-length`, `set-cookie`, `date`, or `age`.
+- `resolveEffectivePolicy` now reads the Space, Collection, and Resource policy
+  documents through a per-backend short-TTL cache, in the same shape as the
+  Space Description cache. Policy PUT and DELETE invalidate their own level;
+  Delete Collection drops every entry under the Collection, and Delete Space and
+  Space import drop every entry under the Space.
 
 ### Notes
 

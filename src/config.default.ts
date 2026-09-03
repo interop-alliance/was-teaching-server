@@ -94,6 +94,18 @@ export const WEBVH_DOCUMENT_CACHE_TTL = 5_000 // milliseconds
 export const WEBVH_DOCUMENT_CACHE_MAX = 1_000
 
 /**
+ * Access-control policy cache (see src/lib/policyCache.ts). `resolveEffectivePolicy`
+ * reads up to three levels (Space, Collection, Resource) on every anonymous
+ * read, so each level is memoized per storage backend. Writes invalidate the
+ * entry explicitly; the short TTL is a backstop that also bounds staleness when
+ * several server processes share one storage backend (so one process's cache
+ * cannot serve another process's write indefinitely).
+ */
+export const POLICY_CACHE_TTL = 10_000 // milliseconds
+/** Max number of policy documents held per backend cache (LRU-bounded). */
+export const POLICY_CACHE_MAX = 1_000
+
+/**
  * `Access-Control-Max-Age` (seconds) on CORS preflight responses. Without it
  * browsers re-preflight the same URL every few seconds (Chrome's default is
  * 5 s), and a signed-request client preflights nearly every call, so about

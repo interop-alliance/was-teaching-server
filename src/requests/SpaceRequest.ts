@@ -9,6 +9,7 @@ import { handleZcapVerify } from '../zcap.js'
 import { buildLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { invalidateSpaceDescription } from '../lib/spaceDescriptionCache.js'
+import { invalidateSpacePolicies } from '../lib/policyCache.js'
 import { verifyBodyControllerConsent } from './controllerConsent.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidIds, assertValidId } from '../lib/validateId.js'
@@ -515,6 +516,9 @@ export class SpaceRequest {
     // Every Collection in the Space went with it, so any controller document
     // resolved out of a history log there is stale too.
     invalidateResolvedWebvhDid({ storage, spaceId })
+    // ...and so is every policy cached at the Space level or under any of its
+    // Collections/Resources.
+    invalidateSpacePolicies({ storage, spaceId })
 
     return reply.status(204).send()
   }
@@ -594,6 +598,10 @@ export class SpaceRequest {
       // Space, so drop any controller document resolved from a history log
       // there.
       invalidateResolvedWebvhDid({ storage, spaceId })
+      // An import can also add, replace, or fill in a policy at any level
+      // (Space, Collection, or Resource); drop every policy cached under this
+      // Space rather than tracking which levels it touched.
+      invalidateSpacePolicies({ storage, spaceId })
       return reply.status(200).send(summary)
     } catch (err) {
       // Archive-validation failures already surface as typed ProblemErrors

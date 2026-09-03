@@ -23,6 +23,7 @@ import {
   createDefaultDidResolver,
   securityLoader
 } from '@interop/security-document-loader'
+import type { LruCache } from '@interop/lru-memoize'
 import {
   verifyCapabilityInvocation,
   type VerifyCapabilityInvocationResult
@@ -219,22 +220,68 @@ function rootCapabilityLoader({
 }
 
 /**
- * Builds the standard DID resolver extended with the local `did:webvh` driver.
- * Per-verification rather than module-global, because the driver closes over
- * the request's storage backend.
+ * A pass-through stand-in for `CachedResolver`'s own internal memoization
+ * (its `{ memoize }` cache extension point), installed on every resolver
+ * {@link didResolverWithWebvh} builds. `createDefaultDidResolver()` returns a
+ * `CachedResolver` with its own ~5s TTL cache of resolved documents; sharing
+ * one resolver instance across verifications (rather than building a fresh,
+ * cold one each time) would otherwise let that cache serve a document
+ * `invalidateResolvedWebvhDid` already dropped, since it has no way to hear
+ * about that invalidation. Document caching happens in exactly one place
+ * instead: `lib/webvhController.ts`'s own invalidation-aware cache for
+ * `did:webvh`, and no cache at all for `did:key` (deriving one is pure
+ * computation, no I/O) or `did:web` (an external fetch this server does not
+ * otherwise memoize). What the shared resolver instance actually saves is the
+ * driver-registration setup, not resolution caching.
+ * @param options {object}
+ * @param options.fn {() => Promise<unknown>}
+ * @returns {Promise<unknown>}
+ */
+async function bypassMemoize<T>({ fn }: { fn: () => Promise<T> }): Promise<T> {
+  return await fn()
+}
+
+/**
+ * One did:key + did:web + did:webvh resolver per storage backend, scoped via
+ * a WeakMap exactly like the Space Description and did:webvh document caches:
+ * two backends in one process (parallel test suites) never share a resolver,
+ * and a resolver is discarded with its backend. Built once rather than per
+ * verification, since `createDefaultDidResolver()` is otherwise the same
+ * fixed driver set on every call; see {@link bypassMemoize} for why its own
+ * result cache is disabled rather than reused.
+ *
+ * Keying by storage rather than by `{ storage, serverUrl }` assumes one
+ * `serverUrl` per backend, which holds for every deployment shape this server
+ * runs in (a process serves one `SERVER_URL`); it does not hold if a future
+ * caller reused one backend across multiple base URLs.
+ */
+const didResolverCaches = new WeakMap<
+  StorageBackend,
+  ReturnType<typeof createDefaultDidResolver>
+>()
+
+/**
+ * Returns the (lazily built, cached) DID resolver extended with the local
+ * `did:webvh` driver for a request's storage backend. See
+ * {@link didResolverCaches}.
  *
  * @param webvh {WebvhResolverContext}
  * @returns {ReturnType<typeof createDefaultDidResolver>}
  */
 function didResolverWithWebvh(webvh: WebvhResolverContext) {
-  const didResolver = createDefaultDidResolver()
-  // The local driver is the did-io `{ method, get }` shape, minus the key
-  // *generation* half of the interface (this server only ever resolves).
-  didResolver.use(
-    webvhDidResolverDriver(webvh) as unknown as Parameters<
-      typeof didResolver.use
-    >[0]
-  )
+  let didResolver = didResolverCaches.get(webvh.storage)
+  if (!didResolver) {
+    didResolver = createDefaultDidResolver()
+    didResolver._cache = { memoize: bypassMemoize as LruCache['memoize'] }
+    // The local driver is the did-io `{ method, get }` shape, minus the key
+    // *generation* half of the interface (this server only ever resolves).
+    didResolver.use(
+      webvhDidResolverDriver(webvh) as unknown as Parameters<
+        typeof didResolver.use
+      >[0]
+    )
+    didResolverCaches.set(webvh.storage, didResolver)
+  }
   return didResolver
 }
 
