@@ -180,10 +180,38 @@ export const SPACE_FILE_PREFIX = '.space.'
 export const COLLECTION_FILE_PREFIX = '.collection.'
 
 /**
- * Prefix of a policy dot-file (`.policy.<id>.json`), keyed by the id of the
- * entity the policy governs (Space, Collection, or Resource).
+ * Suffix shared by the three access-control policy dot-files. Each is named
+ * for the entity it governs, with a letter or word prefix per level so no two
+ * levels can share a file name inside one directory: a Space's own policy is
+ * {@link SPACE_POLICY_FILE_NAME} in the Space dir, a Collection's own policy
+ * is {@link COLLECTION_POLICY_FILE_NAME} in the Collection dir, and a
+ * Resource's policy is `.r.<resourceId>.policy.json` in the Collection dir
+ * (see {@link resourcePolicyFileName}). The Space and Collection names are
+ * fixed (an id is not needed to find the one entity a directory belongs to),
+ * and the fixed names are what makes the Resource form collision-free: a
+ * Resource id is never empty, so `.r.<resourceId>.policy.json` can equal
+ * neither of them.
  */
-export const POLICY_FILE_PREFIX = '.policy.'
+export const POLICY_FILE_SUFFIX = '.policy.json'
+
+/**
+ * File name of a Space's own access-control policy, in the Space dir.
+ */
+export const SPACE_POLICY_FILE_NAME = '.space.policy.json'
+
+/**
+ * File name of a Collection's own access-control policy, in the Collection
+ * dir. Starts with the Collection description's `.collection.` prefix, so any
+ * classifier that matches that prefix must test for this exact name first.
+ */
+export const COLLECTION_POLICY_FILE_NAME = '.collection.policy.json'
+
+/**
+ * Prefix of a Resource's access-control policy dot-file
+ * (`.r.<resourceId>.policy.json`). The leading `.` keeps it out of the
+ * `r.`-prefixed representation listing; the `r` marks the level.
+ */
+export const RESOURCE_POLICY_FILE_PREFIX = '.r.'
 
 /**
  * Prefix of a Resource metadata sidecar (`.meta.<resourceId>.json`) -- and,
@@ -222,23 +250,64 @@ export function collectionDescriptionFileName(collectionId: string): string {
 }
 
 /**
- * Builds the file name of an access-control policy document:
- * `.policy.<entityId>.json`. Kept alongside the description of the entity it
- * governs: a Space policy is keyed by the space id (in the Space dir), a
- * Collection policy by the collection id and a Resource policy by the resource
- * id (both in the Collection dir), so they never collide.
- * @param entityId {string}
+ * Builds the file name of a Resource's access-control policy document:
+ * `.r.<resourceId>.policy.json`, kept in the Collection dir alongside the
+ * Resource's representation and metadata sidecar. The id is not dot-escaped:
+ * the prefix and suffix are both fixed, so {@link parseResourcePolicyFileName}
+ * recovers a dotted id by slicing rather than splitting.
+ * @param resourceId {string}
  * @returns {string}
  */
-export function policyFileName(entityId: string): string {
-  return `${POLICY_FILE_PREFIX}${entityId}${JSON_FILE_SUFFIX}`
+export function resourcePolicyFileName(resourceId: string): string {
+  return `${RESOURCE_POLICY_FILE_PREFIX}${resourceId}${POLICY_FILE_SUFFIX}`
+}
+
+/**
+ * Parses a Resource policy file name (`.r.<resourceId>.policy.json`) back into
+ * its `resourceId`, reversing {@link resourcePolicyFileName}. Returns
+ * `undefined` when the name is not a Resource policy file (no matching prefix
+ * or suffix, or an empty id).
+ * @param fileName {string}   the basename of the file
+ * @returns {string | undefined}
+ */
+export function parseResourcePolicyFileName(
+  fileName: string
+): string | undefined {
+  if (
+    !fileName.startsWith(RESOURCE_POLICY_FILE_PREFIX) ||
+    !fileName.endsWith(POLICY_FILE_SUFFIX)
+  ) {
+    return undefined
+  }
+  const resourceId = fileName.slice(
+    RESOURCE_POLICY_FILE_PREFIX.length,
+    -POLICY_FILE_SUFFIX.length
+  )
+  return resourceId.length > 0 ? resourceId : undefined
+}
+
+/**
+ * True when `fileName` is one of the three access-control policy dot-files.
+ * Tested by exact name or by the Resource form's fixed prefix and suffix, not
+ * by the `.policy.json` suffix alone: a metadata sidecar of a Resource whose
+ * id ends in `.policy` (`.meta.<id>.policy.json`) carries that suffix too.
+ * @param fileName {string}
+ * @returns {boolean}
+ */
+export function isPolicyFileName(fileName: string): boolean {
+  return (
+    fileName === SPACE_POLICY_FILE_NAME ||
+    fileName === COLLECTION_POLICY_FILE_NAME ||
+    parseResourcePolicyFileName(fileName) !== undefined
+  )
 }
 
 /**
  * Builds the file name of a Resource's metadata sidecar:
  * `.meta.<resourceId>.json`. A dot-file kept alongside the resource
- * representation in the Collection dir (the same convention as `.policy.` /
- * `.collection.`), holding the timestamps and user-writable `custom` object.
+ * representation in the Collection dir (the same convention as the policy and
+ * `.collection.` dot-files), holding the timestamps and user-writable `custom`
+ * object.
  * Inside a chunk directory the same builder names a chunk's version sidecar,
  * keyed by the stringified chunk index.
  * @param resourceId {string}

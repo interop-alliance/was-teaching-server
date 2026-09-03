@@ -57,8 +57,8 @@ importers:
         specifier: ^4.0.3
         version: 4.0.3
       '@interop/security-document-loader':
-        specifier: ^10.0.4
-        version: 10.0.4
+        specifier: ^10.1.0
+        version: 10.1.0
       '@interop/storage-core':
         specifier: ^0.9.1
         version: 0.9.1
@@ -671,8 +671,8 @@ packages:
     resolution: {integrity: sha512-MJ0VLEq+vdzkBe8uWl6slS+2pmHXal0LnVA4pbFrOKGXrEkIC/94x5j6jz6/UBQoL1lAMFny0Zwjx8MT7kWo0w==}
     engines: {node: '>=24.0'}
 
-  '@interop/security-document-loader@10.0.4':
-    resolution: {integrity: sha512-hk2pTGOiSuG0BEB6mzT+HF7RvgcBDnNEc3tJJVndjfqxHVHt57Cx8p2aguQ7GpCy+6s0EW2yxqLgwvxGvwI0SQ==}
+  '@interop/security-document-loader@10.1.0':
+    resolution: {integrity: sha512-uOjmPRNTXqAFcWd41S2Q0LjJUb2if9KElydxkiRyeYyUWxTNkkv2tAn83l28uMNtIIEmxwViyTaoED5pjZ43Yw==}
     engines: {node: '>=24.0'}
 
   '@interop/storage-core@0.9.1':
@@ -3467,7 +3467,7 @@ snapshots:
       '@stablelib/chacha': 2.0.1
       '@stablelib/chacha20poly1305': 2.0.1
 
-  '@interop/security-document-loader@10.0.4':
+  '@interop/security-document-loader@10.1.0':
     dependencies:
       '@digitalbazaar/data-integrity-context': 2.0.1
       '@digitalbazaar/multikey-context': 2.0.1

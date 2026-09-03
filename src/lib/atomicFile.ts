@@ -9,7 +9,7 @@
  *
  * Pure and backend-agnostic (no backend imports). Temp files use a `.tmp-`
  * dot-prefix that no directory enumeration in the tree parses or filters on
- * (those match `r.`, `.meta.`, `.space.`, `.collection.`, `.policy.`,
+ * (those match `r.`, `.r.`, `.meta.`, `.space.`, `.collection.`,
  * `.backend.`, or a `.json` suffix), so a temp file transiently present during
  * a write is never mistaken for a Resource, sidecar, or config record.
  */

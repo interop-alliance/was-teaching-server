@@ -53,7 +53,9 @@ import {
   chunkDirName,
   spaceDescriptionFileName,
   collectionDescriptionFileName,
-  policyFileName,
+  COLLECTION_POLICY_FILE_NAME,
+  resourcePolicyFileName,
+  SPACE_POLICY_FILE_NAME,
   metaSidecarFileName,
   collectionMetaFileName
 } from '../lib/resourceFileName.js'
@@ -3444,7 +3446,7 @@ export class PostgresBackend implements StorageBackend {
     ]
     if (spacePolicy) {
       spaceFiles.push({
-        name: policyFileName(spaceId),
+        name: SPACE_POLICY_FILE_NAME,
         bytes: Buffer.from(JSON.stringify(spacePolicy))
       })
     }
@@ -3499,11 +3501,13 @@ export class PostgresBackend implements StorageBackend {
       if (row.collection_id === '') {
         continue
       }
-      // Collection policy keys by the collection id, resource policy by the
-      // resource id -- same dot-file convention, distinct keying ids.
-      const keyId = row.resource_id === '' ? row.collection_id : row.resource_id
+      // The Collection's own policy has a fixed name; a Resource policy is
+      // keyed by the resource id under its own prefix.
       filesFor(row.collection_id).push({
-        name: policyFileName(keyId),
+        name:
+          row.resource_id === ''
+            ? COLLECTION_POLICY_FILE_NAME
+            : resourcePolicyFileName(row.resource_id),
         bytes: Buffer.from(JSON.stringify(row.policy))
       })
     }

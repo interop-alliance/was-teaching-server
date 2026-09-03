@@ -594,14 +594,6 @@ export class SpaceRequest {
         spaceId,
         tarStream: request.body
       })
-      // An import may add or replace the contents of any Collection in the
-      // Space, so drop any controller document resolved from a history log
-      // there.
-      invalidateResolvedWebvhDid({ storage, spaceId })
-      // An import can also add, replace, or fill in a policy at any level
-      // (Space, Collection, or Resource); drop every policy cached under this
-      // Space rather than tracking which levels it touched.
-      invalidateSpacePolicies({ storage, spaceId })
       return reply.status(200).send(summary)
     } catch (err) {
       // Archive-validation failures already surface as typed ProblemErrors
@@ -614,6 +606,16 @@ export class SpaceRequest {
         throw err
       }
       throw new InvalidImportError({ cause: err as Error })
+    } finally {
+      // An import may add or replace the contents of any Collection in the
+      // Space, so drop any controller document resolved from a history log
+      // there. Done in `finally` because an import is not atomic: a failure
+      // partway through has already written earlier entries.
+      invalidateResolvedWebvhDid({ storage, spaceId })
+      // An import can also add, replace, or fill in a policy at any level
+      // (Space, Collection, or Resource); drop every policy cached under this
+      // Space rather than tracking which levels it touched.
+      invalidateSpacePolicies({ storage, spaceId })
     }
   }
 

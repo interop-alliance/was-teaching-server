@@ -111,7 +111,7 @@ describe('buildImportPlan', () => {
       ['space/', { type: 'directory' }],
       ['space/S1/', { type: 'directory' }],
       ['space/S1/.space.S1.json', fileEntry(JSON.stringify({ id: 'S1' }))],
-      ['space/S1/.policy.S1.json', fileEntry(JSON.stringify(spacePolicy))],
+      ['space/S1/.space.policy.json', fileEntry(JSON.stringify(spacePolicy))],
       ['space/S1/colA/', { type: 'directory' }],
       [
         'space/S1/colA/.collection.colA.json',
@@ -120,11 +120,11 @@ describe('buildImportPlan', () => {
         )
       ],
       [
-        'space/S1/colA/.policy.colA.json',
+        'space/S1/colA/.collection.policy.json',
         fileEntry(JSON.stringify(collectionPolicy))
       ],
       [
-        'space/S1/colA/.policy.res1.json',
+        'space/S1/colA/.r.res1.policy.json',
         fileEntry(JSON.stringify(resourcePolicy))
       ],
       [

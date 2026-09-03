@@ -15,10 +15,10 @@ import {
   COLLECTION_META_URL
 } from '../config.default.js'
 import {
+  isPolicyFileName,
   isRepresentationFileName,
   COLLECTION_FILE_PREFIX,
   COLLECTION_META_FILE_PREFIX,
-  POLICY_FILE_PREFIX,
   META_FILE_PREFIX
 } from './resourceFileName.js'
 
@@ -51,6 +51,12 @@ export interface ExportSpaceEntry {
  * @returns {unknown}
  */
 function collectionManifestEntry(fileName: string): unknown {
+  // The Collection's own policy (`.collection.policy.json`) shares the
+  // Collection description's `.collection.` prefix, so the exact-name policy
+  // test has to come first.
+  if (isPolicyFileName(fileName)) {
+    return { [fileName]: { url: POLICY_URL } }
+  }
   // Checked before the Collection description prefix it visually resembles;
   // the two are disjoint (`.collection.` vs `.collectionmeta.`), so the order
   // is documentation, not disambiguation.
@@ -59,9 +65,6 @@ function collectionManifestEntry(fileName: string): unknown {
   }
   if (fileName.startsWith(COLLECTION_FILE_PREFIX)) {
     return { [fileName]: { url: COLLECTION_URL } }
-  }
-  if (fileName.startsWith(POLICY_FILE_PREFIX)) {
-    return { [fileName]: { url: POLICY_URL } }
   }
   if (fileName.startsWith(META_FILE_PREFIX)) {
     return { [fileName]: { url: META_URL } }

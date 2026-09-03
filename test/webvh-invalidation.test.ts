@@ -45,7 +45,10 @@ import {
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { WEBVH_DOCUMENT_CACHE_TTL } from '../src/config.default.js'
+import {
+  WEBVH_DOCUMENT_CACHE_TTL,
+  WEBVH_DOCUMENT_REVERIFY_AGE
+} from '../src/config.default.js'
 import {
   invalidateResolvedWebvhDid,
   resolveWebvhController
@@ -330,9 +333,22 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
   })
 
   // Fake timers are scoped to this describe block only, restored after every
-  // test, so they never leak into the invalidation-scoping suite above.
+  // test, so they never leak into the invalidation-scoping suite above. The
+  // cache measures freshness on the monotonic clock (`performance.now()`), so
+  // `performance` is faked alongside the defaults.
   beforeEach(() => {
-    vi.useFakeTimers()
+    vi.useFakeTimers({
+      toFake: [
+        'setTimeout',
+        'clearTimeout',
+        'setImmediate',
+        'clearImmediate',
+        'setInterval',
+        'clearInterval',
+        'Date',
+        'performance'
+      ]
+    })
   })
   afterEach(() => {
     vi.useRealTimers()
@@ -431,6 +447,55 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
     )
 
     await restoreValidLog()
+  })
+
+  it('past the re-verify age, an unchanged log is fully re-verified anyway', async () => {
+    await warm()
+    // Version matches keep the entry alive across TTL boundaries...
+    vi.advanceTimersByTime(WEBVH_DOCUMENT_CACHE_TTL + 1)
+    await resolveWebvhController({ storage, serverUrl, did: published.did })
+    // ...but not past the hard age: the log is re-read even though its
+    // version has not moved.
+    vi.advanceTimersByTime(WEBVH_DOCUMENT_REVERIFY_AGE)
+    const getResourceSpy = vi.spyOn(storage, 'getResource')
+
+    const doc = await resolveWebvhController({
+      storage,
+      serverUrl,
+      did: published.did
+    })
+
+    assert.equal(doc.id, published.did)
+    assert.ok(getResourceSpy.mock.calls.length >= 1)
+    getResourceSpy.mockRestore()
+  })
+
+  it('an invalidation racing a stale-entry resolve leaves that resolve intact', async () => {
+    await warm()
+    vi.advanceTimersByTime(WEBVH_DOCUMENT_CACHE_TTL + 1)
+
+    // Start the revalidation, then drop the slot from under it before it
+    // settles (a did.jsonl PUT landing mid-flight does exactly this).
+    const pending = resolveWebvhController({
+      storage,
+      serverUrl,
+      did: published.did
+    })
+    invalidateResolvedWebvhDid({
+      storage,
+      spaceId,
+      collectionId: published.collectionId
+    })
+
+    const doc = await pending
+    assert.equal(doc.id, published.did)
+    // And the next resolve, with the slot gone, is a plain cold fill.
+    const again = await resolveWebvhController({
+      storage,
+      serverUrl,
+      did: published.did
+    })
+    assert.equal(again.id, published.did)
   })
 
   it('invalidateResolvedWebvhDid still forces a full re-read', async () => {
