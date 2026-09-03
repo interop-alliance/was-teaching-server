@@ -489,13 +489,19 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
 
     const doc = await pending
     assert.equal(doc.id, published.did)
-    // And the next resolve, with the slot gone, is a plain cold fill.
+    // And the next resolve, with the slot gone, is a plain cold fill: the
+    // log is read and verified again (a revalidation would only read the
+    // Resource's metadata), so a document the racing fetch read from before
+    // the invalidating write never outlives the invalidation.
+    const getResourceSpy = vi.spyOn(storage, 'getResource')
     const again = await resolveWebvhController({
       storage,
       serverUrl,
       did: published.did
     })
     assert.equal(again.id, published.did)
+    assert.ok(getResourceSpy.mock.calls.length >= 1)
+    getResourceSpy.mockRestore()
   })
 
   it('invalidateResolvedWebvhDid still forces a full re-read', async () => {

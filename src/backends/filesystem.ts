@@ -501,11 +501,16 @@ export class FileSystemBackend implements StorageBackend {
    * `QUOTA_USAGE_CACHE_TTL` ms (see `#usageCache`): between re-measurements
    * each accepted write's `incomingBytes` is added to the cached total, so a
    * burst of writes costs one tree walk, not one per write.
+   *
+   * A write that fails after passing this check calls the returned `release`
+   * to give its reservation back; otherwise the phantom bytes would keep
+   * refusing valid writes until the snapshot expires.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.capacityBytes {number}   the configured per-Space limit
    * @param [options.incomingBytes] {number}   known size of the pending write
-   * @returns {Promise<number>}   remaining headroom in bytes
+   * @returns {Promise<{ headroom: number, release: () => void }>}   remaining
+   *   headroom in bytes, and the callback that undoes this write's reservation
    */
   async #assertSpaceHeadroom({
     spaceId,
@@ -515,7 +520,7 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     capacityBytes: number
     incomingBytes?: number
-  }): Promise<number> {
+  }): Promise<{ headroom: number; release: () => void }> {
     let cached = this.#usageCache.get(spaceId)
     if (!cached || cached.expiresAt <= Date.now()) {
       const { total } = await this.#diskUsage(this.#spaceDir(spaceId))
@@ -532,7 +537,17 @@ export class FileSystemBackend implements StorageBackend {
     // Count the accepted write against the cached total so writes within the
     // TTL accumulate rather than each re-admitting against the same snapshot.
     cached.usageBytes += incomingBytes
-    return headroom
+    const reserved = cached
+    return {
+      headroom,
+      release: () => {
+        // Only while this snapshot is still the live one: a later
+        // re-measurement already reflects the failed write's absence.
+        if (this.#usageCache.get(spaceId) === reserved) {
+          reserved.usageBytes -= incomingBytes
+        }
+      }
+    }
   }
 
   /**
@@ -543,10 +558,14 @@ export class FileSystemBackend implements StorageBackend {
    * re-measurements each accepted create adds one to the cached count, so a
    * burst of creates costs one enumeration, not one per create. Soft under
    * concurrency, like the byte quota.
+   *
+   * A create that fails to commit calls the returned `release` to give its
+   * reservation back; otherwise the phantom Resource would keep refusing
+   * valid creates until the snapshot expires.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.maxResourcesPerSpace {number}   the configured per-Space cap
-   * @returns {Promise<void>}
+   * @returns {Promise<() => void>}   undoes this create's reservation
    */
   async #assertResourceHeadroom({
     spaceId,
@@ -554,7 +573,7 @@ export class FileSystemBackend implements StorageBackend {
   }: {
     spaceId: string
     maxResourcesPerSpace: number
-  }): Promise<void> {
+  }): Promise<() => void> {
     let cached = this.#liveCountCache.get(spaceId)
     if (!cached || cached.expiresAt <= Date.now()) {
       cached = {
@@ -573,6 +592,14 @@ export class FileSystemBackend implements StorageBackend {
     // the TTL accumulate rather than each re-admitting against the same
     // snapshot.
     cached.count++
+    const reserved = cached
+    return () => {
+      // Only while this snapshot is still the live one: a later re-measurement
+      // already reflects the failed create's absence.
+      if (this.#liveCountCache.get(spaceId) === reserved) {
+        reserved.count--
+      }
+    }
   }
 
   /**
@@ -2307,14 +2334,26 @@ export class FileSystemBackend implements StorageBackend {
     // Space past `maxResourcesPerSpace`. A write over an existing live
     // representation is an update (never trips it); a write over a tombstone
     // (no `r.` file) is a create and does count. Soft under concurrency.
+    let releaseCountReservation: (() => void) | undefined
     if (this.maxResourcesPerSpace !== undefined && !isLive) {
-      await this.#assertResourceHeadroom({
+      releaseCountReservation = await this.#assertResourceHeadroom({
         spaceId,
         maxResourcesPerSpace: this.maxResourcesPerSpace
       })
     }
 
-    await this.#writeRepresentationBytes({ spaceId, filePath, input })
+    try {
+      await this.#writeRepresentationBytes({ spaceId, filePath, input })
+    } catch (err) {
+      // Nothing landed under the Resource's name, so the create did not
+      // happen: give its count reservation back rather than letting a phantom
+      // Resource refuse valid creates until the cached count expires. The
+      // steps below (prune, sidecar) run after the representation is durably
+      // in place, so a failure there leaves a live Resource the count should
+      // keep.
+      releaseCountReservation?.()
+      throw err
+    }
 
     // A Resource has a single current representation: remove any prior one
     // stored under a different content-type (write-new-then-prune).
@@ -2399,12 +2438,15 @@ export class FileSystemBackend implements StorageBackend {
       const serialized = JSON.stringify(input.data)
       const incomingBytes = Buffer.byteLength(serialized)
       this.#assertUploadSize({ maxUploadBytes, uploadBytes: incomingBytes })
+      let releaseByteReservation: (() => void) | undefined
       if (capacityBytes !== undefined) {
-        await this.#assertSpaceHeadroom({
-          spaceId,
-          capacityBytes,
-          incomingBytes
-        })
+        ;({ release: releaseByteReservation } = await this.#assertSpaceHeadroom(
+          {
+            spaceId,
+            capacityBytes,
+            incomingBytes
+          }
+        ))
       }
       // Write the serialized JSON directly rather than through fs-json-store,
       // whose `write` verifies the result via `readExisting` and treats a falsy
@@ -2415,10 +2457,16 @@ export class FileSystemBackend implements StorageBackend {
       // Ensure the Collection dir exists first (fs-json-store used to create it
       // on the fly; a data-plane backend may not have seen this Collection yet).
       this.logger.info('Creating JSON resource')
-      await mkdir(path.dirname(filePath), { recursive: true })
-      // Durable, atomic replacement (write-temp + fsync + rename + dir fsync):
-      // the final path never observes a torn write, even across a crash.
-      await atomicWriteFile({ filePath, data: serialized })
+      try {
+        await mkdir(path.dirname(filePath), { recursive: true })
+        // Durable, atomic replacement (write-temp + fsync + rename + dir fsync):
+        // the final path never observes a torn write, even across a crash.
+        await atomicWriteFile({ filePath, data: serialized })
+      } catch (err) {
+        // The bytes never landed: give the quota reservation back.
+        releaseByteReservation?.()
+        throw err
+      }
     } else {
       this.logger.info('Writing blob')
       // Pre-flight the declared size (when present) against the per-upload cap,
@@ -2442,15 +2490,17 @@ export class FileSystemBackend implements StorageBackend {
           })
         )
       }
+      let releaseByteReservation: (() => void) | undefined
       if (capacityBytes !== undefined) {
-        const headroomBytes = await this.#assertSpaceHeadroom({
+        const { headroom, release } = await this.#assertSpaceHeadroom({
           spaceId,
           capacityBytes,
           incomingBytes: input.declaredBytes ?? 0
         })
+        releaseByteReservation = release
         guards.push(
           this.#byteLimitGuard({
-            limitBytes: headroomBytes,
+            limitBytes: headroom,
             error: new QuotaExceededError({ spaceId, capacityBytes })
           })
         )
@@ -2475,6 +2525,8 @@ export class FileSystemBackend implements StorageBackend {
         // a truncated or unverified representation behind. Only the temp path is
         // ever staged into, so a failed write never touches the final path.
         await rm(tempPath, { force: true })
+        // The bytes never landed: give the quota reservation back.
+        releaseByteReservation?.()
         throw err
       }
     }

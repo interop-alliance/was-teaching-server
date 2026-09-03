@@ -52,7 +52,20 @@
   host still gets its own Agent.
 - The proxy asks upstreams for an identity encoding and no longer relays
   hop-by-hop headers, `content-encoding` (the body is relayed decoded),
-  `content-length`, `set-cookie`, `date`, or `age`.
+  `content-length`, `set-cookie`, `date`, `age`, or any `access-control-*`
+  header (the proxy's own CORS answer is the one it sends; an upstream
+  `Access-Control-Allow-Origin` would have overwritten it). A cache hit is
+  replayed with an `Age` header counted from the upstream's `Age` at storage
+  time, and an entry's lifetime is the upstream lifetime less that age, so a
+  downstream cache does not restart `max-age` at replay time.
+- The filesystem backend's byte and Resource-count quota checks reserve the
+  pending write against their cached snapshot; a write that then fails (an
+  aborted upload, a mid-stream cap) now gives that reservation back instead of
+  letting a phantom write refuse valid ones until the snapshot expires.
+- An invalidation of a cached `did:webvh` controller document now also reaches a
+  slot whose fill or revalidation is still in flight: the waiting resolve still
+  gets the document it verified, and the result is not written back, so a
+  document read from before the invalidating write cannot outlive it.
 - `resolveEffectivePolicy` now reads the Space, Collection, and Resource policy
   documents through a per-backend short-TTL cache, in the same shape as the
   Space Description cache. Policy PUT and DELETE invalidate their own level;
