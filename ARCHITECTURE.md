@@ -233,8 +233,10 @@ Both inspectors bind the capability decision only. A refusal falls through to
 the target's access-control policy like any other failed verification, so a
 world-readable read still serves. The clause is fail-open across servers: a
 server running unmodified verification accepts exactly what this clause refuses,
-so a wallet publishes a ladder VM only on a host it has confirmed enforces the
-client-annex profile.
+so a wallet publishes a ladder VM only on a host it assumes enforces the
+client-annex profile. That assumption is unverified: WAS defines no venue at
+the authorization-profile layer for a server to advertise the clause, and this
+server advertises nothing.
 
 **Signing:** requests are signed with Cavage HTTP Signatures Draft 12 (not yet
 RFC 9421). The `Authorization` header signs
