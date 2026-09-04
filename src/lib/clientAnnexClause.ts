@@ -65,7 +65,9 @@
  * any other failed verification (a world-readable read still serves). The
  * clause is fail-open across servers -- one running unmodified verification
  * accepts what this refuses -- so a wallet publishes a ladder VM only on a host
- * advertising the client-annex profile.
+ * it assumes enforces the client-annex profile. WAS defines no venue at the
+ * authorization-profile layer for a server to advertise the clause, so the
+ * wallet's assumption is unverified today; a migration path would need one.
  */
 import type { InspectCapabilityChain } from '@interop/zcap'
 import type { DIDDoc } from '@interop/did-method-webvh'

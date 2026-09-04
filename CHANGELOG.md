@@ -2,6 +2,12 @@
 
 ## 0.25.2 - TBD
 
+### Changed
+
+- The client-annex clause's module header and ARCHITECTURE.md say a wallet
+  publishes a ladder VM on a host it assumes enforces the profile, and that
+  the server advertises nothing a client could check. Docs only.
+
 ### Fixed
 
 - The CORS proxy no longer relays an upstream `Link` header. A browser acts on
