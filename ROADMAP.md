@@ -1,5 +1,7 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
+nextAvailableId: 77
+
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
 repo, as of commit `fa1293a`) against the `was-teaching-server` source
@@ -25,8 +27,11 @@ chunk addressing, zcap revocation, and the full error-type registry.
 ## Item format
 
 Each work item is a `### WAS-N: Title` heading followed by a field block and
-free prose context. Ids are permanent and never reused; new items take the next
-unused number regardless of section. Statuses: `todo`, `in-progress`, `draft`
+free prose context. Ids are permanent and never reused. The `nextAvailableId` line at the top of
+this file is the next id to take: filing an item takes that number and
+rewrites the line to one higher, in the same edit. Never derive the next id
+by scanning, since the highest id usually sits in `archived-roadmap.md`
+rather than here. Statuses: `todo`, `in-progress`, `draft`
 (no actionable done-state yet -- spec-blocked or a parking record); `done` items
 move to [archived-roadmap.md](archived-roadmap.md) once shipped (CHANGELOG.md
 remains the record of what landed). Full conventions live in
