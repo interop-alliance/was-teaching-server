@@ -2243,19 +2243,22 @@ export class FileSystemBackend implements StorageBackend {
       return this.#writeMutex.run(
         this.#collectionLockKey({ spaceId, collectionId }),
         async () => {
-          // One Collection scan serves both claims: the equality candidate set
+          // One Collection scan serves both claims. The equality candidate set
           // is the richer of the two (it also carries blobs and each sidecar's
-          // `custom`), so the blinded candidates -- the live, parsable JSON
-          // documents -- are derived from it rather than re-read.
-          const equalityCandidates = await this.#readEqualityCandidates({
+          // `custom`), so when the equality claim needs it the blinded
+          // candidates -- the live, parsable JSON documents -- are derived from
+          // it rather than re-read. A blinded-only claim reads JSON documents
+          // only and never touches a sidecar.
+          const candidates = await this.#readEqualityCandidates({
             spaceId,
             collectionId,
-            excludeResourceId: resourceId
+            excludeResourceId: resourceId,
+            jsonOnly: !equalityUnique
           })
           if (blindedUnique) {
             assertNoUniqueBlindedConflict({
               document: input.kind === 'json' ? input.data : undefined,
-              candidates: this.#jsonCandidatesFrom(equalityCandidates)
+              candidates: this.#jsonCandidatesFrom(candidates)
             })
           }
           if (equalityUnique) {
@@ -2269,7 +2272,7 @@ export class FileSystemBackend implements StorageBackend {
               indexes: uniqueIndexes!,
               content: input.kind === 'json' ? input.data : undefined,
               custom: priorSidecar?.custom,
-              candidates: equalityCandidates
+              candidates
             })
           }
           return write()
@@ -3858,7 +3861,11 @@ export class FileSystemBackend implements StorageBackend {
     cursor?: string
   }): Promise<{ count: number } | BlindedIndexQueryPage> {
     const candidates = this.#jsonCandidatesFrom(
-      await this.#readEqualityCandidates({ spaceId, collectionId })
+      await this.#readEqualityCandidates({
+        spaceId,
+        collectionId,
+        jsonOnly: true
+      })
     )
     return runBlindedIndexQuery({ candidates, query, count, limit, cursor })
   }
@@ -3974,21 +3981,30 @@ export class FileSystemBackend implements StorageBackend {
    * `.meta.` sidecar's `custom` when present. Tombstones are excluded naturally
    * (no live `r.` content file); an optional excluded Resource is skipped. An
    * absent Collection dir resolves empty.
+   *
+   * With `jsonOnly` the scan is the slimmer blinded-index one: blob Resources
+   * are skipped before any read and no sidecar is read, so each candidate is
+   * `{ resourceId, content? }` and a corrupt sidecar on any Resource cannot
+   * fail the scan.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param [options.excludeResourceId] {string}   omit this Resource (a conflict
    *   scan excludes the Resource being written)
+   * @param [options.jsonOnly] {boolean}   JSON representations only, no
+   *   sidecar reads
    * @returns {Promise<EqualityCandidate[]>}
    */
   async #readEqualityCandidates({
     spaceId,
     collectionId,
-    excludeResourceId
+    excludeResourceId,
+    jsonOnly = false
   }: {
     spaceId: string
     collectionId: string
     excludeResourceId?: string
+    jsonOnly?: boolean
   }): Promise<EqualityCandidate[]> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
 
@@ -3996,7 +4012,11 @@ export class FileSystemBackend implements StorageBackend {
 
     return await Promise.all(
       this.#representationEntries(entries)
-        .filter(({ resourceId }) => resourceId !== excludeResourceId)
+        .filter(
+          ({ resourceId, contentType }) =>
+            resourceId !== excludeResourceId &&
+            (!jsonOnly || isJson({ contentType }))
+        )
         .map(async ({ resourceId, fileName, contentType }) => {
           // Parse the content only for a JSON representation; a blob contributes
           // no content-sourced attributes (its `custom` still makes it
@@ -4014,10 +4034,9 @@ export class FileSystemBackend implements StorageBackend {
               content = undefined
             }
           }
-          const sidecar = await this.readMetaSidecar({
-            collectionDir,
-            resourceId
-          })
+          const sidecar = jsonOnly
+            ? undefined
+            : await this.readMetaSidecar({ collectionDir, resourceId })
           return {
             resourceId,
             ...(content !== undefined && { content }),

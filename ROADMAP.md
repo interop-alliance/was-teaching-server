@@ -1053,28 +1053,6 @@ Findings from a review of the 2026-09-05 working tree (request-body helpers, KMS
 record cipher migration, parallel chunk reads, filesystem candidate reader
 consolidation). Each item is small and self-contained.
 
-### WAS-81: Blinded-index candidate reads should skip meta sidecars
-
-- status: todo
-- priority: medium
-- labels: filesystem-backend, performance, correctness
-- acceptance:
-  - [ ] The blinded-index query path and the blinded-unique write path read JSON
-        documents only (no `.meta.<id>.json` read per live Resource)
-  - [ ] A corrupt meta sidecar on an unrelated Resource does not fail a
-        blinded-index query or a blinded-unique write
-  - [ ] `writeResource` calls the candidate reader only when a unique index
-        (plaintext or blinded) actually requires it
-  - [ ] A test in `test/` writes an unparsable sidecar and asserts a
-        blinded-index query still succeeds
-
-Context: deleting `#readJsonCandidates` and deriving blinded-index candidates
-from `#readEqualityCandidates` added one `readMetaSidecar` read per live
-Resource (blobs included) on every blinded-index query and blinded-unique write,
-and `readMetaSidecar` has no error handling, so one bad sidecar rejects the
-whole `Promise.all`. A `jsonOnly` flag on `#readEqualityCandidates`, or a slim
-JSON-only reader, restores the prior cost and failure surface.
-
 ### WAS-82: Skip the sidecar read on Resource and chunk misses
 
 - status: todo
