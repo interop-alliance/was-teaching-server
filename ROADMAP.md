@@ -1070,22 +1070,6 @@ Context: moving the Get Policy auth check from the handler into a route-level
 status changed from 400 to 401. Consistent with PUT and DELETE, which already
 behaved this way, but wire-observable and uncovered by any test.
 
-### WAS-84: Key Operation handler still hand-rolls its body-shape check
-
-- status: todo
-- priority: low
-- labels: kms, simplification
-- acceptance:
-  - [ ] The Key Operation handler in `KeyRequest.ts` uses `assertJsonObjectBody`
-        like the other handlers in that file
-  - [ ] A JSON array body is refused with the same 400 the helper produces
-        elsewhere
-
-Context: the remaining
-`typeof request.body !== 'object' || request.body === null` check has no
-`Array.isArray` exclusion, so the file now carries two definitions of "JSON
-object body".
-
 ## Test coverage gaps (conformance suite + server `test/`)
 
 Produced by a 2026-07-22 coverage analysis: an inventory of the spec's 324

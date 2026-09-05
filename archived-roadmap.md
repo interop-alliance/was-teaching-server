@@ -814,3 +814,20 @@ Context: both methods now issue `readMetaSidecar` concurrently with `#findFile`,
 so every GET or HEAD for a nonexistent id pays a wasted sidecar open/read whose
 result the following throw discards. Overlaps with WAS-77, which changes the
 same lookup path.
+
+### WAS-84: Key Operation handler still hand-rolls its body-shape check
+
+- status: done
+- done: 2026-09-05
+- priority: low
+- labels: kms, simplification
+- acceptance:
+  - [x] The Key Operation handler in `KeyRequest.ts` uses `assertJsonObjectBody`
+        like the other handlers in that file
+  - [x] A JSON array body is refused with the same 400 the helper produces
+        elsewhere
+
+Context: the remaining
+`typeof request.body !== 'object' || request.body === null` check has no
+`Array.isArray` exclusion, so the file now carries two definitions of "JSON
+object body".

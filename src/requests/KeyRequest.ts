@@ -406,19 +406,19 @@ export class KeyRequest {
     const { keystoreId, keyId } = request.params
     const { serverUrl } = request.server
 
-    if (
-      typeof request.body !== 'object' ||
-      request.body === null ||
-      typeof (request.body as Record<string, unknown>).type !== 'string'
-    ) {
+    const body = assertJsonObjectBody({
+      body: request.body,
+      requestName,
+      detail: 'Operation body must be a JSON object.'
+    })
+    const operationType = body.type
+    if (typeof operationType !== 'string') {
       throw new InvalidRequestBodyError({
         requestName,
-        detail: 'Operation body must be a JSON object with a string "type".',
+        detail: 'Operation body must carry a string "type".',
         pointer: '#/type'
       })
     }
-    const operationType = (request.body as Record<string, unknown>)
-      .type as string
     const operationFields = OPERATION_FIELDS[operationType]
     if (operationFields === undefined) {
       // Unknown-but-well-formed operation types (GenerateKeyOperation included:
@@ -426,7 +426,7 @@ export class KeyRequest {
       throw new UnsupportedKeyOperationError({ operationType })
     }
     const envelope = assertOperationEnvelope({
-      body: request.body,
+      body,
       allowedKeys: ['invocationTarget', ...operationFields],
       requestName
     })

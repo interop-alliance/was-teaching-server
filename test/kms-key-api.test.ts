@@ -876,6 +876,26 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
       }
     })
 
+    it('a JSON array body is a clean 400 invalid-request-body', async () => {
+      const key = (await keystoreAgent.generateKey({
+        type: 'asymmetric'
+      })) as AsymmetricKey
+      const err = await requestError(
+        client({ signer: alice.signer }).request({
+          url: key.kmsId!,
+          method: 'POST',
+          action: 'sign',
+          capability: rootZcap(keystoreId),
+          json: [{ type: 'SignOperation', invocationTarget: key.kmsId }]
+        })
+      )
+      assert.equal(err.status, 400)
+      assert.equal(
+        err.data.type,
+        'https://wallet.storage/spec#invalid-request-body'
+      )
+    })
+
     it('an unsupported operation/key-type combo is a clean 400', async () => {
       // SignOperation on a key-wrapping key: well-formed, wrong key type.
       const kek = (await keystoreAgent.generateKey({ type: 'kek' })) as Kek

@@ -4,6 +4,9 @@
 
 ### Changed
 
+- The WebKMS Key Operation handler checks its body shape through the shared
+  JSON-object-body helper, so a JSON array body is refused with the same 400
+  `invalid-request-body` as the other keystore handlers.
 - The filesystem backend reads a Resource's or chunk's meta sidecar only after
   locating the representation, so a GET or HEAD for a nonexistent id no longer
   pays a wasted sidecar read.
