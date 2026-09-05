@@ -146,3 +146,69 @@ export async function getResourceMetadataOrThrow({
   }
   return metadata
 }
+
+/**
+ * The chunk handlers' parent-Resource existence gate, run alongside an
+ * independent companion read of the same backend (a chunk's bytes, its
+ * metadata, or the chunk listing). The two reads are issued together and
+ * settled, then the serial precedence applies: a rejected parent read wins
+ * first, then the parent-absent 404 (`ResourceNotFoundError`), then a rejected
+ * companion read; otherwise the companion's value is returned. Settling
+ * (rather than `Promise.all`) keeps a companion rejection from masking the 404
+ * and leaves no unhandled rejection when the gate short-circuits.
+ *
+ * A companion value that resolved while the gate fails is discarded, and the
+ * gate hands it to `discard` first so the caller can release whatever it
+ * holds: a chunk byte stream has already opened its file descriptor by the
+ * time the filesystem backend resolves it, and left alone it would leak one
+ * per probe of an orphan chunk.
+ *
+ * @param options {object}
+ * @param options.dataBackend {StorageBackend}   the Collection's data-plane
+ *   backend
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.resourceId {string}   the parent Resource
+ * @param options.companion {Promise<T>}   the independent read, already
+ *   started
+ * @param [options.discard] {(value: T) => void}   releases a companion value
+ *   the gate discards
+ * @param options.requestName {string}   human-readable request name, used in
+ *   error titles
+ * @returns {Promise<T>}
+ */
+export async function readGatedOnParentResource<T>({
+  dataBackend,
+  spaceId,
+  collectionId,
+  resourceId,
+  companion,
+  discard,
+  requestName
+}: {
+  dataBackend: StorageBackend
+  spaceId: string
+  collectionId: string
+  resourceId: string
+  companion: Promise<T>
+  discard?: (value: T) => void
+  requestName: string
+}): Promise<T> {
+  const [parentResult, companionResult] = await Promise.allSettled([
+    dataBackend.getResourceMetadata({ spaceId, collectionId, resourceId }),
+    companion
+  ])
+  if (parentResult.status === 'rejected' || !parentResult.value) {
+    if (companionResult.status === 'fulfilled') {
+      discard?.(companionResult.value)
+    }
+    if (parentResult.status === 'rejected') {
+      throw parentResult.reason
+    }
+    throw new ResourceNotFoundError({ requestName })
+  }
+  if (companionResult.status === 'rejected') {
+    throw companionResult.reason
+  }
+  return companionResult.value
+}

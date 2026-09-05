@@ -32,6 +32,11 @@
   concurrently, as List Chunks already did; the filesystem backend reads a
   representation and its metadata sidecar concurrently, and the Postgres
   backend's usage report issues its two queries at once.
+- Get Chunk destroys the chunk stream it opened when the parent-Resource check
+  fails (parent absent, tombstoned, or its read rejected). On the filesystem
+  backend that stream already held a file descriptor, so every probe of an
+  orphan chunk leaked one until `EMFILE`. The parent gate the three chunk read
+  handlers share is now one helper.
 - The CORS proxy no longer relays an upstream `Link` header. A browser acts on
   `Link: rel=preload` on the proxy's reply and resolves relative URLs against
   the proxy's origin, so an upstream 404 page was making wallets request

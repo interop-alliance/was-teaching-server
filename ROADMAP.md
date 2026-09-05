@@ -1053,41 +1053,6 @@ Findings from a review of the 2026-09-05 working tree (request-body helpers, KMS
 record cipher migration, parallel chunk reads, filesystem candidate reader
 consolidation). Each item is small and self-contained.
 
-### WAS-79: Get Chunk leaks the chunk stream when the parent gate fails
-
-- status: todo
-- priority: high
-- labels: chunks, correctness, filesystem-backend
-- acceptance:
-  - [ ] When the parent-Resource read rejects or the parent is absent, the
-        already-opened chunk stream is destroyed before the error is thrown
-  - [ ] A test in `test/` repeatedly GETs an orphan chunk (parent deleted, chunk
-        file left) and asserts no file descriptor remains open (via a spy on the
-        stream's `destroy`, or an fd count on Linux)
-
-Context: `ChunkRequest.get` issues the parent-metadata read and `getChunk`
-together under `Promise.allSettled`. On the filesystem backend `getChunk`
-resolves only after the read stream's `open` event, so an fd is held by the time
-the parent gate throws `ResourceNotFoundError`, and `autoClose` fires only on
-end, error, or destroy. Each probe of an orphan chunk leaks one fd until
-`EMFILE`. Related to the shared helper in WAS-80, which is the natural place for
-the cleanup.
-
-### WAS-80: One helper for the parent-gated parallel chunk reads
-
-- status: todo
-- priority: low
-- labels: chunks, simplification
-- acceptance:
-  - [ ] The three `Promise.allSettled` parent-gate blocks in `ChunkRequest.ts`
-        (get, head, list) call one helper beside `getResourceMetadataOrThrow` in
-        `collectionContext.ts` that takes the independent promise and applies
-        the precedence rule (rejected parent read, then parent-absent 404, then
-        rejected companion read)
-  - [ ] The helper owns the cleanup for a resolved-but-discarded companion value
-        (WAS-79)
-  - [ ] Existing chunk tests keep passing
-
 ### WAS-81: Blinded-index candidate reads should skip meta sidecars
 
 - status: todo

@@ -13,6 +13,7 @@ import assert from 'node:assert'
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import type { Readable } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
 
 import type { Space, Collection } from '@interop/was-client'
@@ -349,6 +350,54 @@ describe('Chunk API (chunked-streams)', () => {
           404,
           `expected 404 for orphan chunk ${method}`
         )
+      }
+    })
+
+    it('[signed] probing an orphan chunk destroys the opened chunk stream', async () => {
+      // Get Chunk reads the parent's metadata and opens the chunk stream
+      // together; on the filesystem backend the stream holds a file
+      // descriptor by the time the parent gate 404s. Every stream the gate
+      // discards must be destroyed, or each probe leaks one descriptor.
+      const chunkDir = path.join(
+        dataDir,
+        'spaces',
+        spaceId,
+        'data',
+        '.chunks.orphan-leak'
+      )
+      await mkdir(chunkDir, { recursive: true })
+      await writeFile(
+        path.join(chunkDir, 'r.0.application%2Foctet-stream.bin'),
+        new Uint8Array([1, 2, 3])
+      )
+
+      // Capture every stream the backend hands the handler.
+      const { storage } = fastify
+      const originalGetChunk = storage.getChunk.bind(storage)
+      const streams: Readable[] = []
+      storage.getChunk = async options => {
+        const result = await originalGetChunk(options)
+        streams.push(result.resourceStream)
+        return result
+      }
+      try {
+        for (let probe = 0; probe < 5; probe++) {
+          assert.equal(
+            await statusOf(
+              alice.was.request({
+                url: chunkUrl('orphan-leak', 0),
+                method: 'GET'
+              })
+            ),
+            404
+          )
+        }
+      } finally {
+        storage.getChunk = originalGetChunk
+      }
+      assert.equal(streams.length, 5, 'expected one opened stream per probe')
+      for (const stream of streams) {
+        assert.ok(stream.destroyed, 'expected the discarded stream destroyed')
       }
     })
 
