@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 77
+nextAvailableId: 85
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -1011,6 +1011,153 @@ did:key driver) and shipped the two cheap wins directly: preflight
 filesystem create path. The remaining items from that review (webvh controller
 revalidation, policy memoization) have since shipped and are recorded in
 archived-roadmap.md.
+
+### WAS-77: Per-Collection filename cache on the filesystem backend
+
+- status: todo
+- priority: low
+- labels: performance, filesystem-backend
+- acceptance:
+  - [ ] `#findFile` / `#resourceFilesFor` resolve a `resourceId` to its
+        representation filename through a per-Collection in-memory map (in the
+        shape of `lib/spaceDescriptionCache.ts` and `lib/policyCache.ts`, one
+        entry per Collection directory, bounded and short-TTL), populated from
+        the directory listing on a miss
+  - [ ] Every write that adds, renames, or removes a representation file
+        (Resource and chunk create/update/delete, metadata writes that rename,
+        Delete Collection, Delete Space, import, prune) drops or updates the
+        affected Collection's entry
+  - [ ] Callers that already hold a listing (the locked `writeResource` path)
+        keep passing `entries` and do not populate the cache from a stale scan
+  - [ ] Tests in `test/`: a Resource written then read on the same server hits
+        without a second listing (observable through a spy or counter on the
+        directory read); a delete is not served from the cache afterward; two
+        Resources whose ids share a prefix resolve to their own files
+  - [ ] The on-disk layout (`r.<id>.<type>.<ext>`) is unchanged
+
+Context: a Resource's content-type lives only in its filename, so every single
+representation lookup with no listing in hand (`#readRepresentation`,
+`#statRepresentation`, the metadata write path) issues a full `readdir` of the
+Collection directory: an O(n) scan, n being the files in the Collection, for a
+point lookup, on each GET, HEAD, and PUT of a Resource or chunk. The locked
+`writeResource` path already avoids the repeated cost by reusing one listing
+across its steps; the read paths cannot, since each is a single call. The cache
+is the same shape as the Space Description and policy caches, with one more
+invalidation surface (any file write under the Collection). Surfaced by the
+2026-09-05 codebase simplification review; the Postgres backend has no
+equivalent cost (a primary-key lookup).
+
+## Code review follow-ups (2026-09-05)
+
+Findings from a review of the 2026-09-05 working tree (request-body helpers, KMS
+record cipher migration, parallel chunk reads, filesystem candidate reader
+consolidation). Each item is small and self-contained.
+
+### WAS-79: Get Chunk leaks the chunk stream when the parent gate fails
+
+- status: todo
+- priority: high
+- labels: chunks, correctness, filesystem-backend
+- acceptance:
+  - [ ] When the parent-Resource read rejects or the parent is absent, the
+        already-opened chunk stream is destroyed before the error is thrown
+  - [ ] A test in `test/` repeatedly GETs an orphan chunk (parent deleted, chunk
+        file left) and asserts no file descriptor remains open (via a spy on the
+        stream's `destroy`, or an fd count on Linux)
+
+Context: `ChunkRequest.get` issues the parent-metadata read and `getChunk`
+together under `Promise.allSettled`. On the filesystem backend `getChunk`
+resolves only after the read stream's `open` event, so an fd is held by the time
+the parent gate throws `ResourceNotFoundError`, and `autoClose` fires only on
+end, error, or destroy. Each probe of an orphan chunk leaks one fd until
+`EMFILE`. Related to the shared helper in WAS-80, which is the natural place for
+the cleanup.
+
+### WAS-80: One helper for the parent-gated parallel chunk reads
+
+- status: todo
+- priority: low
+- labels: chunks, simplification
+- acceptance:
+  - [ ] The three `Promise.allSettled` parent-gate blocks in `ChunkRequest.ts`
+        (get, head, list) call one helper beside `getResourceMetadataOrThrow` in
+        `collectionContext.ts` that takes the independent promise and applies
+        the precedence rule (rejected parent read, then parent-absent 404, then
+        rejected companion read)
+  - [ ] The helper owns the cleanup for a resolved-but-discarded companion value
+        (WAS-79)
+  - [ ] Existing chunk tests keep passing
+
+### WAS-81: Blinded-index candidate reads should skip meta sidecars
+
+- status: todo
+- priority: medium
+- labels: filesystem-backend, performance, correctness
+- acceptance:
+  - [ ] The blinded-index query path and the blinded-unique write path read JSON
+        documents only (no `.meta.<id>.json` read per live Resource)
+  - [ ] A corrupt meta sidecar on an unrelated Resource does not fail a
+        blinded-index query or a blinded-unique write
+  - [ ] `writeResource` calls the candidate reader only when a unique index
+        (plaintext or blinded) actually requires it
+  - [ ] A test in `test/` writes an unparsable sidecar and asserts a
+        blinded-index query still succeeds
+
+Context: deleting `#readJsonCandidates` and deriving blinded-index candidates
+from `#readEqualityCandidates` added one `readMetaSidecar` read per live
+Resource (blobs included) on every blinded-index query and blinded-unique write,
+and `readMetaSidecar` has no error handling, so one bad sidecar rejects the
+whole `Promise.all`. A `jsonOnly` flag on `#readEqualityCandidates`, or a slim
+JSON-only reader, restores the prior cost and failure surface.
+
+### WAS-82: Skip the sidecar read on Resource and chunk misses
+
+- status: todo
+- priority: low
+- labels: filesystem-backend, performance
+- acceptance:
+  - [ ] `#readRepresentation` and `#statRepresentation` start the meta sidecar
+        read only once `#findFile` has located the representation (or check the
+        sidecar against the directory entries already in hand)
+  - [ ] Existing Resource and chunk 404 / HEAD tests keep passing
+
+Context: both methods now issue `readMetaSidecar` concurrently with `#findFile`,
+so every GET or HEAD for a nonexistent id pays a wasted sidecar open/read whose
+result the following throw discards. Overlaps with WAS-77, which changes the
+same lookup path.
+
+### WAS-83: Anonymous Get Policy with a malformed id now returns 401
+
+- status: todo
+- priority: low
+- labels: policy, wire-contract
+- acceptance:
+  - [ ] Decide whether an anonymous policy GET with a malformed id answers 400
+        `invalid-id` (id check before auth) or 401 (current behavior after the
+        hook move); document the choice in CHANGELOG.md
+  - [ ] A test in `test/` pins the chosen status for the Space, Collection, and
+        Resource policy routes (GET and HEAD)
+
+Context: moving the Get Policy auth check from the handler into a route-level
+`onRequest` hook runs `requireAuthHeaders` before `assertValidIds`, so the
+status changed from 400 to 401. Consistent with PUT and DELETE, which already
+behaved this way, but wire-observable and uncovered by any test.
+
+### WAS-84: Key Operation handler still hand-rolls its body-shape check
+
+- status: todo
+- priority: low
+- labels: kms, simplification
+- acceptance:
+  - [ ] The Key Operation handler in `KeyRequest.ts` uses `assertJsonObjectBody`
+        like the other handlers in that file
+  - [ ] A JSON array body is refused with the same 400 the helper produces
+        elsewhere
+
+Context: the remaining
+`typeof request.body !== 'object' || request.body === null` check has no
+`Array.isArray` exclusion, so the file now carries two definitions of "JSON
+object body".
 
 ## Test coverage gaps (conformance suite + server `test/`)
 

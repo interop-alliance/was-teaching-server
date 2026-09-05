@@ -758,6 +758,20 @@ export function normalizeCountLimit(
 }
 
 /**
+ * Normalizes a backend's `capacityBytes` constructor option: a non-finite value
+ * (`Infinity` from an explicit `unlimited`) behaves exactly like unset inside
+ * the backend, no configured limit. Shared so the two backends cannot drift on
+ * the mapping.
+ * @param value {number|undefined}   the constructor option
+ * @returns {number|undefined}   the internal limit, or `undefined` for no cap
+ */
+export function normalizeCapacityBytes(
+  value: number | undefined
+): number | undefined {
+  return value !== undefined && Number.isFinite(value) ? value : undefined
+}
+
+/**
  * Parses the `WAS_ENABLED_BACKENDS` env value into the server-wide registration
  * allowlist: the backend `provider` names a client may register (spec
  * "Backends"). A comma-separated list (e.g. `gdrive,s3`); surrounding whitespace

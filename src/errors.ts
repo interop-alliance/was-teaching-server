@@ -61,34 +61,75 @@ export class ProblemError extends Error {
 }
 
 /**
- * 404 — the requested Space does not exist, or the caller is not authorized.
+ * 404 -- shared base for the `*NotFoundError` family: an entity does not exist,
+ * or the caller is not authorized (the WAS existence-masking convention). The
+ * exported subclasses differ only in the entity noun, which fills the default
+ * title and the detail.
  * @param options {object}
+ * @param options.entity {string}   the entity noun (e.g. `Space`)
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class SpaceNotFoundError extends ProblemError {
-  constructor({ requestName }: { requestName?: string } = {}) {
+class NotFoundError extends ProblemError {
+  constructor({
+    entity,
+    requestName
+  }: {
+    entity: string
+    requestName?: string
+  }) {
     super({
       type: ProblemTypes.NOT_FOUND,
-      title: `Invalid ${requestName || 'Space'} request`,
-      detail: 'Space not found or invalid authorization.',
+      title: `Invalid ${requestName || entity} request`,
+      detail: `${entity} not found or invalid authorization.`,
       statusCode: 404
     })
   }
 }
 
 /**
- * 400 — the provided space id is not URL-safe / otherwise invalid.
+ * 400 -- shared base for the `Invalid*IdError` family: a provided id is not
+ * URL-safe / otherwise invalid. The exported subclasses differ only in the
+ * entity noun, which fills the default title and (lower-cased) the detail.
+ * @param options {object}
+ * @param options.entity {string}   the entity noun (e.g. `Space`)
+ * @param [options.requestName] {string}   request name used in the error title
+ */
+class InvalidIdError extends ProblemError {
+  constructor({
+    entity,
+    requestName
+  }: {
+    entity: string
+    requestName?: string
+  }) {
+    super({
+      type: ProblemTypes.INVALID_ID,
+      title: `Invalid ${requestName || entity} request`,
+      detail: `Invalid ${entity.toLowerCase()} id (make sure it is URL-safe).`,
+      statusCode: 400
+    })
+  }
+}
+
+/**
+ * 404 -- the requested Space does not exist, or the caller is not authorized.
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class InvalidSpaceIdError extends ProblemError {
+export class SpaceNotFoundError extends NotFoundError {
   constructor({ requestName }: { requestName?: string } = {}) {
-    super({
-      type: ProblemTypes.INVALID_ID,
-      title: `Invalid ${requestName || 'Space'} request`,
-      detail: 'Invalid space id (make sure it is URL-safe).',
-      statusCode: 400
-    })
+    super({ entity: 'Space', requestName })
+  }
+}
+
+/**
+ * 400 -- the provided space id is not URL-safe / otherwise invalid.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ */
+export class InvalidSpaceIdError extends InvalidIdError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({ entity: 'Space', requestName })
   }
 }
 
@@ -97,14 +138,9 @@ export class InvalidSpaceIdError extends ProblemError {
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class InvalidCollectionIdError extends ProblemError {
+export class InvalidCollectionIdError extends InvalidIdError {
   constructor({ requestName }: { requestName?: string } = {}) {
-    super({
-      type: ProblemTypes.INVALID_ID,
-      title: `Invalid ${requestName || 'Collection'} request`,
-      detail: 'Invalid collection id (make sure it is URL-safe).',
-      statusCode: 400
-    })
+    super({ entity: 'Collection', requestName })
   }
 }
 
@@ -113,14 +149,9 @@ export class InvalidCollectionIdError extends ProblemError {
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class InvalidResourceIdError extends ProblemError {
+export class InvalidResourceIdError extends InvalidIdError {
   constructor({ requestName }: { requestName?: string } = {}) {
-    super({
-      type: ProblemTypes.INVALID_ID,
-      title: `Invalid ${requestName || 'Resource'} request`,
-      detail: 'Invalid resource id (make sure it is URL-safe).',
-      statusCode: 400
-    })
+    super({ entity: 'Resource', requestName })
   }
 }
 
@@ -435,14 +466,9 @@ export class InvalidCollectionError extends ProblemError {
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class CollectionNotFoundError extends ProblemError {
+export class CollectionNotFoundError extends NotFoundError {
   constructor({ requestName }: { requestName?: string } = {}) {
-    super({
-      type: ProblemTypes.NOT_FOUND,
-      title: `Invalid ${requestName || 'Collection'} request`,
-      detail: 'Collection not found or invalid authorization.',
-      statusCode: 404
-    })
+    super({ entity: 'Collection', requestName })
   }
 }
 
@@ -451,14 +477,9 @@ export class CollectionNotFoundError extends ProblemError {
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class ResourceNotFoundError extends ProblemError {
+export class ResourceNotFoundError extends NotFoundError {
   constructor({ requestName }: { requestName?: string } = {}) {
-    super({
-      type: ProblemTypes.NOT_FOUND,
-      title: `Invalid ${requestName || 'Resource'} request`,
-      detail: 'Resource not found or invalid authorization.',
-      statusCode: 404
-    })
+    super({ entity: 'Resource', requestName })
   }
 }
 
@@ -468,14 +489,9 @@ export class ResourceNotFoundError extends ProblemError {
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class PolicyNotFoundError extends ProblemError {
+export class PolicyNotFoundError extends NotFoundError {
   constructor({ requestName }: { requestName?: string } = {}) {
-    super({
-      type: ProblemTypes.NOT_FOUND,
-      title: `Invalid ${requestName || 'Policy'} request`,
-      detail: 'Policy not found or invalid authorization.',
-      statusCode: 404
-    })
+    super({ entity: 'Policy', requestName })
   }
 }
 
@@ -1032,14 +1048,9 @@ export class InvalidImportError extends ProblemError {
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class KeystoreNotFoundError extends ProblemError {
+export class KeystoreNotFoundError extends NotFoundError {
   constructor({ requestName }: { requestName?: string } = {}) {
-    super({
-      type: ProblemTypes.NOT_FOUND,
-      title: `Invalid ${requestName || 'Keystore'} request`,
-      detail: 'Keystore not found or invalid authorization.',
-      statusCode: 404
-    })
+    super({ entity: 'Keystore', requestName })
   }
 }
 
@@ -1097,14 +1108,9 @@ export class KeystoreStateConflictError extends ProblemError {
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
-export class KeyNotFoundError extends ProblemError {
+export class KeyNotFoundError extends NotFoundError {
   constructor({ requestName }: { requestName?: string } = {}) {
-    super({
-      type: ProblemTypes.NOT_FOUND,
-      title: `Invalid ${requestName || 'Key'} request`,
-      detail: 'Key not found or invalid authorization.',
-      statusCode: 404
-    })
+    super({ entity: 'Key', requestName })
   }
 }
 

@@ -55,12 +55,6 @@ export async function parseAuthHeaders(
 ): Promise<void> {
   const { headers } = request
 
-  // A provisioning-authorized request (e.g. a valid onboarding token) carries a
-  // Bearer token, not an HTTP Signature -- there is no zcap to parse.
-  if (request.provisioningAuthorized) {
-    return
-  }
-
   // No Authorization header presented (e.g. an anonymous read that a fallback
   // policy may authorize). Leave `request.zcap` unset; the handler decides.
   if (!headers.authorization) {
@@ -116,9 +110,8 @@ export function invokerDid(request: FastifyRequest): IDID | undefined {
 /**
  * True when the request presents both auth-related headers a capability
  * invocation needs (`Authorization` and `Capability-Invocation`). The presence
- * test the hooks below gate on, and the one a handler re-applies when its route
- * was let through unauthenticated as a safe method (see `PolicyRequest.get`).
- * Presence only -- neither header is parsed or verified here.
+ * test the hooks below gate on. Presence only -- neither header is parsed or
+ * verified here.
  *
  * @param request {import('fastify').FastifyRequest}
  * @returns {boolean}
@@ -135,7 +128,9 @@ export function hasAuthHeaders(request: FastifyRequest): boolean {
  * privileged: the WebKMS `/kms` group uses it (every webkms route is
  * zcap-invoked; the protocol has no public reads). No WAS group qualifies --
  * even the SpacesRepository group lets anonymous List Spaces reads through,
- * answered with the spec's empty-items 200.
+ * answered with the spec's empty-items 200. Individual WAS routes whose reads
+ * are privileged (the policy GETs) install it as a route-level `onRequest`
+ * hook on top of their group's relaxed one.
  * @param request {import('fastify').FastifyRequest}
  * @param reply {import('fastify').FastifyReply}
  * @returns {Promise<void>}
@@ -144,11 +139,6 @@ export async function requireAuthHeaders(
   request: FastifyRequest,
   _reply: FastifyReply
 ): Promise<void> {
-  // A provisioning-authorized request (onboarding token) carries no capability
-  // invocation and a Bearer -- not Signature -- Authorization header.
-  if (request.provisioningAuthorized) {
-    return
-  }
   if (!hasAuthHeaders(request)) {
     throw new MissingAuthError()
   }
@@ -169,11 +159,6 @@ export async function requireAuthHeadersOrPublicRead(
   request: FastifyRequest,
   _reply: FastifyReply
 ): Promise<void> {
-  // A provisioning-authorized request (onboarding token) carries no capability
-  // invocation and a Bearer -- not Signature -- Authorization header.
-  if (request.provisioningAuthorized) {
-    return
-  }
   if (hasAuthHeaders(request)) {
     return
   }

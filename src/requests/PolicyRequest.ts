@@ -3,24 +3,20 @@
  * `policy` auxiliary resource at the Space, Collection, or Resource level (the
  * level is selected by which path params are present). Reading or modifying a
  * policy is privileged: every operation verifies a capability invocation against
- * the Space controller (the read-method relaxation in auth-header-hooks.ts does
- * not apply here -- a policy is controller-managed metadata, not public data).
+ * the Space controller. The read-method relaxation in auth-header-hooks.ts does
+ * not apply here (a policy is controller-managed metadata, not public data);
+ * routes.ts installs the strict `requireAuthHeaders` on the GET routes.
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndVerify } from './spaceContext.js'
-import { hasAuthHeaders } from '../auth-header-hooks.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { policyPath } from '../lib/paths.js'
 import { invalidatePolicy } from '../lib/policyCache.js'
-import {
-  InvalidPolicyError,
-  MissingAuthError,
-  PolicyNotFoundError
-} from '../errors.js'
+import { InvalidPolicyError, PolicyNotFoundError } from '../errors.js'
 import type { PolicyDocument } from '../types.js'
 
 /** Path params shared by the three policy route shapes. */
-interface PolicyParams {
+export interface PolicyParams {
   spaceId: string
   collectionId?: string
   resourceId?: string
@@ -44,12 +40,6 @@ export class PolicyRequest {
     const requestName = 'Get Policy'
 
     assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
-    // The hook lets this safe method through unauthenticated; a policy is not
-    // public data, so demand the auth headers here (401). PUT/DELETE are
-    // already gated by the hook.
-    if (!hasAuthHeaders(request)) {
-      throw new MissingAuthError()
-    }
 
     // Verify (capability-only): a policy is controller-managed metadata, so
     // reading it requires a valid capability invocation -- no policy fallback.

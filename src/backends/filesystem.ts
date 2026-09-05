@@ -31,7 +31,8 @@ import {
   DEFAULT_MAX_COLLECTIONS_PER_SPACE,
   DEFAULT_MAX_RESOURCES_PER_SPACE,
   QUOTA_USAGE_CACHE_TTL,
-  normalizeCountLimit
+  normalizeCountLimit,
+  normalizeCapacityBytes
 } from '../config.default.js'
 import {
   extractTarEntries,
@@ -261,7 +262,7 @@ export class FileSystemBackend implements StorageBackend {
    * invalidate the Space's entry. Quota reports (`reportUsage`) always
    * re-measure. Single-instance only, like `#writeMutex`.
    */
-  #usageCache = new Map<string, { usageBytes: number; expiresAt: number }>()
+  #usageCache = new Map<string, { used: number; expiresAt: number }>()
 
   /**
    * Per-Space live Resource counts for the create-path count quota, so
@@ -272,7 +273,7 @@ export class FileSystemBackend implements StorageBackend {
    * writes Resources directly) invalidate the Space's entry. Single-instance
    * only.
    */
-  #liveCountCache = new Map<string, { count: number; expiresAt: number }>()
+  #liveCountCache = new Map<string, { used: number; expiresAt: number }>()
 
   constructor({
     dataDir,
@@ -298,12 +299,7 @@ export class FileSystemBackend implements StorageBackend {
     // `spaceRevocationsDir` property doc).
     this.spaceRevocationsDir = path.join(dataDir, 'space-revocations')
     this.logger = logger ?? silentLogger
-    // A non-finite `capacityBytes` (`Infinity` from an explicit `unlimited`)
-    // behaves exactly like unset inside the backend: no configured limit.
-    this.capacityBytes =
-      capacityBytes !== undefined && Number.isFinite(capacityBytes)
-        ? capacityBytes
-        : undefined
+    this.capacityBytes = normalizeCapacityBytes(capacityBytes)
     // Normalize the per-upload cap so every downstream guard keeps its plain
     // `!== undefined` test: an unset option applies the default-on cap; a
     // non-finite option (`Infinity`) means explicitly no cap (the streaming
@@ -521,33 +517,15 @@ export class FileSystemBackend implements StorageBackend {
     capacityBytes: number
     incomingBytes?: number
   }): Promise<{ headroom: number; release: () => void }> {
-    let cached = this.#usageCache.get(spaceId)
-    if (!cached || cached.expiresAt <= Date.now()) {
-      const { total } = await this.#diskUsage(this.#spaceDir(spaceId))
-      cached = {
-        usageBytes: total,
-        expiresAt: Date.now() + QUOTA_USAGE_CACHE_TTL
-      }
-      this.#usageCache.set(spaceId, cached)
-    }
-    const headroom = capacityBytes - cached.usageBytes
-    if (headroom <= 0 || incomingBytes > headroom) {
-      throw new QuotaExceededError({ spaceId, capacityBytes })
-    }
-    // Count the accepted write against the cached total so writes within the
-    // TTL accumulate rather than each re-admitting against the same snapshot.
-    cached.usageBytes += incomingBytes
-    const reserved = cached
-    return {
-      headroom,
-      release: () => {
-        // Only while this snapshot is still the live one: a later
-        // re-measurement already reflects the failed write's absence.
-        if (this.#usageCache.get(spaceId) === reserved) {
-          reserved.usageBytes -= incomingBytes
-        }
-      }
-    }
+    return this.#reserveHeadroom({
+      cache: this.#usageCache,
+      spaceId,
+      measure: async () =>
+        (await this.#diskUsage(this.#spaceDir(spaceId))).total,
+      limit: capacityBytes,
+      incoming: incomingBytes,
+      makeError: () => new QuotaExceededError({ spaceId, capacityBytes })
+    })
   }
 
   /**
@@ -574,30 +552,75 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     maxResourcesPerSpace: number
   }): Promise<() => void> {
-    let cached = this.#liveCountCache.get(spaceId)
+    const { release } = await this.#reserveHeadroom({
+      cache: this.#liveCountCache,
+      spaceId,
+      measure: () => this.#countLiveResources({ spaceId }),
+      limit: maxResourcesPerSpace,
+      incoming: 1,
+      makeError: () =>
+        new CountQuotaExceededError({
+          scope: 'Resources per Space',
+          limit: maxResourcesPerSpace
+        })
+    })
+    return release
+  }
+
+  /**
+   * The shared TTL-cached reservation behind `#assertSpaceHeadroom` (bytes) and
+   * `#assertResourceHeadroom` (Resource count). Re-measures the Space through
+   * `measure` when its cache entry is absent or expired, refuses when the
+   * measured usage already meets `limit` or the `incoming` amount would exceed
+   * it, and otherwise adds `incoming` to the cached total so reservations within
+   * the TTL accumulate rather than each re-admitting against the same snapshot.
+   * @param options {object}
+   * @param options.cache {Map}   the per-Space snapshot cache to read and update
+   * @param options.spaceId {string}
+   * @param options.measure {() => Promise<number>}   fresh usage measurement
+   * @param options.limit {number}   the configured per-Space cap
+   * @param options.incoming {number}   the amount this write reserves
+   * @param options.makeError {() => Error}   the quota error to throw
+   * @returns {Promise<{ headroom: number, release: () => void }>}   remaining
+   *   headroom before this reservation, and the callback that undoes it
+   */
+  async #reserveHeadroom({
+    cache,
+    spaceId,
+    measure,
+    limit,
+    incoming,
+    makeError
+  }: {
+    cache: Map<string, { used: number; expiresAt: number }>
+    spaceId: string
+    measure: () => Promise<number>
+    limit: number
+    incoming: number
+    makeError: () => Error
+  }): Promise<{ headroom: number; release: () => void }> {
+    let cached = cache.get(spaceId)
     if (!cached || cached.expiresAt <= Date.now()) {
       cached = {
-        count: await this.#countLiveResources({ spaceId }),
+        used: await measure(),
         expiresAt: Date.now() + QUOTA_USAGE_CACHE_TTL
       }
-      this.#liveCountCache.set(spaceId, cached)
+      cache.set(spaceId, cached)
     }
-    if (cached.count >= maxResourcesPerSpace) {
-      throw new CountQuotaExceededError({
-        scope: 'Resources per Space',
-        limit: maxResourcesPerSpace
-      })
+    const headroom = limit - cached.used
+    if (headroom <= 0 || incoming > headroom) {
+      throw makeError()
     }
-    // Count the accepted create against the cached total so creates within
-    // the TTL accumulate rather than each re-admitting against the same
-    // snapshot.
-    cached.count++
+    cached.used += incoming
     const reserved = cached
-    return () => {
-      // Only while this snapshot is still the live one: a later re-measurement
-      // already reflects the failed create's absence.
-      if (this.#liveCountCache.get(spaceId) === reserved) {
-        reserved.count--
+    return {
+      headroom,
+      release: () => {
+        // Only while this snapshot is still the live one: a later
+        // re-measurement already reflects the failed write's absence.
+        if (cache.get(spaceId) === reserved) {
+          reserved.used -= incoming
+        }
       }
     }
   }
@@ -1032,13 +1055,8 @@ export class FileSystemBackend implements StorageBackend {
     const spaceDir = this.#spaceDir(spaceId)
     let spaceEntries: fs.Dirent[]
     try {
-      spaceEntries = await fs.promises.readdir(spaceDir, {
-        withFileTypes: true
-      })
+      spaceEntries = await this.#readDirEntries(spaceDir)
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return 0
-      }
       throw new StorageError({ cause: err as Error })
     }
     let count = 0
@@ -2225,34 +2243,19 @@ export class FileSystemBackend implements StorageBackend {
       return this.#writeMutex.run(
         this.#collectionLockKey({ spaceId, collectionId }),
         async () => {
-          // A write carrying BOTH claims scans the Collection once, not twice:
-          // the equality candidate set is the richer of the two (it also carries
-          // blobs and each sidecar's `custom`), so the blinded candidates -- the
-          // live, parsable JSON documents -- are derived from it rather than
-          // re-read. A write carrying one claim reads only that claim's set.
-          const equalityCandidates = equalityUnique
-            ? await this.#readEqualityCandidates({
-                spaceId,
-                collectionId,
-                excludeResourceId: resourceId
-              })
-            : undefined
+          // One Collection scan serves both claims: the equality candidate set
+          // is the richer of the two (it also carries blobs and each sidecar's
+          // `custom`), so the blinded candidates -- the live, parsable JSON
+          // documents -- are derived from it rather than re-read.
+          const equalityCandidates = await this.#readEqualityCandidates({
+            spaceId,
+            collectionId,
+            excludeResourceId: resourceId
+          })
           if (blindedUnique) {
             assertNoUniqueBlindedConflict({
               document: input.kind === 'json' ? input.data : undefined,
-              candidates:
-                equalityCandidates !== undefined
-                  ? equalityCandidates
-                      .filter(candidate => candidate.content !== undefined)
-                      .map(candidate => ({
-                        resourceId: candidate.resourceId,
-                        document: candidate.content
-                      }))
-                  : await this.#readJsonCandidates({
-                      spaceId,
-                      collectionId,
-                      excludeResourceId: resourceId
-                    })
+              candidates: this.#jsonCandidatesFrom(equalityCandidates)
             })
           }
           if (equalityUnique) {
@@ -2266,7 +2269,7 @@ export class FileSystemBackend implements StorageBackend {
               indexes: uniqueIndexes!,
               content: input.kind === 'json' ? input.data : undefined,
               custom: priorSidecar?.custom,
-              candidates: equalityCandidates!
+              candidates: equalityCandidates
             })
           }
           return write()
@@ -2769,7 +2772,12 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     requestName: string
   }): Promise<ResourceResult> {
-    const filePath = await this.#findFile({ collectionDir, resourceId })
+    // The sidecar path derives from `resourceId` alone, so both reads are
+    // independent and run concurrently.
+    const [filePath, sidecar] = await Promise.all([
+      this.#findFile({ collectionDir, resourceId }),
+      this.readMetaSidecar({ collectionDir, resourceId })
+    ])
     if (!filePath) {
       throw new ResourceNotFoundError({ requestName })
     }
@@ -2777,7 +2785,6 @@ export class FileSystemBackend implements StorageBackend {
     const { contentType: storedResourceType } = parseResourceFileName(
       path.basename(filePath)
     )
-    const sidecar = await this.readMetaSidecar({ collectionDir, resourceId })
 
     return {
       resourceStream: await openFileStream(filePath, this.logger),
@@ -2809,7 +2816,12 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<
     { stats: fs.Stats; contentType: string; sidecar?: MetaSidecar } | undefined
   > {
-    const filePath = await this.#findFile({ collectionDir, resourceId })
+    // The sidecar path derives from `resourceId` alone, so both reads are
+    // independent and run concurrently.
+    const [filePath, sidecar] = await Promise.all([
+      this.#findFile({ collectionDir, resourceId }),
+      this.readMetaSidecar({ collectionDir, resourceId })
+    ])
     if (!filePath) {
       return undefined
     }
@@ -2827,7 +2839,6 @@ export class FileSystemBackend implements StorageBackend {
     // Derive the stored content-type from the filename segment (the exact type
     // it was written under), as `getResource` does.
     const { contentType } = parseResourceFileName(path.basename(filePath))
-    const sidecar = await this.readMetaSidecar({ collectionDir, resourceId })
     return { stats, contentType, sidecar }
   }
 
@@ -3846,63 +3857,29 @@ export class FileSystemBackend implements StorageBackend {
     limit?: number
     cursor?: string
   }): Promise<{ count: number } | BlindedIndexQueryPage> {
-    const candidates = await this.#readJsonCandidates({
-      spaceId,
-      collectionId
-    })
+    const candidates = this.#jsonCandidatesFrom(
+      await this.#readEqualityCandidates({ spaceId, collectionId })
+    )
     return runBlindedIndexQuery({ candidates, query, count, limit, cursor })
   }
 
   /**
-   * Reads and parses every live JSON Resource of a Collection -- the candidate
-   * set for both the blinded-index query and the unique-attribute conflict
-   * scan. Tombstones are excluded naturally (no live content file); binary
-   * Resources, unparsable JSON, and (optionally) one excluded Resource are
-   * skipped. An absent Collection dir resolves empty.
-   * @param options {object}
-   * @param options.spaceId {string}
-   * @param options.collectionId {string}
-   * @param [options.excludeResourceId] {string}   omit this Resource (the
-   *   conflict scan excludes the document being written)
-   * @returns {Promise<Array<{ resourceId: string, document: unknown }>>}
+   * Narrows an equality candidate set to the live, parsable JSON documents --
+   * the candidate shape the blinded-index query and the unique-blinded conflict
+   * scan consume. A blob or unparsable JSON Resource carries no `content` and is
+   * dropped.
+   * @param candidates {EqualityCandidate[]}
+   * @returns {Array<{ resourceId: string, document: unknown }>}
    */
-  async #readJsonCandidates({
-    spaceId,
-    collectionId,
-    excludeResourceId
-  }: {
-    spaceId: string
-    collectionId: string
-    excludeResourceId?: string
-  }): Promise<Array<{ resourceId: string; document: unknown }>> {
-    const collectionDir = this.#collectionDir({ spaceId, collectionId })
-
-    const entries = await this.#readDirEntries(collectionDir)
-
-    return (
-      await Promise.all(
-        this.#representationEntries(entries)
-          .filter(
-            ({ resourceId, contentType }) =>
-              resourceId !== excludeResourceId && isJson({ contentType })
-          )
-          .map(async ({ resourceId, fileName }) => {
-            try {
-              return {
-                resourceId,
-                document: JSON.parse(
-                  await fs.promises.readFile(
-                    path.join(collectionDir, fileName),
-                    'utf8'
-                  )
-                ) as unknown
-              }
-            } catch {
-              return undefined
-            }
-          })
-      )
-    ).filter(candidate => candidate !== undefined)
+  #jsonCandidatesFrom(
+    candidates: EqualityCandidate[]
+  ): Array<{ resourceId: string; document: unknown }> {
+    return candidates
+      .filter(candidate => candidate.content !== undefined)
+      .map(candidate => ({
+        resourceId: candidate.resourceId,
+        document: candidate.content
+      }))
   }
 
   /**
@@ -3988,11 +3965,12 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Reads every live Resource of a Collection as an equality candidate -- the
    * candidate set for the equality query and the plaintext unique-attribute
-   * conflict scans. Unlike `#readJsonCandidates` this INCLUDES blob Resources
-   * (a blob is queryable through its `custom`-sourced attributes): each entry
-   * resolves `{ resourceId, content?, custom? }`, where `content` is the parsed
-   * JSON of a JSON-typed representation (the blob content read is skipped, and
-   * unparsable JSON is dropped, as in `#readJsonCandidates`) and `custom` is the
+   * conflict scans. It INCLUDES blob Resources (a blob is queryable through
+   * its `custom`-sourced attributes): each entry resolves
+   * `{ resourceId, content?, custom? }`, where `content` is the parsed JSON of
+   * a JSON-typed representation (the blob content read is skipped, and
+   * unparsable JSON is dropped; `#jsonCandidatesFrom` narrows the set to the
+   * blinded-index candidates) and `custom` is the
    * `.meta.` sidecar's `custom` when present. Tombstones are excluded naturally
    * (no live `r.` content file); an optional excluded Resource is skipped. An
    * absent Collection dir resolves empty.
@@ -4283,15 +4261,7 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
   }): Promise<BackendDescriptor[]> {
     const spaceDir = this.#spaceDir(spaceId)
-    let entries
-    try {
-      entries = await fs.promises.readdir(spaceDir, { withFileTypes: true })
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return []
-      }
-      throw err
-    }
+    const entries = await this.#readDirEntries(spaceDir)
     const backendFile = /^\.backend\.(.+)\.json$/
     const reads = entries
       .filter(entry => entry.isFile() && backendFile.test(entry.name))
@@ -4434,13 +4404,8 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<KeystoreConfig[]> {
     let rootEntries: fs.Dirent[]
     try {
-      rootEntries = await fs.promises.readdir(this.keystoresDir, {
-        withFileTypes: true
-      })
+      rootEntries = await this.#readDirEntries(this.keystoresDir)
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return []
-      }
       throw new StorageError({ cause: err as Error })
     }
     const keystoreEntries = rootEntries
@@ -4561,17 +4526,17 @@ export class FileSystemBackend implements StorageBackend {
     const keysDir = path.join(this.#keystoreDir(keystoreId), 'keys')
     let entries: fs.Dirent[]
     try {
-      entries = await fs.promises.readdir(keysDir, { withFileTypes: true })
+      entries = await this.#readDirEntries(keysDir)
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return []
-      }
       throw new StorageError({ cause: err as Error })
     }
+    // Sort in code-unit order -- the SAME ordering the cursor seek
+    // (`localId > after`) uses, so the keyset stays consistent
+    // (localeCompare could disagree with the `>` operator and break paging).
     const localIds = entries
       .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
       .map(entry => entry.name.slice(0, -'.json'.length))
-      .sort((a, b) => a.localeCompare(b))
+      .sort(compareCodeUnits)
     // Each record is an independent file read, so read them in parallel;
     // `Promise.all` preserves the sorted order.
     const keys = await Promise.all(

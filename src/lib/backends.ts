@@ -387,6 +387,31 @@ export function assertValidBackendId(
 }
 
 /**
+ * Rejects the reserved `default` id for a registered backend: it names the
+ * server backend and cannot be registered (or replaced) by a client. Throws
+ * `InvalidRequestBodyError` (400) with pointer `#/id`.
+ * @param options {object}
+ * @param options.backendId {string}   the backend id being registered
+ * @param [options.requestName] {string}   request name for the 400 error title
+ * @returns {void}
+ */
+export function assertNotDefaultBackendId({
+  backendId,
+  requestName
+}: {
+  backendId: string
+  requestName?: string
+}): void {
+  if (backendId === DEFAULT_BACKEND_ID) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail: `"${DEFAULT_BACKEND_ID}" is the reserved server backend id and cannot be registered.`,
+      pointer: '#/id'
+    })
+  }
+}
+
+/**
  * Assembles the full `StoredBackendRecord` to persist from a validated
  * `BackendRegistration`: the descriptor fields, `managedBy: 'external'`, default
  * `storageMode` / `features`, and the full (secret-bearing) connection stamped

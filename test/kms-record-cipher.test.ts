@@ -75,11 +75,11 @@ function hmacRecord(): KmsKeyRecord {
 
 describe('KMS record cipher (KMS_RECORD_KEK)', () => {
   describe('encryptKeyRecord / decryptKeyRecord round-trip', () => {
-    it('restores an asymmetric key record exactly', () => {
+    it('restores an asymmetric key record exactly', async () => {
       const kek = randomKek()
       const original = ed25519Record()
-      const encrypted = encryptKeyRecord({ record: original, kek })
-      const decrypted = decryptKeyRecord({
+      const encrypted = await encryptKeyRecord({ record: original, kek })
+      const decrypted = await decryptKeyRecord({
         record: encrypted,
         kekLoader: recordKekLoader({
           keks: new Map([[kek.id, kek]]),
@@ -89,21 +89,21 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       assert.deepEqual(decrypted, original)
     })
 
-    it('restores a symmetric (HMAC) key record exactly', () => {
+    it('restores a symmetric (HMAC) key record exactly', async () => {
       const kek = randomKek()
       const original = hmacRecord()
-      const encrypted = encryptKeyRecord({ record: original, kek })
-      const decrypted = decryptKeyRecord({
+      const encrypted = await encryptKeyRecord({ record: original, kek })
+      const decrypted = await decryptKeyRecord({
         record: encrypted,
         kekLoader: () => kek
       })
       assert.deepEqual(decrypted, original)
     })
 
-    it('the on-disk record carries no plaintext secret material', () => {
+    it('the on-disk record carries no plaintext secret material', async () => {
       const kek = randomKek()
       const original = ed25519Record()
-      const encrypted = encryptKeyRecord({ record: original, kek })
+      const encrypted = await encryptKeyRecord({ record: original, kek })
       // Secret fields replaced by the envelope; no cleartext secret anywhere.
       assert.equal(encrypted.key.privateKeyMultibase, undefined)
       assert.equal(encrypted.key.secret, undefined)
@@ -119,10 +119,10 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
   })
 
   describe('plaintext allowlist', () => {
-    it('keeps allowlisted public fields readable without the KEK', () => {
+    it('keeps allowlisted public fields readable without the KEK', async () => {
       const kek = randomKek()
       const original = ed25519Record()
-      const encrypted = encryptKeyRecord({ record: original, kek })
+      const encrypted = await encryptKeyRecord({ record: original, kek })
       // Every allowlisted field present on the original stays verbatim on the
       // encrypted record (no KEK required to read them).
       for (const field of PLAINTEXT_KEY_FIELDS) {
@@ -134,19 +134,19 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       }
     })
 
-    it('sweeps a newly-added non-allowlisted field into the envelope', () => {
+    it('sweeps a newly-added non-allowlisted field into the envelope', async () => {
       const kek = randomKek()
       const original = ed25519Record()
       // A hypothetical future secret-bearing field is deny-by-default.
       ;(original.key as unknown as Record<string, unknown>).futureSecret =
         'zHushHush'
-      const encrypted = encryptKeyRecord({ record: original, kek })
+      const encrypted = await encryptKeyRecord({ record: original, kek })
       assert.equal(
         (encrypted.key as unknown as Record<string, unknown>).futureSecret,
         undefined
       )
       assert.ok(!JSON.stringify(encrypted).includes('zHushHush'))
-      const decrypted = decryptKeyRecord({
+      const decrypted = await decryptKeyRecord({
         record: encrypted,
         kekLoader: () => kek
       })
@@ -158,22 +158,25 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
   })
 
   describe('pass-through and rotation upgrade paths', () => {
-    it('passes a plaintext record through unchanged (no `encrypted`)', () => {
+    it('passes a plaintext record through unchanged (no `encrypted`)', async () => {
       const plaintext = ed25519Record()
       // No KEK registered at all: a plaintext record still reads.
-      const decrypted = decryptKeyRecord({
+      const decrypted = await decryptKeyRecord({
         record: plaintext,
         kekLoader: recordKekLoader(undefined)
       })
       assert.deepEqual(decrypted, plaintext)
     })
 
-    it('decrypts a record after the current KEK is rotated forward', () => {
+    it('decrypts a record after the current KEK is rotated forward', async () => {
       const kek1 = randomKek()
       const kek2 = randomKek()
       assert.notEqual(kek1.id, kek2.id)
       // Written under kek1...
-      const encrypted = encryptKeyRecord({ record: ed25519Record(), kek: kek1 })
+      const encrypted = await encryptKeyRecord({
+        record: ed25519Record(),
+        kek: kek1
+      })
       // ...still decrypts after currentKekId is repointed to kek2, because both
       // KEKs remain in the registry for unwrap.
       const registry = {
@@ -184,7 +187,7 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
         currentKekId: kek2.id
       }
       assert.equal(currentRecordKek(registry)!.id, kek2.id)
-      const decrypted = decryptKeyRecord({
+      const decrypted = await decryptKeyRecord({
         record: encrypted,
         kekLoader: recordKekLoader(registry)
       })
@@ -193,25 +196,24 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
   })
 
   describe('authentication failures', () => {
-    it('throws when the record`s KEK is not registered', () => {
-      const encrypted = encryptKeyRecord({
+    it('throws when the record`s KEK is not registered', async () => {
+      const encrypted = await encryptKeyRecord({
         record: ed25519Record(),
         kek: randomKek()
       })
-      assert.throws(
-        () =>
-          decryptKeyRecord({ record: encrypted, kekLoader: () => undefined }),
+      await assert.rejects(
+        decryptKeyRecord({ record: encrypted, kekLoader: () => undefined }),
         /No KEK registered/
       )
     })
 
-    it('throws when the wrong KEK is supplied (RFC 3394 integrity check)', () => {
-      const encrypted = encryptKeyRecord({
+    it('throws when the wrong KEK is supplied (RFC 3394 integrity check)', async () => {
+      const encrypted = await encryptKeyRecord({
         record: ed25519Record(),
         kek: randomKek()
       })
       const wrongKek = randomKek()
-      assert.throws(() =>
+      await assert.rejects(
         decryptKeyRecord({
           record: encrypted,
           kekLoader: () => ({
@@ -222,22 +224,22 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       )
     })
 
-    it('throws when the ciphertext is tampered (GCM tag mismatch)', () => {
+    it('throws when the ciphertext is tampered (GCM tag mismatch)', async () => {
       const kek = randomKek()
-      const encrypted = encryptKeyRecord({ record: hmacRecord(), kek })
+      const encrypted = await encryptKeyRecord({ record: hmacRecord(), kek })
       // Flip the ciphertext; the CEK unwrap still succeeds, the GCM tag does not.
       const jwe = encrypted.key.encrypted!.jwe
       const bytes = Buffer.from(jwe.ciphertext, 'base64url')
       bytes[0] = bytes[0]! ^ 0xff
       jwe.ciphertext = bytes.toString('base64url')
-      assert.throws(() =>
+      await assert.rejects(
         decryptKeyRecord({ record: encrypted, kekLoader: () => kek })
       )
     })
   })
 
   describe('parseKekMultibase / deriveKekId', () => {
-    it('round-trips a 32-byte AES-256 Multikey value', () => {
+    it('round-trips a 32-byte AES-256 Multikey value', async () => {
       const raw = randomBytes(32)
       const kek = parseKekMultibase(kekMultibase(raw))
       assert.ok(kek.key.equals(raw))
@@ -247,11 +249,11 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       assert.ok(!kek.id.includes(raw.toString('hex')))
     })
 
-    it('rejects a non-multibase value', () => {
+    it('rejects a non-multibase value', async () => {
       assert.throws(() => parseKekMultibase('not-a-multibase!'), /multibase/)
     })
 
-    it('rejects a value without the AES-256 Multikey header', () => {
+    it('rejects a value without the AES-256 Multikey header', async () => {
       const noHeader = new IdEncoder({
         encoding: 'base58',
         multibase: true
@@ -259,7 +261,7 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       assert.throws(() => parseKekMultibase(noHeader), /Multikey header/)
     })
 
-    it('rejects a wrong-length key', () => {
+    it('rejects a wrong-length key', async () => {
       const short = Buffer.concat([Buffer.from([0xa2, 0x01]), randomBytes(16)])
       const mb = new IdEncoder({ encoding: 'base58', multibase: true }).encode(
         short
@@ -269,7 +271,7 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
   })
 
   describe('parseKmsRecordKekRegistry (config)', () => {
-    it('returns undefined when all vars are unset or empty (disabled)', () => {
+    it('returns undefined when all vars are unset or empty (disabled)', async () => {
       assert.equal(parseKmsRecordKekRegistry({}), undefined)
       assert.equal(
         parseKmsRecordKekRegistry({ kek: '', keks: '   ' }),
@@ -277,7 +279,7 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       )
     })
 
-    it('builds a single-KEK registry from KMS_RECORD_KEK (the alias)', () => {
+    it('builds a single-KEK registry from KMS_RECORD_KEK (the alias)', async () => {
       const raw = randomBytes(32)
       const registry = parseKmsRecordKekRegistry({ kek: kekMultibase(raw) })
       assert.ok(registry)
@@ -286,7 +288,7 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       assert.ok(registry!.keks.get(deriveKekId(raw))!.key.equals(raw))
     })
 
-    it('registers KMS_RECORD_KEKS with the first entry current', () => {
+    it('registers KMS_RECORD_KEKS with the first entry current', async () => {
       const raw1 = randomBytes(32)
       const raw2 = randomBytes(32)
       const registry = parseKmsRecordKekRegistry({
@@ -300,7 +302,7 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       assert.equal(registry!.currentKekId, deriveKekId(raw1))
     })
 
-    it('ignores whitespace and empty entries; single entry == alias', () => {
+    it('ignores whitespace and empty entries; single entry == alias', async () => {
       const raw = randomBytes(32)
       const registry = parseKmsRecordKekRegistry({
         keks: ` , ${kekMultibase(raw)} ,  ,`
@@ -310,7 +312,7 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       assert.equal(registry!.currentKekId, deriveKekId(raw))
     })
 
-    it('KMS_RECORD_CURRENT_KEK as a kekId URN selects the second entry', () => {
+    it('KMS_RECORD_CURRENT_KEK as a kekId URN selects the second entry', async () => {
       const raw1 = randomBytes(32)
       const raw2 = randomBytes(32)
       const registry = parseKmsRecordKekRegistry({
@@ -321,7 +323,7 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       assert.equal(registry!.currentKekId, deriveKekId(raw2))
     })
 
-    it('KMS_RECORD_CURRENT_KEK as a multibase value selects that KEK', () => {
+    it('KMS_RECORD_CURRENT_KEK as a multibase value selects that KEK', async () => {
       const raw1 = randomBytes(32)
       const raw2 = randomBytes(32)
       const registry = parseKmsRecordKekRegistry({
@@ -332,7 +334,7 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       assert.equal(registry!.currentKekId, deriveKekId(raw2))
     })
 
-    it('KMS_RECORD_CURRENT_KEK=none sets currentKekId null (decrypt-only)', () => {
+    it('KMS_RECORD_CURRENT_KEK=none sets currentKekId null (decrypt-only)', async () => {
       const raw = randomBytes(32)
       const registry = parseKmsRecordKekRegistry({
         kek: kekMultibase(raw),
@@ -345,7 +347,7 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       assert.ok(registry!.keks.has(deriveKekId(raw)))
     })
 
-    it('throws when both KMS_RECORD_KEK and KMS_RECORD_KEKS are set', () => {
+    it('throws when both KMS_RECORD_KEK and KMS_RECORD_KEKS are set', async () => {
       assert.throws(
         () =>
           parseKmsRecordKekRegistry({
@@ -356,7 +358,7 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       )
     })
 
-    it('throws when KMS_RECORD_CURRENT_KEK names an unregistered KEK', () => {
+    it('throws when KMS_RECORD_CURRENT_KEK names an unregistered KEK', async () => {
       assert.throws(
         () =>
           parseKmsRecordKekRegistry({
@@ -367,14 +369,14 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       )
     })
 
-    it('throws when KMS_RECORD_CURRENT_KEK is set with no KEKs', () => {
+    it('throws when KMS_RECORD_CURRENT_KEK is set with no KEKs', async () => {
       assert.throws(
         () => parseKmsRecordKekRegistry({ currentKek: 'none' }),
         /KMS_RECORD_CURRENT_KEK is set but no KEK is configured/
       )
     })
 
-    it('throws on a duplicate KMS_RECORD_KEKS entry', () => {
+    it('throws on a duplicate KMS_RECORD_KEKS entry', async () => {
       const dup = kekMultibase(randomBytes(32))
       assert.throws(
         () => parseKmsRecordKekRegistry({ keks: `${dup},${dup}` }),
@@ -382,7 +384,7 @@ describe('KMS record cipher (KMS_RECORD_KEK)', () => {
       )
     })
 
-    it('names the list entry position on a malformed KEK, not the secret', () => {
+    it('names the list entry position on a malformed KEK, not the secret', async () => {
       const good = kekMultibase(randomBytes(32))
       let caught: Error | undefined
       try {

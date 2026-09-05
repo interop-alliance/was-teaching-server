@@ -163,6 +163,32 @@ export function parseBlindedIndexQueryBody({
 }
 
 /**
+ * The shared walk over a document's `indexed` array: yields, per well-formed
+ * entry (an object with an `attributes` array), its HMAC key id (unchecked --
+ * each consumer applies its own scope / shape rule) and its attributes.
+ * Malformed entries are skipped, never thrown on.
+ * @param indexed {unknown[]}   the document's `indexed` array
+ * @returns {Generator<{ hmacId: unknown, attributes: IndexedAttribute[] }>}
+ */
+function* indexedEntries(
+  indexed: unknown[]
+): Generator<{ hmacId: unknown; attributes: IndexedAttribute[] }> {
+  for (const entry of indexed) {
+    if (typeof entry !== 'object' || entry === null) {
+      continue
+    }
+    const { hmac, attributes } = entry as {
+      hmac?: { id?: unknown }
+      attributes?: unknown
+    }
+    if (!Array.isArray(attributes)) {
+      continue
+    }
+    yield { hmacId: hmac?.id, attributes: attributes as IndexedAttribute[] }
+  }
+}
+
+/**
  * Collects the `{name: value}` attribute pairs of a document's `indexed`
  * entries into flat `name:value` terms. `scopedTo` limits collection to the
  * entries of one HMAC key id (the `equals` scope); without it, attributes of
@@ -184,21 +210,11 @@ function collectIndexedAttributes({
 }): { names: Set<string>; terms: Set<string> } {
   const names = new Set<string>()
   const terms = new Set<string>()
-  for (const entry of indexed) {
-    if (typeof entry !== 'object' || entry === null) {
+  for (const { hmacId, attributes } of indexedEntries(indexed)) {
+    if (scopedTo !== undefined && hmacId !== scopedTo) {
       continue
     }
-    const { hmac, attributes } = entry as {
-      hmac?: { id?: unknown }
-      attributes?: unknown
-    }
-    if (scopedTo !== undefined && hmac?.id !== scopedTo) {
-      continue
-    }
-    if (!Array.isArray(attributes)) {
-      continue
-    }
-    for (const attribute of attributes as IndexedAttribute[]) {
+    for (const attribute of attributes) {
       if (typeof attribute?.name !== 'string') {
         continue
       }
@@ -226,7 +242,7 @@ function collectIndexedAttributes({
  * @param options.query {BlindedIndexQuery}
  * @returns {boolean}
  */
-export function matchesBlindedIndexQuery({
+function matchesBlindedIndexQuery({
   document,
   query
 }: {
@@ -348,15 +364,8 @@ export function collectUniqueBlindedTerms({
     return []
   }
   const terms: Array<{ hmacId: string; name: string; value: string }> = []
-  for (const entry of indexed) {
-    if (typeof entry !== 'object' || entry === null) {
-      continue
-    }
-    const { hmac, attributes } = entry as {
-      hmac?: { id?: unknown }
-      attributes?: unknown
-    }
-    if (typeof hmac?.id !== 'string' || !Array.isArray(attributes)) {
+  for (const { hmacId, attributes } of indexedEntries(indexed)) {
+    if (typeof hmacId !== 'string') {
       continue
     }
     for (const attribute of attributes as Array<
@@ -368,7 +377,7 @@ export function collectUniqueBlindedTerms({
         typeof attribute.value === 'string'
       ) {
         terms.push({
-          hmacId: hmac.id,
+          hmacId,
           name: attribute.name,
           value: attribute.value
         })

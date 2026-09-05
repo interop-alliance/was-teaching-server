@@ -160,7 +160,9 @@ async function reencryptRecordFile({
     ) as KmsKeyRecord
   } catch (err) {
     summary.failed += 1
-    console.error(`FAILED  ${label}: unreadable record (${(err as Error).message})`)
+    console.error(
+      `FAILED  ${label}: unreadable record (${(err as Error).message})`
+    )
     return
   }
 
@@ -184,12 +186,12 @@ async function reencryptRecordFile({
 
     // A decrypt failure is typically an unregistered kekId: the record's KEK
     // is not in the env registry. Register the missing KEK and re-run.
-    const decrypted = decryptKeyRecord({ record, kekLoader })
+    const decrypted = await decryptKeyRecord({ record, kekLoader })
 
     let action: keyof RunSummary
     let rewritten: KmsKeyRecord
     if (current !== undefined) {
-      rewritten = encryptKeyRecord({ record: decrypted, kek: current })
+      rewritten = await encryptKeyRecord({ record: decrypted, kek: current })
       action = envelope !== undefined ? 'rewrapped' : 'encrypted'
     } else {
       rewritten = decrypted
@@ -221,7 +223,10 @@ async function reencryptRecordFile({
 async function main(): Promise<void> {
   const { dryRun, dataDir } = parseArgs(process.argv.slice(2))
 
-  if (process.env.DATABASE_URL !== undefined && process.env.DATABASE_URL.trim() !== '') {
+  if (
+    process.env.DATABASE_URL !== undefined &&
+    process.env.DATABASE_URL.trim() !== ''
+  ) {
     console.error(
       'DATABASE_URL is set: this deployment uses the Postgres backend, but ' +
         'this tool only walks the filesystem key-record tree. ' +

@@ -174,23 +174,32 @@ export class ChunkRequest {
     })
     let result
     try {
-      // The parent Resource must exist (and not be a tombstone) for any of
-      // its chunks to be readable: an orphan chunk left behind by
-      // out-of-band state 404s here exactly like the Resource route and the
-      // chunk listing do -- checked via its metadata, never its byte stream.
-      await getResourceMetadataOrThrow({
-        dataBackend,
-        spaceId,
-        collectionId,
-        resourceId,
-        requestName
-      })
-      result = await dataBackend.getChunk({
-        spaceId,
-        collectionId,
-        resourceId,
-        chunkIndex
-      })
+      /**
+       * The parent Resource must exist (and not be a tombstone) for any of
+       * its chunks to be readable: an orphan chunk left behind by
+       * out-of-band state 404s here exactly like the Resource route and the
+       * chunk listing do -- checked via its metadata, never its byte stream.
+       * That check and the chunk read are independent, so issue both together
+       * and settle before applying the same precedence the serial version had:
+       * a rejected parent read wins first, then the parent-absent 404, then a
+       * rejected chunk read. Settling (rather than `Promise.all`) keeps a chunk
+       * rejection from masking the 404 and leaves no unhandled rejection when
+       * the 404 short-circuits.
+       */
+      const [parentResult, chunkResult] = await Promise.allSettled([
+        dataBackend.getResourceMetadata({ spaceId, collectionId, resourceId }),
+        dataBackend.getChunk({ spaceId, collectionId, resourceId, chunkIndex })
+      ])
+      if (parentResult.status === 'rejected') {
+        throw parentResult.reason
+      }
+      if (!parentResult.value) {
+        throw new ResourceNotFoundError({ requestName })
+      }
+      if (chunkResult.status === 'rejected') {
+        throw chunkResult.reason
+      }
+      result = chunkResult.value
     } catch (err) {
       rethrowOrWrapStorageError({ err, requestName })
     }
@@ -252,21 +261,32 @@ export class ChunkRequest {
     })
     let metadata
     try {
-      // The same parent-Resource existence gate as Get Chunk: an orphan
-      // chunk's headers reveal what a GET would.
-      await getResourceMetadataOrThrow({
-        dataBackend,
-        spaceId,
-        collectionId,
-        resourceId,
-        requestName
-      })
-      metadata = await dataBackend.getChunkMetadata({
-        spaceId,
-        collectionId,
-        resourceId,
-        chunkIndex
-      })
+      /**
+       * The same parent-Resource existence gate as Get Chunk (an orphan
+       * chunk's headers reveal what a GET would), settled together with the
+       * independent chunk-metadata read under the same precedence: a rejected
+       * parent read first, then the parent-absent 404, then a rejected
+       * chunk-metadata read.
+       */
+      const [parentResult, chunkResult] = await Promise.allSettled([
+        dataBackend.getResourceMetadata({ spaceId, collectionId, resourceId }),
+        dataBackend.getChunkMetadata({
+          spaceId,
+          collectionId,
+          resourceId,
+          chunkIndex
+        })
+      ])
+      if (parentResult.status === 'rejected') {
+        throw parentResult.reason
+      }
+      if (!parentResult.value) {
+        throw new ResourceNotFoundError({ requestName })
+      }
+      if (chunkResult.status === 'rejected') {
+        throw chunkResult.reason
+      }
+      metadata = chunkResult.value
     } catch (err) {
       rethrowOrWrapStorageError({ err, requestName })
     }

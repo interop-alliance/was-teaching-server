@@ -482,29 +482,63 @@ export async function handleZcapVerify({
   ]
   const inspectCapabilityChain =
     inspectors.length > 0 ? composeChainInspectors(inspectors) : undefined
+  return verifiedOrThrow({
+    verify: () =>
+      verifyZcap({
+        url,
+        allowedTarget,
+        allowedAction,
+        method,
+        headers,
+        serverUrl,
+        spaceController,
+        webvh,
+        allowTargetQuery,
+        allowTargetAttenuation,
+        attenuatedRootTarget,
+        inspectCapabilityChain,
+        maxChainLength,
+        maxDelegationTtl
+      }),
+    failureMessage: 'ZCAP verification failed',
+    requestName,
+    logger
+  })
+}
+
+/**
+ * Runs a capability-invocation verification and maps its two failure modes to
+ * the server's errors: a thrown verification error is logged and rethrown as
+ * `AuthVerificationError` (400), and a result that did not verify becomes the
+ * 404-masked `UnauthorizedError`. Shared by `handleZcapVerify` and
+ * `handleRevocationInvocationVerify`, which differ only in what they verify
+ * and in the log message.
+ * @param options {object}
+ * @param options.verify {() => Promise<VerifyCapabilityInvocationResult>}
+ *   the verification to run
+ * @param options.failureMessage {string}   log message for a thrown error
+ * @param options.requestName {string}   request name used in error titles
+ * @param options.logger {ZcapLogger}   logger for verification errors
+ * @returns {Promise<VerifyCapabilityInvocationResult>}   the verified result
+ */
+async function verifiedOrThrow({
+  verify,
+  failureMessage,
+  requestName,
+  logger
+}: {
+  verify: () => Promise<VerifyCapabilityInvocationResult>
+  failureMessage: string
+  requestName: string
+  logger: ZcapLogger
+}): Promise<VerifyCapabilityInvocationResult> {
   let zcapVerifyResult: VerifyCapabilityInvocationResult
   try {
-    zcapVerifyResult = await verifyZcap({
-      url,
-      allowedTarget,
-      allowedAction,
-      method,
-      headers,
-      serverUrl,
-      spaceController,
-      webvh,
-      allowTargetQuery,
-      allowTargetAttenuation,
-      attenuatedRootTarget,
-      inspectCapabilityChain,
-      maxChainLength,
-      maxDelegationTtl
-    })
+    zcapVerifyResult = await verify()
   } catch (err) {
-    logger.error({ err }, 'ZCAP verification failed')
+    logger.error({ err }, failureMessage)
     throw new AuthVerificationError({ requestName, cause: err as Error })
   }
-
   if (!zcapVerifyResult.verified) {
     throw new UnauthorizedError({ requestName })
   }
@@ -886,37 +920,33 @@ export async function handleRevocationInvocationVerify({
     webvh: activeWebvh
   })
 
-  let zcapVerifyResult: VerifyCapabilityInvocationResult
-  try {
-    zcapVerifyResult = await verifyCapabilityInvocation({
-      url: fullRequestUrl,
-      method,
-      headers: headers as Record<string, string>,
-      expectedAction,
-      expectedHost: new URL(serverUrl).host,
-      expectedRootCapability: [
-        rootCapabilityId(rootTarget),
-        rootCapabilityId(fullRequestUrl)
-      ],
-      // The invoked target is the revocation URL, a path under the scope's
-      // root; accept either as a delegated zcap's (attenuated) target. The
-      // array form is narrowed to `string` by the verify fork's option type
-      // (see the same cast in `verifyZcap`'s attenuation branch).
-      expectedTarget: [rootTarget, fullRequestUrl] as unknown as string,
-      allowTargetAttenuation: true,
-      documentLoader,
-      getVerifier: createGetVerifier({ webvh: activeWebvh }),
-      inspectCapabilityChain,
-      maxChainLength,
-      maxDelegationTtl,
-      suite: delegationProofSuites()
-    })
-  } catch (err) {
-    logger.error({ err }, 'ZCAP revocation invocation verification failed')
-    throw new AuthVerificationError({ requestName, cause: err as Error })
-  }
-
-  if (!zcapVerifyResult.verified) {
-    throw new UnauthorizedError({ requestName })
-  }
+  await verifiedOrThrow({
+    verify: () =>
+      verifyCapabilityInvocation({
+        url: fullRequestUrl,
+        method,
+        headers: headers as Record<string, string>,
+        expectedAction,
+        expectedHost: new URL(serverUrl).host,
+        expectedRootCapability: [
+          rootCapabilityId(rootTarget),
+          rootCapabilityId(fullRequestUrl)
+        ],
+        // The invoked target is the revocation URL, a path under the scope's
+        // root; accept either as a delegated zcap's (attenuated) target. The
+        // array form is narrowed to `string` by the verify fork's option type
+        // (see the same cast in `verifyZcap`'s attenuation branch).
+        expectedTarget: [rootTarget, fullRequestUrl] as unknown as string,
+        allowTargetAttenuation: true,
+        documentLoader,
+        getVerifier: createGetVerifier({ webvh: activeWebvh }),
+        inspectCapabilityChain,
+        maxChainLength,
+        maxDelegationTtl,
+        suite: delegationProofSuites()
+      }),
+    failureMessage: 'ZCAP revocation invocation verification failed',
+    requestName,
+    logger
+  })
 }

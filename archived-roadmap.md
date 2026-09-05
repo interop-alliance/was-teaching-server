@@ -663,10 +663,10 @@ they fit the Space Description cache pattern exactly.
   - [x] `plaintext` and `encryption` both present on the resulting description
         is rejected with `invalid-request-body` on create and update, regardless
         of whether `plaintext.indexes` is empty
-  - [x] `plaintext` is updatable (add, change; `{}` is the empty state, there
-        is no removal) on an existing Collection; a malformed `plaintext` (non-object, non-array `indexes`,
-        bad entry, empty or duplicate `name`, unknown `source`) is
-        `invalid-request-body`
+  - [x] `plaintext` is updatable (add, change; `{}` is the empty state, there is
+        no removal) on an existing Collection; a malformed `plaintext`
+        (non-object, non-array `indexes`, bad entry, empty or duplicate `name`,
+        unknown `source`) is `invalid-request-body`
   - [x] The `equality` profile and `GET ?filter[...]` read their declarations
         from `plaintext.indexes`; existing `test/` coverage is moved to the new
         shape
@@ -677,14 +677,63 @@ they fit the Space Description cache pattern exactly.
         Collection, `unique` index conflict 409
 
 The spec settled server-side indexing as `plaintext.indexes` (decision 0004,
-2026-08-20; text ships with WASS-26; server side landed 2026-09-05 in 0.26.0, the
-conformance-suite cases in was-conformance-suite 0.8.0): the two mutually
-exclusive top-level
-Collection members are `encryption` and `plaintext`, so the exclusion is a
-structural fact rather than a cross-reference, and "indexes" stops colliding
-with the blinded indexes of an encrypted Collection. The server shipped the flat
-`indexes` ahead of the spec text; this item moves it. Note for WAS-25 (b): with
-the presence-based exclusion, "`custom`-only indexes on `encryption`-marked
-Collections" would need a `plaintext` member beside `encryption`, which the spec
-forbids; and the spec already makes an encrypted Collection's `custom` metadata
-an envelope, so that extension is superseded as written.
+2026-08-20; text ships with WASS-26; server side landed 2026-09-05 in 0.26.0,
+the conformance-suite cases in was-conformance-suite 0.8.0): the two mutually
+exclusive top-level Collection members are `encryption` and `plaintext`, so the
+exclusion is a structural fact rather than a cross-reference, and "indexes"
+stops colliding with the blinded indexes of an encrypted Collection. The server
+shipped the flat `indexes` ahead of the spec text; this item moves it. Note for
+WAS-25 (b): with the presence-based exclusion, "`custom`-only indexes on
+`encryption`-marked Collections" would need a `plaintext` member beside
+`encryption`, which the spec forbids; and the spec already makes an encrypted
+Collection's `custom` metadata an envelope, so that extension is superseded as
+written.
+
+### WAS-78: KMS key wrap accepts only AES-sized payloads
+
+- status: done
+- done: 2026-09-05
+- priority: high
+- labels: kms, correctness
+- touches:
+  - minimal-cipher: the WebCrypto `Kek` backend must accept every RFC 3394
+    payload length and both backends must refuse malformed lengths with one
+    distinguishable, exported error (its name is a library API contract and
+    needs maintainer sign-off before coding); publish, then bump here. Shipped
+    as `InvalidKeyLengthError` in minimal-cipher 7.9.0
+- acceptance:
+  - [x] minimal-cipher's `wrapKey` accepts any `unwrappedKey` whose length is a
+        multiple of 8 bytes and at least 16, on both the WebCrypto and pure-JS
+        backends, with byte-identical output; shorter or unaligned lengths throw
+        the distinguishable error before either backend runs
+  - [x] minimal-cipher's `unwrapKey` throws the same error for a ciphertext that
+        is not a multiple of 8 bytes or is shorter than 24, instead of resolving
+        `null` (which stays reserved for the integrity-check miss)
+  - [x] `WrapKeyOperation` on an `AesKeyWrappingKey2019` key wraps 40, 48, and
+        64-byte payloads, and maps the library's length error to a 400
+        `invalid-request-body` with pointer `#/unwrappedKey` (`#/wrappedKey` on
+        unwrap)
+  - [x] `UnwrapKeyOperation` returns the same material for every length the wrap
+        side accepts
+  - [x] Tests in `test/` cover a 64-byte round trip, the 400 for an 8-byte and a
+        20-byte payload, and the 16/24/32-byte cases keep passing
+
+Context: the move from `node:crypto`'s `id-aes256-wrap` to minimal-cipher's
+`Kek.wrapKey` imports the payload as an AES-GCM `CryptoKey` before wrapping, so
+WebCrypto rejects any payload that is not 16, 24, or 32 bytes with a `DataError`
+that `aesWrapKey` does not catch (the client sees a 500). The unwrap side has
+the quieter form of the same defect: a 72-byte ciphertext fails the AES-GCM
+import, the `catch` swallows it, and the operation reports `null`, which the
+client reads as a wrong KEK. Verified against minimal-cipher 7.8.3.
+
+The defect is upstream. minimal-cipher's pure-JS backend (`@noble/ciphers`
+`aeskw`) already accepts every RFC 3394 length, so the two backends disagree on
+what they accept while documenting identical output. The fix is in `aeskw.ts`:
+the WebCrypto `Kek` falls through to the noble primitive whenever the payload is
+not an AES key size (or, on unwrap, the ciphertext is not 24, 32, or 40 bytes),
+and a single length check ahead of both backends throws the distinguishable
+error. Output bytes for 16/24/32-byte payloads do not change, so previously
+wrapped keys need no migration. This server keeps only the request-layer half:
+catching that error and rethrowing it as the 400. RFC 3394's 16-byte minimum
+stays; arbitrary lengths would be RFC 5649 key wrap with padding, a different
+algorithm and key type, and are out of scope.

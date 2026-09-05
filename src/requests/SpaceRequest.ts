@@ -10,7 +10,10 @@ import { buildLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { invalidateSpaceDescription } from '../lib/spaceDescriptionCache.js'
 import { invalidateSpacePolicies } from '../lib/policyCache.js'
-import { verifyBodyControllerConsent } from './controllerConsent.js'
+import {
+  assertBodyController,
+  verifyBodyControllerConsent
+} from './controllerConsent.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidIds, assertValidId } from '../lib/validateId.js'
 import {
@@ -200,15 +203,8 @@ export class SpaceRequest {
       })
     }
 
-    // The Space Description body must carry a controller DID. The `name`
-    // property is optional (see spec: Space Description object).
-    if (!body?.controller) {
-      throw new InvalidRequestBodyError({
-        requestName: 'Update Space',
-        detail: 'Space Description body requires a "controller" property.',
-        pointer: '#/controller'
-      })
-    }
+    // The Space Description body must carry a controller DID.
+    assertBodyController({ body, requestName: 'Update Space' })
     // Reject a controller shape this server cannot authorize against before it
     // is stored. Update Space is the one call site that also accepts a
     // self-hosted `did:webvh` (the "promotion by ordering" flow); create and

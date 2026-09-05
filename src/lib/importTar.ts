@@ -56,7 +56,7 @@ export function metaSidecarFileId(fileName: string): string | undefined {
  * @param fileName {string}
  * @returns {string | undefined}
  */
-export function collectionMetaFileId(fileName: string): string | undefined {
+function collectionMetaFileId(fileName: string): string | undefined {
   return dotFileId(fileName, COLLECTION_META_FILE_PREFIX)
 }
 

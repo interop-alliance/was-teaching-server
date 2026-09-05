@@ -6,7 +6,10 @@
  * bodies with the same JSON-Pointer problem details.
  */
 import { InvalidRequestBodyError } from '../errors.js'
-import type { ResourceMetadataCustom } from '../types.js'
+import { isPlainObject } from './isPlainObject.js'
+import { assertJsonObjectBody } from './requestBody.js'
+import { assertEncryptedMetaConforms } from './encryption.js'
+import type { CollectionEncryption, ResourceMetadataCustom } from '../types.js'
 
 /**
  * Validates and extracts the user-writable `custom` object from a Metadata
@@ -33,24 +36,22 @@ export function parseCustomMetadata({
   body: unknown
   requestName: string
 }): ResourceMetadataCustom {
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: 'Request body must be a JSON object.'
-    })
-  }
-  const { custom } = body as Record<string, unknown>
+  const { custom } = assertJsonObjectBody({
+    body,
+    requestName,
+    detail: 'Request body must be a JSON object.'
+  })
   if (custom === undefined) {
     return {}
   }
-  if (typeof custom !== 'object' || custom === null || Array.isArray(custom)) {
+  if (!isPlainObject(custom)) {
     throw new InvalidRequestBodyError({
       requestName,
       detail: 'The `custom` property must be a JSON object.',
       pointer: '/custom'
     })
   }
-  const { name, tags } = custom as Record<string, unknown>
+  const { name, tags } = custom
   if (name !== undefined && typeof name !== 'string') {
     throw new InvalidRequestBodyError({
       requestName,
@@ -58,10 +59,7 @@ export function parseCustomMetadata({
       pointer: '/custom/name'
     })
   }
-  if (
-    tags !== undefined &&
-    (typeof tags !== 'object' || tags === null || Array.isArray(tags))
-  ) {
+  if (tags !== undefined && !isPlainObject(tags)) {
     throw new InvalidRequestBodyError({
       requestName,
       detail: 'The `custom.tags` property must be a JSON object.',
@@ -72,9 +70,7 @@ export function parseCustomMetadata({
   // models them as `Record<string, string>`).
   if (
     tags !== undefined &&
-    Object.values(tags as Record<string, unknown>).some(
-      value => typeof value !== 'string'
-    )
+    Object.values(tags).some(value => typeof value !== 'string')
   ) {
     throw new InvalidRequestBodyError({
       requestName,
@@ -86,4 +82,37 @@ export function parseCustomMetadata({
     ...(name !== undefined && { name }),
     ...(tags !== undefined && { tags: tags as Record<string, string> })
   }
+}
+
+/**
+ * Resolves the `custom` value a Metadata update (`PUT .../meta`) stores,
+ * branching on the target Collection's `encryption` descriptor. On an encrypted
+ * Collection the `custom` value MUST be a conforming envelope of the scheme
+ * (stored opaquely, `422` on a plaintext/malformed value); on a plaintext
+ * Collection it MUST be a well-formed `{ name, tags }` object (`400` otherwise).
+ * Shared by the Resource-level and Collection-level update handlers, which call
+ * it after authorization and the 404-if-missing check, so a 422/400 is
+ * observable only to a caller authorized to write the target.
+ * @param options {object}
+ * @param options.collectionDescription {{ encryption?: CollectionEncryption }}
+ *   the target Collection's stored description
+ * @param options.body {Record<string, unknown>}   the parsed request body
+ * @param options.requestName {string}   request name for the 400 error title
+ * @returns {ResourceMetadataCustom | Record<string, unknown>}
+ */
+export function resolveMetadataCustom({
+  collectionDescription,
+  body,
+  requestName
+}: {
+  collectionDescription: { encryption?: CollectionEncryption }
+  body: Record<string, unknown>
+  requestName: string
+}): ResourceMetadataCustom | Record<string, unknown> {
+  if (collectionDescription.encryption?.scheme !== undefined) {
+    const { custom } = body
+    assertEncryptedMetaConforms({ collectionDescription, custom })
+    return custom as Record<string, unknown>
+  }
+  return parseCustomMetadata({ body, requestName })
 }

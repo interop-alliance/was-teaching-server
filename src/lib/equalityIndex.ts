@@ -34,6 +34,7 @@ import type {
 } from '../types.js'
 import { encodeCursor } from './cursor.js'
 import { compareCodeUnits, resolvePageSize, seekPage } from './pagination.js'
+import { isPlainObject } from './isPlainObject.js'
 import {
   assertCountIsBoolean,
   assertEqualsIsNonEmptyArray,
@@ -103,16 +104,6 @@ export interface EqualityCandidate {
   resourceId: string
   content?: unknown
   custom?: unknown
-}
-
-/**
- * True for a plain (non-null, non-array) object -- the only shape a `content`
- * or `custom` source can be extracted from.
- * @param value {unknown}
- * @returns {boolean}
- */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**
