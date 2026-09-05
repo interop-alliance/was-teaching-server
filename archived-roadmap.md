@@ -774,3 +774,26 @@ the cleanup.
   - [x] The helper owns the cleanup for a resolved-but-discarded companion value
         (WAS-79)
   - [x] Existing chunk tests keep passing
+
+### WAS-81: Blinded-index candidate reads should skip meta sidecars
+
+- status: done
+- done: 2026-09-05
+- priority: medium
+- labels: filesystem-backend, performance, correctness
+- acceptance:
+  - [x] The blinded-index query path and the blinded-unique write path read JSON
+        documents only (no `.meta.<id>.json` read per live Resource)
+  - [x] A corrupt meta sidecar on an unrelated Resource does not fail a
+        blinded-index query or a blinded-unique write
+  - [x] `writeResource` calls the candidate reader only when a unique index
+        (plaintext or blinded) actually requires it
+  - [x] A test in `test/` writes an unparsable sidecar and asserts a
+        blinded-index query still succeeds
+
+Context: deleting `#readJsonCandidates` and deriving blinded-index candidates
+from `#readEqualityCandidates` added one `readMetaSidecar` read per live
+Resource (blobs included) on every blinded-index query and blinded-unique write,
+and `readMetaSidecar` has no error handling, so one bad sidecar rejects the
+whole `Promise.all`. A `jsonOnly` flag on `#readEqualityCandidates`, or a slim
+JSON-only reader, restores the prior cost and failure surface.

@@ -30,6 +30,10 @@
 
 ### Fixed
 
+- Blinded-index queries and unique-blinded writes on the filesystem backend read
+  JSON documents only again: no meta sidecar read per live Resource, and a
+  corrupt sidecar on an unrelated Resource no longer fails the query or the
+  write.
 - List Keys on the filesystem backend now orders key ids in code-unit order, the
   order the shared keyset pager seeks with (the Postgres backend already did).
   The handler uses that pager instead of its own cursor scan.

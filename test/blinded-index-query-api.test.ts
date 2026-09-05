@@ -11,7 +11,7 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
@@ -296,6 +296,39 @@ describe('Collection blinded-index query profile', () => {
     await collection.put(
       'bystander',
       envelope('bystander', [{ name: 'n1', value: 'v1' }])
+    )
+  })
+
+  it('ignores a corrupt meta sidecar on an unrelated Resource', async () => {
+    const collection = await seedCollection('vault-sidecar', [
+      envelope('alpha', [{ name: 'n1', value: 'v1' }]),
+      envelope('beta', [{ name: 'n2', value: 'v2', unique: true }])
+    ])
+    // The candidate scan reads JSON documents only, so a sidecar it never
+    // opens cannot fail it.
+    await writeFile(
+      path.join(
+        dataDir,
+        'spaces',
+        alice.space1.id,
+        'vault-sidecar',
+        '.meta.alpha.json'
+      ),
+      'not json {'
+    )
+
+    const { data } = await queryIndex(alice, 'vault-sidecar', {
+      equals: [{ n1: 'v1' }]
+    })
+    assert.deepEqual(
+      data.documents.map((doc: any) => doc.id),
+      ['alpha']
+    )
+
+    // The unique-blinded conflict scan takes the same JSON-only path.
+    await collection.put(
+      'gamma',
+      envelope('gamma', [{ name: 'n3', value: 'v3', unique: true }])
     )
   })
 })
