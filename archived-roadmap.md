@@ -797,3 +797,20 @@ Resource (blobs included) on every blinded-index query and blinded-unique write,
 and `readMetaSidecar` has no error handling, so one bad sidecar rejects the
 whole `Promise.all`. A `jsonOnly` flag on `#readEqualityCandidates`, or a slim
 JSON-only reader, restores the prior cost and failure surface.
+
+### WAS-82: Skip the sidecar read on Resource and chunk misses
+
+- status: done
+- done: 2026-09-05
+- priority: low
+- labels: filesystem-backend, performance
+- acceptance:
+  - [x] `#readRepresentation` and `#statRepresentation` start the meta sidecar
+        read only once `#findFile` has located the representation (or check the
+        sidecar against the directory entries already in hand)
+  - [x] Existing Resource and chunk 404 / HEAD tests keep passing
+
+Context: both methods now issue `readMetaSidecar` concurrently with `#findFile`,
+so every GET or HEAD for a nonexistent id pays a wasted sidecar open/read whose
+result the following throw discards. Overlaps with WAS-77, which changes the
+same lookup path.

@@ -4,6 +4,9 @@
 
 ### Changed
 
+- The filesystem backend reads a Resource's or chunk's meta sidecar only after
+  locating the representation, so a GET or HEAD for a nonexistent id no longer
+  pays a wasted sidecar read.
 - **BREAKING**: the Collection `indexes` declaration moved under a new
   `plaintext` member (`plaintext.indexes`), following
   `@interop/storage-core@0.10.0`. A top-level `indexes` is no longer read or

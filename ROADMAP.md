@@ -1053,22 +1053,6 @@ Findings from a review of the 2026-09-05 working tree (request-body helpers, KMS
 record cipher migration, parallel chunk reads, filesystem candidate reader
 consolidation). Each item is small and self-contained.
 
-### WAS-82: Skip the sidecar read on Resource and chunk misses
-
-- status: todo
-- priority: low
-- labels: filesystem-backend, performance
-- acceptance:
-  - [ ] `#readRepresentation` and `#statRepresentation` start the meta sidecar
-        read only once `#findFile` has located the representation (or check the
-        sidecar against the directory entries already in hand)
-  - [ ] Existing Resource and chunk 404 / HEAD tests keep passing
-
-Context: both methods now issue `readMetaSidecar` concurrently with `#findFile`,
-so every GET or HEAD for a nonexistent id pays a wasted sidecar open/read whose
-result the following throw discards. Overlaps with WAS-77, which changes the
-same lookup path.
-
 ### WAS-83: Anonymous Get Policy with a malformed id now returns 401
 
 - status: todo
