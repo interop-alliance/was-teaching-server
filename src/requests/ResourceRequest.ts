@@ -18,7 +18,7 @@ import {
 } from '../lib/encryption.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { parseCustomMetadata } from '../lib/customMetadata.js'
-import { uniqueIndexesOf } from '../lib/equalityIndex.js'
+import { declaredIndexesOf, uniqueIndexesOf } from '../lib/equalityIndex.js'
 import { resourcePath, metaPath } from '../lib/paths.js'
 import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
 import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
@@ -109,7 +109,7 @@ export class ResourceRequest {
     // Any `unique: true` index entries the Collection declares ride along, so
     // the backend enforces the uniqueness claim atomically with the write (409).
     const uniqueIndexes = uniqueIndexesOf({
-      indexes: collectionDescription.indexes
+      indexes: declaredIndexesOf({ collectionDescription })
     })
     // Surface any `If-Match` / `If-None-Match` write precondition to the storage
     // layer, which evaluates it atomically with the write (returning 412
@@ -460,7 +460,7 @@ export class ResourceRequest {
     // the backend enforces the uniqueness claim for custom-sourced attributes
     // atomically with this metadata write (409).
     const uniqueIndexes = uniqueIndexesOf({
-      indexes: collectionDescription.indexes
+      indexes: declaredIndexesOf({ collectionDescription })
     })
     let written
     try {

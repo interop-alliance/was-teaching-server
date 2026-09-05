@@ -27,15 +27,15 @@ chunk addressing, zcap revocation, and the full error-type registry.
 ## Item format
 
 Each work item is a `### WAS-N: Title` heading followed by a field block and
-free prose context. Ids are permanent and never reused. The `nextAvailableId` line at the top of
-this file is the next id to take: filing an item takes that number and
-rewrites the line to one higher, in the same edit. Never derive the next id
-by scanning, since the highest id usually sits in `archived-roadmap.md`
-rather than here. Statuses: `todo`, `in-progress`, `draft`
-(no actionable done-state yet -- spec-blocked or a parking record); `done` items
-move to [archived-roadmap.md](archived-roadmap.md) once shipped (CHANGELOG.md
-remains the record of what landed). Full conventions live in
-[AGENTS.md](AGENTS.md) under "Roadmap & Task Conventions".
+free prose context. Ids are permanent and never reused. The `nextAvailableId`
+line at the top of this file is the next id to take: filing an item takes that
+number and rewrites the line to one higher, in the same edit. Never derive the
+next id by scanning, since the highest id usually sits in `archived-roadmap.md`
+rather than here. Statuses: `todo`, `in-progress`, `draft` (no actionable
+done-state yet -- spec-blocked or a parking record); `done` items move to
+[archived-roadmap.md](archived-roadmap.md) once shipped (CHANGELOG.md remains
+the record of what landed). Full conventions live in [AGENTS.md](AGENTS.md)
+under "Roadmap & Task Conventions".
 
 ---
 
@@ -746,61 +746,6 @@ Today `hmac` rides through the descriptor as an unknown extra member
 can drop or replace the blinding key and orphan every blinded index in the
 Collection. The spec now requires the shape check and the permanence invariant;
 this item implements both.
-
-### WAS-63: Move the Collection `indexes` declaration under `plaintext`
-
-- status: todo
-- priority: medium
-- labels: data-model, query, breaking
-- blocked-by: storage-core SC-1 (the shared type moves first)
-- touches:
-  - was-teaching-server: `src/lib/equalityIndex.ts` (`assertSupportedIndexes`,
-    `normalizeIndexes`, `assertIndexesNotEncrypted` -- the exclusion becomes
-    presence-based: `plaintext` and `encryption` both present is
-    `invalid-request-body`, pointer `#/plaintext`),
-    `src/requests/SpaceRequest.ts` (create body `plaintext`),
-    `src/requests/CollectionRequest.ts` (update path, the added-unique-index
-    scan, the `equality` query and `GET ?filter[...]` routes reading
-    `plaintext.indexes`), ARCHITECTURE.md / AGENTS.md unaffected (neither
-    documents `indexes`)
-  - storage-core: SC-1 supplies `CollectionDescription.plaintext`
-  - wallet-attached-storage-spec: shape of record is decision record
-    `_spec/decisions/0004-plaintext-and-encryption-counterparts.md`
-    (2026-08-20); the spec text lands with the `equality` profile under WASS-26
-  - was-conformance-suite: the `plaintext` declaration cases listed in the
-    acceptance below (the `equality` query suite itself waits on spec WASS-26);
-    suite-side items are tracked here
-  - was-client: unaffected (no `indexes` producer or `equality` binding)
-- acceptance:
-  - [ ] A Collection description carries `plaintext: { indexes: [...] }`; a
-        top-level `indexes` is no longer read or stored (no compatibility
-        fallback -- greenfield)
-  - [ ] `plaintext` and `encryption` both present on the resulting description
-        is rejected with `invalid-request-body` on create and update, regardless
-        of whether `plaintext.indexes` is empty
-  - [ ] `plaintext` is updatable (add, change, remove) on an existing
-        Collection; a malformed `plaintext` (non-object, non-array `indexes`,
-        bad entry, empty or duplicate `name`, unknown `source`) is
-        `invalid-request-body`
-  - [ ] The `equality` profile and `GET ?filter[...]` read their declarations
-        from `plaintext.indexes`; existing `test/` coverage is moved to the new
-        shape
-  - [ ] was-conformance-suite cases (a new `plaintext-declaration-api` suite or
-        additions to `collection-api`): `plaintext.indexes` persist/echo,
-        `plaintext` + `encryption` both present 400 on create and update,
-        malformed `plaintext` 400, `plaintext` add/change/remove on an existing
-        Collection, `unique` index conflict 409
-
-The spec settled server-side indexing as `plaintext.indexes` (decision 0004,
-2026-08-20; text ships with WASS-26): the two mutually exclusive top-level
-Collection members are `encryption` and `plaintext`, so the exclusion is a
-structural fact rather than a cross-reference, and "indexes" stops colliding
-with the blinded indexes of an encrypted Collection. The server shipped the flat
-`indexes` ahead of the spec text; this item moves it. Note for WAS-25 (b): with
-the presence-based exclusion, "`custom`-only indexes on `encryption`-marked
-Collections" would need a `plaintext` member beside `encryption`, which the spec
-forbids; and the spec already makes an encrypted Collection's `custom` metadata
-an envelope, so that extension is superseded as written.
 
 ### WAS-66: Accept ids beyond the unreserved charset (percent-encoding on disk, real webvh round-trip)
 

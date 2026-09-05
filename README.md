@@ -323,9 +323,10 @@ so the two URLs can't drift out of sync.
 ```bash
 # One-shot local run (recommended). Override the port with PORT=... if 3002 is
 # taken; the server and CLI URLs are both derived from it, so they stay in
-# sync. Arguments after -- are forwarded to the CLI.
+# sync. Extra arguments are forwarded to the CLI (no `--` separator needed;
+# pnpm forwards them itself).
 pnpm conformance:local
-pnpm conformance:local -- --grep chunk --reporter json
+pnpm conformance:local --grep chunk --reporter json
 
 # Against an already-running or external server. Start it with a matching
 # SERVER_URL, then in another shell:

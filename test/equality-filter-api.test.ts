@@ -38,12 +38,10 @@ describe('GET Collection equality filter', () => {
     indexes: unknown,
     documents: Array<{ id: string } & Record<string, unknown>>
   ): Promise<void> {
-    // `indexes` is honored on the Collection PUT path (create-by-id), not the
-    // POST create path, so declare via PUT.
     await alice.was.request({
       path: `/space/${spaceId()}/${collectionId}`,
       method: 'PUT',
-      json: { id: collectionId, name: collectionId, indexes }
+      json: { id: collectionId, name: collectionId, plaintext: { indexes } }
     })
     for (const document of documents) {
       await alice.was.request({
@@ -252,7 +250,7 @@ describe('GET Collection equality filter', () => {
     assert.equal(response.status, 400)
   })
 
-  it('a filter on an encrypted Collection is a 400 (it can never declare indexes)', async () => {
+  it('a filter on an encrypted Collection is a 400 (it can never carry plaintext)', async () => {
     await alice.was.request({
       path: `/space/${spaceId()}/f-encrypted`,
       method: 'PUT',

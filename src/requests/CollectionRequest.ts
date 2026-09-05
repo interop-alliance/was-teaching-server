@@ -19,9 +19,9 @@ import { parseCustomMetadata } from '../lib/customMetadata.js'
 import type { CollectionDescription, StorageBackend } from '../types.js'
 import { parseBlindedIndexQueryBody } from '../lib/blindedIndex.js'
 import {
-  assertIndexesNotEncrypted,
-  assertSupportedIndexes,
-  normalizeIndexes,
+  assertPlaintextNotEncrypted,
+  assertSupportedPlaintext,
+  declaredIndexesOf,
   parseEqualityQueryBody,
   parseListFilter,
   uniqueIndexesOf
@@ -65,41 +65,40 @@ import {
   rethrowOrWrapStorageError
 } from '../errors.js'
 import type {
-  CollectionIndexDeclaration,
   NormalizedIndexDeclaration,
   ResourceMetadataCustom
 } from '../types.js'
 
 /**
- * The normalized `unique: true` declarations an `indexes` update ADDS -- names
- * that are unique in the incoming declaration but were not unique (declared, or
- * declared without `unique`) in the existing one. These are the claims a
+ * The normalized `unique: true` declarations a `plaintext.indexes` update ADDS
+ * -- names that are unique in the incoming declaration but were not unique
+ * (declared, or declared without `unique`) in the existing one. These are the claims a
  * declare-time conflict scan must verify against already-stored Resources; an
  * unchanged or removed unique claim needs no scan (it was enforced at write
  * time).
  *
  * @param options {object}
- * @param [options.existing] {Array<string | CollectionIndexDeclaration>}   the
- *   Collection's previously-stored `indexes`
- * @param [options.incoming] {Array<string | CollectionIndexDeclaration>}   the
- *   `indexes` about to be persisted
+ * @param [options.existing] {CollectionDescription}   the Collection's
+ *   previously-stored Description
+ * @param options.incoming {CollectionDescription}   the Description about to
+ *   be persisted
  * @returns {NormalizedIndexDeclaration[]}
  */
 function newlyUniqueDeclarations({
   existing,
   incoming
 }: {
-  existing?: Array<string | CollectionIndexDeclaration>
-  incoming?: Array<string | CollectionIndexDeclaration>
+  existing?: CollectionDescription
+  incoming: CollectionDescription
 }): NormalizedIndexDeclaration[] {
   const existingUnique = new Set(
-    normalizeIndexes({ indexes: existing })
-      .filter(declaration => declaration.unique)
-      .map(declaration => declaration.name)
+    uniqueIndexesOf({
+      indexes: declaredIndexesOf({ collectionDescription: existing })
+    }).map(declaration => declaration.name)
   )
-  return normalizeIndexes({ indexes: incoming }).filter(
-    declaration => declaration.unique && !existingUnique.has(declaration.name)
-  )
+  return uniqueIndexesOf({
+    indexes: declaredIndexesOf({ collectionDescription: incoming })
+  }).filter(declaration => !existingUnique.has(declaration.name))
 }
 
 export class CollectionRequest {
@@ -187,7 +186,7 @@ export class CollectionRequest {
     // Any `unique: true` index entries the Collection declares ride along, so
     // the backend enforces the uniqueness claim atomically with the write (409).
     const uniqueIndexes = uniqueIndexesOf({
-      indexes: collectionDescription.indexes
+      indexes: declaredIndexesOf({ collectionDescription })
     })
     try {
       written = await dataBackend.writeResource({
@@ -240,7 +239,7 @@ export class CollectionRequest {
         name?: string
         backend?: unknown
         encryption?: unknown
-        indexes?: unknown
+        plaintext?: unknown
         generator?: unknown
         generatorOrigin?: unknown
       }
@@ -279,14 +278,15 @@ export class CollectionRequest {
       encryption: body.encryption,
       requestName
     })
-    // Validate the optional `indexes` declaration (shape only); an absent
-    // `indexes` validates to `undefined` and leaves the stored declaration
-    // untouched, while a supplied array (an empty one clears it) replaces it --
-    // `indexes` is updatable, unlike the set-once `encryption` descriptor. The
-    // mutual-exclusion-with-encryption rail and the unique-add conflict scan are
-    // enforced below, against the description about to be persisted.
-    const suppliedIndexes = assertSupportedIndexes({
-      indexes: body.indexes,
+    // Validate the optional `plaintext` member (shape only); an absent
+    // `plaintext` validates to `undefined` and leaves the stored member
+    // untouched, while a supplied object replaces it (`{}` is the empty state:
+    // no indexes, but still present) -- `plaintext` is updatable, unlike the
+    // set-once `encryption` descriptor. The exclusion with `encryption` and
+    // the unique-add conflict scan are enforced below, against the description
+    // about to be persisted.
+    const suppliedPlaintext = assertSupportedPlaintext({
+      plaintext: body.plaintext,
       requestName
     })
     // Validate the optional app-attribution members (shape only). Both are the
@@ -361,7 +361,9 @@ export class CollectionRequest {
           ...(suppliedEncryption !== undefined && {
             encryption: suppliedEncryption
           }),
-          ...(suppliedIndexes !== undefined && { indexes: suppliedIndexes }),
+          ...(suppliedPlaintext !== undefined && {
+            plaintext: suppliedPlaintext
+          }),
           ...(suppliedGenerator !== undefined && {
             generator: suppliedGenerator
           }),
@@ -378,7 +380,9 @@ export class CollectionRequest {
           ...(suppliedEncryption !== undefined && {
             encryption: suppliedEncryption
           }),
-          ...(suppliedIndexes !== undefined && { indexes: suppliedIndexes }),
+          ...(suppliedPlaintext !== undefined && {
+            plaintext: suppliedPlaintext
+          }),
           ...(suppliedGenerator !== undefined && {
             generator: suppliedGenerator
           }),
@@ -388,13 +392,14 @@ export class CollectionRequest {
         }
 
     // Mutual exclusion (spec "Collection Data Model"): the description about to
-    // be persisted MUST NOT carry both a non-empty `indexes` and an `encryption`
-    // descriptor -- the server cannot extract plaintext attributes from an opaque
-    // envelope. Enforced in BOTH directions (adding `indexes` to an encrypted
-    // Collection, or `encryption` to an indexed one) against the merged
-    // description, so a pre-existing value on the other field is caught too.
-    assertIndexesNotEncrypted({
-      indexes: collectionDescription.indexes,
+    // be persisted MUST NOT carry both `plaintext` and `encryption` -- they are
+    // counterpart members, excluded by presence (an empty `plaintext` counts).
+    // Enforced in BOTH directions (adding `plaintext` to an encrypted
+    // Collection, or `encryption` to one carrying `plaintext`) against the
+    // merged description, so a pre-existing value on the other member is caught
+    // too.
+    assertPlaintextNotEncrypted({
+      plaintext: collectionDescription.plaintext,
       encryption: collectionDescription.encryption,
       requestName
     })
@@ -407,8 +412,8 @@ export class CollectionRequest {
     // write racing this update could still slip a conflicting value in, which
     // the write-time uniqueness check then rejects.
     const newlyUnique = newlyUniqueDeclarations({
-      existing: existingCollection?.indexes,
-      incoming: collectionDescription.indexes
+      existing: existingCollection,
+      incoming: collectionDescription
     })
     if (newlyUnique.length > 0) {
       const dataBackend = await resolveBackend({
@@ -445,18 +450,27 @@ export class CollectionRequest {
         collectionDescription,
         createdBy: invokerDid(request),
         ...(ifMatch !== undefined && { ifMatch }),
-        // Re-evaluate the encryption-descriptor rails atomically with the write,
-        // against the prior the backend re-reads under its lock: the early
-        // check above ran against a pre-lock read, so without this a
-        // concurrent descriptor write in between could be silently clobbered (an
-        // appended epoch dropped by this full replacement) even though both
-        // writers passed the rails -- the append-only guarantee must hold
-        // unconditionally, not just under `If-Match`.
-        assertTransition: prior =>
+        // Re-evaluate the encryption-descriptor rails and the `plaintext` /
+        // `encryption` exclusion atomically with the write, against the prior
+        // the backend re-reads under its lock: the early checks above ran
+        // against a pre-lock read, so without this a concurrent descriptor
+        // write in between could be silently clobbered (an appended epoch, or a
+        // just-added `plaintext`, dropped by this full replacement) even though
+        // both writers passed the checks -- the guarantees must hold
+        // unconditionally, not just under `If-Match`. The exclusion is checked
+        // against what this write leaves in place: the supplied member, else
+        // the prior's.
+        assertTransition: prior => {
           assertEncryptionDescriptorTransition({
             existing: prior?.encryption,
             incoming: collectionDescription.encryption
           })
+          assertPlaintextNotEncrypted({
+            plaintext: suppliedPlaintext ?? prior?.plaintext,
+            encryption: suppliedEncryption ?? prior?.encryption,
+            requestName
+          })
+        }
       })
     } catch (err) {
       // Rethrow a typed ProblemError from the data-plane backend unchanged
@@ -924,7 +938,7 @@ export class CollectionRequest {
    * - `equality` -- the plaintext equality query (the `equality-query` backend
    *   feature): `{equals | has, count, limit, cursor}` evaluated against the
    *   attributes the server extracts from the Collection's Resources per its
-   *   declared `indexes`, answering `{documents, hasMore, cursor?}` (each
+   *   declared `plaintext.indexes`, answering `{documents, hasMore, cursor?}` (each
    *   document `{id, data?, custom?}`) or `{count}`. Only plaintext Collections
    *   serve it; an encrypted Collection answers `unsupported-operation` (501).
    *
@@ -1033,9 +1047,7 @@ export class CollectionRequest {
       // undeclared/empty declaration means every named attribute fails the
       // fail-closed declared-names check (400). Parse/validate the query body
       // against it, then let the backend extract, match, and paginate.
-      const indexes = normalizeIndexes({
-        indexes: collectionDescription.indexes
-      })
+      const indexes = declaredIndexesOf({ collectionDescription })
       const parsed = parseEqualityQueryBody({ body, indexes, requestName })
       const result = await dataBackend.queryByEquality({
         spaceId,
@@ -1214,8 +1226,8 @@ export class CollectionRequest {
    * capability-or-policy GET path (a `PublicCanRead` Collection answers a filter
    * query anonymously, so an HTTP cache can serve it); `allowTargetQuery`
    * already tolerates the query string. Every filter attribute MUST be declared
-   * in the Collection's `indexes` (fail-closed 400, which also covers encrypted
-   * Collections -- they can never declare `indexes`); the data-plane backend
+   * in the Collection's `plaintext.indexes` (fail-closed 400, which also covers
+   * encrypted Collections -- they can never carry `plaintext`); the data-plane backend
    * MUST serve `queryByEquality` (else 501). With no `filter[...]` parameter the
    * existing listing behavior is unchanged.
    *
@@ -1275,17 +1287,16 @@ export class CollectionRequest {
     const filters = parseListFilter({ query: request.query, requestName })
     if (filters !== undefined) {
       // Fail-closed declared-names check, the same rule as the POST profile:
-      // every filter attribute MUST be declared in the Collection's `indexes`
-      // (an encrypted Collection has none, so a filter there is always a 400).
-      const indexes = normalizeIndexes({
-        indexes: collectionDescription.indexes
-      })
+      // every filter attribute MUST be declared in the Collection's
+      // `plaintext.indexes` (an encrypted Collection has none, so a filter
+      // there is always a 400).
+      const indexes = declaredIndexesOf({ collectionDescription })
       const declared = new Set(indexes.map(declaration => declaration.name))
       for (const name of Object.keys(filters)) {
         if (!declared.has(name)) {
           throw new InvalidRequestBodyError({
             requestName,
-            detail: `Filter attribute "${name}" is not declared in the Collection's indexes.`,
+            detail: `Filter attribute "${name}" is not declared in the Collection's "plaintext.indexes".`,
             pointer: `#/filter/${name}`
           })
         }
