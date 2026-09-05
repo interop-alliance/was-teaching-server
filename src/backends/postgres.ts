@@ -108,7 +108,8 @@ import {
   DEFAULT_MAX_SPACES_PER_CONTROLLER,
   DEFAULT_MAX_COLLECTIONS_PER_SPACE,
   DEFAULT_MAX_RESOURCES_PER_SPACE,
-  normalizeCountLimit
+  normalizeCountLimit,
+  normalizeCapacityBytes
 } from '../config.default.js'
 import {
   assertWritePrecondition,
@@ -322,12 +323,7 @@ export class PostgresBackend implements StorageBackend {
     }
     this.#schema = schema
     this.logger = logger ?? silentLogger
-    // A non-finite `capacityBytes` (`Infinity` from an explicit `unlimited`)
-    // behaves exactly like unset inside the backend: no configured limit.
-    this.capacityBytes =
-      capacityBytes !== undefined && Number.isFinite(capacityBytes)
-        ? capacityBytes
-        : undefined
+    this.capacityBytes = normalizeCapacityBytes(capacityBytes)
     // This backend buffers each upload in memory as a single `bytea`, so an
     // unbounded per-upload cap is not supported -- fail fast at construction
     // rather than risk an OOM at write time.
@@ -694,37 +690,40 @@ export class PostgresBackend implements StorageBackend {
     includeCollections?: boolean
   }): Promise<BackendUsage> {
     const measuredAt = new Date().toISOString()
-    const { rows } = await this.#pool.query<{ usage_bytes: string }>(
+    const totalQuery = this.#pool.query<{ usage_bytes: string }>(
       'SELECT usage_bytes FROM spaces WHERE space_id = $1',
       [spaceId]
     )
+    // The Space total and the per-Collection breakdown are independent reads:
+    // issue both on the pool at once rather than paying the two round trips
+    // serially. Per-Collection usage sums both Resource content bytes and
+    // chunk bytes (the `chunked-streams` feature) so the breakdown agrees with
+    // the Space total in the transactional counter.
+    const [{ rows }, collectionRows] = await Promise.all([
+      totalQuery,
+      includeCollections
+        ? this.#pool
+            .query<{ collection_id: string; usage: string }>(
+              `SELECT collection_id, COALESCE(SUM(bytes), 0) AS usage FROM (
+                 SELECT collection_id, size_bytes AS bytes FROM resources
+                   WHERE space_id = $1
+                 UNION ALL
+                 SELECT collection_id, size AS bytes FROM chunks
+                   WHERE space_id = $1
+               ) usage_rows
+                GROUP BY collection_id
+                ORDER BY collection_id`,
+              [spaceId]
+            )
+            .then(result => result.rows)
+        : undefined
+    ])
     const usageBytes = rows[0] ? Number(rows[0].usage_bytes) : 0
-
-    let usageByCollection: CollectionUsage[] | undefined
-    if (includeCollections) {
-      // Per-Collection usage sums both Resource content bytes and chunk bytes
-      // (the `chunked-streams` feature) so the breakdown agrees with the
-      // Space total in the transactional counter.
-      const { rows: collectionRows } = await this.#pool.query<{
-        collection_id: string
-        usage: string
-      }>(
-        `SELECT collection_id, COALESCE(SUM(bytes), 0) AS usage FROM (
-           SELECT collection_id, size_bytes AS bytes FROM resources
-             WHERE space_id = $1
-           UNION ALL
-           SELECT collection_id, size AS bytes FROM chunks
-             WHERE space_id = $1
-         ) usage_rows
-          GROUP BY collection_id
-          ORDER BY collection_id`,
-        [spaceId]
-      )
-      usageByCollection = collectionRows.map(row => ({
+    const usageByCollection: CollectionUsage[] | undefined =
+      collectionRows?.map(row => ({
         id: row.collection_id,
         usageBytes: Number(row.usage)
       }))
-    }
 
     return {
       ...backendUsageFieldsFor({
@@ -1737,26 +1736,21 @@ export class PostgresBackend implements StorageBackend {
           is_json, size_bytes, version, meta_version, custom, deleted,
           created_at, updated_at, created_by, epoch
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL, false, $9, $9, $10, $11)`
-      if (ifNoneMatch && prior === undefined) {
-        try {
-          await client.query(insertSql, values)
-        } catch (err) {
-          if ((err as { code?: string }).code === '23505') {
-            throw new PreconditionFailedError({
-              detail: `Resource '${resourceId}' already exists (If-None-Match: *).`
-            })
-          }
-          throw err
-        }
-      } else {
-        // The conflict update derives `version` from the row (`resources.
-        // version + 1`), not from the pre-read: if a concurrent creator
-        // slipped in after our lock-nothing SELECT, the counter still
-        // advances monotonically instead of two writers both claiming
-        // version 1 (an ETag anomaly). RETURNING reports the version that
-        // actually landed.
-        const { rows: written } = await client.query<{ version: number }>(
-          `${insertSql}
+      /**
+       * `created_at` / `meta_version` / `custom` are deliberately NOT in the
+       * conflict update: an overwrite keeps the original creation time (also
+       * across a tombstone, as the filesystem sidecar does) and the metadata
+       * counters as they stand on the row. `created_by` is likewise NOT
+       * backfilled from `EXCLUDED`: the conflict path always means a prior
+       * row already existed (including the race where a concurrent creator's
+       * INSERT landed between our lock-nothing SELECT and this statement), so
+       * `resources.created_by` -- the prior row's own value, absent or not --
+       * is authoritative and this write's `createdBy` is ignored entirely.
+       */
+      return this.#insertOrUpsertVersioned({
+        client,
+        insertSql,
+        conflictSql: `
            ON CONFLICT (space_id, collection_id, resource_id) DO UPDATE SET
              content_type = EXCLUDED.content_type,
              content = EXCLUDED.content,
@@ -1766,23 +1760,76 @@ export class PostgresBackend implements StorageBackend {
              deleted = false,
              updated_at = EXCLUDED.updated_at,
              created_by = resources.created_by,
-             epoch = EXCLUDED.epoch
-           RETURNING version`,
-          values
-        )
-        return { version: written[0]!.version }
-      }
-      // `created_at` / `meta_version` / `custom` are deliberately NOT in the
-      // conflict update: an overwrite keeps the original creation time (also
-      // across a tombstone, as the filesystem sidecar does) and the metadata
-      // counters as they stand on the row. `created_by` is likewise NOT
-      // backfilled from `EXCLUDED`: the conflict path always means a prior
-      // row already existed (including the race where a concurrent creator's
-      // INSERT landed between our lock-nothing SELECT and this statement), so
-      // `resources.created_by` -- the prior row's own value, absent or not --
-      // is authoritative and this write's `createdBy` is ignored entirely.
-      return { version }
+             epoch = EXCLUDED.epoch`,
+        values,
+        createOnly: ifNoneMatch === true && prior === undefined,
+        version,
+        conflictDetail: `Resource '${resourceId}' already exists (If-None-Match: *).`
+      })
     })
+  }
+
+  /**
+   * Lands a versioned row write on `client`, the shared tail of `writeResource`
+   * and `writeChunk`. Under `createOnly` (an `If-None-Match: *` write whose
+   * pre-read found NO prior row) it runs the bare INSERT, so the primary key
+   * stays the arbiter against a creator that does not take the same-key lock
+   * (`importSpace`'s plain INSERTs): the loser's unique violation (SQLSTATE
+   * 23505) maps to the 412 the precondition would have thrown. Otherwise it
+   * appends `conflictSql` and RETURNING to the INSERT as an upsert.
+   *
+   * The conflict update derives `version` from the row (`<table>.version +
+   * 1`), not from the pre-read: if a concurrent creator slipped in after our
+   * lock-nothing SELECT, the counter still advances monotonically instead of
+   * two writers both claiming version 1 (an ETag anomaly). RETURNING reports
+   * the version that actually landed.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.insertSql {string}   the INSERT (no ON CONFLICT clause)
+   * @param options.conflictSql {string}   the `ON CONFLICT ... DO UPDATE SET`
+   *   clause appended on the upsert path; must set `version` from the row
+   * @param options.values {unknown[]}   the INSERT's bind values
+   * @param options.createOnly {boolean}   run the bare INSERT (see above)
+   * @param options.version {number}   the pre-read-derived version, reported
+   *   when the bare INSERT lands
+   * @param options.conflictDetail {string}   `detail` of the 412 a unique
+   *   violation on the bare INSERT maps to
+   * @returns {Promise<{ version: number }>}
+   */
+  async #insertOrUpsertVersioned({
+    client,
+    insertSql,
+    conflictSql,
+    values,
+    createOnly,
+    version,
+    conflictDetail
+  }: {
+    client: pg.PoolClient
+    insertSql: string
+    conflictSql: string
+    values: unknown[]
+    createOnly: boolean
+    version: number
+    conflictDetail: string
+  }): Promise<{ version: number }> {
+    if (createOnly) {
+      try {
+        await client.query(insertSql, values)
+      } catch (err) {
+        if ((err as { code?: string }).code === '23505') {
+          throw new PreconditionFailedError({ detail: conflictDetail })
+        }
+        throw err
+      }
+      return { version }
+    }
+    const { rows: written } = await client.query<{ version: number }>(
+      `${insertSql}${conflictSql}
+           RETURNING version`,
+      values
+    )
+    return { version: written[0]!.version }
   }
 
   /**
@@ -2196,39 +2243,23 @@ export class PostgresBackend implements StorageBackend {
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
       // Create-if-absent atomicity mirrors `writeResource`: concurrent
       // creators through this method are serialized by `#lockSameKeyCreate`
-      // above, and against a writer that does not take that lock
-      // (`importSpace`'s plain INSERTs) the plain INSERT keeps the primary key
-      // as the arbiter -- a racing creator's unique violation maps to the 412
-      // the precondition would have thrown.
-      if (ifNoneMatch && prior === undefined) {
-        try {
-          await client.query(insertSql, values)
-        } catch (err) {
-          if ((err as { code?: string }).code === '23505') {
-            throw new PreconditionFailedError({
-              detail: `Chunk '${chunkLabel}' already exists (If-None-Match: *).`
-            })
-          }
-          throw err
-        }
-        return { version }
-      }
-      // The conflict update derives `version` from the row (`chunks.version +
-      // 1`), not from the pre-read, so a concurrent creator that slipped in
-      // after our lock-nothing SELECT still advances the counter monotonically.
-      // RETURNING reports the version that actually landed.
-      const { rows: written } = await client.query<{ version: number }>(
-        `${insertSql}
+      // above; the race against a writer that does not take that lock is
+      // settled inside `#insertOrUpsertVersioned`.
+      return this.#insertOrUpsertVersioned({
+        client,
+        insertSql,
+        conflictSql: `
          ON CONFLICT (space_id, collection_id, resource_id, chunk_index)
          DO UPDATE SET
            content_type = EXCLUDED.content_type,
            bytes = EXCLUDED.bytes,
            size = EXCLUDED.size,
-           version = chunks.version + 1
-         RETURNING version`,
-        values
-      )
-      return { version: written[0]!.version }
+           version = chunks.version + 1`,
+        values,
+        createOnly: ifNoneMatch === true && prior === undefined,
+        version,
+        conflictDetail: `Chunk '${chunkLabel}' already exists (If-None-Match: *).`
+      })
     })
   }
 

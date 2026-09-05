@@ -20,6 +20,7 @@ import {
   EncryptionSchemeMismatchError
 } from '../errors.js'
 import { isValidEdvDocument } from './edvEnvelope.js'
+import { isPlainObject } from './isPlainObject.js'
 
 /**
  * The encryption schemes this server recognizes and can enforce on write (spec
@@ -220,7 +221,7 @@ function assertValidEncryptionEpochs({
   const ids = new Set<string>()
   epochs.forEach((epoch, epochIndex) => {
     const pointer = `#/encryption/epochs/${epochIndex}`
-    if (typeof epoch !== 'object' || epoch === null || Array.isArray(epoch)) {
+    if (!isPlainObject(epoch)) {
       throw new InvalidRequestBodyError({
         requestName,
         detail: 'Each "encryption.epochs" entry must be an object.',
@@ -512,14 +513,11 @@ export function assertEncryptedWriteConforms({
   contentType?: string
   body: unknown
 }): void {
-  const scheme = collectionDescription.encryption?.scheme
-  if (scheme === undefined) {
+  const resolved = resolveEncryptionProfile({ collectionDescription })
+  if (resolved === undefined) {
     return
   }
-  const profile = SUPPORTED_ENCRYPTION_SCHEMES[scheme]
-  if (!profile) {
-    return
-  }
+  const { scheme, profile } = resolved
   // Gate 1: the stored representation's media type. Compare the bare media type
   // (parameters like `; charset=utf-8` stripped), case-insensitively.
   const mediaType = (contentType ?? '').split(';')[0]!.trim().toLowerCase()
@@ -535,6 +533,31 @@ export function assertEncryptedWriteConforms({
       detail: `Resource body is not a structurally valid '${scheme}' encryption envelope.`
     })
   }
+}
+
+/**
+ * Resolves a Collection's declared encryption scheme to its registry profile.
+ * Returns `undefined` when the Collection has no descriptor (plaintext) or --
+ * defensively -- names an unrecognized scheme, so the write-time conformance
+ * checks below are a no-op in both cases.
+ * @param options {object}
+ * @param options.collectionDescription {{ encryption?: CollectionEncryption }}
+ *   the target Collection's stored description
+ * @returns {{ scheme: string, profile: object } | undefined}
+ */
+function resolveEncryptionProfile({
+  collectionDescription
+}: {
+  collectionDescription: { encryption?: CollectionEncryption }
+}):
+  | { scheme: string; profile: (typeof SUPPORTED_ENCRYPTION_SCHEMES)[string] }
+  | undefined {
+  const scheme = collectionDescription.encryption?.scheme
+  if (scheme === undefined) {
+    return undefined
+  }
+  const profile = SUPPORTED_ENCRYPTION_SCHEMES[scheme]
+  return profile ? { scheme, profile } : undefined
 }
 
 /**
@@ -566,14 +589,11 @@ export function assertEncryptedMetaConforms({
   collectionDescription: { encryption?: CollectionEncryption }
   custom: unknown
 }): void {
-  const scheme = collectionDescription.encryption?.scheme
-  if (scheme === undefined) {
+  const resolved = resolveEncryptionProfile({ collectionDescription })
+  if (resolved === undefined) {
     return
   }
-  const profile = SUPPORTED_ENCRYPTION_SCHEMES[scheme]
-  if (!profile) {
-    return
-  }
+  const { scheme, profile } = resolved
   if (!profile.validateEnvelope(custom)) {
     throw new EncryptionSchemeMismatchError({
       detail: `Resource metadata "custom" is not a structurally valid '${scheme}' encryption envelope.`

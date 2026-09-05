@@ -7,7 +7,10 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
 import { isRootInvocation, verifyZcap } from '../zcap.js'
 import { invalidateSpaceDescription } from '../lib/spaceDescriptionCache.js'
-import { verifyBodyControllerConsent } from './controllerConsent.js'
+import {
+  assertBodyController,
+  verifyBodyControllerConsent
+} from './controllerConsent.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidId } from '../lib/validateId.js'
 import { spacePath, spacesPath } from '../lib/paths.js'
@@ -24,11 +27,7 @@ import {
   defaultSpaceType,
   isAuxiliarySpace
 } from '../lib/spaceType.js'
-import {
-  SpaceControllerMismatchError,
-  InvalidRequestBodyError,
-  IdConflictError
-} from '../errors.js'
+import { SpaceControllerMismatchError, IdConflictError } from '../errors.js'
 import type { IDID, SpaceSummary, SpaceListing } from '../types.js'
 
 export class SpacesRepositoryRequest {
@@ -231,15 +230,8 @@ export class SpacesRepositoryRequest {
     const { body } = request
     const { serverUrl, storage } = request.server
 
-    // The Space Description body must carry a controller DID. The `name`
-    // property is optional (see spec: Space Description object).
-    if (!body?.controller) {
-      throw new InvalidRequestBodyError({
-        requestName: 'Create Space',
-        detail: 'Space Description body requires a "controller" property.',
-        pointer: '#/controller'
-      })
-    }
+    // The Space Description body must carry a controller DID.
+    assertBodyController({ body, requestName: 'Create Space' })
     // Reject a malformed / non-`did:key` controller before it is stored.
     assertValidController(body.controller, { requestName: 'Create Space' })
     // The OPTIONAL `type` array subtypes `Space` (e.g. an auxiliary Space).

@@ -12,23 +12,16 @@ import {
 import { resolveResourceInput } from './resourceInput.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
-import {
-  assertEncryptedWriteConforms,
-  assertEncryptedMetaConforms
-} from '../lib/encryption.js'
+import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { assertValidIds } from '../lib/validateId.js'
-import { parseCustomMetadata } from '../lib/customMetadata.js'
+import { resolveMetadataCustom } from '../lib/customMetadata.js'
+import { assertJsonObjectBody } from '../lib/requestBody.js'
 import { declaredIndexesOf, uniqueIndexesOf } from '../lib/equalityIndex.js'
 import { resourcePath, metaPath } from '../lib/paths.js'
 import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
 import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
 import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
-import {
-  InvalidRequestBodyError,
-  ResourceNotFoundError,
-  rethrowOrWrapStorageError
-} from '../errors.js'
-import type { ResourceMetadataCustom } from '../types.js'
+import { ResourceNotFoundError, rethrowOrWrapStorageError } from '../errors.js'
 
 export class ResourceRequest {
   /**
@@ -389,20 +382,15 @@ export class ResourceRequest {
     // Pre-auth body shape (400): the body MUST be a JSON object. The deeper
     // `custom` shape check is deferred until after authorization, where the
     // Collection's `encryption` descriptor decides whether `custom` is a plaintext
-    // `{ name, tags }` (validated by `parseCustomMetadata`) or an opaque envelope
-    // (validated structurally by `assertEncryptedMetaConforms`) -- neither is
-    // knowable before reading the Collection Description, and gating the check on
-    // auth keeps a 422/400 observable only to a caller authorized to write here.
-    if (
-      typeof request.body !== 'object' ||
-      request.body === null ||
-      Array.isArray(request.body)
-    ) {
-      throw new InvalidRequestBodyError({
-        requestName,
-        detail: 'Request body must be a JSON object.'
-      })
-    }
+    // `{ name, tags }` or an opaque envelope (see `resolveMetadataCustom`) --
+    // neither is knowable before reading the Collection Description, and gating
+    // the check on auth keeps a 422/400 observable only to a caller authorized to
+    // write here.
+    const body = assertJsonObjectBody({
+      body: request.body,
+      requestName,
+      detail: 'Request body must be a JSON object.'
+    })
 
     // Verify (capability-only): writing metadata requires a valid capability
     // invocation (the `PUT` action); no access-control-policy fallback.
@@ -427,24 +415,18 @@ export class ResourceRequest {
     // the `custom` value MUST be a conforming envelope of the scheme (stored
     // opaquely, `422` on a plaintext/malformed value); on a plaintext Collection
     // it MUST be a well-formed `{ name, tags }` object (`400` otherwise).
-    let custom: ResourceMetadataCustom | Record<string, unknown>
-    if (collectionDescription.encryption?.scheme !== undefined) {
-      const rawCustom = (request.body as Record<string, unknown>).custom
-      assertEncryptedMetaConforms({ collectionDescription, custom: rawCustom })
-      custom = rawCustom as Record<string, unknown>
-    } else {
-      custom = parseCustomMetadata({ body: request.body, requestName })
-    }
+    const custom = resolveMetadataCustom({
+      collectionDescription,
+      body,
+      requestName
+    })
 
     // The key-epoch stamp (the `key-epochs` feature) MAY also be declared here
     // as a top-level `epoch` member (a sibling of `custom`). Unlike `custom`
     // (full-replace), an omitted `epoch` PRESERVES the stored value -- it
     // describes the content write, not the metadata write. A present value must
     // be a non-empty string (400).
-    const { epoch } = parseMetaEpoch({
-      body: request.body as Record<string, unknown>,
-      requestName
-    })
+    const { epoch } = parseMetaEpoch({ body, requestName })
 
     // Write Metadata to the Collection's selected (data-plane) backend. An
     // `If-Match` / `If-None-Match` precondition (the `conditional-writes`

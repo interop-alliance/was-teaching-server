@@ -35,8 +35,12 @@ import {
 } from '../lib/kmsRecordCipher.js'
 import { isUrlSafeSegment } from '../lib/validateId.js'
 import { kmsKeysPath } from '../lib/paths.js'
-import { decodeCursor } from '../lib/cursor.js'
-import { nextPageUrl } from '../lib/pagination.js'
+import { nextPageUrl, seekPage } from '../lib/pagination.js'
+import { isPlainObject } from '../lib/isPlainObject.js'
+import {
+  assertJsonObjectBody,
+  assertOnlyAllowedKeys
+} from '../lib/requestBody.js'
 import { KEY_LIST_LIMIT } from '../config.default.js'
 import {
   InvalidRequestBodyError,
@@ -96,22 +100,18 @@ function assertOperationEnvelope({
   allowedKeys: string[]
   requestName: string
 }): Record<string, unknown> {
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: 'Operation body must be a JSON object.'
-    })
-  }
-  const envelope = body as Record<string, unknown>
-  for (const key of Object.keys(envelope)) {
-    if (key !== '@context' && key !== 'type' && !allowedKeys.includes(key)) {
-      throw new InvalidRequestBodyError({
-        requestName,
-        detail: `Unexpected operation property "${key}".`,
-        pointer: `#/${key}`
-      })
-    }
-  }
+  const envelope = assertJsonObjectBody({
+    body,
+    requestName,
+    detail: 'Operation body must be a JSON object.'
+  })
+  assertOnlyAllowedKeys({
+    value: envelope,
+    allowedKeys: ['@context', 'type', ...allowedKeys],
+    requestName,
+    label: 'operation property',
+    pointerPrefix: '#'
+  })
   return envelope
 }
 
@@ -130,9 +130,9 @@ function assertOperationEnvelope({
  * @param [options.kmsRecordKek] {KmsRecordKekRegistry}   the configured KEK
  *   registry (`request.server.kmsRecordKek`), or `undefined` when disabled
  * @param options.requestName {string}   request name used in error titles
- * @returns {KmsKeyRecord}   the decrypted (secret-bearing) record
+ * @returns {Promise<KmsKeyRecord>}   the decrypted (secret-bearing) record
  */
-function decryptStoredKeyRecord({
+async function decryptStoredKeyRecord({
   record,
   kmsRecordKek,
   requestName
@@ -140,9 +140,9 @@ function decryptStoredKeyRecord({
   record: KmsKeyRecord
   kmsRecordKek?: KmsRecordKekRegistry
   requestName: string
-}): KmsKeyRecord {
+}): Promise<KmsKeyRecord> {
   try {
-    return decryptKeyRecord({
+    return await decryptKeyRecord({
       record,
       kekLoader: recordKekLoader(kmsRecordKek)
     })
@@ -216,32 +216,25 @@ function assertGenerateKeyTarget({
   publicAlias?: string
   publicAliasTemplate?: string
 } {
-  if (
-    typeof invocationTarget !== 'object' ||
-    invocationTarget === null ||
-    Array.isArray(invocationTarget)
-  ) {
+  if (!isPlainObject(invocationTarget)) {
     throw new InvalidRequestBodyError({
       requestName,
       detail: 'Operation "invocationTarget" must be an object.',
       pointer: '#/invocationTarget'
     })
   }
-  const allowedKeys = [
-    'type',
-    'maxCapabilityChainLength',
-    'publicAlias',
-    'publicAliasTemplate'
-  ]
-  for (const key of Object.keys(invocationTarget)) {
-    if (!allowedKeys.includes(key)) {
-      throw new InvalidRequestBodyError({
-        requestName,
-        detail: `Unexpected invocationTarget property "${key}".`,
-        pointer: `#/invocationTarget/${key}`
-      })
-    }
-  }
+  assertOnlyAllowedKeys({
+    value: invocationTarget,
+    allowedKeys: [
+      'type',
+      'maxCapabilityChainLength',
+      'publicAlias',
+      'publicAliasTemplate'
+    ],
+    requestName,
+    label: 'invocationTarget property',
+    pointerPrefix: '#/invocationTarget'
+  })
   const target = invocationTarget as {
     type?: unknown
     maxCapabilityChainLength?: unknown
@@ -377,7 +370,7 @@ export class KeyRequest {
     }
     const kek = currentRecordKek(request.server.kmsRecordKek)
     if (kek !== undefined) {
-      record = encryptKeyRecord({ record, kek })
+      record = await encryptKeyRecord({ record, kek })
     }
     await storage.insertKey({ keystoreId, localId, record })
 
@@ -569,24 +562,18 @@ export class KeyRequest {
       allowTargetQuery: true
     })
 
-    // The backend returns every record sorted by local id; key records are
-    // insert-once and immutable, so the cursor's `after` names a stable
-    // position -- resume from just past it (falling back to a keyset compare
-    // should the id somehow be absent). The cursor is opaque and validated
-    // here (400 `invalid-cursor` on a malformed token).
+    // The backend returns every record sorted by local id in code-unit order,
+    // so the shared pager's keyset seek resumes strictly after the cursor's
+    // `after` (key records are insert-once and immutable, so that names a
+    // stable position). The cursor is opaque and validated by the pager (400
+    // `invalid-cursor` on a malformed token).
     const keys = await storage.listKeys({ keystoreId })
-    let remaining = keys
-    if (cursor !== undefined) {
-      const { after } = decodeCursor(cursor)
-      const index = keys.findIndex(entry => entry.localId === after)
-      remaining =
-        index === -1
-          ? keys.filter(entry => entry.localId > after)
-          : keys.slice(index + 1)
-    }
-
-    const hasMore = remaining.length > KEY_LIST_LIMIT
-    const page = remaining.slice(0, KEY_LIST_LIMIT)
+    const { page, hasMore } = seekPage({
+      items: keys,
+      cursor,
+      pageSize: KEY_LIST_LIMIT,
+      keyOf: entry => entry.localId
+    })
     // Project directly from the stored record -- NO decrypt. The description
     // reads only public fields, which stay plaintext at rest even under the
     // record cipher (the `encrypted` envelope replaces only the secret subset).

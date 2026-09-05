@@ -17,6 +17,40 @@ import {
 } from './errors.js'
 
 /**
+ * The shape of the `onRequest` / `preValidation` hooks the provisioning gate
+ * and `unlessProvisioningAuthorized` deal in.
+ */
+type OnRequestHook = (
+  request: FastifyRequest,
+  reply: FastifyReply
+) => Promise<void>
+
+/**
+ * Wraps a hook so it is skipped for a provisioning-authorized request. A
+ * request the provisioning gate has granted (e.g. a valid onboarding token)
+ * carries a Bearer token, not an HTTP Signature: there is no capability
+ * invocation to require or parse, and no signature to cover a `Digest` header
+ * with, so the auth and digest hooks have nothing to do. Every other request
+ * reaches the wrapped hook unchanged. The gate runs first in the group hook
+ * chain, so the flag is already settled when the wrapped hooks run.
+ * @param hook {OnRequestHook}   the hook to guard
+ * @returns {OnRequestHook}
+ */
+export function unlessProvisioningAuthorized(
+  hook: OnRequestHook
+): OnRequestHook {
+  return async function skipWhenProvisioningAuthorized(
+    request: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<void> {
+    if (request.provisioningAuthorized) {
+      return
+    }
+    await hook(request, reply)
+  }
+}
+
+/**
  * Builds the provisioning-gate onRequest hook, closed over the exact route URLs
  * it acts on. The caller is routes.ts, which passes the URLs of the very routes
  * it registers in that group -- so the gated set cannot drift from the
@@ -35,7 +69,7 @@ import {
  */
 export function provisioningGateFor(
   routeUrls: Iterable<string>
-): (request: FastifyRequest, reply: FastifyReply) => Promise<void> {
+): OnRequestHook {
   const gatedRoutes = new Set(routeUrls)
 
   return async function provisioningGate(

@@ -12,7 +12,7 @@ import type { FastifyRequest } from 'fastify'
 import { parseSignatureHeader } from '@interop/http-signature-header'
 import { decodeEmbeddedCapability } from '@interop/http-signature-zcap-verify'
 import { handleZcapVerify, isRootInvocation } from '../zcap.js'
-import type { ProblemError } from '../errors.js'
+import { InvalidRequestBodyError, type ProblemError } from '../errors.js'
 import type { IDID } from '../types.js'
 
 /**
@@ -232,4 +232,31 @@ export async function verifyBodyControllerConsent({
     }
     throw err
   }
+}
+
+/**
+ * Asserts a Space Description body carries a `controller` DID (the `name`
+ * property is optional; see spec: Space Description object), narrowing it.
+ * Shared by Create Space and Update Space, the two operations that take a
+ * Space Description body.
+ * @param options {object}
+ * @param [options.body] {{ controller?: unknown }}   the parsed request body
+ * @param options.requestName {string}   request name used in the error title
+ * @returns {IDID}   the body's controller
+ */
+export function assertBodyController({
+  body,
+  requestName
+}: {
+  body?: { controller?: IDID }
+  requestName: string
+}): IDID {
+  if (!body?.controller) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail: 'Space Description body requires a "controller" property.',
+      pointer: '#/controller'
+    })
+  }
+  return body.controller
 }

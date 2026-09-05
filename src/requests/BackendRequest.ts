@@ -15,7 +15,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndVerify } from './spaceContext.js'
 import { assertValidIds } from '../lib/validateId.js'
 import {
-  DEFAULT_BACKEND_ID,
+  assertNotDefaultBackendId,
   assertProviderAllowed,
   assertValidBackendId,
   buildBackendRecord,
@@ -73,13 +73,7 @@ export class BackendRequest {
     // After verification (so an unauthorized caller cannot probe ids): the
     // `default` id is reserved for the server backend, and POST must not replace
     // an existing record (create-or-replace by id is PUT's job).
-    if (registration.id === DEFAULT_BACKEND_ID) {
-      throw new InvalidRequestBodyError({
-        requestName,
-        detail: `"${DEFAULT_BACKEND_ID}" is the reserved server backend id and cannot be registered.`,
-        pointer: '#/id'
-      })
-    }
+    assertNotDefaultBackendId({ backendId: registration.id, requestName })
     if (await storage.getBackend({ spaceId, backendId: registration.id })) {
       throw new IdConflictError({ kind: 'Backend' })
     }
@@ -138,13 +132,7 @@ export class BackendRequest {
         pointer: '#/id'
       })
     }
-    if (backendId === DEFAULT_BACKEND_ID) {
-      throw new InvalidRequestBodyError({
-        requestName,
-        detail: `"${DEFAULT_BACKEND_ID}" is the reserved server backend id and cannot be registered.`,
-        pointer: '#/id'
-      })
-    }
+    assertNotDefaultBackendId({ backendId, requestName })
 
     // Verify (capability-only): no policy fallback for a write.
     await fetchSpaceAndVerify({

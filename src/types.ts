@@ -1257,9 +1257,11 @@ declare module 'fastify' {
     /**
      * Set by the provisioning gate when a request to a provisioning endpoint
      * was authorized by the configured provisioning policy (e.g. a valid
-     * onboarding token) instead of a capability invocation. When set, the auth
-     * and digest hooks and the handler's controller-consent check are skipped
-     * (the request carries a Bearer token, not an HTTP Signature).
+     * onboarding token) instead of a capability invocation. The group hook
+     * chain wraps its auth and digest hooks in `unlessProvisioningAuthorized`,
+     * which skips them when this is set, and the handler skips its
+     * controller-consent check (the request carries a Bearer token, not an
+     * HTTP Signature).
      */
     provisioningAuthorized?: boolean
     /**

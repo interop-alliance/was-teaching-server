@@ -13,7 +13,12 @@
  * data and grants no access to any Space.
  */
 import { randomUUID } from 'node:crypto'
-import type { FastifyInstance, FastifyPluginOptions } from 'fastify'
+import type {
+  FastifyInstance,
+  FastifyPluginOptions,
+  FastifyReply,
+  FastifyRequest
+} from 'fastify'
 import { LruCache } from '@interop/lru-memoize'
 
 /**
@@ -113,6 +118,27 @@ export async function initExchangeRoutes(
   }
 
   /**
+   * Handles one `:exchangeId` route: reads the live record and answers an
+   * unknown or expired id with an empty 404, otherwise hands the record to
+   * `respond`.
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @param respond {(record: ExchangeRecord) => FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  async function withExchange(
+    request: FastifyRequest<{ Params: { exchangeId: string } }>,
+    reply: FastifyReply,
+    respond: (record: ExchangeRecord) => FastifyReply
+  ): Promise<FastifyReply> {
+    const record = await readExchange(request.params.exchangeId)
+    if (!record) {
+      return reply.code(404).send()
+    }
+    return respond(record)
+  }
+
+  /**
    * The canonical URL of an exchange on this server. Read from the per-request
    * instance, so a server whose `serverUrl` is corrected after `listen()`
    * (the test helper) still mints correct URLs.
@@ -166,61 +192,50 @@ export async function initExchangeRoutes(
 
   app.get<{ Params: { exchangeId: string } }>(
     '/workflows/ephemeral/exchanges/:exchangeId',
-    async (request, reply) => {
-      const { exchangeId } = request.params
-      const record = await readExchange(exchangeId)
-      if (!record) {
-        return reply.code(404).send()
-      }
-      if (record.response === undefined) {
-        return reply.send({ id: exchangeId, sequence: 0, state: 'pending' })
-      }
-      return reply.send({
-        id: exchangeId,
-        sequence: 1,
-        state: 'complete',
-        response: record.response
+    async (request, reply) =>
+      withExchange(request, reply, record => {
+        const { exchangeId } = request.params
+        if (record.response === undefined) {
+          return reply.send({ id: exchangeId, sequence: 0, state: 'pending' })
+        }
+        return reply.send({
+          id: exchangeId,
+          sequence: 1,
+          state: 'complete',
+          response: record.response
+        })
       })
-    }
   )
 
   app.post<{ Params: { exchangeId: string }; Body: unknown }>(
     '/workflows/ephemeral/exchanges/:exchangeId',
     { bodyLimit: 65536 },
-    async (request, reply) => {
-      const { exchangeId } = request.params
-      const record = await readExchange(exchangeId)
-      if (!record) {
-        return reply.code(404).send()
-      }
+    async (request, reply) =>
+      withExchange(request, reply, record => {
+        // "Begin": hand back the stored request verbatim.
+        if (isBeginBody(request.body)) {
+          return reply.send(record.request)
+        }
 
-      // "Begin": hand back the stored request verbatim.
-      if (isBeginBody(request.body)) {
-        return reply.send(record.request)
-      }
-
-      // Otherwise this is the response half of the exchange. Last write wins.
-      record.response = request.body
-      return reply.send(request.body)
-    }
+        // Otherwise this is the response half of the exchange. Last write
+        // wins.
+        record.response = request.body
+        return reply.send(request.body)
+      })
   )
 
   app.get<{ Params: { exchangeId: string } }>(
     '/workflows/ephemeral/exchanges/:exchangeId/protocols',
-    async (request, reply) => {
-      const { exchangeId } = request.params
-      const record = await readExchange(exchangeId)
-      if (!record) {
-        return reply.code(404).send()
-      }
-      return reply.send({
-        protocols: {
-          vcapi: exchangeUrl({
-            serverUrl: request.server.serverUrl,
-            exchangeId
-          })
-        }
-      })
-    }
+    async (request, reply) =>
+      withExchange(request, reply, () =>
+        reply.send({
+          protocols: {
+            vcapi: exchangeUrl({
+              serverUrl: request.server.serverUrl,
+              exchangeId: request.params.exchangeId
+            })
+          }
+        })
+      )
   )
 }

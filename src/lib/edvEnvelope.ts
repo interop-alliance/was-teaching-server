@@ -8,6 +8,7 @@
  * ciphertext or key values -- it validates that the document carries a
  * plausible JWE, not that it decrypts.
  */
+import { isPlainObject } from './isPlainObject.js'
 
 /**
  * True if `entry` is a structurally valid JWE general-serialization
@@ -21,21 +22,15 @@
  * @returns {boolean}
  */
 export function isValidJweRecipientEntry(entry: unknown): boolean {
-  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+  if (!isPlainObject(entry)) {
     return false
   }
-  const recipient = entry as Record<string, unknown>
-  if (
-    recipient.header !== undefined &&
-    (typeof recipient.header !== 'object' ||
-      recipient.header === null ||
-      Array.isArray(recipient.header))
-  ) {
+  if (entry.header !== undefined && !isPlainObject(entry.header)) {
     return false
   }
   if (
-    recipient.encrypted_key !== undefined &&
-    typeof recipient.encrypted_key !== 'string'
+    entry.encrypted_key !== undefined &&
+    typeof entry.encrypted_key !== 'string'
   ) {
     return false
   }
@@ -55,10 +50,10 @@ export function isValidJweRecipientEntry(entry: unknown): boolean {
  * @returns {boolean}
  */
 export function isValidEdvEnvelope(body: unknown): boolean {
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+  if (!isPlainObject(body)) {
     return false
   }
-  const envelope = body as Record<string, unknown>
+  const envelope = body
 
   // Required: a non-empty string `ciphertext`.
   if (
@@ -113,8 +108,8 @@ export function isValidEdvEnvelope(body: unknown): boolean {
  * @returns {boolean}
  */
 export function isValidEdvDocument(body: unknown): boolean {
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+  if (!isPlainObject(body)) {
     return false
   }
-  return isValidEdvEnvelope((body as { jwe?: unknown }).jwe)
+  return isValidEdvEnvelope(body.jwe)
 }

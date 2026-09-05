@@ -562,6 +562,66 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
         null
       )
     })
+
+    // RFC 3394 admits any multiple of 8 bytes from 16 up, not only the
+    // three AES key sizes (16/24/32).
+    for (const length of [16, 24, 40, 48, 64]) {
+      it(`round-trips a ${length}-byte key`, async () => {
+        const kek = (await keystoreAgent.generateKey({ type: 'kek' })) as Kek
+        const material = new Uint8Array(randomBytes(length))
+        const wrappedKey = (await kek.wrapKey({
+          unwrappedKey: material
+        })) as Uint8Array
+        assert.equal(wrappedKey.length, length + 8)
+        const unwrapped = await kek.unwrapKey({ wrappedKey: wrappedKey as any })
+        assert.deepEqual(Buffer.from(unwrapped!), Buffer.from(material))
+      })
+    }
+
+    for (const length of [8, 20]) {
+      it(`refuses to wrap a ${length}-byte key with a 400`, async () => {
+        const kek = (await keystoreAgent.generateKey({ type: 'kek' })) as Kek
+        const keyUrl = (kek as any).kmsId
+        const err = await requestError(
+          client({ signer: alice.signer }).request({
+            url: keyUrl,
+            method: 'POST',
+            action: 'wrapKey',
+            capability: rootZcap(keystoreId),
+            json: {
+              type: 'WrapKeyOperation',
+              invocationTarget: keyUrl,
+              unwrappedKey: Buffer.from(randomBytes(length)).toString(
+                'base64url'
+              )
+            }
+          })
+        )
+        assert.equal(err.status, 400)
+        assert.equal(err.data.errors[0].pointer, '#/unwrappedKey')
+      })
+    }
+
+    it('refuses to unwrap a malformed-length wrapped key with a 400', async () => {
+      const kek = (await keystoreAgent.generateKey({ type: 'kek' })) as Kek
+      const keyUrl = (kek as any).kmsId
+      const err = await requestError(
+        client({ signer: alice.signer }).request({
+          url: keyUrl,
+          method: 'POST',
+          action: 'unwrapKey',
+          capability: rootZcap(keystoreId),
+          json: {
+            type: 'UnwrapKeyOperation',
+            invocationTarget: keyUrl,
+            // 20 bytes: shorter than the 24-byte minimum and not 8-aligned.
+            wrappedKey: Buffer.from(randomBytes(20)).toString('base64url')
+          }
+        })
+      )
+      assert.equal(err.status, 400)
+      assert.equal(err.data.errors[0].pointer, '#/wrappedKey')
+    })
   })
 
   describe('delegated capabilities', () => {

@@ -24,6 +24,10 @@ import { kmsKeystoresPath } from '../lib/paths.js'
 import { fetchKeystoreAndVerify } from './keystoreContext.js'
 import { verifyBodyControllerConsent } from './controllerConsent.js'
 import {
+  assertJsonObjectBody,
+  assertOnlyAllowedKeys
+} from '../lib/requestBody.js'
+import {
   DEFAULT_KMS_MODULE,
   KEYSTORE_LIST_LIMIT,
   KMS_MAX_CHAIN_LENGTH,
@@ -73,25 +77,21 @@ function assertKeystoreConfigBody({
   isUpdate?: boolean
   serverUrl?: string
 }): KeystoreConfigBody {
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: 'Keystore config body must be a JSON object.'
-    })
-  }
-  const allowedKeys = isUpdate
-    ? ['id', 'controller', 'sequence', 'kmsModule']
-    : ['controller', 'sequence', 'kmsModule']
-  for (const key of Object.keys(body)) {
-    if (!allowedKeys.includes(key)) {
-      throw new InvalidRequestBodyError({
-        requestName,
-        detail: `Unexpected keystore config property "${key}".`,
-        pointer: `#/${key}`
-      })
-    }
-  }
-  const config = body as Partial<KeystoreConfigBody>
+  const value = assertJsonObjectBody({
+    body,
+    requestName,
+    detail: 'Keystore config body must be a JSON object.'
+  })
+  assertOnlyAllowedKeys({
+    value,
+    allowedKeys: isUpdate
+      ? ['id', 'controller', 'sequence', 'kmsModule']
+      : ['controller', 'sequence', 'kmsModule'],
+    requestName,
+    label: 'keystore config property',
+    pointerPrefix: '#'
+  })
+  const config = value as Partial<KeystoreConfigBody>
   if (isUpdate && serverUrl) {
     assertValidSpaceController(config.controller, { serverUrl, requestName })
   } else {
@@ -220,14 +220,12 @@ export class KeystoreRequest {
     // The list query schema: `controller` required, no other parameters.
     // The controller names whose keystores are being asked for
     // (and thereby the root controller the invocation must verify against).
-    for (const key of Object.keys(query)) {
-      if (key !== 'controller') {
-        throw new InvalidRequestBodyError({
-          requestName,
-          detail: `Unexpected query parameter "${key}".`
-        })
-      }
-    }
+    assertOnlyAllowedKeys({
+      value: query,
+      allowedKeys: ['controller'],
+      requestName,
+      label: 'query parameter'
+    })
     // A promoted account lists by its did:webvh (self-hosted-only), so the
     // update-shape assert applies here too.
     assertValidSpaceController(query.controller, { serverUrl, requestName })

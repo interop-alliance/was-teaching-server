@@ -13,15 +13,11 @@
  * only the public key and is deliberately not served (client-local instead);
  * requesting it is a clean 400.
  */
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHmac,
-  randomBytes,
-  timingSafeEqual
-} from 'node:crypto'
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
+import { InvalidKeyLengthError } from '@interop/minimal-cipher'
+import { createKek } from '@interop/minimal-cipher/algorithms'
 import {
   InvalidRequestBodyError,
   UnsupportedKeyOperationError
@@ -36,15 +32,6 @@ const KEY_TYPE_CONTEXTS: Record<string, string> = {
   Sha256HmacKey2019: 'https://w3id.org/security/suites/hmac-2019/v1',
   AesKeyWrappingKey2019: 'https://w3id.org/security/suites/aes-2019/v1'
 }
-
-/**
- * AES Key Wrap (RFC 3394) parameters: AES-256 in key-wrap mode with the RFC's
- * default initial value. The IV is the integrity check -- `decipher.final()`
- * throws when the unwrapped output would not reproduce it (i.e. the wrong KEK
- * or corrupted ciphertext).
- */
-const AES_KW_ALGORITHM = 'id-aes256-wrap'
-const AES_KW_DEFAULT_IV = Buffer.alloc(8, 0xa6)
 
 /** Decodes a base64url (no padding) operation field into bytes. */
 function decodeBase64url({
@@ -329,7 +316,39 @@ async function hmacVerify({
   return { verified }
 }
 
-/** WrapKeyOperation on an AES-KW key encryption key. */
+/**
+ * Rethrows minimal-cipher's `InvalidKeyLengthError` (key material or wrapped
+ * bytes of a length RFC 3394 cannot process) as a 400 pointing at the
+ * offending operation field; anything else propagates unchanged.
+ * @param options {object}
+ * @param options.err {unknown}   the caught error
+ * @param options.field {string}   the operation field carrying the bytes
+ * @param options.requestName {string}   request name used in the error title
+ * @returns {never}
+ */
+function rethrowKeyLengthError({
+  err,
+  field,
+  requestName
+}: {
+  err: unknown
+  field: string
+  requestName: string
+}): never {
+  if (err instanceof InvalidKeyLengthError) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail: `Operation "${field}": ${err.message}`,
+      pointer: `#/${field}`
+    })
+  }
+  throw err
+}
+
+/**
+ * WrapKeyOperation on an AES-KW key encryption key. Accepts every RFC 3394
+ * length (a multiple of 8 bytes, at least 16); any other length is a 400.
+ */
 async function aesWrapKey({
   key,
   operation
@@ -337,23 +356,28 @@ async function aesWrapKey({
   key: KmsStoredKey
   operation: Record<string, unknown>
 }): Promise<{ wrappedKey: string }> {
+  const requestName = 'Wrap Key Operation'
   const unwrapped = decodeBase64url({
     value: operation.unwrappedKey,
     field: 'unwrappedKey',
-    requestName: 'Wrap Key Operation'
+    requestName
   })
-  const secret = Buffer.from(key.secret as string, 'base64url')
-  const cipher = createCipheriv(AES_KW_ALGORITHM, secret, AES_KW_DEFAULT_IV)
-  const wrapped = Buffer.concat([cipher.update(unwrapped), cipher.final()])
-  return { wrappedKey: wrapped.toString('base64url') }
+  const kek = await createKek({
+    keyData: Buffer.from(key.secret as string, 'base64url')
+  })
+  try {
+    return { wrappedKey: await kek.wrapKey({ unwrappedKey: unwrapped }) }
+  } catch (err) {
+    rethrowKeyLengthError({ err, field: 'unwrappedKey', requestName })
+  }
 }
 
 /**
  * UnwrapKeyOperation on an AES-KW key encryption key. A failed unwrap -- the
  * RFC 3394 integrity check rejecting the ciphertext (wrong KEK, corrupted
  * `wrappedKey`) -- resolves `unwrappedKey: null` rather than erroring: that is
- * the client's documented contract (`Kek.unwrapKey` resolves null when the key
- * does not match).
+ * the client's documented contract, and the one `createKek`'s `unwrapKey`
+ * already implements (null when the key does not match).
  */
 async function aesUnwrapKey({
   key,
@@ -362,25 +386,26 @@ async function aesUnwrapKey({
   key: KmsStoredKey
   operation: Record<string, unknown>
 }): Promise<{ unwrappedKey: string | null }> {
+  const requestName = 'Unwrap Key Operation'
   const wrapped = decodeBase64url({
     value: operation.wrappedKey,
     field: 'wrappedKey',
-    requestName: 'Unwrap Key Operation'
+    requestName
   })
-  const secret = Buffer.from(key.secret as string, 'base64url')
+  const kek = await createKek({
+    keyData: Buffer.from(key.secret as string, 'base64url')
+  })
+  let unwrapped: Uint8Array | null
   try {
-    const decipher = createDecipheriv(
-      AES_KW_ALGORITHM,
-      secret,
-      AES_KW_DEFAULT_IV
-    )
-    const unwrapped = Buffer.concat([
-      decipher.update(wrapped),
-      decipher.final()
-    ])
-    return { unwrappedKey: unwrapped.toString('base64url') }
-  } catch {
-    return { unwrappedKey: null }
+    unwrapped = await kek.unwrapKey({
+      wrappedKey: wrapped.toString('base64url')
+    })
+  } catch (err) {
+    rethrowKeyLengthError({ err, field: 'wrappedKey', requestName })
+  }
+  return {
+    unwrappedKey:
+      unwrapped === null ? null : Buffer.from(unwrapped).toString('base64url')
   }
 }
 

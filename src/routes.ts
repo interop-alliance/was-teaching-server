@@ -18,7 +18,7 @@ import { handleError } from './errors.js'
 import { ResourceRequest } from './requests/ResourceRequest.js'
 import { ChunkRequest } from './requests/ChunkRequest.js'
 import { CollectionRequest } from './requests/CollectionRequest.js'
-import { PolicyRequest } from './requests/PolicyRequest.js'
+import { PolicyRequest, type PolicyParams } from './requests/PolicyRequest.js'
 import { BackendRequest } from './requests/BackendRequest.js'
 import { KeystoreRequest } from './requests/KeystoreRequest.js'
 import { KeyRequest } from './requests/KeyRequest.js'
@@ -29,7 +29,10 @@ import {
   requireAuthHeadersOrPublicRead
 } from './auth-header-hooks.js'
 import { captureRawBody, verifyBodyDigest } from './digest.js'
-import { provisioningGateFor } from './provisioning.js'
+import {
+  provisioningGateFor,
+  unlessProvisioningAuthorized
+} from './provisioning.js'
 
 /**
  * Installs the `handleError` error handler and the hook chain every route group
@@ -61,25 +64,30 @@ function installGroupHooks(
     // path below runs.
     app.addHook('onRequest', provisioningGateFor(provisioningRoutes))
   }
+  // The auth and digest hooks are skipped for a request the gate granted (it
+  // carries a Bearer token, not an HTTP Signature).
   if (strictAuth) {
     // Every operation is privileged: 401 when auth headers are absent.
-    app.addHook('onRequest', requireAuthHeaders)
+    app.addHook('onRequest', unlessProvisioningAuthorized(requireAuthHeaders))
   } else {
     // Writes require auth; reads (GET/HEAD) may proceed unauthenticated so the
     // handler can fall back to an access-control policy (e.g. a public Space,
     // Collection or Resource). In the SpacesRepository group that fallback is
     // the spec's empty-items 200 for an anonymous List Spaces, never an error
     // (the exception to 404 masking).
-    app.addHook('onRequest', requireAuthHeadersOrPublicRead)
+    app.addHook(
+      'onRequest',
+      unlessProvisioningAuthorized(requireAuthHeadersOrPublicRead)
+    )
   }
   // Parse the relevant request headers, set the request.zcap parameter
-  app.addHook('onRequest', parseAuthHeaders)
+  app.addHook('onRequest', unlessProvisioningAuthorized(parseAuthHeaders))
   // Capture raw body bytes (JSON/text) so the digest can be recomputed against
   // exactly what the client signed (spec "Request Body Integrity").
   app.addHook('preParsing', captureRawBody)
   // Enforce the Digest header binding: require it covered by the signature and,
   // when the raw body is available, recompute and compare it.
-  app.addHook('preValidation', verifyBodyDigest)
+  app.addHook('preValidation', unlessProvisioningAuthorized(verifyBodyDigest))
 }
 
 /**
@@ -193,7 +201,15 @@ export async function initSpaceRoutes(
 
   // Space access-control policy (reserved segment; Fastify routes static
   // segments ahead of the `:collectionId` parameter, so this never collides).
-  app.get('/space/:spaceId/policy', PolicyRequest.get)
+  // A policy is not public data, so its GET is privileged even though the
+  // group's hook lets safe methods through: the route-level `requireAuthHeaders`
+  // (run after the group chain) demands the auth headers (401). The same
+  // applies to the Collection- and Resource-level policy GETs below.
+  app.get<{ Params: PolicyParams }>(
+    '/space/:spaceId/policy',
+    { onRequest: requireAuthHeaders },
+    PolicyRequest.get
+  )
   app.put('/space/:spaceId/policy', PolicyRequest.put)
   app.delete('/space/:spaceId/policy', PolicyRequest.delete)
 
@@ -260,7 +276,11 @@ export async function initCollectionRoutes(
 
   // Collection access-control policy (reserved segment; static-beats-parametric
   // routing keeps this ahead of the `:resourceId` parameter).
-  app.get('/space/:spaceId/:collectionId/policy', PolicyRequest.get)
+  app.get<{ Params: PolicyParams }>(
+    '/space/:spaceId/:collectionId/policy',
+    { onRequest: requireAuthHeaders },
+    PolicyRequest.get
+  )
   app.put('/space/:spaceId/:collectionId/policy', PolicyRequest.put)
   app.delete('/space/:spaceId/:collectionId/policy', PolicyRequest.delete)
 
@@ -345,7 +365,11 @@ export async function initResourceRoutes(
   )
 
   // Resource access-control policy (reserved segment)
-  app.get('/space/:spaceId/:collectionId/:resourceId/policy', PolicyRequest.get)
+  app.get<{ Params: PolicyParams }>(
+    '/space/:spaceId/:collectionId/:resourceId/policy',
+    { onRequest: requireAuthHeaders },
+    PolicyRequest.get
+  )
   app.put('/space/:spaceId/:collectionId/:resourceId/policy', PolicyRequest.put)
   app.delete(
     '/space/:spaceId/:collectionId/:resourceId/policy',

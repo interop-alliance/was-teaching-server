@@ -15,16 +15,34 @@
   point at `#/plaintext/...`; the `equality` `id-conflict` pointer is now
   `#/plaintext/indexes`.
 - Update to `@interop/storage-core@0.10.0`.
+- The WebKMS AES-KW key type and the at-rest key record cipher wrap keys through
+  `@interop/minimal-cipher`'s `createKek` (new direct dependency) instead of a
+  local `node:crypto` AES Key Wrap. Same RFC 3394 bytes, so existing wrapped
+  keys and records still unwrap.
 - The client-annex clause's module header and ARCHITECTURE.md say a wallet
   publishes a ladder VM on a host it assumes enforces the profile, and that the
   server advertises nothing a client could check. Docs only.
 
 ### Fixed
 
+- List Keys on the filesystem backend now orders key ids in code-unit order, the
+  order the shared keyset pager seeks with (the Postgres backend already did).
+  The handler uses that pager instead of its own cursor scan.
+- Get Chunk and Head Chunk issue the parent-Resource check and the chunk read
+  concurrently, as List Chunks already did; the filesystem backend reads a
+  representation and its metadata sidecar concurrently, and the Postgres
+  backend's usage report issues its two queries at once.
 - The CORS proxy no longer relays an upstream `Link` header. A browser acts on
   `Link: rel=preload` on the proxy's reply and resolves relative URLs against
   the proxy's origin, so an upstream 404 page was making wallets request
   `/build/assets/...` from the storage host.
+- Wrap Key and Unwrap Key on an `AesKeyWrappingKey2019` key accept every RFC
+  3394 length (a multiple of 8 bytes, at least 16), not only the three AES key
+  sizes; a 64-byte payload was a 500. A payload or wrapped key of any other
+  length is `invalid-request-body` (pointer `#/unwrappedKey` or `#/wrappedKey`)
+  instead of a 500 on wrap and a misleading `unwrappedKey: null` on unwrap. The
+  fix is `@interop/minimal-cipher@7.9.0`, whose WebCrypto AES-KW backend now
+  matches its pure-JS one; wrapped bytes for 16/24/32-byte keys are unchanged.
 
 ## 0.25.1 - 2026-09-03
 
