@@ -2775,15 +2775,13 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     requestName: string
   }): Promise<ResourceResult> {
-    // The sidecar path derives from `resourceId` alone, so both reads are
-    // independent and run concurrently.
-    const [filePath, sidecar] = await Promise.all([
-      this.#findFile({ collectionDir, resourceId }),
-      this.readMetaSidecar({ collectionDir, resourceId })
-    ])
+    // Locate the representation first: a miss throws below, so starting the
+    // sidecar read before the lookup would waste an open/read on every 404.
+    const filePath = await this.#findFile({ collectionDir, resourceId })
     if (!filePath) {
       throw new ResourceNotFoundError({ requestName })
     }
+    const sidecar = await this.readMetaSidecar({ collectionDir, resourceId })
 
     const { contentType: storedResourceType } = parseResourceFileName(
       path.basename(filePath)
@@ -2819,19 +2817,22 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<
     { stats: fs.Stats; contentType: string; sidecar?: MetaSidecar } | undefined
   > {
-    // The sidecar path derives from `resourceId` alone, so both reads are
-    // independent and run concurrently.
-    const [filePath, sidecar] = await Promise.all([
-      this.#findFile({ collectionDir, resourceId }),
-      this.readMetaSidecar({ collectionDir, resourceId })
-    ])
+    // Locate the representation first: a miss resolves `undefined` below, so
+    // starting the sidecar read before the lookup would waste an open/read on
+    // every 404. Once the file is known to exist, the stat and the sidecar read
+    // are independent and run concurrently.
+    const filePath = await this.#findFile({ collectionDir, resourceId })
     if (!filePath) {
       return undefined
     }
 
     let stats
+    let sidecar
     try {
-      stats = await fsStat(filePath)
+      ;[stats, sidecar] = await Promise.all([
+        fsStat(filePath),
+        this.readMetaSidecar({ collectionDir, resourceId })
+      ])
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         return undefined
