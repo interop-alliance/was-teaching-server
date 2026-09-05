@@ -995,9 +995,10 @@ export interface StorageBackend {
    * (OR across elements of an AND within each element's `{name: value}` pairs)
    * or `has` (every named attribute present with an indexable value) -- over
    * the attributes the server extracts from the Collection's live Resources per
-   * the `indexes` declaration. `indexes` is the NORMALIZED declaration array:
-   * the request layer resolves it from the control-plane description (a
-   * data-plane backend does not hold the description) and passes it in. Matching
+   * the `plaintext.indexes` declaration. `indexes` is the NORMALIZED
+   * declaration array: the request layer resolves it from the control-plane
+   * description (a data-plane backend does not hold the description) and
+   * passes it in. Matching
    * is strict JSON equality (no coercion); a content-sourced attribute reads a
    * JSON Resource's stored content, a custom-sourced one reads the `custom`
    * metadata object (so blobs are queryable too). With `count`, resolves only

@@ -169,7 +169,7 @@ export class IdConflictError extends ProblemError {
  * another live Resource in the same Collection. Two invariants share it: the
  * EDV blinded one (an `indexed` blinded attribute's (HMAC key id, name, value)
  * triple; the `blinded-index-query` feature, `variant: 'blinded'`, the
- * default) and the plaintext equality one (a `unique`-declared `indexes`
+ * default) and the plaintext equality one (a `unique`-declared `plaintext.indexes`
  * attribute's (name, value) pair; the `equality-query` feature,
  * `variant: 'equality'`). Reuses the `id-conflict` problem type (like the
  * WebKMS conflicts): a unique attribute is a client-chosen identifier-like
@@ -195,7 +195,7 @@ export class UniqueAttributeConflictError extends ProblemError {
       problems: [
         {
           detail,
-          pointer: variant === 'equality' ? '#/indexes' : '#/indexed'
+          pointer: variant === 'equality' ? '#/plaintext/indexes' : '#/indexed'
         }
       ]
     })

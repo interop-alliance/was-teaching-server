@@ -1577,7 +1577,7 @@ export class PostgresBackend implements StorageBackend {
       // Two unique-attribute invariants can force a JSON content write to
       // serialize before it upserts its row: the EDV blinded one (`unique: true`
       // blinded attributes; the `blinded-index-query` feature) and the plaintext
-      // equality one (a Collection's `unique`-declared `indexes`; the
+      // equality one (a Collection's `unique`-declared `plaintext.indexes`; the
       // `equality-query` feature). Only a unique-carrying JSON write can create
       // either claim. A per-Collection transaction-scoped advisory lock
       // serializes the claimants (held to commit, so the loser's scan sees the

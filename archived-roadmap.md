@@ -631,3 +631,60 @@ Context: every anonymous read that falls through to the policy path issues three
 policy reads before the Resource read itself (the signup log shows this on each
 public `did.jsonl` read). Policies change only through their own handlers, so
 they fit the Space Description cache pattern exactly.
+
+### WAS-63: Move the Collection `indexes` declaration under `plaintext`
+
+- status: done
+- done: 2026-09-05
+- priority: medium
+- labels: data-model, query, breaking
+- touches:
+  - was-teaching-server: `src/lib/equalityIndex.ts` (`assertSupportedIndexes`,
+    `normalizeIndexes`, `assertIndexesNotEncrypted` -- the exclusion becomes
+    presence-based: `plaintext` and `encryption` both present is
+    `invalid-request-body`, pointer `#/plaintext`),
+    `src/requests/SpaceRequest.ts` (create body `plaintext`),
+    `src/requests/CollectionRequest.ts` (update path, the added-unique-index
+    scan, the `equality` query and `GET ?filter[...]` routes reading
+    `plaintext.indexes`), ARCHITECTURE.md / AGENTS.md unaffected (neither
+    documents `indexes`)
+  - storage-core: SC-1 supplies `CollectionDescription.plaintext`
+  - wallet-attached-storage-spec: shape of record is decision record
+    `_spec/decisions/0004-plaintext-and-encryption-counterparts.md`
+    (2026-08-20); the spec text lands with the `equality` profile under WASS-26
+  - was-conformance-suite: the `plaintext` declaration cases listed in the
+    acceptance below (the `equality` query suite itself waits on spec WASS-26);
+    suite-side items are tracked here
+  - was-client: unaffected (no `indexes` producer or `equality` binding)
+- acceptance:
+  - [x] A Collection description carries `plaintext: { indexes: [...] }`; a
+        top-level `indexes` is no longer read or stored (no compatibility
+        fallback -- greenfield)
+  - [x] `plaintext` and `encryption` both present on the resulting description
+        is rejected with `invalid-request-body` on create and update, regardless
+        of whether `plaintext.indexes` is empty
+  - [x] `plaintext` is updatable (add, change; `{}` is the empty state, there
+        is no removal) on an existing Collection; a malformed `plaintext` (non-object, non-array `indexes`,
+        bad entry, empty or duplicate `name`, unknown `source`) is
+        `invalid-request-body`
+  - [x] The `equality` profile and `GET ?filter[...]` read their declarations
+        from `plaintext.indexes`; existing `test/` coverage is moved to the new
+        shape
+  - [x] was-conformance-suite cases (a new `plaintext-declaration-api` suite or
+        additions to `collection-api`): `plaintext.indexes` persist/echo,
+        `plaintext` + `encryption` both present 400 on create and update,
+        malformed `plaintext` 400, `plaintext` add/change on an existing
+        Collection, `unique` index conflict 409
+
+The spec settled server-side indexing as `plaintext.indexes` (decision 0004,
+2026-08-20; text ships with WASS-26; server side landed 2026-09-05 in 0.26.0, the
+conformance-suite cases in was-conformance-suite 0.8.0): the two mutually
+exclusive top-level
+Collection members are `encryption` and `plaintext`, so the exclusion is a
+structural fact rather than a cross-reference, and "indexes" stops colliding
+with the blinded indexes of an encrypted Collection. The server shipped the flat
+`indexes` ahead of the spec text; this item moves it. Note for WAS-25 (b): with
+the presence-based exclusion, "`custom`-only indexes on `encryption`-marked
+Collections" would need a `plaintext` member beside `encryption`, which the spec
+forbids; and the spec already makes an encrypted Collection's `custom` metadata
+an envelope, so that extension is superseded as written.

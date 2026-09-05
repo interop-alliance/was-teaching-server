@@ -37,7 +37,7 @@ export const DEFAULT_BACKEND_ID = 'default'
  * - `blinded-index-query`: serves the `blinded-index` profile -- EDV
  *   blinded-attribute queries (`queryByBlindedIndex`).
  * - `equality-query`: serves the `equality` profile -- server-extracted
- *   plaintext attribute equality over a Collection's declared `indexes`
+ *   plaintext attribute equality over a Collection's declared `plaintext.indexes`
  *   (`queryByEquality`), plus the GET `filter[attr]=value` equality filter.
  * - `key-epochs`: multi-recipient encrypted Collections -- per-epoch wrapped
  *   keys on the `encryption` descriptor, a client-declared `epoch` stamp on

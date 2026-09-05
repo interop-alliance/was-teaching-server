@@ -10,8 +10,9 @@
  *
  * Override the port with `PORT=... pnpm conformance:local` if 3002 is taken;
  * the server URL and the CLI's target URL are both derived from it, so they
- * stay in sync. Extra arguments are forwarded to the CLI, e.g.
- * `pnpm conformance:local -- --grep chunk --reporter json`.
+ * stay in sync. Extra arguments are forwarded to the CLI (no `--` separator;
+ * pnpm forwards them itself), e.g.
+ * `pnpm conformance:local --grep chunk --reporter json`.
  *
  * Usage: pnpm conformance:local
  */

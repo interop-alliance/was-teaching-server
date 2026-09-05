@@ -75,12 +75,12 @@ Each work item follows this schema:
 Rules:
 
 - Item ids are permanent and never reused. The `nextAvailableId: <n>` line at
-  the top of ROADMAP.md is the sole source of the next id: filing an item
-  takes `n` and rewrites the line to `n + 1`, in the same edit. Never derive
-  the next id by scanning the roadmap; the highest id usually lives in
+  the top of ROADMAP.md is the sole source of the next id: filing an item takes
+  `n` and rewrites the line to `n + 1`, in the same edit. Never derive the next
+  id by scanning the roadmap; the highest id usually lives in
   archived-roadmap.md, not in the open roadmap. If the counter's id already
-  appears in either file, the counter is stale: reset it to one past the
-  highest id across both files, then take it.
+  appears in either file, the counter is stale: reset it to one past the highest
+  id across both files, then take it.
 - Every non-draft item needs acceptance criteria before it may be moved to
   `in-progress`.
 - Statuses are edited in place (change the `status:` field); acceptance
@@ -165,10 +165,11 @@ returned `port` back in, so ids minted by the first server still resolve (see
 # Local one-shot (recommended for local runs): spins up the server on a fixed
 # local URL, waits for health, runs the was-conformance CLI against that same
 # URL, and tears the server down — so the two URLs can't drift. Implemented by
-# scripts/conformance-local.ts; override the port with PORT=...; arguments
-# after -- are forwarded to the CLI.
+# scripts/conformance-local.ts; override the port with PORT=...; extra
+# arguments are forwarded to the CLI (pnpm does that itself, so do not add a
+# `--` separator: it would reach the CLI as an argument and exit 2).
 pnpm conformance:local
-pnpm conformance:local -- --grep chunk
+pnpm conformance:local --grep chunk
 
 # Against an already-running / external server. The server must be started with
 # SERVER_URL matching the CLI's target URL exactly (ZCap invocationTarget URLs

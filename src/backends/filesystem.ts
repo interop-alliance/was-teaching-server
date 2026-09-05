@@ -2205,8 +2205,9 @@ export class FileSystemBackend implements StorageBackend {
     // Collection lock before it takes its per-Resource lock: the EDV blinded
     // one (`unique: true` blinded attributes; the `blinded-index-query`
     // feature) and the plaintext equality one (a Collection's `unique`-declared
-    // `indexes`; the `equality-query` feature). Only a JSON content write can
-    // create either claim, so only such writes pay for it: they serialize per
+    // `plaintext.indexes`; the `equality-query` feature). Only a JSON content
+    // write can create either claim, so only such writes pay for it: they
+    // serialize per
     // Collection (the outer lock, so two racing claimants cannot both pass the
     // scan), evaluate the conflict against the Collection's other live
     // documents, then take the ordinary per-Resource lock nested inside.

@@ -9,13 +9,14 @@
  * query time -- a plain Resource write with no extra ceremony is immediately
  * queryable.
  *
- * A Collection opts in by declaring `indexes` in its Collection Description (see
- * `lib/collectionDescription.ts` and the `CollectionIndexDeclaration` wire
- * type). Each declared entry names an attribute plus the `source` it is
- * extracted from (`content` = a JSON Resource's stored content, `custom` = any
- * Resource's `custom` metadata object -- the route by which blob Resources
- * become queryable) and MAY carry `unique: true`, claiming per-Collection
- * uniqueness for that attribute's `(name, value)` pairs.
+ * A Collection opts in by declaring `plaintext.indexes` in its Collection
+ * Description (the `plaintext` member is the counterpart of `encryption`; see
+ * the `CollectionIndexDeclaration` wire type). Each declared entry names an
+ * attribute plus the `source` it is extracted from (`content` = a JSON
+ * Resource's stored content, `custom` = any Resource's `custom` metadata object
+ * -- the route by which blob Resources become queryable) and MAY carry
+ * `unique: true`, claiming per-Collection uniqueness for that attribute's
+ * `(name, value)` pairs.
  *
  * Both storage backends answer the profile through `runEqualityQuery` and
  * enforce the uniqueness invariant through `assertNoUniqueEqualityConflict` /
@@ -27,7 +28,10 @@
  * queried value. Pagination reuses WAS's opaque cursor convention
  * (`lib/cursor.ts`), keyset-ordered by ascending `resourceId`.
  */
-import type { CollectionIndexDeclaration } from '../types.js'
+import type {
+  CollectionDescription,
+  CollectionIndexDeclaration
+} from '../types.js'
 import { encodeCursor } from './cursor.js'
 import { compareCodeUnits, resolvePageSize, seekPage } from './pagination.js'
 import {
@@ -51,9 +55,10 @@ import {
 export type EqualityValue = string | number | boolean
 
 /**
- * A declared `indexes` entry after normalization: the bare-string shorthand
- * expanded and the optional `source` / `unique` defaulted, so downstream code
- * reads a uniform shape. `source` defaults to `'content'`, `unique` to `false`.
+ * A declared `plaintext.indexes` entry after normalization: the bare-string
+ * shorthand expanded and the optional `source` / `unique` defaulted, so
+ * downstream code reads a uniform shape. `source` defaults to `'content'`,
+ * `unique` to `false`.
  */
 export interface NormalizedIndexDeclaration {
   name: string
@@ -125,17 +130,17 @@ function isIndexableValue(value: unknown): value is EqualityValue {
 }
 
 /**
- * Normalizes a Collection Description's declared `indexes` into the uniform
- * {@link NormalizedIndexDeclaration} shape: a bare string entry becomes
+ * Normalizes a Collection Description's declared `plaintext.indexes` into the
+ * uniform {@link NormalizedIndexDeclaration} shape: a bare string entry becomes
  * `{ name, source: 'content', unique: false }`, and an object entry has its
  * optional `source` / `unique` defaulted. An absent declaration normalizes to
  * an empty array. Assumes the declaration has already passed
- * {@link assertSupportedIndexes} (or was read back from storage), so it does no
- * shape validation of its own.
+ * {@link assertSupportedPlaintext} (or was read back from storage), so it does
+ * no shape validation of its own.
  *
  * @param options {object}
  * @param [options.indexes] {Array<string | CollectionIndexDeclaration>}   the
- *   Collection Description's declared `indexes`
+ *   Collection Description's declared `plaintext.indexes`
  * @returns {NormalizedIndexDeclaration[]}
  */
 export function normalizeIndexes({
@@ -159,20 +164,42 @@ export function normalizeIndexes({
 }
 
 /**
- * The normalized `unique: true` entries of a Collection's declared `indexes`
- * (an absent or index-free declaration yields an empty array). A write path
- * passes these to the backend so it enforces the plaintext uniqueness claim
- * atomically with the write (`UniqueAttributeConflictError`, 409); a read path
- * uses them to scope a uniqueness scan. Because the existence-revealing 409 is
- * raised only after a handler has authorized the write, it is observable only
- * to a caller already authorized there.
+ * The normalized declared indexes of a Collection Description: the one place
+ * that knows the declaration lives at `plaintext.indexes`. An absent
+ * Description, an absent `plaintext` member, or an index-free one yields an
+ * empty array (so, for an encrypted Collection, every named attribute fails
+ * the declared-names check).
+ *
+ * @param options {object}
+ * @param [options.collectionDescription] {CollectionDescription}
+ * @returns {NormalizedIndexDeclaration[]}
+ */
+export function declaredIndexesOf({
+  collectionDescription
+}: {
+  collectionDescription?: Pick<CollectionDescription, 'plaintext'>
+}): NormalizedIndexDeclaration[] {
+  return normalizeIndexes({
+    indexes: collectionDescription?.plaintext?.indexes
+  })
+}
+
+/**
+ * The normalized `unique: true` entries of a Collection's declared
+ * `plaintext.indexes` (an absent or index-free declaration yields an empty
+ * array). A write path passes these to the backend so it enforces the
+ * plaintext uniqueness claim atomically with the write
+ * (`UniqueAttributeConflictError`, 409); a read path uses them to scope a
+ * uniqueness scan. Because the existence-revealing 409 is raised only after a
+ * handler has authorized the write, it is observable only to a caller already
+ * authorized there.
  *
  * Accepts either a raw declaration (bare strings and objects, as stored) or an
  * already-normalized one -- {@link normalizeIndexes} is idempotent.
  *
  * @param options {object}
  * @param [options.indexes] {Array<string | CollectionIndexDeclaration>}   the
- *   Collection Description's declared `indexes`
+ *   Collection Description's declared `plaintext.indexes`
  * @returns {NormalizedIndexDeclaration[]}
  */
 export function uniqueIndexesOf({
@@ -184,95 +211,112 @@ export function uniqueIndexesOf({
 }
 
 /**
- * Enforces the indexes-vs-encryption mutual exclusion (spec "Collection Data
- * Model"): a Collection Description MUST NOT carry both a non-empty `indexes`
- * declaration and an `encryption` descriptor -- the server cannot extract
- * plaintext attributes from an opaque envelope. Rejects with
- * `invalid-request-body` (400) pointing at `#/indexes`.
+ * Enforces the `plaintext` / `encryption` mutual exclusion (spec "Collection
+ * Data Model"): the two are counterpart members describing how the server may
+ * treat a Collection's Resources, and a Collection Description MUST NOT carry
+ * both. The exclusion is by presence -- an empty `plaintext` object still
+ * excludes `encryption` -- so it reads as a structural fact rather than a rule
+ * about `indexes`. Rejects with `invalid-request-body` (400) pointing at
+ * `#/plaintext`.
  *
  * Callers pass the values about to be PERSISTED (not merely the ones the
- * request supplied), so a pre-existing value on the other field is caught too:
- * the rail holds in both directions (adding `indexes` to an encrypted
- * Collection, or `encryption` to an indexed one).
+ * request supplied), so a pre-existing value on the other member is caught too,
+ * in both directions (adding `plaintext` to an encrypted Collection, or
+ * `encryption` to a Collection that carries `plaintext`).
  *
  * @param options {object}
- * @param [options.indexes] {unknown}   the `indexes` about to be persisted
+ * @param [options.plaintext] {unknown}   the `plaintext` member about to be
+ *   persisted
  * @param [options.encryption] {unknown}   the `encryption` descriptor about to
  *   be persisted
  * @param [options.requestName] {string}   request name for the 400 error title
  * @returns {void}
  */
-export function assertIndexesNotEncrypted({
-  indexes,
+export function assertPlaintextNotEncrypted({
+  plaintext,
   encryption,
   requestName
 }: {
-  indexes?: unknown
+  plaintext?: unknown
   encryption?: unknown
   requestName?: string
 }): void {
-  if (
-    Array.isArray(indexes) &&
-    indexes.length > 0 &&
-    encryption !== undefined
-  ) {
+  if (plaintext !== undefined && encryption !== undefined) {
     throw new InvalidRequestBodyError({
       requestName,
       detail:
-        'Collection "indexes" must not be combined with an "encryption" descriptor.',
-      pointer: '#/indexes'
+        'A Collection "plaintext" member must not be combined with an "encryption" descriptor.',
+      pointer: '#/plaintext'
     })
   }
 }
 
 /**
- * Validates a client-supplied Collection `indexes` declaration (shape only) and
+ * Validates a client-supplied Collection `plaintext` member (shape only) and
  * returns the value to persist verbatim, or `undefined` when absent (an update
- * then leaves the stored declaration untouched, like `name` / `backend` /
- * `encryption`). Mirrors the validation style of `assertSupportedEncryption` /
- * `assertValidEncryptionEpochs` in `lib/encryption.ts`, rejecting a malformed
- * declaration with `invalid-request-body` (400) and a precise `pointer`. Rules:
- * - `indexes` MUST be an array (an EMPTY array is allowed -- it clears the
- *   declaration).
- * - each entry is either a non-empty string (the `content`-sourced shorthand)
- *   or an object with a non-empty string `name`, an optional `source` of
- *   exactly `'content'` or `'custom'`, and an optional boolean `unique`.
+ * then leaves the stored member untouched, like `name` / `backend` /
+ * `encryption`). `plaintext` is updatable for the Collection's life: a supplied
+ * object replaces the stored one, and `{}` (or `{ indexes: [] }`) is the empty
+ * state -- the member stays present, so it keeps excluding `encryption`, but
+ * declares no server-side processing. There is no removal. Mirrors
+ * `assertSupportedEncryption` in `lib/encryption.ts`: a malformed member is
+ * rejected with `invalid-request-body` (400) and a precise `pointer`, and the
+ * whole object is preserved (only `indexes` is typed today; any other member
+ * survives the round-trip so a future `plaintext` member is not silently
+ * dropped). Rules:
+ * - `plaintext` MUST be a plain object; `indexes`, when present, MUST be an
+ *   array.
+ * - each `indexes` entry is either a non-empty string (the `content`-sourced
+ *   shorthand) or an object with a non-empty string `name`, an optional
+ *   `source` of exactly `'content'` or `'custom'`, and an optional boolean
+ *   `unique`.
  * - declared names MUST be unique across the array regardless of source
  *   (queries refer to attributes by name alone).
  *
  * @param options {object}
- * @param [options.indexes] {unknown}   the request body's `indexes` value
+ * @param [options.plaintext] {unknown}   the request body's `plaintext` value
  * @param [options.requestName] {string}   request name for the 400 error title
- * @returns {Array<string | CollectionIndexDeclaration> | undefined}   the
- *   declaration to store, or undefined when absent
+ * @returns {CollectionDescription['plaintext']}   the member to store, or
+ *   undefined when absent
  */
-export function assertSupportedIndexes({
-  indexes,
+export function assertSupportedPlaintext({
+  plaintext,
   requestName
 }: {
-  indexes?: unknown
+  plaintext?: unknown
   requestName?: string
-}): Array<string | CollectionIndexDeclaration> | undefined {
-  if (indexes === undefined) {
+}): CollectionDescription['plaintext'] {
+  if (plaintext === undefined) {
     return undefined
+  }
+  if (!isPlainObject(plaintext)) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail: 'A Collection "plaintext" member must be an object.',
+      pointer: '#/plaintext'
+    })
+  }
+  const { indexes } = plaintext
+  if (indexes === undefined) {
+    return plaintext as CollectionDescription['plaintext']
   }
   if (!Array.isArray(indexes)) {
     throw new InvalidRequestBodyError({
       requestName,
-      detail: 'Collection "indexes" must be an array.',
-      pointer: '#/indexes'
+      detail: '"plaintext.indexes" must be an array.',
+      pointer: '#/plaintext/indexes'
     })
   }
   const names = new Set<string>()
   indexes.forEach((entry, entryIndex) => {
-    const pointer = `#/indexes/${entryIndex}`
+    const pointer = `#/plaintext/indexes/${entryIndex}`
     let name: string
     if (typeof entry === 'string') {
       if (entry.length === 0) {
         throw new InvalidRequestBodyError({
           requestName,
           detail:
-            'Each "indexes" string entry must be a non-empty attribute name.',
+            'Each "plaintext.indexes" string entry must be a non-empty attribute name.',
           pointer
         })
       }
@@ -282,7 +326,8 @@ export function assertSupportedIndexes({
       if (typeof entryName !== 'string' || entryName.length === 0) {
         throw new InvalidRequestBodyError({
           requestName,
-          detail: 'Each "indexes" entry must have a non-empty string "name".',
+          detail:
+            'Each "plaintext.indexes" entry must have a non-empty string "name".',
           pointer: `${pointer}/name`
         })
       }
@@ -290,14 +335,14 @@ export function assertSupportedIndexes({
         throw new InvalidRequestBodyError({
           requestName,
           detail:
-            'An "indexes" entry "source" must be exactly "content" or "custom".',
+            'A "plaintext.indexes" entry "source" must be exactly "content" or "custom".',
           pointer: `${pointer}/source`
         })
       }
       if (unique !== undefined && typeof unique !== 'boolean') {
         throw new InvalidRequestBodyError({
           requestName,
-          detail: 'An "indexes" entry "unique" must be a boolean.',
+          detail: 'A "plaintext.indexes" entry "unique" must be a boolean.',
           pointer: `${pointer}/unique`
         })
       }
@@ -306,14 +351,14 @@ export function assertSupportedIndexes({
       throw new InvalidRequestBodyError({
         requestName,
         detail:
-          'Each "indexes" entry must be a non-empty string or an object with a "name".',
+          'Each "plaintext.indexes" entry must be a non-empty string or an object with a "name".',
         pointer
       })
     }
     if (names.has(name)) {
       throw new InvalidRequestBodyError({
         requestName,
-        detail: `Duplicate "indexes" attribute name "${name}".`,
+        detail: `Duplicate "plaintext.indexes" attribute name "${name}".`,
         pointer: `${pointer}/name`
       })
     }
@@ -321,7 +366,7 @@ export function assertSupportedIndexes({
   })
   // Persist verbatim (bare strings and objects alike survive the round-trip);
   // normalization for extraction/matching happens at query/write time.
-  return indexes as Array<string | CollectionIndexDeclaration>
+  return plaintext as CollectionDescription['plaintext']
 }
 
 /**
@@ -329,9 +374,9 @@ export function assertSupportedIndexes({
  * (everything besides `profile`), throwing `invalid-request-body` (400) on a
  * malformed query. Exactly one of `equals` / `has` is required. Every attribute
  * name appearing in `equals` or `has` MUST be among the declared index names
- * (`indexes`, already normalized) -- a query naming an undeclared attribute is
- * rejected fail-closed (a typo or missing declaration surfaces loudly rather
- * than as a silently-empty page). `limit` is coerced leniently as in
+ * (`plaintext.indexes`, already normalized) -- a query naming an undeclared
+ * attribute is rejected fail-closed (a typo or missing declaration surfaces
+ * loudly rather than as a silently-empty page). `limit` is coerced leniently as in
  * `parseBlindedIndexQueryBody` (a non-numeric or `< 1` value falls back to the
  * default; the backend clamps an oversized one), and the opaque `cursor` is
  * validated by the backend's cursor decode (`invalid-cursor` 400).
@@ -399,7 +444,7 @@ export function parseEqualityQueryBody({
         if (!declared.has(name)) {
           throw new InvalidRequestBodyError({
             requestName,
-            detail: `Attribute "${name}" is not declared in the Collection's indexes.`,
+            detail: `Attribute "${name}" is not declared in the Collection's "plaintext.indexes".`,
             pointer: `${pointer}/${name}`
           })
         }
@@ -417,7 +462,7 @@ export function parseEqualityQueryBody({
       if (!declared.has(name)) {
         throw new InvalidRequestBodyError({
           requestName,
-          detail: `Attribute "${name}" is not declared in the Collection's indexes.`,
+          detail: `Attribute "${name}" is not declared in the Collection's "plaintext.indexes".`,
           pointer: '#/has'
         })
       }

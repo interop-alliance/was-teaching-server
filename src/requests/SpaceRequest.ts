@@ -32,8 +32,8 @@ import {
 } from '../lib/backends.js'
 import { assertSupportedEncryption } from '../lib/encryption.js'
 import {
-  assertIndexesNotEncrypted,
-  assertSupportedIndexes
+  assertPlaintextNotEncrypted,
+  assertSupportedPlaintext
 } from '../lib/equalityIndex.js'
 import {
   assertValidGenerator,
@@ -355,7 +355,7 @@ export class SpaceRequest {
         name?: string
         backend?: unknown
         encryption?: unknown
-        indexes?: unknown
+        plaintext?: unknown
         generator?: unknown
         generatorOrigin?: unknown
       }
@@ -380,16 +380,15 @@ export class SpaceRequest {
       encryption: body?.encryption,
       requestName
     })
-    // Validate the optional `indexes` declaration (the `equality-query`
-    // feature) on the same terms as the PUT path, and enforce the
-    // mutual-exclusion rail here too: a Collection cannot be born both indexed
-    // and encrypted (the server cannot extract plaintext attributes from an
-    // opaque envelope).
-    const indexes = assertSupportedIndexes({
-      indexes: body?.indexes,
+    // Validate the optional `plaintext` member (its `indexes` declaration is
+    // the `equality-query` feature) on the same terms as the PUT path, and
+    // enforce the presence-based exclusion here too: a Collection cannot be
+    // born carrying both `plaintext` and `encryption`.
+    const plaintext = assertSupportedPlaintext({
+      plaintext: body?.plaintext,
       requestName
     })
-    assertIndexesNotEncrypted({ indexes, encryption, requestName })
+    assertPlaintextNotEncrypted({ plaintext, encryption, requestName })
     // Validate the optional app-attribution members (shape only). Both are the
     // controller's assertions: stored verbatim, echoed on reads, never an
     // authorization input and never defaulted by the server.
@@ -446,7 +445,7 @@ export class SpaceRequest {
       name,
       backend,
       ...(encryption !== undefined && { encryption }),
-      ...(indexes !== undefined && { indexes }),
+      ...(plaintext !== undefined && { plaintext }),
       ...(generator !== undefined && { generator }),
       ...(generatorOrigin !== undefined && { generatorOrigin })
     }

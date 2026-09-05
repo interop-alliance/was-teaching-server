@@ -1,12 +1,23 @@
 # History
 
-## 0.25.2 - TBD
+## 0.26.0 - TBD
 
 ### Changed
 
+- **BREAKING**: the Collection `indexes` declaration moved under a new
+  `plaintext` member (`plaintext.indexes`), following
+  `@interop/storage-core@0.10.0`. A top-level `indexes` is no longer read or
+  stored. `plaintext` and `encryption` are counterparts: a create or update
+  whose result carries both is `invalid-request-body` (pointer `#/plaintext`),
+  by presence, so an empty `plaintext` still excludes `encryption`. `plaintext`
+  is updatable: a supplied object replaces the stored one, `{}` is the empty
+  state, an absent member leaves it untouched. Malformed `plaintext` errors
+  point at `#/plaintext/...`; the `equality` `id-conflict` pointer is now
+  `#/plaintext/indexes`.
+- Update to `@interop/storage-core@0.10.0`.
 - The client-annex clause's module header and ARCHITECTURE.md say a wallet
-  publishes a ladder VM on a host it assumes enforces the profile, and that
-  the server advertises nothing a client could check. Docs only.
+  publishes a ladder VM on a host it assumes enforces the profile, and that the
+  server advertises nothing a client could check. Docs only.
 
 ### Fixed
 
