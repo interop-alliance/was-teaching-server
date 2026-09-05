@@ -15,6 +15,11 @@
   point at `#/plaintext/...`; the `equality` `id-conflict` pointer is now
   `#/plaintext/indexes`.
 - Update to `@interop/storage-core@0.10.0`.
+- Update to `@interop/did-method-webvh@5.8.0`. A self-hosted `did:webvh`
+  controller now resolves through the library's `resolveDID` with its
+  `resolveControlledDid` hook, which hands it the log read from local storage;
+  the library applies its own SCID and requested-DID pinning, and the server
+  still fetches nothing over the network.
 - The WebKMS AES-KW key type and the at-rest key record cipher wrap keys through
   `@interop/minimal-cipher`'s `createKek` (new direct dependency) instead of a
   local `node:crypto` AES Key Wrap. Same RFC 3394 bytes, so existing wrapped
