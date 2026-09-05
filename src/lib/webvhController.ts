@@ -44,7 +44,7 @@ import { LRUCache } from 'lru-cache'
 import {
   defaultWebvhLogVerifier,
   readLogFromString,
-  resolveDIDFromLog
+  resolveDID
 } from '@interop/did-method-webvh'
 import type { DIDDoc } from '@interop/did-method-webvh'
 import {
@@ -92,7 +92,6 @@ interface WebvhCacheEntry {
 interface WebvhFetchContext {
   storage: StorageBackend
   did: string
-  scid: string
   spaceId: string
   collectionId: string
 }
@@ -316,7 +315,7 @@ export async function resolveWebvhController({
         'self-hosted did:webvh controllers are resolvable here.'
     )
   }
-  const { scid, spaceId, collectionId } = parsed
+  const { spaceId, collectionId } = parsed
   const { cache } = documentCaches.for(storage)
   const key = cacheKey({ spaceId, collectionId, did })
   // `peek` sees through an in-flight refresh to the entry it is replacing, so
@@ -328,7 +327,7 @@ export async function resolveWebvhController({
     performance.now() - current.verifiedAt >= WEBVH_DOCUMENT_CACHE_TTL
   const entry = await cache.fetch(key, {
     forceRefresh: stale,
-    context: { storage, did, scid, spaceId, collectionId }
+    context: { storage, did, spaceId, collectionId }
   })
   if (!entry) {
     // `fetchMethod` always resolves an entry or rejects; this is a type guard.
@@ -350,7 +349,6 @@ export async function resolveWebvhController({
  * @param options {object}
  * @param options.storage {StorageBackend}
  * @param options.did {string}
- * @param options.scid {string}
  * @param options.spaceId {string}
  * @param options.collectionId {string}
  * @param options.entry {WebvhCacheEntry}   the stale entry being revalidated
@@ -359,7 +357,6 @@ export async function resolveWebvhController({
 async function reviseEntry({
   storage,
   did,
-  scid,
   spaceId,
   collectionId,
   entry
@@ -379,7 +376,6 @@ async function reviseEntry({
   return await resolveVerifiedEntry({
     storage,
     did,
-    scid,
     spaceId,
     collectionId
   })
@@ -396,14 +392,12 @@ async function reviseEntry({
 async function resolveVerifiedEntry({
   storage,
   did,
-  scid,
   spaceId,
   collectionId
 }: WebvhFetchContext): Promise<WebvhCacheEntry> {
   const { doc, version } = await resolveVerifiedDocument({
     storage,
     did,
-    scid,
     spaceId,
     collectionId
   })
@@ -416,9 +410,11 @@ async function resolveVerifiedEntry({
  * verified document together with the log Resource's `version` as of the read
  * that was verified.
  *
- * `scid` and `requestedDid` are passed explicitly because they are the
- * SCID-pinning knobs -- `resolveDIDFromLog` does not infer them from the log,
- * and without them a log that verifies internally could resolve to any DID.
+ * The log is handed to `resolveDID` through its `resolveControlledDid` hook,
+ * so the library applies its own SCID and requested-DID pinning to a log
+ * this server read from storage and never fetches anything over the network.
+ * `resolveDID` reports failures in the result envelope rather than throwing;
+ * they are rethrown here so callers see one error channel.
  *
  * @param options {WebvhFetchContext}
  * @returns {Promise<{ doc: DIDDoc, version: number | undefined }>}
@@ -426,7 +422,6 @@ async function resolveVerifiedEntry({
 async function resolveVerifiedDocument({
   storage,
   did,
-  scid,
   spaceId,
   collectionId
 }: WebvhFetchContext): Promise<{ doc: DIDDoc; version: number | undefined }> {
@@ -446,22 +441,21 @@ async function resolveVerifiedDocument({
     )
   }
 
-  let doc: DIDDoc | null
-  let deactivated: boolean
-  try {
-    const log = readLogFromString(logText)
-    const resolved = await resolveDIDFromLog(log, {
-      verifier: defaultWebvhLogVerifier,
-      scid,
-      requestedDid: did
-    })
-    doc = resolved.doc
-    deactivated = resolved.meta.deactivated
-  } catch (err) {
-    throw new Error(`Could not verify the history log for "${did}".`, {
-      cause: err
-    })
+  const resolved = await resolveDID(did, {
+    verifier: defaultWebvhLogVerifier,
+    resolveControlledDid: async () => readLogFromString(logText)
+  })
+  const { error, message } = resolved.didResolutionMetadata
+  if (error) {
+    throw new Error(
+      `Could not verify the history log for "${did}": ${error}` +
+        (message ? ` (${message})` : '')
+    )
   }
+  // This package's DIDDoc is structurally looser than the resolution
+  // envelope's IDIDDocument; the library casts at the same boundary.
+  const doc = resolved.didDocument as DIDDoc | null
+  const deactivated = resolved.didDocumentMetadata.deactivated === true
 
   if (!doc) {
     throw new Error(`The history log for "${did}" resolved to no document.`)
