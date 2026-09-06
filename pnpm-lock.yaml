@@ -4,9 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  '@interop/did-method-webvh': link:/home/dmitri/code/Interop/did-method-webvh
-
 importers:
 
   .:
@@ -36,8 +33,8 @@ importers:
         specifier: ^7.4.0
         version: 7.4.0
       '@interop/did-method-webvh':
-        specifier: link:/home/dmitri/code/Interop/did-method-webvh
-        version: link:../did-method-webvh
+        specifier: ^5.8.0
+        version: 5.8.0
       '@interop/ed25519-signature':
         specifier: ^7.2.1
         version: 7.2.1(@interop/jsonld-signatures@11.8.5)
@@ -575,6 +572,10 @@ packages:
   '@interop/did-method-key@7.4.0':
     resolution: {integrity: sha512-fYwGYiRTBEFuCiY2sw0wvlj6M6w2ceXGDPkNESqSmHODdor1ngdbBvej7XClAU8WMzZMjQjiNyLk3bqHoCh7DA==}
     engines: {node: '>=24.0'}
+
+  '@interop/did-method-webvh@5.8.0':
+    resolution: {integrity: sha512-ReFGmf+lS5qnhCKHNKG8PocaLChipNz84DOvMAHJ4trhZ2krQ2jTpCAwJ+rxV/302+y0ZvDNj7yh1ee9FBMwJA==}
+    engines: {node: '>=22'}
 
   '@interop/did-web-resolver@6.3.1':
     resolution: {integrity: sha512-Qpa4kNUOpygwOUTOtM7Eg33Z6uE+2CQSWzw+q5bBcwKVb4edhnwLVUCz6U/7IBQRXKxQnoukMYPrhhXj/mQr9A==}
@@ -3304,6 +3305,14 @@ snapshots:
     transitivePeerDependencies:
       - react-native-get-random-values
 
+  '@interop/did-method-webvh@5.8.0':
+    dependencies:
+      '@interop/data-integrity-core': 8.7.1
+      '@noble/curves': 2.4.0
+      '@noble/hashes': 2.4.0
+      '@scure/base': 2.4.0
+      json-canonicalize: 3.0.0
+
   '@interop/did-web-resolver@6.3.1':
     dependencies:
       '@interop/bnid': 6.0.2
@@ -3468,7 +3477,7 @@ snapshots:
 
   '@interop/vh-resource-log@0.4.1':
     dependencies:
-      '@interop/did-method-webvh': link:../did-method-webvh
+      '@interop/did-method-webvh': 5.8.0
       '@interop/storage-core': 0.9.1
 
   '@interop/was-client@0.48.1(@interop/jsonld-signatures@11.8.5)':
