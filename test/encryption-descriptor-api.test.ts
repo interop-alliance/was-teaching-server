@@ -529,6 +529,150 @@ describe('Encryption descriptor API', () => {
     })
   })
 
+  describe('blinding-key (`hmac`) descriptor validation', () => {
+    /** A valid descriptor carrying a blinding-key `hmac` member. */
+    const hmacDescriptor = () => ({
+      scheme: 'edv',
+      hmac: {
+        id: 'urn:uuid:blinding-key-1',
+        type: 'Sha256HmacKey2019',
+        recipients: [recipient('did:key:zApp1#ka')]
+      }
+    })
+
+    /** Creates a Collection carrying `hmacDescriptor()`. */
+    async function createWithHmac(collectionId: string): Promise<void> {
+      const response = await alice.was.request({
+        path: `/space/${spaceId}/`,
+        method: 'POST',
+        json: { id: collectionId, encryption: hmacDescriptor() }
+      })
+      assert.equal(response.status, 201)
+    }
+
+    it('accepts a valid hmac and round-trips it verbatim on GET', async () => {
+      await createWithHmac('hmac-ok')
+      assert.deepStrictEqual(
+        (await readDesc('hmac-ok')).encryption,
+        hmacDescriptor()
+      )
+    })
+
+    const malformed: [string, unknown, string][] = [
+      ['missing-id', { type: 'T', recipients: [recipient('k')] }, '/id'],
+      ['missing-type', { id: 'urn:k', recipients: [recipient('k')] }, '/type'],
+      [
+        'empty-recipients',
+        { id: 'urn:k', type: 'T', recipients: [] },
+        '/recipients'
+      ],
+      [
+        'bad-recipient-entry',
+        { id: 'urn:k', type: 'T', recipients: [{ foo: 1 }] },
+        '/recipients/0'
+      ]
+    ]
+    for (const [label, hmac, pointerSuffix] of malformed) {
+      it(`rejects hmac with ${label} (400 invalid-request-body)`, async () => {
+        const err = await rejection(
+          alice.was.request({
+            path: `/space/${spaceId}/`,
+            method: 'POST',
+            json: {
+              id: `hmac-bad-${label}`,
+              encryption: { scheme: 'edv', hmac }
+            }
+          })
+        )
+        assert.equal(err.response.status, 400)
+        assert.match(err.data.type, /#invalid-request-body/)
+        assert.equal(
+          err.data.errors?.[0]?.pointer,
+          `#/encryption/hmac${pointerSuffix}`
+        )
+      })
+    }
+
+    it('rejects changing hmac.id on update (409 encryption-immutable, descriptor unchanged)', async () => {
+      const collectionId = 'hmac-id-change'
+      await createWithHmac(collectionId)
+      const changed = hmacDescriptor()
+      changed.hmac.id = 'urn:uuid:blinding-key-2'
+      const err = await rejection(
+        alice.was.request({
+          path: `/space/${spaceId}/${collectionId}`,
+          method: 'PUT',
+          json: { id: collectionId, encryption: changed }
+        })
+      )
+      assert.equal(err.response.status, 409)
+      assert.match(err.data.type, /#encryption-immutable/)
+      assert.equal(err.data.errors?.[0]?.pointer, '#/encryption/hmac/id')
+      assert.deepStrictEqual(
+        (await readDesc(collectionId)).encryption,
+        hmacDescriptor()
+      )
+    })
+
+    it('rejects removing hmac on update (409 encryption-immutable, descriptor unchanged)', async () => {
+      const collectionId = 'hmac-remove'
+      await createWithHmac(collectionId)
+      const err = await rejection(
+        alice.was.request({
+          path: `/space/${spaceId}/${collectionId}`,
+          method: 'PUT',
+          json: { id: collectionId, encryption: { scheme: 'edv' } }
+        })
+      )
+      assert.equal(err.response.status, 409)
+      assert.match(err.data.type, /#encryption-immutable/)
+      assert.equal(err.data.errors?.[0]?.pointer, '#/encryption/hmac')
+      assert.deepStrictEqual(
+        (await readDesc(collectionId)).encryption,
+        hmacDescriptor()
+      )
+    })
+
+    it('allows changing hmac.recipients on update (204)', async () => {
+      const collectionId = 'hmac-recipients'
+      await createWithHmac(collectionId)
+      const rewrapped = hmacDescriptor()
+      rewrapped.hmac.recipients = [
+        recipient('did:key:zApp1#ka'),
+        recipient('did:key:zApp3#ka')
+      ]
+      const put = await alice.was.request({
+        path: `/space/${spaceId}/${collectionId}`,
+        method: 'PUT',
+        json: { id: collectionId, encryption: rewrapped }
+      })
+      assert.equal(put.status, 204)
+      assert.deepStrictEqual(
+        (await readDesc(collectionId)).encryption,
+        rewrapped
+      )
+    })
+
+    it('allows introducing hmac on a stored descriptor that lacks it (204)', async () => {
+      const collectionId = 'hmac-late'
+      await alice.was.request({
+        path: `/space/${spaceId}/`,
+        method: 'POST',
+        json: { id: collectionId, encryption: { scheme: 'edv' } }
+      })
+      const put = await alice.was.request({
+        path: `/space/${spaceId}/${collectionId}`,
+        method: 'PUT',
+        json: { id: collectionId, encryption: hmacDescriptor() }
+      })
+      assert.equal(put.status, 204)
+      assert.deepStrictEqual(
+        (await readDesc(collectionId)).encryption,
+        hmacDescriptor()
+      )
+    })
+  })
+
   describe('key-epoch stamping (Key-Epoch header + /meta epoch)', () => {
     const collectionId = 'epoch-stamp'
     const resUrl = (rid: string) => `/space/${spaceId}/${collectionId}/${rid}`

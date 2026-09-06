@@ -831,3 +831,52 @@ Context: the remaining
 `typeof request.body !== 'object' || request.body === null` check has no
 `Array.isArray` exclusion, so the file now carries two definitions of "JSON
 object body".
+
+### WAS-62: Validate the `hmac` descriptor member (shape + permanence)
+
+- status: done
+- done: 2026-09-05
+- priority: medium
+- labels: encryption, data-model, validation
+- touches:
+  - was-teaching-server: `src/lib/encryption.ts` (a new `hmac` shape check
+    beside `assertValidEncryptionEpochs`, and a permanence check inside
+    `assertEncryptionDescriptorTransition`), `src/errors.ts` if the
+    `encryption-immutable` detail text is widened; ARCHITECTURE.md / AGENTS.md
+    unaffected (neither documents the descriptor members)
+  - storage-core: unaffected; its `CollectionEncryption` type already declares
+    `hmac` with the required shape, so the server's shape check narrows against
+    that type rather than adding a local one
+  - wallet-attached-storage-spec: the rules are shipped text (WASS-20,
+    2026-08-20): `#blinding-key-member` and `#key-epoch-server-validation`
+  - was-conformance-suite: `encryption-descriptor-api` gains the hmac cases
+    listed in the acceptance below (suite-side items are tracked here, not in a
+    separate roadmap)
+  - was-client: unaffected (already mints `hmac` through the descriptor CAS and
+    never changes `id`/`type` or drops the member)
+- acceptance:
+  - [x] On a create or update that supplies `encryption.hmac` for a recognized
+        `edv` descriptor: `hmac` MUST be an object with non-empty string `id`
+        and `type` and a non-empty `recipients` array whose entries have the
+        epoch entry shape (`header.kid`, `header.alg` non-empty strings, string
+        `encrypted_key`); a violation is `invalid-request-body` with a JSON
+        pointer
+  - [x] On an update of a stored descriptor that carries `hmac`: the member MUST
+        remain present with `id` and `type` unchanged (`recipients` entries may
+        change); a change or removal is `encryption-immutable` (409).
+        Introducing `hmac` on a stored descriptor that lacks it is accepted (the
+        WAS-EC provisioning-time rule stays client-side)
+  - [x] The whole descriptor still round-trips unmodified (`hmac` included)
+  - [x] Server `test/` coverage for each accepted and refused case
+  - [x] was-conformance-suite `encryption-descriptor-api` cases: hmac round-trip
+        (`encryption.hmac-persist-echo`), malformed hmac 400 (missing
+        `id`/`type`, empty `recipients`, bad entry shape), hmac `id` change 409,
+        hmac removal 409, hmac `recipients` change accepted, late hmac
+        introduction accepted
+
+Today `hmac` rides through the descriptor as an unknown extra member
+(`encryption.ts` preserves unknown fields and
+`assertEncryptionDescriptorTransition` has no `hmac` branch), so a client bug
+can drop or replace the blinding key and orphan every blinded index in the
+Collection. The spec now requires the shape check and the permanence invariant;
+this item implements both.

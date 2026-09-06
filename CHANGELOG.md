@@ -1,5 +1,19 @@
 # History
 
+## 0.27.0 - TBD
+
+### Added
+
+- The Collection `encryption` descriptor's `hmac` member (the blinded-index
+  blinding key) is now validated on create and update: it must be an object with
+  non-empty string `id` and `type` and a non-empty `recipients` array whose
+  entries have the epoch recipients-entry shape, else 400 `invalid-request-body`
+  with a pointer into `#/encryption/hmac`. On an update of a descriptor that
+  already carries `hmac`, the member must remain present with `id` and `type`
+  unchanged; removing it or changing either is 409 `encryption-immutable`.
+  `recipients` may change, and introducing `hmac` on a descriptor that lacks it
+  is accepted.
+
 ## 0.26.0 - 2026-09-05
 
 ### Changed

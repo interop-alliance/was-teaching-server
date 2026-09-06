@@ -112,6 +112,13 @@ export function assertSupportedEncryption({
     requestName
   })
 
+  // Validate the OPTIONAL blinding-key member (`hmac`) when present, on the
+  // same shape-only terms as the epochs.
+  assertValidEncryptionHmac({
+    descriptor: encryption as CollectionEncryption,
+    requestName
+  })
+
   // Validate the OPTIONAL scheme-version field when present: shape, then the
   // same fail-closed recognition gate as the scheme itself.
   assertValidEncryptionVersion({ descriptor: encryption, scheme, requestName })
@@ -253,31 +260,10 @@ function assertValidEncryptionEpochs({
         pointer: `${pointer}/recipients`
       })
     }
-    recipients.forEach((recipient, recipientIndex) => {
-      const rPointer = `${pointer}/recipients/${recipientIndex}`
-      // The JWE recipients-entry members the wrapped-epoch-key descriptor needs:
-      // `header.kid` / `header.alg` and the wrapped key `encrypted_key`. The
-      // member checks (optional chaining included) already reject every
-      // non-object or malformed entry, so no generic JWE-entry shape test runs
-      // first.
-      const header = (
-        recipient as { header?: { kid?: unknown; alg?: unknown } }
-      )?.header
-      if (
-        typeof header?.kid !== 'string' ||
-        header.kid.length === 0 ||
-        typeof header.alg !== 'string' ||
-        header.alg.length === 0 ||
-        typeof (recipient as { encrypted_key?: unknown }).encrypted_key !==
-          'string'
-      ) {
-        throw new InvalidRequestBodyError({
-          requestName,
-          detail:
-            'Each "recipients" entry must have a "header" object with non-empty string "kid" and "alg", plus a string "encrypted_key".',
-          pointer: rPointer
-        })
-      }
+    assertValidRecipientEntries({
+      recipients,
+      pointer: `${pointer}/recipients`,
+      requestName
     })
   })
   if (typeof currentEpoch !== 'string' || currentEpoch.length === 0) {
@@ -293,6 +279,170 @@ function assertValidEncryptionEpochs({
       requestName,
       detail: `Collection "encryption.currentEpoch" ("${currentEpoch}") does not name an epoch in "epochs".`,
       pointer: '#/encryption/currentEpoch'
+    })
+  }
+}
+
+/**
+ * Validates the entries of a wrapped-key `recipients` array -- the shape shared
+ * by every epoch and by the `hmac` blinding-key member. Each entry must carry
+ * the JWE recipients-entry members the descriptor requires: a `header` object
+ * with non-empty string `kid` and `alg`, plus a string `encrypted_key` (the
+ * wrapped key). The member checks (optional chaining included) already reject
+ * every non-object or malformed entry, so no generic JWE-entry shape test runs
+ * first. Rejects with `invalid-request-body` (400) and a pointer to the entry.
+ *
+ * @param options {object}
+ * @param options.recipients {unknown[]}   the (already non-empty) recipients array
+ * @param options.pointer {string}   the JSON pointer of the array itself
+ * @param [options.requestName] {string}   request name for the 400 error title
+ * @returns {void}
+ */
+function assertValidRecipientEntries({
+  recipients,
+  pointer,
+  requestName
+}: {
+  recipients: unknown[]
+  pointer: string
+  requestName?: string
+}): void {
+  recipients.forEach((recipient, recipientIndex) => {
+    const header = (recipient as { header?: { kid?: unknown; alg?: unknown } })
+      ?.header
+    if (
+      typeof header?.kid !== 'string' ||
+      header.kid.length === 0 ||
+      typeof header.alg !== 'string' ||
+      header.alg.length === 0 ||
+      typeof (recipient as { encrypted_key?: unknown }).encrypted_key !==
+        'string'
+    ) {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail:
+          'Each "recipients" entry must have a "header" object with non-empty string "kid" and "alg", plus a string "encrypted_key".',
+        pointer: `${pointer}/${recipientIndex}`
+      })
+    }
+  })
+}
+
+/**
+ * Validates the OPTIONAL `hmac` member of a Collection `encryption` descriptor
+ * (spec "The blinding-key member" / "Server validation"): the public reference
+ * to the Collection's blinding key, under which a client blinds the attribute
+ * names and values of its blinded indexes. Shape-only, on the same terms as the
+ * epoch members: when present, `hmac` MUST be an object with non-empty string
+ * `id` and `type` and a non-empty `recipients` array whose entries have the
+ * epoch recipients-entry shape. `type` is opaque to the server. Rejects with
+ * `invalid-request-body` (400) and a precise `pointer`; an absent member passes.
+ *
+ * @param options {object}
+ * @param options.descriptor {CollectionEncryption}   the shape-validated descriptor
+ * @param [options.requestName] {string}   request name for the 400 error title
+ * @returns {void}
+ */
+function assertValidEncryptionHmac({
+  descriptor,
+  requestName
+}: {
+  descriptor: CollectionEncryption
+  requestName?: string
+}): void {
+  const { hmac } = descriptor as { hmac?: unknown }
+  if (hmac === undefined) {
+    return
+  }
+  if (!isPlainObject(hmac)) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail: 'Collection "encryption.hmac" must be an object.',
+      pointer: '#/encryption/hmac'
+    })
+  }
+  const { id, type, recipients } = hmac as {
+    id?: unknown
+    type?: unknown
+    recipients?: unknown
+  }
+  if (typeof id !== 'string' || id.length === 0) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail: 'Collection "encryption.hmac" must have a non-empty string "id".',
+      pointer: '#/encryption/hmac/id'
+    })
+  }
+  if (typeof type !== 'string' || type.length === 0) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail:
+        'Collection "encryption.hmac" must have a non-empty string "type".',
+      pointer: '#/encryption/hmac/type'
+    })
+  }
+  if (!Array.isArray(recipients) || recipients.length === 0) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail:
+        'Collection "encryption.hmac" must have a non-empty "recipients" array.',
+      pointer: '#/encryption/hmac/recipients'
+    })
+  }
+  assertValidRecipientEntries({
+    recipients,
+    pointer: '#/encryption/hmac/recipients',
+    requestName
+  })
+}
+
+/**
+ * Enforces the blinding-key permanence rail on an UPDATE, when the existing
+ * descriptor already carries an `hmac` member (spec "Server validation"). Call
+ * only when an `incoming` descriptor was supplied and shape-validated. The
+ * member MUST remain present with its `id` and `type` unchanged: every blinded
+ * token in the Collection is computed under this key, so replacing or dropping
+ * it would orphan every blinded index at once, just as a `scheme` change would
+ * corrupt the Resources. Either violation is `encryption-immutable` (409) with
+ * a pointer to the offending member. `recipients` entries MAY change (a reader
+ * added or removed). Introducing `hmac` on a descriptor that lacks one is not a
+ * server-side violation; the provisioning-time rule is a client-profile matter.
+ *
+ * @param options {object}
+ * @param [options.existing] {CollectionEncryption}   the persisted descriptor
+ * @param options.incoming {CollectionEncryption}   the validated request descriptor
+ * @returns {void}
+ */
+export function assertEncryptionHmacTransition({
+  existing,
+  incoming
+}: {
+  existing?: CollectionEncryption
+  incoming: CollectionEncryption
+}): void {
+  const existingHmac = existing?.hmac
+  if (existingHmac === undefined) {
+    // No prior blinding key: a first declaration has nothing to preserve.
+    return
+  }
+  const incomingHmac = incoming.hmac
+  if (incomingHmac === undefined) {
+    throw new EncryptionImmutableError({
+      detail:
+        'Collection "encryption.hmac" is permanent and may not be removed once set.',
+      pointer: '#/encryption/hmac'
+    })
+  }
+  if (incomingHmac.id !== existingHmac.id) {
+    throw new EncryptionImmutableError({
+      detail: `Collection "encryption.hmac.id" is permanent and may not change (from "${existingHmac.id}" to "${incomingHmac.id}").`,
+      pointer: '#/encryption/hmac/id'
+    })
+  }
+  if (incomingHmac.type !== existingHmac.type) {
+    throw new EncryptionImmutableError({
+      detail: `Collection "encryption.hmac.type" is permanent and may not change (from "${existingHmac.type}" to "${incomingHmac.type}").`,
+      pointer: '#/encryption/hmac/type'
     })
   }
 }
@@ -362,7 +512,9 @@ export function assertEncryptionEpochsTransition({
  * Enforces the full `encryption`-descriptor transition rails against a persisted
  * descriptor in one call: set-once immutability
  * ({@link assertEncryptionTransition}) plus the key-epoch rails
- * ({@link assertEncryptionEpochsTransition}). Unlike those two -- which require
+ * ({@link assertEncryptionEpochsTransition}), the blinding-key permanence rail
+ * ({@link assertEncryptionHmacTransition}) and the scheme-version rail
+ * ({@link assertEncryptionVersionTransition}). Unlike those -- which require
  * a supplied `incoming` -- this also accepts an absent one: a write whose
  * description would CLEAR an existing descriptor is rejected with
  * `encryption-immutable` (409), on the same terms as changing it. The request
@@ -396,6 +548,7 @@ export function assertEncryptionDescriptorTransition({
   }
   assertEncryptionTransition({ existing, incoming })
   assertEncryptionEpochsTransition({ existing, incoming })
+  assertEncryptionHmacTransition({ existing, incoming })
   assertEncryptionVersionTransition({ existing, incoming })
 }
 

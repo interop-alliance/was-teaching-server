@@ -22,6 +22,7 @@ import {
   assertSupportedEncryption,
   assertEncryptionTransition,
   assertEncryptionEpochsTransition,
+  assertEncryptionHmacTransition,
   assertEncryptionDescriptorTransition,
   assertEncryptedWriteConforms,
   assertEncryptedMetaConforms
@@ -308,6 +309,147 @@ describe('assertSupportedEncryption (key-epoch fields)', () => {
           }
         }),
       InvalidRequestBodyError
+    )
+  })
+})
+
+/** A valid `edv` descriptor carrying a blinding-key `hmac` member. */
+function hmacDescriptor(): CollectionEncryption {
+  return {
+    scheme: 'edv',
+    hmac: {
+      id: 'urn:uuid:blinding-key-1',
+      type: 'Sha256HmacKey2019',
+      recipients: [recipient('did:key:zApp1#ka')]
+    }
+  }
+}
+
+describe('assertSupportedEncryption (hmac member)', () => {
+  it('accepts and round-trips a descriptor carrying a valid `hmac` verbatim', () => {
+    const descriptor = hmacDescriptor()
+    assert.deepStrictEqual(
+      assertSupportedEncryption({ encryption: descriptor }),
+      descriptor
+    )
+  })
+  it('accepts a descriptor without `hmac` unchanged', () => {
+    const descriptor = epochDescriptor()
+    assert.deepStrictEqual(
+      assertSupportedEncryption({ encryption: descriptor }),
+      descriptor
+    )
+  })
+  const malformed: [string, unknown, string][] = [
+    ['a non-object hmac', 'not-an-object', '#/encryption/hmac'],
+    ['an array hmac', [], '#/encryption/hmac'],
+    [
+      'a missing id',
+      { type: 'Sha256HmacKey2019', recipients: [recipient('k')] },
+      '#/encryption/hmac/id'
+    ],
+    [
+      'an empty id',
+      { id: '', type: 'Sha256HmacKey2019', recipients: [recipient('k')] },
+      '#/encryption/hmac/id'
+    ],
+    [
+      'a missing type',
+      { id: 'urn:k', recipients: [recipient('k')] },
+      '#/encryption/hmac/type'
+    ],
+    [
+      'a non-string type',
+      { id: 'urn:k', type: 7, recipients: [recipient('k')] },
+      '#/encryption/hmac/type'
+    ],
+    [
+      'missing recipients',
+      { id: 'urn:k', type: 'Sha256HmacKey2019' },
+      '#/encryption/hmac/recipients'
+    ],
+    [
+      'empty recipients',
+      { id: 'urn:k', type: 'Sha256HmacKey2019', recipients: [] },
+      '#/encryption/hmac/recipients'
+    ],
+    [
+      'a recipient without header.kid',
+      {
+        id: 'urn:k',
+        type: 'Sha256HmacKey2019',
+        recipients: [recipient('k'), { encrypted_key: 'ek' }]
+      },
+      '#/encryption/hmac/recipients/1'
+    ]
+  ]
+  for (const [label, hmac, pointer] of malformed) {
+    it(`rejects ${label} (400, pointer ${pointer})`, () => {
+      throwsInvalidBodyPointer(
+        () =>
+          assertSupportedEncryption({ encryption: { scheme: 'edv', hmac } }),
+        pointer
+      )
+    })
+  }
+})
+
+describe('assertEncryptionHmacTransition', () => {
+  it('is a no-op when the existing descriptor has no hmac (late introduction)', () => {
+    assert.doesNotThrow(() =>
+      assertEncryptionHmacTransition({
+        existing: { scheme: 'edv' },
+        incoming: hmacDescriptor()
+      })
+    )
+  })
+  it('allows re-sending the same hmac', () => {
+    assert.doesNotThrow(() =>
+      assertEncryptionHmacTransition({
+        existing: hmacDescriptor(),
+        incoming: hmacDescriptor()
+      })
+    )
+  })
+  it('allows changing the recipients (reader added or removed)', () => {
+    const incoming = hmacDescriptor()
+    incoming.hmac!.recipients = [recipient('did:key:zApp2#ka')]
+    assert.doesNotThrow(() =>
+      assertEncryptionHmacTransition({ existing: hmacDescriptor(), incoming })
+    )
+  })
+  it('rejects removing hmac (409 encryption-immutable, pointer #/encryption/hmac)', () => {
+    throwsImmutablePointer(
+      () =>
+        assertEncryptionDescriptorTransition({
+          existing: hmacDescriptor(),
+          incoming: { scheme: 'edv' }
+        }),
+      '#/encryption/hmac'
+    )
+  })
+  it('rejects changing hmac.id (409, pointer #/encryption/hmac/id)', () => {
+    const incoming = hmacDescriptor()
+    incoming.hmac!.id = 'urn:uuid:blinding-key-2'
+    throwsImmutablePointer(
+      () =>
+        assertEncryptionDescriptorTransition({
+          existing: hmacDescriptor(),
+          incoming
+        }),
+      '#/encryption/hmac/id'
+    )
+  })
+  it('rejects changing hmac.type (409, pointer #/encryption/hmac/type)', () => {
+    const incoming = hmacDescriptor()
+    incoming.hmac!.type = 'OtherKeyType'
+    throwsImmutablePointer(
+      () =>
+        assertEncryptionDescriptorTransition({
+          existing: hmacDescriptor(),
+          incoming
+        }),
+      '#/encryption/hmac/type'
     )
   })
 })
