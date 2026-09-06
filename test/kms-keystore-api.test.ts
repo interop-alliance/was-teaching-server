@@ -164,6 +164,14 @@ describe('WebKMS keystore lifecycle (/kms/keystores)', () => {
       assert.equal(err.status, 400)
       assert.equal(err.data.errors[0].pointer, '#/meterId')
     })
+
+    it('unknown-field pointers escape `~` and `/` (RFC 6901)', async () => {
+      const err = await requestError(
+        createKeystore(alice, { 'a/b~c': 'unexpected' })
+      )
+      assert.equal(err.status, 400)
+      assert.equal(err.data.errors[0].pointer, '#/a~1b~0c')
+    })
   })
 
   describe('get', () => {
