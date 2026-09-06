@@ -65,7 +65,8 @@ export function assertOnlyAllowedKeys({
         requestName,
         detail: `Unexpected ${label} "${key}".`,
         ...(pointerPrefix !== undefined && {
-          pointer: `${pointerPrefix}/${key}`
+          // RFC 6901 reference-token escaping: `~` then `/`, in that order.
+          pointer: `${pointerPrefix}/${key.replace(/~/g, '~0').replace(/\//g, '~1')}`
         })
       })
     }
