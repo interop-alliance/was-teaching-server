@@ -54,7 +54,8 @@ import {
   resourcePolicyFileName,
   SPACE_POLICY_FILE_NAME,
   metaSidecarFileName,
-  collectionMetaFileName
+  collectionMetaFileName,
+  collectionLogFileName
 } from '../lib/resourceFileName.js'
 import type { MetaSidecar, CollectionMetaSidecar } from '../lib/metaSidecar.js'
 import {
@@ -74,6 +75,7 @@ import { policyGrants } from '../policy.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
 import { isJson } from '../lib/isJson.js'
 import { normalizeDescriptionWrite } from '../lib/collectionDescription.js'
+import { type EtagValidator, etagOf, resolveGeneration } from '../lib/etag.js'
 import {
   atomicWriteFile,
   atomicCreateFile,
@@ -112,7 +114,8 @@ import {
   assertWritePrecondition,
   assertMetaWritePrecondition,
   assertCollectionWritePrecondition,
-  assertCollectionMetaWritePrecondition
+  assertCollectionMetaWritePrecondition,
+  assertCollectionLogWritePrecondition
 } from '../lib/preconditions.js'
 import type {
   SpaceDescription,
@@ -125,7 +128,6 @@ import type {
   ChunkListing,
   ResourceMetadata,
   ResourceMetadataCustom,
-  CollectionMetadata,
   ResourceInput,
   ImportStats,
   PolicyDocument,
@@ -134,6 +136,10 @@ import type {
   CollectionUsage,
   StorageBackend,
   StoredBackendRecord,
+  StoredCollectionDescription,
+  StoredCollectionMetadata,
+  StoredCollectionLog,
+  VersionedMetadata,
   KeystoreConfig,
   KmsKeyRecord,
   RevocationRecord,
@@ -1387,6 +1393,7 @@ export class FileSystemBackend implements StorageBackend {
       collectionDescription,
       collectionPolicy,
       collectionMetadata,
+      collectionLog,
       resources,
       resourcePolicies,
       resourceMetadata,
@@ -1429,6 +1436,13 @@ export class FileSystemBackend implements StorageBackend {
         await atomicWriteFile({
           filePath: this.#collectionMetaPath({ spaceId, collectionId }),
           data: collectionMetadata
+        })
+      }
+      // Its governing history log travels on the same terms.
+      if (collectionLog && !collectionExisted) {
+        await atomicWriteFile({
+          filePath: this.#collectionLogPath({ spaceId, collectionId }),
+          data: collectionLog
         })
       }
 
@@ -1616,10 +1630,10 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.createdBy] {string}   DID of the invoker, recorded as the
    *   Collection's `createdBy` on first write only
    * @param [options.ifMatch] {string}   an `If-Match` compare-and-swap on the
-   *   current description version (the `key-epochs` feature); a stale validator
+   *   current description `ETag` (the `key-epochs` feature); a stale validator
    *   throws `PreconditionFailedError` (412)
-   * @returns {Promise<{ version: number }>}   the Collection's new description
-   *   version (the `ETag` validator)
+   * @returns {Promise<EtagValidator>}   the Collection's new description
+   *   validator (its `generation` and bumped `version`, the `ETag`)
    */
   async writeCollection({
     spaceId,
@@ -1635,9 +1649,9 @@ export class FileSystemBackend implements StorageBackend {
     createdBy?: IDID
     ifMatch?: string
     assertTransition?: (
-      prior?: CollectionDescription & { descriptionVersion?: number }
-    ) => void
-  }): Promise<{ version: number }> {
+      prior?: StoredCollectionDescription
+    ) => void | Promise<void>
+  }): Promise<EtagValidator> {
     // Serialize the read-check-write under a per-Collection-description lock so
     // the `If-Match` compare-and-swap and the monotonic version bump are atomic
     // with the write (two concurrent recipient edits cannot clobber one
@@ -1647,23 +1661,26 @@ export class FileSystemBackend implements StorageBackend {
       this.#collectionDescLockKey({ spaceId, collectionId }),
       async () => {
         // Prior description, read once and reused below: for the create-path
-        // quota check, `createdBy` resolution, and the CAS version.
+        // quota check, `createdBy` resolution, and the CAS validator.
         const prior = await this.getCollectionDescription({
           spaceId,
           collectionId
         })
 
-        // Compare-and-swap on the current description version (opt-in): a stale
+        // Compare-and-swap on the current description `ETag` (opt-in): a stale
         // `If-Match` throws 412. An unconditional write skips this.
         assertCollectionWritePrecondition({
           collectionId,
-          currentVersion: prior?.descriptionVersion ?? 0,
+          currentEtag: etagOf({
+            generation: prior?.descriptionGeneration,
+            version: prior?.descriptionVersion
+          }),
           ifMatch
         })
 
         // The request layer's state-transition rails (e.g. epoch append-only),
         // re-evaluated here against the description just read under the lock.
-        assertTransition?.(prior)
+        await assertTransition?.(prior)
 
         // Count quota (create path only): a new Collection must not push its
         // Space past `maxCollectionsPerSpace`; overwriting an existing
@@ -1683,17 +1700,23 @@ export class FileSystemBackend implements StorageBackend {
         // description, and preserved verbatim afterward -- including
         // preserved-as-absent. The client-supplied `collectionDescription` is
         // wire input and may carry its own `createdBy` (and the out-of-band
-        // `descriptionVersion` when a caller spread a read result back in) --
-        // discard both, since the server alone is authoritative for them.
+        // `descriptionGeneration` / `descriptionVersion` when a caller spread a
+        // read result back in) -- discard them all, since the server alone is
+        // authoritative for them.
         const {
           createdBy: _suppliedCreatedBy,
+          descriptionGeneration: _suppliedGeneration,
           descriptionVersion: _suppliedVersion,
           ...rest
-        } = collectionDescription as CollectionDescription & {
-          descriptionVersion?: number
-        }
+        } = collectionDescription as StoredCollectionDescription
         const creator = prior ? prior.createdBy : createdBy
-        const version = (prior?.descriptionVersion ?? 0) + 1
+        // The description keeps its generation for the Collection's whole life;
+        // a Collection deleted and re-created under the same id mints a new one,
+        // so the two lives' validators can never coincide.
+        const validator = {
+          generation: resolveGeneration(prior?.descriptionGeneration),
+          version: (prior?.descriptionVersion ?? 0) + 1
+        }
 
         await this.#persistCollection({
           spaceId,
@@ -1702,9 +1725,9 @@ export class FileSystemBackend implements StorageBackend {
             ...rest,
             ...(creator !== undefined && { createdBy: creator })
           },
-          descriptionVersion: version
+          validator
         })
-        return { version }
+        return validator
       }
     )
   }
@@ -1739,24 +1762,26 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.collectionDescription {CollectionDescription}
-   * @param [options.descriptionVersion] {number}   the monotonic description
-   *   version to persist (the `ETag` validator; the `key-epochs` feature). Kept
-   *   OUT of the wire body -- stored under a reserved `_version` member that
-   *   `getCollectionDescription` strips and re-surfaces as `descriptionVersion`.
-   *   When omitted (the import path), a `_version` already on the incoming
-   *   description is preserved, else it defaults to `1`.
+   * @param [options.validator] {EtagValidator}   the description validator to
+   *   persist (its `generation` and monotonic `version`, the `ETag`; the
+   *   `key-epochs` feature). Kept OUT of the wire body -- stored under the
+   *   reserved `_generation` / `_version` members that
+   *   `getCollectionDescription` strips and re-surfaces as
+   *   `descriptionGeneration` / `descriptionVersion`. When omitted (the import
+   *   path), a `_generation` / `_version` pair already on the incoming
+   *   description is preserved, else a fresh generation starts at version 1.
    * @returns {Promise<void>}
    */
   async #persistCollection({
     spaceId,
     collectionId,
     collectionDescription,
-    descriptionVersion
+    validator
   }: {
     spaceId: string
     collectionId: string
     collectionDescription: CollectionDescription
-    descriptionVersion?: number
+    validator?: EtagValidator
   }): Promise<void> {
     const collectionDir = await this.#ensureCollectionDir({
       spaceId,
@@ -1764,17 +1789,21 @@ export class FileSystemBackend implements StorageBackend {
     })
     const filename = collectionDescriptionFileName(collectionId)
     // Shared normalization (lib/collectionDescription.ts): strip the
-    // version-bearing members from the incoming body and re-stamp -- an
-    // explicit `descriptionVersion` wins, else a `_version` already on the
-    // incoming (imported) description is kept, else the first write starts
-    // at 1.
-    const { body, version } = normalizeDescriptionWrite({
+    // validator-bearing members from the incoming body and re-stamp -- an
+    // explicit `validator` wins, else the `_generation` / `_version` pair
+    // already on the incoming (imported) description is kept, else a fresh
+    // generation starts at version 1.
+    const { body, validator: stamped } = normalizeDescriptionWrite({
       collectionDescription,
-      descriptionVersion
+      validator
     })
     await atomicWriteFile({
       filePath: path.join(collectionDir, filename),
-      data: JSON.stringify({ ...body, _version: version })
+      data: JSON.stringify({
+        ...body,
+        _generation: stamped.generation,
+        _version: stamped.version
+      })
     })
   }
 
@@ -1782,7 +1811,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @returns {Promise<CollectionDescription|undefined>}
+   * @returns {Promise<StoredCollectionDescription|undefined>}
    *   Resolves falsy when the Collection does not exist (must not throw).
    */
   async getCollectionDescription({
@@ -1791,13 +1820,11 @@ export class FileSystemBackend implements StorageBackend {
   }: {
     spaceId: string
     collectionId: string
-  }): Promise<
-    (CollectionDescription & { descriptionVersion?: number }) | undefined
-  > {
+  }): Promise<StoredCollectionDescription | undefined> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
     const filename = collectionDescriptionFileName(collectionId)
     const metaStore = new MetadataJsonStore<
-      CollectionDescription & { _version?: number }
+      CollectionDescription & { _generation?: string; _version?: number }
     >({
       file: path.join(collectionDir, filename)
     })
@@ -1805,12 +1832,14 @@ export class FileSystemBackend implements StorageBackend {
     if (!raw) {
       return undefined
     }
-    // `_version` is the internal ETag validator, kept out of the wire body:
-    // strip it and re-surface it out-of-band as `descriptionVersion` (the
-    // handler sets the `ETag` header from it). Absent for a legacy Collection.
-    const { _version, ...description } = raw
+    // `_generation` / `_version` are the internal ETag validator, kept out of
+    // the wire body: strip them and re-surface them out-of-band as
+    // `descriptionGeneration` / `descriptionVersion` (the handler sets the
+    // `ETag` header from them). Absent for a legacy Collection.
+    const { _generation, _version, ...description } = raw
     return {
       ...description,
+      ...(_generation !== undefined && { descriptionGeneration: _generation }),
       ...(_version !== undefined && { descriptionVersion: _version })
     }
   }
@@ -1914,13 +1943,12 @@ export class FileSystemBackend implements StorageBackend {
    * from the stored Collection Description (where the creator is recorded; it is
    * never duplicated into the sidecar). Resolves `undefined` when the Collection
    * does not exist. A Collection with no metadata written yet resolves an object
-   * carrying only what is known -- and no `metaVersion`, so the request layer
-   * emits no `ETag`.
+   * carrying only what is known -- and no validator, so the request layer emits
+   * no `ETag`.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @returns {Promise<(CollectionMetadata & { metaVersion?: number })
-   *   | undefined>}
+   * @returns {Promise<StoredCollectionMetadata | undefined>}
    */
   async getCollectionMetadata({
     spaceId,
@@ -1928,7 +1956,7 @@ export class FileSystemBackend implements StorageBackend {
   }: {
     spaceId: string
     collectionId: string
-  }): Promise<(CollectionMetadata & { metaVersion?: number }) | undefined> {
+  }): Promise<StoredCollectionMetadata | undefined> {
     const collectionDescription = await this.getCollectionDescription({
       spaceId,
       collectionId
@@ -1954,6 +1982,11 @@ export class FileSystemBackend implements StorageBackend {
       ...(hasCustom && { custom: sidecar!.custom as ResourceMetadataCustom }),
       // The client-declared key epoch (the `key-epochs` feature), when stamped.
       ...(sidecar?.epoch !== undefined && { epoch: sidecar.epoch }),
+      // The `/meta` ETag validator: the sidecar's generation with its
+      // monotonic `metaVersion`.
+      ...(sidecar?.generation !== undefined && {
+        generation: sidecar.generation
+      }),
       ...(sidecar?.metaVersion !== undefined && {
         metaVersion: sidecar.metaVersion
       })
@@ -1974,18 +2007,20 @@ export class FileSystemBackend implements StorageBackend {
    * envelope with the old envelope's epoch.
    *
    * Runs under the Collection's own metadata lock, so an `If-Match` /
-   * `If-None-Match` precondition (evaluated on `metaVersion`) is atomic with the
-   * write. A mismatch throws `PreconditionFailedError` (412).
+   * `If-None-Match` precondition (evaluated on the metadata `ETag`) is atomic
+   * with the write. A mismatch throws `PreconditionFailedError` (412).
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.custom {ResourceMetadataCustom | Record<string, unknown>}
    * @param [options.epoch] {string}   the key-epoch stamp; omitted clears it
-   * @param [options.ifMatch] {string}   `If-Match` on the current `metaVersion`
+   * @param [options.ifMatch] {string}   `If-Match` on the current metadata
+   *   `ETag`
    * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *` -- write only if
    *   no metadata has been written yet (`metaVersion` unset)
-   * @returns {Promise<{ metaVersion: number } | undefined>}   the new
-   *   `metaVersion`, or `undefined` when the Collection does not exist
+   * @returns {Promise<EtagValidator | undefined>}   the metadata object's new
+   *   validator (the sidecar's `generation` with the bumped `metaVersion` as
+   *   the `version`), or `undefined` when the Collection does not exist
    */
   async writeCollectionMetadata({
     spaceId,
@@ -2001,7 +2036,7 @@ export class FileSystemBackend implements StorageBackend {
     epoch?: string
     ifMatch?: string
     ifNoneMatch?: boolean
-  }): Promise<{ metaVersion: number } | undefined> {
+  }): Promise<EtagValidator | undefined> {
     return this.#writeMutex.run(
       this.#collectionMetaLockKey({ spaceId, collectionId }),
       async () => {
@@ -2016,16 +2051,22 @@ export class FileSystemBackend implements StorageBackend {
           spaceId,
           collectionId
         })
-        // Evaluate the `/meta` precondition against the current `metaVersion`
-        // atomically under the lock, before writing.
+        // Evaluate the `/meta` precondition against the current metadata
+        // `ETag` atomically under the lock, before writing.
         assertCollectionMetaWritePrecondition({
           collectionId,
-          metaVersion: prior?.metaVersion,
+          currentEtag: etagOf({
+            generation: prior?.generation,
+            version: prior?.metaVersion
+          }),
           ifMatch,
           ifNoneMatch
         })
 
         const now = new Date().toISOString()
+        // The generation is minted by the first metadata write and kept
+        // thereafter (the sidecar only ever goes away with its Collection).
+        const generation = resolveGeneration(prior?.generation)
         const metaVersion = (prior?.metaVersion ?? 0) + 1
         const hasCustom = Object.keys(custom).length > 0
         await atomicWriteFile({
@@ -2035,13 +2076,172 @@ export class FileSystemBackend implements StorageBackend {
             // thereafter; `updatedAt` tracks this one.
             createdAt: prior?.createdAt ?? now,
             updatedAt: now,
+            generation,
             metaVersion,
             ...(hasCustom && { custom }),
             ...(epoch !== undefined && { epoch })
           } satisfies CollectionMetaSidecar)
         })
-        return { metaVersion }
+        return { generation, version: metaVersion }
       }
+    )
+  }
+
+  /**
+   * Builds the per-Collection history-log serialization key for
+   * `#writeMutex`. A log write also takes the `desc:` lock first (a log write
+   * bumps the description validator, and the request layer's checks on either
+   * side read the other record), so the two never interleave.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {string}
+   */
+  #collectionLogLockKey({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): string {
+    return `clog:${spaceId}/${collectionId}`
+  }
+
+  /**
+   * Builds the on-disk path for a Collection's governing history log
+   * (`.collectionlog.<collectionId>.json`) in its own Collection dir.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {string}
+   */
+  #collectionLogPath({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): string {
+    const filePath = path.join(
+      this.#collectionDir({ spaceId, collectionId }),
+      collectionLogFileName(collectionId)
+    )
+    this.#assertContained(filePath)
+    return filePath
+  }
+
+  /**
+   * Reads a Collection's governing history log (the `governed-history-logs`
+   * feature): the JSON Lines body verbatim with its own validator. Resolves
+   * `undefined` when the Collection has no log.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<StoredCollectionLog | undefined>}
+   */
+  async getCollectionLog({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<StoredCollectionLog | undefined> {
+    const logStore = new MetadataJsonStore<StoredCollectionLog>({
+      file: this.#collectionLogPath({ spaceId, collectionId })
+    })
+    // The store reads an absent file as `null`; the contract says `undefined`.
+    return (await logStore.read()) ?? undefined
+  }
+
+  /**
+   * Replaces a Collection's governing history log (guarded create or
+   * compare-and-swap append), under the description lock and then the log
+   * lock: the precondition is evaluated on the log's current `ETag`, the
+   * request layer's `assertTransition` runs against the log and description
+   * just read, and the description validator is bumped in the same critical
+   * section, since the served description's `encryption` member is derived
+   * from this log's head.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.body {string}   the new JSON Lines body
+   * @param [options.ifMatch] {string}   the log `ETag` the write is pinned to
+   * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *` -- create only
+   * @param [options.assertTransition] {Function}   the request layer's
+   *   checks, run atomically with the write
+   * @returns {Promise<EtagValidator | undefined>}   the log's new validator,
+   *   or `undefined` when the Collection does not exist
+   */
+  async writeCollectionLog({
+    spaceId,
+    collectionId,
+    body,
+    ifMatch,
+    ifNoneMatch,
+    assertTransition
+  }: {
+    spaceId: string
+    collectionId: string
+    body: string
+    ifMatch?: string
+    ifNoneMatch?: boolean
+    assertTransition?: (context: {
+      prior?: StoredCollectionLog
+      collectionDescription: StoredCollectionDescription
+    }) => void | Promise<void>
+  }): Promise<EtagValidator | undefined> {
+    return this.#writeMutex.run(
+      this.#collectionDescLockKey({ spaceId, collectionId }),
+      () =>
+        this.#writeMutex.run(
+          this.#collectionLogLockKey({ spaceId, collectionId }),
+          async () => {
+            const collectionDescription = await this.getCollectionDescription({
+              spaceId,
+              collectionId
+            })
+            if (!collectionDescription) {
+              return undefined
+            }
+            const prior = await this.getCollectionLog({ spaceId, collectionId })
+            assertCollectionLogWritePrecondition({
+              collectionId,
+              currentEtag: etagOf({
+                generation: prior?.generation,
+                version: prior?.version
+              }),
+              ifMatch,
+              ifNoneMatch
+            })
+            await assertTransition?.({ prior, collectionDescription })
+
+            const validator = {
+              generation: resolveGeneration(prior?.generation),
+              version: (prior?.version ?? 0) + 1
+            }
+            await atomicWriteFile({
+              filePath: this.#collectionLogPath({ spaceId, collectionId }),
+              data: JSON.stringify({
+                ...validator,
+                body
+              } satisfies StoredCollectionLog)
+            })
+            // The served description changed with its derived member, so its
+            // validator advances too (generation kept, version bumped).
+            await this.#persistCollection({
+              spaceId,
+              collectionId,
+              collectionDescription,
+              validator: {
+                generation: resolveGeneration(
+                  collectionDescription.descriptionGeneration
+                ),
+                version: (collectionDescription.descriptionVersion ?? 0) + 1
+              }
+            })
+            return validator
+          }
+        )
     )
   }
 
@@ -2155,8 +2355,9 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Writes a resource representation (JSON value or byte stream) to disk, under
    * the per-Resource write lock (the `conditional-writes` feature), and bumps
-   * the Resource's monotonic `version`. The new version is returned so the
-   * request layer can surface it as the response `ETag`.
+   * the Resource's monotonic `version`. The new validator (that `version` under
+   * the Resource's `generation`) is returned so the request layer can surface it
+   * as the response `ETag`.
    *
    * When a conditional-write precondition is supplied it is evaluated against
    * the Resource's current state atomically with the write (under the lock),
@@ -2176,7 +2377,7 @@ export class FileSystemBackend implements StorageBackend {
    *   Resource's `createdBy` on first write only
    * @param [options.ifMatch] {string}   `If-Match` precondition (a quoted ETag)
    * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *` (create-if-absent)
-   * @returns {Promise<{ version: number }>}   the Resource's new version
+   * @returns {Promise<EtagValidator>}   the Resource's new ETag validator
    */
   async writeResource({
     spaceId,
@@ -2198,7 +2399,7 @@ export class FileSystemBackend implements StorageBackend {
     uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: boolean
-  }): Promise<{ version: number }> {
+  }): Promise<EtagValidator> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
     const lockKey = this.#resourceLockKey({
       spaceId,
@@ -2286,8 +2487,8 @@ export class FileSystemBackend implements StorageBackend {
    * The critical section of `writeResource`, run under the per-Resource lock:
    * evaluates any precondition, writes the representation, prunes a stale
    * representation under a different content-type, and persists the bumped
-   * `version` in the sidecar. See `writeResource` for the parameters.
-   * @returns {Promise<{ version: number }>}
+   * validator in the sidecar. See `writeResource` for the parameters.
+   * @returns {Promise<EtagValidator>}
    */
   async #writeResourceLocked({
     spaceId,
@@ -2307,7 +2508,7 @@ export class FileSystemBackend implements StorageBackend {
     epoch?: string
     ifMatch?: string
     ifNoneMatch?: boolean
-  }): Promise<{ version: number }> {
+  }): Promise<EtagValidator> {
     const filename = fileNameFor({ resourceId, contentType: input.contentType })
     const filePath = path.join(collectionDir, filename)
     this.#assertContained(filePath)
@@ -2371,11 +2572,12 @@ export class FileSystemBackend implements StorageBackend {
       entries
     })
 
-    // Maintain the server-managed timestamps and the monotonic `version`: a
-    // content write sets `createdAt` on first write, bumps `updatedAt`, and
-    // increments `version` (the ETag validator) from its prior value, preserving
-    // any user-writable `custom` and the independent `metaVersion` already stored
-    // in the sidecar (a content write does not touch the metadata sub-resource).
+    // Maintain the server-managed timestamps and the ETag validator: a content
+    // write sets `createdAt` on first write, bumps `updatedAt`, increments
+    // `version` from its prior value and keeps the Resource's `generation`
+    // (minting one only on the first write), preserving any user-writable
+    // `custom` and the independent `metaVersion` already stored in the sidecar
+    // (a content write does not touch the metadata sub-resource).
     //
     // `createdBy` pairs with `createdAt`: taken from this write's invoker only
     // when this write creates the sidecar, so it names the creator rather than
@@ -2388,12 +2590,13 @@ export class FileSystemBackend implements StorageBackend {
       collectionDir,
       resourceId,
       prior,
-      build: ({ prior, version, now }) => {
+      build: ({ prior, generation, version, now }) => {
         const creator = prior ? prior.createdBy : createdBy
         return {
           createdAt: prior?.createdAt ?? now,
           updatedAt: now,
           ...(creator !== undefined && { createdBy: creator }),
+          generation,
           version,
           ...(prior?.metaVersion !== undefined && {
             metaVersion: prior.metaVersion
@@ -2584,13 +2787,15 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * The bump-write sidecar tail shared by `#writeResourceLocked` and
-   * `#writeChunkLocked`: computes the next monotonic `version` (bumped from the
-   * prior value, so a first write lands at 1), builds the new sidecar via
-   * `build`, writes it, and returns the new version. The two write paths fill in
-   * different fields -- a chunk carries no user Metadata / `createdBy` / epoch
-   * stamp -- so `build` supplies the sidecar body from the shared
-   * `{ prior, version, now }` inputs. The caller passes the item's current
-   * sidecar in, since it has already read it under the same lock.
+   * `#writeChunkLocked`: resolves the item's ETag validator -- the `generation`
+   * it already carries (minted here on a first write) with the next monotonic
+   * `version` (bumped from the prior value, so a first write lands at 1) --
+   * builds the new sidecar via `build`, writes it, and returns the validator.
+   * The two write paths fill in different fields -- a chunk carries no user
+   * Metadata / `createdBy` / epoch stamp -- so `build` supplies the sidecar body
+   * from the shared `{ prior, generation, version, now }` inputs and MUST write
+   * the `generation` it is handed into the sidecar. The caller passes the item's
+   * current sidecar in, since it has already read it under the same lock.
    * @param options {object}
    * @param options.collectionDir {string}   the dir the sidecar lives in (a
    *   Collection dir, or a chunk dir for a chunk)
@@ -2598,10 +2803,11 @@ export class FileSystemBackend implements StorageBackend {
    *   stringified chunk index)
    * @param [options.prior] {MetaSidecar}   the item's current sidecar, absent
    *   when it has none yet
-   * @param options.build {(context: { prior?: MetaSidecar, version: number,
-   *   now: string }) => MetaSidecar}   builds the sidecar to persist from the
-   *   prior sidecar, the bumped `version`, and the write timestamp
-   * @returns {Promise<{ version: number }>}
+   * @param options.build {(context: { prior?: MetaSidecar, generation: string,
+   *   version: number, now: string }) => MetaSidecar}   builds the sidecar to
+   *   persist from the prior sidecar, the resolved `generation`, the bumped
+   *   `version`, and the write timestamp
+   * @returns {Promise<EtagValidator>}
    */
   async #bumpSidecarVersion({
     collectionDir,
@@ -2614,18 +2820,24 @@ export class FileSystemBackend implements StorageBackend {
     prior?: MetaSidecar
     build: (context: {
       prior?: MetaSidecar
+      generation: string
       version: number
       now: string
     }) => MetaSidecar
-  }): Promise<{ version: number }> {
+  }): Promise<EtagValidator> {
     const now = new Date().toISOString()
+    // The generation is minted once, when the counter starts, and kept for the
+    // item's whole life -- through a Resource tombstone and its re-create,
+    // since the counter continues there. A sidecar removed outright (a chunk
+    // delete) takes it along, so the next item under that id starts fresh.
+    const generation = resolveGeneration(prior?.generation)
     const version = (prior?.version ?? 0) + 1
     await this.#writeMetaSidecar({
       collectionDir,
       resourceId,
-      sidecar: build({ prior, version, now })
+      sidecar: build({ prior, generation, version, now })
     })
-    return { version }
+    return { generation, version }
   }
 
   /**
@@ -2708,10 +2920,12 @@ export class FileSystemBackend implements StorageBackend {
     assertWritePrecondition({
       resourceId,
       exists,
-      // A tombstone's sidecar survives its content, so the version it carries
+      // A tombstone's sidecar survives its content, so the validator it carries
       // counts only when the Resource is live -- as it did when the sidecar was
       // read only in that case.
-      currentVersion: exists ? (prior?.version ?? 0) : 0,
+      currentEtag: exists
+        ? etagOf({ generation: prior?.generation, version: prior?.version })
+        : undefined,
       ifMatch,
       ifNoneMatch
     })
@@ -2724,7 +2938,8 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.resourceId {string}
    * @param [options.contentType] {string}
    * @returns {Promise<ResourceResult>}   includes the Resource's current
-   *   `version` (the ETag validator) when one is recorded in its sidecar.
+   *   `generation` / `version` (the ETag validator) when one is recorded in its
+   *   sidecar.
    */
   async getResource({
     spaceId,
@@ -2749,12 +2964,12 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Resolves a stored representation's read stream, content-type, and version
-   * (a `ResourceResult`), shared by `getResource` and `getChunk` -- a chunk is a
-   * Resource keyed by its index inside its chunk dir. The content-type is
-   * derived from the filename segment (the exact type it was written under), and
-   * the `version` ETag validator from the sidecar (absent only for a legacy item
-   * written before versioning). Throws `ResourceNotFoundError` (404) when no
+   * Resolves a stored representation's read stream, content-type, and ETag
+   * validator (a `ResourceResult`), shared by `getResource` and `getChunk` -- a
+   * chunk is a Resource keyed by its index inside its chunk dir. The
+   * content-type is derived from the filename segment (the exact type it was
+   * written under), and the `generation` / `version` ETag validator from the
+   * sidecar (absent only for a legacy item written before versioning). Throws `ResourceNotFoundError` (404) when no
    * representation file is present. Unlike the metadata getters it does NOT
    * re-`stat` the file: the read stream's own `open` surfaces a concurrent
    * removal, so a stat existence recheck would be redundant.
@@ -2790,6 +3005,9 @@ export class FileSystemBackend implements StorageBackend {
     return {
       resourceStream: await openFileStream(filePath, this.logger),
       storedResourceType,
+      ...(sidecar?.generation !== undefined && {
+        generation: sidecar.generation
+      }),
       ...(sidecar?.version !== undefined && { version: sidecar.version })
     }
   }
@@ -2919,18 +3137,17 @@ export class FileSystemBackend implements StorageBackend {
    * times and `custom` is omitted. Resolves `undefined` when the Resource is
    * absent (including a delete race on `stat`).
    *
-   * Also surfaces the Resource's content `version` and its `metaVersion` (the
-   * two ETag validators) when recorded in the sidecar, so the request layer can
-   * set the `ETag` header: HEAD / the resource itself use the content `version`,
-   * while `GET /meta` uses `metaVersion`. Both are out-of-band fields the request
-   * layer reads for the header; neither is part of the Resource Metadata wire
-   * body.
+   * Also surfaces the sidecar's `generation` with the content `version` and the
+   * `metaVersion` (the two ETag validators) when recorded, so the request layer
+   * can set the `ETag` header: HEAD / the resource itself pair the generation
+   * with the content `version`, while `GET /meta` pairs it with `metaVersion`.
+   * All three are out-of-band fields the request layer reads for the header;
+   * none is part of the Resource Metadata wire body.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
-   * @returns {Promise<(ResourceMetadata & { version?: number; metaVersion?:
-   *   number }) | undefined>}
+   * @returns {Promise<(ResourceMetadata & VersionedMetadata) | undefined>}
    */
   async getResourceMetadata({
     spaceId,
@@ -2940,9 +3157,7 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
     resourceId: string
-  }): Promise<
-    (ResourceMetadata & { version?: number; metaVersion?: number }) | undefined
-  > {
+  }): Promise<(ResourceMetadata & VersionedMetadata) | undefined> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
     const stated = await this.#statRepresentation({ collectionDir, resourceId })
     if (!stated) {
@@ -2967,6 +3182,9 @@ export class FileSystemBackend implements StorageBackend {
       ...(hasCustom && { custom: sidecar!.custom as ResourceMetadataCustom }),
       // The client-declared key epoch (the `key-epochs` feature), when stamped.
       ...(sidecar?.epoch !== undefined && { epoch: sidecar.epoch }),
+      ...(sidecar?.generation !== undefined && {
+        generation: sidecar.generation
+      }),
       ...(sidecar?.version !== undefined && { version: sidecar.version }),
       ...(sidecar?.metaVersion !== undefined && {
         metaVersion: sidecar.metaVersion
@@ -2985,8 +3203,8 @@ export class FileSystemBackend implements StorageBackend {
    * encryption envelope, stored verbatim.
    *
    * Runs under the per-Resource write lock -- the same lock content writes take
-   * -- so an `If-Match` / `If-None-Match` precondition (evaluated on
-   * `metaVersion`) is atomic with the write and serializes with concurrent
+   * -- so an `If-Match` / `If-None-Match` precondition (evaluated on the
+   * metadata `ETag`) is atomic with the write and serializes with concurrent
    * content/metadata writes to the same Resource. A precondition mismatch throws
    * `PreconditionFailedError` (412).
    * @param options {object}
@@ -2994,11 +3212,13 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param options.custom {ResourceMetadataCustom | Record<string, unknown>}
-   * @param [options.ifMatch] {string}   `If-Match` on the current `metaVersion`
+   * @param [options.ifMatch] {string}   `If-Match` on the current metadata
+   *   `ETag`
    * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *` -- write only if
    *   no metadata has been written yet (`metaVersion` unset)
-   * @returns {Promise<{ metaVersion: number } | undefined>}   the new
-   *   `metaVersion`, or `undefined` when the Resource does not exist
+   * @returns {Promise<EtagValidator | undefined>}   the metadata object's new
+   *   validator (the sidecar's `generation` with the bumped `metaVersion` as
+   *   the `version`), or `undefined` when the Resource does not exist
    */
   async writeResourceMetadata({
     spaceId,
@@ -3018,23 +3238,24 @@ export class FileSystemBackend implements StorageBackend {
     uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: boolean
-  }): Promise<{ metaVersion: number } | undefined> {
+  }): Promise<EtagValidator | undefined> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
-    const writeMeta = async (): Promise<
-      { metaVersion: number } | undefined
-    > => {
+    const writeMeta = async (): Promise<EtagValidator | undefined> => {
       const filePath = await this.#findFile({ collectionDir, resourceId })
       if (!filePath) {
         return undefined
       }
       const prior = await this.readMetaSidecar({ collectionDir, resourceId })
-      // Evaluate the `/meta` precondition against the current `metaVersion`
+      // Evaluate the `/meta` precondition against the current metadata `ETag`
       // atomically under the lock, before writing. `If-None-Match: *` means
       // "only if no metadata has been written yet"; `If-Match` pins the current
-      // `metaVersion` ETag.
+      // `/meta` ETag.
       assertMetaWritePrecondition({
         resourceId,
-        metaVersion: prior?.metaVersion,
+        currentEtag: etagOf({
+          generation: prior?.generation,
+          version: prior?.metaVersion
+        }),
         ifMatch,
         ifNoneMatch
       })
@@ -3050,6 +3271,10 @@ export class FileSystemBackend implements StorageBackend {
           createdAt = now
         }
       }
+      // The sidecar's generation is preserved; a legacy Resource written
+      // before generations has none, so mint one now -- the `/meta` ETag this
+      // write returns needs one.
+      const generation = resolveGeneration(prior?.generation)
       const metaVersion = (prior?.metaVersion ?? 0) + 1
       const hasCustom = Object.keys(custom).length > 0
       // The key-epoch stamp describes the CONTENT write, not this metadata
@@ -3067,6 +3292,7 @@ export class FileSystemBackend implements StorageBackend {
           ...(prior?.createdBy !== undefined && {
             createdBy: prior.createdBy
           }),
+          generation,
           // Preserve the content `version` (ETag) -- a metadata write does not
           // change the stored representation.
           ...(prior?.version !== undefined && { version: prior.version }),
@@ -3075,7 +3301,7 @@ export class FileSystemBackend implements StorageBackend {
           ...(resolvedEpoch !== undefined && { epoch: resolvedEpoch })
         }
       })
-      return { metaVersion }
+      return { generation, version: metaVersion }
     }
     // A metadata write can create a plaintext equality unique claim for a
     // `custom`-sourced attribute (the `equality-query` feature). When the
@@ -3195,7 +3421,9 @@ export class FileSystemBackend implements StorageBackend {
       })
       // Bump `version` / `updatedAt` so the tombstone sorts after the Resource's
       // prior state in the change feed, and continues the monotonic version (a
-      // later re-create reads this sidecar and keeps counting up). `custom` is
+      // later re-create reads this sidecar and keeps counting up). The
+      // `generation` is kept for the same reason: the counter survives, so the
+      // validator it forms stays continuous across the soft delete. `custom` is
       // dropped: the user Metadata goes with the deleted Resource. `createdAt` /
       // `createdBy` are kept: they are the server's record of the Resource's
       // origin, which a re-create under the same id continues.
@@ -3209,6 +3437,9 @@ export class FileSystemBackend implements StorageBackend {
           updatedAt: now,
           ...(prior?.createdBy !== undefined && {
             createdBy: prior.createdBy
+          }),
+          ...(prior?.generation !== undefined && {
+            generation: prior.generation
           }),
           version: (prior?.version ?? 0) + 1,
           deleted: true,
@@ -3260,9 +3491,10 @@ export class FileSystemBackend implements StorageBackend {
    * per-Resource lock a `deleteResource` cascade takes so a chunk can never be
    * orphaned by a racing delete. The body is stored opaquely (bytes +
    * content-type) through the shared upload-cap / quota guards, and the chunk's
-   * own monotonic `version` (its ETag validator, independent of the parent's) is
-   * bumped; any `If-Match` / `If-None-Match` precondition is evaluated on that
-   * version atomically with the write (`PreconditionFailedError`, 412).
+   * own monotonic `version` (with its `generation`, the chunk's ETag validator,
+   * independent of the parent's) is bumped; any `If-Match` / `If-None-Match`
+   * precondition is evaluated on that validator atomically with the write
+   * (`PreconditionFailedError`, 412).
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -3271,7 +3503,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.input {ResourceInput}
    * @param [options.ifMatch] {string}   `If-Match` precondition (a quoted ETag)
    * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *` (create-if-absent)
-   * @returns {Promise<{ version: number }>}   the chunk's new version
+   * @returns {Promise<EtagValidator>}   the chunk's new ETag validator
    */
   async writeChunk({
     spaceId,
@@ -3289,7 +3521,7 @@ export class FileSystemBackend implements StorageBackend {
     input: ResourceInput
     ifMatch?: string
     ifNoneMatch?: boolean
-  }): Promise<{ version: number }> {
+  }): Promise<EtagValidator> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
     // Serialize on the parent Resource's lock key -- the same key
     // `deleteResource` takes -- so the parent-exists check, the write, and the
@@ -3312,7 +3544,7 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * The critical section of `writeChunk`, run under the per-Resource lock. See
    * `writeChunk` for the parameters.
-   * @returns {Promise<{ version: number }>}
+   * @returns {Promise<EtagValidator>}
    */
   async #writeChunkLocked({
     spaceId,
@@ -3330,7 +3562,7 @@ export class FileSystemBackend implements StorageBackend {
     input: ResourceInput
     ifMatch?: string
     ifNoneMatch?: boolean
-  }): Promise<{ version: number }> {
+  }): Promise<EtagValidator> {
     // The parent Resource must exist: writing a chunk of an absent Resource
     // rejects, so orphan chunks cannot accumulate.
     const parentExists =
@@ -3351,7 +3583,7 @@ export class FileSystemBackend implements StorageBackend {
     const filePath = path.join(chunkDir, filename)
     this.#assertContained(filePath)
 
-    // Evaluate any precondition against the chunk's current version before
+    // Evaluate any precondition against the chunk's current ETag before
     // writing (still inside the lock, so check and write are atomic).
     if (ifMatch !== undefined || ifNoneMatch) {
       await this.#assertWritePrecondition({
@@ -3375,8 +3607,11 @@ export class FileSystemBackend implements StorageBackend {
       keepPath: filePath
     })
 
-    // Bump the chunk's monotonic `version` (its ETag validator), preserving its
-    // `createdAt`. A chunk carries no user Metadata / `createdBy` / epoch stamp.
+    // Bump the chunk's monotonic `version` under its `generation` (its ETag
+    // validator), preserving its `createdAt`. A chunk keeps no tombstone, so a
+    // delete takes the sidecar with it and the next write at this index mints a
+    // fresh generation. A chunk carries no user Metadata / `createdBy` / epoch
+    // stamp.
     const priorChunkSidecar = await this.readMetaSidecar({
       collectionDir: chunkDir,
       resourceId: chunkId
@@ -3385,9 +3620,10 @@ export class FileSystemBackend implements StorageBackend {
       collectionDir: chunkDir,
       resourceId: chunkId,
       prior: priorChunkSidecar,
-      build: ({ prior, version, now }) => ({
+      build: ({ prior, generation, version, now }) => ({
         createdAt: prior?.createdAt ?? now,
         updatedAt: now,
+        generation,
         version
       })
     })
@@ -3395,8 +3631,8 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Reads a chunk's bytes, resolving a `ResourceResult` (stream + resolved
-   * content-type + the chunk's `version`). Throws `ResourceNotFoundError` (404)
-   * when the chunk is absent.
+   * content-type + the chunk's ETag validator). Throws `ResourceNotFoundError`
+   * (404) when the chunk is absent.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -3427,8 +3663,8 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Reads a chunk's stored content-type / size / version (the HEAD payload
-   * headers). Resolves `undefined` when the chunk is absent.
+   * Reads a chunk's stored content-type / size / ETag validator (the HEAD
+   * payload headers). Resolves `undefined` when the chunk is absent.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -3462,17 +3698,24 @@ export class FileSystemBackend implements StorageBackend {
     return {
       contentType,
       size: stats.size,
+      ...(sidecar?.generation !== undefined && {
+        generation: sidecar.generation
+      }),
       ...(sidecar?.version !== undefined && { version: sidecar.version })
     }
   }
 
   /**
-   * Deletes one chunk (a hard delete: its bytes and version sidecar both go, and
+   * Deletes one chunk (a hard delete: its bytes and validator sidecar both go,
+   * and
    * -- unlike a Resource -- it leaves no tombstone, since chunks are not part of
-   * the change feed). Resolves `true` when a chunk was removed and `false` when
-   * none was stored at that index. When `ifMatch` is supplied it is evaluated on
-   * the chunk's current version atomically with the removal (under the same
-   * per-Resource lock), throwing `PreconditionFailedError` (412) on a mismatch.
+   * the change feed). The sidecar's `generation` goes with it, so a later write
+   * at the same index starts a fresh one and a client's pre-delete `ETag` can
+   * never match the new chunk. Resolves `true` when a chunk was removed and
+   * `false` when none was stored at that index. When `ifMatch` is supplied it is
+   * evaluated on the chunk's current ETag atomically with the removal (under the
+   * same per-Resource lock), throwing `PreconditionFailedError` (412) on a
+   * mismatch.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -3517,7 +3760,8 @@ export class FileSystemBackend implements StorageBackend {
           })
         }
         await Promise.all(files.map(name => rm(name)))
-        // Remove the version sidecar too: a chunk keeps no tombstone.
+        // Remove the validator sidecar too: a chunk keeps no tombstone, so its
+        // generation does not survive the delete.
         await rm(
           this.#metaSidecarPath({
             collectionDir: chunkDir,
@@ -3570,7 +3814,7 @@ export class FileSystemBackend implements StorageBackend {
     const entries = await this.#readDirEntries(chunkDir)
 
     // Keep only chunk representations (`r.<index>.<type>.<ext>`), dropping the
-    // `.meta.<index>.json` version sidecars.
+    // `.meta.<index>.json` validator sidecars.
     const chunkEntries = this.#representationEntries(entries)
     const chunks = await Promise.all(
       chunkEntries.map(
@@ -3585,6 +3829,9 @@ export class FileSystemBackend implements StorageBackend {
             index: Number(indexStr),
             size: stats.size,
             contentType,
+            ...(sidecar?.generation !== undefined && {
+              generation: sidecar.generation
+            }),
             ...(sidecar?.version !== undefined && { version: sidecar.version })
           }
         }
@@ -3626,6 +3873,7 @@ export class FileSystemBackend implements StorageBackend {
       resourceId: string
       version: number
       metaVersion?: number
+      generation?: string
       createdBy?: IDID
       updatedAt: string
       deleted: boolean
@@ -3672,6 +3920,7 @@ export class FileSystemBackend implements StorageBackend {
           resourceId: string
           version: number
           metaVersion?: number
+          generation?: string
           createdBy?: IDID
           updatedAt: string
           deleted: false
@@ -3683,6 +3932,7 @@ export class FileSystemBackend implements StorageBackend {
           resourceId: string
           version: number
           metaVersion?: number
+          generation?: string
           createdBy?: IDID
           updatedAt: string
           deleted: true
@@ -3713,6 +3963,11 @@ export class FileSystemBackend implements StorageBackend {
           version: sidecar?.version ?? 0,
           ...(sidecar?.metaVersion !== undefined && {
             metaVersion: sidecar.metaVersion
+          }),
+          // Pairs with `version` / `metaVersion` so the request layer can
+          // derive the wire `etag` / `metaEtag` without a fetch per Resource.
+          ...(sidecar?.generation !== undefined && {
+            generation: sidecar.generation
           }),
           // The creator's DID rides the feed so provenance replicates with the
           // document, rather than needing a `/meta` fetch per Resource.
@@ -3752,6 +4007,9 @@ export class FileSystemBackend implements StorageBackend {
           version: sidecar.version ?? 0,
           ...(sidecar.metaVersion !== undefined && {
             metaVersion: sidecar.metaVersion
+          }),
+          ...(sidecar.generation !== undefined && {
+            generation: sidecar.generation
           }),
           // A tombstone keeps its creator, as it keeps its `createdAt`.
           ...(sidecar.createdBy !== undefined && {

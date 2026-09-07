@@ -461,7 +461,7 @@ export class SpaceRequest {
     reply.header('Location', createdUrl)
     // Surface the new Collection Description ETag so a client can chain a
     // conditional update (the `key-epochs` conditional-Collection-write feature).
-    reply.header('etag', formatEtag(written.version))
+    reply.header('etag', formatEtag(written))
     // Echo what was persisted, `createdBy` included, so the create response and
     // a subsequent Get Collection agree. An id already in use was rejected as a
     // 409 above, so this write created the Collection.

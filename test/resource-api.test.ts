@@ -12,7 +12,13 @@ import { NotFoundError } from '@interop/was-client'
 import type { Space, Collection } from '@interop/was-client'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import {
+  assertEtagVersion,
+  etagGeneration,
+  responseOf,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('Resource API', () => {
   let fastify: FastifyInstance,
@@ -612,6 +618,193 @@ describe('Resource API', () => {
     })
   })
 
+  describe('Conditional Reads (If-None-Match / 304)', () => {
+    const resourceUrl = (resourceId: string) =>
+      `${serverUrl}/space/${alice.space1.id}/credentials/${resourceId}`
+
+    /**
+     * Writes a text Resource (so a HEAD's empty body does not trip the JSON
+     * parser) and returns its URL and ETag.
+     */
+    async function textResource(
+      resourceId: string
+    ): Promise<{ url: string; etag: string }> {
+      const url = resourceUrl(resourceId)
+      const created = await alice.was.request({
+        url,
+        method: 'PUT',
+        body: new Blob(['hello'], { type: 'text/plain' })
+      })
+      return { url, etag: created.headers.get('etag')! }
+    }
+
+    it('[signed] GET with a matching If-None-Match is 304 with the ETag and no body', async () => {
+      const { url, etag } = await textResource('cond-read-get-match')
+      const response = await responseOf(
+        alice.was.request({
+          url,
+          method: 'GET',
+          headers: { 'if-none-match': etag }
+        })
+      )
+      assert.equal(response.status, 304)
+      assert.equal(response.headers.get('etag'), etag)
+      assert.equal(await response.text(), '')
+    })
+
+    it('[signed] GET with a stale If-None-Match is the full 200', async () => {
+      const { url, etag } = await textResource('cond-read-get-stale')
+      await alice.was.request({
+        url,
+        method: 'PUT',
+        body: new Blob(['hello again'], { type: 'text/plain' })
+      })
+      const response = await responseOf(
+        alice.was.request({
+          url,
+          method: 'GET',
+          headers: { 'if-none-match': etag }
+        })
+      )
+      assert.equal(response.status, 200)
+      const newEtag = response.headers.get('etag')
+      assertEtagVersion({ etag: newEtag, version: 2 })
+      assert.equal(etagGeneration(newEtag!), etagGeneration(etag))
+      assert.equal(await response.text(), 'hello again')
+    })
+
+    it('[signed] a weak validator, a list, and `*` all match (RFC 9110 weak comparison)', async () => {
+      const { url, etag } = await textResource('cond-read-get-forms')
+      for (const ifNoneMatch of [`W/${etag}`, `"99", ${etag}`, '*']) {
+        const response = await responseOf(
+          alice.was.request({
+            url,
+            method: 'GET',
+            headers: { 'if-none-match': ifNoneMatch }
+          })
+        )
+        assert.equal(response.status, 304, `If-None-Match: ${ifNoneMatch}`)
+      }
+    })
+
+    it('[signed] HEAD with a matching If-None-Match is 304', async () => {
+      const { url, etag } = await textResource('cond-read-head-match')
+      const response = await responseOf(
+        alice.was.request({
+          url,
+          method: 'HEAD',
+          headers: { 'if-none-match': etag }
+        })
+      )
+      assert.equal(response.status, 304)
+      assert.equal(response.headers.get('etag'), etag)
+    })
+
+    it('[signed] GET /meta with a matching If-None-Match is 304 on the meta ETag', async () => {
+      const resourceId = 'cond-read-meta'
+      const { url } = await textResource(resourceId)
+      const metaUrl = `${url}/meta`
+      const written = await alice.was.request({
+        url: metaUrl,
+        method: 'PUT',
+        json: { custom: { name: 'Meta' } }
+      })
+      const metaEtag = written.headers.get('etag')!
+      const unchanged = await responseOf(
+        alice.was.request({
+          url: metaUrl,
+          method: 'GET',
+          headers: { 'if-none-match': metaEtag }
+        })
+      )
+      assert.equal(unchanged.status, 304)
+      assert.equal(unchanged.headers.get('etag'), metaEtag)
+
+      // The metadata ETag shares the sidecar's generation with the content
+      // ETag, so the two validators can read the same at equal versions; they
+      // name different resources, and only the meta one is compared here. A
+      // superseded meta validator misses.
+      const rewritten = await alice.was.request({
+        url: metaUrl,
+        method: 'PUT',
+        json: { custom: { name: 'Meta 2' } }
+      })
+      assert.notEqual(rewritten.headers.get('etag'), metaEtag)
+      const stale = await responseOf(
+        alice.was.request({
+          url: metaUrl,
+          method: 'GET',
+          headers: { 'if-none-match': metaEtag }
+        })
+      )
+      assert.equal(stale.status, 200)
+    })
+
+    it('[signed] GET /meta never written: `*` is 304 with no ETag, a listed validator misses', async () => {
+      // No `metaVersion`, so no ETag to compare a listed validator against;
+      // but the metadata object is a current representation, which is all
+      // `*` asks (RFC 9110 section 13.1.2). The 304 carries no ETag, as the
+      // 200 would not have.
+      const { url, etag: contentEtag } = await textResource(
+        'cond-read-meta-unwritten'
+      )
+      const any = await responseOf(
+        alice.was.request({
+          url: `${url}/meta`,
+          method: 'GET',
+          headers: { 'if-none-match': '*' }
+        })
+      )
+      assert.equal(any.status, 304)
+      assert.equal(any.headers.get('etag'), null)
+      const listed = await responseOf(
+        alice.was.request({
+          url: `${url}/meta`,
+          method: 'GET',
+          headers: { 'if-none-match': contentEtag }
+        })
+      )
+      assert.equal(listed.status, 200)
+      assert.equal(listed.headers.get('etag'), null)
+    })
+
+    it('an under-authorized conditional GET is the 404 mask, never a 304', async () => {
+      // A 304 would confirm the Resource exists, exactly what the mask hides.
+      const { url, etag } = await textResource('cond-read-private')
+      const anonymous = await fetch(new URL(url), {
+        headers: { 'if-none-match': etag }
+      })
+      assert.equal(anonymous.status, 404)
+      const other = await responseOf(
+        bob.was.request({
+          url,
+          method: 'GET',
+          headers: { 'if-none-match': etag }
+        })
+      )
+      assert.equal(other.status, 404)
+    })
+
+    it('an anonymous conditional GET of a public Resource is 304', async () => {
+      const publicCollection = await aliceSpace.createCollection({
+        id: 'cond-read-public',
+        name: 'Conditional Public'
+      })
+      await publicCollection.setPublic()
+      await publicCollection.put('readme', { id: 'readme', name: 'Read Me' })
+      const url = `${serverUrl}/space/${alice.space1.id}/cond-read-public/readme`
+      const first = await fetch(new URL(url))
+      assert.equal(first.status, 200)
+      const etag = first.headers.get('etag')!
+      const second = await fetch(new URL(url), {
+        headers: { 'if-none-match': etag }
+      })
+      assert.equal(second.status, 304)
+      assert.equal(second.headers.get('etag'), etag)
+      assert.equal(await second.text(), '')
+    })
+  })
+
   describe('Conditional Writes (ETag / If-Match)', () => {
     // Build the absolute resource URL for a credentials-collection resource.
     const resourceUrl = (resourceId: string) =>
@@ -625,22 +818,25 @@ describe('Resource API', () => {
         json: { id: resourceId, n: 1 }
       })
       assert.equal(created.status, 204)
-      assert.equal(created.headers.get('etag'), '"1"')
+      const createdEtag = created.headers.get('etag')
+      assertEtagVersion({ etag: createdEtag, version: 1 })
 
       // GET echoes the same validator.
       const got = await alice.was.request({
         url: resourceUrl(resourceId),
         method: 'GET'
       })
-      assert.equal(got.headers.get('etag'), '"1"')
+      assert.equal(got.headers.get('etag'), createdEtag)
 
-      // A second (unconditional) write advances the version.
+      // A second (unconditional) write advances the version, same generation.
       const updated = await alice.was.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 2 }
       })
-      assert.equal(updated.headers.get('etag'), '"2"')
+      const updatedEtag = updated.headers.get('etag')
+      assertEtagVersion({ etag: updatedEtag, version: 2 })
+      assert.equal(etagGeneration(updatedEtag!), etagGeneration(createdEtag!))
     })
 
     it('surfaces the ETag header on a HEAD response', async () => {
@@ -678,17 +874,20 @@ describe('Resource API', () => {
         headers: { 'if-match': etag }
       })
       assert.equal(updated.status, 204)
-      assert.equal(updated.headers.get('etag'), '"2"')
+      const updatedEtag = updated.headers.get('etag')
+      assertEtagVersion({ etag: updatedEtag, version: 2 })
+      assert.equal(etagGeneration(updatedEtag!), etagGeneration(etag))
     })
 
     it('a stale If-Match is rejected with 412 precondition-failed', async () => {
       const resourceId = 'cond-ifmatch-stale'
-      await alice.was.request({
+      const created = await alice.was.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 1 }
       })
-      // Advance the version so the original `"1"` is now stale.
+      const staleEtag = created.headers.get('etag')!
+      // Advance the version so the original validator is now stale.
       await alice.was.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
@@ -701,7 +900,7 @@ describe('Resource API', () => {
           url: resourceUrl(resourceId),
           method: 'PUT',
           json: { id: resourceId, n: 3 },
-          headers: { 'if-match': '"1"' }
+          headers: { 'if-match': staleEtag }
         })
       } catch (err) {
         thrown = err
@@ -719,7 +918,7 @@ describe('Resource API', () => {
         headers: { 'if-none-match': '*' }
       })
       assert.equal(created.status, 204)
-      assert.equal(created.headers.get('etag'), '"1"')
+      assertEtagVersion({ etag: created.headers.get('etag'), version: 1 })
 
       // A second create-if-absent against the now-existing resource fails.
       let thrown: any
@@ -832,6 +1031,34 @@ describe('Resource API', () => {
       assert.equal(deleted.status, 204)
       const gone = await aliceCredentials.get(resourceId)
       assert.equal(gone, null)
+    })
+
+    it('a tombstone keeps the generation: PUT / DELETE / PUT continues the version', async () => {
+      const resourceId = 'cond-tombstone-generation'
+      const created = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 1 }
+      })
+      const createdEtag = created.headers.get('etag')!
+      assertEtagVersion({ etag: createdEtag, version: 1 })
+
+      // The tombstone sidecar survives the content, continuing the version.
+      await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'DELETE'
+      })
+
+      // Re-creating under the same id keeps the generation and keeps counting
+      // the version up, rather than starting a fresh generation at version 1.
+      const recreated = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 2 }
+      })
+      const recreatedEtag = recreated.headers.get('etag')
+      assertEtagVersion({ etag: recreatedEtag, version: 3 })
+      assert.equal(etagGeneration(recreatedEtag!), etagGeneration(createdEtag))
     })
   })
 

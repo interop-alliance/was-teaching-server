@@ -16,7 +16,12 @@ import { resolveResourceInput } from './resourceInput.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { resolveMetadataCustom } from '../lib/customMetadata.js'
-import { assertJsonObjectBody } from '../lib/requestBody.js'
+import { assertJsonObjectBody, readTextBody } from '../lib/requestBody.js'
+import {
+  LOG_CONTENT_TYPE,
+  assertGoverningLogAppend,
+  deriveGovernedEncryption
+} from '../lib/governedLog.js'
 import type { CollectionDescription, StorageBackend } from '../types.js'
 import { parseBlindedIndexQueryBody } from '../lib/blindedIndex.js'
 import {
@@ -52,12 +57,20 @@ import {
   linksetPath,
   backendPath,
   collectionMetaPath,
+  collectionLogPath,
   quotaPath,
   queryPath
 } from '../lib/paths.js'
-import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
+import {
+  type EtagValidator,
+  etagOf,
+  formatEtag,
+  parseWritePreconditions
+} from '../lib/etag.js'
 import {
   CollectionNotFoundError,
+  EncryptionHistoryLogGovernedError,
+  EncryptionImmutableError,
   InvalidCollectionError,
   InvalidRequestBodyError,
   UnsupportedOperationError,
@@ -65,6 +78,7 @@ import {
   rethrowOrWrapStorageError
 } from '../errors.js'
 import type { NormalizedIndexDeclaration } from '../types.js'
+import { notModifiedReply } from './notModified.js'
 
 /**
  * The normalized `unique: true` declarations a `plaintext.indexes` update ADDS
@@ -120,7 +134,7 @@ export class CollectionRequest {
     const {
       params: { spaceId, collectionId }
     } = request
-    const { serverUrl, storage } = request.server
+    const { serverUrl } = request.server
     const requestName = 'Create Resource'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -141,7 +155,7 @@ export class CollectionRequest {
 
     // Fetch collection by id
     const collectionDescription = await getCollectionOrThrow({
-      storage,
+      request,
       spaceId,
       collectionId,
       requestName
@@ -162,7 +176,7 @@ export class CollectionRequest {
     // zCap checks out, continue
     const resourceId = uuidv4()
     let response: { id: string; 'content-type'?: string; url?: string }
-    let written: { version: number }
+    let written: EtagValidator
 
     // Route resource bytes to the Collection's selected (data-plane) backend.
     const dataBackend = await resolveBackend({
@@ -210,7 +224,7 @@ export class CollectionRequest {
     reply.header('Location', createdUrl)
     // Surface the created Resource's ETag so a client can chain a conditional
     // write (the conditional-writes feature).
-    reply.header('etag', formatEtag(written.version))
+    reply.header('etag', formatEtag(written))
     response.url = createdUrl
 
     return reply.status(201).send(response)
@@ -250,7 +264,7 @@ export class CollectionRequest {
     if (!body) {
       throw new InvalidCollectionError()
     }
-    const { storage } = request.server
+    const { serverUrl, storage } = request.server
     const requestName = 'Update Collection'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -331,6 +345,30 @@ export class CollectionRequest {
       spaceId,
       collectionId
     })
+    // A Collection governed by a history log (the `governed-history-logs`
+    // feature) serves its `encryption` member derived from the log head, so
+    // the member is read-only on this path: a direct write is refused with
+    // `encryption-history-log-governed` (409). The stored description carries
+    // no `encryption` for such a Collection, so nothing below re-persists the
+    // derived member. Re-checked under the backend's lock, since a guarded
+    // log create is serialized with description writes.
+    const governedEncryptionOf = async (): Promise<
+      CollectionDescription['encryption']
+    > => {
+      const log = await storage.getCollectionLog({ spaceId, collectionId })
+      return log
+        ? deriveGovernedEncryption({
+            body: log.body,
+            logUrl: `${serverUrl}${collectionLogPath({ spaceId, collectionId })}`
+          })
+        : undefined
+    }
+    const governedEncryption = existingCollection
+      ? await governedEncryptionOf()
+      : undefined
+    if (governedEncryption !== undefined && suppliedEncryption !== undefined) {
+      throw new EncryptionHistoryLogGovernedError()
+    }
     // The encryption descriptor is set-once (an update may declare one on a
     // Collection that lacks it, but may not change/clear an existing one --
     // `encryption-immutable` 409), and the key-epoch safety rails (the
@@ -397,7 +435,7 @@ export class CollectionRequest {
     // too.
     assertPlaintextNotEncrypted({
       plaintext: collectionDescription.plaintext,
-      encryption: collectionDescription.encryption,
+      encryption: collectionDescription.encryption ?? governedEncryption,
       requestName
     })
 
@@ -439,7 +477,7 @@ export class CollectionRequest {
     // write inside the backend; a stale validator surfaces as 412
     // `precondition-failed` (rethrown unchanged).
     const { ifMatch } = parseWritePreconditions(request.headers)
-    let written: { version: number }
+    let written: EtagValidator
     try {
       written = await storage.writeCollection({
         spaceId,
@@ -457,14 +495,18 @@ export class CollectionRequest {
         // unconditionally, not just under `If-Match`. The exclusion is checked
         // against what this write leaves in place: the supplied member, else
         // the prior's.
-        assertTransition: prior => {
+        assertTransition: async prior => {
+          const governed = prior ? await governedEncryptionOf() : undefined
+          if (governed !== undefined && suppliedEncryption !== undefined) {
+            throw new EncryptionHistoryLogGovernedError()
+          }
           assertEncryptionDescriptorTransition({
             existing: prior?.encryption,
             incoming: collectionDescription.encryption
           })
           assertPlaintextNotEncrypted({
             plaintext: suppliedPlaintext ?? prior?.plaintext,
-            encryption: suppliedEncryption ?? prior?.encryption,
+            encryption: suppliedEncryption ?? prior?.encryption ?? governed,
             requestName
           })
         }
@@ -479,7 +521,7 @@ export class CollectionRequest {
     reply.header('Location', collectionUrl)
     // Surface the new description ETag so a client can chain a conditional
     // update (read-modify-CAS on the descriptor).
-    reply.header('etag', formatEtag(written.version))
+    reply.header('etag', formatEtag(written))
     return existingCollection
       ? reply.status(204).send() // update
       : reply.status(201).send(collectionDescription) // create
@@ -501,7 +543,6 @@ export class CollectionRequest {
     const {
       params: { spaceId, collectionId }
     } = request
-    const { storage } = request.server
     const requestName = 'Get Collection'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -519,7 +560,7 @@ export class CollectionRequest {
 
     // Fetch collection by id
     const collectionDescription = await getCollectionOrThrow({
-      storage,
+      request,
       spaceId,
       collectionId,
       requestName
@@ -540,10 +581,26 @@ export class CollectionRequest {
     // surface it as the `ETag` header (so a client can read-modify-CAS the
     // descriptor). Present only once the Collection has been written under
     // versioning; a legacy Collection reports none.
-    const { descriptionVersion, ...descriptionBody } = collectionDescription
+    const { descriptionGeneration, descriptionVersion, ...descriptionBody } =
+      collectionDescription
+    const descriptionEtag = etagOf({
+      generation: descriptionGeneration,
+      version: descriptionVersion
+    })
+
+    // A conditional read (spec "Caching") against the description ETag.
+    const notModified = notModifiedReply({
+      request,
+      reply,
+      etag: descriptionEtag
+    })
+    if (notModified) {
+      return notModified
+    }
+
     const getReply = reply.status(200).type('application/json')
-    if (descriptionVersion !== undefined) {
-      getReply.header('etag', formatEtag(descriptionVersion))
+    if (descriptionEtag !== undefined) {
+      getReply.header('etag', descriptionEtag)
     }
     return getReply.send(
       JSON.stringify({
@@ -641,7 +698,7 @@ export class CollectionRequest {
 
     // Fetch collection by id
     const collectionDescription = await getCollectionOrThrow({
-      storage,
+      request,
       spaceId,
       collectionId,
       requestName
@@ -719,15 +776,23 @@ export class CollectionRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
-    // `metaVersion` is the out-of-band ETag validator, not part of the
-    // Collection Metadata wire body, so strip it before serializing and surface
-    // it as the `ETag` header. It is present only once metadata has been
-    // written, and is independent of the Collection Description's ETag
-    // (`descriptionVersion`), so a metadata edit never disturbs that one.
-    const { metaVersion, ...metadataBody } = metadata
+    // `generation` / `metaVersion` are the out-of-band ETag validator, not
+    // part of the Collection Metadata wire body, so strip them before
+    // serializing and surface them as the `ETag` header. It is present only
+    // once metadata has been written, and is independent of the Collection
+    // Description's ETag, so a metadata edit never disturbs that one.
+    const { generation, metaVersion, ...metadataBody } = metadata
+    const metaEtag = etagOf({ generation, version: metaVersion })
+
+    // A conditional read (spec "Caching") against the `/meta` ETag.
+    const notModified = notModifiedReply({ request, reply, etag: metaEtag })
+    if (notModified) {
+      return notModified
+    }
+
     const metaReply = reply.status(200).type('application/json')
-    if (metaVersion !== undefined) {
-      metaReply.header('etag', formatEtag(metaVersion))
+    if (metaEtag !== undefined) {
+      metaReply.header('etag', metaEtag)
     }
     return metaReply.send(JSON.stringify(metadataBody))
   }
@@ -789,7 +854,7 @@ export class CollectionRequest {
 
     // Fetch collection by id (404 when absent -- this operation does not create)
     const collectionDescription = await getCollectionOrThrow({
-      storage,
+      request,
       spaceId,
       collectionId,
       requestName
@@ -837,12 +902,145 @@ export class CollectionRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
-    // Return the new `/meta` ETag (`metaVersion`) so a client can chain a
-    // subsequent conditional metadata write.
+    // Return the new `/meta` ETag so a client can chain a subsequent
+    // conditional metadata write.
+    return reply.status(204).header('etag', formatEtag(written)).send()
+  }
+
+  /**
+   * GET /space/:spaceId/:collectionId/meta/log
+   * Request handler for "Get Collection History Log" (the
+   * `governed-history-logs` feature): the governing log's JSON Lines body,
+   * verbatim, served as `text/jsonl` with its own `ETag`. Authorization is
+   * capability-or-policy at the Collection level, like `/meta`: any
+   * capability whose target covers the Collection URL reads it, so a share
+   * grantee or an app reads the log with the zcap it already holds. A
+   * Collection with no log is a 404, conflated with an unauthorized read.
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async getLog(
+    request: FastifyRequest<{
+      Params: { spaceId: string; collectionId: string }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId, collectionId }
+    } = request
+    const { storage } = request.server
+    const requestName = 'Get Collection History Log'
+
+    assertValidIds({ spaceId, collectionId }, { requestName })
+
+    await fetchSpaceAndAuthorize({
+      request,
+      spaceId,
+      collectionId,
+      targetPath: collectionLogPath({ spaceId, collectionId }),
+      requestName
+    })
+
+    // authorized, continue
+
+    let log
+    try {
+      log = await storage.getCollectionLog({ spaceId, collectionId })
+    } catch (err) {
+      rethrowOrWrapStorageError({ err, requestName })
+    }
+    if (!log) {
+      throw new CollectionNotFoundError({ requestName })
+    }
+
+    const etag = formatEtag(log)
+    const notModified = notModifiedReply({ request, reply, etag })
+    if (notModified) {
+      return notModified
+    }
     return reply
-      .status(204)
-      .header('etag', formatEtag(written.metaVersion))
-      .send()
+      .status(200)
+      .type(LOG_CONTENT_TYPE)
+      .header('etag', etag)
+      .send(log.body)
+  }
+
+  /**
+   * PUT /space/:spaceId/:collectionId/meta/log
+   * Request handler for "Write Collection History Log" (the
+   * `governed-history-logs` feature): the `/log` transport's guarded create
+   * (`If-None-Match: *`) and compare-and-swap append (`If-Match`, the prior
+   * bytes carried verbatim plus the new line), `412` on a lost race. The
+   * guarded create is the declaration that makes the Collection log-governed;
+   * it is refused with `encryption-immutable` (409) on a Collection whose
+   * Description already holds a client-written `encryption` member. Each
+   * write checks the line contract (`invalid-request-body`, 400) and, against
+   * the prior head, the encryption descriptor's transition checks, atomically
+   * with the write. Authorization is capability-only (the `PUT` action), as
+   * for `/meta`. Does NOT create a Collection. Returns 204 with the log's new
+   * `ETag`.
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async putLog(
+    request: FastifyRequest<{
+      Params: { spaceId: string; collectionId: string }
+      Body: unknown
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId, collectionId }
+    } = request
+    const { storage } = request.server
+    const requestName = 'Write Collection History Log'
+
+    assertValidIds({ spaceId, collectionId }, { requestName })
+
+    await fetchSpaceAndVerify({
+      request,
+      spaceId,
+      targetPath: collectionLogPath({ spaceId, collectionId }),
+      requestName
+    })
+
+    // zCap checks out, continue
+
+    const body = await readTextBody(request)
+
+    let written
+    try {
+      written = await storage.writeCollectionLog({
+        spaceId,
+        collectionId,
+        body,
+        ...parseWritePreconditions(request.headers),
+        assertTransition: ({ prior, collectionDescription }) => {
+          // The declaration: a log may only govern a Collection whose stored
+          // Description holds no client-written descriptor. Pre-release there
+          // is no conversion, only re-provisioning.
+          if (prior === undefined && collectionDescription.encryption) {
+            throw new EncryptionImmutableError({
+              detail:
+                "A history log cannot govern a Collection whose 'encryption' " +
+                'descriptor was written on its Description.'
+            })
+          }
+          assertGoverningLogAppend({ body, prior: prior?.body, requestName })
+        }
+      })
+    } catch (err) {
+      rethrowOrWrapStorageError({ err, requestName })
+    }
+    if (!written) {
+      throw new CollectionNotFoundError({ requestName })
+    }
+
+    return reply.status(204).header('etag', formatEtag(written)).send()
   }
 
   /**
@@ -1120,21 +1318,34 @@ export class CollectionRequest {
     // Collection) and its independent `metaVersion` ride along so a metadata-only
     // edit replicates alongside content, as does the server-managed `createdBy`
     // so a replica learns each Resource's creator without a `/meta` fetch per
-    // Resource. The RxDB browser adapter does the final reshape into RxDB
-    // documents.
-    const documents: ChangeDocument[] = result.documents.map(doc => ({
-      id: doc.resourceId,
-      _deleted: doc.deleted,
-      updatedAt: doc.updatedAt,
-      version: doc.version,
-      ...(doc.metaVersion !== undefined && { metaVersion: doc.metaVersion }),
-      ...(doc.createdBy !== undefined && { createdBy: doc.createdBy }),
-      ...(doc.data !== undefined && { data: doc.data }),
-      ...(doc.custom !== undefined && { custom: doc.custom }),
-      // The client-declared key epoch (the `key-epochs` feature) rides the feed
-      // so a replicating reader picks the right epoch key without a `/meta` fetch.
-      ...(doc.epoch !== undefined && { epoch: doc.epoch })
-    }))
+    // Resource. The content `etag` and `/meta` `metaEtag` -- the quoted strong
+    // validators exactly as the server emits them in the `ETag` header -- ride
+    // the feed too, so a replica can send `If-Match` from feed state alone
+    // without a GET per Resource. The RxDB browser adapter does the final
+    // reshape into RxDB documents.
+    const documents: ChangeDocument[] = result.documents.map(doc => {
+      const etag = etagOf({ generation: doc.generation, version: doc.version })
+      const metaEtag = etagOf({
+        generation: doc.generation,
+        version: doc.metaVersion
+      })
+      return {
+        id: doc.resourceId,
+        _deleted: doc.deleted,
+        updatedAt: doc.updatedAt,
+        version: doc.version,
+        ...(doc.metaVersion !== undefined && { metaVersion: doc.metaVersion }),
+        ...(etag !== undefined && { etag }),
+        ...(metaEtag !== undefined && { metaEtag }),
+        ...(doc.createdBy !== undefined && { createdBy: doc.createdBy }),
+        ...(doc.data !== undefined && { data: doc.data }),
+        ...(doc.custom !== undefined && { custom: doc.custom }),
+        // The client-declared key epoch (the `key-epochs` feature) rides the
+        // feed so a replicating reader picks the right epoch key without a
+        // `/meta` fetch.
+        ...(doc.epoch !== undefined && { epoch: doc.epoch })
+      }
+    })
 
     return reply
       .status(200)

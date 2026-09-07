@@ -44,6 +44,10 @@ export const DEFAULT_BACKEND_ID = 'default'
  *   Resources, and conditional (`If-Match`) Collection Description writes.
  * - `chunked-streams`: chunk addressing (`/{resourceId}/chunks/{n}`) for a
  *   large Resource, each chunk stored opaquely (raw bytes plus content type).
+ * - `governed-history-logs`: a Collection's `encryption` descriptor may be
+ *   governed by a history log at the `meta/log` sub-resource (guarded create,
+ *   compare-and-swap append), with the served member derived from the log's
+ *   head entry.
  *
  * (Client-side encryption is deliberately not a backend feature: encrypted
  * documents are opaque client-encrypted JSON a backend already stores
@@ -55,7 +59,8 @@ export const SERVER_BACKEND_FEATURES: string[] = [
   'blinded-index-query',
   'equality-query',
   'key-epochs',
-  'chunked-streams'
+  'chunked-streams',
+  'governed-history-logs'
 ]
 
 /**

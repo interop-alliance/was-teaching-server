@@ -324,6 +324,29 @@ export class EncryptionImmutableError extends ProblemError {
 }
 
 /**
+ * 409 -- an Update Collection wrote the `encryption` member directly on a
+ * Collection whose descriptor is governed by its history log (the
+ * `.../meta/log` sub-resource, the `governed-history-logs` feature). The served
+ * member is derived from the log head, so the Description path is read-only
+ * for it: a change is an append to the log. Like `encryption-immutable`, only
+ * observable by a caller already authorized to update the Collection.
+ */
+export class EncryptionHistoryLogGovernedError extends ProblemError {
+  constructor() {
+    const detail =
+      "This Collection's 'encryption' descriptor is governed by its history " +
+      'log (meta/log); append to the log instead of writing the member.'
+    super({
+      type: ProblemTypes.ENCRYPTION_HISTORY_LOG_GOVERNED,
+      title: 'Collection encryption descriptor is governed by its history log.',
+      detail,
+      statusCode: 409,
+      problems: [{ detail, pointer: '#/encryption' }]
+    })
+  }
+}
+
+/**
  * 400 — a Collection create/update supplied an `encryption` descriptor naming a
  * `scheme` -- or a `version` of a recognized scheme -- this server does not
  * recognize and therefore cannot enforce on write. Taking the spec's

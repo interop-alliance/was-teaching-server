@@ -230,6 +230,16 @@ export const META_FILE_PREFIX = '.meta.'
 export const COLLECTION_META_FILE_PREFIX = '.collectionmeta.'
 
 /**
+ * Prefix of a Collection's governing history log file
+ * (`.collectionlog.<collectionId>.json`, the `governed-history-logs` feature):
+ * the JSON Lines log body with its own `ETag` validator, kept beside the
+ * Collection's metadata sidecar. Its own prefix, disjoint from `.meta.` and
+ * `.collectionmeta.`, keeps it out of the Resource listing, the `changes`
+ * feed's tombstone scan, and the metadata import branches.
+ */
+export const COLLECTION_LOG_FILE_PREFIX = '.collectionlog.'
+
+/**
  * Builds the file name of a Space description document:
  * `.space.<spaceId>.json`.
  * @param spaceId {string}
@@ -326,4 +336,16 @@ export function metaSidecarFileName(resourceId: string): string {
  */
 export function collectionMetaFileName(collectionId: string): string {
   return `${COLLECTION_META_FILE_PREFIX}${collectionId}${JSON_FILE_SUFFIX}`
+}
+
+/**
+ * Builds the file name of a Collection's governing history log:
+ * `.collectionlog.<collectionId>.json`, a dot-file in the Collection dir
+ * beside the metadata sidecar, versioned independently of both the sidecar
+ * and the Collection description.
+ * @param collectionId {string}
+ * @returns {string}
+ */
+export function collectionLogFileName(collectionId: string): string {
+  return `${COLLECTION_LOG_FILE_PREFIX}${collectionId}${JSON_FILE_SUFFIX}`
 }

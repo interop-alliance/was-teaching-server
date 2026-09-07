@@ -19,7 +19,13 @@ import type { FastifyInstance } from 'fastify'
 import type { Space, Collection } from '@interop/was-client'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import {
+  assertEtagVersion,
+  etagGeneration,
+  responseOf,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 /**
  * Resolves the HTTP status of a signed request, whether it fulfills (2xx/3xx)
@@ -29,16 +35,7 @@ import { startTestServer, zcapClients } from './helpers.js'
  * @returns {Promise<number>}
  */
 async function statusOf(promise: Promise<{ status: number }>): Promise<number> {
-  try {
-    return (await promise).status
-  } catch (err) {
-    return (
-      (err as { response?: { status?: number }; status?: number }).response
-        ?.status ??
-      (err as { status?: number }).status ??
-      0
-    )
-  }
+  return (await responseOf(promise)).status
 }
 
 describe('Chunk API (chunked-streams)', () => {
@@ -82,6 +79,73 @@ describe('Chunk API (chunked-streams)', () => {
     await rm(dataDir, { recursive: true, force: true })
   })
 
+  describe('conditional chunk reads (If-None-Match / 304)', () => {
+    it('[signed] GET and HEAD of a chunk with a matching If-None-Match are 304', async () => {
+      const resourceId = 'cond-read-chunk'
+      await dataCollection.put(resourceId, { id: resourceId, name: 'Manifest' })
+      const written = await alice.was.request({
+        url: chunkUrl(resourceId, 0),
+        method: 'PUT',
+        body: new Blob([new Uint8Array([1, 2, 3])], {
+          type: 'application/octet-stream'
+        })
+      })
+      const etag = written.headers.get('etag')!
+
+      for (const method of ['GET', 'HEAD']) {
+        const unchanged = await responseOf(
+          alice.was.request({
+            url: chunkUrl(resourceId, 0),
+            method,
+            headers: { 'if-none-match': etag }
+          })
+        )
+        assert.equal(unchanged.status, 304, method)
+        assert.equal(unchanged.headers.get('etag'), etag, method)
+        assert.equal(await unchanged.text(), '', method)
+      }
+
+      // A stale validator gets the full chunk.
+      const stale = await responseOf(
+        alice.was.request({
+          url: chunkUrl(resourceId, 0),
+          method: 'GET',
+          headers: { 'if-none-match': '"99"' }
+        })
+      )
+      assert.equal(stale.status, 200)
+      assert.deepEqual(
+        new Uint8Array(await stale.arrayBuffer()),
+        new Uint8Array([1, 2, 3])
+      )
+    })
+
+    it('[signed] a conditional GET of an orphan chunk is still 404', async () => {
+      // The parent gate runs before the validator is consulted: an orphan
+      // chunk reveals nothing through a 304 either.
+      const chunkDir = path.join(
+        dataDir,
+        'spaces',
+        spaceId,
+        'data',
+        '.chunks.cond-read-orphan'
+      )
+      await mkdir(chunkDir, { recursive: true })
+      await writeFile(
+        path.join(chunkDir, 'r.0.application%2Foctet-stream.bin'),
+        new Uint8Array([9])
+      )
+      const response = await responseOf(
+        alice.was.request({
+          url: chunkUrl('cond-read-orphan', 0),
+          method: 'GET',
+          headers: { 'if-none-match': '*' }
+        })
+      )
+      assert.equal(response.status, 404)
+    })
+  })
+
   describe('binary chunk round-trip', () => {
     it('[signed] PUT / GET / HEAD / DELETE a raw octet-stream chunk', async () => {
       const resourceId = 'binary-blob'
@@ -95,8 +159,9 @@ describe('Chunk API (chunked-streams)', () => {
         body: new Blob([bytes], { type: 'application/octet-stream' })
       })
       assert.equal(putResponse.status, 204)
-      // The chunk carries its own monotonic version (first write => "1").
-      assert.equal(putResponse.headers.get('etag'), '"1"')
+      // The chunk carries its own monotonic version (first write => version 1).
+      const putEtag = putResponse.headers.get('etag')
+      assertEtagVersion({ etag: putEtag, version: 1 })
 
       // GET streams back the exact stored bytes with the stored content-type.
       const getResponse = await alice.was.request({
@@ -108,7 +173,7 @@ describe('Chunk API (chunked-streams)', () => {
         getResponse.headers.get('content-type')!,
         /application\/octet-stream/
       )
-      assert.equal(getResponse.headers.get('etag'), '"1"')
+      assert.equal(getResponse.headers.get('etag'), putEtag)
       assert.deepEqual(new Uint8Array(await getResponse.arrayBuffer()), bytes)
 
       // HEAD carries the payload headers from stored metadata, no body.
@@ -125,7 +190,7 @@ describe('Chunk API (chunked-streams)', () => {
         headResponse.headers.get('content-length'),
         String(bytes.length)
       )
-      assert.equal(headResponse.headers.get('etag'), '"1"')
+      assert.equal(headResponse.headers.get('etag'), putEtag)
       assert.equal(await headResponse.text(), '')
 
       // DELETE removes the chunk; a subsequent GET 404s.
@@ -426,7 +491,8 @@ describe('Chunk API (chunked-streams)', () => {
           type: 'application/octet-stream'
         })
       })
-      assert.equal(created.headers.get('etag'), '"1"')
+      const createdEtag = created.headers.get('etag')
+      assertEtagVersion({ etag: createdEtag, version: 1 })
 
       // A stale If-Match is rejected...
       assert.equal(
@@ -450,10 +516,12 @@ describe('Chunk API (chunked-streams)', () => {
         body: new Blob([new Uint8Array([2])], {
           type: 'application/octet-stream'
         }),
-        headers: { 'if-match': '"1"' }
+        headers: { 'if-match': createdEtag! }
       })
       assert.equal(updated.status, 204)
-      assert.equal(updated.headers.get('etag'), '"2"')
+      const updatedEtag = updated.headers.get('etag')
+      assertEtagVersion({ etag: updatedEtag, version: 2 })
+      assert.equal(etagGeneration(updatedEtag!), etagGeneration(createdEtag!))
 
       // If-None-Match: * on an existing chunk 412s (create-if-absent fails).
       assert.equal(
@@ -544,6 +612,71 @@ describe('Chunk API (chunked-streams)', () => {
         method: 'DELETE'
       })
       await assert.rejects(stat(chunkDir), { code: 'ENOENT' })
+    })
+
+    it('a chunk delete is a hard delete: the re-created chunk starts a new generation', async () => {
+      const resourceId = 'chunk-generation-reset'
+      await dataCollection.put(resourceId, { id: resourceId })
+
+      const created = await alice.was.request({
+        url: chunkUrl(resourceId, 0),
+        method: 'PUT',
+        body: new Blob([new Uint8Array([1])], {
+          type: 'application/octet-stream'
+        })
+      })
+      const oldEtag = created.headers.get('etag')!
+      assertEtagVersion({ etag: oldEtag, version: 1 })
+
+      await alice.was.request({
+        url: chunkUrl(resourceId, 0),
+        method: 'DELETE'
+      })
+
+      // Unlike a Resource tombstone, a chunk keeps no sidecar across the
+      // delete, so re-creating it mints a fresh generation at version 1.
+      const recreated = await alice.was.request({
+        url: chunkUrl(resourceId, 0),
+        method: 'PUT',
+        body: new Blob([new Uint8Array([9, 9])], {
+          type: 'application/octet-stream'
+        })
+      })
+      const newEtag = recreated.headers.get('etag')
+      assertEtagVersion({ etag: newEtag, version: 1 })
+      assert.notEqual(etagGeneration(newEtag!), etagGeneration(oldEtag))
+
+      // The old ETag is not the current one: a conditional GET with it is the
+      // full (new) representation, never a 304.
+      const conditional = await responseOf(
+        alice.was.request({
+          url: chunkUrl(resourceId, 0),
+          method: 'GET',
+          headers: { 'if-none-match': oldEtag }
+        })
+      )
+      assert.equal(conditional.status, 200)
+      assert.equal(conditional.headers.get('etag'), newEtag)
+      assert.deepEqual(
+        new Uint8Array(await conditional.arrayBuffer()),
+        new Uint8Array([9, 9])
+      )
+
+      // And an If-Match write against the old validator 412s: it names a
+      // generation the current chunk no longer carries.
+      assert.equal(
+        await statusOf(
+          alice.was.request({
+            url: chunkUrl(resourceId, 0),
+            method: 'PUT',
+            body: new Blob([new Uint8Array([3])], {
+              type: 'application/octet-stream'
+            }),
+            headers: { 'if-match': oldEtag }
+          })
+        ),
+        412
+      )
     })
   })
 

@@ -880,3 +880,78 @@ Today `hmac` rides through the descriptor as an unknown extra member
 can drop or replace the blinding key and orphan every blinded index in the
 Collection. The spec now requires the shape check and the permanence invariant;
 this item implements both.
+
+### WAS-54: Read-side caching: 304 on `If-None-Match` and `Cache-Control`
+
+- status: done
+- done: 2026-09-07
+- priority: low
+- labels: caching
+- acceptance:
+  - [x] A Resource GET/HEAD with an `If-None-Match` that matches the current
+        `ETag` returns 304 Not Modified with no body (and the `ETag` header),
+        per RFC 9110 conditional-read semantics; a non-matching validator
+        returns the full 200 representation
+  - [x] The same conditional-read handling applies to the other ETag-emitting
+        reads (chunk GET/HEAD, `/meta`, Collection Description)
+  - [x] Non-idempotent responses are marked non-cacheable
+        (`Cache-Control: no-store` on POST responses), per the spec SHOULD
+  - [x] Integration tests in `test/`, plus optional-tier conformance tests in
+        the `conditional-requests-api` suite (the spec keeps caching at
+        SHOULD/MAY, so they stay optional-tier)
+
+The read-side half of the caching story (discovered-from: WAS-45; recorded as
+the one genuinely unimplemented area in the WAS-45 dark-section triage). The
+write-side validators already exist: `formatEtag` in `src/lib/etag.ts` emits
+strong version-based ETags on GET/HEAD, and `If-Match`/`If-None-Match` gate
+writes via `src/lib/preconditions.ts` -- but no read path ever evaluates
+`If-None-Match`, so clients re-download unchanged content. Note the spec defers
+`Cache-Control` semantics in an editor's note, so keep the `no-store` marking
+minimal and revisit if the spec text firms up.
+
+A concrete consumer arrived 2026-09-07 (freewallet FW-134, the log-governed
+collection encryption descriptors). Every resource log a wallet reads -- the
+account `did.jsonl`, the user key roster, the annex generation log, and under
+FW-134 one log per governed collection -- is re-downloaded whole and re-verified
+from genesis on every visit. A client holding a verified head and its `ETag`
+could confirm the log unchanged with a header round trip and skip both the body
+and the chain verification. The log route is an ordinary Resource GET (body
+`text/jsonl`), so the first acceptance box already covers it; nothing
+log-specific is needed. The wallets adopt the header in their log store's read
+path once this lands. Not a blocker for FW-134.
+
+### WAS-88: Generation marker in the `ETag` so a hard delete cannot reuse a validator
+
+- status: done
+- done: 2026-09-07
+- priority: high
+- labels: caching, conditional-writes, wire-contract
+- touches:
+  - was-client: `parseEtag` reads the trailing integer after the last `.`;
+    `If-Match` echoes the received validator string instead of rebuilding it
+    from a number
+  - conformance-suite: drop the literal `"1"` assertions; treat the validator as
+    opaque
+  - spec: already satisfied, the Conditional Requests text says the validator is
+    opaque to clients and its derivation a server-side concern; no edit
+- acceptance:
+  - [x] `ETag` is `"<generation>.<version>"`; the generation is minted once per
+        versioned record (Resource sidecar, chunk sidecar, Collection
+        description, Collection metadata sidecar) and preserved through a
+        Resource tombstone and re-create
+  - [x] A chunk deleted and rewritten, and a Collection deleted and re-created
+        under the same id, carry a different generation; a stale pre-delete
+        `If-None-Match` gets 200 and a stale `If-Match` gets 412, on both
+        backends
+  - [x] Export/import carries the generation with the sidecars and the
+        description
+  - [x] was-client and the conformance suite consume the new shape (touches
+        resolved)
+
+Before this change the version counter restarted at 1 after a hard delete (chunk
+delete, Delete Collection, Delete Space), so a re-created record could emit an
+`ETag` equal to one a client cached from the old record, and the new 304 path
+would answer it with the stale body. A counter that survives the delete would
+need tombstones outside the Space tree and would tell a later controller of a
+reused Space id how many writes the previous one made; a per-record random
+generation needs no persistence beyond the record itself.

@@ -650,8 +650,9 @@ describe('Storage API', () => {
           'sidecar should remain as the tombstone'
         )
 
-        // The tombstone records `deleted`, a bumped `version`, and the
-        // last-known content-type (the content filename no longer carries it).
+        // The tombstone records `deleted`, a bumped `version` under the kept
+        // `generation`, and the last-known content-type (the content filename
+        // no longer carries it).
         const sidecar = await backend.readMetaSidecar({
           collectionDir,
           resourceId: 'note'
@@ -662,6 +663,7 @@ describe('Storage API', () => {
           2,
           'version bumped from 1 to 2 on delete'
         )
+        assert.ok(sidecar?.generation, 'the tombstone keeps the generation')
         assert.equal(sidecar?.contentType, 'application/json')
       } finally {
         await rm(tempDir, { recursive: true, force: true })
@@ -1032,7 +1034,7 @@ describe('Storage API', () => {
           resourceId: 'doc',
           custom: { name: 'labeled', tags: { s: 'draft' } }
         })
-        assert.deepEqual(written, { metaVersion: 1 })
+        assert.equal(written!.version, 1, 'metaVersion starts at 1')
 
         const meta = await backend.getResourceMetadata({
           spaceId,
@@ -1130,7 +1132,7 @@ describe('Storage API', () => {
           custom: { name: 'first' },
           ifNoneMatch: true
         })
-        assert.deepEqual(first, { metaVersion: 1 })
+        assert.equal(first!.version, 1, 'metaVersion starts at 1')
         // A second If-None-Match: * now fails (metadata already exists).
         await assert.rejects(
           backend.writeResourceMetadata({
@@ -1142,13 +1144,13 @@ describe('Storage API', () => {
           }),
           PreconditionFailedError
         )
-        // If-Match on the current metaVersion succeeds; a stale one fails.
+        // If-Match on the current metadata ETag succeeds; a stale one fails.
         await backend.writeResourceMetadata({
           spaceId,
           collectionId,
           resourceId: 'doc',
           custom: { name: 'second' },
-          ifMatch: formatEtag(1)
+          ifMatch: formatEtag(first!)
         })
         await assert.rejects(
           backend.writeResourceMetadata({
@@ -1156,7 +1158,7 @@ describe('Storage API', () => {
             collectionId,
             resourceId: 'doc',
             custom: { name: 'third' },
-            ifMatch: formatEtag(1)
+            ifMatch: formatEtag(first!)
           }),
           PreconditionFailedError
         )

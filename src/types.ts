@@ -37,6 +37,7 @@ import type {
   IDocumentLoader
 } from '@interop/data-integrity-core/loader'
 
+import type { EtagValidator } from './lib/etag.js'
 import type {
   BlindedIndexQuery,
   BlindedIndexQueryPage
@@ -140,22 +141,24 @@ export interface ResourceResult {
   /** resolved content-type of the stored bytes */
   storedResourceType: string
   /**
-   * The Resource's current monotonic `version` -- the value behind its HTTP
-   * `ETag` strong validator (`conditional-writes` feature). Absent only for a
-   * legacy Resource written before versioning.
+   * The Resource's current `generation` and monotonic `version` -- the two
+   * parts of its HTTP `ETag` strong validator (`conditional-writes` feature).
+   * Both absent only for a legacy Resource written before versioning.
    */
+  generation?: string
   version?: number
 }
 
 /**
  * Return shape of `getChunkMetadata()` (the `chunked-streams` feature): a
- * chunk's stored content-type / size / version -- the HEAD payload headers.
- * `version` is the chunk's own monotonic ETag validator, absent for a legacy
- * chunk written before versioning.
+ * chunk's stored content-type / size / validator -- the HEAD payload headers.
+ * `generation` / `version` are the chunk's own ETag validator, absent for a
+ * legacy chunk written before versioning.
  */
 export interface ChunkMetadata {
   contentType: string
   size: number
+  generation?: string
   version?: number
 }
 
@@ -170,6 +173,7 @@ export interface ChunkListing {
     index: number
     size: number
     contentType: string
+    generation?: string
     version?: number
   }>
 }
@@ -457,6 +461,51 @@ export type BackendProviderRegistry = Map<string, BackendProvider>
  * Note: `exportSpace` resolves a tar-stream `Pack` at runtime, typed here as the
  * `Readable` it extends (tar-stream ships no types).
  */
+/**
+ * A stored Collection Description as the backends surface it: the wire body
+ * plus, out of band, the description's `ETag` validator parts
+ * (`descriptionGeneration` / `descriptionVersion`), both absent for a legacy
+ * Collection written before description versioning.
+ */
+export type StoredCollectionDescription = CollectionDescription & {
+  descriptionGeneration?: string
+  descriptionVersion?: number
+}
+
+/**
+ * The out-of-band validator parts a Resource Metadata read carries: the
+ * sidecar's `generation` with the content `version` and the `/meta` object's
+ * `metaVersion`. `generation` and `version` are absent for a legacy Resource;
+ * `metaVersion` until the first metadata write.
+ */
+export interface VersionedMetadata {
+  generation?: string
+  version?: number
+  metaVersion?: number
+}
+
+/**
+ * A Collection Metadata object as read from storage: the wire body plus the
+ * out-of-band `/meta` validator parts, `generation` and `metaVersion`, both
+ * absent until the first metadata write.
+ */
+export type StoredCollectionMetadata = CollectionMetadata & {
+  generation?: string
+  metaVersion?: number
+}
+
+/**
+ * A Collection's governing history log as read from storage (the
+ * `governed-history-logs` feature): the JSON Lines body verbatim, plus its
+ * own `ETag` validator, minted by the guarded create and bumped by each
+ * append, independent of the description and `/meta` validators.
+ */
+export interface StoredCollectionLog {
+  body: string
+  generation: string
+  version: number
+}
+
 export interface StorageBackend {
   /**
    * Optional logger the backend writes diagnostics through (Fastify's pino
@@ -592,14 +641,15 @@ export interface StorageBackend {
 
   /**
    * Writes a Collection Description (full replacement), bumping its monotonic
-   * description `version` (the `ETag` validator behind conditional Collection
-   * writes; the `key-epochs` feature) and returning the new version. `createdBy`
+   * description `version` (with its `generation`, the `ETag` validator behind
+   * conditional Collection writes; the `key-epochs` feature) and returning the
+   * new validator. `createdBy`
    * is server-managed on the same terms as `writeSpace`'s. When `ifMatch` is
    * supplied it is evaluated atomically with the write: the current description
    * ETag must equal it (an update-if-unchanged compare-and-swap that keeps two
    * concurrent recipient edits from clobbering one another), else
-   * `precondition-failed` (412). The version travels only as the `ETag` header
-   * -- it is kept OUT of the stored/wire Collection Description body.
+   * `precondition-failed` (412). The validator travels only as the `ETag`
+   * header -- it is kept OUT of the stored/wire Collection Description body.
    */
   writeCollection(options: {
     spaceId: string
@@ -617,21 +667,20 @@ export interface StorageBackend {
      * miss a concurrent write.
      */
     assertTransition?: (
-      prior?: CollectionDescription & { descriptionVersion?: number }
-    ) => void
-  }): Promise<{ version: number }>
+      prior?: StoredCollectionDescription
+    ) => void | Promise<void>
+  }): Promise<EtagValidator>
   /**
    * Reads a Collection Description. Resolves falsy when the Collection does not
-   * exist. `descriptionVersion` is the out-of-band `ETag` validator (the handler
-   * strips it from the wire body and sets it as the `ETag` header); absent for a
-   * legacy Collection written before description versioning.
+   * exist. `descriptionGeneration` / `descriptionVersion` are the out-of-band
+   * `ETag` validator (the handler strips them from the wire body and sets the
+   * `ETag` header from them); absent for a legacy Collection written before
+   * description versioning.
    */
   getCollectionDescription(options: {
     spaceId: string
     collectionId: string
-  }): Promise<
-    (CollectionDescription & { descriptionVersion?: number }) | undefined
-  >
+  }): Promise<StoredCollectionDescription | undefined>
   deleteCollection(options: {
     spaceId: string
     collectionId: string
@@ -661,8 +710,9 @@ export interface StorageBackend {
   }): Promise<CollectionResourcesList>
 
   /**
-   * Writes a Resource representation, bumping its monotonic `version` (the ETag
-   * validator), and returns the new version. When a conditional-write
+   * Writes a Resource representation, bumping its monotonic `version` (with
+   * its `generation`, the ETag validator), and returns the new validator. When
+   * a conditional-write
    * precondition is supplied (`conditional-writes` feature) it is evaluated
    * atomically with the write: `ifMatch` is an update-if-unchanged (the current
    * ETag must equal it), `ifNoneMatch` is a create-if-absent (`If-None-Match:
@@ -719,7 +769,7 @@ export interface StorageBackend {
     epoch?: string
     ifMatch?: string
     ifNoneMatch?: boolean
-  }): Promise<{ version: number }>
+  }): Promise<EtagValidator>
   getResource(options: {
     spaceId: string
     collectionId: string
@@ -742,23 +792,23 @@ export interface StorageBackend {
     ifMatch?: string
   }): Promise<void>
   /**
-   * Reads a Resource's Metadata object. `version` / `metaVersion` are the
-   * out-of-band ETag validators (the handler strips them from the wire body);
-   * the Metadata's own `createdBy` rides along in it.
+   * Reads a Resource's Metadata object. `generation` with `version` /
+   * `metaVersion` are the out-of-band ETag validators of the content and of the
+   * `/meta` object (the handler strips them from the wire body); the
+   * Metadata's own `createdBy` rides along in it.
    */
   getResourceMetadata(options: {
     spaceId: string
     collectionId: string
     resourceId: string
-  }): Promise<
-    (ResourceMetadata & { version?: number; metaVersion?: number }) | undefined
-  >
+  }): Promise<(ResourceMetadata & VersionedMetadata) | undefined>
   /**
    * Replaces the user-writable `custom` object of a Resource's Metadata (full
    * replacement; pass `{}` to clear). Resolves `undefined` when the Resource
    * does not exist (this operation does not create one) so the handler can 404,
-   * else the Resource's new `metaVersion` (the `/meta` ETag validator, bumped
-   * on each metadata write independently of the content `version`).
+   * else the `/meta` object's new ETag validator (its `metaVersion` as the
+   * `version`, bumped on each metadata write independently of the content
+   * `version`, under the sidecar's `generation`).
    *
    * On an encrypted Collection `custom` is the opaque encryption envelope (an
    * arbitrary JSON object) rather than a `{ name, tags }` object; the backend
@@ -789,22 +839,23 @@ export interface StorageBackend {
     epoch?: string
     ifMatch?: string
     ifNoneMatch?: boolean
-  }): Promise<{ metaVersion: number } | undefined>
+  }): Promise<EtagValidator | undefined>
 
   /**
    * Reads a Collection's Metadata object -- the Collection-level sibling of
    * `getResourceMetadata`. Resolves `undefined` when the Collection does not
    * exist; a Collection that exists but has never had metadata written resolves
    * an object carrying only whatever server-managed members are known (its
-   * `createdBy`, read from the stored description), with no `metaVersion`.
+   * `createdBy`, read from the stored description), with no validator.
    *
-   * `metaVersion` is the out-of-band ETag validator (the handler strips it from
-   * the wire body), independent of the Collection's `descriptionVersion`.
+   * `generation` / `metaVersion` are the out-of-band ETag validator (the
+   * handler strips them from the wire body), independent of the Collection's
+   * description validator.
    */
   getCollectionMetadata(options: {
     spaceId: string
     collectionId: string
-  }): Promise<(CollectionMetadata & { metaVersion?: number }) | undefined>
+  }): Promise<StoredCollectionMetadata | undefined>
   /**
    * Replaces the user-writable `custom` object of a Collection's Metadata (full
    * replacement; pass `{}` to clear). Resolves `undefined` when the Collection
@@ -835,17 +886,60 @@ export interface StorageBackend {
     epoch?: string
     ifMatch?: string
     ifNoneMatch?: boolean
-  }): Promise<{ metaVersion: number } | undefined>
+  }): Promise<EtagValidator | undefined>
+
+  /**
+   * Reads a Collection's governing history log (the `governed-history-logs`
+   * feature): the JSON Lines body as last written, with its validator.
+   * Resolves `undefined` when the Collection has no log (it is not governed)
+   * or does not exist.
+   */
+  getCollectionLog(options: {
+    spaceId: string
+    collectionId: string
+  }): Promise<StoredCollectionLog | undefined>
+  /**
+   * Replaces a Collection's governing history log with `body` (the `/log`
+   * transport's guarded create under `ifNoneMatch`, or its compare-and-swap
+   * append under `ifMatch`, which carries the prior bytes forward). The
+   * precondition is evaluated on the log's current `ETag` atomically with the
+   * write (`precondition-failed`, 412, on a mismatch). Resolves `undefined`
+   * when the Collection does not exist (this operation never creates one).
+   *
+   * The write also bumps the Collection Description's validator: the served
+   * description's `encryption` member is derived from the log head, so a
+   * description `ETag` must change with it. The write is serialized with
+   * description writes, so `assertTransition` and a concurrent
+   * `writeCollection`'s own callback each see the other's outcome.
+   */
+  writeCollectionLog(options: {
+    spaceId: string
+    collectionId: string
+    body: string
+    ifMatch?: string
+    ifNoneMatch?: boolean
+    /**
+     * Invoked atomically with the write against the freshly re-read current
+     * log (`undefined` on a create) and Collection Description; throwing
+     * aborts the write. Carries the request layer's line contract and
+     * descriptor-transition checks.
+     */
+    assertTransition?: (context: {
+      prior?: StoredCollectionLog
+      collectionDescription: StoredCollectionDescription
+    }) => void | Promise<void>
+  }): Promise<EtagValidator | undefined>
 
   /**
    * Writes one chunk of a chunked Resource (the `chunked-streams` feature),
    * keyed by `(spaceId, collectionId, resourceId, chunkIndex)`. Same upload-cap
-   * / quota guards, monotonic `version` bump (the ETag validator), and atomic
+   * / quota guards, `generation` + monotonic `version` bump (the ETag
+   * validator), and atomic
    * `ifMatch` / `ifNoneMatch` precondition semantics as `writeResource`;
    * differences:
    * - the body is opaque bytes + content-type (the server never parses it), so
    *   no encryption-conformance or unique-index enforcement applies;
-   * - the `version` bumped is the chunk's OWN, independent of the parent's;
+   * - the validator bumped is the chunk's OWN, independent of the parent's;
    * - the parent Resource MUST already exist, else `ResourceNotFoundError`
    *   (404), so orphan chunks cannot accumulate;
    * - a chunk carries no server-managed `createdBy` / epoch / user Metadata.
@@ -858,7 +952,7 @@ export interface StorageBackend {
     input: ResourceInput
     ifMatch?: string
     ifNoneMatch?: boolean
-  }): Promise<{ version: number }>
+  }): Promise<EtagValidator>
   /**
    * Reads a chunk's bytes, resolving the same `ResourceResult` shape as
    * `getResource`; rejects with `ResourceNotFoundError` when absent.
@@ -919,9 +1013,13 @@ export interface StorageBackend {
    * `createdBy` (the creator's DID, when one was recorded -- so provenance
    * replicates and does not have to be fetched per Resource from `/meta`), and
    * -- so metadata replicates alongside content -- the user-writable `custom`
-   * object (the opaque encryption envelope on an encrypted Collection). A
-   * tombstone keeps its `createdBy`, as it keeps its `createdAt`. A
-   * metadata-only edit
+   * object (the opaque encryption envelope on an encrypted Collection). It also
+   * carries the Resource's `generation` (absent for a legacy Resource with no
+   * generation), which the request layer pairs with `version` and
+   * `metaVersion` to derive the wire document's `etag` / `metaEtag` -- the
+   * quoted strong validators a replica can send back as `If-Match` without a
+   * GET per Resource. A tombstone keeps its `createdBy`, as it keeps its
+   * `createdAt`. A metadata-only edit
    * re-surfaces the Resource with a bumped `updatedAt` / `metaVersion` but its
    * `version` / `data` unchanged. A tombstone (soft-deleted Resource) is
    * surfaced with `deleted: true` and no `data` so the delete replicates until
@@ -945,6 +1043,10 @@ export interface StorageBackend {
       resourceId: string
       version: number
       metaVersion?: number
+      // Absent for a legacy Resource with no generation. Paired with
+      // `version` / `metaVersion` by the request layer to derive the wire
+      // `etag` / `metaEtag`.
+      generation?: string
       createdBy?: IDID
       updatedAt: string
       deleted: boolean
@@ -1215,6 +1317,13 @@ export type AuthorizeProvisioning = (options: {
 }) => ProvisioningDecision | Promise<ProvisioningDecision>
 
 declare module 'fastify' {
+  interface FastifyContextConfig {
+    /**
+     * Marks a POST route as a read (safe in the RFC 9110 sense), so the
+     * `no-store` hook in `routes.ts` leaves its response cacheable.
+     */
+    safe?: boolean
+  }
   interface FastifyInstance {
     serverUrl: string
     storage: StorageBackend

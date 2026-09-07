@@ -207,6 +207,26 @@ export function collectionMetaPath({
 }
 
 /**
+ * `/space/:spaceId/:collectionId/meta/log` -- the Collection's governing
+ * history log sub-resource (the `governed-history-logs` feature), a sibling
+ * path under {@link collectionMetaPath}. A capability whose target covers the
+ * Collection URL covers it.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @returns {string}
+ */
+export function collectionLogPath({
+  spaceId,
+  collectionId
+}: {
+  spaceId: string
+  collectionId: string
+}): string {
+  return `${collectionMetaPath({ spaceId, collectionId })}/log`
+}
+
+/**
  * `/space/:spaceId/:collectionId/:resourceId/meta` -- the Resource Metadata
  * (reserved `meta` segment) path, one level below its Collection-level sibling
  * {@link collectionMetaPath}, so it takes the full id triple.

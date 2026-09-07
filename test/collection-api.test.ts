@@ -12,7 +12,13 @@ import { NotFoundError } from '@interop/was-client'
 import type { Space } from '@interop/was-client'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import {
+  assertEtagVersion,
+  etagGeneration,
+  responseOf,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('Collections API', () => {
   let fastify: FastifyInstance,
@@ -63,6 +69,66 @@ describe('Collections API', () => {
         .createCollection({ name: 'Test Collection' }),
       (err: unknown) => err instanceof NotFoundError
     )
+  })
+
+  it('POST responses carry Cache-Control: no-store (non-idempotent, non-cacheable)', async () => {
+    const collectionId = crypto.randomUUID()
+    const response = await alice.was.request({
+      url: `${serverUrl}/space/${alice.space1.id}/`,
+      method: 'POST',
+      json: { id: collectionId, name: 'No Store' }
+    })
+    assert.equal(response.status, 201)
+    assert.equal(response.headers.get('cache-control'), 'no-store')
+
+    // A failed POST is marked the same way; a read is not marked at all.
+    const conflict = await responseOf(
+      alice.was.request({
+        url: `${serverUrl}/space/${alice.space1.id}/`,
+        method: 'POST',
+        json: { id: collectionId, name: 'Conflict' }
+      })
+    )
+    assert.equal(conflict.status, 409)
+    assert.equal(conflict.headers.get('cache-control'), 'no-store')
+    const read = await alice.was.request({
+      url: `${serverUrl}/space/${alice.space1.id}/${collectionId}`,
+      method: 'GET'
+    })
+    assert.equal(read.headers.get('cache-control'), null)
+
+    // Only a non-idempotent POST is marked: a slash-variant redirect performs
+    // nothing, and Query and Export are reads that use POST to carry a body.
+    // The redirect sits behind the auth-headers presence and parse gates but
+    // before verification, so a well-formed, unsigned pair reaches it.
+    const redirect = await fetch(
+      new URL(`/space/${alice.space1.id}`, serverUrl),
+      {
+        method: 'POST',
+        headers: {
+          authorization:
+            'Signature keyId="did:key:z6MkProbe#z6MkProbe",' +
+            'headers="(request-target)",signature="cHJvYmU="',
+          'capability-invocation': 'zcap id="urn:zcap:root:probe"'
+        },
+        redirect: 'manual'
+      }
+    )
+    assert.equal(redirect.status, 308)
+    assert.equal(redirect.headers.get('cache-control'), null)
+    const query = await alice.was.request({
+      url: `${serverUrl}/space/${alice.space1.id}/${collectionId}/query`,
+      method: 'POST',
+      json: { profile: 'changes' }
+    })
+    assert.equal(query.status, 200)
+    assert.equal(query.headers.get('cache-control'), null)
+    const exported = await alice.was.request({
+      url: `${serverUrl}/space/${alice.space1.id}/export`,
+      method: 'POST'
+    })
+    assert.equal(exported.status, 200)
+    assert.equal(exported.headers.get('cache-control'), null)
   })
 
   it('[root] create collection via POST', async () => {
@@ -219,6 +285,44 @@ describe('Collections API', () => {
     assert.equal(await collection.describe(), null)
   })
 
+  it('a Collection delete is a hard delete: re-creating starts a new generation', async () => {
+    const collectionId = crypto.randomUUID()
+    const collectionUrl = `${serverUrl}/space/${alice.space1.id}/${collectionId}`
+
+    const created = await alice.was.request({
+      url: `${serverUrl}/space/${alice.space1.id}/`,
+      method: 'POST',
+      json: { id: collectionId, name: 'Regenerated' }
+    })
+    const oldEtag = created.headers.get('etag')!
+    assert.ok(oldEtag, 'POST returns a description ETag')
+
+    await aliceSpace.collection(collectionId).delete()
+
+    // Re-creating under the same id starts a fresh description sidecar: no
+    // generation survives a hard Collection delete.
+    await alice.was.request({
+      url: `${serverUrl}/space/${alice.space1.id}/`,
+      method: 'POST',
+      json: { id: collectionId, name: 'Regenerated Again' }
+    })
+
+    // The old validator names a generation the re-created Collection no
+    // longer carries, so a conditional GET with it is the full description,
+    // never a 304.
+    const conditional = await responseOf(
+      alice.was.request({
+        url: collectionUrl,
+        method: 'GET',
+        headers: { 'if-none-match': oldEtag }
+      })
+    )
+    assert.equal(conditional.status, 200)
+    const newEtag = conditional.headers.get('etag')
+    assert.ok(newEtag, 'GET returns a description ETag')
+    assert.notEqual(etagGeneration(newEtag!), etagGeneration(oldEtag))
+  })
+
   it('[root] DELETE a never-created collection is idempotent (204, not 500)', async () => {
     const collection = aliceSpace.collection('never-existed-collection')
     await collection.delete()
@@ -347,7 +451,8 @@ describe('Collections API', () => {
           'blinded-index-query',
           'equality-query',
           'key-epochs',
-          'chunked-streams'
+          'chunked-streams',
+          'governed-history-logs'
         ]
       })
     })
@@ -373,7 +478,8 @@ describe('Collections API', () => {
         'blinded-index-query',
         'equality-query',
         'key-epochs',
-        'chunked-streams'
+        'chunked-streams',
+        'governed-history-logs'
       ])
     })
 
@@ -502,7 +608,7 @@ describe('Collections API', () => {
       assert.equal(meta.createdBy, alice.did)
     })
 
-    it('[signed] PUT /meta sets custom, round-tripped by GET with ETag "1"', async () => {
+    it('[signed] PUT /meta sets custom, round-tripped by GET with a matching ETag', async () => {
       const collectionId = await freshCollection()
       const put = await alice.was.request({
         url: metaUrl(collectionId),
@@ -512,14 +618,15 @@ describe('Collections API', () => {
         }
       })
       assert.equal(put.status, 204)
-      assert.equal(put.headers.get('etag'), '"1"')
+      const putEtag = put.headers.get('etag')
+      assertEtagVersion({ etag: putEtag, version: 1 })
 
       const got = await alice.was.request({
         url: metaUrl(collectionId),
         method: 'GET'
       })
       assert.equal(got.status, 200)
-      assert.equal(got.headers.get('etag'), '"1"')
+      assert.equal(got.headers.get('etag'), putEtag)
       assert.equal(got.data.custom.name, 'Trip Photos')
       assert.deepEqual(got.data.custom.tags, { app: 'gallery' })
       assert.equal(got.data.createdBy, alice.did)
@@ -540,7 +647,7 @@ describe('Collections API', () => {
         method: 'PUT',
         json: {}
       })
-      assert.equal(cleared.headers.get('etag'), '"2"')
+      assertEtagVersion({ etag: cleared.headers.get('etag'), version: 2 })
 
       const got = await alice.was.request({
         url: metaUrl(collectionId),
@@ -661,7 +768,7 @@ describe('Collections API', () => {
         headers: { 'if-none-match': '*' }
       })
       assert.equal(created.status, 204)
-      assert.equal(created.headers.get('etag'), '"1"')
+      assertEtagVersion({ etag: created.headers.get('etag'), version: 1 })
 
       let thrown: any
       try {
@@ -705,6 +812,53 @@ describe('Collections API', () => {
       assert.equal(cleared.data.epoch, undefined)
     })
 
+    it('[signed] GET of the description and of /meta with a matching If-None-Match are 304', async () => {
+      const collectionId = await freshCollection()
+      const collectionUrl = `${serverUrl}/space/${alice.space1.id}/${collectionId}`
+
+      const described = await alice.was.request({
+        url: collectionUrl,
+        method: 'GET'
+      })
+      const descriptionEtag = described.headers.get('etag')!
+      const unchanged = await responseOf(
+        alice.was.request({
+          url: collectionUrl,
+          method: 'GET',
+          headers: { 'if-none-match': descriptionEtag }
+        })
+      )
+      assert.equal(unchanged.status, 304)
+      assert.equal(unchanged.headers.get('etag'), descriptionEtag)
+      assert.equal(await unchanged.text(), '')
+
+      // A stale validator gets the full description.
+      const stale = await alice.was.request({
+        url: collectionUrl,
+        method: 'GET',
+        headers: { 'if-none-match': '"99"' }
+      })
+      assert.equal(stale.status, 200)
+      assert.equal(stale.data.id, collectionId)
+
+      // The `/meta` sub-resource validates against its own ETag.
+      const written = await alice.was.request({
+        url: metaUrl(collectionId),
+        method: 'PUT',
+        json: { custom: { name: 'Meta' } }
+      })
+      const metaEtag = written.headers.get('etag')!
+      const metaUnchanged = await responseOf(
+        alice.was.request({
+          url: metaUrl(collectionId),
+          method: 'GET',
+          headers: { 'if-none-match': metaEtag }
+        })
+      )
+      assert.equal(metaUnchanged.status, 304)
+      assert.equal(metaUnchanged.headers.get('etag'), metaEtag)
+    })
+
     it('[signed] metaVersion and descriptionVersion are independent ETags', async () => {
       const collectionId = await freshCollection()
       const collectionUrl = `${serverUrl}/space/${alice.space1.id}/${collectionId}`
@@ -743,7 +897,7 @@ describe('Collections API', () => {
         url: metaUrl(collectionId),
         method: 'GET'
       })
-      assert.equal(meta.headers.get('etag'), '"1"')
+      assertEtagVersion({ etag: meta.headers.get('etag'), version: 1 })
       assert.equal(meta.data.custom.name, 'Independent')
     })
 

@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 85
+nextAvailableId: 89
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -417,33 +417,6 @@ trusts the archive: `importSpace` in `src/backends/filesystem.ts` (writes
 descriptions and sidecars raw) and in `src/backends/postgres.ts` (routes through
 `_upsertCollection`, still trusting the archived value).
 
-### WAS-54: Read-side caching: 304 on `If-None-Match` and `Cache-Control`
-
-- status: todo
-- priority: low
-- labels: caching
-- acceptance:
-  - [ ] A Resource GET/HEAD with an `If-None-Match` that matches the current
-        `ETag` returns 304 Not Modified with no body (and the `ETag` header),
-        per RFC 9110 conditional-read semantics; a non-matching validator
-        returns the full 200 representation
-  - [ ] The same conditional-read handling applies to the other ETag-emitting
-        reads (chunk GET/HEAD, `/meta`, Collection Description)
-  - [ ] Non-idempotent responses are marked non-cacheable
-        (`Cache-Control: no-store` on POST responses), per the spec SHOULD
-  - [ ] Integration tests in `test/`, plus optional-tier conformance tests in
-        the `conditional-requests-api` suite (the spec keeps caching at
-        SHOULD/MAY, so they stay optional-tier)
-
-The read-side half of the caching story (discovered-from: WAS-45; recorded as
-the one genuinely unimplemented area in the WAS-45 dark-section triage). The
-write-side validators already exist: `formatEtag` in `src/lib/etag.ts` emits
-strong version-based ETags on GET/HEAD, and `If-Match`/`If-None-Match` gate
-writes via `src/lib/preconditions.ts` -- but no read path ever evaluates
-`If-None-Match`, so clients re-download unchanged content. Note the spec defers
-`Cache-Control` semantics in an editor's note, so keep the `no-store` marking
-minimal and revisit if the spec text firms up.
-
 ### WAS-57: Typed denial reasons on zcap authorization failures
 
 - status: todo
@@ -795,6 +768,133 @@ weaker than the handlers suggest. The consumer side now depends on it:
 was-client 0.45.0's `ensureSpaceAndCollection` refuses a caller-supplied Space
 description whose `id` does not name the Space being provisioned.
 
+### WAS-87: Governing-log sub-resource with a server-derived `encryption` member
+
+- status: in-progress
+- priority: medium
+- labels: encryption, resource-log, data-model, cross-repo
+- touches:
+  - was-teaching-server (landed 2026-09-07, uncommitted): `CollectionRequest`
+    (the describe/list read path that serves `encryption`, and the create/update
+    path that today accepts a client-written descriptor),
+    `src/lib/encryption.ts` (the epoch and hmac transition checks move from
+    Description PUT to log append for a governed Collection), the
+    encrypted-Collection envelope enforcement (a log sub-resource is exempt),
+    the listing and `changes` feed (a log sub-resource is not a Resource of the
+    Collection), a new route `/space/{space_id}/{collection_id}/meta/log` beside
+    the Collection `/meta` route (`CollectionRequest.getMeta` / `putMeta`), the
+    problem-type registry in storage-core (one new entry)
+  - wallet-attached-storage-spec: WASS-27 is the normative half, written
+    generically (a governing-log sub-resource and server-derived members, the
+    `encryption` descriptor as the first governed member); the wire values were
+    settled 2026-09-07: path `.../meta/log`, declaration by guarded create, one
+    new problem type `encryption-history-log-governed` (409), features flag
+    `governed-history-logs`
+  - storage-core: the new problem type in the shared registry
+    (`https://wallet.storage/spec#encryption-history-log-governed`, 409).
+    Shipped 2026-09-07 as `ProblemTypes.ENCRYPTION_HISTORY_LOG_GOVERNED` in
+    storage-core 0.11.0 (published; the server depends on `^0.11.0`)
+  - encrypted-collections-spec: owns the profile-level refusals this item does
+    not implement (`state.type`, `history` inside `state`, proofs, chain); ECS-7
+    resolves in this direction
+  - was-client: the `/log` transport's `resourceLogStore` takes a Collection
+    Resource handle today; the sub-resource is not a Resource, so the store
+    needs a constructor over the Collection handle (or a raw URL). WCL-17
+    carries that. The descriptor-store seam serves a governed Collection's
+    descriptor from the derived member as today
+  - freewallet FW-134 / dcw DCW-43: the producers; both drop their projection
+    PUT and write the log alone
+  - was-conformance-suite: a governed Collection's derived member equals the log
+    head's `state` plus `history`; a direct `encryption` write on a governed
+    Collection is refused; a log append violating epoch monotonicity is refused.
+    Also: the suite's optional backend-description cases pin the exact
+    `features` list and already fail on `chunked-streams`; they now also miss
+    `governed-history-logs`
+- acceptance:
+  - [x] A Collection becomes log-governed by the guarded create of its log
+        (`PUT .../meta/log` with `If-None-Match: *`) on a Collection whose
+        Description holds no client-written `encryption` member; the create is
+        refused with `encryption-immutable` (409) on one that does. No new
+        Description member. For such a Collection the served `encryption` member
+        on describe and on the Space listing is derived by the server from the
+        governing log's head entry `state`, with `history: { method, resource }`
+        stamped on. The server does not verify entry proofs or the hash chain;
+        derivation is last-line parsing, and the member is exactly what a
+        verifying reader would compute after stripping `history`
+  - [x] The log is the sub-resource
+        `/space/{space_id}/{collection_id}/meta/log`, not a Resource of the
+        Collection and not part of the `/meta` body (a `PUT /meta` does not
+        touch it): absent from listings and the `changes` feed, exempt from the
+        encrypted-Collection envelope rule, and readable under any capability
+        whose `invocationTarget` covers the Collection URL, so a share grantee
+        or an app reads it with the zcap it already holds
+  - [x] The log sub-resource supports the `/log` transport's three operations:
+        read with `ETag`, append as a compare-and-swap on `If-Match` carrying
+        the prior bytes verbatim, guarded create with `If-None-Match: *`; `412`
+        on a lost race
+  - [x] The epoch and hmac transition checks (`epochs` append-only,
+        `currentEpoch` never older, `hmac` id/type permanent once present,
+        `scheme`/`version` set-once) run on each log append against the prior
+        head's `state`, and a violating append is refused before it lands. The
+        server checks the WASS-27 line contract alone (JSON Lines, each line an
+        object with a `state` member, last line is the head) and refuses an
+        append that breaks it; `state.type`, the reserved `history` member
+        inside `state`, proofs, and the chain are the profile's constraints and
+        are NOT checked here
+  - [x] A direct write of `encryption` on a governed Collection's Description is
+        refused with `encryption-history-log-governed` (409, new registry
+        entry); the descriptor is read-only on that path. A line-contract break
+        on append is `invalid-request-body` (400); an epoch-transition violation
+        on append raises what the Description PUT raises today
+  - [x] Creating the log on a Collection that already carries a client-written
+        `encryption` descriptor is refused (`encryption-immutable`);
+        pre-release, there is no conversion, only re-provisioning
+  - [ ] Server `test/` coverage of the four refusals (direct member write,
+        line-contract break, epoch-transition violation, governing an
+        already-described Collection) and of derived == head-state equality; the
+        backend advertises `governed-history-logs` in its features list;
+        conformance-suite assertions gated on that flag **Server half held
+        2026-09-07** -- `test/governed-log-api.test.ts` (21 cases) plus a
+        backend-contract block run on both backends; the flag is advertised. The
+        conformance-suite assertions remain (suite repo)
+
+Server half landed 2026-09-07 (uncommitted): the storage seam
+(`getCollectionLog` / `writeCollectionLog` on both backends), the route and
+handlers, derivation in `getCollectionOrThrow`, the refusals, and the tests. Two
+notes from the implementation. An epoch-transition violation on append raises
+what the Description PUT raises today, which for a dropped epoch or a backwards
+`currentEpoch` is `invalid-request-body` (400), not `encryption-immutable`;
+WASS-27's text says the latter and should follow the server. A log whose genesis
+line carries no string `parameters.method` is served without a `history` stamp
+(the storage-core type requires both members). storage-core 0.11.0 is published
+and consumed from the registry. Open before `done`: the conformance-suite,
+was-client, and spec touches.
+
+Filed 2026-09-07 from freewallet FW-134's design pass. Under the
+encrypted-collections log form each governed Collection's encryption descriptor
+is the `state` of a hash-chained resource log's head, and today's design had
+every producer append to the log and then PUT a point-state projection onto the
+Collection Description, two requests with a drift window between them and an
+ensure sweep to mend a tear. Deriving the projection server-side removes the
+second write, the drift, and the mender, and lets the spec say what it already
+half-says (encrypted-collections-spec ECS-7): the log is the only authoritative
+serving and the point-state member is a projection of it. The server already
+does the same thing one level up: it resolves a did:webvh Space controller by
+reading `did.jsonl` out of its own storage. The difference here is that the
+server does not verify the log; a verifying reader does, and everyone else
+trusts the server exactly as much as they do now.
+
+The sub-resource placement follows from two server rules. The envelope rule
+refuses non-envelope content in an encrypted Collection, so the log cannot be a
+document of the Collection it governs; and a document would show in listings and
+the `changes` feed, where the sync driver would replicate it as a row. A
+sub-resource beside `/meta` sits under the Collection URL for authorization and
+outside its document set for everything else.
+
+The read-side cost the wallets carry (one log fetch per governed Collection per
+session, verified from genesis) is unaffected by this item; WAS-54 / WAS-86
+(`If-None-Match` on reads) are the items that reduce it.
+
 ## Public collection serving (agent storage demo next steps, 2026-08-21)
 
 Context: freewallet's agent storage demo (FW-227) has a CLI agent publish
@@ -1002,6 +1102,38 @@ invalidation surface (any file write under the Collection). Surfaced by the
 2026-09-05 codebase simplification review; the Postgres backend has no
 equivalent cost (a primary-key lookup).
 
+### WAS-86: Backend-evaluated `If-None-Match` on Resource and chunk reads
+
+- status: todo
+- priority: low
+- labels: caching, performance, postgres-backend
+- acceptance:
+  - [ ] `getResource` and `getChunk` on `StorageBackend` accept an optional
+        held-validator set (the `HeldValidators` value `parseIfNoneMatch`
+        already produces, rather than the raw header) and resolve a not-modified
+        result, carrying the current validator and no stream, when it covers the
+        stored one
+  - [ ] The Postgres backend answers a covered read without selecting the
+        `content` column; the filesystem backend compares the sidecar validator
+        it already reads and skips opening the file
+  - [ ] Get Resource and Get Chunk pass the parsed set down and drop their
+        metadata-first read; the 304 wire behavior and every existing
+        conditional-read test in `test/` and the conformance suite are unchanged
+  - [ ] Storage-contract tests cover the covered and uncovered paths on both
+        backends; the webvh controller's unconditional `getResource` call is
+        unaffected
+
+Context: the conditional-read check (archived WAS-54) lives in the handlers. A
+conditional Resource or chunk GET reads the metadata first and opens the byte
+stream only on a miss, so on the filesystem backend a 304 costs a sidecar read.
+On Postgres that first read is a separate query, and a miss then runs the
+content query as well. Moving the comparison into the backend makes a
+conditional hit one query with no content transfer and a miss the single query
+an unconditional read costs. The header parsing stays in the request layer; the
+backend only answers whether the stored version is in the set. Only worth doing
+once Postgres is a deployment target for the wallet log workloads that motivated
+the 304 path. discovered-from: WAS-54.
+
 ## Code review follow-ups (2026-09-05)
 
 Findings from a review of the 2026-09-05 working tree (request-body helpers, KMS
@@ -1024,6 +1156,29 @@ Context: moving the Get Policy auth check from the handler into a route-level
 `onRequest` hook runs `requireAuthHeaders` before `assertValidIds`, so the
 status changed from 400 to 401. Consistent with PUT and DELETE, which already
 behaved this way, but wire-observable and uncovered by any test.
+
+### WAS-85: `createApp` option to disable or replace the Fastify logger
+
+- status: todo
+- priority: low
+- labels: dx, testing
+- acceptance:
+  - [ ] `createApp` accepts a `logger` option passed through to Fastify (`false`
+        for silent, or a pino options object / instance), defaulting to the
+        current `true`
+  - [ ] The backend diagnostics wiring in `src/plugin.ts` (the
+        `storage.logger     = fastify.log` hand-off) still works when the logger
+        is silent
+  - [ ] `test/helpers.ts` `startTestServer` defaults to `logger: false`, and the
+        in-process consumers (was-react, was-sync) can opt in the same way
+  - [ ] CHANGELOG entry
+
+Context: `createApp` in `src/server.ts` constructs Fastify with `logger: true`
+and offers no way to change it. Every consumer that boots the server in-process
+for its tests (was-react's and was-sync's integration suites, this repo's own
+`test/`) gets one JSON log line per request in its test output, which buries
+assertion failures. Requested from was-sync's WS-11, which moved its integration
+suite from a fake server onto a live in-process instance.
 
 ## Test coverage gaps (conformance suite + server `test/`)
 

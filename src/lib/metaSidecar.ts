@@ -20,11 +20,19 @@ import type { IDID, ResourceMetadataCustom } from '../types.js'
  * Metadata Data Model"): an OPTIONAL server-managed property, absent when no
  * creator was recorded.
  *
- * `version` is the per-Resource monotonic counter that backs the HTTP `ETag`
- * strong validator (see `formatEtag`): it starts at 1 on first content write and
- * increments on each subsequent content write. It is `undefined` only for a
- * Resource written before versioning existed (a legacy sidecar), in which case
- * the backend treats the current version as 0.
+ * `generation` is the sidecar's random marker (see `newGeneration`), minted
+ * when the sidecar is first written and kept for its whole life, tombstone and
+ * re-create included. Together with `version` (or `metaVersion`) it forms the
+ * HTTP `ETag` strong validator (see `formatEtag`). A sidecar removed outright
+ * (a chunk delete, or the delete of the Collection or Space) takes its
+ * generation with it, so a later record under the same id mints a new one and
+ * its validators never coincide with the old record's.
+ *
+ * `version` is the per-Resource monotonic counter behind the content `ETag`:
+ * it starts at 1 on first content write and increments on each subsequent
+ * content write. Both it and `generation` are `undefined` only for a Resource
+ * written before versioning existed (a legacy sidecar), which then has no
+ * `ETag`.
  *
  * `metaVersion` is the independent monotonic counter for the `/meta`
  * sub-resource (spec V2 metadata versioning): it starts at 1 on first metadata
@@ -52,6 +60,7 @@ export interface MetaSidecar {
   // and not reachable from the user-writable `custom`. Absent on a sidecar
   // written before `createdBy` was recorded, or by a caller with no invoker.
   createdBy?: IDID
+  generation?: string
   version?: number
   metaVersion?: number
   // On a plaintext Collection `custom` is `{ name, tags }`; on an encrypted
@@ -71,18 +80,20 @@ export interface MetaSidecar {
 /**
  * The on-disk shape of a Collection's metadata sidecar
  * (`.collectionmeta.<collectionId>.json`, see `collectionMetaFileName`): the
- * server-managed timestamps of the metadata object itself, the monotonic
- * `metaVersion` backing its ETag, and the user-writable `custom` object.
+ * server-managed timestamps of the metadata object itself, the `generation`
+ * and monotonic `metaVersion` backing its ETag, and the user-writable `custom`
+ * object.
  *
  * `createdAt` is stamped by the FIRST metadata write and `updatedAt` by the
  * latest one; both describe the metadata object, not the Collection (the
  * Collection's own creator is read from its description, where `createdBy`
  * lives, and is never duplicated here).
  *
- * `metaVersion` starts at 1 on the first metadata write and increments on each
- * subsequent one. It is independent of the Collection's `descriptionVersion`:
- * a description write never bumps it, and a metadata write never bumps the
- * description's.
+ * `generation` is minted by the first metadata write and kept thereafter (the
+ * sidecar only ever goes away with its Collection). `metaVersion` starts at 1
+ * on the first metadata write and increments on each subsequent one. Both are
+ * independent of the Collection's description validator: a description write
+ * never bumps them, and a metadata write never bumps the description's.
  *
  * `custom` is `{ name, tags }` on a plaintext Collection and the opaque
  * encryption envelope on an encrypted one, stored verbatim either way.
@@ -95,6 +106,7 @@ export interface MetaSidecar {
 export interface CollectionMetaSidecar {
   createdAt: string
   updatedAt: string
+  generation: string
   metaVersion: number
   custom?: ResourceMetadataCustom | Record<string, unknown>
   epoch?: string
