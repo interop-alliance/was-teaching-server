@@ -99,6 +99,26 @@ export async function requestError(promise: Promise<unknown>): Promise<any> {
 }
 
 /**
+ * Awaits a request and returns its `Response` whether it succeeded or the
+ * client rejected it for a non-2xx status (the http client treats a 304 Not
+ * Modified as an error). Shared by the conditional-read cases, which assert on
+ * the status and headers of a 304 and a 200 alike.
+ *
+ * @param promise {Promise<any>}   the request
+ * @returns {Promise<Response>}   the response, from the value or the error
+ */
+export async function responseOf(promise: Promise<any>): Promise<Response> {
+  try {
+    return await promise
+  } catch (err: any) {
+    if (err.response) {
+      return err.response
+    }
+    throw err
+  }
+}
+
+/**
  * GETs an absolute or server-relative URL with an identity's signed capability
  * (the raw `was.request` escape hatch). Shared by the pagination suites, whose
  * paginated reads carry a `?limit` / `cursor` query string that the high-level
@@ -123,6 +143,53 @@ export async function signedGet({
     url: new URL(url, serverUrl).toString(),
     method: 'GET'
   })
+}
+
+/**
+ * Asserts an `ETag` header is a quoted `"<generation>.<version>"` strong
+ * validator at the expected `version`, without hardcoding the generation.
+ * Suites use it for the common "same generation, bumped version" shape; a
+ * generation change is asserted separately with `etagGeneration`.
+ *
+ * @param options {object}
+ * @param options.etag {string | null}   the `ETag` header value
+ * @param options.version {number}   the expected trailing version
+ */
+export function assertEtagVersion({
+  etag,
+  version
+}: {
+  etag: string | null
+  version: number
+}): void {
+  assert.ok(etag, 'expected an ETag header')
+  const match = /^"([A-Za-z0-9]+)\.(\d+)"$/.exec(etag!)
+  assert.ok(
+    match,
+    `expected a quoted "<generation>.<version>" ETag, got ${etag}`
+  )
+  assert.equal(
+    Number(match![2]),
+    version,
+    `expected ETag version ${version}, got ${etag}`
+  )
+}
+
+/**
+ * The generation part of a quoted `"<generation>.<version>"` ETag. Suites use
+ * it to compare generations across a hard delete and re-create, where the
+ * version alone (e.g. both `1`) would not show the underlying record changed.
+ *
+ * @param etag {string}   the `ETag` header value
+ * @returns {string}
+ */
+export function etagGeneration(etag: string): string {
+  const match = /^"([A-Za-z0-9]+)\.\d+"$/.exec(etag)
+  assert.ok(
+    match,
+    `expected a quoted "<generation>.<version>" ETag, got ${etag}`
+  )
+  return match![1]!
 }
 
 export const fixtures = {

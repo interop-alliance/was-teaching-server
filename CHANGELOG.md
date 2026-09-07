@@ -1,5 +1,66 @@
 # History
 
+## 0.28.0 - TBD
+
+### Added
+
+- Conditional reads: a GET or HEAD carrying an `If-None-Match` that covers the
+  current `ETag` is answered 304 Not Modified with the `ETag` header and no
+  body, per RFC 9110 (weak comparison, so `W/"3"` matches `"3"`; a list and `*`
+  are honored). Applies to every ETag-emitting read: Resource, chunk, Resource
+  and Collection `/meta`, and the Collection Description. A Resource or chunk
+  GET consults the stored metadata before opening the byte stream, so a 304
+  never reads the content. A representation with no `ETag` (a legacy Resource,
+  or metadata never written) is matched only by `*` and its 304 carries no
+  `ETag`, per RFC 9110. Authorization runs first, so an under-authorized
+  conditional read still gets the 404 mask.
+- Responses to non-idempotent POSTs carry `Cache-Control: no-store` (spec
+  "Caching"); slash-variant redirects and the read-shaped Query and Export POSTs
+  stay cacheable.
+- Governing history logs (the `governed-history-logs` backend feature): a
+  Collection may carry a history log at the `meta/log` sub-resource (`GET` /
+  `PUT /space/{space_id}/{collection_id}/meta/log`, `text/jsonl`, its own
+  `ETag`), with a guarded create (`If-None-Match: *`) and a compare-and-swap
+  append (`If-Match`, prior bytes carried verbatim), 412 on a lost race. The
+  guarded create makes the Collection log-governed, refused with
+  `encryption-immutable` (409) on one whose Description already carries a
+  client-written `encryption` member. A governed Collection's served
+  `encryption` member is derived from the log head's `state`, with
+  `history: { method, resource }` stamped on; a direct write of the member is
+  refused with the new `encryption-history-log-governed` problem type (409).
+  Each write checks the line contract (`invalid-request-body`, 400) and runs the
+  encryption descriptor's transition checks against the prior head. The log is
+  not a Resource: absent from listings and the `changes` feed, exempt from the
+  envelope rule, untouched by `PUT /meta`, readable under any capability
+  covering the Collection URL. A log write also bumps the Description's `ETag`.
+  Stored as `.collectionlog.<id>.json` beside the metadata sidecar (carried by
+  export/import); the Postgres schema gains `log_body`, `log_generation`, and
+  `log_version` on `collections` (migration v3). Requires
+  `@interop/storage-core` 0.11.0.
+- The `changes` feed carries each document's current content `etag` and `/meta`
+  `metaEtag`, the quoted validators exactly as the server emits them in the
+  `ETag` header, so a replica can send `If-Match` from feed state without a GET
+  per Resource.
+
+### Changed
+
+- **Breaking:** the `ETag` validator is now `"<generation>.<version>"` instead
+  of `"<version>"`. The generation is a random base58 marker minted when a
+  record's version counter starts (a Resource, chunk, Collection Description, or
+  `/meta` object) and kept for the record's life, tombstone and re-create
+  included. A hard delete (a chunk, a Collection, a Space) takes it with the
+  record, so a record re-created under the same id gets a new generation and a
+  stale `ETag` from before the delete can no longer be answered 304 over
+  different bytes, or pass `If-Match` against the new record. Clients must echo
+  the quoted value back verbatim; the trailing integer is still the per-record
+  revision. Stored as `generation` in metadata sidecars and `_generation` in
+  Collection description files; the Postgres schema gains `generation`
+  (resources, chunks), `description_generation` and `meta_generation`
+  (collections) with no migration, so an existing database must be recreated. An
+  `If-Match` against a record with no validator (a legacy Resource, or metadata
+  never written) now fails with 412; previously an unwritten metadata object
+  compared as `"0"`.
+
 ## 0.27.0 - 2026-09-05
 
 ### Added

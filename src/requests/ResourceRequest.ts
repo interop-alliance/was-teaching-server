@@ -18,10 +18,16 @@ import { resolveMetadataCustom } from '../lib/customMetadata.js'
 import { assertJsonObjectBody } from '../lib/requestBody.js'
 import { declaredIndexesOf, uniqueIndexesOf } from '../lib/equalityIndex.js'
 import { resourcePath, metaPath } from '../lib/paths.js'
-import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
+import {
+  type EtagValidator,
+  etagOf,
+  formatEtag,
+  parseWritePreconditions
+} from '../lib/etag.js'
 import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
 import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
 import { ResourceNotFoundError, rethrowOrWrapStorageError } from '../errors.js'
+import { notModifiedBeforeStream, notModifiedReply } from './notModified.js'
 
 export class ResourceRequest {
   /**
@@ -64,7 +70,7 @@ export class ResourceRequest {
 
     // Fetch collection by id
     const collectionDescription = await getCollectionOrThrow({
-      storage,
+      request,
       spaceId,
       collectionId,
       requestName
@@ -107,7 +113,7 @@ export class ResourceRequest {
     // Surface any `If-Match` / `If-None-Match` write precondition to the storage
     // layer, which evaluates it atomically with the write (returning 412
     // `precondition-failed` on a mismatch -- rethrown unchanged below).
-    let written: { version: number }
+    let written: EtagValidator
     try {
       written = await dataBackend.writeResource({
         spaceId,
@@ -127,7 +133,7 @@ export class ResourceRequest {
     // from the previous log is stale as of this write.
     invalidateResolvedWebvhDid({ storage, spaceId, collectionId, resourceId })
     // Return the new ETag so a client can chain a subsequent conditional write.
-    return reply.status(204).header('etag', formatEtag(written.version)).send()
+    return reply.status(204).header('etag', formatEtag(written)).send()
   }
 
   /**
@@ -178,6 +184,25 @@ export class ResourceRequest {
       collectionId,
       requestName
     })
+
+    // A conditional read (spec "Caching") consults the Metadata first and
+    // answers 304 without opening the byte stream.
+    const notModified = await notModifiedBeforeStream({
+      request,
+      reply,
+      readMetadata: () =>
+        getResourceMetadataOrThrow({
+          dataBackend,
+          spaceId,
+          collectionId,
+          resourceId,
+          requestName
+        })
+    })
+    if (notModified) {
+      return notModified
+    }
+
     const contentType = request.headers['content-type']
     let result
     try {
@@ -196,9 +221,10 @@ export class ResourceRequest {
 
     const getReply = reply.status(200).type(result.storedResourceType)
     // Surface the ETag validator (the conditional-writes feature) when the
-    // backend tracks a version for this Resource.
-    if (result.version !== undefined) {
-      getReply.header('etag', formatEtag(result.version))
+    // backend tracks one for this Resource.
+    const resultEtag = etagOf(result)
+    if (resultEtag !== undefined) {
+      getReply.header('etag', resultEtag)
     }
     return getReply.send(result.resourceStream)
   }
@@ -264,6 +290,13 @@ export class ResourceRequest {
       requestName
     })
 
+    // A conditional read (spec "Caching"): the same 304 a GET would answer.
+    const contentEtag = etagOf(metadata)
+    const notModified = notModifiedReply({ request, reply, etag: contentEtag })
+    if (notModified) {
+      return notModified
+    }
+
     // Set the payload headers a GET would send, but send no body. Fastify keeps
     // a manually-set `Content-Length` on a bodyless send (it is not recomputed
     // to 0).
@@ -271,8 +304,8 @@ export class ResourceRequest {
       .status(200)
       .type(metadata.contentType)
       .header('content-length', metadata.size)
-    if (metadata.version !== undefined) {
-      headReply.header('etag', formatEtag(metadata.version))
+    if (contentEtag !== undefined) {
+      headReply.header('etag', contentEtag)
     }
     return headReply.send()
   }
@@ -335,15 +368,28 @@ export class ResourceRequest {
       requestName
     })
 
-    // `version` (content) and `metaVersion` (metadata) are out-of-band ETag
-    // validators, not part of the Resource Metadata wire body, so strip both
-    // before serializing. The `/meta` sub-resource carries its OWN ETag
-    // (`metaVersion`, V2) so a metadata-only edit does not disturb the content
-    // ETag; it is present only once metadata has been written.
-    const { version: _version, metaVersion, ...metadataBody } = metadata
+    // `generation` with `version` (content) and `metaVersion` (metadata) are
+    // out-of-band ETag validators, not part of the Resource Metadata wire body,
+    // so strip all three before serializing. The `/meta` sub-resource carries
+    // its OWN ETag (`metaVersion`, V2) so a metadata-only edit does not disturb
+    // the content ETag; it is present only once metadata has been written.
+    const {
+      generation,
+      version: _version,
+      metaVersion,
+      ...metadataBody
+    } = metadata
+    const metaEtag = etagOf({ generation, version: metaVersion })
+
+    // A conditional read (spec "Caching") against the `/meta` ETag.
+    const notModified = notModifiedReply({ request, reply, etag: metaEtag })
+    if (notModified) {
+      return notModified
+    }
+
     const metaReply = reply.status(200).type('application/json')
-    if (metaVersion !== undefined) {
-      metaReply.header('etag', formatEtag(metaVersion))
+    if (metaEtag !== undefined) {
+      metaReply.header('etag', metaEtag)
     }
     return metaReply.send(JSON.stringify(metadataBody))
   }
@@ -373,7 +419,6 @@ export class ResourceRequest {
     const {
       params: { spaceId, collectionId, resourceId }
     } = request
-    const { storage } = request.server
     const requestName = 'Update Resource Metadata'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -405,7 +450,7 @@ export class ResourceRequest {
 
     // Fetch collection by id
     const collectionDescription = await getCollectionOrThrow({
-      storage,
+      request,
       spaceId,
       collectionId,
       requestName
@@ -464,12 +509,9 @@ export class ResourceRequest {
       throw new ResourceNotFoundError({ requestName })
     }
 
-    // Return the new `/meta` ETag (`metaVersion`) so a client can chain a
-    // subsequent conditional metadata write.
-    return reply
-      .status(204)
-      .header('etag', formatEtag(written.metaVersion))
-      .send()
+    // Return the new `/meta` ETag so a client can chain a subsequent
+    // conditional metadata write.
+    return reply.status(204).header('etag', formatEtag(written)).send()
   }
 
   /**

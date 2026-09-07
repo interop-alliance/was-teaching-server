@@ -4,52 +4,73 @@
  * Resource-level handler repeats the same shape after authorization -- load
  * the Collection Description for context, throw `CollectionNotFoundError`
  * when absent, then resolve the Collection's data-plane backend -- so it lives
- * here, along with the Resource-Metadata read the Resource- and chunk-level
- * handlers share.
+ * here, along with the Resource-Metadata and chunk-metadata reads the
+ * Resource- and chunk-level handlers share.
  */
 import type { FastifyRequest } from 'fastify'
 import { resolveBackend } from '../lib/backendRegistry.js'
+import { deriveGovernedEncryption } from '../lib/governedLog.js'
+import { collectionLogPath } from '../lib/paths.js'
 import {
   CollectionNotFoundError,
   ResourceNotFoundError,
   rethrowOrWrapStorageError
 } from '../errors.js'
 import type {
-  CollectionDescription,
+  ChunkMetadata,
   ResourceMetadata,
-  StorageBackend
+  StorageBackend,
+  StoredCollectionDescription,
+  VersionedMetadata
 } from '../types.js'
 
 /**
- * Fetches a Collection Description or throws CollectionNotFoundError (404)
- * when absent.
+ * Fetches a Collection Description as served, or throws
+ * CollectionNotFoundError (404) when absent. For a Collection governed by a
+ * history log (the `governed-history-logs` feature) the `encryption` member
+ * is derived here from the log head, so every handler that reads the
+ * description through this prelude -- describe, the envelope enforcement on
+ * writes, the listing's name suppression -- sees the governed descriptor.
+ * Update Collection reads the stored description directly instead, since it
+ * must not persist the derived member.
  * @param options {object}
- * @param options.storage {StorageBackend}   the request's storage backend
+ * @param options.request {FastifyRequest}   supplies `request.server.storage`
+ *   and `serverUrl`
  * @param options.spaceId {string}
  * @param options.collectionId {string}
  * @param options.requestName {string}   human-readable request name, used in
  *   error titles
- * @returns {Promise<CollectionDescription & { descriptionVersion?: number }>}
+ * @returns {Promise<StoredCollectionDescription>}
  */
 export async function getCollectionOrThrow({
-  storage,
+  request,
   spaceId,
   collectionId,
   requestName
 }: {
-  storage: StorageBackend
+  request: FastifyRequest
   spaceId: string
   collectionId: string
   requestName: string
-}): Promise<CollectionDescription & { descriptionVersion?: number }> {
-  const collectionDescription = await storage.getCollectionDescription({
-    spaceId,
-    collectionId
-  })
+}): Promise<StoredCollectionDescription> {
+  const { storage, serverUrl } = request.server
+  const [collectionDescription, log] = await Promise.all([
+    storage.getCollectionDescription({ spaceId, collectionId }),
+    storage.getCollectionLog({ spaceId, collectionId })
+  ])
   if (!collectionDescription) {
     throw new CollectionNotFoundError({ requestName })
   }
-  return collectionDescription
+  if (!log) {
+    return collectionDescription
+  }
+  return {
+    ...collectionDescription,
+    encryption: deriveGovernedEncryption({
+      body: log.body,
+      logUrl: `${serverUrl}${collectionLogPath({ spaceId, collectionId })}`
+    })
+  }
 }
 
 /**
@@ -66,7 +87,7 @@ export async function getCollectionOrThrow({
  * @param options.requestName {string}   human-readable request name, used in
  *   error titles
  * @returns {Promise<{ collectionDescription: CollectionDescription &
- *   { descriptionVersion?: number }, dataBackend: StorageBackend }>}
+ *   StoredCollectionDescription, dataBackend: StorageBackend }>}
  */
 export async function fetchCollectionAndBackend({
   request,
@@ -79,11 +100,11 @@ export async function fetchCollectionAndBackend({
   collectionId: string
   requestName: string
 }): Promise<{
-  collectionDescription: CollectionDescription & { descriptionVersion?: number }
+  collectionDescription: StoredCollectionDescription
   dataBackend: StorageBackend
 }> {
   const collectionDescription = await getCollectionOrThrow({
-    storage: request.server.storage,
+    request,
     spaceId,
     collectionId,
     requestName
@@ -115,8 +136,7 @@ export async function fetchCollectionAndBackend({
  * @param options.resourceId {string}
  * @param options.requestName {string}   human-readable request name, used in
  *   error titles
- * @returns {Promise<ResourceMetadata & { version?: number,
- *   metaVersion?: number }>}
+ * @returns {Promise<ResourceMetadata & VersionedMetadata>}
  */
 export async function getResourceMetadataOrThrow({
   dataBackend,
@@ -130,13 +150,69 @@ export async function getResourceMetadataOrThrow({
   collectionId: string
   resourceId: string
   requestName: string
-}): Promise<ResourceMetadata & { version?: number; metaVersion?: number }> {
+}): Promise<ResourceMetadata & VersionedMetadata> {
   let metadata
   try {
     metadata = await dataBackend.getResourceMetadata({
       spaceId,
       collectionId,
       resourceId
+    })
+  } catch (err) {
+    rethrowOrWrapStorageError({ err, requestName })
+  }
+  if (!metadata) {
+    throw new ResourceNotFoundError({ requestName })
+  }
+  return metadata
+}
+
+/**
+ * Reads a chunk's stored metadata (content-type, size, version) through the
+ * parent-Resource existence gate, or throws `ResourceNotFoundError` (404) when
+ * the parent or the chunk is absent. Shared by Head Chunk (its payload
+ * headers) and by Get Chunk's conditional-read check, which needs the chunk's
+ * version before deciding whether to open the byte stream.
+ * @param options {object}
+ * @param options.dataBackend {StorageBackend}   the Collection's data-plane
+ *   backend
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.resourceId {string}   the parent Resource
+ * @param options.chunkIndex {number}
+ * @param options.requestName {string}   human-readable request name, used in
+ *   error titles
+ * @returns {Promise<ChunkMetadata>}
+ */
+export async function readChunkMetadataOrThrow({
+  dataBackend,
+  spaceId,
+  collectionId,
+  resourceId,
+  chunkIndex,
+  requestName
+}: {
+  dataBackend: StorageBackend
+  spaceId: string
+  collectionId: string
+  resourceId: string
+  chunkIndex: number
+  requestName: string
+}): Promise<ChunkMetadata> {
+  let metadata
+  try {
+    metadata = await readGatedOnParentResource({
+      dataBackend,
+      spaceId,
+      collectionId,
+      resourceId,
+      companion: dataBackend.getChunkMetadata({
+        spaceId,
+        collectionId,
+        resourceId,
+        chunkIndex
+      }),
+      requestName
     })
   } catch (err) {
     rethrowOrWrapStorageError({ err, requestName })

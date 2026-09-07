@@ -14,18 +14,25 @@ import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import {
   fetchCollectionAndBackend,
   getResourceMetadataOrThrow,
+  readChunkMetadataOrThrow,
   readGatedOnParentResource
 } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { parseChunkIndexSegment } from '../lib/resourceFileName.js'
 import { chunkPath, chunksContainerPath } from '../lib/paths.js'
-import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
+import {
+  type EtagValidator,
+  etagOf,
+  formatEtag,
+  parseWritePreconditions
+} from '../lib/etag.js'
 import {
   InvalidChunkIndexError,
   ResourceNotFoundError,
   rethrowOrWrapStorageError
 } from '../errors.js'
+import { notModifiedBeforeStream, notModifiedReply } from './notModified.js'
 
 /**
  * Parses and validates the `:chunkIndex` path param -- the canonical decimal
@@ -109,7 +116,7 @@ export class ChunkRequest {
     // Surface any `If-Match` / `If-None-Match` write precondition to the
     // storage layer, which evaluates it against the chunk's own version
     // atomically with the write (412 `precondition-failed` on a mismatch).
-    let written: { version: number }
+    let written: EtagValidator
     try {
       written = await dataBackend.writeChunk({
         spaceId,
@@ -123,7 +130,7 @@ export class ChunkRequest {
       rethrowOrWrapStorageError({ err, requestName })
     }
     // Return the new ETag so a client can chain a subsequent conditional write.
-    return reply.status(204).header('etag', formatEtag(written.version)).send()
+    return reply.status(204).header('etag', formatEtag(written)).send()
   }
 
   /**
@@ -173,6 +180,27 @@ export class ChunkRequest {
       collectionId,
       requestName
     })
+
+    // A conditional read (spec "Caching") consults the chunk's metadata first
+    // (through the same parent-Resource gate as Head Chunk) and answers 304
+    // without opening the byte stream.
+    const notModified = await notModifiedBeforeStream({
+      request,
+      reply,
+      readMetadata: () =>
+        readChunkMetadataOrThrow({
+          dataBackend,
+          spaceId,
+          collectionId,
+          resourceId,
+          chunkIndex,
+          requestName
+        })
+    })
+    if (notModified) {
+      return notModified
+    }
+
     let result
     try {
       // The parent Resource must exist (and not be a tombstone) for any of its
@@ -200,8 +228,9 @@ export class ChunkRequest {
     }
 
     const getReply = reply.status(200).type(result.storedResourceType)
-    if (result.version !== undefined) {
-      getReply.header('etag', formatEtag(result.version))
+    const resultEtag = etagOf(result)
+    if (resultEtag !== undefined) {
+      getReply.header('etag', resultEtag)
     }
     return getReply.send(result.resourceStream)
   }
@@ -254,28 +283,22 @@ export class ChunkRequest {
       collectionId,
       requestName
     })
-    let metadata
-    try {
-      // The same parent-Resource existence gate as Get Chunk (an orphan
-      // chunk's headers reveal what a GET would).
-      metadata = await readGatedOnParentResource({
-        dataBackend,
-        spaceId,
-        collectionId,
-        resourceId,
-        companion: dataBackend.getChunkMetadata({
-          spaceId,
-          collectionId,
-          resourceId,
-          chunkIndex
-        }),
-        requestName
-      })
-    } catch (err) {
-      rethrowOrWrapStorageError({ err, requestName })
-    }
-    if (!metadata) {
-      throw new ResourceNotFoundError({ requestName })
+    // The same parent-Resource existence gate as Get Chunk (an orphan chunk's
+    // headers reveal what a GET would).
+    const metadata = await readChunkMetadataOrThrow({
+      dataBackend,
+      spaceId,
+      collectionId,
+      resourceId,
+      chunkIndex,
+      requestName
+    })
+
+    // A conditional read (spec "Caching"): the same 304 a GET would answer.
+    const chunkEtag = etagOf(metadata)
+    const notModified = notModifiedReply({ request, reply, etag: chunkEtag })
+    if (notModified) {
+      return notModified
     }
 
     // Set the payload headers a GET would send, but send no body.
@@ -283,8 +306,8 @@ export class ChunkRequest {
       .status(200)
       .type(metadata.contentType)
       .header('content-length', metadata.size)
-    if (metadata.version !== undefined) {
-      headReply.header('etag', formatEtag(metadata.version))
+    if (chunkEtag !== undefined) {
+      headReply.header('etag', chunkEtag)
     }
     return headReply.send()
   }

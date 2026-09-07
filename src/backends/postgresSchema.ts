@@ -41,25 +41,37 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX spaces_controller_idx ON spaces (controller);
 
-  -- 'description_version' is the monotonic Collection Description version --
-  -- the ETag validator behind conditional (If-Match) Collection Description
-  -- writes, so concurrent recipient edits compare-and-swap instead of
-  -- clobbering. Kept out of the stored 'description' jsonb (it travels only
-  -- as the ETag header); writeCollection bumps it on every write.
+  -- 'description_generation' and 'description_version' are the two parts of
+  -- the Collection Description ETag validator behind conditional (If-Match)
+  -- Description writes, so concurrent recipient edits compare-and-swap
+  -- instead of clobbering. The generation is the opaque marker minted by the
+  -- FIRST real description write and kept for the Collection's whole life; it
+  -- is NULL on a placeholder row, which has no description to validate yet. A
+  -- Collection deleted and re-created under the same id mints a new one, so
+  -- the two lives' validators can never coincide. The version is the
+  -- monotonic counter writeCollection bumps on every write. Both are kept out
+  -- of the stored 'description' jsonb -- they travel only as the ETag header.
   CREATE TABLE collections (
-    space_id            text COLLATE "C" NOT NULL
-                        REFERENCES spaces ON DELETE CASCADE,
-    collection_id       text COLLATE "C" NOT NULL,
-    description         jsonb,
-    description_version integer NOT NULL DEFAULT 1,
+    space_id               text COLLATE "C" NOT NULL
+                           REFERENCES spaces ON DELETE CASCADE,
+    collection_id          text COLLATE "C" NOT NULL,
+    description            jsonb,
+    description_generation text,
+    description_version    integer NOT NULL DEFAULT 1,
     PRIMARY KEY (space_id, collection_id)
   );
 
   -- One row per Resource, live or tombstoned. 'content' is the byte-for-byte
   -- representation (JSON stored as its serialized UTF-8 bytes, NOT jsonb --
   -- jsonb normalization would break byte fidelity); NULL on a tombstone.
-  -- 'content_type' records the last-known type on a tombstone. 'version' /
-  -- 'meta_version' are the two ETag validators; 'custom' is the user-writable
+  -- 'content_type' records the last-known type on a tombstone. 'generation'
+  -- is the row's opaque ETag marker, minted when the row is first created and
+  -- preserved by every later write (a soft delete keeps it, and so does a
+  -- re-create over the tombstone); paired with 'version' it is the content
+  -- ETag validator and with 'meta_version' the '/meta' one, the two counters
+  -- advancing independently. A hard delete removes the row, so the next
+  -- Resource under the same id mints a new generation and the two lives'
+  -- validators can never coincide. 'custom' is the user-writable
   -- metadata (or the opaque encryption envelope on an encrypted Collection).
   -- 'created_by' is the Resource's creator -- the DID of the invoker of its
   -- FIRST content write, set once and preserved verbatim thereafter (the
@@ -78,6 +90,7 @@ const MIGRATIONS: string[] = [
     content       bytea,
     is_json       boolean NOT NULL,
     size_bytes    bigint NOT NULL DEFAULT 0,
+    generation    text NOT NULL,
     version       integer NOT NULL,
     meta_version  integer,
     custom        jsonb,
@@ -99,13 +112,15 @@ const MIGRATIONS: string[] = [
   -- Chunk storage for chunked Resources. One row per addressed chunk
   -- (space, collection, resource, index); 'bytes' is the opaque chunk
   -- representation (stored exactly like a binary Resource's content, never
-  -- parsed), 'size' its byte length (the quota-counter input), and 'version'
-  -- the chunk's own monotonic ETag validator (independent of the parent
-  -- Resource's). The foreign key to 'resources' gives chunk rows the same
-  -- ON DELETE CASCADE the Space/Collection tree already uses, so a HARD
-  -- delete of the parent Resource (or its Collection or Space) removes its
-  -- chunks with it; a SOFT delete (the tombstone UPDATE in deleteResource)
-  -- removes them explicitly in the same transaction instead.
+  -- parsed), 'size' its byte length (the quota-counter input), and
+  -- 'generation' with 'version' the chunk's own ETag validator (independent
+  -- of the parent Resource's). A chunk delete removes the row outright, so
+  -- the next chunk written at that index mints a new generation. The foreign
+  -- key to 'resources' gives chunk rows the same ON DELETE CASCADE the
+  -- Space/Collection tree already uses, so a HARD delete of the parent
+  -- Resource (or its Collection or Space) removes its chunks with it; a SOFT
+  -- delete (the tombstone UPDATE in deleteResource) removes them explicitly
+  -- in the same transaction instead.
   CREATE TABLE chunks (
     space_id      text COLLATE "C" NOT NULL,
     collection_id text COLLATE "C" NOT NULL,
@@ -114,6 +129,7 @@ const MIGRATIONS: string[] = [
     content_type  text NOT NULL,
     bytes         bytea NOT NULL,
     size          bigint NOT NULL DEFAULT 0,
+    generation    text NOT NULL,
     version       integer NOT NULL,
     PRIMARY KEY (space_id, collection_id, resource_id, chunk_index),
     FOREIGN KEY (space_id, collection_id, resource_id)
@@ -194,9 +210,10 @@ const MIGRATIONS: string[] = [
   // the Collection-level sibling of the resource metadata columns. Kept on the
   // 'collections' row rather than in its own table: it is exactly one optional
   // metadata object per Collection, and it dies with the Collection.
-  // 'meta_version' is its monotonic ETag validator, NULL until the first
-  // metadata write and deliberately INDEPENDENT of 'description_version' (a
-  // description write never touches it, and vice versa). 'meta_custom' is the
+  // 'meta_generation' and 'meta_version' are its ETag validator, both NULL
+  // until the first metadata write (which mints the generation and keeps it
+  // thereafter) and deliberately INDEPENDENT of the description validator (a
+  // description write never touches them, and vice versa). 'meta_custom' is the
   // user-writable object (or the opaque encryption envelope on an encrypted
   // Collection), 'meta_epoch' the client-declared key epoch the envelope was
   // encrypted under (stored opaquely; NULL when unstamped -- and, unlike the
@@ -206,11 +223,26 @@ const MIGRATIONS: string[] = [
   // like every other ISO-8601 column here.
   `
   ALTER TABLE collections
+    ADD COLUMN meta_generation text,
     ADD COLUMN meta_version    integer,
     ADD COLUMN meta_custom     jsonb,
     ADD COLUMN meta_epoch      text,
     ADD COLUMN meta_created_at text COLLATE "C",
     ADD COLUMN meta_updated_at text COLLATE "C";
+  `,
+  // v3: the Collection's governing history log (the 'meta/log' sub-resource,
+  // the 'governed-history-logs' feature). 'log_body' is the JSON Lines body
+  // verbatim (text, never parsed into jsonb: the line framing and the entry
+  // bytes a verifying reader hashes must survive byte-for-byte);
+  // 'log_generation' / 'log_version' are its own ETag validator, NULL until
+  // the guarded create, and independent of both the description and the
+  // '/meta' validators. A log write does bump 'description_version', since
+  // the served description's 'encryption' member is derived from the head.
+  `
+  ALTER TABLE collections
+    ADD COLUMN log_body       text,
+    ADD COLUMN log_generation text,
+    ADD COLUMN log_version    integer;
   `
 ]
 

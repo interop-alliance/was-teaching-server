@@ -44,6 +44,66 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   failure).
 - **`src/zcap.ts`** — `handleZcapVerify()` performs the capability-invocation
   signature verification against the Space controller's key.
+- **`src/lib/etag.ts`** and **`src/lib/preconditions.ts`** — the `ETag`
+  validators (spec "Caching" and "Conditional Requests"). A Resource, chunk,
+  Collection Description, and each `/meta` object carries a generation and a
+  monotonic version that `formatEtag` emits together as one strong `ETag`
+  (`"<generation>.<version>"`) on GET/HEAD. The generation is a random base58
+  marker minted when the record's counter starts and kept for the record's life,
+  a Resource tombstone and its re-create included. A hard delete (a chunk, a
+  Collection, a Space) removes the counter with the record, so the next record
+  under the same id mints a new generation and its validators never coincide
+  with the old record's; a client's stale cached `ETag` then matches nothing
+  instead of being answered 304 over different bytes. A client treats the whole
+  quoted value as opaque and may read the trailing integer as the revision
+  number. Writes are gated by `If-Match` / `If-None-Match: *`, which
+  `parseWritePreconditions` normalizes and the backends evaluate atomically with
+  the write through `preconditions.ts`. Reads are conditional the other way
+  round: a GET/HEAD carrying `If-None-Match` is parsed by `parseIfNoneMatch`
+  into the set of validators the client holds (RFC 9110 weak comparison, list
+  and `*` forms), and a handler answers 304 Not Modified with the `ETag` and no
+  body when that set covers the current one (`isNotModified`, sent by the shared
+  `requests/notModified.ts` helper). The decision sits in each read handler,
+  after authorization, so an under-authorized conditional read still gets the
+  404 mask. A Resource or chunk GET consults the stored metadata first when the
+  header is present and opens the byte stream only on a miss. A representation
+  with no validator (a legacy Resource, or metadata never written) is matched
+  only by `*`, which RFC 9110 makes true for any current representation; its 304
+  then carries no `ETag`, as its 200 would not. Responses to non-idempotent
+  POSTs are marked `Cache-Control: no-store` by an `onSend` hook in `routes.ts`;
+  a slash-variant redirect and a POST route registered with `config.safe` (Query
+  and Export, reads that use POST to carry a body) stay cacheable. The spec
+  defers further `Cache-Control` semantics.
+- **`src/lib/governedLog.ts`** -- the `governed-history-logs` feature: a
+  Collection's governing history log, served at its own sub-resource
+  (`GET`/`PUT /space/:spaceId/:collectionId/meta/log`,
+  `CollectionRequest.getLog` / `putLog`). The log is not a Resource: it is
+  absent from listings and the changes feed, exempt from the
+  encrypted-Collection envelope rule, and left untouched by a `PUT /meta`. It is
+  served as `text/jsonl` with its own generation/version `ETag`, so a
+  conditional `GET` behaves like any other record; a `PUT` is either a guarded
+  create (`If-None-Match: *`) or a compare-and-swap append (`If-Match` carrying
+  the prior bytes verbatim plus one new line), 412 on a lost race. `GET` is
+  capability-or-policy at the Collection's target; `PUT` is capability-only,
+  like `/meta`. The guarded create is the declaration that puts the Collection
+  under log governance, and is refused with `encryption-immutable` (409) on a
+  Collection whose Description already carries a client-written `encryption`
+  member. From then on, the Collection's served `encryption` member -- read by
+  Get Collection and by every handler that loads the Description through
+  `getCollectionOrThrow`, so the write-time envelope check sees it too -- is
+  derived from the log's last line's `state`, with a
+  `history: { method, resource }` member stamped on (`method` from the genesis
+  line's `parameters.method`, `resource` the log's own URL); the stored
+  Description never carries that derived member, a direct `encryption` write
+  against it is refused with `encryption-history-log-governed` (409), and its
+  other fields still update normally. The server verifies neither proofs nor a
+  hash chain: it checks only that the body is JSON Lines, each line a JSON
+  object with an object `state` member and the last line the head
+  (`invalid-request-body`, 400 on a break), and on every append it runs the same
+  encryption-descriptor transition checks against the prior head that an
+  ordinary Description update runs. A log write also bumps the Description's own
+  `ETag`, since its served content changed, and is serialized with Description
+  writes through the same per-Collection lock.
 - **`src/storage.ts`** — supplies `defaultBackend()`, the `FileSystemBackend`
   (rooted at `data/`) that `createApp()` uses when no backend is injected. The
   active backend is injected via `createApp({ backend })` and decorated onto the

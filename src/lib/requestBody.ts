@@ -4,8 +4,38 @@
  * with `InvalidRequestBodyError` (400). Handlers keep their own field-level
  * validation; these cover only the envelope shape every strict body shares.
  */
+import type { Readable } from 'node:stream'
+import type { FastifyRequest } from 'fastify'
 import { InvalidRequestBodyError } from '../errors.js'
 import { isPlainObject } from './isPlainObject.js'
+
+/**
+ * Resolves a request body as UTF-8 text whatever parser it reached the
+ * handler through: the buffered bytes the digest hook captured for a `text/*`
+ * body, a string the built-in text parser produced, or the raw stream the
+ * catch-all parser passes through for any other media type. For a route whose
+ * body is text by definition (a JSON Lines log), not a representation stored
+ * under its own media type.
+ * @param request {FastifyRequest}
+ * @returns {Promise<string>}
+ */
+export async function readTextBody(request: FastifyRequest): Promise<string> {
+  if (request.rawBody !== undefined) {
+    return request.rawBody.toString('utf8')
+  }
+  const { body } = request
+  if (typeof body === 'string') {
+    return body
+  }
+  if (Buffer.isBuffer(body)) {
+    return body.toString('utf8')
+  }
+  const chunks: Buffer[] = []
+  for await (const chunk of body as Readable) {
+    chunks.push(chunk as Buffer)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
 
 /**
  * Asserts a parsed body is a plain JSON object (not null, not an array) and

@@ -13,7 +13,8 @@ import {
   SPACE_POLICY_FILE_NAME,
   JSON_FILE_SUFFIX,
   META_FILE_PREFIX,
-  COLLECTION_META_FILE_PREFIX
+  COLLECTION_META_FILE_PREFIX,
+  COLLECTION_LOG_FILE_PREFIX
 } from './resourceFileName.js'
 import { assertEncryptedWriteConforms } from './encryption.js'
 import { InvalidImportError } from '../errors.js'
@@ -61,6 +62,17 @@ function collectionMetaFileId(fileName: string): string | undefined {
 }
 
 /**
+ * If `fileName` is a Collection governing history log
+ * (`.collectionlog.<collectionId>.json`), returns the `<collectionId>` it is
+ * keyed by; otherwise undefined.
+ * @param fileName {string}
+ * @returns {string | undefined}
+ */
+function collectionLogFileId(fileName: string): string | undefined {
+  return dotFileId(fileName, COLLECTION_LOG_FILE_PREFIX)
+}
+
+/**
  * If `fileName` is a chunk entry relative to its Collection dir
  * (`.chunks.<encodedResourceId>/<chunkFile>`, the `chunked-streams` feature),
  * returns the parent `resourceId` (decoded from the directory name) and the
@@ -97,8 +109,8 @@ function chunkEntryName(
  * undefined when the name is not a canonical chunk file. A representation
  * (`r.<index>.<encType>.<ext>`) yields its `chunkIndex` and decoded
  * `contentType`; a version sidecar (`.meta.<index>.json`) yields its
- * `chunkIndex` and parsed `version` (undefined when `body` is absent or not
- * JSON). In both cases the RAW `<index>` segment must pass
+ * `chunkIndex` and parsed `generation` / `version` (undefined when `body` is
+ * absent or not JSON). In both cases the RAW `<index>` segment must pass
  * {@link parseChunkIndexSegment} -- the same predicate the live route enforces.
  * Validating the raw (undecoded) segment rejects both non-canonical spellings
  * (`r.01.*`, which would alias chunk 1) and percent-encoded ones (`r.%31.*`),
@@ -107,28 +119,41 @@ function chunkEntryName(
  * for both backends' import paths; anything else in a chunk directory is
  * dropped (undefined).
  * @param chunkFileName {string}   the file's basename inside the chunk dir
- * @param body {Buffer}   the file's bytes (only read for a sidecar's version)
- * @returns {{ chunkIndex: number, contentType?: string, version?: number } |
- *   undefined}
+ * @param body {Buffer}   the file's bytes (only read for a sidecar's
+ *   validator)
+ * @returns {{ chunkIndex: number, contentType?: string, generation?: string,
+ *   version?: number } | undefined}
  */
 function parseChunkFileName(
   chunkFileName: string,
   body: Buffer
-): { chunkIndex: number; contentType?: string; version?: number } | undefined {
+):
+  | {
+      chunkIndex: number
+      contentType?: string
+      generation?: string
+      version?: number
+    }
+  | undefined {
   const metaId = metaSidecarFileId(chunkFileName)
   if (metaId !== undefined) {
     const chunkIndex = parseChunkIndexSegment(metaId)
     if (chunkIndex === undefined) {
       return undefined
     }
-    let version: number | undefined
+    let sidecar: { generation?: string; version?: number }
     try {
-      version = (JSON.parse(body.toString('utf8')) as { version?: number })
-        .version
+      sidecar = JSON.parse(body.toString('utf8'))
     } catch {
-      version = undefined
+      sidecar = {}
     }
-    return { chunkIndex, version }
+    return {
+      chunkIndex,
+      ...(typeof sidecar.generation === 'string' && {
+        generation: sidecar.generation
+      }),
+      ...(typeof sidecar.version === 'number' && { version: sidecar.version })
+    }
   }
   if (isRepresentationFileName(chunkFileName)) {
     const indexSegment = chunkFileName.split('.')[1]
@@ -165,8 +190,9 @@ export interface ImportPlanResource {
  * basename inside that directory (`r.<index>...` bytes or its `.meta.<index>.json`
  * version sidecar). The plan also carries the decoded chunk fields so a
  * row-oriented backend (Postgres) need not re-parse the file name: a
- * representation carries its `contentType` (and no `version`); a version
- * sidecar carries its `version` (and no `contentType`). The filesystem backend
+ * representation carries its `contentType` (and no validator); a version
+ * sidecar carries its `generation` / `version` (and no `contentType`). The
+ * filesystem backend
  * ignores the decoded fields and writes `fileName`/`body` verbatim.
  */
 export interface ImportPlanChunkFile {
@@ -177,7 +203,11 @@ export interface ImportPlanChunkFile {
   chunkIndex: number
   /** Representation file: its decoded content-type (a sidecar has none). */
   contentType?: string
-  /** Version sidecar: its parsed `version` (a representation has none). */
+  /**
+   * Version sidecar: its parsed `generation` / `version` (a representation has
+   * neither).
+   */
+  generation?: string
   version?: number
 }
 
@@ -198,6 +228,11 @@ export interface ImportPlanCollection {
    * Collection, like its description and policy.
    */
   collectionMetadata?: Buffer
+  /**
+   * The Collection's governing history log (raw `.collectionlog.<id>.json`
+   * bytes), when the archive carries one; travels like the metadata sidecar.
+   */
+  collectionLog?: Buffer
   /** Chunk files of chunked Resources in this Collection, carried verbatim. */
   chunkFiles: ImportPlanChunkFile[]
 }
@@ -372,6 +407,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     const resources: ImportPlanResource[] = []
     let collectionPolicy: PolicyDocument | undefined
     let collectionMetadata: Buffer | undefined
+    let collectionLog: Buffer | undefined
     const resourcePolicies = new Map<string, PolicyDocument>()
     const resourceMetadata = new Map<string, Buffer>()
     const chunkFiles: ImportPlanChunkFile[] = []
@@ -411,6 +447,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
           body: entry.body,
           chunkIndex: parsedChunk.chunkIndex,
           contentType: parsedChunk.contentType,
+          generation: parsedChunk.generation,
           version: parsedChunk.version
         })
         continue
@@ -450,6 +487,17 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       if (collectionMetaId !== undefined) {
         if (collectionMetaId === collectionId) {
           collectionMetadata = entry.body
+        }
+        continue
+      }
+
+      // The Collection's governing history log
+      // (`.collectionlog.<collectionId>.json`): carried as raw bytes, on the
+      // same terms as the metadata sidecar.
+      const collectionLogId = collectionLogFileId(fileName)
+      if (collectionLogId !== undefined) {
+        if (collectionLogId === collectionId) {
+          collectionLog = entry.body
         }
         continue
       }
@@ -500,6 +548,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       collectionDescription,
       collectionPolicy,
       ...(collectionMetadata !== undefined && { collectionMetadata }),
+      ...(collectionLog !== undefined && { collectionLog }),
       resources,
       resourcePolicies,
       resourceMetadata,

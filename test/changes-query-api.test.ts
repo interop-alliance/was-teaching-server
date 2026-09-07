@@ -136,6 +136,46 @@ describe('Collection changes query profile', () => {
     assert.deepEqual(doc.data, { n: 'a' })
   })
 
+  it('carries etag/metaEtag matching the ETag headers a GET returns', async () => {
+    const collection = await seedCollection('etag-feed', ['a'])
+    await collection.resource('a').setMeta({ custom: { name: 'labeled' } })
+
+    const { data } = await queryChanges(alice, 'etag-feed', { limit: 10 })
+    const doc = data.documents.find((entry: any) => entry.id === 'a')
+    assert.ok(doc, 'expected the resource in the feed')
+
+    const resourceUrl = new URL(
+      `/space/${alice.space1.id}/etag-feed/a`,
+      serverUrl
+    ).toString()
+    const getResponse = await alice.was.request({
+      url: resourceUrl,
+      method: 'GET'
+    })
+    assert.equal(typeof doc.etag, 'string')
+    assert.equal(doc.etag, getResponse.headers.get('etag'))
+
+    const metaResponse = await alice.was.request({
+      url: `${resourceUrl}/meta`,
+      method: 'GET'
+    })
+    assert.equal(typeof doc.metaEtag, 'string')
+    assert.equal(doc.metaEtag, metaResponse.headers.get('etag'))
+  })
+
+  it('carries etag on a tombstone', async () => {
+    const collection = await seedCollection('etag-tombstone-feed', ['a'])
+    await collection.resource('a').delete()
+
+    const { data } = await queryChanges(alice, 'etag-tombstone-feed', {
+      limit: 10
+    })
+    const tombstone = data.documents.find((entry: any) => entry.id === 'a')
+    assert.ok(tombstone, 'expected the tombstone in the feed')
+    assert.equal(tombstone._deleted, true)
+    assert.equal(typeof tombstone.etag, 'string')
+  })
+
   it('iterates by checkpoint, returning only newer changes', async () => {
     await seedCollection('iter', ['a', 'b', 'c', 'd', 'e'])
     const seen: string[] = []

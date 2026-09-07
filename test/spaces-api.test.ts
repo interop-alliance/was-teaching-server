@@ -763,7 +763,8 @@ describe('Spaces', () => {
         'blinded-index-query',
         'equality-query',
         'key-epochs',
-        'chunked-streams'
+        'chunked-streams',
+        'governed-history-logs'
       ]
     }
 
@@ -809,7 +810,8 @@ describe('Spaces', () => {
         'blinded-index-query',
         'equality-query',
         'key-epochs',
-        'chunked-streams'
+        'chunked-streams',
+        'governed-history-logs'
       ])
     })
 

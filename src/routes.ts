@@ -37,8 +37,8 @@ import {
 /**
  * Installs the `handleError` error handler and the hook chain every route group
  * shares, in the one order they all rely on: the optional provisioning gate,
- * the auth-header requirement, `parseAuthHeaders`, `captureRawBody`, then
- * `verifyBodyDigest`.
+ * the auth-header requirement, `parseAuthHeaders`, `captureRawBody`,
+ * `verifyBodyDigest`, then the POST `Cache-Control: no-store` marking.
  * @param app {import('fastify').FastifyInstance}
  * @param options {object}
  * @param [options.provisioningRoutes] {string[]}   route URLs (exactly as
@@ -88,7 +88,44 @@ function installGroupHooks(
   // Enforce the Digest header binding: require it covered by the signature and,
   // when the raw body is available, recompute and compare it.
   app.addHook('preValidation', unlessProvisioningAuthorized(verifyBodyDigest))
+  // Mark the response to a non-idempotent operation non-cacheable (spec
+  // "Caching"). Only POST is non-idempotent here; reads carry an `ETag` for
+  // validation instead, and the spec defers further `Cache-Control` semantics.
+  app.addHook('onSend', markPostNoStore)
 }
+
+/**
+ * The `onSend` hook that stamps `Cache-Control: no-store` on the response to
+ * a non-idempotent POST, whatever its status (spec "Caching"). Two kinds of
+ * POST are left alone: a slash-variant redirect, which is a cacheable 308 that
+ * performs nothing, and a route registered with `config.safe` -- a read that
+ * uses POST only to carry a body (Query, Export).
+ * @param request {import('fastify').FastifyRequest}
+ * @param reply {import('fastify').FastifyReply}
+ * @param payload {unknown}
+ * @returns {Promise<unknown>}
+ */
+async function markPostNoStore(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  payload: unknown
+): Promise<unknown> {
+  if (
+    request.method === 'POST' &&
+    !request.routeOptions.config.safe &&
+    (reply.statusCode < 300 || reply.statusCode >= 400)
+  ) {
+    reply.header('cache-control', 'no-store')
+  }
+  return payload
+}
+
+/**
+ * Route config marking a POST route as a read (safe in the RFC 9110 sense):
+ * it uses POST only to carry a request body, so `markPostNoStore` leaves its
+ * response cacheable.
+ */
+const safeRoute = { config: { safe: true } }
 
 /**
  * Toggles the trailing slash on the request's actual path (preserving any query
@@ -247,7 +284,7 @@ export async function initSpaceRoutes(
   app.post('/space/:spaceId/', SpaceRequest.post)
 
   // POST /space/12345/export
-  app.post('/space/:spaceId/export', SpaceRequest.export)
+  app.post('/space/:spaceId/export', safeRoute, SpaceRequest.export)
 
   // POST /space/12345/import
   app.addContentTypeParser('application/x-tar', (_req, body, done) => {
@@ -294,6 +331,12 @@ export async function initCollectionRoutes(
   app.get('/space/:spaceId/:collectionId/meta', CollectionRequest.getMeta)
   // Update Collection Metadata (full replacement of the user-writable `custom`).
   app.put('/space/:spaceId/:collectionId/meta', CollectionRequest.putMeta)
+  // The Collection's governing history log (the `governed-history-logs`
+  // feature), a sub-resource beside `/meta`: not a Resource of the Collection,
+  // so it needs no reserved id, but it sits at the Resource `/meta` depth and
+  // must be registered here, ahead of the `:resourceId/meta` Resource route.
+  app.get('/space/:spaceId/:collectionId/meta/log', CollectionRequest.getLog)
+  app.put('/space/:spaceId/:collectionId/meta/log', CollectionRequest.putLog)
 
   // Collection Backend Selected (reserved segment; static-beats-parametric
   // routing keeps this ahead of the `:resourceId` parameter in Resource routes).
@@ -308,7 +351,11 @@ export async function initCollectionRoutes(
   // `changes` profile; params ride the signed
   // POST body. Static-beats-parametric routing keeps this ahead of the
   // `:resourceId` parameter in Resource routes.
-  app.post('/space/:spaceId/:collectionId/query', CollectionRequest.query)
+  app.post(
+    '/space/:spaceId/:collectionId/query',
+    safeRoute,
+    CollectionRequest.query
+  )
 
   // Add Resource to a Collection
   app.post('/space/:spaceId/:collectionId', redirectAddSlash)

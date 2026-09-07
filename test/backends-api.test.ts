@@ -54,7 +54,8 @@ describe('Space backend registration (/backends)', () => {
       'blinded-index-query',
       'equality-query',
       'key-epochs',
-      'chunked-streams'
+      'chunked-streams',
+      'governed-history-logs'
     ]
   }
 
