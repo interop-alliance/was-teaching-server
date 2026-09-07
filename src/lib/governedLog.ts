@@ -10,7 +10,7 @@
  * checks them and compares its result against the derived member.
  */
 import type { CollectionEncryption } from '@interop/storage-core'
-import { InvalidRequestBodyError } from '../errors.js'
+import { InvalidRequestBodyError, StorageError } from '../errors.js'
 import { isPlainObject } from './isPlainObject.js'
 import {
   assertEncryptionDescriptorTransition,
@@ -120,6 +120,11 @@ export function assertGoverningLogAppend({
  * genesis entry's format identifier and `resource` the log's own URL. Exactly
  * what a verifying reader computes after stripping `history`.
  *
+ * The body is stored data, validated when it was written (a `/log` PUT or an
+ * import), so a body the line contract rejects here is a server-side fault
+ * and surfaces as `StorageError` (500) rather than as the client-facing 400
+ * the parser raises.
+ *
  * @param options {object}
  * @param options.body {string}   the stored log body
  * @param options.logUrl {string}   the absolute URL of the log sub-resource
@@ -132,7 +137,17 @@ export function deriveGovernedEncryption({
   body: string
   logUrl: string
 }): CollectionEncryption {
-  const { head, method } = parseGoverningLog({ body })
+  let parsed: ReturnType<typeof parseGoverningLog>
+  try {
+    parsed = parseGoverningLog({ body })
+  } catch (err) {
+    throw new StorageError({
+      cause: new Error('Stored history log breaks the line contract.', {
+        cause: err
+      })
+    })
+  }
+  const { head, method } = parsed
   // `history` names the log's format identifier and location together; a
   // log whose genesis carries no `parameters.method` gets no `history` stamp
   // (the location is derivable from the Collection URL regardless).

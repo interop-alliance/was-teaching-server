@@ -15,7 +15,7 @@
  */
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
-import type { Readable } from 'node:stream'
+import { Readable } from 'node:stream'
 import { buildExportManifest, EXPORT_ENTRY_MTIME } from './exportManifest.js'
 
 /**
@@ -160,5 +160,6 @@ export async function packSpaceArchive({
   }
 
   pack.finalize()
-  return pack
+  // tar-stream's pack is a streamx stream; hand callers a Node `Readable`.
+  return Readable.from(pack)
 }

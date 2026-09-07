@@ -17,7 +17,9 @@ import {
   COLLECTION_LOG_FILE_PREFIX
 } from './resourceFileName.js'
 import { assertEncryptedWriteConforms } from './encryption.js'
-import { InvalidImportError } from '../errors.js'
+import { assertGoverningLogAppend } from './governedLog.js'
+import { isPlainObject } from './isPlainObject.js'
+import { InvalidImportError, ProblemError } from '../errors.js'
 import type {
   CollectionDescription,
   PolicyDocument,
@@ -70,6 +72,62 @@ function collectionMetaFileId(fileName: string): string | undefined {
  */
 function collectionLogFileId(fileName: string): string | undefined {
   return dotFileId(fileName, COLLECTION_LOG_FILE_PREFIX)
+}
+
+/**
+ * Checks an archived governing history log before it is carried on the plan:
+ * the stored-record shape (`{ body, generation, version }`) and, on `body`,
+ * the same line contract and head-descriptor check a guarded create passes.
+ * The read path parses a stored log strictly, so an unchecked archive entry
+ * would otherwise break every read of the Collection it governs. Fails the
+ * import (`InvalidImportError`, 400); the archive is caller-supplied.
+ * @param options {object}
+ * @param options.collectionId {string}   for the error detail
+ * @param options.bytes {Buffer}   the archive entry's bytes
+ * @returns {void}
+ */
+function assertImportedCollectionLog({
+  collectionId,
+  bytes
+}: {
+  collectionId: string
+  bytes: Buffer
+}): void {
+  const where = `history log of Collection '${collectionId}'`
+  let record: unknown
+  try {
+    record = JSON.parse(bytes.toString('utf8'))
+  } catch (err) {
+    throw new InvalidImportError({
+      message: `The ${where} is not valid JSON.`,
+      cause: err as Error
+    })
+  }
+  if (
+    !isPlainObject(record) ||
+    typeof record.body !== 'string' ||
+    typeof record.generation !== 'string' ||
+    record.generation.length === 0 ||
+    !Number.isInteger(record.version) ||
+    (record.version as number) < 1
+  ) {
+    throw new InvalidImportError({
+      message:
+        `The ${where} must be an object with a string 'body', a string ` +
+        "'generation', and a positive integer 'version'."
+    })
+  }
+  try {
+    assertGoverningLogAppend({ body: record.body, requestName: 'Import Space' })
+  } catch (err) {
+    if (err instanceof ProblemError) {
+      throw new InvalidImportError({
+        message: `The ${where} is malformed: ${err.detail}`,
+        cause: err
+      })
+    }
+    throw err
+  }
 }
 
 /**
@@ -141,12 +199,18 @@ function parseChunkFileName(
     if (chunkIndex === undefined) {
       return undefined
     }
-    let sidecar: { generation?: string; version?: number }
+    let parsed: unknown
     try {
-      sidecar = JSON.parse(body.toString('utf8'))
+      parsed = JSON.parse(body.toString('utf8'))
     } catch {
-      sidecar = {}
+      parsed = undefined
     }
+    // Any JSON value parses; only an object carries the validator members.
+    const sidecar: { generation?: unknown; version?: unknown } = isPlainObject(
+      parsed
+    )
+      ? parsed
+      : {}
     return {
       chunkIndex,
       ...(typeof sidecar.generation === 'string' && {
@@ -271,7 +335,7 @@ export async function extractTarEntries(
       }
 
       const chunks: Buffer[] = []
-      stream.on('data', chunk => chunks.push(Buffer.from(chunk)))
+      stream.on('data', chunk => chunks.push(Buffer.from(chunk as Uint8Array)))
       stream.on('end', () => {
         entries.set(header.name, {
           type: 'file',
@@ -493,10 +557,12 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
 
       // The Collection's governing history log
       // (`.collectionlog.<collectionId>.json`): carried as raw bytes, on the
-      // same terms as the metadata sidecar.
+      // same terms as the metadata sidecar, once its stored-record shape and
+      // line contract check out (the read path parses it strictly).
       const collectionLogId = collectionLogFileId(fileName)
       if (collectionLogId !== undefined) {
         if (collectionLogId === collectionId) {
+          assertImportedCollectionLog({ collectionId, bytes: entry.body })
           collectionLog = entry.body
         }
         continue

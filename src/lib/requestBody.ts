@@ -6,7 +6,7 @@
  */
 import type { Readable } from 'node:stream'
 import type { FastifyRequest } from 'fastify'
-import { InvalidRequestBodyError } from '../errors.js'
+import { InvalidRequestBodyError, PayloadTooLargeError } from '../errors.js'
 import { isPlainObject } from './isPlainObject.js'
 
 /**
@@ -16,22 +16,57 @@ import { isPlainObject } from './isPlainObject.js'
  * catch-all parser passes through for any other media type. For a route whose
  * body is text by definition (a JSON Lines log), not a representation stored
  * under its own media type.
- * @param request {FastifyRequest}
+ *
+ * The body is buffered in memory, so it is bounded: the stream is rejected
+ * with `PayloadTooLargeError` (413) as soon as it exceeds `maxBytes`, and an
+ * already-buffered body is checked against the same cap. Fastify's own
+ * `bodyLimit` covers only the parsers that buffer, not the raw pass-through
+ * stream, so the cap is applied here.
+ * @param options {object}
+ * @param options.request {FastifyRequest}
+ * @param options.maxBytes {number}   the cap in bytes
+ * @param options.backendId {string}   the backend named in the 413 detail
  * @returns {Promise<string>}
  */
-export async function readTextBody(request: FastifyRequest): Promise<string> {
-  if (request.rawBody !== undefined) {
-    return request.rawBody.toString('utf8')
+export async function readTextBody({
+  request,
+  maxBytes,
+  backendId
+}: {
+  request: FastifyRequest
+  maxBytes: number
+  backendId: string
+}): Promise<string> {
+  const tooLarge = (uploadBytes?: number) =>
+    new PayloadTooLargeError({
+      maxUploadBytes: maxBytes,
+      backendId,
+      uploadBytes
+    })
+  const declared = Number(request.headers['content-length'])
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw tooLarge(declared)
   }
-  const { body } = request
-  if (typeof body === 'string') {
-    return body
-  }
-  if (Buffer.isBuffer(body)) {
-    return body.toString('utf8')
+  const buffered =
+    request.rawBody ??
+    (typeof request.body === 'string'
+      ? Buffer.from(request.body, 'utf8')
+      : Buffer.isBuffer(request.body)
+        ? request.body
+        : undefined)
+  if (buffered !== undefined) {
+    if (buffered.byteLength > maxBytes) {
+      throw tooLarge(buffered.byteLength)
+    }
+    return buffered.toString('utf8')
   }
   const chunks: Buffer[] = []
-  for await (const chunk of body as Readable) {
+  let received = 0
+  for await (const chunk of request.body as Readable) {
+    received += (chunk as Buffer).byteLength
+    if (received > maxBytes) {
+      throw tooLarge()
+    }
     chunks.push(chunk as Buffer)
   }
   return Buffer.concat(chunks).toString('utf8')
