@@ -275,6 +275,82 @@ describe('buildImportPlan', () => {
         err instanceof InvalidImportError && /malformed/i.test(err.message)
     )
   })
+
+  /** A stored-log record whose single line carries a supported descriptor. */
+  function logRecord(body: string): string {
+    return JSON.stringify({ body, generation: 'zgen', version: 1 })
+  }
+  const genesis = JSON.stringify({
+    versionId: '1-hash1',
+    parameters: { method: 'resource-log:0.1' },
+    state: {
+      type: 'WasEpochConfiguration',
+      scheme: 'edv',
+      currentEpoch: 'urn:epoch:1',
+      epochs: [
+        {
+          id: 'urn:epoch:1',
+          recipients: [
+            {
+              header: { kid: 'did:key:zApp1#ka', alg: 'ECDH-ES+A256KW' },
+              encrypted_key: 'wrapped'
+            }
+          ]
+        }
+      ]
+    },
+    proof: []
+  })
+
+  it('carries a well-formed governing history log on the plan', () => {
+    const entries = validSpaceEntries()
+    entries.set(
+      'space/S1/colA/.collectionlog.colA.json',
+      fileEntry(logRecord(genesis + '\n'))
+    )
+    const [colA] = buildImportPlan(entries).collections
+    assert.equal(
+      colA!.collectionLog?.toString('utf8'),
+      logRecord(genesis + '\n')
+    )
+  })
+
+  it('throws InvalidImportError on a governing history log the read path could not parse', () => {
+    const cases: Array<[string, RegExp]> = [
+      ['{not json', /not valid JSON/i],
+      ['null', /must be an object/i],
+      ['{}', /must be an object/i],
+      [JSON.stringify({ body: genesis, generation: 'zgen' }), /version/i],
+      [logRecord(''), /malformed/i],
+      [logRecord('not json\n'), /malformed/i],
+      [logRecord(JSON.stringify({ state: { scheme: 'bogus' } })), /malformed/i]
+    ]
+    for (const [record, expected] of cases) {
+      const entries = validSpaceEntries()
+      entries.set('space/S1/colA/.collectionlog.colA.json', fileEntry(record))
+      assert.throws(
+        () => buildImportPlan(entries),
+        (err: Error) =>
+          err instanceof InvalidImportError && expected.test(err.message),
+        `record ${record}`
+      )
+    }
+  })
+
+  it('tolerates a chunk metadata sidecar whose JSON is not an object', () => {
+    const entries = validSpaceEntries()
+    entries.set('space/S1/colA/.chunks.res1/.meta.0.json', fileEntry('null'))
+    entries.set('space/S1/colA/.chunks.res1/.meta.1.json', fileEntry('[1]'))
+    const [colA] = buildImportPlan(entries).collections
+    const sidecars = colA!.chunkFiles.filter(f =>
+      f.fileName.startsWith('.meta.')
+    )
+    assert.equal(sidecars.length, 2)
+    for (const sidecar of sidecars) {
+      assert.equal(sidecar.generation, undefined)
+      assert.equal(sidecar.version, undefined)
+    }
+  })
 })
 
 describe('extractTarEntries', () => {

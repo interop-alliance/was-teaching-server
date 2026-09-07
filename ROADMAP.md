@@ -789,7 +789,9 @@ description whose `id` does not name the Space being provisioned.
     `encryption` descriptor as the first governed member); the wire values were
     settled 2026-09-07: path `.../meta/log`, declaration by guarded create, one
     new problem type `encryption-history-log-governed` (409), features flag
-    `governed-history-logs`
+    `governed-history-logs`. Spec text landed 2026-09-07 (uncommitted in the
+    spec repo): the "Collection Governing History Log" section and its two
+    operations, plus the registry, features, and cross-reference clauses
   - storage-core: the new problem type in the shared registry
     (`https://wallet.storage/spec#encryption-history-log-governed`, 409).
     Shipped 2026-09-07 as `ProblemTypes.ENCRYPTION_HISTORY_LOG_GOVERNED` in
@@ -801,7 +803,10 @@ description whose `id` does not name the Space being provisioned.
     Resource handle today; the sub-resource is not a Resource, so the store
     needs a constructor over the Collection handle (or a raw URL). WCL-17
     carries that. The descriptor-store seam serves a governed Collection's
-    descriptor from the derived member as today
+    descriptor from the derived member as today. Landed 2026-09-07 (was-client
+    0.51.0, unpublished): `resourceLogStore({ collection })` over
+    `Collection.getHistoryLog` / `putHistoryLog`, plus a live-server integration
+    test
   - freewallet FW-134 / dcw DCW-43: the producers; both drop their projection
     PUT and write the log alone
   - was-conformance-suite: a governed Collection's derived member equals the log
@@ -809,7 +814,9 @@ description whose `id` does not name the Space being provisioned.
     Collection is refused; a log append violating epoch monotonicity is refused.
     Also: the suite's optional backend-description cases pin the exact
     `features` list and already fail on `chunked-streams`; they now also miss
-    `governed-history-logs`
+    `governed-history-logs`. Landed 2026-09-07 (suite 0.11.0, unpublished): a
+    `governed-log-api` suite of 15 cases gated on the feature token, and the
+    `features` pin now carries the full list, 222/222 against this server
 - acceptance:
   - [x] A Collection becomes log-governed by the guarded create of its log
         (`PUT .../meta/log` with `If-None-Match: *`) on a Collection whose
@@ -849,14 +856,15 @@ description whose `id` does not name the Space being provisioned.
   - [x] Creating the log on a Collection that already carries a client-written
         `encryption` descriptor is refused (`encryption-immutable`);
         pre-release, there is no conversion, only re-provisioning
-  - [ ] Server `test/` coverage of the four refusals (direct member write,
+  - [x] Server `test/` coverage of the four refusals (direct member write,
         line-contract break, epoch-transition violation, governing an
         already-described Collection) and of derived == head-state equality; the
         backend advertises `governed-history-logs` in its features list;
         conformance-suite assertions gated on that flag **Server half held
         2026-09-07** -- `test/governed-log-api.test.ts` (21 cases) plus a
         backend-contract block run on both backends; the flag is advertised. The
-        conformance-suite assertions remain (suite repo)
+        conformance-suite assertions landed 2026-09-07 (suite 0.11.0,
+        unpublished)
 
 Server half landed 2026-09-07 (uncommitted): the storage seam
 (`getCollectionLog` / `writeCollectionLog` on both backends), the route and
@@ -867,8 +875,11 @@ what the Description PUT raises today, which for a dropped epoch or a backwards
 WASS-27's text says the latter and should follow the server. A log whose genesis
 line carries no string `parameters.method` is served without a `history` stamp
 (the storage-core type requires both members). storage-core 0.11.0 is published
-and consumed from the registry. Open before `done`: the conformance-suite,
-was-client, and spec touches.
+and consumed from the registry. The Space listing (List Collections) carries
+no `encryption` member for any Collection, governed or not, so the derived
+member is served on describe alone. Open before `done`: publishing suite 0.11.0
+and was-client 0.51.0; the spec text landed 2026-09-07 (WASS-27, in-progress
+until its own touches resolve).
 
 Filed 2026-09-07 from freewallet FW-134's design pass. Under the
 encrypted-collections log form each governed Collection's encryption descriptor

@@ -42,6 +42,20 @@
   `ETag` header, so a replica can send `If-Match` from feed state without a GET
   per Resource.
 
+### Fixed
+
+- Import Space validates an archived governing history log (the stored-record
+  shape plus the line contract and head-descriptor check a log write passes) and
+  rejects the archive with `invalid-import` (400); an unchecked entry could
+  break every read of the Collection it governs. A stored log the line contract
+  rejects now surfaces as `storage-error` (500) rather than as
+  `invalid-request-body`.
+- Import Space no longer fails with a 500 on a chunk metadata sidecar whose JSON
+  is not an object.
+- A history log `PUT` body is bounded while it is buffered: the backend's
+  `maxUploadBytes` (else Fastify's `bodyLimit`) applies, 413 `payload-too-large`
+  past it.
+
 ### Changed
 
 - **Breaking:** the `ETag` validator is now `"<generation>.<version>"` instead

@@ -90,7 +90,8 @@ describe('Governing history log API (meta/log)', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir })
+      // A small per-upload cap, so the oversize-log refusal is cheap to hit.
+      backend: new FileSystemBackend({ dataDir, maxUploadBytes: 64 * 1024 })
     }))
     ;({ alice, aliceDelegatedApp } = await zcapClients({ serverUrl }))
     await alice.was.createSpace({
@@ -404,6 +405,24 @@ describe('Governing history log API (meta/log)', () => {
         alice.was.request({ url: logUrl(collectionId), method: 'GET' })
       )
       assert.equal(err.response.status, 404)
+    })
+
+    it('[signed] a log body over the upload cap is 413 payload-too-large', async () => {
+      const collectionId = await freshCollection()
+      // Pad the genesis line past the backend's `maxUploadBytes`.
+      const body =
+        entryLine({
+          ordinal: 1,
+          state: oneEpoch,
+          parameters: { method: 'resource-log:0.1', pad: 'x'.repeat(64 * 1024) }
+        }) + '\n'
+      const response = await putLog({
+        collectionId,
+        body,
+        headers: { 'if-none-match': '*' }
+      })
+      assert.equal(response.status, 413)
+      assert.match(response.problem.type, /#payload-too-large$/)
     })
 
     it('[signed] a head state that is not a supported descriptor is refused as a Description write would be', async () => {

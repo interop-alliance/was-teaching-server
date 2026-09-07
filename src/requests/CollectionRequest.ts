@@ -1010,7 +1010,14 @@ export class CollectionRequest {
 
     // zCap checks out, continue
 
-    const body = await readTextBody(request)
+    // Buffered in memory, so bounded: the backend's per-upload cap when it has
+    // one, else Fastify's `bodyLimit` (what a buffering parser would apply).
+    const body = await readTextBody({
+      request,
+      maxBytes:
+        storage.maxUploadBytes ?? request.server.initialConfig.bodyLimit!,
+      backendId: storage.describe().id
+    })
 
     let written
     try {

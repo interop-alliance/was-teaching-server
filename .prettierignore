@@ -1,0 +1,2 @@
+# Prettier's Handlebars parser drops the <!doctype> declaration.
+src/views/templates/main.hbs
