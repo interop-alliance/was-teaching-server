@@ -1470,6 +1470,62 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(result?.generation, firstMeta!.generation)
       })
 
+      it('a soft delete drops the /meta validator: the re-created Resource starts a new meta generation at 1', async () => {
+        const { backend } = harness
+        const target = { spaceId, collectionId: 'col', resourceId: 'meta-tomb' }
+        const created = await backend.writeResource({
+          ...target,
+          input: jsonInput({ v: 1 })
+        })
+        const preDeleteMeta = await backend.writeResourceMetadata({
+          ...target,
+          custom: { name: 'before' }
+        })
+        assert.equal(preDeleteMeta?.version, 1)
+        assert.notEqual(
+          preDeleteMeta?.generation,
+          created.generation,
+          'the /meta validator has a generation of its own'
+        )
+        await backend.deleteResource(target)
+        const revived = await backend.writeResource({
+          ...target,
+          input: jsonInput({ v: 2 })
+        })
+        // The content validator is unchanged by this fix: generation kept,
+        // version continuing through the tombstone.
+        assert.equal(revived.generation, created.generation)
+        assert.equal(revived.version, 3)
+        // The re-created Resource has no metadata object yet, so the
+        // pre-delete /meta ETag matches nothing ...
+        await expect(
+          backend.writeResourceMetadata({
+            ...target,
+            custom: { name: 'stale replica' },
+            ifMatch: formatEtag(preDeleteMeta!)
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        // ... while a guarded first write succeeds, under a fresh generation at
+        // metaVersion 1 rather than the old generation's `<gen>.1` recurring.
+        const revivedMeta = await backend.writeResourceMetadata({
+          ...target,
+          custom: { name: 'after' },
+          ifNoneMatch: true
+        })
+        assert.equal(revivedMeta?.version, 1)
+        assert.notEqual(revivedMeta?.generation, preDeleteMeta?.generation)
+        assert.notEqual(
+          formatEtag(revivedMeta!),
+          formatEtag(preDeleteMeta!),
+          'a pre-delete /meta ETag never recurs on the re-created Resource'
+        )
+        const read = await backend.getResourceMetadata(target)
+        assert.equal(read?.metaGeneration, revivedMeta?.generation)
+        assert.equal(read?.metaVersion, 1)
+        assert.equal(read?.generation, created.generation)
+        assert.deepEqual(read?.custom, { name: 'after' })
+      })
+
       it('exactly one of N concurrent If-None-Match: * creators wins', async () => {
         // Create-if-absent must be atomic under concurrency: the filesystem
         // backend serializes on its per-Resource mutex, the Postgres backend

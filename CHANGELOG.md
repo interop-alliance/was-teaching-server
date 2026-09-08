@@ -44,6 +44,12 @@
 
 ### Fixed
 
+- A Resource's `/meta` `ETag` now carries a generation of its own, minted by the
+  first metadata write and dropped by a soft delete together with `custom` and
+  `metaVersion`, so a `/meta` `ETag` held from before the delete cannot pass
+  `If-Match` against the re-created Resource. The content validator is
+  unchanged. The `.meta.<id>.json` sidecar gains `metaGeneration`; the Postgres
+  schema gains `meta_generation` on `resources` (migration v4).
 - A history log write fast-forwards the stored log: the body must carry the
   stored bytes verbatim followed by exactly one new line. A body the stored log
   is not a prefix of (a stale read or a rewritten prefix) is 412

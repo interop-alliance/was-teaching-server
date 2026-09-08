@@ -1333,7 +1333,7 @@ export class CollectionRequest {
     const documents: ChangeDocument[] = result.documents.map(doc => {
       const etag = etagOf({ generation: doc.generation, version: doc.version })
       const metaEtag = etagOf({
-        generation: doc.generation,
+        generation: doc.metaGeneration,
         version: doc.metaVersion
       })
       return {

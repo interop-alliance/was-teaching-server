@@ -2576,8 +2576,9 @@ export class FileSystemBackend implements StorageBackend {
     // write sets `createdAt` on first write, bumps `updatedAt`, increments
     // `version` from its prior value and keeps the Resource's `generation`
     // (minting one only on the first write), preserving any user-writable
-    // `custom` and the independent `metaVersion` already stored in the sidecar
-    // (a content write does not touch the metadata sub-resource).
+    // `custom` and the independent `metaGeneration` / `metaVersion` already
+    // stored in the sidecar (a content write does not touch the metadata
+    // sub-resource).
     //
     // `createdBy` pairs with `createdAt`: taken from this write's invoker only
     // when this write creates the sidecar, so it names the creator rather than
@@ -2598,6 +2599,9 @@ export class FileSystemBackend implements StorageBackend {
           ...(creator !== undefined && { createdBy: creator }),
           generation,
           version,
+          ...(prior?.metaGeneration !== undefined && {
+            metaGeneration: prior.metaGeneration
+          }),
           ...(prior?.metaVersion !== undefined && {
             metaVersion: prior.metaVersion
           }),
@@ -3137,12 +3141,12 @@ export class FileSystemBackend implements StorageBackend {
    * times and `custom` is omitted. Resolves `undefined` when the Resource is
    * absent (including a delete race on `stat`).
    *
-   * Also surfaces the sidecar's `generation` with the content `version` and the
-   * `metaVersion` (the two ETag validators) when recorded, so the request layer
-   * can set the `ETag` header: HEAD / the resource itself pair the generation
-   * with the content `version`, while `GET /meta` pairs it with `metaVersion`.
-   * All three are out-of-band fields the request layer reads for the header;
-   * none is part of the Resource Metadata wire body.
+   * Also surfaces the two ETag validators when recorded, so the request layer
+   * can set the `ETag` header: HEAD / the resource itself pair the sidecar's
+   * `generation` with the content `version`, while `GET /meta` pairs the
+   * metadata object's own `metaGeneration` with `metaVersion`. All four are
+   * out-of-band fields the request layer reads for the header; none is part of
+   * the Resource Metadata wire body.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -3186,6 +3190,9 @@ export class FileSystemBackend implements StorageBackend {
         generation: sidecar.generation
       }),
       ...(sidecar?.version !== undefined && { version: sidecar.version }),
+      ...(sidecar?.metaGeneration !== undefined && {
+        metaGeneration: sidecar.metaGeneration
+      }),
       ...(sidecar?.metaVersion !== undefined && {
         metaVersion: sidecar.metaVersion
       })
@@ -3215,9 +3222,10 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.ifMatch] {string}   `If-Match` on the current metadata
    *   `ETag`
    * @param [options.ifNoneMatch] {boolean}   `If-None-Match: *` -- write only if
-   *   no metadata has been written yet (`metaVersion` unset)
+   *   no metadata has been written yet (no `/meta` `ETag`, i.e. `metaGeneration`
+   *   and `metaVersion` unset)
    * @returns {Promise<EtagValidator | undefined>}   the metadata object's new
-   *   validator (the sidecar's `generation` with the bumped `metaVersion` as
+   *   validator (its own `metaGeneration` with the bumped `metaVersion` as
    *   the `version`), or `undefined` when the Resource does not exist
    */
   async writeResourceMetadata({
@@ -3253,7 +3261,7 @@ export class FileSystemBackend implements StorageBackend {
       assertMetaWritePrecondition({
         resourceId,
         currentEtag: etagOf({
-          generation: prior?.generation,
+          generation: prior?.metaGeneration,
           version: prior?.metaVersion
         }),
         ifMatch,
@@ -3271,10 +3279,12 @@ export class FileSystemBackend implements StorageBackend {
           createdAt = now
         }
       }
-      // The sidecar's generation is preserved; a legacy Resource written
-      // before generations has none, so mint one now -- the `/meta` ETag this
-      // write returns needs one.
-      const generation = resolveGeneration(prior?.generation)
+      // The metadata object's own generation: minted by the first metadata
+      // write (a tombstone dropped any earlier one with `metaVersion`, so a
+      // re-created Resource starts afresh here) and kept by every later one.
+      // The content `generation` is preserved untouched, absent included (a
+      // legacy Resource stays without a content ETag).
+      const metaGeneration = resolveGeneration(prior?.metaGeneration)
       const metaVersion = (prior?.metaVersion ?? 0) + 1
       const hasCustom = Object.keys(custom).length > 0
       // The key-epoch stamp describes the CONTENT write, not this metadata
@@ -3292,16 +3302,19 @@ export class FileSystemBackend implements StorageBackend {
           ...(prior?.createdBy !== undefined && {
             createdBy: prior.createdBy
           }),
-          generation,
-          // Preserve the content `version` (ETag) -- a metadata write does not
-          // change the stored representation.
+          // Preserve the content validator (`generation` / `version`) -- a
+          // metadata write does not change the stored representation.
+          ...(prior?.generation !== undefined && {
+            generation: prior.generation
+          }),
           ...(prior?.version !== undefined && { version: prior.version }),
+          metaGeneration,
           metaVersion,
           ...(hasCustom && { custom }),
           ...(resolvedEpoch !== undefined && { epoch: resolvedEpoch })
         }
       })
-      return { generation, version: metaVersion }
+      return { generation: metaGeneration, version: metaVersion }
     }
     // A metadata write can create a plaintext equality unique claim for a
     // `custom`-sourced attribute (the `equality-query` feature). When the
@@ -3423,10 +3436,14 @@ export class FileSystemBackend implements StorageBackend {
       // prior state in the change feed, and continues the monotonic version (a
       // later re-create reads this sidecar and keeps counting up). The
       // `generation` is kept for the same reason: the counter survives, so the
-      // validator it forms stays continuous across the soft delete. `custom` is
-      // dropped: the user Metadata goes with the deleted Resource. `createdAt` /
-      // `createdBy` are kept: they are the server's record of the Resource's
-      // origin, which a re-create under the same id continues.
+      // validator it forms stays continuous across the soft delete. The
+      // metadata object is dropped whole -- `custom` with its validator,
+      // `metaGeneration` / `metaVersion` -- since the user Metadata goes with
+      // the deleted Resource; a re-create's first metadata write then mints a
+      // new generation, so a `/meta` ETag held from before the delete cannot
+      // pass `If-Match` against it. `createdAt` / `createdBy` are kept: they
+      // are the server's record of the Resource's origin, which a re-create
+      // under the same id continues.
       const now = new Date().toISOString()
       const prior = await this.readMetaSidecar({ collectionDir, resourceId })
       await this.#writeMetaSidecar({
@@ -3874,6 +3891,7 @@ export class FileSystemBackend implements StorageBackend {
       version: number
       metaVersion?: number
       generation?: string
+      metaGeneration?: string
       createdBy?: IDID
       updatedAt: string
       deleted: boolean
@@ -3921,6 +3939,7 @@ export class FileSystemBackend implements StorageBackend {
           version: number
           metaVersion?: number
           generation?: string
+          metaGeneration?: string
           createdBy?: IDID
           updatedAt: string
           deleted: false
@@ -3931,7 +3950,6 @@ export class FileSystemBackend implements StorageBackend {
       | {
           resourceId: string
           version: number
-          metaVersion?: number
           generation?: string
           createdBy?: IDID
           updatedAt: string
@@ -3964,10 +3982,14 @@ export class FileSystemBackend implements StorageBackend {
           ...(sidecar?.metaVersion !== undefined && {
             metaVersion: sidecar.metaVersion
           }),
-          // Pairs with `version` / `metaVersion` so the request layer can
-          // derive the wire `etag` / `metaEtag` without a fetch per Resource.
+          // `generation` pairs with `version` and `metaGeneration` with
+          // `metaVersion` so the request layer can derive the wire `etag` /
+          // `metaEtag` without a fetch per Resource.
           ...(sidecar?.generation !== undefined && {
             generation: sidecar.generation
+          }),
+          ...(sidecar?.metaGeneration !== undefined && {
+            metaGeneration: sidecar.metaGeneration
           }),
           // The creator's DID rides the feed so provenance replicates with the
           // document, rather than needing a `/meta` fetch per Resource.
@@ -4005,9 +4027,8 @@ export class FileSystemBackend implements StorageBackend {
         return {
           resourceId,
           version: sidecar.version ?? 0,
-          ...(sidecar.metaVersion !== undefined && {
-            metaVersion: sidecar.metaVersion
-          }),
+          // A soft delete dropped the `/meta` object, so a tombstone carries no
+          // `metaGeneration` / `metaVersion`.
           ...(sidecar.generation !== undefined && {
             generation: sidecar.generation
           }),

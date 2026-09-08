@@ -720,9 +720,8 @@ describe('Resource API', () => {
       assert.equal(unchanged.status, 304)
       assert.equal(unchanged.headers.get('etag'), metaEtag)
 
-      // The metadata ETag shares the sidecar's generation with the content
-      // ETag, so the two validators can read the same at equal versions; they
-      // name different resources, and only the meta one is compared here. A
+      // The metadata ETag has a generation of its own, so it never reads the
+      // same as the content ETag; only the meta one is compared here. A
       // superseded meta validator misses.
       const rewritten = await alice.was.request({
         url: metaUrl,
@@ -1059,6 +1058,73 @@ describe('Resource API', () => {
       const recreatedEtag = recreated.headers.get('etag')
       assertEtagVersion({ etag: recreatedEtag, version: 3 })
       assert.equal(etagGeneration(recreatedEtag!), etagGeneration(createdEtag))
+    })
+
+    it('a tombstone drops the /meta validator: PUT /meta, DELETE, PUT, PUT /meta starts a new meta generation', async () => {
+      const resourceId = 'cond-tombstone-meta-generation'
+      const metaUrl = `${resourceUrl(resourceId)}/meta`
+      const created = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 1 }
+      })
+      const createdEtag = created.headers.get('etag')!
+      const preDeleteMeta = await alice.was.request({
+        url: metaUrl,
+        method: 'PUT',
+        json: { custom: { name: 'before' } }
+      })
+      const preDeleteMetaEtag = preDeleteMeta.headers.get('etag')!
+      assertEtagVersion({ etag: preDeleteMetaEtag, version: 1 })
+      assert.notEqual(
+        etagGeneration(preDeleteMetaEtag),
+        etagGeneration(createdEtag),
+        'the /meta validator carries its own generation'
+      )
+
+      await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'DELETE'
+      })
+      const recreated = await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 2 }
+      })
+      // The content validator continues through the tombstone, as before.
+      assertEtagVersion({ etag: recreated.headers.get('etag'), version: 3 })
+      assert.equal(
+        etagGeneration(recreated.headers.get('etag')!),
+        etagGeneration(createdEtag)
+      )
+
+      // A replica still holding the pre-delete /meta ETag is refused ...
+      const stale = await responseOf(
+        alice.was.request({
+          url: metaUrl,
+          method: 'PUT',
+          json: { custom: { name: 'stale replica' } },
+          headers: { 'if-match': preDeleteMetaEtag }
+        })
+      )
+      assert.equal(stale.status, 412)
+      // ... while a guarded create of the metadata object succeeds, under a
+      // fresh generation at metaVersion 1 rather than the old `<gen>.1`.
+      const revivedMeta = await alice.was.request({
+        url: metaUrl,
+        method: 'PUT',
+        json: { custom: { name: 'after' } },
+        headers: { 'if-none-match': '*' }
+      })
+      const revivedMetaEtag = revivedMeta.headers.get('etag')!
+      assertEtagVersion({ etag: revivedMetaEtag, version: 1 })
+      assert.notEqual(revivedMetaEtag, preDeleteMetaEtag)
+      assert.notEqual(
+        etagGeneration(revivedMetaEtag),
+        etagGeneration(preDeleteMetaEtag)
+      )
+      const meta = await aliceCredentials.resource(resourceId).meta()
+      assert.deepEqual(meta!.custom, { name: 'after' })
     })
   })
 

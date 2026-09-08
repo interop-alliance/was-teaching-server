@@ -65,14 +65,15 @@ const MIGRATIONS: string[] = [
   -- representation (JSON stored as its serialized UTF-8 bytes, NOT jsonb --
   -- jsonb normalization would break byte fidelity); NULL on a tombstone.
   -- 'content_type' records the last-known type on a tombstone. 'generation'
-  -- is the row's opaque ETag marker, minted when the row is first created and
-  -- preserved by every later write (a soft delete keeps it, and so does a
-  -- re-create over the tombstone); paired with 'version' it is the content
-  -- ETag validator and with 'meta_version' the '/meta' one, the two counters
-  -- advancing independently. A hard delete removes the row, so the next
+  -- is the row's opaque content ETag marker, minted when the row is first
+  -- created and preserved by every later write (a soft delete keeps it, and
+  -- so does a re-create over the tombstone); paired with 'version' it is the
+  -- content ETag validator. A hard delete removes the row, so the next
   -- Resource under the same id mints a new generation and the two lives'
-  -- validators can never coincide. 'custom' is the user-writable
-  -- metadata (or the opaque encryption envelope on an encrypted Collection).
+  -- validators can never coincide. 'meta_version' is the independent '/meta'
+  -- counter, paired with the 'meta_generation' column added in v4. 'custom'
+  -- is the user-writable metadata (or the opaque encryption envelope on an
+  -- encrypted Collection).
   -- 'created_by' is the Resource's creator -- the DID of the invoker of its
   -- FIRST content write, set once and preserved verbatim thereafter (the
   -- spec's OPTIONAL 'createdBy'); NULL for a row written by a caller with no
@@ -243,6 +244,18 @@ const MIGRATIONS: string[] = [
     ADD COLUMN log_body       text,
     ADD COLUMN log_generation text,
     ADD COLUMN log_version    integer;
+  `,
+  // v4: the Resource metadata object's own ETag generation. Paired with
+  // 'meta_version' it is the '/meta' validator, minted by the first metadata
+  // write and kept by every later one; independent of the row's content
+  // 'generation'. A soft delete NULLs it together with 'meta_version' and
+  // 'custom' (the metadata object goes with the deleted Resource), so a
+  // re-created Resource's first metadata write mints a fresh one and a
+  // pre-delete '/meta' ETag can never pass If-Match against it -- whereas the
+  // content 'generation' survives the tombstone.
+  `
+  ALTER TABLE resources
+    ADD COLUMN meta_generation text;
   `
 ]
 

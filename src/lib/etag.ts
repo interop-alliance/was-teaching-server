@@ -9,14 +9,18 @@
  * client already holds.
  *
  * The generation is an opaque random marker minted once, when a record's
- * version counter starts, and kept for that record's whole life -- through a
- * Resource tombstone and its re-create, since the counter continues there. A
- * hard delete (a chunk, a Collection, a Space) removes the counter with the
- * record, so the next record under the same id mints a fresh generation and
- * its validators can never coincide with the old one's. That is what keeps the
- * validator strong across a delete: a client's cached `ETag` from the previous
- * record matches nothing, so it is never answered 304 with the old body and
- * never passes `If-Match` against the new one.
+ * version counter starts, and kept for that record's whole life. A Resource's
+ * content counter continues through a tombstone and its re-create, so its
+ * generation does too; the Resource's `/meta` object is a record of its own,
+ * with its own generation, and dies with the tombstone (the soft delete drops
+ * `custom` and both parts of that validator together), so a re-create's first
+ * metadata write mints a fresh one. A hard delete (a chunk, a Collection, a
+ * Space) removes the counter with the record, so the next record under the
+ * same id mints a fresh generation and its validators can never coincide with
+ * the old one's. That is what keeps the validator strong across a delete: a
+ * client's cached `ETag` from the previous record matches nothing, so it is
+ * never answered 304 with the old body and never passes `If-Match` against
+ * the new one.
  */
 import { randomBytes } from 'node:crypto'
 import { base58 } from '@scure/base'

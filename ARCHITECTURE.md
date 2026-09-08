@@ -49,20 +49,26 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   Collection Description, and each `/meta` object carries a generation and a
   monotonic version that `formatEtag` emits together as one strong `ETag`
   (`"<generation>.<version>"`) on GET/HEAD. The generation is a random base58
-  marker minted when the record's counter starts and kept for the record's life,
-  a Resource tombstone and its re-create included. A hard delete (a chunk, a
-  Collection, a Space) removes the counter with the record, so the next record
-  under the same id mints a new generation and its validators never coincide
-  with the old record's; a client's stale cached `ETag` then matches nothing
-  instead of being answered 304 over different bytes. A client treats the whole
-  quoted value as opaque and may read the trailing integer as the revision
-  number. Writes are gated by `If-Match` / `If-None-Match: *`, which
-  `parseWritePreconditions` normalizes and the backends evaluate atomically with
-  the write through `preconditions.ts`. Reads are conditional the other way
-  round: a GET/HEAD carrying `If-None-Match` is parsed by `parseIfNoneMatch`
-  into the set of validators the client holds (RFC 9110 weak comparison, list
-  and `*` forms), and a handler answers 304 Not Modified with the `ETag` and no
-  body when that set covers the current one (`isNotModified`, sent by the shared
+  marker minted when the record's counter starts and kept for the record's life.
+  A Resource's content counter continues through a tombstone and its re-create,
+  so its generation does too. The Resource's `/meta` object is a record of its
+  own with its own generation (`metaGeneration` in the sidecar,
+  `meta_generation` in Postgres), and a soft delete drops it together with
+  `custom` and `metaVersion`, so a re-create's first metadata write starts a
+  fresh generation at version 1 and a `/meta` `ETag` held from before the delete
+  cannot pass `If-Match` against it. A hard delete (a chunk, a Collection, a
+  Space) removes the counter with the record, so the next record under the same
+  id mints a new generation and its validators never coincide with the old
+  record's; a client's stale cached `ETag` then matches nothing instead of being
+  answered 304 over different bytes. A client treats the whole quoted value as
+  opaque and may read the trailing integer as the revision number. Writes are
+  gated by `If-Match` / `If-None-Match: *`, which `parseWritePreconditions`
+  normalizes and the backends evaluate atomically with the write through
+  `preconditions.ts`. Reads are conditional the other way round: a GET/HEAD
+  carrying `If-None-Match` is parsed by `parseIfNoneMatch` into the set of
+  validators the client holds (RFC 9110 weak comparison, list and `*` forms),
+  and a handler answers 304 Not Modified with the `ETag` and no body when that
+  set covers the current one (`isNotModified`, sent by the shared
   `requests/notModified.ts` helper). The decision sits in each read handler,
   after authorization, so an under-authorized conditional read still gets the
   404 mask. A Resource or chunk GET consults the stored metadata first when the

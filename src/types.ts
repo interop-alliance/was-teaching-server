@@ -474,13 +474,15 @@ export type StoredCollectionDescription = CollectionDescription & {
 
 /**
  * The out-of-band validator parts a Resource Metadata read carries: the
- * sidecar's `generation` with the content `version` and the `/meta` object's
- * `metaVersion`. `generation` and `version` are absent for a legacy Resource;
- * `metaVersion` until the first metadata write.
+ * sidecar's `generation` with the content `version` (the content validator),
+ * and the `/meta` object's own `metaGeneration` with `metaVersion` (the `/meta`
+ * validator). `generation` and `version` are absent for a legacy Resource;
+ * `metaGeneration` and `metaVersion` until the first metadata write.
  */
 export interface VersionedMetadata {
   generation?: string
   version?: number
+  metaGeneration?: string
   metaVersion?: number
 }
 
@@ -806,15 +808,17 @@ export interface StorageBackend {
    * Replaces the user-writable `custom` object of a Resource's Metadata (full
    * replacement; pass `{}` to clear). Resolves `undefined` when the Resource
    * does not exist (this operation does not create one) so the handler can 404,
-   * else the `/meta` object's new ETag validator (its `metaVersion` as the
-   * `version`, bumped on each metadata write independently of the content
-   * `version`, under the sidecar's `generation`).
+   * else the `/meta` object's new ETag validator: its own `metaGeneration`,
+   * minted by the first metadata write, with `metaVersion` as the `version`,
+   * bumped on each metadata write independently of the content `generation` /
+   * `version`.
    *
    * On an encrypted Collection `custom` is the opaque encryption envelope (an
    * arbitrary JSON object) rather than a `{ name, tags }` object; the backend
    * stores it verbatim. When `ifMatch` / `ifNoneMatch` is supplied
-   * (`conditional-writes`), the write is gated on the current `metaVersion`
-   * atomically, rejecting a mismatch with `precondition-failed` (412).
+   * (`conditional-writes`), the write is gated on the current `/meta` `ETag`
+   * atomically (`If-None-Match: *` passes only while there is none), rejecting
+   * a mismatch with `precondition-failed` (412).
    */
   writeResourceMetadata(options: {
     spaceId: string
@@ -1001,30 +1005,29 @@ export interface StorageBackend {
   }): Promise<ChunkListing>
 
   /**
-   * OPTIONAL replication change feed (the `changes` query profile.
-   * Returns the Collection's JSON-document
-   * Resources and tombstones changed strictly after `checkpoint`, in change
-   * order (`(updatedAt, resourceId)` ascending), capped at `limit` (a backend
-   * MAY clamp an oversized value to its own maximum). With no `checkpoint`, the
-   * feed starts from the beginning.
+   * OPTIONAL replication change feed (the `changes` query profile). Returns
+   * the Collection's JSON-document Resources and tombstones changed strictly
+   * after `checkpoint`, in change order (`(updatedAt, resourceId)` ascending),
+   * capped at `limit` (a backend MAY clamp an oversized value to its own
+   * maximum). With no `checkpoint`, the feed starts from the beginning.
    *
-   * Each document carries its monotonic content `version`, its `metaVersion`
-   * (when a metadata write has occurred), `updatedAt`, the server-managed
-   * `createdBy` (the creator's DID, when one was recorded -- so provenance
-   * replicates and does not have to be fetched per Resource from `/meta`), and
-   * -- so metadata replicates alongside content -- the user-writable `custom`
-   * object (the opaque encryption envelope on an encrypted Collection). It also
-   * carries the Resource's `generation` (absent for a legacy Resource with no
-   * generation), which the request layer pairs with `version` and
-   * `metaVersion` to derive the wire document's `etag` / `metaEtag` -- the
-   * quoted strong validators a replica can send back as `If-Match` without a
-   * GET per Resource. A tombstone keeps its `createdBy`, as it keeps its
-   * `createdAt`. A metadata-only edit
-   * re-surfaces the Resource with a bumped `updatedAt` / `metaVersion` but its
-   * `version` / `data` unchanged. A tombstone (soft-deleted Resource) is
-   * surfaced with `deleted: true` and no `data` so the delete replicates until
-   * clients catch up. Binary (non-JSON) Resources are excluded -- attachment
-   * replication is future work. The result's
+   * Each document carries its monotonic content `version`, its
+   * `metaGeneration` and `metaVersion` (when a metadata write has occurred),
+   * `updatedAt`, the server-managed `createdBy` (the creator's DID, when one
+   * was recorded -- so provenance replicates and does not have to be fetched
+   * per Resource from `/meta`), and -- so metadata replicates alongside
+   * content -- the user-writable `custom` object (the opaque encryption
+   * envelope on an encrypted Collection). It also carries the Resource's
+   * `generation` (absent for a legacy Resource with no generation), which the
+   * request layer pairs with `version` for the wire document's `etag`, and
+   * `metaGeneration` with `metaVersion` for its `metaEtag` -- the quoted
+   * strong validators a replica can send back as `If-Match` without a GET per
+   * Resource. A tombstone keeps its `createdBy`, as it keeps its `createdAt`.
+   * A metadata-only edit re-surfaces the Resource with a bumped `updatedAt` /
+   * `metaVersion` but its `version` / `data` unchanged. A tombstone
+   * (soft-deleted Resource) is surfaced with `deleted: true` and no `data` so
+   * the delete replicates until clients catch up. Binary (non-JSON) Resources
+   * are excluded -- attachment replication is future work. The result's
    * `checkpoint` is the `{ id, updatedAt }` of the last returned document (the
    * keyset position a follow-up call resumes after), or `null` when nothing
    * changed since `checkpoint`.
@@ -1044,9 +1047,11 @@ export interface StorageBackend {
       version: number
       metaVersion?: number
       // Absent for a legacy Resource with no generation. Paired with
-      // `version` / `metaVersion` by the request layer to derive the wire
-      // `etag` / `metaEtag`.
+      // `version` by the request layer to derive the wire `etag`.
       generation?: string
+      // The `/meta` object's own generation, present with `metaVersion` once
+      // metadata has been written; paired with it for the wire `metaEtag`.
+      metaGeneration?: string
       createdBy?: IDID
       updatedAt: string
       deleted: boolean

@@ -368,18 +368,24 @@ export class ResourceRequest {
       requestName
     })
 
-    // `generation` with `version` (content) and `metaVersion` (metadata) are
-    // out-of-band ETag validators, not part of the Resource Metadata wire body,
-    // so strip all three before serializing. The `/meta` sub-resource carries
-    // its OWN ETag (`metaVersion`, V2) so a metadata-only edit does not disturb
-    // the content ETag; it is present only once metadata has been written.
+    // `generation` with `version` (content) and `metaGeneration` with
+    // `metaVersion` (metadata) are out-of-band ETag validators, not part of
+    // the Resource Metadata wire body, so strip all four before serializing.
+    // The `/meta` sub-resource carries its OWN ETag (V2) so a metadata-only
+    // edit does not disturb the content ETag, and its own generation so the
+    // validator dies with the metadata object on a soft delete; it is present
+    // only once metadata has been written.
     const {
-      generation,
+      generation: _generation,
       version: _version,
+      metaGeneration,
       metaVersion,
       ...metadataBody
     } = metadata
-    const metaEtag = etagOf({ generation, version: metaVersion })
+    const metaEtag = etagOf({
+      generation: metaGeneration,
+      version: metaVersion
+    })
 
     // A conditional read (spec "Caching") against the `/meta` ETag.
     const notModified = notModifiedReply({ request, reply, etag: metaEtag })

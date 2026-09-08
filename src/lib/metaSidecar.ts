@@ -22,8 +22,8 @@ import type { IDID, ResourceMetadataCustom } from '../types.js'
  *
  * `generation` is the sidecar's random marker (see `newGeneration`), minted
  * when the sidecar is first written and kept for its whole life, tombstone and
- * re-create included. Together with `version` (or `metaVersion`) it forms the
- * HTTP `ETag` strong validator (see `formatEtag`). A sidecar removed outright
+ * re-create included. Together with `version` it forms the content's HTTP
+ * `ETag` strong validator (see `formatEtag`). A sidecar removed outright
  * (a chunk delete, or the delete of the Collection or Space) takes its
  * generation with it, so a later record under the same id mints a new one and
  * its validators never coincide with the old record's.
@@ -40,6 +40,15 @@ import type { IDID, ResourceMetadataCustom } from '../types.js'
  * kept separate from `version` so a metadata-only edit does not bump the content
  * ETag (preserving the content-ETag contract), and is `undefined` until the
  * first metadata write. A content write preserves it unchanged.
+ *
+ * `metaGeneration` is the metadata object's own generation marker, minted by
+ * the first metadata write beside `metaVersion` and paired with it as the
+ * `/meta` ETag. It is independent of the content `generation`: the metadata
+ * object dies with a soft delete (the tombstone drops `custom`, `metaVersion`,
+ * and this marker together), so a re-created Resource's first metadata write
+ * starts a fresh generation at `metaVersion` 1 and a `/meta` ETag held from
+ * before the delete can never match again. The content validator, by
+ * contrast, continues through the tombstone.
  *
  * `deleted` marks a **tombstone**: a soft delete that drops the content
  * representation but keeps the sidecar so the change feed (replication) still
@@ -62,6 +71,7 @@ export interface MetaSidecar {
   createdBy?: IDID
   generation?: string
   version?: number
+  metaGeneration?: string
   metaVersion?: number
   // On a plaintext Collection `custom` is `{ name, tags }`; on an encrypted
   // Collection it is the opaque encryption envelope (an arbitrary JSON object),

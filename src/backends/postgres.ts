@@ -179,6 +179,7 @@ interface ResourceRow {
   size_bytes: string
   generation: string
   version: number
+  meta_generation: string | null
   meta_version: number | null
   custom: ResourceMetadataCustom | Record<string, unknown> | null
   deleted: boolean
@@ -1914,9 +1915,10 @@ export class PostgresBackend implements StorageBackend {
         await this.#applyUsageDelta({ client, spaceId, delta })
       }
 
-      // A content write preserves the independent `metaVersion` and the
-      // user-writable `custom` of a LIVE Resource; a tombstoned row already
-      // dropped both (the metadata went with the deleted Resource).
+      // A content write preserves the independent `meta_generation` /
+      // `meta_version` and the user-writable `custom` of a LIVE Resource; a
+      // tombstoned row already dropped all three (the metadata went with the
+      // deleted Resource).
       //
       // Create-if-absent atomicity: when `If-None-Match: *` found NO prior row
       // (a tombstone is a real row and stays lock-serialized), concurrent
@@ -1959,8 +1961,9 @@ export class PostgresBackend implements StorageBackend {
           deleted, created_at, updated_at, created_by, epoch
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL, false, $10, $10, $11, $12)`
       /**
-       * `created_at` / `meta_version` / `custom` are deliberately NOT in the
-       * conflict update: an overwrite keeps the original creation time (also
+       * `created_at` / `meta_generation` / `meta_version` / `custom` are
+       * deliberately NOT in the conflict update: an overwrite keeps the
+       * original creation time (also
        * across a tombstone, as the filesystem sidecar does) and the metadata
        * counters as they stand on the row. `created_by` is likewise NOT
        * backfilled from `EXCLUDED`: the conflict path always means a prior
@@ -2099,10 +2102,12 @@ export class PostgresBackend implements StorageBackend {
   /**
    * Soft-deletes a Resource into a tombstone row: content dropped, `deleted`
    * set, `version` bumped (so the change feed surfaces it) under the row's
-   * unchanged `generation`, last-known
-   * `content_type` retained, `custom` / `meta_version` dropped, and the freed
-   * bytes subtracted from the quota counter -- one transaction. Idempotent on
-   * an absent Resource or an existing tombstone.
+   * unchanged `generation`, last-known `content_type` retained, the metadata
+   * object dropped whole (`custom` with its `meta_generation` /
+   * `meta_version` validator, so a re-create's first metadata write mints a
+   * new generation and a pre-delete `/meta` ETag cannot pass `If-Match`
+   * against it), and the freed bytes subtracted from the quota counter -- one
+   * transaction. Idempotent on an absent Resource or an existing tombstone.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -2175,12 +2180,15 @@ export class PostgresBackend implements StorageBackend {
       }
       const now = new Date().toISOString()
       // `generation` is deliberately NOT touched: a tombstone keeps the row's
-      // marker, so a later re-create continues both parts of the validator.
+      // marker, so a later re-create continues both parts of the content
+      // validator. `meta_generation` goes with `meta_version`: the `/meta`
+      // validator dies with the metadata object.
       await client.query(
         `UPDATE resources SET
            content = NULL,
            size_bytes = 0,
            version = version + 1,
+           meta_generation = NULL,
            meta_version = NULL,
            custom = NULL,
            epoch = NULL,
@@ -2212,8 +2220,9 @@ export class PostgresBackend implements StorageBackend {
     resourceId: string
   }): Promise<(ResourceMetadata & VersionedMetadata) | undefined> {
     const { rows } = await this.#pool.query<ResourceRow>(
-      `SELECT content_type, size_bytes, generation, version, meta_version,
-              custom, epoch, deleted, created_at, updated_at, created_by
+      `SELECT content_type, size_bytes, generation, version, meta_generation,
+              meta_version, custom, epoch, deleted, created_at, updated_at,
+              created_by
          FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
       [spaceId, collectionId, resourceId]
@@ -2233,10 +2242,14 @@ export class PostgresBackend implements StorageBackend {
       ...(hasCustom && { custom: row.custom as ResourceMetadataCustom }),
       // The client-declared key epoch (the `key-epochs` feature), when stamped.
       ...(row.epoch !== null && { epoch: row.epoch }),
-      // The row's generation pairs with `version` for the content `ETag` and
-      // with `metaVersion` for the `/meta` one.
+      // The row's generation pairs with `version` for the content `ETag`; the
+      // metadata object's own `metaGeneration` pairs with `metaVersion` for
+      // the `/meta` one.
       generation: row.generation,
       version: row.version,
+      ...(row.meta_generation !== null && {
+        metaGeneration: row.meta_generation
+      }),
       ...(row.meta_version !== null && { metaVersion: row.meta_version })
     }
   }
@@ -2245,9 +2258,10 @@ export class PostgresBackend implements StorageBackend {
    * Replaces the user-writable `custom` object (full replacement; `{}`
    * clears), bumping `updatedAt` and the independent `metaVersion` -- one
    * row-locked transaction, preconditions evaluated on the current metadata
-   * `ETag` via the shared helper. The row's `generation` is untouched: it
-   * backs both the content and the `/meta` validator. Resolves `undefined` (no
-   * create) for an absent or tombstoned Resource.
+   * `ETag` via the shared helper. The metadata object keeps its own
+   * `meta_generation`, minted by the first metadata write (afresh after a
+   * tombstone dropped it); the row's content `generation` is untouched.
+   * Resolves `undefined` (no create) for an absent or tombstoned Resource.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -2256,7 +2270,7 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.ifMatch] {string}
    * @param [options.ifNoneMatch] {boolean}
    * @returns {Promise<EtagValidator | undefined>}   the `/meta` object's new
-   *   validator (the row's `generation` with the bumped `metaVersion`)
+   *   validator (its `meta_generation` with the bumped `metaVersion`)
    */
   async writeResourceMetadata({
     spaceId,
@@ -2289,7 +2303,7 @@ export class PostgresBackend implements StorageBackend {
         await this.#lockCollectionUniqueness({ client, spaceId, collectionId })
       }
       const { rows } = await client.query<ResourceRow>(
-        `SELECT generation, meta_version, deleted FROM resources
+        `SELECT meta_generation, meta_version, deleted FROM resources
           WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
           FOR UPDATE`,
         [spaceId, collectionId, resourceId]
@@ -2301,7 +2315,7 @@ export class PostgresBackend implements StorageBackend {
       assertMetaWritePrecondition({
         resourceId,
         currentEtag: etagOf({
-          generation: prior.generation,
+          generation: prior.meta_generation ?? undefined,
           version: prior.meta_version ?? undefined
         }),
         ifMatch,
@@ -2340,31 +2354,34 @@ export class PostgresBackend implements StorageBackend {
           })
         })
       }
+      const metaGeneration = resolveGeneration(prior.meta_generation)
       const metaVersion = (prior.meta_version ?? 0) + 1
       const hasCustom = Object.keys(custom).length > 0
       const now = new Date().toISOString()
       // The key-epoch stamp describes the CONTENT write, so a supplied `epoch`
       // replaces it but an OMITTED one PRESERVES the stored value (unlike
-      // `custom`, full-replace): `COALESCE($7, epoch)` keeps the current value
+      // `custom`, full-replace): `COALESCE($8, epoch)` keeps the current value
       // when the parameter is NULL.
       await client.query(
         `UPDATE resources SET
-           meta_version = $4,
-           custom = $5::jsonb,
-           updated_at = $6,
-           epoch = COALESCE($7, epoch)
+           meta_generation = $4,
+           meta_version = $5,
+           custom = $6::jsonb,
+           updated_at = $7,
+           epoch = COALESCE($8, epoch)
          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
         [
           spaceId,
           collectionId,
           resourceId,
+          metaGeneration,
           metaVersion,
           hasCustom ? JSON.stringify(custom) : null,
           now,
           epoch ?? null
         ]
       )
-      return { generation: prior.generation, version: metaVersion }
+      return { generation: metaGeneration, version: metaVersion }
     })
   }
 
@@ -2743,6 +2760,7 @@ export class PostgresBackend implements StorageBackend {
       version: number
       metaVersion?: number
       generation?: string
+      metaGeneration?: string
       createdBy?: IDID
       updatedAt: string
       deleted: boolean
@@ -2756,8 +2774,8 @@ export class PostgresBackend implements StorageBackend {
     const { rows } = await this.#pool.query<
       ResourceRow & { resource_id: string }
     >(
-      `SELECT resource_id, content, version, meta_version, generation, custom,
-              epoch, deleted, updated_at, created_by
+      `SELECT resource_id, content, version, meta_generation, meta_version,
+              generation, custom, epoch, deleted, updated_at, created_by
          FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND is_json
           AND ($3::text IS NULL OR (updated_at, resource_id) > ($3, $4))
@@ -2797,10 +2815,13 @@ export class PostgresBackend implements StorageBackend {
         resourceId: row.resource_id,
         version: row.version,
         ...(row.meta_version !== null && { metaVersion: row.meta_version }),
-        // The row's generation pairs with `version` / `metaVersion` so the
-        // request layer can derive the wire `etag` / `metaEtag` without a
-        // fetch per Resource.
+        // The row's generation pairs with `version` and `metaGeneration` with
+        // `metaVersion` so the request layer can derive the wire `etag` /
+        // `metaEtag` without a fetch per Resource.
         generation: row.generation,
+        ...(row.meta_generation !== null && {
+          metaGeneration: row.meta_generation
+        }),
         // The creator's DID rides the feed so provenance replicates with the
         // document, rather than needing a `/meta` fetch per Resource.
         ...(row.created_by !== null && { createdBy: row.created_by }),
@@ -3635,6 +3656,9 @@ export class PostgresBackend implements StorageBackend {
       ...(row.created_by !== null && { createdBy: row.created_by }),
       generation: row.generation,
       version: row.version,
+      ...(row.meta_generation !== null && {
+        metaGeneration: row.meta_generation
+      }),
       ...(row.meta_version !== null && { metaVersion: row.meta_version }),
       ...(row.custom !== null && { custom: row.custom }),
       // The client-declared key epoch (the `key-epochs` feature) rides the
@@ -3705,8 +3729,9 @@ export class PostgresBackend implements StorageBackend {
         }
       >(
         `SELECT collection_id, resource_id, content_type, is_json,
-                size_bytes, generation, version, meta_version, custom, epoch,
-                deleted, created_at, updated_at, created_by
+                size_bytes, generation, version, meta_generation,
+                meta_version, custom, epoch, deleted, created_at, updated_at,
+                created_by
            FROM resources WHERE space_id = $1`,
         [spaceId]
       ),
@@ -4570,10 +4595,11 @@ export class PostgresBackend implements StorageBackend {
     await client.query(
       `INSERT INTO resources (
          space_id, collection_id, resource_id, content_type, content,
-         is_json, size_bytes, generation, version, meta_version, custom,
-         deleted, created_at, updated_at, created_by, epoch
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12,
-                 $13, $14, $15, $16)`,
+         is_json, size_bytes, generation, version, meta_generation,
+         meta_version, custom, deleted, created_at, updated_at, created_by,
+         epoch
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb,
+                 $13, $14, $15, $16, $17)`,
       [
         spaceId,
         collectionId,
@@ -4584,6 +4610,9 @@ export class PostgresBackend implements StorageBackend {
         body?.length ?? 0,
         resolveGeneration(sidecar?.generation),
         sidecar?.version ?? 1,
+        // The `/meta` validator is restored verbatim from the archived sidecar,
+        // as the filesystem backend restores the sidecar bytes themselves.
+        sidecar?.metaGeneration ?? null,
         sidecar?.metaVersion ?? null,
         sidecar?.custom !== undefined ? JSON.stringify(sidecar.custom) : null,
         deleted,
