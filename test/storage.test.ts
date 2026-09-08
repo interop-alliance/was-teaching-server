@@ -87,7 +87,9 @@ describe('Storage API', () => {
         await new Promise<void>((resolve, reject) => {
           extract.on('entry', (header, stream, next) => {
             const chunks: Buffer[] = []
-            stream.on('data', chunk => chunks.push(Buffer.from(chunk)))
+            stream.on('data', chunk =>
+              chunks.push(Buffer.from(chunk as Uint8Array))
+            )
             stream.on('end', () => {
               entries.push({
                 name: header.name,

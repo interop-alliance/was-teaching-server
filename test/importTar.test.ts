@@ -7,6 +7,7 @@
  */
 import { it, describe } from 'vitest'
 import assert from 'node:assert'
+import { Readable } from 'node:stream'
 import YAML from 'yaml'
 import * as tar from 'tar-stream'
 
@@ -361,7 +362,9 @@ describe('extractTarEntries', () => {
     pack.entry({ name: 'space/S1/r.note.text%2Fplain.txt' }, 'hello')
     pack.finalize()
 
-    const entries = await extractTarEntries(pack)
+    // tar-stream is streamx-based, not a Node Readable; bridge via the
+    // async-iterable protocol both implement.
+    const entries = await extractTarEntries(Readable.from(pack))
 
     assert.equal(entries.size, 3)
     assert.equal(entries.get('space/')!.type, 'directory')
