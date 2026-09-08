@@ -40,7 +40,7 @@ export async function startTestServer({
   port = 0,
   logger = false,
   ...options
-}: Omit<Parameters<typeof createApp>[0], 'serverUrl'> & {
+}: Omit<NonNullable<Parameters<typeof createApp>[0]>, 'serverUrl'> & {
   port?: number
 } = {}): Promise<{
   fastify: FastifyInstance

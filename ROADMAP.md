@@ -768,48 +768,6 @@ weaker than the handlers suggest. The consumer side now depends on it:
 was-client 0.45.0's `ensureSpaceAndCollection` refuses a caller-supplied Space
 description whose `id` does not name the Space being provisioned.
 
-### WAS-90: Create-if-absent preconditions on Collection and Space Descriptions
-
-- status: in-progress
-- priority: low
-- labels: conditional-writes, spec
-- touches:
-  - wallet-attached-storage-spec: WASS-31 (shipped 2026-09-07:
-    `If-None-Match: *` and its 412 on Update Collection; the Space validator,
-    the Read Space `ETag`, and both preconditions on Update Space)
-  - was-conformance-suite: `conditional-requests-api` "Descriptions" group (four
-    cases, drafted 2026-09-07 for 0.13.0; publish pending)
-  - was-client: WCL-32 (the `ensureSpace` / `ensureSpaceAndCollection` create
-    races; a 412 there has to become a re-read rather than an error)
-- acceptance:
-  - [x] `writeCollection` accepts `ifNoneMatch` beside `ifMatch`, evaluated
-        atomically with the write like the metadata and log writes already are;
-        `CollectionRequest.put` threads the parsed `If-None-Match: *` through
-        instead of dropping it, and an existing Description answers 412
-        `precondition-failed`
-  - [x] Space Descriptions carry a server-managed version validator; Read Space
-        emits it as a strong `ETag`, and `writeSpace` accepts `ifMatch` /
-        `ifNoneMatch` on the same terms, with `SpaceRequest.put` threading the
-        parsed headers through
-  - [x] Conformance and `test/` coverage for both endpoints: guarded create
-        succeeds on an absent target, 412 on a present one, `If-Match` CAS on
-        the Space, and an unconditional PUT unchanged
-  - [x] Spec text for both operations (the `If-None-Match: *` line and its 412
-        on Update Collection; the Space validator, `ETag`, and preconditions),
-        filed against the spec repo
-
-Context: the client's `ensureSpace` and `ensureSpaceAndCollection` read the
-Description, find it absent, and `PUT` a create. Two clients booting at once
-both take that branch, and the loser's replace-semantics `PUT` overwrites the
-winner's: a Space loses its `type` array (accepted at creation only) and a
-collection its `backend`. `If-None-Match: *` is the only precondition that
-states create-if-absent. The Collection Description handler parses it and drops
-it; the Space handler reads no preconditions and its read emits no `ETag`, so
-there is nothing to condition on. Neither endpoint rejects the header either, so
-a client sending it gets no 412 and no protection. The Collection half reuses
-the `ifMatch` / `assertTransition` plumbing `writeCollection` already has; the
-Space half needs the validator first, which is the spec decision.
-
 ## Public collection serving (agent storage demo next steps, 2026-08-21)
 
 Context: freewallet's agent storage demo (FW-227) has a CLI agent publish
