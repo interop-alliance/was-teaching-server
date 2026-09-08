@@ -21,7 +21,7 @@ import { spacePath } from '../lib/paths.js'
 import { isUrlSafeSegment } from '../lib/validateId.js'
 import { getCachedSpaceDescription } from '../lib/spaceDescriptionCache.js'
 import { SpaceNotFoundError } from '../errors.js'
-import type { SpaceDescription, StorageBackend } from '../types.js'
+import type { StorageBackend, StoredSpaceDescription } from '../types.js'
 
 /**
  * Fetches a Space Description or throws SpaceNotFoundError (404) when absent.
@@ -33,7 +33,7 @@ import type { SpaceDescription, StorageBackend } from '../types.js'
  * @param options.spaceId {string}
  * @param options.requestName {string}   human-readable request name, used in
  *   error titles
- * @returns {Promise<SpaceDescription>}
+ * @returns {Promise<StoredSpaceDescription>}
  */
 async function getSpaceDescriptionOrThrow({
   storage,
@@ -43,7 +43,7 @@ async function getSpaceDescriptionOrThrow({
   storage: StorageBackend
   spaceId: string
   requestName: string
-}): Promise<SpaceDescription> {
+}): Promise<StoredSpaceDescription> {
   const spaceDescription = await getCachedSpaceDescription({
     storage,
     spaceId
@@ -68,7 +68,7 @@ async function getSpaceDescriptionOrThrow({
  * @param options.spaceId {string}
  * @param options.requestName {string}   human-readable request name, used in
  *   error titles
- * @returns {Promise<SpaceDescription>}
+ * @returns {Promise<StoredSpaceDescription>}
  */
 export async function fetchSpace({
   request,
@@ -78,7 +78,7 @@ export async function fetchSpace({
   request: FastifyRequest
   spaceId: string
   requestName: string
-}): Promise<SpaceDescription> {
+}): Promise<StoredSpaceDescription> {
   // A non-URL-safe id cannot name a stored Space and must not reach the
   // filesystem layer: same 404 masking.
   if (!isUrlSafeSegment(spaceId)) {
@@ -94,7 +94,7 @@ export async function fetchSpace({
 /** The verified context every handler builds before touching storage. */
 interface VerifiedSpaceContext {
   /** the fetched Space Description (its controller authorized the request) */
-  spaceDescription: SpaceDescription
+  spaceDescription: StoredSpaceDescription
   /** the resolved invocationTarget URL the request was authorized against */
   allowedTarget: string
   /**
@@ -117,21 +117,25 @@ interface VerifiedSpaceContext {
  *   invocationTarget, resolved against serverUrl (e.g. `/space/${spaceId}`)
  * @param options.requestName {string}   human-readable request name, used in
  *   error titles
+ * @param [options.spaceDescription] {StoredSpaceDescription}   a description
+ *   the caller already read from storage, so it is not read again here
  * @returns {Promise<VerifiedSpaceContext>}
  */
 async function fetchSpaceContext({
   request,
   spaceId,
   targetPath,
-  requestName
+  requestName,
+  spaceDescription
 }: {
   request: FastifyRequest
   spaceId: string
   targetPath: string
   requestName: string
+  spaceDescription?: StoredSpaceDescription
 }): Promise<VerifiedSpaceContext> {
   const { serverUrl, storage } = request.server
-  const spaceDescription = await getSpaceDescriptionOrThrow({
+  spaceDescription ??= await getSpaceDescriptionOrThrow({
     storage,
     spaceId,
     requestName
@@ -159,6 +163,10 @@ async function fetchSpaceContext({
  *   invocationTarget, resolved against serverUrl (e.g. `/space/${spaceId}`)
  * @param options.requestName {string}   human-readable request name, used in
  *   error titles
+ * @param [options.spaceDescription] {StoredSpaceDescription}   a description
+ *   the caller already read from storage directly (Read Space, which serves it
+ *   and decides its 304 on the stored state rather than the per-process
+ *   cache), so the prelude does not read it again
  * @returns {Promise<VerifiedSpaceContext>}
  */
 export async function fetchSpaceAndAuthorize({
@@ -168,6 +176,7 @@ export async function fetchSpaceAndAuthorize({
   resourceId,
   targetPath,
   requestName,
+  spaceDescription,
   allowTargetQuery = false
 }: {
   request: FastifyRequest
@@ -176,6 +185,7 @@ export async function fetchSpaceAndAuthorize({
   resourceId?: string
   targetPath: string
   requestName: string
+  spaceDescription?: StoredSpaceDescription
   /**
    * When set, the capability-invocation path tolerates query parameters on
    * the request URL that extend `targetPath` (e.g. List Collection's
@@ -188,7 +198,8 @@ export async function fetchSpaceAndAuthorize({
     request,
     spaceId,
     targetPath,
-    requestName
+    requestName,
+    spaceDescription
   })
   await authorize({
     request,

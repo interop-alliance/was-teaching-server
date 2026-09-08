@@ -11,7 +11,15 @@ import type { FastifyInstance } from 'fastify'
 import { Space } from '@interop/was-client'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { client, startTestServer, zcapClients } from './helpers.js'
+import {
+  assertEtagVersion,
+  client,
+  etagGeneration,
+  requestError,
+  responseOf,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('Spaces', () => {
   let fastify: FastifyInstance,
@@ -97,6 +105,27 @@ describe('Spaces', () => {
       assert.deepStrictEqual(entry!['https://wallet.storage/spec#quotas'], [
         { href: `/space/${alice.space1.id}/quotas`, type: 'application/json' }
       ])
+    })
+
+    it('two concurrent POST /spaces/ with the same id yield one 201 and one 409, the winner untouched', async () => {
+      const spaceId = crypto.randomUUID()
+      const post = (name: string) =>
+        alice.was
+          .request({
+            url: new URL('/spaces/', serverUrl).toString(),
+            method: 'POST',
+            json: { id: spaceId, name, controller: alice.did }
+          })
+          .then(
+            () => 201,
+            (err: any) => err.response.status as number
+          )
+      const statuses = await Promise.all([post('First'), post('Second')])
+      assert.deepEqual(statuses.slice().sort(), [201, 409])
+      // The guarded write inside the backend refused the loser, so the
+      // winner's description is what is stored (its name was not replaced).
+      const stored = await alice.was.space(spaceId).describe()
+      assert.equal(stored!.name, statuses[0] === 201 ? 'First' : 'Second')
     })
 
     it('POST /spaces/ with an existing id yields id-conflict (409)', async () => {
@@ -298,6 +327,228 @@ describe('Spaces', () => {
 
       // Check that the space was deleted (reads return null on 404).
       assert.equal(await space.describe(), null)
+    })
+  })
+
+  describe('Space Description ETag and conditional writes', () => {
+    const spaceUrl = (spaceId: string) => `${serverUrl}/space/${spaceId}`
+    const description = (spaceId: string, name: string) => ({
+      id: spaceId,
+      name,
+      controller: alice.did
+    })
+
+    it('[root] Create Space (POST and PUT) and Get Space emit the description ETag', async () => {
+      const posted = await alice.was.request({
+        url: `${serverUrl}/spaces/`,
+        method: 'POST',
+        json: description('etag-post', 'Posted')
+      })
+      assertEtagVersion({ etag: posted.headers.get('etag'), version: 1 })
+
+      const put = await alice.was.request({
+        url: spaceUrl('etag-put'),
+        method: 'PUT',
+        json: description('etag-put', 'Put')
+      })
+      assert.equal(put.status, 201)
+      const createdEtag = put.headers.get('etag')
+      assertEtagVersion({ etag: createdEtag, version: 1 })
+
+      const read = await alice.was.request({
+        url: spaceUrl('etag-put'),
+        method: 'GET'
+      })
+      assert.equal(read.headers.get('etag'), createdEtag)
+      // The validator travels only as the header and stays out of the body.
+      assert.equal(read.data.descriptionGeneration, undefined)
+      assert.equal(read.data.descriptionVersion, undefined)
+      assert.equal(read.data._generation, undefined)
+      assert.equal(read.data._version, undefined)
+
+      // An update bumps the version under the same generation.
+      const updated = await alice.was.request({
+        url: spaceUrl('etag-put'),
+        method: 'PUT',
+        json: description('etag-put', 'Put Again')
+      })
+      assert.equal(updated.status, 204)
+      const updatedEtag = updated.headers.get('etag')
+      assertEtagVersion({ etag: updatedEtag, version: 2 })
+      assert.equal(etagGeneration(updatedEtag!), etagGeneration(createdEtag!))
+    })
+
+    it('[root] Get Space with a matching If-None-Match is 304', async () => {
+      const created = await alice.was.request({
+        url: spaceUrl('etag-304'),
+        method: 'PUT',
+        json: description('etag-304', 'Cached')
+      })
+      const etag = created.headers.get('etag')!
+      const unchanged = await responseOf(
+        alice.was.request({
+          url: spaceUrl('etag-304'),
+          method: 'GET',
+          headers: { 'if-none-match': etag }
+        })
+      )
+      assert.equal(unchanged.status, 304)
+      assert.equal(unchanged.headers.get('etag'), etag)
+      assert.equal(await unchanged.text(), '')
+
+      // A stale validator gets the full description.
+      const stale = await alice.was.request({
+        url: spaceUrl('etag-304'),
+        method: 'GET',
+        headers: { 'if-none-match': '"99"' }
+      })
+      assert.equal(stale.status, 200)
+      assert.equal(stale.data.id, 'etag-304')
+    })
+
+    it('[root] an under-authorized conditional GET still gets the 404 mask', async () => {
+      const created = await alice.was.request({
+        url: spaceUrl('etag-masked'),
+        method: 'PUT',
+        json: description('etag-masked', 'Masked')
+      })
+      const etag = created.headers.get('etag')!
+      const masked = await responseOf(
+        bob.was.request({
+          url: spaceUrl('etag-masked'),
+          method: 'GET',
+          headers: { 'if-none-match': etag }
+        })
+      )
+      assert.equal(masked.status, 404)
+    })
+
+    it('[root] PUT with If-None-Match: * creates an absent Space and 412s on a present one', async () => {
+      const created = await alice.was.request({
+        url: spaceUrl('guarded-create'),
+        method: 'PUT',
+        json: { ...description('guarded-create', 'Winner'), type: ['Space'] },
+        headers: { 'if-none-match': '*' }
+      })
+      assert.equal(created.status, 201)
+      assertEtagVersion({ etag: created.headers.get('etag'), version: 1 })
+
+      // The loser of a create race: same guarded PUT against the now-present
+      // Space, refused without touching the stored description.
+      const thrown = await requestError(
+        alice.was.request({
+          url: spaceUrl('guarded-create'),
+          method: 'PUT',
+          json: description('guarded-create', 'Loser'),
+          headers: { 'if-none-match': '*' }
+        })
+      )
+      assert.equal(thrown.response.status, 412)
+      assert.equal(
+        thrown.data.type,
+        'https://wallet.storage/spec#precondition-failed'
+      )
+      const stored = await alice.was.space('guarded-create').describe()
+      assert.equal(stored.name, 'Winner')
+    })
+
+    it('[root] PUT with If-Match is a compare-and-swap on the description version', async () => {
+      const created = await alice.was.request({
+        url: spaceUrl('cas'),
+        method: 'PUT',
+        json: description('cas', 'One')
+      })
+      const current = created.headers.get('etag')!
+
+      const stale = await requestError(
+        alice.was.request({
+          url: spaceUrl('cas'),
+          method: 'PUT',
+          json: description('cas', 'Stale'),
+          headers: { 'if-match': '"99"' }
+        })
+      )
+      assert.equal(stale.response.status, 412)
+      assert.equal((await alice.was.space('cas').describe()).name, 'One')
+
+      const swapped = await alice.was.request({
+        url: spaceUrl('cas'),
+        method: 'PUT',
+        json: description('cas', 'Two'),
+        headers: { 'if-match': current }
+      })
+      assert.equal(swapped.status, 204)
+      assertEtagVersion({ etag: swapped.headers.get('etag'), version: 2 })
+      assert.equal((await alice.was.space('cas').describe()).name, 'Two')
+
+      // The consumed validator no longer matches.
+      const replay = await requestError(
+        alice.was.request({
+          url: spaceUrl('cas'),
+          method: 'PUT',
+          json: description('cas', 'Three'),
+          headers: { 'if-match': current }
+        })
+      )
+      assert.equal(replay.response.status, 412)
+    })
+
+    it('[root] If-Match on an absent Space is 412, not a create', async () => {
+      const thrown = await requestError(
+        alice.was.request({
+          url: spaceUrl('cas-absent'),
+          method: 'PUT',
+          json: description('cas-absent', 'Never'),
+          headers: { 'if-match': '"abc.1"' }
+        })
+      )
+      assert.equal(thrown.response.status, 412)
+      assert.equal(await alice.was.space('cas-absent').describe(), null)
+    })
+
+    it('[root] an unconditional PUT still upserts (last writer wins)', async () => {
+      await alice.was.request({
+        url: spaceUrl('unconditional'),
+        method: 'PUT',
+        json: description('unconditional', 'First')
+      })
+      const second = await alice.was.request({
+        url: spaceUrl('unconditional'),
+        method: 'PUT',
+        json: description('unconditional', 'Second')
+      })
+      assert.equal(second.status, 204)
+      assert.equal(
+        (await alice.was.space('unconditional').describe()).name,
+        'Second'
+      )
+    })
+
+    it('[root] a Space deleted and re-created under the same id gets a fresh generation', async () => {
+      const first = await alice.was.request({
+        url: spaceUrl('regen'),
+        method: 'PUT',
+        json: description('regen', 'First life')
+      })
+      const oldEtag = first.headers.get('etag')!
+      await alice.was.space('regen').delete()
+      const second = await alice.was.request({
+        url: spaceUrl('regen'),
+        method: 'PUT',
+        json: description('regen', 'Second life')
+      })
+      const newEtag = second.headers.get('etag')!
+      assertEtagVersion({ etag: newEtag, version: 1 })
+      assert.notEqual(etagGeneration(newEtag), etagGeneration(oldEtag))
+      // The old validator matches nothing on the new record.
+      const conditional = await responseOf(
+        alice.was.request({
+          url: spaceUrl('regen'),
+          method: 'GET',
+          headers: { 'if-none-match': oldEtag }
+        })
+      )
+      assert.equal(conditional.status, 200)
     })
   })
 

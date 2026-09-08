@@ -1130,7 +1130,7 @@ describe('Storage API', () => {
           collectionId,
           resourceId: 'doc',
           custom: { name: 'first' },
-          ifNoneMatch: true
+          ifNoneMatch: '*'
         })
         assert.equal(first!.version, 1, 'metaVersion starts at 1')
         // A second If-None-Match: * now fails (metadata already exists).
@@ -1140,7 +1140,7 @@ describe('Storage API', () => {
             collectionId,
             resourceId: 'doc',
             custom: { name: 'again' },
-            ifNoneMatch: true
+            ifNoneMatch: '*'
           }),
           PreconditionFailedError
         )

@@ -770,30 +770,31 @@ description whose `id` does not name the Space being provisioned.
 
 ### WAS-90: Create-if-absent preconditions on Collection and Space Descriptions
 
-- status: todo
+- status: in-progress
 - priority: low
 - labels: conditional-writes, spec
 - touches:
-  - wallet-attached-storage-spec: Update (or Create By Id) Collection documents
-    `If-Match` and its 412 but no `If-None-Match: *`; the Space Data Model has
-    no version validator, Read Space emits no `ETag`, and Update Space documents
-    no preconditions at all
+  - wallet-attached-storage-spec: WASS-31 (shipped 2026-09-07:
+    `If-None-Match: *` and its 412 on Update Collection; the Space validator,
+    the Read Space `ETag`, and both preconditions on Update Space)
+  - was-conformance-suite: `conditional-requests-api` "Descriptions" group (four
+    cases, drafted 2026-09-07 for 0.13.0; publish pending)
   - was-client: WCL-32 (the `ensureSpace` / `ensureSpaceAndCollection` create
     races; a 412 there has to become a re-read rather than an error)
 - acceptance:
-  - [ ] `writeCollection` accepts `ifNoneMatch` beside `ifMatch`, evaluated
+  - [x] `writeCollection` accepts `ifNoneMatch` beside `ifMatch`, evaluated
         atomically with the write like the metadata and log writes already are;
         `CollectionRequest.put` threads the parsed `If-None-Match: *` through
         instead of dropping it, and an existing Description answers 412
         `precondition-failed`
-  - [ ] Space Descriptions carry a server-managed version validator; Read Space
+  - [x] Space Descriptions carry a server-managed version validator; Read Space
         emits it as a strong `ETag`, and `writeSpace` accepts `ifMatch` /
         `ifNoneMatch` on the same terms, with `SpaceRequest.put` threading the
         parsed headers through
-  - [ ] Conformance and `test/` coverage for both endpoints: guarded create
+  - [x] Conformance and `test/` coverage for both endpoints: guarded create
         succeeds on an absent target, 412 on a present one, `If-Match` CAS on
         the Space, and an unconditional PUT unchanged
-  - [ ] Spec text for both operations (the `If-None-Match: *` line and its 412
+  - [x] Spec text for both operations (the `If-None-Match: *` line and its 412
         on Update Collection; the Space validator, `ETag`, and preconditions),
         filed against the spec repo
 

@@ -7,6 +7,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
 import { isRootInvocation, verifyZcap } from '../zcap.js'
 import { invalidateSpaceDescription } from '../lib/spaceDescriptionCache.js'
+import { type EtagValidator, formatEtag } from '../lib/etag.js'
 import {
   assertBodyController,
   verifyBodyControllerConsent
@@ -27,7 +28,11 @@ import {
   defaultSpaceType,
   isAuxiliarySpace
 } from '../lib/spaceType.js'
-import { SpaceControllerMismatchError, IdConflictError } from '../errors.js'
+import {
+  SpaceControllerMismatchError,
+  IdConflictError,
+  PreconditionFailedError
+} from '../errors.js'
 import type { IDID, SpaceSummary, SpaceListing } from '../types.js'
 
 export class SpacesRepositoryRequest {
@@ -246,6 +251,9 @@ export class SpacesRepositoryRequest {
       // verified against the *body's* controller, so without this check any
       // caller could overwrite a Space (controller included) by POSTing its
       // id. Spec: `id-conflict` (409); create-or-replace by id is PUT's job.
+      // This unlocked read answers the common case before the (costlier)
+      // consent verification, so a conflicting id gets 409 whoever signed;
+      // the guarded write below is what closes the race between two creates.
       if (await storage.getSpaceDescription({ spaceId: body.id })) {
         throw new IdConflictError({ kind: 'Space' })
       }
@@ -274,7 +282,26 @@ export class SpacesRepositoryRequest {
     // zCap checks out, continue. A token-provisioned create carries no
     // invocation, so it records no `createdBy`.
     const createdBy = invokerDid(request)
-    await storage.writeSpace({ spaceId, spaceDescription, createdBy })
+    // The write is the guarded create (`If-None-Match: *` semantics),
+    // evaluated atomically inside the backend: two concurrent creates of the
+    // same id both pass the existence check above, and without the guard the
+    // later full-replacement write would overwrite the winner's `controller`
+    // and `type`. The loser's 412 is served as the spec's `id-conflict`
+    // (409), since no client header was involved.
+    let written: EtagValidator
+    try {
+      written = await storage.writeSpace({
+        spaceId,
+        spaceDescription,
+        createdBy,
+        ifNoneMatch: '*'
+      })
+    } catch (err) {
+      if (err instanceof PreconditionFailedError) {
+        throw new IdConflictError({ kind: 'Space' })
+      }
+      throw err
+    }
     // Bust any cached (e.g. negatively cached) description for this id so the
     // next read sees the freshly created Space.
     invalidateSpaceDescription({ storage, spaceId })
@@ -284,9 +311,13 @@ export class SpacesRepositoryRequest {
       serverUrl
     ).toString()
     reply.header('Location', createdSpaceUrl)
+    // Surface the description ETag so a client can chain a conditional Update
+    // Space (read-modify-CAS on the Space Description).
+    reply.header('etag', formatEtag(written))
     // Echo what was persisted, `createdBy` included, so the create response and
     // a subsequent Get Space agree. An id already in use was rejected as a 409
-    // above, so this write created the Space and its creator is this invoker.
+    // by the guarded write, so it created the Space and its creator is this
+    // invoker.
     return reply
       .status(201)
       .send({ ...spaceDescription, ...(createdBy && { createdBy }) })

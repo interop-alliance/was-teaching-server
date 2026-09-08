@@ -256,6 +256,19 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE resources
     ADD COLUMN meta_generation text;
+  `,
+  // v5: the Space Description's own ETag validator, the Space-level twin of
+  // the collections columns of the same names: 'description_generation' is
+  // minted by the first real description write and kept for the Space's whole
+  // life (NULL on a placeholder row, which has no description to validate
+  // yet); 'description_version' is the monotonic counter writeSpace bumps on
+  // every write. Both stay out of the stored 'description' jsonb and travel
+  // only as the ETag header, behind the guarded create (If-None-Match: *) and
+  // compare-and-swap (If-Match) on Update Space.
+  `
+  ALTER TABLE spaces
+    ADD COLUMN description_generation text,
+    ADD COLUMN description_version    integer NOT NULL DEFAULT 1;
   `
 ]
 

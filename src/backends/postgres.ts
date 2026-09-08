@@ -77,8 +77,16 @@ import { packSpaceArchive } from '../lib/exportTar.js'
 import type { ArchiveEntry, ArchiveFile } from '../lib/exportTar.js'
 import { revocationFileName } from '../lib/revocations.js'
 import { isJson } from '../lib/isJson.js'
-import { normalizeDescriptionWrite } from '../lib/collectionDescription.js'
-import { type EtagValidator, etagOf, resolveGeneration } from '../lib/etag.js'
+import { normalizeDescriptionWrite } from '../lib/descriptionWrite.js'
+import {
+  type EtagValidator,
+  type HeldValidators,
+  descriptionEtagOf,
+  embedDescriptionValidator,
+  etagOf,
+  resolveGeneration,
+  stripDescriptionValidator
+} from '../lib/etag.js'
 import {
   clampPageSize,
   nextPageUrl,
@@ -117,6 +125,7 @@ import {
   assertWritePrecondition,
   assertMetaWritePrecondition,
   assertCollectionWritePrecondition,
+  assertSpaceWritePrecondition,
   assertCollectionMetaWritePrecondition,
   assertCollectionLogWritePrecondition
 } from '../lib/preconditions.js'
@@ -140,6 +149,8 @@ import type {
   StorageBackend,
   StoredBackendRecord,
   StoredCollectionDescription,
+  DescriptionValidatorParts,
+  StoredSpaceDescription,
   StoredCollectionMetadata,
   StoredCollectionLog,
   VersionedMetadata,
@@ -154,6 +165,11 @@ import type {
 /** Pool sizing and per-connection statement timeout (operational defaults). */
 const POOL_MAX = 10
 const STATEMENT_TIMEOUT_MS = 30_000
+// The per-Space advisory lock `writeSpace` and `deleteSpace` serialize on
+// (a Space Description precondition check and version bump, or a delete, are
+// atomic against each other; disjoint from the `spaces` row lock the
+// Collection and Resource writes hold as the usage counter).
+const SPACE_DESC_LOCK_SQL = `SELECT pg_advisory_xact_lock(hashtext('space-desc:' || $1))`
 
 /**
  * Silent logger used when no logger is injected into the backend (`createApp`
@@ -220,6 +236,40 @@ async function bufferStreamCapped({
     chunks.push(buffer)
   }
   return Buffer.concat(chunks)
+}
+
+/**
+ * The stored form of a Space or Collection Description row: the jsonb body
+ * with the row's validator columns re-surfaced as the out-of-band
+ * `descriptionGeneration` / `descriptionVersion` parts. A NULL generation
+ * column (a legacy row) contributes no generation, so `etagOf` reports no
+ * validator for it. Resolves `undefined` for a missing row and for a
+ * placeholder (NULL-description) row, both "no described record yet".
+ * @param row {object}   the row, if any
+ * @param [row.description] {T | null}
+ * @param row.description_generation {string | null}
+ * @param row.description_version {number}
+ * @returns {(T & DescriptionValidatorParts) | undefined}
+ */
+function storedDescriptionFromRow<T extends object>(
+  row:
+    | {
+        description: T | null
+        description_generation: string | null
+        description_version: number
+      }
+    | undefined
+): (T & DescriptionValidatorParts) | undefined {
+  if (row?.description == null) {
+    return undefined
+  }
+  return {
+    ...row.description,
+    ...(row.description_generation !== null && {
+      descriptionGeneration: row.description_generation
+    }),
+    descriptionVersion: row.description_version
+  }
 }
 
 /**
@@ -790,115 +840,162 @@ export class PostgresBackend implements StorageBackend {
    * @param options.spaceDescription {SpaceDescription}
    * @param [options.createdBy] {string}   DID of the invoker, recorded as the
    *   Space's `createdBy` on first write only
-   * @returns {Promise<void>}
+   * @param [options.ifMatch] {string}   an `If-Match` compare-and-swap on the
+   *   current description `ETag`; a stale validator throws
+   *   `PreconditionFailedError` (412)
+   * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *`, the guarded
+   *   create; an existing Description throws `PreconditionFailedError` (412)
+   * @returns {Promise<EtagValidator>}   the Space's new description validator
+   *   (its `generation` and bumped `version`, the `ETag`)
    */
   async writeSpace({
     spaceId,
     spaceDescription,
-    createdBy
+    createdBy,
+    ifMatch,
+    ifNoneMatch
   }: {
     spaceId: string
     spaceDescription: SpaceDescription
     createdBy?: IDID
-  }): Promise<void> {
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+  }): Promise<EtagValidator> {
     const { controller } = spaceDescription
-    // `createdBy` names the Space's creator, not its last writer: taken from
-    // this write's invoker only when there is no prior description, and
-    // preserved verbatim afterward. The client-supplied `spaceDescription` is
-    // wire input and may carry its own `createdBy` -- discard it, since the
-    // server alone is authoritative for this field.
-    const { createdBy: _suppliedCreatedBy, ...rest } = spaceDescription
-    const descriptionJson = JSON.stringify(rest)
-    // The upsert maintains the denormalized `controller` column on both insert
-    // and update -- the description's controller can change on update, and the
-    // Spaces count quota reads this column (spec "Quotas"). `createdBy` is
-    // resolved within this same statement, in one transaction-free round trip
-    // (no separate read-then-write race with a concurrent `writeSpace` for the
-    // same id):
-    // - `spaces.description IS NULL` means there is no prior description row
-    //   (a placeholder row created by a sub-resource write before any Space
-    //   Description was written) -- this write IS the create, so it behaves
-    //   like the insert branch: attach this write's `createdBy` when present,
-    //   otherwise omit the key entirely (never store it as JSON `null`).
-    // - Otherwise a prior description exists, and its `createdBy` -- present
-    //   or absent -- is preserved verbatim via the jsonb `?` key-existence
-    //   operator; this write's `createdBy` is ignored entirely (never
-    //   backfilled).
-    const upsert = (queryable: Queryable): Promise<unknown> =>
-      queryable.query(
-        `INSERT INTO spaces (space_id, description, controller)
-         VALUES (
-           $1,
-           CASE WHEN $4::text IS NULL THEN $2::jsonb
-                ELSE ($2::jsonb) || jsonb_build_object('createdBy', $4::text) END,
-           $3
-         )
-         ON CONFLICT (space_id) DO UPDATE SET
-           description = CASE
-             WHEN spaces.description IS NULL THEN
-               CASE WHEN $4::text IS NULL THEN $2::jsonb
-                    ELSE ($2::jsonb) || jsonb_build_object('createdBy', $4::text) END
-             WHEN spaces.description ? 'createdBy' THEN
-               ($2::jsonb) || jsonb_build_object(
-                 'createdBy', spaces.description->>'createdBy'
-               )
-             ELSE $2::jsonb
-           END,
-           controller = EXCLUDED.controller`,
-        [spaceId, descriptionJson, controller, createdBy ?? null]
-      )
-
-    if (this.maxSpacesPerController === undefined) {
-      await upsert(this.#pool)
-      return
-    }
-
-    // Count quota (create path only), enforced as a HARD limit: take a
-    // controller-scoped advisory lock so concurrent creates for the same
-    // controller serialize (the byte quota's posture), detect a create (no
-    // described row yet -- a NULL-description placeholder counts as a create),
-    // COUNT this controller's Spaces, and reject at the limit.
-    await this.#withTransaction(async client => {
-      await client.query(
-        `SELECT pg_advisory_xact_lock(hashtext('controller-count:' || $1))`,
-        [controller]
-      )
-      const { rows } = await client.query<{ description: unknown }>(
-        'SELECT description FROM spaces WHERE space_id = $1',
+    return this.#withTransaction(async client => {
+      // Serialize concurrent Description writes (and Delete Space) for the
+      // same Space id on an advisory lock: a `FOR UPDATE` on the row locks
+      // nothing while the row does not exist yet, and two racing guarded
+      // creates must not both observe "absent". The advisory lock is the
+      // whole serialization; the row itself is read plainly below, so a
+      // Description write does not block, and is not blocked by, the
+      // Collection and Resource writes that lock the same row as the Space's
+      // usage counter. Holding the lock across the quota COUNT below also
+      // serializes creates for the same controller.
+      await client.query(SPACE_DESC_LOCK_SQL, [spaceId])
+      if (this.maxSpacesPerController !== undefined) {
+        await client.query(
+          `SELECT pg_advisory_xact_lock(hashtext('controller-count:' || $1))`,
+          [controller]
+        )
+      }
+      // Read the current row (if any) and its validator, so the precondition,
+      // the create detection, `createdBy` resolution, and the monotonic
+      // version bump are all atomic with the write. A missing row and a
+      // placeholder (NULL-description) row are both "no described Space yet":
+      // version 0 and no generation, so the first real description write mints
+      // a generation at version 1 (a placeholder's `description_version`
+      // column holds the schema DEFAULT and must not count).
+      const { rows } = await client.query<{
+        description: SpaceDescription | null
+        description_generation: string | null
+        description_version: number
+      }>(
+        `SELECT description, description_generation, description_version
+           FROM spaces WHERE space_id = $1`,
         [spaceId]
       )
-      const isCreate = rows[0]?.description == null
-      if (isCreate) {
+      const prior = storedDescriptionFromRow(rows[0])
+
+      assertSpaceWritePrecondition({
+        spaceId,
+        exists: prior !== undefined,
+        currentEtag: descriptionEtagOf(prior),
+        ifMatch,
+        ifNoneMatch
+      })
+
+      // Count quota (create path only), enforced as a HARD limit under the
+      // controller-scoped advisory lock taken above: COUNT this controller's
+      // Spaces and reject at the limit.
+      if (this.maxSpacesPerController !== undefined && prior === undefined) {
         const { rows: countRows } = await client.query<{ count: number }>(
           'SELECT COUNT(*)::int AS count FROM spaces WHERE controller = $1',
           [controller]
         )
-        if (countRows[0]!.count >= this.maxSpacesPerController!) {
+        if (countRows[0]!.count >= this.maxSpacesPerController) {
           throw new CountQuotaExceededError({
             scope: 'Spaces per controller',
-            limit: this.maxSpacesPerController!
+            limit: this.maxSpacesPerController
           })
         }
       }
-      await upsert(client)
+
+      // `createdBy` names the Space's creator, not its last writer: taken from
+      // this write's invoker only when this write CREATES the description, and
+      // preserved verbatim afterward -- including preserved-as-absent, so a
+      // Space created with no invoker (a token-provisioned create) never has a
+      // later writer backfilled into it as its creator. The client-supplied
+      // `spaceDescription` is wire input and may carry its own `createdBy` --
+      // discard it, since the server alone is authoritative for it. The
+      // validator-bearing members it may carry are stripped by the shared
+      // normalization (lib/descriptionWrite.ts), the same rule the filesystem
+      // backend applies, so a client-supplied `_generation` / `_version` never
+      // lands in the jsonb body.
+      const creator = prior ? prior.createdBy : createdBy
+      // The description keeps its generation for the Space's whole life; a
+      // Space deleted and re-created under the same id mints a new one, so the
+      // two lives' validators can never coincide.
+      const validator = {
+        generation: resolveGeneration(prior?.descriptionGeneration),
+        version: (prior?.descriptionVersion ?? 0) + 1
+      }
+      const { body } = normalizeDescriptionWrite({
+        description: spaceDescription,
+        validator
+      })
+      const { createdBy: _suppliedCreatedBy, ...rest } = body
+      // The upsert maintains the denormalized `controller` column on both
+      // insert and update -- the description's controller can change on
+      // update, and the Spaces count quota reads this column (spec "Quotas").
+      // The validator lives in its own columns and stays out of the jsonb body.
+      await client.query(
+        `INSERT INTO spaces (space_id, description, controller,
+                             description_generation, description_version)
+         VALUES ($1, $2::jsonb, $3, $4, $5)
+         ON CONFLICT (space_id) DO UPDATE SET
+           description = EXCLUDED.description,
+           controller = EXCLUDED.controller,
+           description_generation = EXCLUDED.description_generation,
+           description_version = EXCLUDED.description_version`,
+        [
+          spaceId,
+          JSON.stringify({
+            ...rest,
+            ...(creator !== undefined && { createdBy: creator })
+          }),
+          controller,
+          validator.generation,
+          validator.version
+        ]
+      )
+      return validator
     })
   }
 
   /**
    * @param options {object}
    * @param options.spaceId {string}
-   * @returns {Promise<SpaceDescription|undefined>}   falsy when the Space does
-   *   not exist or is a placeholder row without a description
+   * @returns {Promise<StoredSpaceDescription|undefined>}   falsy when the
+   *   Space does not exist or is a placeholder row without a description;
+   *   `descriptionGeneration` / `descriptionVersion` are the out-of-band
+   *   `ETag` validator
    */
   async getSpaceDescription({
     spaceId
   }: {
     spaceId: string
-  }): Promise<SpaceDescription | undefined> {
+  }): Promise<StoredSpaceDescription | undefined> {
     const { rows } = await this.#pool.query<{
       description: SpaceDescription | null
-    }>('SELECT description FROM spaces WHERE space_id = $1', [spaceId])
-    return rows[0]?.description ?? undefined
+      description_generation: string | null
+      description_version: number
+    }>(
+      `SELECT description, description_generation, description_version
+         FROM spaces WHERE space_id = $1`,
+      [spaceId]
+    )
+    return storedDescriptionFromRow(rows[0])
   }
 
   /**
@@ -910,7 +1007,14 @@ export class PostgresBackend implements StorageBackend {
    * @returns {Promise<void>}
    */
   async deleteSpace({ spaceId }: { spaceId: string }): Promise<void> {
-    await this.#pool.query('DELETE FROM spaces WHERE space_id = $1', [spaceId])
+    await this.#withTransaction(async client => {
+      // The same advisory lock `writeSpace` serializes on, so the delete
+      // cannot land between that write's prior read and its upsert: the
+      // upsert would recreate the row carrying the deleted life's generation,
+      // where a re-create must mint a fresh one.
+      await client.query(SPACE_DESC_LOCK_SQL, [spaceId])
+      await client.query('DELETE FROM spaces WHERE space_id = $1', [spaceId])
+    })
   }
 
   /**
@@ -942,6 +1046,8 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.ifMatch] {string}   an `If-Match` compare-and-swap on the
    *   current description `ETag` (the `key-epochs` feature); a stale validator
    *   throws `PreconditionFailedError` (412)
+   * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *`, the guarded
+   *   create; an existing Description throws `PreconditionFailedError` (412)
    * @returns {Promise<EtagValidator>}   the Collection's new description
    *   validator (its `generation` and bumped `version`, the `ETag`)
    */
@@ -951,6 +1057,7 @@ export class PostgresBackend implements StorageBackend {
     collectionDescription,
     createdBy,
     ifMatch,
+    ifNoneMatch,
     assertTransition
   }: {
     spaceId: string
@@ -958,6 +1065,7 @@ export class PostgresBackend implements StorageBackend {
     collectionDescription: CollectionDescription
     createdBy?: IDID
     ifMatch?: string
+    ifNoneMatch?: HeldValidators
     assertTransition?: (
       prior?: StoredCollectionDescription
     ) => void | Promise<void>
@@ -989,31 +1097,21 @@ export class PostgresBackend implements StorageBackend {
           WHERE space_id = $1 AND collection_id = $2 FOR UPDATE`,
         [spaceId, collectionId]
       )
-      const priorRow = rows[0]
       // A missing row and a placeholder (NULL-description) row are both "no
       // described Collection yet": version 0 and no generation, so the first
       // real description write mints a generation at version 1 (a
       // placeholder's `description_version` column holds the schema DEFAULT
       // and must not count).
-      const prior =
-        priorRow?.description == null
-          ? undefined
-          : {
-              ...priorRow.description,
-              ...(priorRow.description_generation !== null && {
-                descriptionGeneration: priorRow.description_generation
-              }),
-              descriptionVersion: priorRow.description_version
-            }
-      // Compare-and-swap (opt-in): a stale `If-Match` throws 412. An
+      const prior = storedDescriptionFromRow(rows[0])
+      // Guarded create (`If-None-Match: *`) or compare-and-swap (`If-Match`),
+      // both opt-in: a present Description or a stale validator throws 412. An
       // unconditional write skips this.
       assertCollectionWritePrecondition({
         collectionId,
-        currentEtag: etagOf({
-          generation: prior?.descriptionGeneration,
-          version: prior?.descriptionVersion
-        }),
-        ifMatch
+        exists: prior !== undefined,
+        currentEtag: descriptionEtagOf(prior),
+        ifMatch,
+        ifNoneMatch
       })
       // The request layer's state-transition rails (e.g. epoch append-only),
       // re-evaluated here against the row just read under the lock.
@@ -1111,7 +1209,7 @@ export class PostgresBackend implements StorageBackend {
     // `description_version` columns instead. `createdBy` is additionally
     // stripped here because this statement re-resolves it in SQL.
     const { body, validator: stamped } = normalizeDescriptionWrite({
-      collectionDescription,
+      description: collectionDescription,
       validator
     })
     const { createdBy: _suppliedCreatedBy, ...rest } = body
@@ -1173,21 +1271,10 @@ export class PostgresBackend implements StorageBackend {
         WHERE space_id = $1 AND collection_id = $2`,
       [spaceId, collectionId]
     )
-    const row = rows[0]
-    if (!row?.description) {
-      return undefined
-    }
     // Surface the validator out-of-band as `descriptionGeneration` /
     // `descriptionVersion` (the handler sets the `ETag` header from them); both
-    // are stored in their own columns, never the wire body. The generation is
-    // absent only on a description written before generations existed.
-    return {
-      ...row.description,
-      ...(row.description_generation !== null && {
-        descriptionGeneration: row.description_generation
-      }),
-      descriptionVersion: row.description_version
-    }
+    // are stored in their own columns and stay out of the wire body.
+    return storedDescriptionFromRow(rows[0])
   }
 
   /**
@@ -1262,7 +1349,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options.custom {ResourceMetadataCustom | Record<string, unknown>}
    * @param [options.epoch] {string}   the key-epoch stamp; omitted clears it
    * @param [options.ifMatch] {string}
-   * @param [options.ifNoneMatch] {boolean}
+   * @param [options.ifNoneMatch] {HeldValidators}
    * @returns {Promise<EtagValidator | undefined>}   the `/meta` object's new
    *   validator (its `generation` with the bumped `metaVersion`)
    */
@@ -1279,7 +1366,7 @@ export class PostgresBackend implements StorageBackend {
     custom: ResourceMetadataCustom | Record<string, unknown>
     epoch?: string
     ifMatch?: string
-    ifNoneMatch?: boolean
+    ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator | undefined> {
     return this.#withTransaction(async client => {
       const { rows } = await client.query<{
@@ -1394,7 +1481,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options.collectionId {string}
    * @param options.body {string}   the new JSON Lines body
    * @param [options.ifMatch] {string}
-   * @param [options.ifNoneMatch] {boolean}
+   * @param [options.ifNoneMatch] {HeldValidators}
    * @param [options.assertTransition] {Function}
    * @returns {Promise<EtagValidator | undefined>}   the log's new validator
    */
@@ -1410,7 +1497,7 @@ export class PostgresBackend implements StorageBackend {
     collectionId: string
     body: string
     ifMatch?: string
-    ifNoneMatch?: boolean
+    ifNoneMatch?: HeldValidators
     assertTransition?: (context: {
       prior?: StoredCollectionLog
       collectionDescription: StoredCollectionDescription
@@ -1739,7 +1826,7 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.createdBy] {string}   DID of the invoker, recorded as the
    *   Resource's `createdBy` on first write only
    * @param [options.ifMatch] {string}
-   * @param [options.ifNoneMatch] {boolean}
+   * @param [options.ifNoneMatch] {HeldValidators}
    * @returns {Promise<EtagValidator>}   the Resource's new content validator
    */
   async writeResource({
@@ -1761,7 +1848,7 @@ export class PostgresBackend implements StorageBackend {
     epoch?: string
     uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
-    ifNoneMatch?: boolean
+    ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator> {
     const content = await this.#bufferInputCapped(input)
 
@@ -1863,7 +1950,7 @@ export class PostgresBackend implements StorageBackend {
         lockingSelect: selectPrior
       })
       const exists = prior !== undefined && !prior.deleted
-      if (ifMatch !== undefined || ifNoneMatch) {
+      if (ifMatch !== undefined || ifNoneMatch !== undefined) {
         assertWritePrecondition({
           resourceId,
           exists,
@@ -1991,7 +2078,7 @@ export class PostgresBackend implements StorageBackend {
              created_by = resources.created_by,
              epoch = EXCLUDED.epoch`,
         values,
-        createOnly: ifNoneMatch === true && prior === undefined,
+        createOnly: ifNoneMatch === '*' && prior === undefined,
         validator,
         conflictDetail: `Resource '${resourceId}' already exists (If-None-Match: *).`
       })
@@ -2268,7 +2355,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options.resourceId {string}
    * @param options.custom {ResourceMetadataCustom | Record<string, unknown>}
    * @param [options.ifMatch] {string}
-   * @param [options.ifNoneMatch] {boolean}
+   * @param [options.ifNoneMatch] {HeldValidators}
    * @returns {Promise<EtagValidator | undefined>}   the `/meta` object's new
    *   validator (its `meta_generation` with the bumped `metaVersion`)
    */
@@ -2289,7 +2376,7 @@ export class PostgresBackend implements StorageBackend {
     epoch?: string
     uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
-    ifNoneMatch?: boolean
+    ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator | undefined> {
     return this.#withTransaction(async client => {
       // A metadata write can create a plaintext equality unique claim for a
@@ -2403,7 +2490,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options.chunkIndex {number}   a non-negative safe integer
    * @param options.input {ResourceInput}
    * @param [options.ifMatch] {string}
-   * @param [options.ifNoneMatch] {boolean}
+   * @param [options.ifNoneMatch] {HeldValidators}
    * @returns {Promise<EtagValidator>}   the chunk's new validator
    */
   async writeChunk({
@@ -2421,7 +2508,7 @@ export class PostgresBackend implements StorageBackend {
     chunkIndex: number
     input: ResourceInput
     ifMatch?: string
-    ifNoneMatch?: boolean
+    ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator> {
     const bytes = await this.#bufferInputCapped(input)
 
@@ -2469,7 +2556,7 @@ export class PostgresBackend implements StorageBackend {
         lockingSelect: selectPrior
       })
       const exists = prior !== undefined
-      if (ifMatch !== undefined || ifNoneMatch) {
+      if (ifMatch !== undefined || ifNoneMatch !== undefined) {
         assertWritePrecondition({
           resourceId: chunkLabel,
           exists,
@@ -2526,7 +2613,7 @@ export class PostgresBackend implements StorageBackend {
            generation = chunks.generation,
            version = chunks.version + 1`,
         values,
-        createOnly: ifNoneMatch === true && prior === undefined,
+        createOnly: ifNoneMatch === '*' && prior === undefined,
         validator,
         conflictDetail: `Chunk '${chunkLabel}' already exists (If-None-Match: *).`
       })
@@ -3777,10 +3864,21 @@ export class PostgresBackend implements StorageBackend {
     // sort key within its dir; a chunk directory sorts by its `.chunks.<encId>`
     // dir name.
     // Space-level dot-files are always small JSON, carried inline.
+    // The Space file follows the same `_generation` / `_version` embedding as
+    // the `.collection.` file below (the filesystem backend's on-disk
+    // convention), so archives stay interchangeable between the two backends.
     const spaceFiles: ArchiveFile[] = [
       {
         name: spaceDescriptionFileName(spaceId),
-        bytes: Buffer.from(JSON.stringify(spaceDescription))
+        bytes: Buffer.from(
+          JSON.stringify(
+            embedDescriptionValidator({
+              body: stripDescriptionValidator(spaceDescription),
+              generation: spaceDescription.descriptionGeneration,
+              version: spaceDescription.descriptionVersion
+            })
+          )
+        )
       }
     ]
     if (spacePolicy) {
@@ -3809,13 +3907,13 @@ export class PostgresBackend implements StorageBackend {
         files.push({
           name: collectionDescriptionFileName(row.collection_id),
           bytes: Buffer.from(
-            JSON.stringify({
-              ...row.description,
-              ...(row.description_generation !== null && {
-                _generation: row.description_generation
-              }),
-              _version: row.description_version
-            })
+            JSON.stringify(
+              embedDescriptionValidator({
+                body: row.description,
+                generation: row.description_generation ?? undefined,
+                version: row.description_version
+              })
+            )
           )
         })
       }

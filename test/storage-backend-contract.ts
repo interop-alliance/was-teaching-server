@@ -32,6 +32,7 @@ import type {
   RevocationRecord,
   ResourceInput,
   StoredCollectionDescription,
+  SpaceDescription,
   IDID
 } from '../src/types.js'
 
@@ -742,7 +743,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId,
           collectionId,
           custom: { name: 'Created' },
-          ifNoneMatch: true
+          ifNoneMatch: '*'
         })
         // ...and rejects a second create-if-absent.
         await expect(
@@ -750,7 +751,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             spaceId,
             collectionId,
             custom: { name: 'Again' },
-            ifNoneMatch: true
+            ifNoneMatch: '*'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
 
@@ -930,6 +931,284 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             })
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
+      })
+    })
+
+    describe('Description write preconditions', () => {
+      let harness: BackendHarness
+      beforeAll(async () => {
+        harness = await makeBackend()
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      const spaceDescription = (spaceId: string) => ({
+        id: spaceId,
+        type: ['Space'],
+        name: `Space ${spaceId}`,
+        controller: CONTROLLER
+      })
+
+      it('writeSpace returns a validator that getSpaceDescription surfaces and bumps per write', async () => {
+        const { backend } = harness
+        const created = await backend.writeSpace({
+          spaceId: 'space-etag',
+          spaceDescription: spaceDescription('space-etag')
+        })
+        assert.equal(created.version, 1)
+        const stored = await backend.getSpaceDescription({
+          spaceId: 'space-etag'
+        })
+        assert.equal(stored?.descriptionGeneration, created.generation)
+        assert.equal(stored?.descriptionVersion, 1)
+        // A caller spreading the read result back in does not smuggle the
+        // validator into the stored body.
+        const updated = await backend.writeSpace({
+          spaceId: 'space-etag',
+          spaceDescription: { ...stored!, name: 'Renamed' }
+        })
+        assert.deepEqual(updated, {
+          generation: created.generation,
+          version: 2
+        })
+        const reread = await backend.getSpaceDescription({
+          spaceId: 'space-etag'
+        })
+        assert.equal(reread?.name, 'Renamed')
+        assert.equal(reread?.descriptionVersion, 2)
+        // The listing is the plain wire shape, validator stripped.
+        const listed = (await backend.listSpaces()).find(
+          space => space.id === 'space-etag'
+        )
+        assert.ok(listed)
+        assert.equal('descriptionGeneration' in listed!, false)
+        assert.equal('descriptionVersion' in listed!, false)
+      })
+
+      it('writeSpace If-None-Match: * creates when absent, 412s when present', async () => {
+        const { backend } = harness
+        await backend.writeSpace({
+          spaceId: 'space-inm',
+          spaceDescription: spaceDescription('space-inm'),
+          ifNoneMatch: '*'
+        })
+        await expect(
+          backend.writeSpace({
+            spaceId: 'space-inm',
+            spaceDescription: { ...spaceDescription('space-inm'), name: 'Two' },
+            ifNoneMatch: '*'
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        assert.equal(
+          (await backend.getSpaceDescription({ spaceId: 'space-inm' }))?.name,
+          'Space space-inm'
+        )
+      })
+
+      it('writeSpace If-Match matches the current ETag or 412s', async () => {
+        const { backend } = harness
+        const created = await backend.writeSpace({
+          spaceId: 'space-im',
+          spaceDescription: spaceDescription('space-im')
+        })
+        await expect(
+          backend.writeSpace({
+            spaceId: 'space-im',
+            spaceDescription: spaceDescription('space-im'),
+            ifMatch: formatEtag({ generation: created.generation, version: 9 })
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        const second = await backend.writeSpace({
+          spaceId: 'space-im',
+          spaceDescription: spaceDescription('space-im'),
+          ifMatch: formatEtag(created)
+        })
+        assert.equal(second.version, 2)
+        // The consumed validator is stale now.
+        await expect(
+          backend.writeSpace({
+            spaceId: 'space-im',
+            spaceDescription: spaceDescription('space-im'),
+            ifMatch: formatEtag(created)
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+      })
+
+      it('writeSpace strips a client-supplied _generation / _version from the stored body', async () => {
+        const { backend } = harness
+        const written = await backend.writeSpace({
+          spaceId: 'space-smuggle',
+          spaceDescription: {
+            ...spaceDescription('space-smuggle'),
+            _generation: 'fake',
+            _version: 999
+          } as SpaceDescription
+        })
+        const stored = await backend.getSpaceDescription({
+          spaceId: 'space-smuggle'
+        })
+        assert.equal('_generation' in stored!, false)
+        assert.equal('_version' in stored!, false)
+        assert.equal(stored?.descriptionGeneration, written.generation)
+        assert.equal(stored?.descriptionVersion, 1)
+      })
+
+      it('writeSpace If-Match honors the * and list forms', async () => {
+        const { backend } = harness
+        await expect(
+          backend.writeSpace({
+            spaceId: 'space-im-forms',
+            spaceDescription: spaceDescription('space-im-forms'),
+            ifMatch: '*'
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        const created = await backend.writeSpace({
+          spaceId: 'space-im-forms',
+          spaceDescription: spaceDescription('space-im-forms')
+        })
+        const second = await backend.writeSpace({
+          spaceId: 'space-im-forms',
+          spaceDescription: spaceDescription('space-im-forms'),
+          ifMatch: '*'
+        })
+        assert.equal(second.version, 2)
+        const third = await backend.writeSpace({
+          spaceId: 'space-im-forms',
+          spaceDescription: spaceDescription('space-im-forms'),
+          ifMatch: `${formatEtag(created)}, ${formatEtag(second)}`
+        })
+        assert.equal(third.version, 3)
+        // A weak member never matches under strong comparison.
+        await expect(
+          backend.writeSpace({
+            spaceId: 'space-im-forms',
+            spaceDescription: spaceDescription('space-im-forms'),
+            ifMatch: `W/${formatEtag(third)}`
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+      })
+
+      it('writeSpace If-None-Match with a listed validator refuses the named current ETag', async () => {
+        const { backend } = harness
+        const created = await backend.writeSpace({
+          spaceId: 'space-inm-list',
+          spaceDescription: spaceDescription('space-inm-list')
+        })
+        await expect(
+          backend.writeSpace({
+            spaceId: 'space-inm-list',
+            spaceDescription: spaceDescription('space-inm-list'),
+            ifNoneMatch: new Set([formatEtag(created)])
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        const second = await backend.writeSpace({
+          spaceId: 'space-inm-list',
+          spaceDescription: spaceDescription('space-inm-list'),
+          ifNoneMatch: new Set([
+            formatEtag({ generation: created.generation, version: 7 })
+          ])
+        })
+        assert.equal(second.version, 2)
+      })
+
+      it('writeSpace with both If-Match and If-None-Match: * is 412 whether or not the Space exists', async () => {
+        const { backend } = harness
+        await expect(
+          backend.writeSpace({
+            spaceId: 'space-both',
+            spaceDescription: spaceDescription('space-both'),
+            ifMatch: formatEtag({ generation: 'noSuchGen', version: 1 }),
+            ifNoneMatch: '*'
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        assert.equal(
+          await backend.getSpaceDescription({ spaceId: 'space-both' }),
+          undefined
+        )
+        const created = await backend.writeSpace({
+          spaceId: 'space-both',
+          spaceDescription: spaceDescription('space-both')
+        })
+        await expect(
+          backend.writeSpace({
+            spaceId: 'space-both',
+            spaceDescription: spaceDescription('space-both'),
+            ifMatch: formatEtag(created),
+            ifNoneMatch: '*'
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+      })
+
+      it('writeSpace If-Match on an absent Space 412s', async () => {
+        await expect(
+          harness.backend.writeSpace({
+            spaceId: 'space-im-absent',
+            spaceDescription: spaceDescription('space-im-absent'),
+            ifMatch: formatEtag({ generation: 'noSuchGen', version: 1 })
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        assert.equal(
+          await harness.backend.getSpaceDescription({
+            spaceId: 'space-im-absent'
+          }),
+          undefined
+        )
+      })
+
+      it('a Space deleted and re-created under the same id mints a new generation', async () => {
+        const { backend } = harness
+        const first = await backend.writeSpace({
+          spaceId: 'space-regen',
+          spaceDescription: spaceDescription('space-regen')
+        })
+        await backend.deleteSpace({ spaceId: 'space-regen' })
+        const second = await backend.writeSpace({
+          spaceId: 'space-regen',
+          spaceDescription: spaceDescription('space-regen')
+        })
+        assert.equal(second.version, 1)
+        assert.notEqual(second.generation, first.generation)
+      })
+
+      it('writeCollection If-None-Match: * creates when absent, 412s when present', async () => {
+        const { backend } = harness
+        await backend.writeSpace({
+          spaceId: 'space-col-inm',
+          spaceDescription: spaceDescription('space-col-inm')
+        })
+        const created = await backend.writeCollection({
+          spaceId: 'space-col-inm',
+          collectionId: 'guarded',
+          collectionDescription: {
+            id: 'guarded',
+            type: ['Collection'],
+            name: 'One'
+          },
+          ifNoneMatch: '*'
+        })
+        assert.equal(created.version, 1)
+        await expect(
+          backend.writeCollection({
+            spaceId: 'space-col-inm',
+            collectionId: 'guarded',
+            collectionDescription: {
+              id: 'guarded',
+              type: ['Collection'],
+              name: 'Two'
+            },
+            ifNoneMatch: '*'
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        assert.equal(
+          (
+            await backend.getCollectionDescription({
+              spaceId: 'space-col-inm',
+              collectionId: 'guarded'
+            })
+          )?.name,
+          'One'
+        )
       })
     })
 
@@ -1286,7 +1565,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           resourceId: 'inm',
           input: jsonInput({ v: 1 }),
-          ifNoneMatch: true
+          ifNoneMatch: '*'
         })
         await expect(
           backend.writeResource({
@@ -1294,7 +1573,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             collectionId: 'col',
             resourceId: 'inm',
             input: jsonInput({ v: 2 }),
-            ifNoneMatch: true
+            ifNoneMatch: '*'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
       })
@@ -1405,7 +1684,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           resourceId: 'tomb',
           input: jsonInput({ v: 3 }),
-          ifNoneMatch: true
+          ifNoneMatch: '*'
         })
         assert.equal(revived.version, 4)
         assert.equal(
@@ -1436,7 +1715,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           resourceId: 'mp',
           custom: { name: 'a' },
-          ifNoneMatch: true
+          ifNoneMatch: '*'
         })
         await expect(
           backend.writeResourceMetadata({
@@ -1444,7 +1723,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             collectionId: 'col',
             resourceId: 'mp',
             custom: { name: 'b' },
-            ifNoneMatch: true
+            ifNoneMatch: '*'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         await expect(
@@ -1510,7 +1789,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const revivedMeta = await backend.writeResourceMetadata({
           ...target,
           custom: { name: 'after' },
-          ifNoneMatch: true
+          ifNoneMatch: '*'
         })
         assert.equal(revivedMeta?.version, 1)
         assert.notEqual(revivedMeta?.generation, preDeleteMeta?.generation)
@@ -1538,7 +1817,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
               collectionId: 'col',
               resourceId: 'race-create',
               input: jsonInput({ writer: index }),
-              ifNoneMatch: true
+              ifNoneMatch: '*'
             })
           )
         )
@@ -3840,7 +4119,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           resourceId: 'parent',
           chunkIndex: 7,
           input: binaryInput(Buffer.from('a')),
-          ifNoneMatch: true
+          ifNoneMatch: '*'
         })
         assert.equal(created.version, 1)
         // If-None-Match: * on an existing chunk 412s.
@@ -3851,7 +4130,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             resourceId: 'parent',
             chunkIndex: 7,
             input: binaryInput(Buffer.from('b')),
-            ifNoneMatch: true
+            ifNoneMatch: '*'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         // A stale If-Match 412s; the matching one succeeds.
@@ -4117,7 +4396,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId,
           collectionId,
           body: line1,
-          ifNoneMatch: true
+          ifNoneMatch: '*'
         })
         assert.equal(created?.version, 1)
         const stored = await backend.getCollectionLog({ spaceId, collectionId })
@@ -4146,7 +4425,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             spaceId,
             collectionId: 'absent-collection',
             body: line1,
-            ifNoneMatch: true
+            ifNoneMatch: '*'
           }),
           undefined
         )
@@ -4160,7 +4439,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId,
           collectionId,
           body: line1,
-          ifNoneMatch: true,
+          ifNoneMatch: '*',
           assertTransition: ({ prior, collectionDescription }) => {
             seen.push(prior, collectionDescription.id)
           }
@@ -4172,7 +4451,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             spaceId,
             collectionId,
             body: line1,
-            ifNoneMatch: true
+            ifNoneMatch: '*'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         await expect(
@@ -4212,7 +4491,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId,
           collectionId,
           body: line1,
-          ifNoneMatch: true
+          ifNoneMatch: '*'
         })
         const after = await backend.getCollectionDescription({
           spaceId,
@@ -4235,7 +4514,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId,
           collectionId,
           body: line1,
-          ifNoneMatch: true
+          ifNoneMatch: '*'
         })
         const listing = await backend.listCollectionItems({
           spaceId,
@@ -4275,7 +4554,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             spaceId: exportSpaceId,
             collectionId: 'governed',
             body: line1 + line2,
-            ifNoneMatch: true
+            ifNoneMatch: '*'
           })
           const tarStream = await source.backend.exportSpace({
             spaceId: exportSpaceId
