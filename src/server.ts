@@ -5,7 +5,10 @@
  * static assets, the Handlebars-rendered welcome page, the `/health` probe,
  * and the CORS proxy.
  */
-import Fastify, { type FastifyInstance } from 'fastify'
+import Fastify, {
+  type FastifyInstance,
+  type FastifyServerOptions
+} from 'fastify'
 import fastifyView from '@fastify/view'
 import fastifyStatic from '@fastify/static'
 import handlebars from 'handlebars'
@@ -23,12 +26,21 @@ import { BUILD_INFO, SPEC_URL, SERVER_VERSION } from './config.default.js'
  * options are passed through -- see {@link FastifyWasOptions}), then the
  * teaching-server extras (static files, welcome page, health probe, CORS
  * proxy).
- * @param options {FastifyWasOptions}
+ * @param options {object}   `fastifyWas` plugin options
+ *   ({@link FastifyWasOptions}), plus:
+ * @param [options.logger] {boolean|object}   Fastify's `logger` option:
+ *   `false` for silent, or a pino options object or instance. Defaults to
+ *   `true` (pino at its default level). The active backend's diagnostics are
+ *   routed through whatever logger results, so `false` silences those too.
  * @returns {import('fastify').FastifyInstance}
  */
-export function createApp(options: FastifyWasOptions = {}): FastifyInstance {
-  // By default uses 'pino' logger
-  const fastify = Fastify({ logger: true })
+export function createApp({
+  logger = true,
+  ...options
+}: FastifyWasOptions & {
+  logger?: FastifyServerOptions['logger']
+} = {}): FastifyInstance {
+  const fastify = Fastify({ logger })
 
   // The WAS protocol surface (decorations, parsers, WAS + WebKMS route groups)
   fastify.register(fastifyWas, options)

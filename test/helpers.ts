@@ -9,7 +9,6 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import type { ISigner } from '@interop/data-integrity-core'
 
 import { createApp } from '../src/server.js'
-import type { FastifyWasOptions } from '../src/plugin.js'
 import type { IRootZcap } from '../src/types.js'
 
 /**
@@ -33,17 +32,26 @@ import type { IRootZcap } from '../src/types.js'
  * @param [options] {object}   `createApp()` options, minus `serverUrl`
  * @param [options.port] {number}   pin the listening port; defaults to an
  *   OS-assigned ephemeral port
+ * @param [options.logger] {boolean|object}   Fastify logger; defaults to
+ *   `false` so per-request log lines stay out of the test output
  * @returns {Promise<{ fastify: FastifyInstance, serverUrl: string, port: number }>}
  */
 export async function startTestServer({
   port = 0,
+  logger = false,
   ...options
-}: Omit<FastifyWasOptions, 'serverUrl'> & { port?: number } = {}): Promise<{
+}: Omit<Parameters<typeof createApp>[0], 'serverUrl'> & {
+  port?: number
+} = {}): Promise<{
   fastify: FastifyInstance
   serverUrl: string
   port: number
 }> {
-  const fastify = createApp({ ...options, serverUrl: 'http://localhost' })
+  const fastify = createApp({
+    ...options,
+    logger,
+    serverUrl: 'http://localhost'
+  })
   await fastify.listen({ port })
   const listeningPort = (fastify.server.address() as AddressInfo).port
   // `localhost`, not `127.0.0.1`: webkms-client only relaxes its loopback

@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 90
+nextAvailableId: 91
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -906,6 +906,47 @@ The read-side cost the wallets carry (one log fetch per governed Collection per
 session, verified from genesis) is unaffected by this item; WAS-54 / WAS-86
 (`If-None-Match` on reads) are the items that reduce it.
 
+### WAS-90: Create-if-absent preconditions on Collection and Space Descriptions
+
+- status: todo
+- priority: low
+- labels: conditional-writes, spec
+- touches:
+  - wallet-attached-storage-spec: Update (or Create By Id) Collection documents
+    `If-Match` and its 412 but no `If-None-Match: *`; the Space Data Model has
+    no version validator, Read Space emits no `ETag`, and Update Space documents
+    no preconditions at all
+  - was-client: WCL-32 (the `ensureSpace` / `ensureSpaceAndCollection` create
+    races; a 412 there has to become a re-read rather than an error)
+- acceptance:
+  - [ ] `writeCollection` accepts `ifNoneMatch` beside `ifMatch`, evaluated
+        atomically with the write like the metadata and log writes already are;
+        `CollectionRequest.put` threads the parsed `If-None-Match: *` through
+        instead of dropping it, and an existing Description answers 412
+        `precondition-failed`
+  - [ ] Space Descriptions carry a server-managed version validator; Read Space
+        emits it as a strong `ETag`, and `writeSpace` accepts `ifMatch` /
+        `ifNoneMatch` on the same terms, with `SpaceRequest.put` threading the
+        parsed headers through
+  - [ ] Conformance and `test/` coverage for both endpoints: guarded create
+        succeeds on an absent target, 412 on a present one, `If-Match` CAS on
+        the Space, and an unconditional PUT unchanged
+  - [ ] Spec text for both operations (the `If-None-Match: *` line and its 412
+        on Update Collection; the Space validator, `ETag`, and preconditions),
+        filed against the spec repo
+
+Context: the client's `ensureSpace` and `ensureSpaceAndCollection` read the
+Description, find it absent, and `PUT` a create. Two clients booting at once
+both take that branch, and the loser's replace-semantics `PUT` overwrites the
+winner's: a Space loses its `type` array (accepted at creation only) and a
+collection its `backend`. `If-None-Match: *` is the only precondition that
+states create-if-absent. The Collection Description handler parses it and drops
+it; the Space handler reads no preconditions and its read emits no `ETag`, so
+there is nothing to condition on. Neither endpoint rejects the header either, so
+a client sending it gets no 412 and no protection. The Collection half reuses
+the `ifMatch` / `assertTransition` plumbing `writeCollection` already has; the
+Space half needs the validator first, which is the spec decision.
+
 ## Public collection serving (agent storage demo next steps, 2026-08-21)
 
 Context: freewallet's agent storage demo (FW-227) has a CLI agent publish
@@ -1168,29 +1209,6 @@ Context: moving the Get Policy auth check from the handler into a route-level
 status changed from 400 to 401. Consistent with PUT and DELETE, which already
 behaved this way, but wire-observable and uncovered by any test.
 
-### WAS-85: `createApp` option to disable or replace the Fastify logger
-
-- status: todo
-- priority: low
-- labels: dx, testing
-- acceptance:
-  - [ ] `createApp` accepts a `logger` option passed through to Fastify (`false`
-        for silent, or a pino options object / instance), defaulting to the
-        current `true`
-  - [ ] The backend diagnostics wiring in `src/plugin.ts` (the
-        `storage.logger     = fastify.log` hand-off) still works when the logger
-        is silent
-  - [ ] `test/helpers.ts` `startTestServer` defaults to `logger: false`, and the
-        in-process consumers (was-react, was-sync) can opt in the same way
-  - [ ] CHANGELOG entry
-
-Context: `createApp` in `src/server.ts` constructs Fastify with `logger: true`
-and offers no way to change it. Every consumer that boots the server in-process
-for its tests (was-react's and was-sync's integration suites, this repo's own
-`test/`) gets one JSON log line per request in its test output, which buries
-assertion failures. Requested from was-sync's WS-11, which moved its integration
-suite from a fake server onto a live in-process instance.
-
 ### WAS-89: A soft delete reopens the `/meta` validator reuse the generation closed
 
 - status: in-progress
@@ -1221,7 +1239,9 @@ suite from a fake server onto a live in-process instance.
 
 Server side shipped 2026-09-07 (sidecar `metaGeneration`, Postgres
 `meta_generation` migration v4, both backends, contract and HTTP regression
-tests). Open: the spec (WASS-28) and was-sync (WS-13) touches.
+tests). The was-sync touch (WS-13) shipped the same day: its integration case
+pins both the one-cycle resurrection and the 412 on the pre-delete meta `ETag`
+against this server. Open: the spec (WASS-28) touch.
 
 The `<generation>.<version>` change (0.28.0) keeps a Resource's generation
 through a soft delete so the content counter stays continuous. The `/meta`

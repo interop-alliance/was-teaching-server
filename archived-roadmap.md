@@ -955,3 +955,26 @@ would answer it with the stale body. A counter that survives the delete would
 need tombstones outside the Space tree and would tell a later controller of a
 reused Space id how many writes the previous one made; a per-record random
 generation needs no persistence beyond the record itself.
+
+### WAS-85: `createApp` option to disable or replace the Fastify logger
+
+- status: done (2026-09-07)
+- priority: low
+- labels: dx, testing
+- acceptance:
+  - [x] `createApp` accepts a `logger` option passed through to Fastify (`false`
+        for silent, or a pino options object / instance), defaulting to the
+        current `true`
+  - [x] The backend diagnostics wiring in `src/plugin.ts` (the
+        `storage.logger     = fastify.log` hand-off) still works when the logger
+        is silent
+  - [x] `test/helpers.ts` `startTestServer` defaults to `logger: false`, and the
+        in-process consumers (was-react, was-sync) can opt in the same way
+  - [x] CHANGELOG entry
+
+Context: `createApp` in `src/server.ts` constructs Fastify with `logger: true`
+and offers no way to change it. Every consumer that boots the server in-process
+for its tests (was-react's and was-sync's integration suites, this repo's own
+`test/`) gets one JSON log line per request in its test output, which buries
+assertion failures. Requested from was-sync's WS-11, which moved its integration
+suite from a fake server onto a live in-process instance.

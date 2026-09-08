@@ -295,3 +295,31 @@ describe('fastifyWas serverUrl validation', () => {
     )
   })
 })
+
+describe('createApp logger option', () => {
+  it('defaults to an active pino logger, shared with the backend', async () => {
+    const fastify = createApp()
+    await fastify.ready()
+    assert.strictEqual(fastify.log.level, 'info')
+    assert.strictEqual(fastify.storage.logger, fastify.log)
+    await fastify.close()
+  })
+
+  it('logger: false silences Fastify and the backend hand-off', async () => {
+    const fastify = createApp({ logger: false })
+    await fastify.ready()
+    // Fastify substitutes a no-op logger (no `level`); the backend gets it too,
+    // so its diagnostics calls resolve to no-ops rather than throwing.
+    assert.strictEqual(fastify.log.level, undefined)
+    assert.strictEqual(fastify.storage.logger, fastify.log)
+    assert.doesNotThrow(() => fastify.storage.logger?.info('silenced'))
+    await fastify.close()
+  })
+
+  it('accepts a pino options object', async () => {
+    const fastify = createApp({ logger: { level: 'error' } })
+    await fastify.ready()
+    assert.strictEqual(fastify.log.level, 'error')
+    await fastify.close()
+  })
+})

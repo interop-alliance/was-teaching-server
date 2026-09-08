@@ -4,6 +4,11 @@
 
 ### Added
 
+- `createApp` accepts a `logger` option passed through to Fastify: `false` for
+  silent, or a pino options object or instance. The default stays `true`. The
+  backend's diagnostics follow the same logger, so a silent app logs nothing.
+  The test helper `startTestServer` now defaults to `logger: false`, so
+  in-process suites no longer print a log line per request.
 - Conditional reads: a GET or HEAD carrying an `If-None-Match` that covers the
   current `ETag` is answered 304 Not Modified with the `ETag` header and no
   body, per RFC 9110 (weak comparison, so `W/"3"` matches `"3"`; a list and `*`
