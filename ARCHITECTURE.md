@@ -97,13 +97,20 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   Description never carries that derived member, a direct `encryption` write
   against it is refused with `encryption-history-log-governed` (409), and its
   other fields still update normally. The server verifies neither proofs nor a
-  hash chain: it checks only that the body is JSON Lines, each line a JSON
-  object with an object `state` member and the last line the head
-  (`invalid-request-body`, 400 on a break), and on every append it runs the same
+  hash chain: it checks that the body is JSON Lines, each line a JSON object
+  with an object `state` member and the last line the head
+  (`invalid-request-body`, 400 on a break), that an append fast-forwards the
+  stored log (the stored bytes verbatim followed by exactly one new line; a body
+  the stored log is not a prefix of is `precondition-failed`, 412, with or
+  without `If-Match`, and one adding other than one line is
+  `invalid-request-body`, 400), and on every append it runs the same
   encryption-descriptor transition checks against the prior head that an
-  ordinary Description update runs. A log write also bumps the Description's own
-  `ETag`, since its served content changed, and is serialized with Description
-  writes through the same per-Collection lock.
+  ordinary Description update runs. The fast-forward rule keeps the log
+  append-only at the server: a write capability can add history but not erase
+  it, while a break inside an appended entry stays the verifying reader's to
+  detect. A log write also bumps the Description's own `ETag`, since its served
+  content changed, and is serialized with Description writes through the same
+  per-Collection lock.
 - **`src/storage.ts`** — supplies `defaultBackend()`, the `FileSystemBackend`
   (rooted at `data/`) that `createApp()` uses when no backend is injected. The
   active backend is injected via `createApp({ backend })` and decorated onto the

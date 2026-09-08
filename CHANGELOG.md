@@ -44,6 +44,12 @@
 
 ### Fixed
 
+- A history log write fast-forwards the stored log: the body must carry the
+  stored bytes verbatim followed by exactly one new line. A body the stored log
+  is not a prefix of (a stale read or a rewritten prefix) is 412
+  `precondition-failed` whether or not the write carries `If-Match`; a body
+  adding no line or several is 400 `invalid-request-body`. A write capability
+  can therefore add to a log but not erase or rewrite it.
 - Import Space validates an archived governing history log (the stored-record
   shape plus the line contract and head-descriptor check a log write passes) and
   rejects the archive with `invalid-import` (400); an unchecked entry could
