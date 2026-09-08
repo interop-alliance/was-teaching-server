@@ -1,5 +1,53 @@
 # History
 
+## 0.29.0 - TBD
+
+### Added
+
+- Create-if-absent preconditions on the Space and Collection Descriptions.
+  Update (or Create by Id) Collection now honors `If-None-Match: *`: the write
+  proceeds only when no Description exists under that id, else 412
+  `precondition-failed`, evaluated atomically with the write (the header was
+  parsed and dropped before). The Space Description gains a server-managed
+  version validator on the same terms as the Collection's: Read Space emits it
+  as a strong `ETag` (and answers a covering `If-None-Match` with 304), Create
+  Space and Update Space return the new `ETag`, and Update Space honors
+  `If-Match` (compare-and-swap) and `If-None-Match: *` (guarded create), 412 on
+  a failed one. An unconditional PUT still upserts. The guarded create resolves
+  two clients provisioning the same Space or Collection at once, where the
+  loser's replacement used to drop the winner's `type` array or `backend`.
+  Postgres gains a schema migration adding the two validator columns to
+  `spaces`. `If-Match` on every conditional write now takes its RFC 9110 forms
+  (`*`, and a comma-separated list of validators), and `If-None-Match` on a
+  write takes a list of validators as well as `*`, refusing when one of them
+  names the current `ETag`. A request carrying both headers evaluates them in
+  the RFC's order, `If-Match` first.
+- Create Space is a guarded create inside the storage backend: two concurrent
+  `POST /spaces/` with the same client-supplied `id` can no longer both succeed,
+  with the later one replacing the first's `controller`. The loser gets the same
+  `id-conflict` (409) as before.
+
+### Fixed
+
+- Filesystem backend: a JSON metadata read (a description, policy, metadata
+  sidecar, history log, backend record, or keystore config) no longer fails with
+  an `ENOENT` 500 when a concurrent hard delete removes the directory between
+  the store's existence check and its read. The window was reachable through the
+  List Spaces scan the Spaces count quota runs on every create, so a Create
+  Space racing another controller's Delete Space could fail.
+- Both backends: Delete Space (and, on the filesystem, Delete Collection) is
+  serialized with the Description write of the same id, so a delete landing
+  inside a concurrent write's read-then-write can no longer resurrect the record
+  with the deleted life's generation.
+- Postgres backend: a Space Description write no longer holds a row lock on the
+  `spaces` row, which is also the usage counter every Collection and Resource
+  write locks, so Update Space and unrelated writes in the Space no longer stall
+  each other.
+- Read Space decides a conditional `If-None-Match` read against the stored
+  description rather than the short-lived per-process cache, so a 304 from one
+  server instance cannot affirm a validator another instance has already
+  superseded.
+
 ## 0.28.0 - 2026-09-07
 
 ### Added

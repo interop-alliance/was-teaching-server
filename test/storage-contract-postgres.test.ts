@@ -227,9 +227,20 @@ if (!connectionString) {
             )
           }
           for (const [name, doc] of fsArchive.parsed) {
+            // The Space Description file is ignored on import (the target
+            // Space was written independently), so its `_generation` /
+            // `_version` validator is that Space's own and cannot match.
+            const withoutSpaceValidator = (document: unknown) =>
+              name.endsWith(`/.space.${spaceId}.json`)
+                ? Object.fromEntries(
+                    Object.entries(document as object).filter(
+                      ([key]) => key !== '_generation' && key !== '_version'
+                    )
+                  )
+                : document
             assert.deepEqual(
-              pgArchive.parsed.get(name),
-              doc,
+              withoutSpaceValidator(pgArchive.parsed.get(name)),
+              withoutSpaceValidator(doc),
               `document differs: ${name}`
             )
           }

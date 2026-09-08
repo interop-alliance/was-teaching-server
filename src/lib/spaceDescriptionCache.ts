@@ -11,7 +11,7 @@ import {
   SPACE_DESCRIPTION_CACHE_MAX,
   SPACE_DESCRIPTION_CACHE_TTL
 } from '../config.default.js'
-import type { SpaceDescription, StorageBackend } from '../types.js'
+import type { StorageBackend, StoredSpaceDescription } from '../types.js'
 import { backendScoped } from './backendCache.js'
 
 /**
@@ -53,7 +53,7 @@ export function invalidateSpaceDescription({
  * @param options {object}
  * @param options.storage {StorageBackend}   the request's storage backend
  * @param options.spaceId {string}
- * @returns {Promise<SpaceDescription | undefined>}
+ * @returns {Promise<StoredSpaceDescription | undefined>}
  */
 export async function getCachedSpaceDescription({
   storage,
@@ -61,10 +61,10 @@ export async function getCachedSpaceDescription({
 }: {
   storage: StorageBackend
   spaceId: string
-}): Promise<SpaceDescription | undefined> {
+}): Promise<StoredSpaceDescription | undefined> {
   return await descriptionCaches
     .for(storage)
-    .memoize<SpaceDescription | undefined>({
+    .memoize<StoredSpaceDescription | undefined>({
       key: spaceId,
       fn: () => storage.getSpaceDescription({ spaceId })
     })

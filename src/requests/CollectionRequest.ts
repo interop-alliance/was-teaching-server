@@ -63,9 +63,11 @@ import {
 } from '../lib/paths.js'
 import {
   type EtagValidator,
+  descriptionEtagOf,
   etagOf,
   formatEtag,
-  parseWritePreconditions
+  parseWritePreconditions,
+  stripDescriptionValidator
 } from '../lib/etag.js'
 import {
   CollectionNotFoundError,
@@ -387,9 +389,10 @@ export class CollectionRequest {
     // create, default `name` to the Collection id and `backend` to the server
     // default (spec).
     const collectionDescription = existingCollection
-      ? // Existing: Update only the allowed fields
+      ? // Existing: update only the allowed fields. The stored description's
+        // out-of-band validator is not part of the body handed to storage.
         {
-          ...existingCollection,
+          ...stripDescriptionValidator(existingCollection),
           id: collectionId,
           ...(body.name !== undefined && { name: body.name }),
           ...(suppliedBackend !== undefined && { backend: suppliedBackend }),
@@ -472,11 +475,14 @@ export class CollectionRequest {
     // `If-Match` (the `key-epochs` / conditional-Collection-write feature) makes
     // a Collection Description update a compare-and-swap on its monotonic
     // description version, so two clients concurrently editing the descriptor (e.g.
-    // both adding a recipient) cannot silently clobber one another. Opt-in: an
-    // unconditional PUT still upserts as before. Evaluated atomically with the
-    // write inside the backend; a stale validator surfaces as 412
+    // both adding a recipient) cannot silently clobber one another, and
+    // `If-None-Match: *` makes the PUT a guarded create (two clients racing to
+    // provision the same Collection cannot both succeed, so the loser cannot
+    // overwrite the winner's `backend`). Both opt-in: an unconditional PUT
+    // still upserts as before. Evaluated atomically with the write inside the
+    // backend; a stale validator or a present Description surfaces as 412
     // `precondition-failed` (rethrown unchanged).
-    const { ifMatch } = parseWritePreconditions(request.headers)
+    const { ifMatch, ifNoneMatch } = parseWritePreconditions(request.headers)
     let written: EtagValidator
     try {
       written = await storage.writeCollection({
@@ -485,6 +491,7 @@ export class CollectionRequest {
         collectionDescription,
         createdBy: invokerDid(request),
         ...(ifMatch !== undefined && { ifMatch }),
+        ...(ifNoneMatch !== undefined && { ifNoneMatch }),
         // Re-evaluate the encryption-descriptor rails and the `plaintext` /
         // `encryption` exclusion atomically with the write, against the prior
         // the backend re-reads under its lock: the early checks above ran
@@ -581,12 +588,8 @@ export class CollectionRequest {
     // surface it as the `ETag` header (so a client can read-modify-CAS the
     // descriptor). Present only once the Collection has been written under
     // versioning; a legacy Collection reports none.
-    const { descriptionGeneration, descriptionVersion, ...descriptionBody } =
-      collectionDescription
-    const descriptionEtag = etagOf({
-      generation: descriptionGeneration,
-      version: descriptionVersion
-    })
+    const descriptionBody = stripDescriptionValidator(collectionDescription)
+    const descriptionEtag = descriptionEtagOf(collectionDescription)
 
     // A conditional read (spec "Caching") against the description ETag.
     const notModified = notModifiedReply({

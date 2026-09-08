@@ -42,7 +42,13 @@ import {
   assertValidGenerator,
   assertValidGeneratorOrigin
 } from '../lib/generator.js'
-import { formatEtag } from '../lib/etag.js'
+import {
+  descriptionEtagOf,
+  formatEtag,
+  parseWritePreconditions,
+  stripDescriptionValidator
+} from '../lib/etag.js'
+import { notModifiedReply } from './notModified.js'
 import {
   spacePath,
   collectionPath,
@@ -60,7 +66,8 @@ import {
   InvalidRequestBodyError,
   IdConflictError,
   SpaceControllerMismatchError,
-  UnresolvableControllerError
+  UnresolvableControllerError,
+  SpaceNotFoundError
 } from '../errors.js'
 import type {
   IDID,
@@ -102,23 +109,59 @@ export class SpaceRequest {
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId }, { requestName })
 
+    // The description served (and the validator the 304 decision below is
+    // made on) is read from storage directly, not from the short-TTL
+    // per-process cache the authorization prelude would use: with several
+    // server instances over one backend, another instance's write invalidates
+    // only its own cache, and a 304 affirms that the client's copy is
+    // current, so it must be decided on the stored state. The same read
+    // supplies the prelude its controller, so the Space is read once.
+    const spaceDescription = await request.server.storage.getSpaceDescription({
+      spaceId
+    })
+    if (!spaceDescription) {
+      throw new SpaceNotFoundError({ requestName })
+    }
     // Authorize (capability-or-policy): capability invocation first, then the
     // Space's access-control policy as a fallback (a public-readable Space).
-    const { spaceDescription } = await fetchSpaceAndAuthorize({
+    await fetchSpaceAndAuthorize({
       request,
       spaceId,
       targetPath: spacePath({ spaceId }),
-      requestName
+      requestName,
+      spaceDescription
     })
+
+    // `descriptionGeneration` / `descriptionVersion` are the out-of-band
+    // `ETag` validator, not part of the wire body: strip them and emit the
+    // `ETag` header instead. A legacy Space written before description
+    // versioning reports none.
+    const storedDescription = stripDescriptionValidator(spaceDescription)
+    const descriptionEtag = descriptionEtagOf(spaceDescription)
+    // A conditional read (`If-None-Match` covering the current validator) is
+    // answered 304 with no body, after authorization so an under-authorized
+    // read still got the 404 mask above.
+    const notModified = notModifiedReply({
+      request,
+      reply,
+      etag: descriptionEtag
+    })
+    if (notModified) {
+      return notModified
+    }
 
     // authorized, continue. Advertise the Space's self `url` and linkset (policy
     // discovery); both relative, consistent with the other URL fields the API
     // returns. `type` is served lexically sorted (spec SHOULD).
     const url = spacePath({ spaceId })
     const linkset = linksetPath({ spaceId })
-    return reply.status(200).send({
-      ...spaceDescription,
-      type: [...spaceDescription.type].sort(),
+    const getReply = reply.status(200)
+    if (descriptionEtag !== undefined) {
+      getReply.header('etag', descriptionEtag)
+    }
+    return getReply.send({
+      ...storedDescription,
+      type: [...storedDescription.type].sort(),
       url,
       linkset
     } satisfies SpaceDescription)
@@ -301,9 +344,10 @@ export class SpaceRequest {
     // Compose Space Description object body, new or updated. `name` is
     // optional, so only include it when the request supplies one.
     const spaceDescription = existingSpaceDescription
-      ? // Existing: Update only the allowed fields
+      ? // Existing: update only the allowed fields. The stored description's
+        // out-of-band validator is not part of the body handed to storage.
         {
-          ...existingSpaceDescription,
+          ...stripDescriptionValidator(existingSpaceDescription),
           id: spaceId,
           controller: body.controller,
           ...(body.name !== undefined && { name: body.name })
@@ -316,16 +360,30 @@ export class SpaceRequest {
           ...(body.name !== undefined && { name: body.name })
         }
 
-    // zCap checks out, continue
-    await storage.writeSpace({
+    // zCap checks out, continue. `If-None-Match: *` makes the PUT a guarded
+    // create (two clients racing to provision the same Space cannot both
+    // succeed, so the loser's replace-semantics PUT cannot overwrite the
+    // winner's `type`) and `If-Match` a compare-and-swap on the description's
+    // monotonic version. Both opt-in: an unconditional PUT still upserts as
+    // before. Evaluated atomically with the write inside the backend, against
+    // the description it re-reads under its lock -- the `existingSpaceDescription`
+    // read above chose the authorization path, and a Space created in between
+    // by a concurrent writer surfaces here as 412 `precondition-failed`.
+    const { ifMatch, ifNoneMatch } = parseWritePreconditions(request.headers)
+    const written = await storage.writeSpace({
       spaceId,
       spaceDescription,
-      createdBy: invokerDid(request)
+      createdBy: invokerDid(request),
+      ...(ifMatch !== undefined && { ifMatch }),
+      ...(ifNoneMatch !== undefined && { ifNoneMatch })
     })
     // Bust any cached (now-stale) description so the next read sees this write.
     invalidateSpaceDescription({ storage, spaceId })
 
     reply.header('Location', spaceUrl)
+    // Surface the new description ETag so a client can chain a conditional
+    // update (read-modify-CAS on the Space Description).
+    reply.header('etag', formatEtag(written))
     return existingSpaceDescription
       ? reply.status(204).send() // update
       : reply.status(201).send(spaceDescription) // create

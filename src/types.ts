@@ -37,7 +37,7 @@ import type {
   IDocumentLoader
 } from '@interop/data-integrity-core/loader'
 
-import type { EtagValidator } from './lib/etag.js'
+import type { EtagValidator, HeldValidators } from './lib/etag.js'
 import type {
   BlindedIndexQuery,
   BlindedIndexQueryPage
@@ -462,15 +462,29 @@ export type BackendProviderRegistry = Map<string, BackendProvider>
  * `Readable` it extends (tar-stream ships no types).
  */
 /**
- * A stored Collection Description as the backends surface it: the wire body
- * plus, out of band, the description's `ETag` validator parts
- * (`descriptionGeneration` / `descriptionVersion`), both absent for a legacy
- * Collection written before description versioning.
+ * The out-of-band description `ETag` validator parts a stored Space or
+ * Collection Description carries beside its wire body, both absent for a
+ * legacy record written before description versioning. The handler strips
+ * them from the wire body and sets the `ETag` header from them.
  */
-export type StoredCollectionDescription = CollectionDescription & {
+export interface DescriptionValidatorParts {
   descriptionGeneration?: string
   descriptionVersion?: number
 }
+
+/**
+ * A stored Collection Description as the backends surface it: the wire body
+ * plus the out-of-band validator parts.
+ */
+export type StoredCollectionDescription = CollectionDescription &
+  DescriptionValidatorParts
+
+/**
+ * A stored Space Description as the backends surface it: the wire body plus
+ * the out-of-band validator parts.
+ */
+export type StoredSpaceDescription = SpaceDescription &
+  DescriptionValidatorParts
 
 /**
  * The out-of-band validator parts a Resource Metadata read carries: the
@@ -578,22 +592,39 @@ export interface StorageBackend {
   }): Promise<BackendUsage>
 
   /**
-   * Writes a Space Description (full replacement). The server-managed
-   * `createdBy` is authoritative, never taken from `spaceDescription`: the
-   * backend drops any value carried in that (client-supplied) document and
-   * records `createdBy` from the first write's invoker, preserving it verbatim
-   * on every later write. Omitting `createdBy` on a first write leaves it
-   * unrecorded rather than letting the body supply one.
+   * Writes a Space Description (full replacement), bumping its monotonic
+   * description `version` (with its `generation`, the `ETag` validator behind
+   * conditional Space writes) and returning the new validator. The
+   * server-managed `createdBy` is authoritative, never taken from
+   * `spaceDescription`: the backend drops any value carried in that
+   * (client-supplied) document and records `createdBy` from the first write's
+   * invoker, preserving it verbatim on every later write. Omitting `createdBy`
+   * on a first write leaves it unrecorded rather than letting the body supply
+   * one. `ifMatch` / `ifNoneMatch` are evaluated atomically with the write on
+   * the same terms as `writeCollection`'s: `ifNoneMatch` is the guarded create
+   * (412 `precondition-failed` when a Description exists), `ifMatch` the
+   * compare-and-swap on the current description `ETag`. The validator travels
+   * only as the `ETag` header -- it is kept OUT of the wire Space Description
+   * body, and a backend strips any validator-bearing member the supplied
+   * document carries through `normalizeDescriptionWrite` before storing it.
    */
   writeSpace(options: {
     spaceId: string
     spaceDescription: SpaceDescription
     /** DID of the invoker; recorded as `createdBy` on first write only */
     createdBy?: IDID
-  }): Promise<void>
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+  }): Promise<EtagValidator>
+  /**
+   * Reads a Space Description. Resolves falsy when the Space does not exist.
+   * `descriptionGeneration` / `descriptionVersion` are the out-of-band `ETag`
+   * validator; absent for a legacy Space written before description
+   * versioning.
+   */
   getSpaceDescription(options: {
     spaceId: string
-  }): Promise<SpaceDescription | undefined>
+  }): Promise<StoredSpaceDescription | undefined>
   deleteSpace(options: { spaceId: string }): Promise<void>
   /**
    * Enumerates every Space stored on this backend (the candidate set for the
@@ -652,6 +683,9 @@ export interface StorageBackend {
    * concurrent recipient edits from clobbering one another), else
    * `precondition-failed` (412). The validator travels only as the `ETag`
    * header -- it is kept OUT of the stored/wire Collection Description body.
+   * `ifNoneMatch` (`If-None-Match: *`) is the guarded create: the write
+   * proceeds only if no Description exists yet, else `precondition-failed`
+   * (412), evaluated under the same lock.
    */
   writeCollection(options: {
     spaceId: string
@@ -660,6 +694,7 @@ export interface StorageBackend {
     /** DID of the invoker; recorded as `createdBy` on first write only */
     createdBy?: IDID
     ifMatch?: string
+    ifNoneMatch?: HeldValidators
     /**
      * Invoked atomically with the write (inside the backend's per-Collection
      * lock / row-locking transaction) against the freshly re-read current
@@ -770,7 +805,7 @@ export interface StorageBackend {
      */
     epoch?: string
     ifMatch?: string
-    ifNoneMatch?: boolean
+    ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator>
   getResource(options: {
     spaceId: string
@@ -842,7 +877,7 @@ export interface StorageBackend {
      */
     epoch?: string
     ifMatch?: string
-    ifNoneMatch?: boolean
+    ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator | undefined>
 
   /**
@@ -889,7 +924,7 @@ export interface StorageBackend {
      */
     epoch?: string
     ifMatch?: string
-    ifNoneMatch?: boolean
+    ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator | undefined>
 
   /**
@@ -921,7 +956,7 @@ export interface StorageBackend {
     collectionId: string
     body: string
     ifMatch?: string
-    ifNoneMatch?: boolean
+    ifNoneMatch?: HeldValidators
     /**
      * Invoked atomically with the write against the freshly re-read current
      * log (`undefined` on a create) and Collection Description; throwing
@@ -955,7 +990,7 @@ export interface StorageBackend {
     chunkIndex: number
     input: ResourceInput
     ifMatch?: string
-    ifNoneMatch?: boolean
+    ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator>
   /**
    * Reads a chunk's bytes, resolving the same `ResourceResult` shape as

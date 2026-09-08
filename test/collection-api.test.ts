@@ -15,6 +15,7 @@ import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
   assertEtagVersion,
   etagGeneration,
+  requestError,
   responseOf,
   startTestServer,
   zcapClients
@@ -321,6 +322,47 @@ describe('Collections API', () => {
     const newEtag = conditional.headers.get('etag')
     assert.ok(newEtag, 'GET returns a description ETag')
     assert.notEqual(etagGeneration(newEtag!), etagGeneration(oldEtag))
+  })
+
+  it('[root] PUT with If-None-Match: * creates an absent Collection and 412s on a present one', async () => {
+    const collectionId = 'guarded-collection'
+    const collectionUrl = `${serverUrl}/space/${alice.space1.id}/${collectionId}`
+
+    const created = await alice.was.request({
+      url: collectionUrl,
+      method: 'PUT',
+      json: { id: collectionId, name: 'Winner' },
+      headers: { 'if-none-match': '*' }
+    })
+    assert.equal(created.status, 201)
+    assertEtagVersion({ etag: created.headers.get('etag'), version: 1 })
+
+    // The loser of a create race: the same guarded PUT against the now-present
+    // Collection is refused and the stored description is untouched.
+    const thrown = await requestError(
+      alice.was.request({
+        url: collectionUrl,
+        method: 'PUT',
+        json: { id: collectionId, name: 'Loser' },
+        headers: { 'if-none-match': '*' }
+      })
+    )
+    assert.equal(thrown.response.status, 412)
+    assert.equal(
+      thrown.data.type,
+      'https://wallet.storage/spec#precondition-failed'
+    )
+    const stored = await aliceSpace.collection(collectionId).describe()
+    assert.equal(stored!.name, 'Winner')
+
+    // An unconditional PUT still upserts.
+    const replaced = await alice.was.request({
+      url: collectionUrl,
+      method: 'PUT',
+      json: { id: collectionId, name: 'Replaced' }
+    })
+    assert.equal(replaced.status, 204)
+    assertEtagVersion({ etag: replaced.headers.get('etag'), version: 2 })
   })
 
   it('[root] DELETE a never-created collection is idempotent (204, not 500)', async () => {

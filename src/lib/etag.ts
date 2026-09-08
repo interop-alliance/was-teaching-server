@@ -24,6 +24,7 @@
  */
 import { randomBytes } from 'node:crypto'
 import { base58 } from '@scure/base'
+import type { DescriptionValidatorParts } from '../types.js'
 
 /**
  * The parts of a strong `ETag` validator: the record's `generation` and its
@@ -92,26 +93,139 @@ export function etagOf({
 }
 
 /**
+ * The `ETag` of a stored Space or Collection Description, from its
+ * out-of-band validator parts; `undefined` for a legacy record or an absent
+ * one (a create's prior state).
+ * @param [stored] {DescriptionValidatorParts}
+ * @returns {string | undefined}
+ */
+export function descriptionEtagOf(
+  stored?: DescriptionValidatorParts
+): string | undefined {
+  return etagOf({
+    generation: stored?.descriptionGeneration,
+    version: stored?.descriptionVersion
+  })
+}
+
+/**
+ * Lifts a description file's on-disk layout (the wire body plus the reserved
+ * `_generation` / `_version` members, the filesystem backend's convention and
+ * the archive interchange shape) into the stored read shape: the validator
+ * re-surfaced out of band as `descriptionGeneration` / `descriptionVersion`,
+ * both absent for a legacy record. The inverse of `embedDescriptionValidator`.
+ * @param raw {T & { _generation?: string, _version?: number }}
+ * @returns {T & DescriptionValidatorParts}
+ */
+export function storedDescriptionFromFile<T extends object>(
+  raw: T & { _generation?: string; _version?: number }
+): T & DescriptionValidatorParts {
+  const { _generation, _version, ...description } = raw
+  return {
+    ...(description as T),
+    ...(_generation !== undefined && { descriptionGeneration: _generation }),
+    ...(_version !== undefined && { descriptionVersion: _version })
+  }
+}
+
+/**
+ * Embeds a description validator into a wire body as the reserved
+ * `_generation` / `_version` members, the layout a description file on disk
+ * and an archived description share. A missing generation (a legacy record)
+ * is left out rather than written as `undefined`, and so is a missing version.
+ * @param options {object}
+ * @param options.body {T}   the wire body, validator already stripped
+ * @param [options.generation] {string}
+ * @param [options.version] {number}
+ * @returns {T & { _generation?: string, _version?: number }}
+ */
+export function embedDescriptionValidator<T extends object>({
+  body,
+  generation,
+  version
+}: {
+  body: T
+  generation?: string
+  version?: number
+}): T & { _generation?: string; _version?: number } {
+  return {
+    ...body,
+    ...(generation !== undefined && { _generation: generation }),
+    ...(version !== undefined && { _version: version })
+  }
+}
+
+/**
+ * Drops the out-of-band validator parts from a stored Space or Collection
+ * Description read result, leaving the wire body. A handler that composes an
+ * update from the stored description spreads this, so the document handed to
+ * storage carries no validator of its own.
+ * @param stored {T & DescriptionValidatorParts}
+ * @returns {T}
+ */
+export function stripDescriptionValidator<T extends object>(
+  stored: T & DescriptionValidatorParts
+): T {
+  const {
+    descriptionGeneration: _generation,
+    descriptionVersion: _version,
+    ...body
+  } = stored
+  return body as T
+}
+
+/**
  * Normalizes the `If-Match` / `If-None-Match` request headers into the write
- * preconditions the storage layer evaluates. Only `If-None-Match: *`
- * (create-if-absent) is supported; an `If-Match` value is passed through as the
- * quoted ETag to match. A header that is absent (or, for an array-valued header,
- * not a single string) contributes no precondition.
+ * preconditions the storage layer evaluates. `If-Match` is passed through as
+ * its header value (an array-valued header comma-joined), in any of the RFC
+ * 9110 forms `ifMatchCovers` understands: `*`, one quoted validator, or a
+ * list. `If-None-Match` is parsed by `parseIfNoneMatch` into the same held
+ * set a conditional read uses, so `*` (create-if-absent) and a list of
+ * validators both reach the backend. A header that is absent contributes no
+ * precondition.
  * @param headers {object}
  * @param [headers.if-match] {string | string[]}
  * @param [headers.if-none-match] {string | string[]}
- * @returns {{ ifMatch?: string, ifNoneMatch?: boolean }}
+ * @returns {{ ifMatch?: string, ifNoneMatch?: HeldValidators }}
  */
 export function parseWritePreconditions(headers: {
   'if-match'?: string | string[]
   'if-none-match'?: string | string[]
-}): { ifMatch?: string; ifNoneMatch?: boolean } {
-  const ifMatch = headers['if-match']
-  const ifNoneMatch = headers['if-none-match']
+}): { ifMatch?: string; ifNoneMatch?: HeldValidators } {
+  const rawIfMatch = headers['if-match']
+  const ifMatch = Array.isArray(rawIfMatch) ? rawIfMatch.join(',') : rawIfMatch
+  const ifNoneMatch = parseIfNoneMatch(headers['if-none-match'])
   return {
-    ...(typeof ifMatch === 'string' && { ifMatch }),
-    ...(ifNoneMatch === '*' && { ifNoneMatch: true })
+    ...(ifMatch !== undefined && { ifMatch }),
+    ...(ifNoneMatch !== undefined && { ifNoneMatch })
   }
+}
+
+/**
+ * Whether an `If-Match` header value covers a record's current `ETag` (RFC
+ * 9110 section 13.1.1): `*` covers any record that has a validator, and a
+ * list covers it when one member equals it under strong comparison, so a
+ * weak (`W/`-prefixed) member never matches. A record with no `ETag` is
+ * covered by nothing, since no client holds a validator for it.
+ * @param options {object}
+ * @param options.ifMatch {string}   the `If-Match` header value
+ * @param [options.currentEtag] {string}   the record's current `ETag`
+ * @returns {boolean}
+ */
+export function ifMatchCovers({
+  ifMatch,
+  currentEtag
+}: {
+  ifMatch: string
+  currentEtag?: string
+}): boolean {
+  if (currentEtag === undefined) {
+    return false
+  }
+  if (ifMatch.trim() === '*') {
+    return true
+  }
+  return ifMatch.split(',').some(member => member.trim() === currentEtag)
 }
 
 /**
