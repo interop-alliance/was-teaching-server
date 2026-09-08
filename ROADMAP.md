@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 89
+nextAvailableId: 90
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -1190,6 +1190,55 @@ for its tests (was-react's and was-sync's integration suites, this repo's own
 `test/`) gets one JSON log line per request in its test output, which buries
 assertion failures. Requested from was-sync's WS-11, which moved its integration
 suite from a fake server onto a live in-process instance.
+
+### WAS-89: A soft delete reopens the `/meta` validator reuse the generation closed
+
+- status: todo
+- priority: high
+- labels: bug, conditional-writes, metadata, tombstones
+- touches:
+  - was-teaching-server: `deleteResource` (the tombstone sidecar rewrite),
+    the Resource `/meta` write path, `src/lib/etag.ts`, the Postgres schema
+    (a `meta_generation` column on resources), CHANGELOG
+  - wallet-attached-storage-spec: WASS-28 records the lifecycle rule this
+    item enforces
+  - was-sync: WS-13 pins the resurrection path's `/meta` write against this
+    server
+- acceptance:
+  - [ ] A Resource's `/meta` validator carries its own generation, minted by
+        the first metadata write and independent of the content sidecar's
+        `generation` (the shape Collections already have with
+        `description_generation` beside `meta_generation`)
+  - [ ] The tombstone rewrite drops that generation together with `custom`
+        and `metaVersion`, so a re-created Resource's first metadata write
+        starts a fresh generation at `metaVersion` 1
+  - [ ] Regression test on both backends: write `/meta`, soft-delete,
+        re-create, write `/meta` again; the pre-delete meta `ETag` fails
+        `If-Match` with 412, and `If-None-Match: *` on `/meta` succeeds on
+        the re-created Resource
+  - [ ] The content validator's behavior is unchanged: `generation` kept and
+        `version` continuing through the tombstone
+
+The `<generation>.<version>` change (0.28.0) keeps a Resource's generation
+through a soft delete so the content counter stays continuous. The `/meta`
+validator is built from that same sidecar generation and `metaVersion`, but
+the tombstone rewrite in `deleteResource` drops `metaVersion` while keeping
+the generation. After a re-create, the first metadata write mints
+`metaVersion` 1 under the old generation, so the meta `ETag` `<gen>.1` recurs.
+A replica still holding the pre-delete `<gen>.1` passes `If-Match` on `/meta`
+and clobbers the re-created Resource's metadata with stale `custom`. That is
+the lost update the generation was introduced to close, reopened on the
+soft-delete path for the metadata validator alone.
+
+Dropping `custom` on delete is right (the user metadata goes with the deleted
+Resource, and the spec treats a Collection's metadata object the same way).
+The fix is to make the metadata object's validator die with it: a separate
+meta generation, gone with the tombstone. Keeping `metaVersion` through the
+tombstone instead would also close the hole, but it would force every
+resurrecting client to carry a meta `ETag` off the tombstone feed entry and
+use `If-Match`, and would change the tombstone's documented feed shape; the
+separate generation leaves both the spec text and the sync driver as they
+are.
 
 ## Test coverage gaps (conformance suite + server `test/`)
 

@@ -10,7 +10,11 @@
  * checks them and compares its result against the derived member.
  */
 import type { CollectionEncryption } from '@interop/storage-core'
-import { InvalidRequestBodyError, StorageError } from '../errors.js'
+import {
+  InvalidRequestBodyError,
+  PreconditionFailedError,
+  StorageError
+} from '../errors.js'
 import { isPlainObject } from './isPlainObject.js'
 import {
   assertEncryptionDescriptorTransition,
@@ -80,12 +84,36 @@ export function parseGoverningLog({
 }
 
 /**
+ * The number of entry lines in a log body under the line contract (a
+ * trailing newline closes the last line rather than opening an empty one).
+ * @param body {string}
+ * @returns {number}
+ */
+function lineCount(body: string): number {
+  const lines = body.split('\n')
+  return lines.at(-1) === '' ? lines.length - 1 : lines.length
+}
+
+/**
  * The checks a log write runs atomically with the write: the line contract
  * on the new body, the head `state`'s shape as an encryption descriptor (the
- * same gate a Description write passes), and the descriptor transition from
- * the prior head (`epochs` append-only, `currentEpoch` never older, `hmac`
- * id and type permanent, `scheme` and `version` set-once), raising exactly
- * what a Description PUT raises today.
+ * same gate a Description write passes), the fast-forward rule against the
+ * stored log, and the descriptor transition from the prior head (`epochs`
+ * append-only, `currentEpoch` never older, `hmac` id and type permanent,
+ * `scheme` and `version` set-once), raising exactly what a Description PUT
+ * raises today.
+ *
+ * The fast-forward rule is what keeps the log append-only at the server: an
+ * append carries the stored bytes verbatim followed by exactly one new line.
+ * A body the stored log is not a prefix of presumes a log that is not the
+ * current one (a stale read, or a rewritten prefix) and is refused as
+ * `precondition-failed` (412), whether or not the write carried `If-Match`;
+ * a body that extends the stored bytes by other than one line is a malformed
+ * append (`invalid-request-body`, 400). So a holder of a write capability
+ * can add to the history but cannot erase it; a break inside an appended
+ * entry (a bad proof, a broken hash chain) is still the verifying reader's
+ * to detect under the governing profile. A create (no stored log) is bound
+ * by the line contract alone.
  *
  * @param options {object}
  * @param options.body {string}   the new log body
@@ -106,6 +134,23 @@ export function assertGoverningLogAppend({
   const incoming = assertSupportedEncryption({ encryption: head, requestName })
   if (prior === undefined) {
     return
+  }
+  if (!body.startsWith(prior)) {
+    throw new PreconditionFailedError({
+      requestName,
+      detail:
+        'The stored history log is not a prefix of the body: an append ' +
+        'carries the stored bytes verbatim followed by the new line.'
+    })
+  }
+  const added = lineCount(body) - lineCount(prior)
+  if (added !== 1) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail:
+        `An append adds exactly one line to the stored history log ` +
+        `(${added} added).`
+    })
   }
   const existing = parseGoverningLog({ body: prior, requestName }).head
   assertEncryptionDescriptorTransition({

@@ -295,6 +295,68 @@ describe('Governing history log API (meta/log)', () => {
       assertEtagVersion({ etag: read.headers.get('etag'), version: 2 })
     })
 
+    it('[signed] a body the stored log is not a prefix of is a 412 even under a current If-Match, and the log is unchanged', async () => {
+      const { collectionId, etag } = await governedCollection()
+      // A rewritten genesis (different versionId) under the current ETag.
+      const rewritten =
+        entryLine({
+          ordinal: 9,
+          state: oneEpoch,
+          parameters: { method: 'resource-log:0.1', scid: 'zScid' }
+        }) +
+        '\n' +
+        entryLine({ ordinal: 2, state: twoEpochs }) +
+        '\n'
+      const refused = await putLog({
+        collectionId,
+        body: rewritten,
+        headers: { 'if-match': etag }
+      })
+      assert.equal(refused.status, 412)
+      assert.match(refused.problem.type, /#precondition-failed$/)
+      const read = await alice.was.request({
+        url: logUrl(collectionId),
+        method: 'GET'
+      })
+      assertEtagVersion({ etag: read.headers.get('etag'), version: 1 })
+    })
+
+    it('[signed] an append adds exactly one line: none or several is 400 invalid-request-body', async () => {
+      const { collectionId, body, etag } = await governedCollection()
+      for (const extended of [
+        body,
+        body +
+          entryLine({ ordinal: 2, state: twoEpochs }) +
+          '\n' +
+          entryLine({ ordinal: 3, state: twoEpochs }) +
+          '\n'
+      ]) {
+        const refused = await putLog({
+          collectionId,
+          body: extended,
+          headers: { 'if-match': etag }
+        })
+        assert.equal(refused.status, 400)
+        assert.match(refused.problem.type, /#invalid-request-body$/)
+      }
+    })
+
+    it('[signed] a write carrying no precondition is bound by the body: a fast-forward lands, a stale body is a 412', async () => {
+      const { collectionId, body } = await governedCollection()
+      const extended = body + entryLine({ ordinal: 2, state: twoEpochs }) + '\n'
+      const landed = await putLog({ collectionId, body: extended })
+      assert.equal(landed.status, 204)
+      assertEtagVersion({ etag: landed.etag, version: 2 })
+      // A lost race: a second line built on the genesis alone, after the
+      // append above moved the head, so the stored log is not its prefix.
+      const stale = await putLog({
+        collectionId,
+        body: body + entryLine({ ordinal: 2, state: oneEpoch }) + '\n'
+      })
+      assert.equal(stale.status, 412)
+      assert.match(stale.problem.type, /#precondition-failed$/)
+    })
+
     it('[signed] a guarded create on an existing log is a 412', async () => {
       const { collectionId, body } = await governedCollection()
       const raced = await putLog({
