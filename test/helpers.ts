@@ -290,24 +290,21 @@ export async function zcapClients({ serverUrl }: { serverUrl: string }) {
     seed: fixtures.alice.secret.adminKeySeedBytes
   })
   const aliceRootDid = `did:key:${aliceAdminKeyPair.fingerprint()}`
-  aliceAdminKeyPair.id = `${aliceRootDid}#${aliceAdminKeyPair.fingerprint()}`
-  const aliceRootSigner = aliceAdminKeyPair.signer()
+  const aliceRootSigner = aliceAdminKeyPair.didKeySigner()
 
   // Set up a key pair for Alice's delegated app
   const aliceDelegatedAppKeyPair = await Ed25519VerificationKey.generate({
     seed: fixtures.aliceDelegatedApp.secret.adminKeySeedBytes
   })
   const aliceDelegatedAppDid = `did:key:${aliceDelegatedAppKeyPair.fingerprint()}`
-  aliceDelegatedAppKeyPair.id = `${aliceDelegatedAppDid}#${aliceDelegatedAppKeyPair.fingerprint()}`
-  const aliceDelegatedAppSigner = aliceDelegatedAppKeyPair.signer()
+  const aliceDelegatedAppSigner = aliceDelegatedAppKeyPair.didKeySigner()
 
   // Set up Bob's root / admin key pair and client
   const bobAdminKeyPair = await Ed25519VerificationKey.generate({
     seed: fixtures.bob.secret.adminKeySeedBytes
   })
   const bobRootDid = `did:key:${bobAdminKeyPair.fingerprint()}`
-  bobAdminKeyPair.id = `${bobRootDid}#${bobAdminKeyPair.fingerprint()}`
-  const bobRootSigner = bobAdminKeyPair.signer()
+  const bobRootSigner = bobAdminKeyPair.didKeySigner()
 
   return {
     alice: {

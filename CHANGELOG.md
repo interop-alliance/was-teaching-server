@@ -1,5 +1,13 @@
 # History
 
+## 0.31.0 - TBD
+
+### Changed
+
+- Bumped `@interop/ed25519-verification-key` to 8.2.0 and switched test fixtures
+  that mint a bare `did:key` signer to its new `didKeySigner()` method instead
+  of hand-setting `keyPair.id` before calling `signer()`.
+
 ## 0.30.0 - 2026-09-10
 
 ### Added

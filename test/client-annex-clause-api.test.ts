@@ -191,13 +191,11 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     await space.collection(collectionId).configure({ force: true })
 
     const updateKeyPair = await Ed25519VerificationKey.generate()
-    updateKeyPair.id =
-      `did:key:${updateKeyPair.publicKeyMultibase}` +
-      `#${updateKeyPair.publicKeyMultibase}`
+    const updateKeySigner = updateKeyPair.didKeySigner()
     const logSigner = signerFromExternalKey({
       publicKeyMultibase: updateKeyPair.publicKeyMultibase!,
       sign: async ({ data }: { data: Uint8Array }) =>
-        await updateKeyPair.signer().sign({ data })
+        await updateKeySigner.sign({ data })
     })
 
     const clientKeyPair = await Ed25519VerificationKey.generate()
@@ -997,13 +995,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
      */
     function bareDidKeyOf(keyPair: any): { did: string; signer: any } {
       const did = `did:key:${keyPair.publicKeyMultibase}`
-      return {
-        did,
-        signer: {
-          ...keyPair.signer(),
-          id: `${did}#${keyPair.publicKeyMultibase}`
-        }
-      }
+      return { did, signer: keyPair.didKeySigner() }
     }
 
     /**

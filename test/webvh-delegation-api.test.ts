@@ -76,13 +76,11 @@ describe('did:webvh delegation and chain depth', () => {
    */
   async function mintWebvhDid({ spaceId }: { spaceId: string }) {
     const updateKeyPair = await Ed25519VerificationKey.generate()
-    updateKeyPair.id =
-      `did:key:${updateKeyPair.publicKeyMultibase}` +
-      `#${updateKeyPair.publicKeyMultibase}`
+    const updateKeySigner = updateKeyPair.didKeySigner()
     const logSigner = signerFromExternalKey({
       publicKeyMultibase: updateKeyPair.publicKeyMultibase!,
       sign: async ({ data }: { data: Uint8Array }) =>
-        await updateKeyPair.signer().sign({ data })
+        await updateKeySigner.sign({ data })
     })
     const clientKeyPair = await Ed25519VerificationKey.generate()
 

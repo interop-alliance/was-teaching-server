@@ -116,13 +116,11 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
     await space.collection('id').configure({ force: true })
 
     const updateKeyPair = await Ed25519VerificationKey.generate()
-    updateKeyPair.id =
-      `did:key:${updateKeyPair.publicKeyMultibase}` +
-      `#${updateKeyPair.publicKeyMultibase}`
+    const updateKeySigner = updateKeyPair.didKeySigner()
     const logSigner = signerFromExternalKey({
       publicKeyMultibase: updateKeyPair.publicKeyMultibase!,
       sign: async ({ data }: { data: Uint8Array }) =>
-        await updateKeyPair.signer().sign({ data })
+        await updateKeySigner.sign({ data })
     })
 
     const allRelations = await Ed25519VerificationKey.generate()
