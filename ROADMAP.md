@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 91
+nextAvailableId: 92
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -425,7 +425,9 @@ descriptions and sidecars raw) and in `src/backends/postgres.ts` (routes through
 - touches:
   - storage-core: new problem types in the shared error registry (their
     spellings are permanent wire values and need maintainer sign-off before
-    coding)
+    coding). Note: storage-core: SC-2 minted
+    `ProblemTypes.CAPABILITY_ALREADY_REVOKED` (`#capability-already-revoked`,
+    400), published as @interop/storage-core@0.12.0
   - conformance-suite: negative-path assertions on the new types
 - acceptance:
   - [ ] An authorization denial distinguishes, at minimum, a revoked capability

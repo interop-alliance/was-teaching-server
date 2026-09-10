@@ -1224,3 +1224,44 @@ there is nothing to condition on. Neither endpoint rejects the header either, so
 a client sending it gets no 412 and no protection. The Collection half reuses
 the `ifMatch` / `assertTransition` plumbing `writeCollection` already has; the
 Space half needs the validator first, which is the spec decision.
+
+### WAS-91: Distinct problem type for an already-revoked revocation submission
+
+- status: done
+- done: 2026-09-09
+- priority: medium
+- labels: zcap, errors, revocation
+- blocked-by: storage-core SC-2
+- touches:
+  - storage-core: SC-2 minted `ProblemTypes.CAPABILITY_ALREADY_REVOKED`
+    (`#capability-already-revoked`, 400) on 2026-09-09; published as
+    @interop/storage-core@0.12.0 (consumed here 2026-09-09)
+  - was-client: WCL-39 maps the type to `AlreadyRevokedError` (waived here
+    2026-09-09; tracked in the was-client roadmap)
+  - wallet-core: WC-135 narrows `revokeTreatingAlreadyRevokedAsSuccess` to it
+    (waived here 2026-09-09; tracked in the wallet-core roadmap)
+- acceptance:
+  - [x] `RevocationRequest` (`src/requests/RevocationRequest.ts`) answers the
+        post-authorization store hit ("already revoked", the check that runs
+        after `handleRevocationInvocationVerify`) with the SC-2 problem type
+        instead of `INVALID_REQUEST_BODY`; the status stays 400
+  - [x] Every other 400 on the route (malformed body, root capability, id
+        mismatch, chain verification failure, no delegator) keeps
+        `INVALID_REQUEST_BODY`, so a chain that fails to verify is never
+        reported as revoked
+  - [x] The oracle argument is recorded in the handler comment: the distinct
+        type is emitted only after the masked authorization, so it discloses
+        nothing an unauthorized prober could not already learn
+  - [x] Server `test/` pins the type on a resubmission and pins
+        `INVALID_REQUEST_BODY` on a tampered and on an expired chain
+
+Discovered 2026-09-09 from wallet-core WC-135. Today every 400 on the revocation
+route is one `InvalidRevocationError` carrying `INVALID_REQUEST_BODY` and the
+title "Invalid Revoke Capability request"; the cases differ only in the
+free-text `detail`. A client resubmitting a revocation blind (a resumed
+ceremony) therefore cannot tell "already revoked" from "the chain does not
+verify", and wallet-core currently treats both as success, which leaves a
+still-valid generation delegation live for up to a year. Narrower than WAS-57:
+that item types the denial on an invocation under a revoked chain; this one
+types the answer to the revocation submission itself, on the one path whose
+disclosure is already gated behind authorization.

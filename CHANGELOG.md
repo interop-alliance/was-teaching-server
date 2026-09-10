@@ -1,5 +1,19 @@
 # History
 
+## 0.30.0 - TBD
+
+### Changed
+
+- Resubmitting a stored revocation now answers with the distinct
+  `capability-already-revoked` problem type (`@interop/storage-core` 0.12.0),
+  still 400. Every other 400 on the revocation route (malformed body, root
+  capability, id mismatch, a chain that does not verify) keeps
+  `invalid-request-body`, so a chain that fails to verify is never reported as
+  revoked. The type is emitted only after the 404-masking authorization, so it
+  discloses nothing an unauthorized prober could not already learn. A client
+  resubmitting a revocation blind can now tell "already done" from "refused"; it
+  used to get one type for both, differing only in `detail`.
+
 ## 0.29.0 - 2026-09-08
 
 ### Added

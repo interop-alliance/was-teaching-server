@@ -18,6 +18,8 @@ import {
   type AsymmetricKey
 } from '@interop/webkms-client'
 
+import { ProblemTypes } from '@interop/storage-core'
+
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { kmsRevocationsPath } from '../src/lib/paths.js'
 import {
@@ -219,7 +221,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
       assert.equal(response.status, 200)
     })
 
-    it('resubmitting a stored revocation is the 400 invalid-delegation', async () => {
+    it('resubmitting a stored revocation is the 400 capability-already-revoked', async () => {
       const key = await generateKey()
       const zcap = await delegate({ target: key.kmsId! })
       await kmsClient.revokeCapability({
@@ -229,8 +231,9 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
 
       // The second submission passes authorization, then trips the
       // post-authorization store check -- the chain contains a revoked
-      // capability (ezcap-express parity); the 409 duplicate is reserved for
-      // a write race at the store.
+      // capability (the 400 is ezcap-express parity, the problem type is
+      // this server's own); the 409 duplicate is reserved for a write race
+      // at the store.
       const err = await requestError(
         client({ signer: alice.signer }).request({
           url: revocationUrl(zcap.id),
@@ -241,6 +244,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
         })
       )
       assert.equal(err.status, 400)
+      assert.equal(err.data.type, ProblemTypes.CAPABILITY_ALREADY_REVOKED)
     })
 
     it('a root capability cannot be revoked (400)', async () => {

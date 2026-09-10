@@ -56,7 +56,7 @@
     "@interop/lru-memoize": "^4.0.3",
     "@interop/minimal-cipher": "^7.10.0",
     "@interop/security-document-loader": "^10.1.1",
-    "@interop/storage-core": "^0.11.0",
+    "@interop/storage-core": "^0.12.0",
     "@interop/x25519-key-agreement-key": "^5.3.0",
     "@interop/zcap": "^11.1.0",
     "@scure/base": "^2.4.0",

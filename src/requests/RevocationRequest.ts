@@ -35,7 +35,10 @@ import {
   KMS_MAX_CHAIN_LENGTH,
   KMS_MAX_DELEGATION_TTL
 } from '../config.default.js'
-import { InvalidRevocationError } from '../errors.js'
+import {
+  CapabilityAlreadyRevokedError,
+  InvalidRevocationError
+} from '../errors.js'
 import type { IDID, RevocationRecord, RevocationScope } from '../types.js'
 import { fetchKeystore } from './keystoreContext.js'
 import { fetchSpace } from './spaceContext.js'
@@ -49,10 +52,15 @@ const ONE_DAY = 24 * 60 * 60 * 1000
  * the chain's controllers for the dual-root invocation check, then -- only
  * once the invocation is authorized -- reject a chain containing an
  * already-revoked link (resubmissions included) with the 400
- * `InvalidRevocationError`, per ezcap-express, and store the record. The
- * store check runs strictly AFTER the 404-masking authorization so an
- * unauthorized caller cannot probe whether a capability is revoked (a
- * 400-vs-404 oracle otherwise). The record expires one day after the
+ * `CapabilityAlreadyRevokedError`, and store the record. The store check
+ * runs strictly AFTER the 404-masking authorization so an unauthorized
+ * caller cannot probe whether a capability is revoked (a 400-vs-404 oracle
+ * otherwise); that ordering is also what lets the store hit carry a problem
+ * type of its own -- every earlier 400 (malformed body, root capability, id
+ * mismatch, a chain that does not verify) stays `InvalidRevocationError`, so
+ * a chain that fails to verify is never reported as revoked, and the distinct
+ * type discloses nothing an unauthorized prober could not already learn. The
+ * record expires one day after the
  * capability itself does (from then on the capability is rejected on expiry
  * alone; the margin covers clock-skew grace periods).
  *
@@ -162,14 +170,14 @@ async function submitRevocation({
 
   // The caller is authorized; NOW consult the store for the to-be-revoked
   // chain. A chain containing an already-revoked link (resubmissions
-  // included) is the 400, per ezcap-express; the 409 duplicate stays
-  // reserved for a write race at the store. Running this after the masked
-  // authorization keeps revocation state undisclosed to unauthorized callers.
+  // included) is the 400 `capability-already-revoked`; the 409 duplicate
+  // stays reserved for a write race at the store. Running this after the
+  // masked authorization keeps revocation state undisclosed to unauthorized
+  // callers (they got the 404 above), which is what makes the distinct type
+  // safe to emit: an authorized submitter could learn the same fact by
+  // invoking the capability.
   if (await storage.isRevoked({ scope, capabilities })) {
-    throw new InvalidRevocationError({
-      detail:
-        'The capability (or a capability in its chain) is already revoked.'
-    })
+    throw new CapabilityAlreadyRevokedError()
   }
 
   const capability = capabilityBody as RevocationRecord['capability']

@@ -12,13 +12,15 @@
  * surface, and the negative cases need to shape the invocation by hand --
  * the same house pattern as the `/kms` revocation suite.
  */
-import { it, describe, beforeAll, afterAll } from 'vitest'
+import { it, describe, beforeAll, afterAll, afterEach, vi } from 'vitest'
 import assert from 'node:assert'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
+
+import { ProblemTypes } from '@interop/storage-core'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { spaceRevocationsPath } from '../src/lib/paths.js'
@@ -313,7 +315,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
   })
 
   describe('rejected submissions', () => {
-    it('resubmitting a stored revocation is the 400 invalid-delegation', async () => {
+    it('resubmitting a stored revocation is the 400 capability-already-revoked', async () => {
       const zcap = await delegate()
       await revoke({
         capabilityToRevoke: zcap,
@@ -323,8 +325,9 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
 
       // The second submission passes authorization, then trips the
       // post-authorization store check -- the chain contains a revoked
-      // capability; the 409 duplicate is reserved for a write race at the
-      // store.
+      // capability. That hit carries its own problem type, so a client
+      // resubmitting blind can tell it from a chain that does not verify;
+      // the 409 duplicate is reserved for a write race at the store.
       const err = await requestError(
         revoke({
           capabilityToRevoke: zcap,
@@ -333,6 +336,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
         })
       )
       assert.equal(err.status, 400)
+      assert.equal(err.data.type, ProblemTypes.CAPABILITY_ALREADY_REVOKED)
     })
 
     it('a root capability cannot be revoked (400)', async () => {
@@ -407,6 +411,8 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
         })
       )
       assert.equal(err.status, 400)
+      // A chain that fails to verify is never reported as revoked.
+      assert.equal(err.data.type, ProblemTypes.INVALID_REQUEST_BODY)
       assert.equal(
         err.data.errors[0].detail,
         'The provided capability delegation is invalid.'
@@ -419,6 +425,50 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
         signer: aliceDelegatedApp.signer
       })
       assert.equal(response.status, 200)
+    })
+
+    describe('an expired chain', () => {
+      afterEach(() => {
+        vi.useRealTimers()
+      })
+
+      it('is refused as invalid-request-body, not reported as revoked (400)', async () => {
+        // A two-hop chain is minted now and the clock is then moved past its
+        // expiry (and past the verifier's 300s clock-skew grace). The
+        // delegation proof purpose checks a parent's `expires` against the
+        // clock while walking the chain (a lone leaf's expiry is the
+        // invocation purpose's concern), so the expired link has to be the
+        // parent. Only `Date` is faked: the server runs in this process, so
+        // its verification reads the same shifted clock, while the HTTP stack
+        // keeps its real timers. ezcap refuses to sign an already-expired
+        // delegation, which is why the shift happens after minting.
+        const parent = await delegate()
+        const child = await client({
+          signer: aliceDelegatedApp.signer
+        }).delegate({
+          capability: parent,
+          invocationTarget: collectionUrl,
+          controller: bob.did,
+          allowedActions: ['GET'],
+          expires: new Date(Date.now() + 30 * 60 * 1000)
+        })
+        vi.useFakeTimers({ toFake: ['Date'] })
+        vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000)
+
+        const err = await requestError(
+          revoke({
+            capabilityToRevoke: child,
+            signer: alice.signer,
+            capability: rootZcap(spaceUrl)
+          })
+        )
+        assert.equal(err.status, 400)
+        assert.equal(err.data.type, ProblemTypes.INVALID_REQUEST_BODY)
+        assert.equal(
+          err.data.errors[0].detail,
+          'The provided capability delegation is invalid.'
+        )
+      })
     })
 
     it('a capability whose delegation proof was signed by the wrong key is refused (400)', async () => {

@@ -1192,10 +1192,9 @@ export class UnsupportedKeyOperationError extends ProblemError {
  * 400 — a submitted zcap revocation cannot be accepted: the body is not a
  * revocable delegated capability (root zcaps cannot be revoked), its id does
  * not match the revocation URL, its chain does not root in the keystore being
- * posted to, or its delegation chain fails verification (a chain containing
- * an already-revoked capability included -- resubmitting a stored revocation
- * therefore lands here, per ezcap-express's `authorizeZcapRevocation`; the
- * 409 duplicate is reserved for a write race at the store).
+ * posted to, or its delegation chain fails verification. A chain that fails
+ * to verify is never reported as revoked: the one already-revoked case is the
+ * distinct `CapabilityAlreadyRevokedError`.
  * @param options {object}
  * @param options.detail {string}   which of the revocation conditions failed
  * @param [options.cause] {Error}   the underlying chain-verification failure
@@ -1213,11 +1212,33 @@ export class InvalidRevocationError extends ProblemError {
 }
 
 /**
+ * 400 — the submitted, verifying capability (or a capability in its chain) is
+ * already revoked in the scope posted to, so the submission has nothing left
+ * to do. The status matches ezcap-express's `authorizeZcapRevocation`, which
+ * folds this case into its generic 400; the distinct problem type lets a
+ * client resubmitting a revocation blind (a resumed ceremony) tell "already
+ * done" from "refused". It is thrown only after the 404-masking authorization,
+ * so it discloses nothing an unauthorized prober could not already learn. The
+ * 409 duplicate is reserved for a write race at the store.
+ */
+export class CapabilityAlreadyRevokedError extends ProblemError {
+  constructor() {
+    super({
+      type: ProblemTypes.CAPABILITY_ALREADY_REVOKED,
+      title: 'Capability already revoked',
+      detail:
+        'The capability (or a capability in its chain) is already revoked.',
+      statusCode: 400
+    })
+  }
+}
+
+/**
  * 409 — a revocation record already exists at `(delegator, capabilityId)`
  * (`@interop/webkms-client` maps a 409 to its `DuplicateError`). Reached only
- * on a concurrent-submission race:
- * a sequential resubmission fails the chain verification first (the chain now
- * contains a revoked capability) and is the 400 `InvalidRevocationError`.
+ * on a concurrent-submission race: a sequential resubmission trips the
+ * post-authorization store check first and is the 400
+ * `CapabilityAlreadyRevokedError`.
  */
 export class DuplicateRevocationError extends ProblemError {
   constructor() {

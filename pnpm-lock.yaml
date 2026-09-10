@@ -63,8 +63,8 @@ importers:
         specifier: ^10.1.1
         version: 10.1.1
       '@interop/storage-core':
-        specifier: ^0.11.0
-        version: 0.11.0
+        specifier: ^0.12.0
+        version: 0.12.0
       '@interop/x25519-key-agreement-key':
         specifier: ^5.3.0
         version: 5.3.0
@@ -669,6 +669,10 @@ packages:
 
   '@interop/storage-core@0.11.0':
     resolution: {integrity: sha512-Kh9iyeUZXq6bY4rQdLrapOlab3gY8gH8YTMqam/IKfyJqaLe9NpE+ha/p5oDpwjnv5XPF4F6itIlu/GQu/wprw==}
+    engines: {node: '>=22.0'}
+
+  '@interop/storage-core@0.12.0':
+    resolution: {integrity: sha512-Ynxkky+xuXPArjICm5Bu3fvx/K3RuDEVS9Lq1IRFiX7Dl8MrTD/LuNlRT+mY5mOnS0Gd4z9R3/Vf07Wgu7kHag==}
     engines: {node: '>=22.0'}
 
   '@interop/storage-core@0.9.1':
@@ -3441,6 +3445,10 @@ snapshots:
       - react-native-get-random-values
 
   '@interop/storage-core@0.11.0':
+    dependencies:
+      '@interop/data-integrity-core': 8.7.1
+
+  '@interop/storage-core@0.12.0':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
 
