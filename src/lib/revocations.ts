@@ -79,6 +79,14 @@ export function capabilitySummaries({
 }
 
 /**
+ * The `name` on the error the revocation inspector fails a chain with. The
+ * verifier's result carries that error back out through the zcap library
+ * unchanged, and `verifiedOrThrow` keys on the name to report the denial as
+ * `capability-revoked` rather than the generic masked failure.
+ */
+export const CAPABILITY_REVOKED_ERROR_NAME = 'CapabilityRevokedError'
+
+/**
  * Builds the `inspectCapabilityChain` hook for one scope: valid when no
  * delegated capability in the chain has a stored revocation under that
  * keystore or Space (a chain of just the root has nothing to check, so a bare
@@ -104,12 +112,11 @@ export function revocationChainInspector({
     }
     const revoked = await storage.isRevoked({ scope, capabilities })
     if (revoked) {
-      return {
-        valid: false,
-        error: new Error(
-          'One or more capabilities in the chain have been revoked.'
-        )
-      }
+      const error = new Error(
+        'One or more capabilities in the chain have been revoked.'
+      )
+      error.name = CAPABILITY_REVOKED_ERROR_NAME
+      return { valid: false, error }
     }
     return { valid: true }
   }

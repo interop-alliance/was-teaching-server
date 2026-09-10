@@ -171,6 +171,9 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
         signOp({ keyUrl: key.kmsId!, signer: aliceDelegatedApp.signer, zcap })
       )
       assert.equal(err.status, 404)
+      // The keystore family shares the typed denial: same masked status, the
+      // type names the revocation to the holder.
+      assert.equal(err.data.type, ProblemTypes.CAPABILITY_REVOKED)
 
       // The controller's own (root) access is untouched: root zcaps cannot
       // be revoked, and no revocation applies to a chain of just the root.
@@ -346,6 +349,9 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
         signOp({ keyUrl: key.kmsId!, signer: bob.signer, zcap: zcapB })
       )
       assert.equal(leafErr.status, 404)
+      // A revocation anywhere up the chain is reported the same way to the
+      // leaf's holder.
+      assert.equal(leafErr.data.type, ProblemTypes.CAPABILITY_REVOKED)
       const midErr = await requestError(
         signOp({
           keyUrl: key.kmsId!,

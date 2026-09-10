@@ -148,6 +148,38 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
     })
   }
 
+  /**
+   * Mints a two-hop chain whose parent expires first: the app's one-hour
+   * grant from `delegate()`, and under it a 30-minute grant to Bob. Once the
+   * clock is shifted past both (`shiftClockPastExpiry`), the chain walk
+   * refuses the expired parent link before the invocation purpose ever looks
+   * at the leaf. ezcap refuses to sign an already-expired delegation, which
+   * is why the chain is minted before the shift.
+   */
+  async function mintExpiredParentChain() {
+    const parent = await delegate()
+    const child = await client({ signer: aliceDelegatedApp.signer }).delegate({
+      capability: parent,
+      invocationTarget: collectionUrl,
+      controller: bob.did,
+      allowedActions: ['GET'],
+      expires: new Date(Date.now() + 30 * 60 * 1000)
+    })
+    return { parent, child }
+  }
+
+  /**
+   * Moves the clock two hours ahead: past every grant this suite mints and
+   * past the verifier's 300s clock-skew grace. Only `Date` is faked: the
+   * server runs in this process, so its verification reads the same shifted
+   * clock, while the HTTP stack keeps its real timers. Callers restore the
+   * clock in `afterEach` with `vi.useRealTimers()`.
+   */
+  function shiftClockPastExpiry() {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000)
+  }
+
   beforeAll(async () => {
     await alice.was.space(spaceId).collection(collectionId).put('doc-1', {
       hello: 'world'
@@ -171,6 +203,9 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
         readDoc({ zcap, signer: aliceDelegatedApp.signer })
       )
       assert.equal(err.status, 404)
+      // The holder is told why: the type names the revocation, the status
+      // stays the merged not-found.
+      assert.equal(err.data.type, ProblemTypes.CAPABILITY_REVOKED)
 
       // The controller's own (root) access is untouched: root zcaps cannot be
       // revoked, and no revocation applies to a chain of just the root.
@@ -190,13 +225,16 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       })
 
       const err = await requestError(
-        client({ signer: aliceDelegatedApp.signer }).write({
+        client({ signer: aliceDelegatedApp.signer }).request({
           url: `${collectionUrl}/doc-2`,
+          method: 'PUT',
+          action: 'PUT',
           capability: zcap,
           json: { escape: true }
         })
       )
       assert.equal(err.status, 404)
+      assert.equal(err.data.type, ProblemTypes.CAPABILITY_REVOKED)
       // ...and the write did not land.
       const doc = await alice.was
         .space(spaceId)
@@ -261,13 +299,16 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       assert.equal(response.status, 200)
 
       const err = await requestError(
-        client({ signer: aliceDelegatedApp.signer }).write({
+        client({ signer: aliceDelegatedApp.signer }).request({
           url: `${publicUrl}/notice-2`,
+          method: 'PUT',
+          action: 'PUT',
           capability: zcap,
           json: { sneaky: true }
         })
       )
       assert.equal(err.status, 404)
+      assert.equal(err.data.type, ProblemTypes.CAPABILITY_REVOKED)
     })
 
     it('a non-participant cannot revoke (masked 404)', async () => {
@@ -427,33 +468,151 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       assert.equal(response.status, 200)
     })
 
+    describe('typed denial reasons', () => {
+      afterEach(() => {
+        vi.useRealTimers()
+      })
+
+      it('a revoked capability invoked by someone other than its controller is the plain not-found (no revocation oracle)', async () => {
+        // Bob holds Alice's app's revoked capability (say, a leaked copy) but
+        // not the app's key. The verifier matches the invoking key against
+        // the capability controller before it runs the revocation inspector,
+        // so Bob learns nothing about the revocation: his answer is the same
+        // masked not-found any unauthorized caller gets.
+        const zcap = await delegate()
+        await revoke({
+          capabilityToRevoke: zcap,
+          signer: alice.signer,
+          capability: rootZcap(spaceUrl)
+        })
+        const err = await requestError(readDoc({ zcap, signer: bob.signer }))
+        assert.equal(err.status, 404)
+        assert.equal(err.data.type, ProblemTypes.NOT_FOUND)
+      })
+
+      it('a revoked capability whose delegation proof does not verify is the plain not-found', async () => {
+        // The proof is checked before the revocation inspector runs, so a
+        // holder presenting a tampered copy of a revoked grant gets the
+        // generic failure, not the typed one.
+        const zcap = await delegate()
+        await revoke({
+          capabilityToRevoke: zcap,
+          signer: alice.signer,
+          capability: rootZcap(spaceUrl)
+        })
+        const tampered = { ...zcap, allowedAction: ['GET', 'HEAD', 'PUT'] }
+        const err = await requestError(
+          readDoc({ zcap: tampered, signer: aliceDelegatedApp.signer })
+        )
+        assert.equal(err.status, 404)
+        assert.equal(err.data.type, ProblemTypes.NOT_FOUND)
+      })
+
+      it('an expired invoked capability is capability-expired (404)', async () => {
+        // The leaf's own `expires` has passed: the invocation purpose refuses
+        // it after the chain and the controller match verified.
+        const zcap = await delegate()
+        shiftClockPastExpiry()
+
+        const err = await requestError(
+          readDoc({ zcap, signer: aliceDelegatedApp.signer })
+        )
+        assert.equal(err.status, 404)
+        assert.equal(err.data.type, ProblemTypes.CAPABILITY_EXPIRED)
+        assert.equal(
+          err.data.errors[0].detail,
+          'The invoked capability, or a capability in its delegation chain, ' +
+            'has expired.'
+        )
+      })
+
+      it('an expired parent in the chain is capability-expired too (404)', async () => {
+        // The chain walk refuses the expired parent link (a different
+        // verifier check from the leaf's own expiry), and the server reports
+        // the same cause for both.
+        const { child } = await mintExpiredParentChain()
+        shiftClockPastExpiry()
+
+        const err = await requestError(
+          readDoc({ zcap: child, signer: bob.signer })
+        )
+        assert.equal(err.status, 404)
+        assert.equal(err.data.type, ProblemTypes.CAPABILITY_EXPIRED)
+      })
+
+      it('an expired parent invoked by someone other than the leaf controller is the plain not-found', async () => {
+        // The zcap library raises the parent-link expiry while walking the
+        // chain, before it matches the invoking key to the leaf's controller,
+        // so the server does that match itself before naming the cause. The
+        // delegator's own key is not the leaf's controller.
+        const { child } = await mintExpiredParentChain()
+        shiftClockPastExpiry()
+
+        const err = await requestError(
+          readDoc({ zcap: child, signer: aliceDelegatedApp.signer })
+        )
+        assert.equal(err.status, 404)
+        assert.equal(err.data.type, ProblemTypes.NOT_FOUND)
+      })
+
+      it('an expired capability that is also revoked reports the expiry', async () => {
+        // The verifier checks expiry before it runs the revocation inspector,
+        // so the first refusal wins; either way the grant is dead.
+        const zcap = await delegate()
+        await revoke({
+          capabilityToRevoke: zcap,
+          signer: alice.signer,
+          capability: rootZcap(spaceUrl)
+        })
+        shiftClockPastExpiry()
+
+        const err = await requestError(
+          readDoc({ zcap, signer: aliceDelegatedApp.signer })
+        )
+        assert.equal(err.status, 404)
+        assert.equal(err.data.type, ProblemTypes.CAPABILITY_EXPIRED)
+      })
+
+      it('an expired capability invoked by someone other than its controller is the plain not-found', async () => {
+        // A leaf's expiry is checked after the controller match, so a holder
+        // of a copy without the invoking key sees the generic failure.
+        const zcap = await delegate()
+        shiftClockPastExpiry()
+
+        const err = await requestError(readDoc({ zcap, signer: bob.signer }))
+        assert.equal(err.status, 404)
+        assert.equal(err.data.type, ProblemTypes.NOT_FOUND)
+      })
+
+      it('a capability that fails verification for any other reason stays the plain not-found', async () => {
+        // Wrong action: the capability grants GET only, the request PUTs.
+        const zcap = await delegate({ allowedActions: ['GET'] })
+        const err = await requestError(
+          client({ signer: aliceDelegatedApp.signer }).request({
+            url: `${collectionUrl}/doc-3`,
+            method: 'PUT',
+            action: 'PUT',
+            capability: zcap,
+            json: { nope: true }
+          })
+        )
+        assert.equal(err.status, 404)
+        assert.equal(err.data.type, ProblemTypes.NOT_FOUND)
+      })
+    })
+
     describe('an expired chain', () => {
       afterEach(() => {
         vi.useRealTimers()
       })
 
       it('is refused as invalid-request-body, not reported as revoked (400)', async () => {
-        // A two-hop chain is minted now and the clock is then moved past its
-        // expiry (and past the verifier's 300s clock-skew grace). The
-        // delegation proof purpose checks a parent's `expires` against the
-        // clock while walking the chain (a lone leaf's expiry is the
+        // The delegation proof purpose checks a parent's `expires` against
+        // the clock while walking the chain (a lone leaf's expiry is the
         // invocation purpose's concern), so the expired link has to be the
-        // parent. Only `Date` is faked: the server runs in this process, so
-        // its verification reads the same shifted clock, while the HTTP stack
-        // keeps its real timers. ezcap refuses to sign an already-expired
-        // delegation, which is why the shift happens after minting.
-        const parent = await delegate()
-        const child = await client({
-          signer: aliceDelegatedApp.signer
-        }).delegate({
-          capability: parent,
-          invocationTarget: collectionUrl,
-          controller: bob.did,
-          allowedActions: ['GET'],
-          expires: new Date(Date.now() + 30 * 60 * 1000)
-        })
-        vi.useFakeTimers({ toFake: ['Date'] })
-        vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000)
+        // parent.
+        const { child } = await mintExpiredParentChain()
+        shiftClockPastExpiry()
 
         const err = await requestError(
           revoke({

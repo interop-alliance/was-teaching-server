@@ -26,12 +26,18 @@ import {
 import type { LruCache } from '@interop/lru-memoize'
 import { backendScoped } from './lib/backendCache.js'
 import {
+  decodeEmbeddedCapability,
   verifyCapabilityInvocation,
   type VerifyCapabilityInvocationResult
 } from '@interop/http-signature-zcap-verify'
+import { parseSignatureHeader } from '@interop/http-signature-header'
 import jsigs from '@interop/jsonld-signatures'
 import {
   CapabilityDelegation,
+  // Aliased: the server's own `CapabilityExpiredError` (the problem+json
+  // error) is the one this module throws; the library's is the cause it
+  // recognizes by name.
+  CapabilityExpiredError as ZcapCapabilityExpiredError,
   type InspectCapabilityChain
 } from '@interop/zcap'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
@@ -42,10 +48,13 @@ import * as didKey from '@interop/did-method-key'
 import type { IDocumentLoader, IPublicKey } from '@interop/data-integrity-core'
 import {
   AuthVerificationError,
+  CapabilityExpiredError,
+  CapabilityRevokedError,
   InvalidRevocationError,
   UnauthorizedError
 } from './errors.js'
 import {
+  CAPABILITY_REVOKED_ERROR_NAME,
   capabilitySummaries,
   revocationChainInspector
 } from './lib/revocations.js'
@@ -387,8 +396,10 @@ export function isRootInvocation({
 
 /**
  * Verifies the capability-invocation signature on a request against the Space
- * controller's key. Throws AuthVerificationError if verification itself errors,
- * or UnauthorizedError if the capability does not verify.
+ * controller's key. Throws `AuthVerificationError` (400) if verification itself
+ * errors. If the capability does not verify, throws the 404 `denialError`
+ * picks: `CapabilityRevokedError`, `CapabilityExpiredError`, or the masked
+ * `UnauthorizedError`.
  *
  * @param options {object}
  * @param options.url {string}   request URL (path), resolved against serverUrl
@@ -501,22 +512,104 @@ export async function handleZcapVerify({
         maxDelegationTtl
       }),
     failureMessage: 'ZCAP verification failed',
+    headers,
     requestName,
     logger
   })
 }
 
 /**
+ * Whether the request's signing key belongs to the invoked capability's
+ * controller. The zcap library runs the same match, but only after the chain
+ * walk, and the walk names an expired parent link before it gets there. This
+ * server-side match gates the named denial causes, so a leaked copy of a
+ * grant invoked with some other key stays the masked `not-found`. A root
+ * invocation carries no embedded capability and never reaches a named cause;
+ * an unreadable header counts as no match. The comparison mirrors the
+ * library's `isController`: the controller set includes the key id itself or
+ * the DID it is a fragment of.
+ * @param options {object}
+ * @param options.headers {IncomingHttpHeaders}   the request headers
+ * @returns {boolean}
+ */
+function invokerIsController({
+  headers
+}: {
+  headers: IncomingHttpHeaders
+}): boolean {
+  try {
+    const keyId = parseSignatureHeader(headers.authorization ?? '').params.keyId
+    const encoded = parseSignatureHeader(
+      headers['capability-invocation'] as string
+    ).params.capability
+    if (typeof keyId !== 'string' || typeof encoded !== 'string') {
+      return false
+    }
+    const capability = decodeEmbeddedCapability({ encoded }) as {
+      controller?: string | string[]
+    }
+    const controllers = [capability.controller ?? []].flat()
+    const did = keyId.split('#')[0] ?? keyId
+    return controllers.includes(keyId) || controllers.includes(did)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Maps a verification result that did not verify to the server's denial
+ * error. Two causes are named by their problem type, both still 404: a
+ * revoked capability in the chain (the revocation inspector's error, told by
+ * its name) and an expired capability (the zcap library's named expiry
+ * error). Every other cause is the masked `UnauthorizedError`. A cause is
+ * named only for a caller signing with the invoked capability's own
+ * controller key (`invokerIsController`), so it reports something about the
+ * caller's own grant and nothing to anyone else. Both shapes the verifier
+ * hands back are read: a bare error, or a jsigs `VerificationError` wrapping
+ * it in `errors`.
+ * @param options {object}
+ * @param options.error {Error}   the verify result's `error`
+ * @param options.headers {IncomingHttpHeaders}   the request headers
+ * @param options.requestName {string}   request name used in error titles
+ * @returns {ProblemError}
+ */
+function denialError({
+  error,
+  headers,
+  requestName
+}: {
+  error?: Error
+  headers: IncomingHttpHeaders
+  requestName: string
+}): UnauthorizedError | CapabilityRevokedError | CapabilityExpiredError {
+  const cause =
+    (error as { errors?: Error[] } | undefined)?.errors?.[0] ?? error
+  const named =
+    cause?.name === CAPABILITY_REVOKED_ERROR_NAME ||
+    cause?.name === ZcapCapabilityExpiredError.name
+  if (!named || !invokerIsController({ headers })) {
+    return new UnauthorizedError({ requestName })
+  }
+  if (cause?.name === CAPABILITY_REVOKED_ERROR_NAME) {
+    return new CapabilityRevokedError({ requestName, cause })
+  }
+  return new CapabilityExpiredError({ requestName, cause })
+}
+
+/**
  * Runs a capability-invocation verification and maps its two failure modes to
  * the server's errors: a thrown verification error is logged and rethrown as
  * `AuthVerificationError` (400), and a result that did not verify becomes the
- * 404-masked `UnauthorizedError`. Shared by `handleZcapVerify` and
+ * 404 denial `denialError` picks (`capability-revoked`, `capability-expired`,
+ * or the masked `UnauthorizedError`). Shared by `handleZcapVerify` and
  * `handleRevocationInvocationVerify`, which differ only in what they verify
  * and in the log message.
  * @param options {object}
  * @param options.verify {() => Promise<VerifyCapabilityInvocationResult>}
  *   the verification to run
  * @param options.failureMessage {string}   log message for a thrown error
+ * @param options.headers {IncomingHttpHeaders}   the request headers, read by
+ *   `denialError` to gate the named causes
  * @param options.requestName {string}   request name used in error titles
  * @param options.logger {ZcapLogger}   logger for verification errors
  * @returns {Promise<VerifyCapabilityInvocationResult>}   the verified result
@@ -524,11 +617,13 @@ export async function handleZcapVerify({
 async function verifiedOrThrow({
   verify,
   failureMessage,
+  headers,
   requestName,
   logger
 }: {
   verify: () => Promise<VerifyCapabilityInvocationResult>
   failureMessage: string
+  headers: IncomingHttpHeaders
   requestName: string
   logger: ZcapLogger
 }): Promise<VerifyCapabilityInvocationResult> {
@@ -540,7 +635,7 @@ async function verifiedOrThrow({
     throw new AuthVerificationError({ requestName, cause: err as Error })
   }
   if (!zcapVerifyResult.verified) {
-    throw new UnauthorizedError({ requestName })
+    throw denialError({ error: zcapVerifyResult.error, headers, requestName })
   }
   return zcapVerifyResult
 }
@@ -846,8 +941,9 @@ export async function verifyRevocationChain({
  * to-be-revoked capability's chain* -- so a delegee can revoke its own zcap
  * without holding a separate capability (ezcap-express
  * `authorizeZcapRevocation`). Throws like `handleZcapVerify`:
- * `AuthVerificationError` (400) when verification errors, the 404-masked
- * `UnauthorizedError` when the invocation does not verify.
+ * `AuthVerificationError` (400) when verification errors, and the 404
+ * `denialError` picks (`CapabilityRevokedError`, `CapabilityExpiredError`, or
+ * the masked `UnauthorizedError`) when the invocation does not verify.
  *
  * @param options {object}
  * @param options.url {string}   request URL (path), resolved against serverUrl
@@ -946,6 +1042,7 @@ export async function handleRevocationInvocationVerify({
         suite: delegationProofSuites()
       }),
     failureMessage: 'ZCAP revocation invocation verification failed',
+    headers,
     requestName,
     logger
   })

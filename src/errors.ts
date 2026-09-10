@@ -537,18 +537,92 @@ export class InvalidPolicyError extends ProblemError {
 }
 
 /**
- * 404 — capability invocation did not verify (reported as not-found so as not
+ * 404 -- shared base for the authorization-denial family. Every denial keeps
+ * the same masked status, so an under-authorized caller cannot tell an absent
+ * target from one it may not see; the subclasses differ only in the problem
+ * `type` and the detail.
+ * @param options {object}
+ * @param options.type {ProblemType}   the problem type naming the cause
+ * @param options.detail {string}   the problem detail
+ * @param [options.requestName] {string}   request name used in the error title
+ * @param [options.cause] {Error}   the verifier's or inspector's error
+ */
+class DenialError extends ProblemError {
+  constructor({
+    type,
+    detail,
+    requestName,
+    cause
+  }: {
+    type: ProblemType
+    detail: string
+    requestName?: string
+    cause?: Error
+  }) {
+    super({
+      type,
+      title: `Invalid ${requestName} request.`,
+      detail,
+      statusCode: 404,
+      cause
+    })
+  }
+}
+
+/**
+ * 404 -- capability invocation did not verify (reported as not-found so as not
  * to leak resource existence).
  * @param options {object}
- * @param options.requestName {string}   request name used in the error title
+ * @param [options.requestName] {string}   request name used in the error title
  */
-export class UnauthorizedError extends ProblemError {
+export class UnauthorizedError extends DenialError {
   constructor({ requestName }: { requestName?: string }) {
     super({
       type: ProblemTypes.NOT_FOUND,
-      title: `Invalid ${requestName} request.`,
       detail: 'URL not found or invalid authorization.',
-      statusCode: 404
+      requestName
+    })
+  }
+}
+
+/**
+ * 404 -- a capability in the invoked delegation chain has a stored
+ * revocation. Only the `type` (`capability-revoked`) names the cause. Raised
+ * only for the holder of the capability and its invoking key (`denialError`
+ * in `zcap.ts` enforces that), so it tells a prober nothing.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ * @param [options.cause] {Error}   the inspector's error
+ */
+export class CapabilityRevokedError extends DenialError {
+  constructor({ requestName, cause }: { requestName?: string; cause?: Error }) {
+    super({
+      type: ProblemTypes.CAPABILITY_REVOKED,
+      detail: 'A capability in the invoked delegation chain has been revoked.',
+      requestName,
+      cause
+    })
+  }
+}
+
+/**
+ * 404 -- the invoked capability, or a capability in its delegation chain, has
+ * expired (`capability-expired`). Same terms as `CapabilityRevokedError`: the
+ * cause names something already written in the presented capability, and it
+ * is raised only for the holder of the capability and its invoking key.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ * @param [options.cause] {Error}   the verifier's expiry error
+ */
+export class CapabilityExpiredError extends DenialError {
+  constructor({ requestName, cause }: { requestName?: string; cause?: Error }) {
+    super({
+      type: ProblemTypes.CAPABILITY_EXPIRED,
+      detail:
+        'The invoked capability, or a capability in its delegation chain, ' +
+        'has expired.',
+      requestName,
+      cause
     })
   }
 }

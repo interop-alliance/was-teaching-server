@@ -2,6 +2,18 @@
 
 ## 0.30.0 - TBD
 
+### Added
+
+- Typed denial reasons on a refused capability invocation. The status stays the
+  merged `not-found` 404 on every route family, and two causes are now named by
+  `type` alone (`@interop/storage-core` 0.13.0): `capability-revoked` when a
+  capability in the invoked chain has a stored revocation, and
+  `capability-expired` when the invoked capability, or one in its chain, has
+  expired (the named error `@interop/zcap` 11.2.0 raises). Every other cause
+  keeps `not-found`. A cause is named only when the request is signed by the
+  invoked capability's controller; a copy of the grant invoked with any other
+  key still gets the plain `not-found`.
+
 ### Changed
 
 - Resubmitting a stored revocation now answers with the distinct

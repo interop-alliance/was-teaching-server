@@ -1265,3 +1265,60 @@ still-valid generation delegation live for up to a year. Narrower than WAS-57:
 that item types the denial on an invocation under a revoked chain; this one
 types the answer to the revocation submission itself, on the one path whose
 disclosure is already gated behind authorization.
+
+### WAS-57: Typed denial reasons on zcap authorization failures
+
+- status: done
+- done: 2026-09-10
+- priority: low
+- labels: zcap, errors
+- touches:
+  - storage-core: SC-3 minted `ProblemTypes.CAPABILITY_REVOKED` and
+    `CAPABILITY_EXPIRED` (`#capability-revoked` / `#capability-expired`, 404) on
+    2026-09-09; published as @interop/storage-core@0.13.0. Earlier: SC-2 minted
+    `ProblemTypes.CAPABILITY_ALREADY_REVOKED` (`#capability-already-revoked`,
+    400), published as @interop/storage-core@0.12.0
+  - zcap: the two verification-time expiry checks throw the exported
+    `CapabilityExpiredError` (`name: 'CapabilityExpiredError'`), published as
+    @interop/zcap@11.2.0
+  - conformance-suite: `denial-reasons-api` (optional typed cases, required
+    merged-not-found case), published as 0.14.0
+  - was-client: WCL-40 maps both types to `CapabilityRevokedError` /
+    `CapabilityExpiredError` (`NotFoundError` subclasses), published as 0.57.0
+  - wallet-attached-storage-spec: WASS-32 records the registry entries and the
+    privacy note, joining the WASS-4 revocation text (waived for this item:
+    still todo in the spec repo, handled by the maintainer)
+- acceptance:
+  - [x] An authorization denial distinguishes, at minimum, a revoked capability
+        in the chain, an expired capability, and a generic verification failure,
+        as distinct problem types in the error response (today every cause
+        collapses into one generic unauthorized response)
+  - [x] A security-considerations pass decides which reasons are safe to expose
+        to which callers: reason detail must not become an oracle (e.g.
+        confirming to an unauthorized prober that a given capability exists or
+        was revoked); reasons may need to be limited to callers presenting the
+        affected chain
+  - [x] The problem-type spellings are recorded (registry + spec-side note,
+        joining the WASS-4 revocation spec text when that lands)
+  - [x] Server `test/` coverage for each distinguished cause
+
+2026-09-09: implemented. The security pass settled on 404 for every denial, the
+two causes named by `type` only, and only for a caller signing with the invoked
+capability's controller key (ARCHITECTURE.md "Denial reasons"). 2026-09-10: the
+four packages published and the temporary link overrides dropped; archived.
+
+The diagnosability half of the revocation-observability question, minted
+2026-08-19; the read/status-probe half (a client-queryable revocation endpoint)
+is deliberately deferred until a use case needs it -- revocation records are
+retention-bounded internal enforcement state (`capability.expires + 24h`, then
+prunable), so a query surface would promote them into a contract with retention
+and authorization questions of their own. Motivating case, from wallet-side
+ceremony design: a chain that stops verifying is opaque to its holder and to the
+Space owner alike -- "revoked" is indistinguishable from "expired", a policy
+denial, or a verification-clause refusal, which hurts incident response and
+forces grantee apps to treat every 403 as ambiguous. Typed denial reasons give
+the holder the answer at exactly the moment it matters, without a new query
+surface. Denials currently funnel through the generic authorization error in
+`src/zcap.ts` / `src/authorize.ts`; the revocation cause originates in
+`revocationChainInspector` (`src/lib/revocations.ts`) and is distinguishable at
+that point.

@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 92
+nextAvailableId: 93
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -416,48 +416,6 @@ _Related._ `createdBy` implementation: `invokerDid()` in
 trusts the archive: `importSpace` in `src/backends/filesystem.ts` (writes
 descriptions and sidecars raw) and in `src/backends/postgres.ts` (routes through
 `_upsertCollection`, still trusting the archived value).
-
-### WAS-57: Typed denial reasons on zcap authorization failures
-
-- status: todo
-- priority: low
-- labels: zcap, errors
-- touches:
-  - storage-core: new problem types in the shared error registry (their
-    spellings are permanent wire values and need maintainer sign-off before
-    coding). Note: storage-core: SC-2 minted
-    `ProblemTypes.CAPABILITY_ALREADY_REVOKED` (`#capability-already-revoked`,
-    400), published as @interop/storage-core@0.12.0
-  - conformance-suite: negative-path assertions on the new types
-- acceptance:
-  - [ ] An authorization denial distinguishes, at minimum, a revoked capability
-        in the chain, an expired capability, and a generic verification failure,
-        as distinct problem types in the error response (today every cause
-        collapses into one generic unauthorized response)
-  - [ ] A security-considerations pass decides which reasons are safe to expose
-        to which callers: reason detail must not become an oracle (e.g.
-        confirming to an unauthorized prober that a given capability exists or
-        was revoked); reasons may need to be limited to callers presenting the
-        affected chain
-  - [ ] The problem-type spellings are recorded (registry + spec-side note,
-        joining the WASS-4 revocation spec text when that lands)
-  - [ ] Server `test/` coverage for each distinguished cause
-
-The diagnosability half of the revocation-observability question, minted
-2026-08-19; the read/status-probe half (a client-queryable revocation endpoint)
-is deliberately deferred until a use case needs it -- revocation records are
-retention-bounded internal enforcement state (`capability.expires + 24h`, then
-prunable), so a query surface would promote them into a contract with retention
-and authorization questions of their own. Motivating case, from wallet-side
-ceremony design: a chain that stops verifying is opaque to its holder and to the
-Space owner alike -- "revoked" is indistinguishable from "expired", a policy
-denial, or a verification-clause refusal, which hurts incident response and
-forces grantee apps to treat every 403 as ambiguous. Typed denial reasons give
-the holder the answer at exactly the moment it matters, without a new query
-surface. Denials currently funnel through the generic authorization error in
-`src/zcap.ts` / `src/authorize.ts`; the revocation cause originates in
-`revocationChainInspector` (`src/lib/revocations.ts`) and is distinguishable at
-that point.
 
 ### WAS-59: Enforce the reserved-path authorization classes (bounded target attenuation)
 
@@ -1014,6 +972,35 @@ the 304 path. discovered-from: WAS-54.
 Findings from a review of the 2026-09-05 working tree (request-body helpers, KMS
 record cipher migration, parallel chunk reads, filesystem candidate reader
 consolidation). Each item is small and self-contained.
+
+### WAS-92: Filesystem GET can observe a Resource with no validator mid-write
+
+- status: todo
+- priority: medium
+- labels: filesystem-backend, consistency
+- acceptance:
+  - [ ] A Resource GET or HEAD on the filesystem backend never returns a
+        representation without its `ETag` / version once a prior write has
+        completed, and never returns the new bytes with the old sidecar
+  - [ ] A test in `test/` drives a concurrent PUT and GET on one Resource (a
+        slowed sidecar write is enough to widen the window) and asserts the read
+        sees either the prior state or the fully committed new one
+  - [ ] ARCHITECTURE.md's filesystem backend section states the read/write
+        atomicity guarantee for a single Resource
+
+Context: `writeResource` in `src/backends/filesystem.ts` writes the content file
+(`#writeRepresentationBytes`, line 2734) and then the metadata sidecar
+(`#writeMetaSidecar`, line 3217), under the per-resource `#writeMutex`.
+`getResource` (line 3046) takes no lock: it locates the content file, then reads
+the sidecar. A read that lands between the two writes returns the new bytes with
+no `generation`, `version`, or `createdBy`, so the client sees no `ETag` and a
+`version` of 0 on a Resource that a completed PUT then reports at version 1. On
+a fast local disk the window is rarely hit; on GitHub Actions it surfaced as two
+flaky `@interop/was-sync` integration tests, which now wait for an `ETag` before
+reading back. The Postgres backend reads content and validator from one row and
+is not affected. Candidate fixes: have reads take the resource mutex, or write
+the sidecar first and make the content file visible last (a rename), so the
+sidecar is present whenever the bytes are.
 
 ### WAS-83: Anonymous Get Policy with a malformed id now returns 401
 

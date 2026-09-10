@@ -271,13 +271,13 @@ chain, which the verifier walks down to.
 **Chain inspection:** after signature verification, the dereferenced chain
 passes through two composed inspectors. The revocation inspector
 (`lib/revocations.ts`) fails a chain containing any capability with a stored
-revocation. The annex-chain inspector (`lib/clientAnnexClause.ts`) bounds what a
-_ladder_ verification method may delegate. A ladder VM is the stable,
-credential-derived method a wallet publishes on a ladder-anchored account
-document, recognized by relation asymmetry: a `capabilityDelegation` member of
-the resolved self-hosted `did:webvh` document that is absent from
-`capabilityInvocation`. A delegation signed by one is admitted only in one of
-three shapes.
+revocation, with an error named `CapabilityRevokedError`. The annex-chain
+inspector (`lib/clientAnnexClause.ts`) bounds what a _ladder_ verification
+method may delegate. A ladder VM is the stable, credential-derived method a
+wallet publishes on a ladder-anchored account document, recognized by relation
+asymmetry: a `capabilityDelegation` member of the resolved self-hosted
+`did:webvh` document that is absent from `capabilityInvocation`. A delegation
+signed by one is admitted only in one of three shapes.
 
 The first shape is bounded by grantee, target, and action together. Its sole
 `controller` equals the client-annex DID named by the account document's
@@ -322,6 +322,31 @@ so a wallet publishes a ladder VM only on a host it assumes enforces the
 client-annex profile. That assumption is unverified: WAS defines no venue at the
 authorization-profile layer for a server to advertise the clause, and this
 server advertises nothing.
+
+**Denial reasons:** a refusal is a 404 whose `type` is the merged `not-found`,
+with two exceptions named by `type` only, the status unchanged (`denialError` in
+`zcap.ts`, on the shared `verifiedOrThrow` path every route family uses).
+`capability-revoked` means the revocation inspector failed the chain.
+`capability-expired` means the zcap library raised its named expiry error for
+the invoked capability or one in its chain. The two are told apart from every
+other cause by `err.name`, the cross-package rule, since the verifier hands the
+cause back as a bare error or wrapped in a jsigs `VerificationError`. A cause is
+named only for a caller signing with the invoked capability's own controller
+key. The zcap library performs that controller match itself, but only after the
+chain walk, and the walk raises an expired parent link before it gets there. So
+`denialError` repeats the match server-side (`invokerIsController`), reading the
+signing key id and the embedded capability from the request headers. The request
+signature is verified before any of this, and each named cause is raised only
+after every delegation proof in the chain verified. A named cause therefore
+reaches only the holder of the capability and its invoking key, and tells it
+something about its own grant: a revocation it did not see, or an `expires` it
+already carries. A copy of a revoked or expired grant invoked with any other
+key, a tampered proof, a wrong action, or a chain that never verified all stay
+the plain `not-found`. An under-authorized caller still cannot tell an absent
+target from one it may not see. The policy fallback in `authorize.ts` is
+unchanged. A denial with a named cause still falls through to the target's
+access-control policy, and the error surfaces only when the policy does not
+grant either.
 
 **Signing:** requests are signed with Cavage HTTP Signatures Draft 12 (not yet
 RFC 9421). The `Authorization` header signs

@@ -30,8 +30,8 @@ importers:
         specifier: ^3.4.5
         version: 3.4.5
       '@interop/did-method-key':
-        specifier: ^7.4.0
-        version: 7.4.0
+        specifier: ^7.4.1
+        version: 7.4.1
       '@interop/did-method-webvh':
         specifier: ^5.8.0
         version: 5.8.0
@@ -57,20 +57,20 @@ importers:
         specifier: ^4.0.3
         version: 4.0.3
       '@interop/minimal-cipher':
-        specifier: ^7.10.0
-        version: 7.10.0
+        specifier: ^7.10.1
+        version: 7.10.1
       '@interop/security-document-loader':
         specifier: ^10.1.1
         version: 10.1.1
       '@interop/storage-core':
-        specifier: ^0.12.0
-        version: 0.12.0
+        specifier: ^0.13.0
+        version: 0.13.0
       '@interop/x25519-key-agreement-key':
-        specifier: ^5.3.0
-        version: 5.3.0
+        specifier: ^5.4.0
+        version: 5.4.0
       '@interop/zcap':
-        specifier: ^11.1.0
-        version: 11.1.0
+        specifier: ^11.2.0
+        version: 11.2.0
       '@scure/base':
         specifier: ^2.4.0
         version: 2.4.0
@@ -118,20 +118,20 @@ importers:
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.10.0(supports-color@8.1.1))
       '@interop/ezcap':
-        specifier: ^7.4.6
-        version: 7.4.6
+        specifier: ^7.4.7
+        version: 7.4.7
       '@interop/http-signature-zcap-invoke':
         specifier: ^6.2.6
         version: 6.2.6
       '@interop/was-client':
-        specifier: ^0.53.0
-        version: 0.53.0(@interop/jsonld-signatures@11.8.5)
+        specifier: ^0.58.0
+        version: 0.58.0(@interop/jsonld-signatures@11.8.5)
       '@interop/was-conformance-suite':
-        specifier: ^0.12.0
-        version: 0.12.0(@interop/jsonld-signatures@11.8.5)(@interop/was-client@0.53.0(@interop/jsonld-signatures@11.8.5))(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.2.8)(supports-color@8.1.1))
+        specifier: ^0.14.0
+        version: 0.14.0(@interop/jsonld-signatures@11.8.5)(@interop/was-client@0.58.0(@interop/jsonld-signatures@11.8.5))(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.2.8)(supports-color@8.1.1))
       '@interop/webkms-client':
-        specifier: ^14.7.5
-        version: 14.7.5
+        specifier: ^15.0.0
+        version: 15.0.0
       '@types/mime-types':
         specifier: 3.0.1
         version: 3.0.1
@@ -554,6 +554,10 @@ packages:
       react-native-get-random-values:
         optional: true
 
+  '@interop/capability-agent@0.1.1':
+    resolution: {integrity: sha512-1qGbdIhw/sLK65FCqr9blfJDVvW7uXsML6sRpiiledRBt/xhSskHBVQ4QzHYOvxDCYW6p1KPy/jPIGz6CqwIjA==}
+    engines: {node: '>=24.0'}
+
   '@interop/data-integrity-core@8.7.1':
     resolution: {integrity: sha512-KD/AFAfnsDVa7Kz3yzx0t/L1A+GlFI0RahbtXsfzcznRlN63fPZCJ6W3C+unPyksCYsILZIHcOFFJkZe6eKtkw==}
     engines: {node: '>=24.0'}
@@ -566,8 +570,8 @@ packages:
     resolution: {integrity: sha512-uD5cnRLoDq5TJWNYASv3HomQXr2xW2TanQZ13TPcmRRo+r8QGPn/DY10kiXw+FYArrUorn8xxjsSSw7C2zS94w==}
     engines: {node: '>=24.0'}
 
-  '@interop/did-method-key@7.4.0':
-    resolution: {integrity: sha512-fYwGYiRTBEFuCiY2sw0wvlj6M6w2ceXGDPkNESqSmHODdor1ngdbBvej7XClAU8WMzZMjQjiNyLk3bqHoCh7DA==}
+  '@interop/did-method-key@7.4.1':
+    resolution: {integrity: sha512-13VcKU0OC4g3DxRlnOMFl/tgJYG4FB3ioPtrl6HPZYAQV2kTJ60dQ/V+ZOj++5pLput2LGEwnaAsfKT7edRxnQ==}
     engines: {node: '>=24.0'}
 
   '@interop/did-method-webvh@5.8.0':
@@ -609,8 +613,8 @@ packages:
       react-native-get-random-values:
         optional: true
 
-  '@interop/edv-client@17.8.2':
-    resolution: {integrity: sha512-n5a68nUkHtPjOaqR7evIH+Nl9bgF+jkoN9MYPDw8+Hg2IJNKK6SOLZ93yf/LHdKaNBCFJodFZr0sudexaoq5Kg==}
+  '@interop/edv-client@17.8.3':
+    resolution: {integrity: sha512-ZFXa99CV3RpbUDyiALzMsAPML3+PIRZuD5STvUWwo3+tKn1s1lNGyDx0ff1t6ufcjslNp8paKZLd8hUx60GapQ==}
     engines: {node: '>=24.0'}
     peerDependencies:
       react-native-get-random-values: ^2.0.0
@@ -618,8 +622,8 @@ packages:
       react-native-get-random-values:
         optional: true
 
-  '@interop/ezcap@7.4.6':
-    resolution: {integrity: sha512-t5nVS2PA0cQYQGdG4R5feNoMJKlgdcLCTzFYMKHRx+Wp1dhjpCixj2E7nsjrfq3nh28+OS1bBJlFhYflm/qaww==}
+  '@interop/ezcap@7.4.7':
+    resolution: {integrity: sha512-l2UXWEwrajgAbXm5HnKXYQCkyBcJZ8Y9cw7trFuW5grFd2rJVRW8oNspQIbeq2hb7tNFtsqummu3NyyUUbPnZA==}
     engines: {node: '>=20.0'}
 
   '@interop/http-client@1.0.5':
@@ -659,51 +663,47 @@ packages:
     resolution: {integrity: sha512-6c8dnoQNIiL25Q4YovC1a44mREO1lzW3F/lmvdwbAMMbhtGGRoQeqo1H4diwNhBzaxRrUMXrAIwbM26POmI/Yg==}
     engines: {node: '>=24.0'}
 
-  '@interop/minimal-cipher@7.10.0':
-    resolution: {integrity: sha512-p5Y7S7tt2qRhyXHtToQ/GTb4a/+vf0AGXX8N5h3978d1yyKb1wJ22sV6LFF8wMc7GQqCYqflLnI8aNubVAgV0g==}
+  '@interop/minimal-cipher@7.10.1':
+    resolution: {integrity: sha512-/qpVpUzJQXagW1KkgXxuHjO8Nvp1C74gs+peYuf0YDktXXH9Ydw5lJtwIWmP30e50K02RTKVGJCBTWQ0uHCkhw==}
     engines: {node: '>=24.0'}
 
   '@interop/security-document-loader@10.1.1':
     resolution: {integrity: sha512-ATCJlFQEPMSBlt9epaou6fazhWqgFLIRF5YwjS1nHFJlTnxsloHNA+BlXyo1TvjxiIM+Pvw3mmVubzVOEmF5fA==}
     engines: {node: '>=24.0'}
 
-  '@interop/storage-core@0.11.0':
-    resolution: {integrity: sha512-Kh9iyeUZXq6bY4rQdLrapOlab3gY8gH8YTMqam/IKfyJqaLe9NpE+ha/p5oDpwjnv5XPF4F6itIlu/GQu/wprw==}
-    engines: {node: '>=22.0'}
-
-  '@interop/storage-core@0.12.0':
-    resolution: {integrity: sha512-Ynxkky+xuXPArjICm5Bu3fvx/K3RuDEVS9Lq1IRFiX7Dl8MrTD/LuNlRT+mY5mOnS0Gd4z9R3/Vf07Wgu7kHag==}
+  '@interop/storage-core@0.13.0':
+    resolution: {integrity: sha512-LrH09nIaLjz+Y4inQO6fgA6cSuv1CypX8p/bNRFKC0EpG36Cp2A24abEmV4jL+HW4Vi4cD0Q3yOaH7WViBkJwg==}
     engines: {node: '>=22.0'}
 
   '@interop/storage-core@0.9.1':
     resolution: {integrity: sha512-YF+qMjuBn+ehqqY+dKNRF6k34f0uvWh+ojzg+mC71TPtJ6B/7+Qjm8MTYPFRfoW8wekEoSB525a1uto+mMfoKQ==}
     engines: {node: '>=22.0'}
 
-  '@interop/vh-resource-log@0.4.2':
-    resolution: {integrity: sha512-ppy+NBi23kMCPJeIEh+LmbR2U88qZaoiEZ42rxWoFBtejYteq4/5IuwgrZCcDytgqkxRSBDDHqu3hwZuPMIMig==}
+  '@interop/vh-resource-log@0.5.0':
+    resolution: {integrity: sha512-lI2pLNU3Kxm8o1Y7trKBJLi8tCvpr83gMpVkhUq0RIclNtL7fQAxsI1a6zCuFY6qtGZfgwdBJK+Zzsbz3ASxxw==}
     engines: {node: '>=24.0'}
 
-  '@interop/was-client@0.53.0':
-    resolution: {integrity: sha512-yE8E6hQO9ZLchpSk0HkcrliALQy9cvjjT8q0+USaP5TALbKH7TBpViE0fYVUiQ+PRyeXewYyNebuiUx0pCfWqQ==}
+  '@interop/was-client@0.58.0':
+    resolution: {integrity: sha512-ahrZQwrPJMQQlXkrUppYCTqeJxgWE+pTJev6AmKQ74ka2XXQseg5n3hcS2BLYsuHCVnTiV4ChRItcSvOTFe0Hw==}
     engines: {node: '>=24.0'}
 
-  '@interop/was-conformance-suite@0.12.0':
-    resolution: {integrity: sha512-p4YLkxn6NGbFoMEtI/s1jRvwtkHlbrKuw0E+D+Y4q2O9528IX9QWYrq4BkJg95p75N21XV9NozTh7bxQ5RSAAg==}
+  '@interop/was-conformance-suite@0.14.0':
+    resolution: {integrity: sha512-Fg276yUFKtlplPuEbDq4eGVLKMASNda5qKbIrPtuFMfG+zl6ItoN0p3vTZdrQL2/dqHW0oz4JduwAYRWGWp6sQ==}
     engines: {node: '>=24.0'}
     hasBin: true
     peerDependencies:
       '@interop/was-client': '>=0.35.0 <1.0.0'
 
-  '@interop/webkms-client@14.7.5':
-    resolution: {integrity: sha512-MrLmQH6BNBn4qWFV+Xl6nn2A2KKzFhJ6c83kgXS35B5r+LjuIHWEmf8eJQWh7w07A64hlU1Z3UUx03x8WT7EsQ==}
+  '@interop/webkms-client@15.0.0':
+    resolution: {integrity: sha512-h1G7O8r9vd7Wksm94AjK8J5HDoO7ZVeexTHT3/v88+d3dvRoTePPBd32ZUpWwCT1HalyHU3sNW+CsNOV6LNkYA==}
     engines: {node: '>=24.0'}
 
-  '@interop/x25519-key-agreement-key@5.3.0':
-    resolution: {integrity: sha512-c/DXLw0kBGICScAw/5Pk6rn9dzjk9tl6Jl9f6yoOle5I7+8998TqaDkVQkMO0TsEf2/XAPcu61VThnJCC++zFQ==}
+  '@interop/x25519-key-agreement-key@5.4.0':
+    resolution: {integrity: sha512-67xKx0LF1F6iQK8GQzk//XDdWB4cd2FUZtRqKWfMZih5ufMWG51Y/UYPhgEwOVmpbhE62NgS8SeE1SEa7Cgsdg==}
     engines: {node: '>=24.0'}
 
-  '@interop/zcap@11.1.0':
-    resolution: {integrity: sha512-Y0C6RqHnR5fhgXGr0qBWsTfIYBKp+5yMWS3sUdF759IFPJQQslWHo5RwZOiqmhtY4q6PSAmnoQbCed9G1cPkqQ==}
+  '@interop/zcap@11.2.0':
+    resolution: {integrity: sha512-L/+ceE4XynFm6636ikD+MIgGp48FIcM+pZGPq46/nbWuzSh+7ekGqM7sHqnujw/+LmMfzo5eriad3X/eqSDnlQ==}
     engines: {node: '>=24.0'}
 
   '@isaacs/ttlcache@1.4.1':
@@ -3257,6 +3257,13 @@ snapshots:
     dependencies:
       '@scure/base': 2.4.0
 
+  '@interop/capability-agent@0.1.1':
+    dependencies:
+      '@interop/data-integrity-core': 8.7.1
+      '@interop/ed25519-verification-key': 8.1.0
+    transitivePeerDependencies:
+      - react-native-get-random-values
+
   '@interop/data-integrity-core@8.7.1':
     dependencies:
       '@scure/base': 2.4.0
@@ -3273,12 +3280,12 @@ snapshots:
       '@interop/data-integrity-core': 8.7.1
       '@interop/lru-memoize': 4.0.3
 
-  '@interop/did-method-key@7.4.0':
+  '@interop/did-method-key@7.4.1':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
       '@interop/did-io': 4.1.1
       '@interop/ed25519-verification-key': 8.1.0
-      '@interop/x25519-key-agreement-key': 5.3.0
+      '@interop/x25519-key-agreement-key': 5.4.0
     transitivePeerDependencies:
       - react-native-get-random-values
 
@@ -3335,13 +3342,13 @@ snapshots:
       '@noble/hashes': 2.4.0
       '@scure/base': 2.4.0
 
-  '@interop/edv-client@17.8.2':
+  '@interop/edv-client@17.8.3':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
       '@interop/http-client': 1.0.5
       '@interop/http-signature-zcap-invoke': 6.2.6
       '@interop/lru-memoize': 4.0.3
-      '@interop/minimal-cipher': 7.10.0
+      '@interop/minimal-cipher': 7.10.1
       '@noble/hashes': 2.4.0
       '@scure/base': 2.4.0
       canonicalize: 3.0.0
@@ -3349,7 +3356,7 @@ snapshots:
     transitivePeerDependencies:
       - expo-crypto
 
-  '@interop/ezcap@7.4.6':
+  '@interop/ezcap@7.4.7':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
       '@interop/data-integrity-proof': 3.4.5
@@ -3357,7 +3364,7 @@ snapshots:
       '@interop/http-client': 1.0.5
       '@interop/http-signature-zcap-invoke': 6.2.6
       '@interop/jsonld-signatures': 11.8.5
-      '@interop/zcap': 11.1.0
+      '@interop/zcap': 11.2.0
     transitivePeerDependencies:
       - expo-crypto
 
@@ -3383,7 +3390,7 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.7.1
       '@interop/http-signature-header': 5.0.3
-      '@interop/zcap': 11.1.0
+      '@interop/zcap': 11.2.0
       '@scure/base': 2.4.0
       pako: 2.2.0
 
@@ -3407,7 +3414,7 @@ snapshots:
     dependencies:
       lru-cache: 11.5.2
 
-  '@interop/minimal-cipher@7.10.0':
+  '@interop/minimal-cipher@7.10.1':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
       '@interop/ecdsa-multikey': 2.4.0
@@ -3428,7 +3435,7 @@ snapshots:
       '@digitalcredentials/open-badges-context': 3.0.0
       '@interop/data-integrity-core': 8.7.1
       '@interop/did-io': 4.1.1
-      '@interop/did-method-key': 7.4.0
+      '@interop/did-method-key': 7.4.1
       '@interop/did-web-resolver': 6.3.2
       '@interop/ecdsa-multikey': 2.4.0
       '@interop/ed25519-verification-key': 8.1.0
@@ -3444,11 +3451,7 @@ snapshots:
     transitivePeerDependencies:
       - react-native-get-random-values
 
-  '@interop/storage-core@0.11.0':
-    dependencies:
-      '@interop/data-integrity-core': 8.7.1
-
-  '@interop/storage-core@0.12.0':
+  '@interop/storage-core@0.13.0':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
 
@@ -3456,22 +3459,23 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.7.1
 
-  '@interop/vh-resource-log@0.4.2':
+  '@interop/vh-resource-log@0.5.0':
     dependencies:
       '@interop/did-method-webvh': 5.8.0
       '@interop/storage-core': 0.9.1
 
-  '@interop/was-client@0.53.0(@interop/jsonld-signatures@11.8.5)':
+  '@interop/was-client@0.58.0(@interop/jsonld-signatures@11.8.5)':
     dependencies:
+      '@interop/capability-agent': 0.1.1
       '@interop/data-integrity-core': 8.7.1
       '@interop/ed25519-signature': 7.2.1(@interop/jsonld-signatures@11.8.5)
-      '@interop/edv-client': 17.8.2
-      '@interop/ezcap': 7.4.6
+      '@interop/edv-client': 17.8.3
+      '@interop/ezcap': 7.4.7
       '@interop/http-client': 1.0.5
-      '@interop/minimal-cipher': 7.10.0
-      '@interop/storage-core': 0.11.0
-      '@interop/vh-resource-log': 0.4.2
-      '@interop/x25519-key-agreement-key': 5.3.0
+      '@interop/minimal-cipher': 7.10.1
+      '@interop/storage-core': 0.13.0
+      '@interop/vh-resource-log': 0.5.0
+      '@interop/x25519-key-agreement-key': 5.4.0
       '@noble/hashes': 2.4.0
       '@scure/base': 2.4.0
       json-canonicalize: 3.0.0
@@ -3480,17 +3484,17 @@ snapshots:
       - expo-crypto
       - react-native-get-random-values
 
-  '@interop/was-conformance-suite@0.12.0(@interop/jsonld-signatures@11.8.5)(@interop/was-client@0.53.0(@interop/jsonld-signatures@11.8.5))(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.2.8)(supports-color@8.1.1))':
+  '@interop/was-conformance-suite@0.14.0(@interop/jsonld-signatures@11.8.5)(@interop/was-client@0.58.0(@interop/jsonld-signatures@11.8.5))(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.2.8)(supports-color@8.1.1))':
     dependencies:
       '@digitalcredentials/bnid': 5.0.0(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.2.8)(supports-color@8.1.1))
       '@interop/data-integrity-core': 8.7.1
       '@interop/ed25519-signature': 7.2.1(@interop/jsonld-signatures@11.8.5)
       '@interop/ed25519-verification-key': 8.1.0
-      '@interop/ezcap': 7.4.6
+      '@interop/ezcap': 7.4.7
       '@interop/http-digest-header': 3.1.0
       '@interop/http-signature-zcap-invoke': 6.2.6
-      '@interop/was-client': 0.53.0(@interop/jsonld-signatures@11.8.5)
-      '@interop/x25519-key-agreement-key': 5.3.0
+      '@interop/was-client': 0.58.0(@interop/jsonld-signatures@11.8.5)
+      '@interop/x25519-key-agreement-key': 5.4.0
       assert: 2.1.0
       uuid: 14.0.2
     transitivePeerDependencies:
@@ -3499,10 +3503,10 @@ snapshots:
       - react-native
       - react-native-get-random-values
 
-  '@interop/webkms-client@14.7.5':
+  '@interop/webkms-client@15.0.0':
     dependencies:
+      '@interop/capability-agent': 0.1.1
       '@interop/data-integrity-core': 8.7.1
-      '@interop/ed25519-verification-key': 8.1.0
       '@interop/http-client': 1.0.5
       '@interop/http-signature-zcap-invoke': 6.2.6
       '@interop/lru-memoize': 4.0.3
@@ -3511,13 +3515,13 @@ snapshots:
       - expo-crypto
       - react-native-get-random-values
 
-  '@interop/x25519-key-agreement-key@5.3.0':
+  '@interop/x25519-key-agreement-key@5.4.0':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
       '@noble/curves': 2.4.0
       '@scure/base': 2.4.0
 
-  '@interop/zcap@11.1.0':
+  '@interop/zcap@11.2.0':
     dependencies:
       '@digitalbazaar/zcap-context': 2.0.1
       '@interop/data-integrity-core': 8.7.1
