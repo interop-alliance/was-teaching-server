@@ -72,7 +72,7 @@ import { packSpaceArchive } from '../lib/exportTar.js'
 import type { ArchiveEntry, ArchiveFile } from '../lib/exportTar.js'
 import { revocationFileName } from '../lib/revocations.js'
 import { policyGrants } from '../policy.js'
-import { KeyedMutex } from '../lib/keyedMutex.js'
+import { KeyedMutex, KeyedReadWriteLock } from '../lib/keyedMutex.js'
 import { isJson } from '../lib/isJson.js'
 import { normalizeDescriptionWrite } from '../lib/descriptionWrite.js'
 import {
@@ -172,7 +172,10 @@ const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
 
 /**
  * Opens a read stream for a file, resolving once the stream has opened (and
- * rejecting if it errors first).
+ * rejecting if it errors first). The rejection carries the underlying error as
+ * its `cause` and repeats its syscall `code`, so a caller can tell a read that
+ * raced a delete (`ENOENT`, a 404) from a genuine storage fault (a 500) without
+ * unwrapping.
  * @param filePath {string}
  * @param logger {FastifyBaseLogger}
  * @returns {Promise<import('node:fs').ReadStream>}
@@ -184,8 +187,13 @@ async function openFileStream(
   const resourceStream = fs.createReadStream(filePath)
   return new Promise((resolve, reject) => {
     resourceStream
-      .on('error', error => {
-        reject(new Error(`Error creating a read stream: ${error}`))
+      .on('error', err => {
+        const failure: NodeJS.ErrnoException = new Error(
+          `Error creating a read stream: ${err}`,
+          { cause: err }
+        )
+        failure.code = (err as NodeJS.ErrnoException).code
+        reject(failure)
       })
       .on('open', () => {
         logger.info(`GET -- Reading ${filePath}`)
@@ -270,6 +278,63 @@ export class FileSystemBackend implements StorageBackend {
    * observe the same prior version and both succeed. Single-instance only.
    */
   #writeMutex = new KeyedMutex()
+
+  /**
+   * Per-Space gate between the writes that create paths inside a Space and the
+   * removals that take a whole container away (`deleteCollection`,
+   * `deleteSpace`). Every path-creating write runs on the shared side
+   * (`#underSpaceWrite`), concurrently with the others; a removal runs on the
+   * exclusive side (`#underSpaceRemoval`), alone. Without it a removal can land
+   * between a write's `mkdir` and its file write, leaving the directory
+   * recreated behind the delete: a Collection dir holding Resources but no
+   * description (listed, unreadable, still counted against the Collection cap
+   * and the quota), or a Space dir holding data no route can reach.
+   *
+   * Lock order, the one this backend uses everywhere: the Space gate is taken
+   * FIRST, then any `#writeMutex` key. Nothing acquires the gate while holding
+   * a `#writeMutex` key, so the two cannot deadlock against each other.
+   * Single-instance only, like `#writeMutex`.
+   */
+  #spaceGate = new KeyedReadWriteLock()
+
+  /**
+   * Runs a write that creates a path inside a Space on the shared side of the
+   * Space gate (see `#spaceGate`), so a concurrent container removal cannot
+   * land in the middle of it. Shared, so writes to a Space still run
+   * concurrently with one another.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.write {() => Promise<T>}   the write to run under the gate
+   * @returns {Promise<T>}
+   */
+  async #underSpaceWrite<T>({
+    spaceId,
+    write
+  }: {
+    spaceId: string
+    write: () => Promise<T>
+  }): Promise<T> {
+    return this.#spaceGate.read(spaceId, write)
+  }
+
+  /**
+   * Runs a container removal (a Collection or Space delete) on the exclusive
+   * side of the Space gate (see `#spaceGate`), so every write to that Space in
+   * flight has finished and none starts until the removal is done.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.remove {() => Promise<T>}   the removal to run under the gate
+   * @returns {Promise<T>}
+   */
+  async #underSpaceRemoval<T>({
+    spaceId,
+    remove
+  }: {
+    spaceId: string
+    remove: () => Promise<T>
+  }): Promise<T> {
+    return this.#spaceGate.write(spaceId, remove)
+  }
 
   /**
    * Per-Space usage totals for the write-path quota pre-flight, so
@@ -517,13 +582,19 @@ export class FileSystemBackend implements StorageBackend {
    *
    * A write that fails after passing this check calls the returned `release`
    * to give its reservation back; otherwise the phantom bytes would keep
-   * refusing valid writes until the snapshot expires.
+   * refusing valid writes until the snapshot expires. A write whose size is not
+   * known up front (a streamed body with no `Content-Length`) reserves nothing
+   * and calls `reconcile` with the bytes it actually wrote, so the snapshot
+   * reflects it -- without that, every streamed write inside one TTL would be
+   * admitted against the same total and the Space would sail past capacity.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.capacityBytes {number}   the configured per-Space limit
    * @param [options.incomingBytes] {number}   known size of the pending write
-   * @returns {Promise<{ headroom: number, release: () => void }>}   remaining
-   *   headroom in bytes, and the callback that undoes this write's reservation
+   * @returns {Promise<{ headroom: number, release: () => void,
+   *   reconcile: (actualBytes: number) => void }>}   remaining headroom in
+   *   bytes, the callback that undoes this write's reservation, and the
+   *   callback that corrects it to the bytes actually written
    */
   async #assertSpaceHeadroom({
     spaceId,
@@ -533,7 +604,11 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     capacityBytes: number
     incomingBytes?: number
-  }): Promise<{ headroom: number; release: () => void }> {
+  }): Promise<{
+    headroom: number
+    release: () => void
+    reconcile: (actualBytes: number) => void
+  }> {
     return this.#reserveHeadroom({
       cache: this.#usageCache,
       spaceId,
@@ -598,8 +673,10 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.limit {number}   the configured per-Space cap
    * @param options.incoming {number}   the amount this write reserves
    * @param options.makeError {() => Error}   the quota error to throw
-   * @returns {Promise<{ headroom: number, release: () => void }>}   remaining
-   *   headroom before this reservation, and the callback that undoes it
+   * @returns {Promise<{ headroom: number, release: () => void,
+   *   reconcile: (actual: number) => void }>}   remaining headroom before this
+   *   reservation, the callback that undoes it, and the callback that corrects
+   *   it to the amount actually consumed
    */
   async #reserveHeadroom({
     cache,
@@ -615,7 +692,11 @@ export class FileSystemBackend implements StorageBackend {
     limit: number
     incoming: number
     makeError: () => Error
-  }): Promise<{ headroom: number; release: () => void }> {
+  }): Promise<{
+    headroom: number
+    release: () => void
+    reconcile: (actual: number) => void
+  }> {
     let cached = cache.get(spaceId)
     if (!cached || cached.expiresAt <= Date.now()) {
       cached = {
@@ -630,15 +711,22 @@ export class FileSystemBackend implements StorageBackend {
     }
     cached.used += incoming
     const reserved = cached
+    // What this reservation currently holds in the snapshot. `reconcile` moves
+    // it to the amount actually consumed, so `release` always gives back what
+    // is really held rather than the original estimate.
+    let held = incoming
+    // Only adjust while this snapshot is still the live one: a later
+    // re-measurement already reflects the write's real outcome.
+    const adjust = (amount: number): void => {
+      if (cache.get(spaceId) === reserved) {
+        reserved.used += amount - held
+      }
+      held = amount
+    }
     return {
       headroom,
-      release: () => {
-        // Only while this snapshot is still the live one: a later
-        // re-measurement already reflects the failed write's absence.
-        if (cache.get(spaceId) === reserved) {
-          reserved.used -= incoming
-        }
-      }
+      release: () => adjust(0),
+      reconcile: (actual: number) => adjust(actual)
     }
   }
 
@@ -946,87 +1034,90 @@ export class FileSystemBackend implements StorageBackend {
     // precondition check and the monotonic version bump are atomic with the
     // write (two clients racing a guarded create cannot both succeed). Its own
     // lock namespace: a Space Description write touches no Collection file.
-    return this.#writeMutex.run(
-      this.#spaceDescLockKey({ spaceId }),
-      async () => {
-        // Prior description, read once and reused below: for the precondition,
-        // the create-path quota check (a brand-new Space has none yet), and to
-        // resolve `createdBy`.
-        const prior = await this.getSpaceDescription({ spaceId })
+    // The Space gate goes on the outside, as on every path-creating write:
+    // this one creates the Space dir.
+    return this.#underSpaceWrite({
+      spaceId,
+      write: () =>
+        this.#writeMutex.run(this.#spaceDescLockKey({ spaceId }), async () => {
+          // Prior description, read once and reused below: for the precondition,
+          // the create-path quota check (a brand-new Space has none yet), and to
+          // resolve `createdBy`.
+          const prior = await this.getSpaceDescription({ spaceId })
 
-        assertSpaceWritePrecondition({
-          spaceId,
-          exists: prior !== undefined,
-          currentEtag: descriptionEtagOf(prior),
-          ifMatch,
-          ifNoneMatch
-        })
+          assertSpaceWritePrecondition({
+            spaceId,
+            exists: prior !== undefined,
+            currentEtag: descriptionEtagOf(prior),
+            ifMatch,
+            ifNoneMatch
+          })
 
-        // Count quota (create path only): a brand-new Space (no description yet)
-        // must not push its controller past `maxSpacesPerController`.
-        // Overwriting an existing Space's description never trips it. Space
-        // creation is rare, so the O(all Spaces) enumeration is acceptable; soft
-        // under concurrency across controllers, like the byte quota.
-        if (this.maxSpacesPerController !== undefined && !prior) {
-          const { controller } = spaceDescription
-          const spaces = await this.listSpaces()
-          const owned = spaces.filter(
-            space => space.controller === controller
-          ).length
-          if (owned >= this.maxSpacesPerController) {
-            throw new CountQuotaExceededError({
-              scope: 'Spaces per controller',
-              limit: this.maxSpacesPerController
-            })
+          // Count quota (create path only): a brand-new Space (no description yet)
+          // must not push its controller past `maxSpacesPerController`.
+          // Overwriting an existing Space's description never trips it. Space
+          // creation is rare, so the O(all Spaces) enumeration is acceptable; soft
+          // under concurrency across controllers, like the byte quota.
+          if (this.maxSpacesPerController !== undefined && !prior) {
+            const { controller } = spaceDescription
+            const spaces = await this.listSpaces()
+            const owned = spaces.filter(
+              space => space.controller === controller
+            ).length
+            if (owned >= this.maxSpacesPerController) {
+              throw new CountQuotaExceededError({
+                scope: 'Spaces per controller',
+                limit: this.maxSpacesPerController
+              })
+            }
           }
-        }
 
-        // `createdBy` names the Space's creator, not its last writer: taken from
-        // this write's invoker only when this write CREATES the description, and
-        // preserved verbatim afterward -- including preserved-as-absent, so a
-        // Space created with no invoker (a token-provisioned create) never has a
-        // later writer backfilled into it as its creator. The client-supplied
-        // `spaceDescription` is wire input and may carry its own `createdBy` --
-        // discard it, since the server alone is authoritative for it. The
-        // validator-bearing members it may carry are stripped by the shared
-        // normalization (lib/descriptionWrite.ts), so the stored body never
-        // holds a client-supplied `_generation` / `_version` on either backend.
-        const creator = prior ? prior.createdBy : createdBy
-        // The description keeps its generation for the Space's whole life; a
-        // Space deleted and re-created under the same id mints a new one, so the
-        // two lives' validators can never coincide.
-        const validator = {
-          generation: resolveGeneration(prior?.descriptionGeneration),
-          version: (prior?.descriptionVersion ?? 0) + 1
-        }
-        const { body } = normalizeDescriptionWrite({
-          description: spaceDescription,
-          validator
-        })
-        const { createdBy: _suppliedCreatedBy, ...rest } = body
+          // `createdBy` names the Space's creator, not its last writer: taken from
+          // this write's invoker only when this write CREATES the description, and
+          // preserved verbatim afterward -- including preserved-as-absent, so a
+          // Space created with no invoker (a token-provisioned create) never has a
+          // later writer backfilled into it as its creator. The client-supplied
+          // `spaceDescription` is wire input and may carry its own `createdBy` --
+          // discard it, since the server alone is authoritative for it. The
+          // validator-bearing members it may carry are stripped by the shared
+          // normalization (lib/descriptionWrite.ts), so the stored body never
+          // holds a client-supplied `_generation` / `_version` on either backend.
+          const creator = prior ? prior.createdBy : createdBy
+          // The description keeps its generation for the Space's whole life; a
+          // Space deleted and re-created under the same id mints a new one, so the
+          // two lives' validators can never coincide.
+          const validator = {
+            generation: resolveGeneration(prior?.descriptionGeneration),
+            version: (prior?.descriptionVersion ?? 0) + 1
+          }
+          const { body } = normalizeDescriptionWrite({
+            description: spaceDescription,
+            validator
+          })
+          const { createdBy: _suppliedCreatedBy, ...rest } = body
 
-        const spaceDir = await this.#ensureSpaceDir({ spaceId })
-        const filename = spaceDescriptionFileName(spaceId)
-        // Durable full replacement: `MetadataJsonStore.read` parses plain JSON,
-        // so an atomically-written JSON string round-trips through the same read
-        // path. The validator is stored under the reserved `_generation` /
-        // `_version` members that `getSpaceDescription` strips and re-surfaces
-        // out of band, the same layout as a Collection Description file.
-        await atomicWriteFile({
-          filePath: path.join(spaceDir, filename),
-          data: JSON.stringify(
-            embedDescriptionValidator({
-              body: {
-                ...rest,
-                ...(creator !== undefined && { createdBy: creator })
-              },
-              ...validator
-            })
-          )
+          const spaceDir = await this.#ensureSpaceDir({ spaceId })
+          const filename = spaceDescriptionFileName(spaceId)
+          // Durable full replacement: `MetadataJsonStore.read` parses plain JSON,
+          // so an atomically-written JSON string round-trips through the same read
+          // path. The validator is stored under the reserved `_generation` /
+          // `_version` members that `getSpaceDescription` strips and re-surfaces
+          // out of band, the same layout as a Collection Description file.
+          await atomicWriteFile({
+            filePath: path.join(spaceDir, filename),
+            data: JSON.stringify(
+              embedDescriptionValidator({
+                body: {
+                  ...rest,
+                  ...(creator !== undefined && { createdBy: creator })
+                },
+                ...validator
+              })
+            )
+          })
+          return validator
         })
-        return validator
-      }
-    )
+    })
   }
 
   /**
@@ -1088,24 +1179,29 @@ export class FileSystemBackend implements StorageBackend {
     // Under the Space Description lock, so the delete cannot land between a
     // concurrent `writeSpace`'s prior read and its file write: that write
     // would recreate the directory and carry the deleted life's generation
-    // into the new one, where a re-create must mint a fresh generation.
-    return this.#writeMutex.run(
-      this.#spaceDescLockKey({ spaceId }),
-      async () => {
-        // Freed bytes and slots: drop the cached quota figures so the next write
-        // re-measures.
-        this.#usageCache.delete(spaceId)
-        this.#liveCountCache.delete(spaceId)
-        // Remove this Space's revocations, which sit outside the Space dir.
-        await rm(this.#spaceRevocationDir(spaceId), {
-          recursive: true,
-          force: true
+    // into the new one, where a re-create must mint a fresh generation. Under
+    // the Space gate's exclusive side as well, which holds off every OTHER
+    // write into the Space for the duration: a Resource write recreates the
+    // Collection dir on its way past (`mkdir ... recursive`), so one landing
+    // mid-`rm` would leave a description-less directory behind the delete.
+    return this.#underSpaceRemoval({
+      spaceId,
+      remove: () =>
+        this.#writeMutex.run(this.#spaceDescLockKey({ spaceId }), async () => {
+          // Freed bytes and slots: drop the cached quota figures so the next write
+          // re-measures.
+          this.#usageCache.delete(spaceId)
+          this.#liveCountCache.delete(spaceId)
+          // Remove this Space's revocations, which sit outside the Space dir.
+          await rm(this.#spaceRevocationDir(spaceId), {
+            recursive: true,
+            force: true
+          })
+          // `force: true` keeps delete idempotent (the `StorageBackend` contract):
+          // removing an absent Space resolves rather than rejecting with `ENOENT`.
+          await rm(this.#spaceDir(spaceId), { recursive: true, force: true })
         })
-        // `force: true` keeps delete idempotent (the `StorageBackend` contract):
-        // removing an absent Space resolves rather than rejecting with `ENOENT`.
-        await rm(this.#spaceDir(spaceId), { recursive: true, force: true })
-      }
-    )
+    })
   }
 
   /**
@@ -1172,7 +1268,12 @@ export class FileSystemBackend implements StorageBackend {
         continue
       }
       const collectionDir = path.join(spaceDir, entry.name)
-      const files = await fs.promises.readdir(collectionDir)
+      // A Collection deleted between the Space listing and this read counts
+      // nothing, rather than failing an unrelated write in another Collection
+      // with a raw `ENOENT` (which `handleError` would render as a 500).
+      const files = (await this.#readDirEntries(collectionDir)).map(
+        dirEntry => dirEntry.name
+      )
       // A live Resource has one representation file; count distinct ids so a
       // transient second representation (mid content-type swap) is not
       // double-counted.
@@ -1443,282 +1544,361 @@ export class FileSystemBackend implements StorageBackend {
         this.#assertUploadSize({ maxUploadBytes, uploadBytes }),
       chunkBodiesFor: collection => collection.chunkFiles
     })
+    // Keep the reservation handle: the apply loop below skips every body the
+    // destination already holds, and can throw part-way (a count quota), so the
+    // import must give back what it did not write. Otherwise a re-import of an
+    // unchanged archive -- which writes nothing -- would hold the whole archive
+    // size in the snapshot and refuse unrelated writes with 507 until it
+    // expires. `bytesWritten` tracks what actually landed; the `finally` below
+    // reconciles the reservation down to it.
+    let reconcileByteReservation: ((actualBytes: number) => void) | undefined
+    let bytesWritten = 0
     if (capacityBytes !== undefined) {
-      await this.#assertSpaceHeadroom({
-        spaceId,
-        capacityBytes,
-        incomingBytes
-      })
-    }
-
-    const stats: ImportStats = {
-      collectionsCreated: 0,
-      collectionsSkipped: 0,
-      resourcesCreated: 0,
-      resourcesSkipped: 0,
-      policiesCreated: 0,
-      policiesSkipped: 0
-    }
-
-    // Space-level policy: restore it when the destination has none (the import
-    // target Space pre-exists, so this fills in a missing policy without
-    // clobbering one the destination already carries).
-    if (spacePolicy) {
-      if (await this.getPolicy({ spaceId })) {
-        stats.policiesSkipped++
-      } else {
-        await this.writePolicy({ spaceId, policy: spacePolicy })
-        stats.policiesCreated++
-      }
-    }
-
-    // Count quotas: measure the Space's existing live Collections/Resources
-    // ONCE here, then track running totals as the apply loop creates items, so
-    // an import cannot push the Space past `maxCollectionsPerSpace` /
-    // `maxResourcesPerSpace`. Only brand-new items count -- a re-imported
-    // existing id is skipped and does not -- mirroring the per-create
-    // write-path guards without re-enumerating the Space per item.
-    // The import writes Resource files directly (not via `writeResource`), so
-    // it bypasses `#liveCountCache`: measure fresh here and drop the Space's
-    // entry, now and again once the apply loop has run, so the next create
-    // re-measures rather than trusting a count the import moved.
-    this.#liveCountCache.delete(spaceId)
-    const collectionIds = new Set(await this.#collectionIds({ spaceId }))
-    let liveResourceCount =
-      maxResourcesPerSpace !== undefined
-        ? await this.#countLiveResources({ spaceId })
-        : 0
-
-    for (const {
-      collectionId,
-      collectionDescription,
-      collectionPolicy,
-      collectionMetadata,
-      collectionLog,
-      resources,
-      resourcePolicies,
-      resourceMetadata,
-      chunkFiles
-    } of collections) {
-      // check if collection already exists
-      const collectionExisted = Boolean(
-        await this.getCollectionDescription({ spaceId, collectionId })
-      )
-      if (collectionExisted) {
-        stats.collectionsSkipped++
-      } else {
-        // A brand-new Collection (one whose id the Space did not already hold,
-        // even as a description-less directory) counts against the cap; filling
-        // in the description of an existing directory does not.
-        if (
-          maxCollectionsPerSpace !== undefined &&
-          !collectionIds.has(collectionId) &&
-          collectionIds.size >= maxCollectionsPerSpace
-        ) {
-          throw new CountQuotaExceededError({
-            scope: 'Collections per Space',
-            limit: maxCollectionsPerSpace
-          })
-        }
-        collectionIds.add(collectionId)
-        await this.#persistCollection({
+      ;({ reconcile: reconcileByteReservation } =
+        await this.#assertSpaceHeadroom({
           spaceId,
-          collectionId,
-          collectionDescription
-        })
-        stats.collectionsCreated++
-      }
-
-      // The Collection's own metadata sidecar travels with a newly-created
-      // Collection (preserving its timestamps, `metaVersion`, and user-writable
-      // `custom`); for an existing (skipped) Collection, leave its metadata
-      // untouched, exactly as its policy and description are left alone.
-      if (collectionMetadata && !collectionExisted) {
-        await atomicWriteFile({
-          filePath: this.#collectionMetaPath({ spaceId, collectionId }),
-          data: collectionMetadata
-        })
-      }
-      // Its governing history log travels on the same terms.
-      if (collectionLog && !collectionExisted) {
-        await atomicWriteFile({
-          filePath: this.#collectionLogPath({ spaceId, collectionId }),
-          data: collectionLog
-        })
-      }
-
-      // A collection-level policy travels with a newly-created collection; for
-      // an existing (skipped) collection, leave its access policy untouched.
-      if (collectionPolicy) {
-        if (collectionExisted) {
-          stats.policiesSkipped++
-        } else {
-          await this.writePolicy({
-            spaceId,
-            collectionId,
-            policy: collectionPolicy
-          })
-          stats.policiesCreated++
-        }
-      }
-
-      const collectionDir = this.#collectionDir({ spaceId, collectionId })
-
-      for (const { fileName, resourceId, body } of resources) {
-        // Skip anything the destination already has for this id: a live
-        // representation (`#findFile`) OR a sidecar (`readMetaSidecar`, which
-        // includes a `deleted:true` tombstone). Checking only `#findFile` would
-        // let an import write content back over a soft-deleted (tombstoned)
-        // resource -- resurrecting it while its `deleted:true` sidecar remains,
-        // yielding a served-but-tombstoned resource and an inconsistent feed.
-        const resourceExists =
-          Boolean(await this.#findFile({ collectionDir, resourceId })) ||
-          Boolean(await this.readMetaSidecar({ collectionDir, resourceId }))
-        if (resourceExists) {
-          stats.resourcesSkipped++
-          // A resource-level policy travels with a newly-created resource only.
-          if (resourcePolicies.has(resourceId)) {
-            stats.policiesSkipped++
-          }
-          continue
-        }
-
-        // A new live Resource counts against the per-Space cap.
-        if (maxResourcesPerSpace !== undefined) {
-          if (liveResourceCount >= maxResourcesPerSpace) {
-            throw new CountQuotaExceededError({
-              scope: 'Resources per Space',
-              limit: maxResourcesPerSpace
-            })
-          }
-          liveResourceCount++
-        }
-
-        await atomicWriteFile({
-          filePath: path.join(collectionDir, fileName),
-          data: body
-        })
-        stats.resourcesCreated++
-
-        // A metadata sidecar travels with a newly-created resource (preserving
-        // its timestamps and user-writable `custom`); an absent one leaves
-        // `getResourceMetadata` to fall back to the file's stat times.
-        const metadataBytes = resourceMetadata.get(resourceId)
-        if (metadataBytes) {
-          await atomicWriteFile({
-            filePath: this.#metaSidecarPath({ collectionDir, resourceId }),
-            data: metadataBytes
-          })
-        }
-
-        const resourcePolicy = resourcePolicies.get(resourceId)
-        if (resourcePolicy) {
-          await this.writePolicy({
-            spaceId,
-            collectionId,
-            resourceId,
-            policy: resourcePolicy
-          })
-          stats.policiesCreated++
-        }
-      }
-
-      // Carry tombstones: a soft-deleted Resource (see `deleteResource`) exports
-      // as a `.meta.` sidecar with no paired `r.` content file, so it never
-      // appears in `resources` above. Restore each such ORPHAN sidecar that is a
-      // tombstone (`deleted: true`) -- writing only the sidecar re-creates the
-      // tombstone. A non-tombstone orphan sidecar is anomalous (a Resource with
-      // no representation) and is skipped. Merge semantics match resources:
-      // anything the destination already has for that id (a live Resource or an
-      // existing tombstone) is left untouched.
-      const importedResourceIds = new Set(resources.map(r => r.resourceId))
-      for (const [resourceId, metadataBytes] of resourceMetadata) {
-        if (importedResourceIds.has(resourceId)) {
-          continue
-        }
-        let sidecar: MetaSidecar | undefined
-        try {
-          sidecar = JSON.parse(metadataBytes.toString('utf8'))
-        } catch {
-          continue
-        }
-        if (sidecar?.deleted !== true) {
-          continue
-        }
-        const exists =
-          Boolean(await this.#findFile({ collectionDir, resourceId })) ||
-          Boolean(await this.readMetaSidecar({ collectionDir, resourceId }))
-        if (exists) {
-          stats.resourcesSkipped++
-          continue
-        }
-        await atomicWriteFile({
-          filePath: this.#metaSidecarPath({ collectionDir, resourceId }),
-          data: metadataBytes
-        })
-        stats.resourcesCreated++
-      }
-
-      // Restore chunk files of chunked Resources (the `chunked-streams` feature)
-      // into their per-Resource chunk directories. Skip-not-overwrite, per chunk
-      // file: an existing chunk file is left untouched, so a re-import never
-      // clobbers stored chunk bytes (or their version sidecar). An ORPHAN chunk
-      // file -- one whose parent Resource is absent or a tombstone (no live
-      // representation on the destination after the Resource apply loop above)
-      // -- is skipped rather than resurrected, matching the live write path's
-      // parent-exists rule (and the Postgres import).
-      const parentIsLive = new Map<string, boolean>()
-      for (const { resourceId, fileName, body } of chunkFiles) {
-        let live = parentIsLive.get(resourceId)
-        if (live === undefined) {
-          live = Boolean(await this.#findFile({ collectionDir, resourceId }))
-          parentIsLive.set(resourceId, live)
-        }
-        if (!live) {
-          continue
-        }
-        const chunkDir = this.#chunkDir({ collectionDir, resourceId })
-        const target = path.join(chunkDir, fileName)
-        this.#assertContained(target)
-        let present = false
-        try {
-          await fsStat(target)
-          present = true
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-            throw err
-          }
-        }
-        if (present) {
-          continue
-        }
-        await mkdir(chunkDir, { recursive: true })
-        await atomicWriteFile({ filePath: target, data: body })
-      }
+          capacityBytes,
+          incomingBytes
+        }))
     }
 
-    // Restore the archive's Space-scoped zcap revocations under this Space's
-    // scope: a capability revoked before the export must stay revoked after
-    // an import (a backup/restore round-trip must not resurrect revoked
-    // access). Merge semantics match the rest of the import -- an
-    // already-stored record is skipped -- and a record past its GC horizon is
-    // dropped (the capability itself has expired; `isRevoked` would prune it).
-    const now = Date.now()
-    for (const record of revocations) {
-      if (record.meta.expires && Date.parse(record.meta.expires) <= now) {
-        continue
-      }
-      try {
-        await this.insertRevocation({ scope: { spaceId }, record })
-      } catch (err) {
-        if (!(err instanceof DuplicateRevocationError)) {
-          throw err
+    // The whole apply loop runs on the Space gate's shared side, so a container
+    // removal cannot land between the import's `mkdir` and its file writes. The
+    // helpers it calls (`writePolicy`) take the shared side again; the gate
+    // admits readers re-entrantly, so that nests safely.
+    return this.#underSpaceWrite({
+      spaceId,
+      write: async () => {
+        try {
+          const stats: ImportStats = {
+            collectionsCreated: 0,
+            collectionsSkipped: 0,
+            resourcesCreated: 0,
+            resourcesSkipped: 0,
+            policiesCreated: 0,
+            policiesSkipped: 0
+          }
+
+          // Space-level policy: restore it when the destination has none (the import
+          // target Space pre-exists, so this fills in a missing policy without
+          // clobbering one the destination already carries).
+          if (spacePolicy) {
+            if (await this.getPolicy({ spaceId })) {
+              stats.policiesSkipped++
+            } else {
+              await this.writePolicy({ spaceId, policy: spacePolicy })
+              stats.policiesCreated++
+            }
+          }
+
+          // Count quotas: measure the Space's existing live Collections/Resources
+          // ONCE here, then track running totals as the apply loop creates items, so
+          // an import cannot push the Space past `maxCollectionsPerSpace` /
+          // `maxResourcesPerSpace`. Only brand-new items count -- a re-imported
+          // existing id is skipped and does not -- mirroring the per-create
+          // write-path guards without re-enumerating the Space per item.
+          // The import writes Resource files directly (not via `writeResource`), so
+          // it bypasses `#liveCountCache`: measure fresh here and drop the Space's
+          // entry, now and again once the apply loop has run, so the next create
+          // re-measures rather than trusting a count the import moved.
+          this.#liveCountCache.delete(spaceId)
+          const collectionIds = new Set(await this.#collectionIds({ spaceId }))
+          let liveResourceCount =
+            maxResourcesPerSpace !== undefined
+              ? await this.#countLiveResources({ spaceId })
+              : 0
+
+          for (const {
+            collectionId,
+            collectionDescription,
+            collectionPolicy,
+            collectionMetadata,
+            collectionLog,
+            resources,
+            resourcePolicies,
+            resourceMetadata,
+            chunkFiles
+          } of collections) {
+            // check if collection already exists
+            const collectionExisted = Boolean(
+              await this.getCollectionDescription({ spaceId, collectionId })
+            )
+            if (collectionExisted) {
+              stats.collectionsSkipped++
+            } else {
+              // A brand-new Collection (one whose id the Space did not already hold,
+              // even as a description-less directory) counts against the cap; filling
+              // in the description of an existing directory does not.
+              if (
+                maxCollectionsPerSpace !== undefined &&
+                !collectionIds.has(collectionId) &&
+                collectionIds.size >= maxCollectionsPerSpace
+              ) {
+                throw new CountQuotaExceededError({
+                  scope: 'Collections per Space',
+                  limit: maxCollectionsPerSpace
+                })
+              }
+              collectionIds.add(collectionId)
+              await this.#persistCollection({
+                spaceId,
+                collectionId,
+                collectionDescription
+              })
+              stats.collectionsCreated++
+            }
+
+            // The Collection's own metadata sidecar travels with a newly-created
+            // Collection (preserving its timestamps, `metaVersion`, and user-writable
+            // `custom`); for an existing (skipped) Collection, leave its metadata
+            // untouched, exactly as its policy and description are left alone.
+            if (collectionMetadata && !collectionExisted) {
+              await atomicWriteFile({
+                filePath: this.#collectionMetaPath({ spaceId, collectionId }),
+                data: collectionMetadata
+              })
+              bytesWritten += collectionMetadata.length
+            }
+            // Its governing history log travels on the same terms.
+            if (collectionLog && !collectionExisted) {
+              await atomicWriteFile({
+                filePath: this.#collectionLogPath({ spaceId, collectionId }),
+                data: collectionLog
+              })
+              bytesWritten += collectionLog.length
+            }
+
+            // A collection-level policy travels with a newly-created collection; for
+            // an existing (skipped) collection, leave its access policy untouched.
+            if (collectionPolicy) {
+              if (collectionExisted) {
+                stats.policiesSkipped++
+              } else {
+                await this.writePolicy({
+                  spaceId,
+                  collectionId,
+                  policy: collectionPolicy
+                })
+                stats.policiesCreated++
+              }
+            }
+
+            const collectionDir = this.#collectionDir({ spaceId, collectionId })
+
+            for (const { fileName, resourceId, body } of resources) {
+              // Under the Resource's own write lock, as every other write path is:
+              // the existence probe, the body write, and the sidecar write are one
+              // atomic step. Without it a concurrent `PUT` of the same id can bump
+              // the sidecar (returning that `ETag` to its client) while the archive's
+              // bytes land underneath, leaving a stored validator that describes
+              // content nobody wrote.
+              const imported = await this.#writeMutex.run(
+                this.#resourceLockKey({ spaceId, collectionId, resourceId }),
+                async () => {
+                  // Skip anything the destination already has for this id: a live
+                  // representation (`#findFile`) OR a sidecar (`readMetaSidecar`, which
+                  // includes a `deleted:true` tombstone). Checking only `#findFile` would
+                  // let an import write content back over a soft-deleted (tombstoned)
+                  // resource -- resurrecting it while its `deleted:true` sidecar remains,
+                  // yielding a served-but-tombstoned resource and an inconsistent feed.
+                  const resourceExists =
+                    Boolean(
+                      await this.#findFile({ collectionDir, resourceId })
+                    ) ||
+                    Boolean(
+                      await this.readMetaSidecar({ collectionDir, resourceId })
+                    )
+                  if (resourceExists) {
+                    stats.resourcesSkipped++
+                    // A resource-level policy travels with a newly-created resource only.
+                    if (resourcePolicies.has(resourceId)) {
+                      stats.policiesSkipped++
+                    }
+                    return false
+                  }
+
+                  // A new live Resource counts against the per-Space cap.
+                  if (maxResourcesPerSpace !== undefined) {
+                    if (liveResourceCount >= maxResourcesPerSpace) {
+                      throw new CountQuotaExceededError({
+                        scope: 'Resources per Space',
+                        limit: maxResourcesPerSpace
+                      })
+                    }
+                    liveResourceCount++
+                  }
+
+                  await atomicWriteFile({
+                    filePath: path.join(collectionDir, fileName),
+                    data: body
+                  })
+                  bytesWritten += body.length
+                  stats.resourcesCreated++
+
+                  // A metadata sidecar travels with a newly-created resource (preserving
+                  // its timestamps and user-writable `custom`); an absent one leaves
+                  // `getResourceMetadata` to fall back to the file's stat times.
+                  const metadataBytes = resourceMetadata.get(resourceId)
+                  if (metadataBytes) {
+                    await atomicWriteFile({
+                      filePath: this.#metaSidecarPath({
+                        collectionDir,
+                        resourceId
+                      }),
+                      data: metadataBytes
+                    })
+                  }
+                  return true
+                }
+              )
+
+              // The Resource's policy is written outside its lock: it lives in the
+              // policy tree, not under the Resource's key, and `writePolicy` takes
+              // no Resource lock of its own.
+              const resourcePolicy = resourcePolicies.get(resourceId)
+              if (imported && resourcePolicy) {
+                await this.writePolicy({
+                  spaceId,
+                  collectionId,
+                  resourceId,
+                  policy: resourcePolicy
+                })
+                stats.policiesCreated++
+              }
+            }
+
+            // Carry tombstones: a soft-deleted Resource (see `deleteResource`) exports
+            // as a `.meta.` sidecar with no paired `r.` content file, so it never
+            // appears in `resources` above. Restore each such ORPHAN sidecar that is a
+            // tombstone (`deleted: true`) -- writing only the sidecar re-creates the
+            // tombstone. A non-tombstone orphan sidecar is anomalous (a Resource with
+            // no representation) and is skipped. Merge semantics match resources:
+            // anything the destination already has for that id (a live Resource or an
+            // existing tombstone) is left untouched.
+            const importedResourceIds = new Set(
+              resources.map(r => r.resourceId)
+            )
+            for (const [resourceId, metadataBytes] of resourceMetadata) {
+              if (importedResourceIds.has(resourceId)) {
+                continue
+              }
+              let sidecar: MetaSidecar | undefined
+              try {
+                sidecar = JSON.parse(metadataBytes.toString('utf8'))
+              } catch {
+                continue
+              }
+              if (sidecar?.deleted !== true) {
+                continue
+              }
+              // Under the Resource's write lock, as the content restore above is.
+              await this.#writeMutex.run(
+                this.#resourceLockKey({ spaceId, collectionId, resourceId }),
+                async () => {
+                  const exists =
+                    Boolean(
+                      await this.#findFile({ collectionDir, resourceId })
+                    ) ||
+                    Boolean(
+                      await this.readMetaSidecar({ collectionDir, resourceId })
+                    )
+                  if (exists) {
+                    stats.resourcesSkipped++
+                    return
+                  }
+                  await atomicWriteFile({
+                    filePath: this.#metaSidecarPath({
+                      collectionDir,
+                      resourceId
+                    }),
+                    data: metadataBytes
+                  })
+                  bytesWritten += metadataBytes.length
+                  stats.resourcesCreated++
+                }
+              )
+            }
+
+            // Restore chunk files of chunked Resources (the `chunked-streams` feature)
+            // into their per-Resource chunk directories. Skip-not-overwrite, per chunk
+            // file: an existing chunk file is left untouched, so a re-import never
+            // clobbers stored chunk bytes (or their version sidecar). An ORPHAN chunk
+            // file -- one whose parent Resource is absent or a tombstone (no live
+            // representation on the destination after the Resource apply loop above)
+            // -- is skipped rather than resurrected, matching the live write path's
+            // parent-exists rule (and the Postgres import).
+            const parentIsLive = new Map<string, boolean>()
+            for (const { resourceId, fileName, body } of chunkFiles) {
+              let live = parentIsLive.get(resourceId)
+              if (live === undefined) {
+                live = Boolean(
+                  await this.#findFile({ collectionDir, resourceId })
+                )
+                parentIsLive.set(resourceId, live)
+              }
+              if (!live) {
+                continue
+              }
+              const chunkDir = this.#chunkDir({ collectionDir, resourceId })
+              const target = path.join(chunkDir, fileName)
+              this.#assertContained(target)
+              // The parent Resource's lock, which is what `writeChunk` /
+              // `deleteChunk` serialize on, so a restore cannot interleave with a
+              // live chunk write or resurrect a chunk a delete is removing.
+              await this.#writeMutex.run(
+                this.#resourceLockKey({ spaceId, collectionId, resourceId }),
+                async () => {
+                  let present = false
+                  try {
+                    await fsStat(target)
+                    present = true
+                  } catch (err) {
+                    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+                      throw err
+                    }
+                  }
+                  if (present) {
+                    return
+                  }
+                  await mkdir(chunkDir, { recursive: true })
+                  await atomicWriteFile({ filePath: target, data: body })
+                  bytesWritten += body.length
+                }
+              )
+            }
+          }
+
+          // Restore the archive's Space-scoped zcap revocations under this Space's
+          // scope: a capability revoked before the export must stay revoked after
+          // an import (a backup/restore round-trip must not resurrect revoked
+          // access). Merge semantics match the rest of the import -- an
+          // already-stored record is skipped -- and a record past its GC horizon is
+          // dropped (the capability itself has expired; `isRevoked` would prune it).
+          const now = Date.now()
+          for (const record of revocations) {
+            if (record.meta.expires && Date.parse(record.meta.expires) <= now) {
+              continue
+            }
+            try {
+              await this.insertRevocation({ scope: { spaceId }, record })
+            } catch (err) {
+              if (!(err instanceof DuplicateRevocationError)) {
+                throw err
+              }
+            }
+          }
+
+          this.#liveCountCache.delete(spaceId)
+          return stats
+        } finally {
+          // Book exactly what landed: the apply loop skips bodies the destination
+          // already holds, and a count quota can abort it part-way, so the
+          // reservation taken for the whole archive is corrected down to the bytes
+          // actually written (zero on a fully-skipped re-import).
+          reconcileByteReservation?.(bytesWritten)
         }
       }
-    }
-
-    this.#liveCountCache.delete(spaceId)
-    return stats
+    })
   }
 
   // Collections
@@ -1762,74 +1942,81 @@ export class FileSystemBackend implements StorageBackend {
     // with the write (two concurrent recipient edits cannot clobber one
     // another). A distinct lock namespace from the per-Resource / unique-scan
     // locks: a description write and a Resource write touch different files.
-    return this.#writeMutex.run(
-      this.#collectionDescLockKey({ spaceId, collectionId }),
-      async () => {
-        // Prior description, read once and reused below: for the create-path
-        // quota check, `createdBy` resolution, and the CAS validator.
-        const prior = await this.getCollectionDescription({
-          spaceId,
-          collectionId
-        })
-
-        // Guarded create (`If-None-Match: *`) or compare-and-swap on the
-        // current description `ETag` (`If-Match`), both opt-in: a present
-        // Description or a stale validator throws 412. An unconditional write
-        // skips this.
-        assertCollectionWritePrecondition({
-          collectionId,
-          exists: prior !== undefined,
-          currentEtag: descriptionEtagOf(prior),
-          ifMatch,
-          ifNoneMatch
-        })
-
-        // The request layer's state-transition rails (e.g. epoch append-only),
-        // re-evaluated here against the description just read under the lock.
-        await assertTransition?.(prior)
-
-        // Count quota (create path only): a new Collection must not push its
-        // Space past `maxCollectionsPerSpace`; overwriting an existing
-        // Collection's description never trips it.
-        if (this.maxCollectionsPerSpace !== undefined && !prior) {
-          const collectionIds = await this.#collectionIds({ spaceId })
-          if (collectionIds.length >= this.maxCollectionsPerSpace) {
-            throw new CountQuotaExceededError({
-              scope: 'Collections per Space',
-              limit: this.maxCollectionsPerSpace
+    // The Space gate wraps it, as on every path-creating write: this one
+    // creates the Collection dir.
+    return this.#underSpaceWrite({
+      spaceId,
+      write: () =>
+        this.#writeMutex.run(
+          this.#collectionDescLockKey({ spaceId, collectionId }),
+          async () => {
+            // Prior description, read once and reused below: for the create-path
+            // quota check, `createdBy` resolution, and the CAS validator.
+            const prior = await this.getCollectionDescription({
+              spaceId,
+              collectionId
             })
+
+            // Guarded create (`If-None-Match: *`) or compare-and-swap on the
+            // current description `ETag` (`If-Match`), both opt-in: a present
+            // Description or a stale validator throws 412. An unconditional write
+            // skips this.
+            assertCollectionWritePrecondition({
+              collectionId,
+              exists: prior !== undefined,
+              currentEtag: descriptionEtagOf(prior),
+              ifMatch,
+              ifNoneMatch
+            })
+
+            // The request layer's state-transition rails (e.g. epoch append-only),
+            // re-evaluated here against the description just read under the lock.
+            await assertTransition?.(prior)
+
+            // Count quota (create path only): a new Collection must not push its
+            // Space past `maxCollectionsPerSpace`; overwriting an existing
+            // Collection's description never trips it.
+            if (this.maxCollectionsPerSpace !== undefined && !prior) {
+              const collectionIds = await this.#collectionIds({ spaceId })
+              if (collectionIds.length >= this.maxCollectionsPerSpace) {
+                throw new CountQuotaExceededError({
+                  scope: 'Collections per Space',
+                  limit: this.maxCollectionsPerSpace
+                })
+              }
+            }
+
+            // `createdBy` names the Collection's creator, not its last writer: taken
+            // from this write's invoker only when this write CREATES the
+            // description, and preserved verbatim afterward -- including
+            // preserved-as-absent. The client-supplied `collectionDescription` is
+            // wire input and may carry its own `createdBy` -- discard it, since the
+            // server alone is authoritative for it (`#persistCollection` strips
+            // the validator-bearing members the same way).
+            const { createdBy: _suppliedCreatedBy, ...rest } =
+              collectionDescription
+            const creator = prior ? prior.createdBy : createdBy
+            // The description keeps its generation for the Collection's whole life;
+            // a Collection deleted and re-created under the same id mints a new one,
+            // so the two lives' validators can never coincide.
+            const validator = {
+              generation: resolveGeneration(prior?.descriptionGeneration),
+              version: (prior?.descriptionVersion ?? 0) + 1
+            }
+
+            await this.#persistCollection({
+              spaceId,
+              collectionId,
+              collectionDescription: {
+                ...rest,
+                ...(creator !== undefined && { createdBy: creator })
+              },
+              validator
+            })
+            return validator
           }
-        }
-
-        // `createdBy` names the Collection's creator, not its last writer: taken
-        // from this write's invoker only when this write CREATES the
-        // description, and preserved verbatim afterward -- including
-        // preserved-as-absent. The client-supplied `collectionDescription` is
-        // wire input and may carry its own `createdBy` -- discard it, since the
-        // server alone is authoritative for it (`#persistCollection` strips
-        // the validator-bearing members the same way).
-        const { createdBy: _suppliedCreatedBy, ...rest } = collectionDescription
-        const creator = prior ? prior.createdBy : createdBy
-        // The description keeps its generation for the Collection's whole life;
-        // a Collection deleted and re-created under the same id mints a new one,
-        // so the two lives' validators can never coincide.
-        const validator = {
-          generation: resolveGeneration(prior?.descriptionGeneration),
-          version: (prior?.descriptionVersion ?? 0) + 1
-        }
-
-        await this.#persistCollection({
-          spaceId,
-          collectionId,
-          collectionDescription: {
-            ...rest,
-            ...(creator !== undefined && { createdBy: creator })
-          },
-          validator
-        })
-        return validator
-      }
-    )
+        )
+    })
   }
 
   /**
@@ -1951,26 +2138,32 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<void> {
     // Under the Collection Description lock, for the same reason as
     // `deleteSpace`: a concurrent `writeCollection` must not recreate the
-    // directory with the deleted life's generation.
-    return this.#writeMutex.run(
-      this.#collectionDescLockKey({ spaceId, collectionId }),
-      async () => {
-        // Freed bytes and slots: drop the cached quota figures so the next
-        // write re-measures.
-        this.#usageCache.delete(spaceId)
-        this.#liveCountCache.delete(spaceId)
-        // `force: true` keeps delete idempotent (spec / `StorageBackend`
-        // contract): removing an absent (or already-deleted) Collection
-        // resolves rather than rejecting with `ENOENT` (which the request
-        // layer would wrap as a 500). The Collection's metadata sidecar lives
-        // inside that dir, so it goes with it -- a re-created Collection of
-        // the same id starts with no metadata.
-        await rm(this.#collectionDir({ spaceId, collectionId }), {
-          recursive: true,
-          force: true
-        })
-      }
-    )
+    // directory with the deleted life's generation. And under the Space gate's
+    // exclusive side, which excludes the Resource writes that would otherwise
+    // recreate this directory mid-`rm` as a description-less phantom.
+    return this.#underSpaceRemoval({
+      spaceId,
+      remove: () =>
+        this.#writeMutex.run(
+          this.#collectionDescLockKey({ spaceId, collectionId }),
+          async () => {
+            // Freed bytes and slots: drop the cached quota figures so the next
+            // write re-measures.
+            this.#usageCache.delete(spaceId)
+            this.#liveCountCache.delete(spaceId)
+            // `force: true` keeps delete idempotent (spec / `StorageBackend`
+            // contract): removing an absent (or already-deleted) Collection
+            // resolves rather than rejecting with `ENOENT` (which the request
+            // layer would wrap as a 500). The Collection's metadata sidecar lives
+            // inside that dir, so it goes with it -- a re-created Collection of
+            // the same id starts with no metadata.
+            await rm(this.#collectionDir({ spaceId, collectionId }), {
+              recursive: true,
+              force: true
+            })
+          }
+        )
+    })
   }
 
   /**
@@ -2137,54 +2330,58 @@ export class FileSystemBackend implements StorageBackend {
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator | undefined> {
-    return this.#writeMutex.run(
-      this.#collectionMetaLockKey({ spaceId, collectionId }),
-      async () => {
-        const collectionDescription = await this.getCollectionDescription({
-          spaceId,
-          collectionId
-        })
-        if (!collectionDescription) {
-          return undefined
-        }
-        const prior = await this.#readCollectionMetaSidecar({
-          spaceId,
-          collectionId
-        })
-        // Evaluate the `/meta` precondition against the current metadata
-        // `ETag` atomically under the lock, before writing.
-        assertCollectionMetaWritePrecondition({
-          collectionId,
-          currentEtag: etagOf({
-            generation: prior?.generation,
-            version: prior?.metaVersion
-          }),
-          ifMatch,
-          ifNoneMatch
-        })
+    return this.#underSpaceWrite({
+      spaceId,
+      write: () =>
+        this.#writeMutex.run(
+          this.#collectionMetaLockKey({ spaceId, collectionId }),
+          async () => {
+            const collectionDescription = await this.getCollectionDescription({
+              spaceId,
+              collectionId
+            })
+            if (!collectionDescription) {
+              return undefined
+            }
+            const prior = await this.#readCollectionMetaSidecar({
+              spaceId,
+              collectionId
+            })
+            // Evaluate the `/meta` precondition against the current metadata
+            // `ETag` atomically under the lock, before writing.
+            assertCollectionMetaWritePrecondition({
+              collectionId,
+              currentEtag: etagOf({
+                generation: prior?.generation,
+                version: prior?.metaVersion
+              }),
+              ifMatch,
+              ifNoneMatch
+            })
 
-        const now = new Date().toISOString()
-        // The generation is minted by the first metadata write and kept
-        // thereafter (the sidecar only ever goes away with its Collection).
-        const generation = resolveGeneration(prior?.generation)
-        const metaVersion = (prior?.metaVersion ?? 0) + 1
-        const hasCustom = Object.keys(custom).length > 0
-        await atomicWriteFile({
-          filePath: this.#collectionMetaPath({ spaceId, collectionId }),
-          data: JSON.stringify({
-            // `createdAt` is stamped by the first metadata write and preserved
-            // thereafter; `updatedAt` tracks this one.
-            createdAt: prior?.createdAt ?? now,
-            updatedAt: now,
-            generation,
-            metaVersion,
-            ...(hasCustom && { custom }),
-            ...(epoch !== undefined && { epoch })
-          } satisfies CollectionMetaSidecar)
-        })
-        return { generation, version: metaVersion }
-      }
-    )
+            const now = new Date().toISOString()
+            // The generation is minted by the first metadata write and kept
+            // thereafter (the sidecar only ever goes away with its Collection).
+            const generation = resolveGeneration(prior?.generation)
+            const metaVersion = (prior?.metaVersion ?? 0) + 1
+            const hasCustom = Object.keys(custom).length > 0
+            await atomicWriteFile({
+              filePath: this.#collectionMetaPath({ spaceId, collectionId }),
+              data: JSON.stringify({
+                // `createdAt` is stamped by the first metadata write and preserved
+                // thereafter; `updatedAt` tracks this one.
+                createdAt: prior?.createdAt ?? now,
+                updatedAt: now,
+                generation,
+                metaVersion,
+                ...(hasCustom && { custom }),
+                ...(epoch !== undefined && { epoch })
+              } satisfies CollectionMetaSidecar)
+            })
+            return { generation, version: metaVersion }
+          }
+        )
+    })
   }
 
   /**
@@ -2288,59 +2485,67 @@ export class FileSystemBackend implements StorageBackend {
       collectionDescription: StoredCollectionDescription
     }) => void | Promise<void>
   }): Promise<EtagValidator | undefined> {
-    return this.#writeMutex.run(
-      this.#collectionDescLockKey({ spaceId, collectionId }),
-      () =>
+    return this.#underSpaceWrite({
+      spaceId,
+      write: () =>
         this.#writeMutex.run(
-          this.#collectionLogLockKey({ spaceId, collectionId }),
-          async () => {
-            const collectionDescription = await this.getCollectionDescription({
-              spaceId,
-              collectionId
-            })
-            if (!collectionDescription) {
-              return undefined
-            }
-            const prior = await this.getCollectionLog({ spaceId, collectionId })
-            assertCollectionLogWritePrecondition({
-              collectionId,
-              currentEtag: etagOf({
-                generation: prior?.generation,
-                version: prior?.version
-              }),
-              ifMatch,
-              ifNoneMatch
-            })
-            await assertTransition?.({ prior, collectionDescription })
+          this.#collectionDescLockKey({ spaceId, collectionId }),
+          () =>
+            this.#writeMutex.run(
+              this.#collectionLogLockKey({ spaceId, collectionId }),
+              async () => {
+                const collectionDescription =
+                  await this.getCollectionDescription({
+                    spaceId,
+                    collectionId
+                  })
+                if (!collectionDescription) {
+                  return undefined
+                }
+                const prior = await this.getCollectionLog({
+                  spaceId,
+                  collectionId
+                })
+                assertCollectionLogWritePrecondition({
+                  collectionId,
+                  currentEtag: etagOf({
+                    generation: prior?.generation,
+                    version: prior?.version
+                  }),
+                  ifMatch,
+                  ifNoneMatch
+                })
+                await assertTransition?.({ prior, collectionDescription })
 
-            const validator = {
-              generation: resolveGeneration(prior?.generation),
-              version: (prior?.version ?? 0) + 1
-            }
-            await atomicWriteFile({
-              filePath: this.#collectionLogPath({ spaceId, collectionId }),
-              data: JSON.stringify({
-                ...validator,
-                body
-              } satisfies StoredCollectionLog)
-            })
-            // The served description changed with its derived member, so its
-            // validator advances too (generation kept, version bumped).
-            await this.#persistCollection({
-              spaceId,
-              collectionId,
-              collectionDescription,
-              validator: {
-                generation: resolveGeneration(
-                  collectionDescription.descriptionGeneration
-                ),
-                version: (collectionDescription.descriptionVersion ?? 0) + 1
+                const validator = {
+                  generation: resolveGeneration(prior?.generation),
+                  version: (prior?.version ?? 0) + 1
+                }
+                await atomicWriteFile({
+                  filePath: this.#collectionLogPath({ spaceId, collectionId }),
+                  data: JSON.stringify({
+                    ...validator,
+                    body
+                  } satisfies StoredCollectionLog)
+                })
+                // The served description changed with its derived member, so its
+                // validator advances too (generation kept, version bumped).
+                await this.#persistCollection({
+                  spaceId,
+                  collectionId,
+                  collectionDescription,
+                  validator: {
+                    generation: resolveGeneration(
+                      collectionDescription.descriptionGeneration
+                    ),
+                    version: (collectionDescription.descriptionVersion ?? 0) + 1
+                  }
+                })
+                return validator
               }
-            })
-            return validator
-          }
+            )
         )
-    )
+    })
   }
 
   /**
@@ -2385,14 +2590,12 @@ export class FileSystemBackend implements StorageBackend {
     // not sort, so its order is nondeterministic -- pagination needs a stable
     // keyset. Keep only resource representations (`r.<id>.<type>.<ext>`), which
     // drops the `.meta.` / `.collection.` / policy dot-files.
-    let entries: fs.Dirent[] = []
-    try {
-      entries = await fs.promises.readdir(collectionDir, {
-        withFileTypes: true
-      })
-    } catch (err) {
-      this.logger.error({ err }, 'Error reading collection directory')
-    }
+    // An absent directory lists nothing (a Collection whose description exists
+    // but which holds no Resource yet). Any other failure -- `EACCES`, `EIO`,
+    // `EMFILE` -- is a real fault and must surface: swallowing it would serve a
+    // 200 with an empty listing for a Collection that provably exists, which a
+    // replicating client reads as "every Resource was removed".
+    const entries = await this.#readDirEntries(collectionDir)
     const resources = this.#representationEntries(entries)
       // Sort by `resourceId` ascending in code-unit order -- the SAME ordering
       // the cursor seek (`resourceId > after`) uses, so the keyset is consistent
@@ -2504,6 +2707,9 @@ export class FileSystemBackend implements StorageBackend {
       collectionId,
       resourceId
     })
+    // Every branch below runs inside the Space gate's shared side (see
+    // `#spaceGate`): this path creates the Collection dir on its way past, so a
+    // container removal must not land in the middle of it.
     const write = () =>
       this.#writeMutex.run(lockKey, () =>
         this.#writeResourceLocked({
@@ -2539,46 +2745,50 @@ export class FileSystemBackend implements StorageBackend {
       uniqueIndexes !== undefined &&
       uniqueIndexes.length > 0
     if (blindedUnique || equalityUnique) {
-      return this.#writeMutex.run(
-        this.#collectionLockKey({ spaceId, collectionId }),
-        async () => {
-          // One Collection scan serves both claims. The equality candidate set
-          // is the richer of the two (it also carries blobs and each sidecar's
-          // `custom`), so when the equality claim needs it the blinded
-          // candidates -- the live, parsable JSON documents -- are derived from
-          // it rather than re-read. A blinded-only claim reads JSON documents
-          // only and never touches a sidecar.
-          const candidates = await this.#readEqualityCandidates({
-            spaceId,
-            collectionId,
-            excludeResourceId: resourceId,
-            jsonOnly: !equalityUnique
-          })
-          if (blindedUnique) {
-            assertNoUniqueBlindedConflict({
-              document: input.kind === 'json' ? input.data : undefined,
-              candidates: this.#jsonCandidatesFrom(candidates)
-            })
-          }
-          if (equalityUnique) {
-            // A content write does not change the Resource's `custom`, so the
-            // custom side of the claim comes from the CURRENT stored sidecar.
-            const priorSidecar = await this.readMetaSidecar({
-              collectionDir,
-              resourceId
-            })
-            assertNoUniqueEqualityConflict({
-              indexes: uniqueIndexes!,
-              content: input.kind === 'json' ? input.data : undefined,
-              custom: priorSidecar?.custom,
-              candidates
-            })
-          }
-          return write()
-        }
-      )
+      return this.#underSpaceWrite({
+        spaceId,
+        write: () =>
+          this.#writeMutex.run(
+            this.#collectionLockKey({ spaceId, collectionId }),
+            async () => {
+              // One Collection scan serves both claims. The equality candidate set
+              // is the richer of the two (it also carries blobs and each sidecar's
+              // `custom`), so when the equality claim needs it the blinded
+              // candidates -- the live, parsable JSON documents -- are derived from
+              // it rather than re-read. A blinded-only claim reads JSON documents
+              // only and never touches a sidecar.
+              const candidates = await this.#readEqualityCandidates({
+                spaceId,
+                collectionId,
+                excludeResourceId: resourceId,
+                jsonOnly: !equalityUnique
+              })
+              if (blindedUnique) {
+                assertNoUniqueBlindedConflict({
+                  document: input.kind === 'json' ? input.data : undefined,
+                  candidates: this.#jsonCandidatesFrom(candidates)
+                })
+              }
+              if (equalityUnique) {
+                // A content write does not change the Resource's `custom`, so the
+                // custom side of the claim comes from the CURRENT stored sidecar.
+                const priorSidecar = await this.readMetaSidecar({
+                  collectionDir,
+                  resourceId
+                })
+                assertNoUniqueEqualityConflict({
+                  indexes: uniqueIndexes!,
+                  content: input.kind === 'json' ? input.data : undefined,
+                  custom: priorSidecar?.custom,
+                  candidates
+                })
+              }
+              return write()
+            }
+          )
+      })
     }
-    return write()
+    return this.#underSpaceWrite({ spaceId, write })
   }
 
   /**
@@ -2803,13 +3013,19 @@ export class FileSystemBackend implements StorageBackend {
         )
       }
       let releaseByteReservation: (() => void) | undefined
+      let reconcileByteReservation: ((actualBytes: number) => void) | undefined
       if (capacityBytes !== undefined) {
-        const { headroom, release } = await this.#assertSpaceHeadroom({
-          spaceId,
-          capacityBytes,
-          incomingBytes: input.declaredBytes ?? 0
-        })
+        const { headroom, release, reconcile } =
+          await this.#assertSpaceHeadroom({
+            spaceId,
+            capacityBytes,
+            // A body with no declared size reserves nothing up front; the
+            // streaming guard below bounds it to the remaining headroom, and
+            // `reconcile` books the bytes it actually wrote once it lands.
+            incomingBytes: input.declaredBytes ?? 0
+          })
         releaseByteReservation = release
+        reconcileByteReservation = reconcile
         guards.push(
           this.#byteLimitGuard({
             limitBytes: headroom,
@@ -2829,6 +3045,13 @@ export class FileSystemBackend implements StorageBackend {
           ...guards,
           fs.createWriteStream(tempPath)
         ])
+        // Correct the reservation to the size actually written BEFORE the
+        // commit: `declaredBytes` was absent (nothing reserved) or understated,
+        // and the snapshot must carry these bytes or the next write inside the
+        // same TTL is admitted against a total that never moved.
+        if (reconcileByteReservation !== undefined) {
+          reconcileByteReservation((await fsStat(tempPath)).size)
+        }
         await commitTempFile({ tempPath, filePath })
       } catch (err) {
         // Remove the partial file on ANY failure: a guard rejection (413/507),
@@ -3104,8 +3327,22 @@ export class FileSystemBackend implements StorageBackend {
       path.basename(filePath)
     )
 
+    let resourceStream
+    try {
+      resourceStream = await openFileStream(filePath, this.logger)
+    } catch (err) {
+      // The representation was removed between `#findFile` and the open: that
+      // is exactly the concurrent-removal case this path relies on the stream's
+      // own `open` to surface, and it is a 404, not a server fault. Anything
+      // else is a genuine storage failure.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new ResourceNotFoundError({ requestName })
+      }
+      throw new StorageError({ cause: err as Error, requestName })
+    }
+
     return {
-      resourceStream: await openFileStream(filePath, this.logger),
+      resourceStream,
       storedResourceType,
       ...(sidecar?.generation !== undefined && {
         generation: sidecar.generation
@@ -3422,33 +3659,41 @@ export class FileSystemBackend implements StorageBackend {
     // nesting cannot deadlock (plain writes never hold a Resource key while
     // waiting on a Collection key).
     if (uniqueIndexes !== undefined && uniqueIndexes.length > 0) {
-      return this.#writeMutex.run(
-        this.#collectionLockKey({ spaceId, collectionId }),
-        async () => {
-          assertNoUniqueEqualityConflict({
-            indexes: uniqueIndexes,
-            content: await this.#readResourceJsonContent({
-              collectionDir,
-              resourceId
-            }),
-            custom,
-            candidates: await this.#readEqualityCandidates({
-              spaceId,
-              collectionId,
-              excludeResourceId: resourceId
-            })
-          })
-          return this.#writeMutex.run(
-            this.#resourceLockKey({ spaceId, collectionId, resourceId }),
-            writeMeta
+      return this.#underSpaceWrite({
+        spaceId,
+        write: () =>
+          this.#writeMutex.run(
+            this.#collectionLockKey({ spaceId, collectionId }),
+            async () => {
+              assertNoUniqueEqualityConflict({
+                indexes: uniqueIndexes,
+                content: await this.#readResourceJsonContent({
+                  collectionDir,
+                  resourceId
+                }),
+                custom,
+                candidates: await this.#readEqualityCandidates({
+                  spaceId,
+                  collectionId,
+                  excludeResourceId: resourceId
+                })
+              })
+              return this.#writeMutex.run(
+                this.#resourceLockKey({ spaceId, collectionId, resourceId }),
+                writeMeta
+              )
+            }
           )
-        }
-      )
+      })
     }
-    return this.#writeMutex.run(
-      this.#resourceLockKey({ spaceId, collectionId, resourceId }),
-      writeMeta
-    )
+    return this.#underSpaceWrite({
+      spaceId,
+      write: () =>
+        this.#writeMutex.run(
+          this.#resourceLockKey({ spaceId, collectionId, resourceId }),
+          writeMeta
+        )
+    })
   }
 
   /**
@@ -3487,10 +3732,6 @@ export class FileSystemBackend implements StorageBackend {
     ifMatch?: string
   }): Promise<void> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
-    // Freed bytes and slots: drop the cached quota figures so the next write
-    // re-measures.
-    this.#usageCache.delete(spaceId)
-    this.#liveCountCache.delete(spaceId)
     const softDelete = async (): Promise<void> => {
       if (ifMatch !== undefined) {
         await this.#assertWritePrecondition({
@@ -3520,6 +3761,13 @@ export class FileSystemBackend implements StorageBackend {
       )
       // Drop the content representation(s) but KEEP the sidecar as the tombstone.
       await Promise.all(filesForResource.map(filename => rm(filename)))
+      // Freed bytes and slots: drop the cached quota figures so the next write
+      // re-measures. AFTER the removal and inside the lock, as `deleteChunk`
+      // does -- invalidating first would let a concurrent write re-measure the
+      // pre-delete tree and cache that total for a full TTL, refusing the
+      // client's follow-up write (507) over space this delete just freed.
+      this.#usageCache.delete(spaceId)
+      this.#liveCountCache.delete(spaceId)
       // Cascade-delete the Resource's chunks (the `chunked-streams` feature): a
       // chunk must never outlive its parent Resource, so its whole chunk
       // directory goes with the content. Runs under the same per-Resource lock a
@@ -3564,10 +3812,14 @@ export class FileSystemBackend implements StorageBackend {
     // The soft delete is a read-modify-write on the sidecar, so it always
     // serializes with concurrent writes under the per-Resource lock (not only
     // for a conditional delete, as the old unconditional removal did).
-    return this.#writeMutex.run(
-      this.#resourceLockKey({ spaceId, collectionId, resourceId }),
-      softDelete
-    )
+    return this.#underSpaceWrite({
+      spaceId,
+      write: () =>
+        this.#writeMutex.run(
+          this.#resourceLockKey({ spaceId, collectionId, resourceId }),
+          softDelete
+        )
+    })
   }
 
   // Chunks (the `chunked-streams` feature)
@@ -3639,20 +3891,25 @@ export class FileSystemBackend implements StorageBackend {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
     // Serialize on the parent Resource's lock key -- the same key
     // `deleteResource` takes -- so the parent-exists check, the write, and the
-    // cascade delete cannot interleave (no orphan chunk).
-    return this.#writeMutex.run(
-      this.#resourceLockKey({ spaceId, collectionId, resourceId }),
-      () =>
-        this.#writeChunkLocked({
-          spaceId,
-          collectionDir,
-          resourceId,
-          chunkIndex,
-          input,
-          ifMatch,
-          ifNoneMatch
-        })
-    )
+    // cascade delete cannot interleave (no orphan chunk). Under the Space gate,
+    // as every path-creating write is: this one creates the chunk dir.
+    return this.#underSpaceWrite({
+      spaceId,
+      write: () =>
+        this.#writeMutex.run(
+          this.#resourceLockKey({ spaceId, collectionId, resourceId }),
+          () =>
+            this.#writeChunkLocked({
+              spaceId,
+              collectionDir,
+              resourceId,
+              chunkIndex,
+              input,
+              ifMatch,
+              ifNoneMatch
+            })
+        )
+    })
   }
 
   /**
@@ -3854,51 +4111,55 @@ export class FileSystemBackend implements StorageBackend {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
     const chunkDir = this.#chunkDir({ collectionDir, resourceId })
     const chunkId = String(chunkIndex)
-    return this.#writeMutex.run(
-      this.#resourceLockKey({ spaceId, collectionId, resourceId }),
-      async () => {
-        const files = await this.#resourceFilesFor({
-          collectionDir: chunkDir,
-          resourceId: chunkId
-        })
-        if (files.length === 0) {
-          // Absent: the handler 404s on `false` (chunk deletes are not silently
-          // idempotent, mirroring the EDV chunk contract).
-          return false
-        }
-        if (ifMatch !== undefined) {
-          await this.#assertWritePrecondition({
-            collectionDir: chunkDir,
-            resourceId: chunkId,
-            ifMatch
-          })
-        }
-        await Promise.all(files.map(name => rm(name)))
-        // Remove the validator sidecar too: a chunk keeps no tombstone, so its
-        // generation does not survive the delete.
-        await rm(
-          this.#metaSidecarPath({
-            collectionDir: chunkDir,
-            resourceId: chunkId
-          }),
-          { force: true }
+    return this.#underSpaceWrite({
+      spaceId,
+      write: () =>
+        this.#writeMutex.run(
+          this.#resourceLockKey({ spaceId, collectionId, resourceId }),
+          async () => {
+            const files = await this.#resourceFilesFor({
+              collectionDir: chunkDir,
+              resourceId: chunkId
+            })
+            if (files.length === 0) {
+              // Absent: the handler 404s on `false` (chunk deletes are not silently
+              // idempotent, mirroring the EDV chunk contract).
+              return false
+            }
+            if (ifMatch !== undefined) {
+              await this.#assertWritePrecondition({
+                collectionDir: chunkDir,
+                resourceId: chunkId,
+                ifMatch
+              })
+            }
+            await Promise.all(files.map(name => rm(name)))
+            // Remove the validator sidecar too: a chunk keeps no tombstone, so its
+            // generation does not survive the delete.
+            await rm(
+              this.#metaSidecarPath({
+                collectionDir: chunkDir,
+                resourceId: chunkId
+              }),
+              { force: true }
+            )
+            // When that was the last chunk, remove the now-empty chunk directory
+            // itself: a lingering empty `.chunks.<encId>/` would otherwise appear
+            // in the export walk (diverging from a Postgres export of the same
+            // logical state) and count its allocated block toward the du-based
+            // quota measurement. Safe under the per-Resource lock (`writeChunk`
+            // serializes on the same key, so nothing lands in the directory
+            // between the check and the rmdir).
+            const remaining = await fs.promises.readdir(chunkDir)
+            if (remaining.length === 0) {
+              await fs.promises.rmdir(chunkDir)
+            }
+            // Freed bytes: drop the cached quota usage so the next write re-measures.
+            this.#usageCache.delete(spaceId)
+            return true
+          }
         )
-        // When that was the last chunk, remove the now-empty chunk directory
-        // itself: a lingering empty `.chunks.<encId>/` would otherwise appear
-        // in the export walk (diverging from a Postgres export of the same
-        // logical state) and count its allocated block toward the du-based
-        // quota measurement. Safe under the per-Resource lock (`writeChunk`
-        // serializes on the same key, so nothing lands in the directory
-        // between the check and the rmdir).
-        const remaining = await fs.promises.readdir(chunkDir)
-        if (remaining.length === 0) {
-          await fs.promises.rmdir(chunkDir)
-        }
-        // Freed bytes: drop the cached quota usage so the next write re-measures.
-        this.#usageCache.delete(spaceId)
-        return true
-      }
-    )
+    })
   }
 
   /**
@@ -3930,27 +4191,43 @@ export class FileSystemBackend implements StorageBackend {
     // Keep only chunk representations (`r.<index>.<type>.<ext>`), dropping the
     // `.meta.<index>.json` validator sidecars.
     const chunkEntries = this.#representationEntries(entries)
-    const chunks = await Promise.all(
-      chunkEntries.map(
-        async ({ resourceId: indexStr, contentType, fileName }) => {
-          const filePath = path.join(chunkDir, fileName)
-          const stats = await fsStat(filePath)
-          const sidecar = await this.readMetaSidecar({
-            collectionDir: chunkDir,
-            resourceId: indexStr
-          })
-          return {
-            index: Number(indexStr),
-            size: stats.size,
-            contentType,
-            ...(sidecar?.generation !== undefined && {
-              generation: sidecar.generation
-            }),
-            ...(sidecar?.version !== undefined && { version: sidecar.version })
+    // `listChunks` takes no lock, so a concurrent `deleteChunk` can remove a
+    // file this listing already named. Such a chunk is simply omitted (its
+    // `stat` resolves `undefined` below), as `#statRepresentation` does on the
+    // same race -- an `ENOENT` escaping here would be a 500 for a valid read.
+    const chunks = (
+      await Promise.all(
+        chunkEntries.map(
+          async ({ resourceId: indexStr, contentType, fileName }) => {
+            const filePath = path.join(chunkDir, fileName)
+            let stats
+            try {
+              stats = await fsStat(filePath)
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+                return undefined
+              }
+              throw err
+            }
+            const sidecar = await this.readMetaSidecar({
+              collectionDir: chunkDir,
+              resourceId: indexStr
+            })
+            return {
+              index: Number(indexStr),
+              size: stats.size,
+              contentType,
+              ...(sidecar?.generation !== undefined && {
+                generation: sidecar.generation
+              }),
+              ...(sidecar?.version !== undefined && {
+                version: sidecar.version
+              })
+            }
           }
-        }
+        )
       )
-    )
+    ).filter(chunk => chunk !== undefined)
     chunks.sort((left, right) => left.index - right.index)
     return { count: chunks.length, chunks }
   }
@@ -4535,15 +4812,20 @@ export class FileSystemBackend implements StorageBackend {
     resourceId?: string
     policy: PolicyDocument
   }): Promise<void> {
-    // Ensure the containing directory exists (Space or Collection dir).
-    if (collectionId !== undefined) {
-      await this.#ensureCollectionDir({ spaceId, collectionId })
-    } else {
-      await this.#ensureSpaceDir({ spaceId })
-    }
-    await atomicWriteFile({
-      filePath: this.#policyFile({ spaceId, collectionId, resourceId }),
-      data: JSON.stringify(policy)
+    // Creates the Space or Collection dir, so it runs under the Space gate.
+    return this.#underSpaceWrite({
+      spaceId,
+      write: async () => {
+        if (collectionId !== undefined) {
+          await this.#ensureCollectionDir({ spaceId, collectionId })
+        } else {
+          await this.#ensureSpaceDir({ spaceId })
+        }
+        await atomicWriteFile({
+          filePath: this.#policyFile({ spaceId, collectionId, resourceId }),
+          data: JSON.stringify(policy)
+        })
+      }
     })
   }
 
@@ -4612,10 +4894,16 @@ export class FileSystemBackend implements StorageBackend {
     backendId: string
     record: StoredBackendRecord
   }): Promise<void> {
-    await this.#ensureSpaceDir({ spaceId })
-    await atomicWriteFile({
-      filePath: this.#backendFile({ spaceId, backendId }),
-      data: JSON.stringify(record)
+    // Creates the Space dir, so it runs under the Space gate.
+    return this.#underSpaceWrite({
+      spaceId,
+      write: async () => {
+        await this.#ensureSpaceDir({ spaceId })
+        await atomicWriteFile({
+          filePath: this.#backendFile({ spaceId, backendId }),
+          data: JSON.stringify(record)
+        })
+      }
     })
   }
 
