@@ -531,7 +531,18 @@ export class PostgresBackend implements StorageBackend {
   /**
    * Ensures the `spaces` row for `spaceId` exists (a placeholder with a NULL
    * description when the Space was never described -- the analogue of the
-   * filesystem creating a Space directory on a sub-Space write).
+   * filesystem creating a Space directory on a sub-Space write), and leaves
+   * the row locked for the rest of the transaction.
+   *
+   * Provisioning and locking are one statement on purpose. `ON CONFLICT DO
+   * NOTHING` takes no lock on the row it found, so a concurrent `deleteSpace`
+   * could commit between this statement and a following `#lockSpaceRow`,
+   * whose `FOR UPDATE` would then match no row and lock nothing; the caller's
+   * next `INSERT` into a cascade-dependent table would raise a foreign-key
+   * violation, which is no `ProblemError` and so renders a 500. `DO UPDATE`
+   * locks the conflicting row instead, so the write and the deletion order
+   * deterministically. The no-op update costs nothing extra: every content
+   * write updates this row again through `#applyUsageDelta`.
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
@@ -546,7 +557,7 @@ export class PostgresBackend implements StorageBackend {
   }): Promise<void> {
     await client.query(
       `INSERT INTO spaces (space_id) VALUES ($1)
-       ON CONFLICT (space_id) DO NOTHING`,
+       ON CONFLICT (space_id) DO UPDATE SET space_id = spaces.space_id`,
       [spaceId]
     )
   }
@@ -598,6 +609,13 @@ export class PostgresBackend implements StorageBackend {
    * throughout: `SPACE_DESC_LOCK_SQL` is taken BEFORE this row lock (the
    * Space Description paths take no other), and `#lockSameKeyCreate` /
    * `#lockCollectionUniqueness` are taken AFTER it.
+   *
+   * A path that provisions the Space takes this same lock through
+   * `#ensureSpaceRow`, which creates-or-locks in one statement; calling this
+   * afterwards is then a no-op on a row the transaction already holds, kept
+   * where the call site's own reason for the lock is worth stating. This
+   * variant never creates the row, so a delete path that finds it gone locks
+   * nothing and its own statements report the absence.
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
