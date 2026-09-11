@@ -31,6 +31,11 @@ Postgres backend:
   surface as a 500, because transactions took the `spaces` and `collections` row
   locks in opposite orders. Every transaction that mutates stored bytes now
   takes the Space row first.
+- A write that raced a Space delete could fail with a foreign-key violation,
+  which carries no problem type and so rendered a 500. Provisioning the Space
+  row took no lock on a row that already existed, so a delete could commit
+  before the write's separate `SELECT ... FOR UPDATE`, which then locked
+  nothing. Provisioning and locking are now one statement.
 
 Filesystem backend:
 

@@ -13,6 +13,7 @@ import { formatEtag } from '../src/lib/etag.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
 import {
   PreconditionFailedError,
+  ProblemError,
   ResourceNotFoundError,
   StorageError,
   UniqueAttributeConflictError,
@@ -4421,6 +4422,59 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           }
         }
       )
+    })
+
+    describe('Space deletion racing a write', () => {
+      // Whichever of the two lands first, the other must resolve as itself or
+      // as a WAS error -- never as a raw storage fault, which carries no
+      // `type` and so renders a 500. The pair contends over the same records:
+      // a write provisions the Space and its Collection, and the delete
+      // removes the Space and everything under it. The filesystem backend
+      // serializes them on its per-Space gate; Postgres serializes them on the
+      // `spaces` row, which is why provisioning that row and locking it have
+      // to be one statement -- with a lockless `ON CONFLICT DO NOTHING`
+      // followed by a separate `FOR UPDATE`, a delete committing in between
+      // leaves the writer locking nothing and its next insert raising a
+      // foreign-key violation.
+      it('resolves both sides without a raw storage fault', async () => {
+        const race = await makeBackend()
+        try {
+          // The window is a statement wide, so the interleaving is sampled
+          // rather than forced: repeat enough to land in it.
+          for (let attempt = 0; attempt < 10; attempt++) {
+            const spaceId = `space-delete-race-${attempt}`
+            await provisionSpace(race.backend, spaceId)
+            const outcomes = await Promise.allSettled([
+              race.backend.writeResource({
+                spaceId,
+                collectionId: 'col',
+                resourceId: 'doc',
+                input: jsonInput({ racing: attempt })
+              }),
+              race.backend.deleteSpace({ spaceId }),
+              race.backend.writeCollection({
+                spaceId,
+                collectionId: 'raced-col',
+                collectionDescription: {
+                  id: 'raced-col',
+                  type: ['Collection'],
+                  name: 'raced-col'
+                }
+              })
+            ])
+            for (const outcome of outcomes) {
+              if (outcome.status === 'rejected') {
+                assert.ok(
+                  outcome.reason instanceof ProblemError,
+                  `unmapped storage fault: ${String(outcome.reason)}`
+                )
+              }
+            }
+          }
+        } finally {
+          await race.cleanup()
+        }
+      })
     })
 
     describe('governing history log (governed-history-logs)', () => {
