@@ -24,11 +24,10 @@ const vanished = vi.hoisted(() => ({ paths: [] as string[] }))
 const isVanished = vi.hoisted(
   () => (target: unknown) =>
     typeof target === 'string' &&
-    (globalThis as { __vanished?: { paths: string[] } }).__vanished !==
-      undefined &&
-    (globalThis as { __vanished: { paths: string[] } }).__vanished.paths.some(
-      fragment => target.includes(fragment)
-    )
+    ((
+      globalThis as { __vanished?: { paths: string[] } }
+    ).__vanished?.paths.some(fragment => target.includes(fragment)) ??
+      false)
 )
 
 vi.mock('node:fs/promises', async importOriginal => {

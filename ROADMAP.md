@@ -1350,97 +1350,6 @@ caller-supplied protected-header params"**
 Items with no current trigger: blocked on the spec, or on a deployment shape
 nobody runs yet. Parked here so the active sections stay actionable.
 
-### WAS-96: Multi-primary Spaces (replicated write identity and conflict model)
-
-- status: draft
-- priority: medium
-- labels: data-model, replication, changes-feed, etag, spec-blocked
-- discovered-from: WAS-93
-- touches:
-  - wallet-attached-storage-spec: the Resource data model (a replicated origin
-    identity and the validators), the `changes` profile (per-source or vector
-    checkpoints), and a new section on server-to-server sync
-  - storage-core: `ChangeDocument`, `ChangesCheckpoint`, and the Resource
-    metadata model
-  - was-teaching-server: the `ETag` derivation in `src/lib/etag.ts`, the sidecar
-    and `resources` row layouts, both `changesSince` implementations, and a sync
-    facet that pulls a peer's feed under a delegated capability
-  - was-client and was-sync: one checkpoint per server a replica pulls from, and
-    idempotent apply across sources
-
-Draft rather than todo: the done-state depends on a Resource-model decision the
-spec has not made (how two concurrent versions of one Resource are represented
-and resolved), so there are no acceptance criteria yet. This item records what
-multi-primary forces, so that the single-server items filed in the meantime
-(WAS-93 first) do not close the door. Promote it to `todo` once the conflict
-model is decided, with acceptance criteria per bullet below.
-
-The goal: a Space lives on more than one server, each accepts writes to the same
-Collection, and the servers sync with each other. Today a Space lives on one
-server, because every capability's `invocationTarget` embeds that server's URL,
-and the only multi-writer case is many clients pushing to one server that
-serializes them. With two primaries there is no total order over a Collection's
-writes, only each server's local commit order. Everything below follows from
-that.
-
-Feed position is local. A client's checkpoint is a position in one server's feed
-and means nothing on the other. Either a replica keeps one checkpoint per server
-it pulls from (CouchDB's per source-target checkpoint), or the checkpoint
-becomes a vector with one entry per source (CouchDB's clustered sequence).
-WAS-93 makes the checkpoint opaque and server-scoped so either extension fits
-inside it.
-
-A write needs a replicated identity. When server B receives a write that
-originated on A, B assigns it a position in B's own feed, but the write keeps an
-origin stamp: the accepting server's identifier plus a stamp from that server.
-Without it a client pulling both feeds sees the write twice and cannot tell, and
-A cannot recognize its own write returning from B and stop the loop. A hybrid
-logical clock (physical time plus a logical counter, as in CockroachDB and
-MongoDB's cluster time) is the natural stamp: it stays close to wall time and is
-comparable across servers, which a last-writer-wins rule needs, and it lets
-`updatedAt` remain the origin's honest clock rather than the receiving server's.
-The exact members, their encoding, and where they live (sidecar, row, feed
-document, `/meta`) are wire decisions to be made when the item is promoted.
-
-Record metadata must be origin-owned and replicated verbatim. This is the `ETag`
-consideration. Today the validator is `"<generation>.<version>"`, the generation
-a random marker minted by this server when the record's counter starts, and the
-version a per-server counter. If B re-mints either on receive, a client holding
-an `ETag` from A cannot send `If-Match` to B, and the same logical write carries
-different validators on each replica. So `generation`, `version`, `updatedAt`,
-and the `/meta` pair (`metaGeneration`, `metaVersion`) become facts about the
-write, minted once at its origin and stored unchanged by every replica. The
-quoted byte layout of the validator can stay; what changes is who mints it and
-that it travels with the write. The generation could remain random-at-origin or
-be derived from the origin identity; either way it can no longer be a per-server
-marker. The hard-delete rule ("a new record under the same id mints a new
-generation") also needs a multi-server reading, since two servers could
-re-create the same id independently.
-
-Concurrent versions need a merge rule. Two primaries can each accept a write to
-`x` while partitioned, and a single counter cannot express that. The known
-choices are a version vector or revision tree that surfaces the conflict to the
-client (CouchDB, Riak), or last-writer-wins on the origin clock. The `If-Match`
-precondition model assumes one authority per Resource, and multi-primary
-replaces that with the merge rule. This is the spec-level decision the item is
-blocked on. Encrypted Collections constrain it further: the server cannot merge
-opaque envelopes, so any resolution beyond last-writer-wins must be a
-client-side merge of surfaced conflicts.
-
-Server-to-server sync itself. A server can act as a client of its peer: the
-Space controller delegates a capability to the peer server's DID, and the peer
-pulls the changes feed under it, keeping one checkpoint per peer. Received
-writes take a local feed position and keep their origin stamp; a write whose
-origin is the receiving server itself is a loop and is dropped. The capability's
-`invocationTarget` embeds the peer's URL, so a Space on two hosts has two URL
-identities under one controller; how a client discovers the replica set (a
-service entry on the controller document, or the Space Description) is open.
-
-Out of scope until promoted: the reader-safety watermark (closed timestamps)
-that would be needed if per-Collection write serialization were ever relaxed;
-blob and chunk replication (WAS-14); and server-signed checkpoints (WAS-36),
-which interact with per-source checkpoints and should be designed together.
-
 ### WAS-11: Space-level `/query`
 
 - status: draft (spec-blocked)
@@ -1750,5 +1659,96 @@ query); (b) _custom-sourced indexes on encrypted Collections_ -- tags on
 encrypted photos, since `custom` metadata is server-visible plaintext
 regardless; (c) _path-valued index names_ -- extending the `name` grammar to
 JSON Pointer for nested attributes.
+
+### WAS-96: Multi-primary Spaces (replicated write identity and conflict model)
+
+- status: draft
+- priority: medium
+- labels: data-model, replication, changes-feed, etag, spec-blocked
+- discovered-from: WAS-93
+- touches:
+  - wallet-attached-storage-spec: the Resource data model (a replicated origin
+    identity and the validators), the `changes` profile (per-source or vector
+    checkpoints), and a new section on server-to-server sync
+  - storage-core: `ChangeDocument`, `ChangesCheckpoint`, and the Resource
+    metadata model
+  - was-teaching-server: the `ETag` derivation in `src/lib/etag.ts`, the sidecar
+    and `resources` row layouts, both `changesSince` implementations, and a sync
+    facet that pulls a peer's feed under a delegated capability
+  - was-client and was-sync: one checkpoint per server a replica pulls from, and
+    idempotent apply across sources
+
+Draft rather than todo: the done-state depends on a Resource-model decision the
+spec has not made (how two concurrent versions of one Resource are represented
+and resolved), so there are no acceptance criteria yet. This item records what
+multi-primary forces, so that the single-server items filed in the meantime
+(WAS-93 first) do not close the door. Promote it to `todo` once the conflict
+model is decided, with acceptance criteria per bullet below.
+
+The goal: a Space lives on more than one server, each accepts writes to the same
+Collection, and the servers sync with each other. Today a Space lives on one
+server, because every capability's `invocationTarget` embeds that server's URL,
+and the only multi-writer case is many clients pushing to one server that
+serializes them. With two primaries there is no total order over a Collection's
+writes, only each server's local commit order. Everything below follows from
+that.
+
+Feed position is local. A client's checkpoint is a position in one server's feed
+and means nothing on the other. Either a replica keeps one checkpoint per server
+it pulls from (CouchDB's per source-target checkpoint), or the checkpoint
+becomes a vector with one entry per source (CouchDB's clustered sequence).
+WAS-93 makes the checkpoint opaque and server-scoped so either extension fits
+inside it.
+
+A write needs a replicated identity. When server B receives a write that
+originated on A, B assigns it a position in B's own feed, but the write keeps an
+origin stamp: the accepting server's identifier plus a stamp from that server.
+Without it a client pulling both feeds sees the write twice and cannot tell, and
+A cannot recognize its own write returning from B and stop the loop. A hybrid
+logical clock (physical time plus a logical counter, as in CockroachDB and
+MongoDB's cluster time) is the natural stamp: it stays close to wall time and is
+comparable across servers, which a last-writer-wins rule needs, and it lets
+`updatedAt` remain the origin's honest clock rather than the receiving server's.
+The exact members, their encoding, and where they live (sidecar, row, feed
+document, `/meta`) are wire decisions to be made when the item is promoted.
+
+Record metadata must be origin-owned and replicated verbatim. This is the `ETag`
+consideration. Today the validator is `"<generation>.<version>"`, the generation
+a random marker minted by this server when the record's counter starts, and the
+version a per-server counter. If B re-mints either on receive, a client holding
+an `ETag` from A cannot send `If-Match` to B, and the same logical write carries
+different validators on each replica. So `generation`, `version`, `updatedAt`,
+and the `/meta` pair (`metaGeneration`, `metaVersion`) become facts about the
+write, minted once at its origin and stored unchanged by every replica. The
+quoted byte layout of the validator can stay; what changes is who mints it and
+that it travels with the write. The generation could remain random-at-origin or
+be derived from the origin identity; either way it can no longer be a per-server
+marker. The hard-delete rule ("a new record under the same id mints a new
+generation") also needs a multi-server reading, since two servers could
+re-create the same id independently.
+
+Concurrent versions need a merge rule. Two primaries can each accept a write to
+`x` while partitioned, and a single counter cannot express that. The known
+choices are a version vector or revision tree that surfaces the conflict to the
+client (CouchDB, Riak), or last-writer-wins on the origin clock. The `If-Match`
+precondition model assumes one authority per Resource, and multi-primary
+replaces that with the merge rule. This is the spec-level decision the item is
+blocked on. Encrypted Collections constrain it further: the server cannot merge
+opaque envelopes, so any resolution beyond last-writer-wins must be a
+client-side merge of surfaced conflicts.
+
+Server-to-server sync itself. A server can act as a client of its peer: the
+Space controller delegates a capability to the peer server's DID, and the peer
+pulls the changes feed under it, keeping one checkpoint per peer. Received
+writes take a local feed position and keep their origin stamp; a write whose
+origin is the receiving server itself is a loop and is dropped. The capability's
+`invocationTarget` embeds the peer's URL, so a Space on two hosts has two URL
+identities under one controller; how a client discovers the replica set (a
+service entry on the controller document, or the Space Description) is open.
+
+Out of scope until promoted: the reader-safety watermark (closed timestamps)
+that would be needed if per-Collection write serialization were ever relaxed;
+blob and chunk replication (WAS-14); and server-signed checkpoints (WAS-36),
+which interact with per-source checkpoints and should be designed together.
 
 ---
