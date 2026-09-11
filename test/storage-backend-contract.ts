@@ -2453,6 +2453,72 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await harness.cleanup()
       })
 
+      it('advances updatedAt on an overwrite, and the overwrite reaches the feed', async () => {
+        const { backend } = harness
+        // Its own Collection, so the Resources it writes stay out of the
+        // shared feed fixture the next test enumerates.
+        const collectionId = 'col-overwrite'
+        const resourceId = 'overwritten'
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionDescription: {
+            id: collectionId,
+            type: ['Collection'],
+            name: collectionId
+          }
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId,
+          input: jsonInput({ n: 1 })
+        })
+        const first = await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId
+        })
+        // The keyset position a replicating client would checkpoint at after
+        // seeing the create.
+        const checkpoint = { id: resourceId, updatedAt: first!.updatedAt! }
+        // Far enough apart that the two writes cannot share a millisecond.
+        await new Promise(resolve => setTimeout(resolve, 25))
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId,
+          input: jsonInput({ n: 2 })
+        })
+        const second = await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId
+        })
+        // An overwrite keeps the creation time and MOVES the modification
+        // time forward. Binding one timestamp to both columns would rewind
+        // `updatedAt` to the creation time instead.
+        assert.equal(second!.createdAt, first!.createdAt)
+        assert.ok(
+          Date.parse(second!.updatedAt!) > Date.parse(first!.updatedAt!),
+          'updatedAt must advance on an overwrite'
+        )
+        // The consequence that matters: a replica resuming from the create's
+        // checkpoint must be told about the overwrite. A rewound `updatedAt`
+        // leaves the Resource at or before the checkpoint's keyset position,
+        // and the change is never replicated at all.
+        const feed = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          checkpoint,
+          limit: 50
+        })
+        assert.ok(
+          feed.documents.some(doc => doc.resourceId === resourceId),
+          'an overwrite must surface in the change feed'
+        )
+      })
+
       it('orders by (updatedAt, resourceId), resumes from a checkpoint, and carries tombstones', async () => {
         const { backend } = harness
         await backend.writeResource({

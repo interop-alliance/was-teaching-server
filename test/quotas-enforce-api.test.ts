@@ -178,6 +178,150 @@ describe('Quota enforcement (backend)', () => {
     )
   })
 
+  it('books a streamed blob with no declared size against the quota', async () => {
+    // Regression: a chunked-transfer body carries no `Content-Length`, so the
+    // write reserved zero bytes and nothing credited what it wrote. Every write
+    // inside the usage-cache TTL was then admitted against the same stale
+    // snapshot, and the Space sailed past `capacityBytes`.
+    const streamedDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
+    const streamedBackend = new FileSystemBackend({
+      dataDir: streamedDir,
+      capacityBytes: 40_000
+    })
+    const streamedSpace = `quota-streamed-${crypto.randomUUID()}`
+    try {
+      await streamedBackend.writeSpace({
+        spaceId: streamedSpace,
+        spaceDescription: {
+          id: streamedSpace,
+          type: ['Space'],
+          controller: 'did:key:z6MkStreamedQuotaController'
+        }
+      })
+      await streamedBackend.writeCollection({
+        spaceId: streamedSpace,
+        collectionId,
+        collectionDescription: {
+          id: collectionId,
+          type: ['Collection'],
+          name: 'Credentials'
+        }
+      })
+      // No `declaredBytes` on either write: the first fits, the second must not.
+      await streamedBackend.writeResource({
+        spaceId: streamedSpace,
+        collectionId,
+        resourceId: 'streamed-one',
+        input: {
+          kind: 'binary',
+          contentType: 'application/octet-stream',
+          stream: bufferStream(Buffer.alloc(30_000, 0x61))
+        }
+      })
+      await assert.rejects(
+        streamedBackend.writeResource({
+          spaceId: streamedSpace,
+          collectionId,
+          resourceId: 'streamed-two',
+          input: {
+            kind: 'binary',
+            contentType: 'application/octet-stream',
+            stream: bufferStream(Buffer.alloc(30_000, 0x61))
+          }
+        }),
+        (err: unknown) => err instanceof QuotaExceededError
+      )
+      // The refused write left nothing behind: only the first blob is stored,
+      // so the Space holds one 30 KB body rather than two.
+      await assert.rejects(
+        streamedBackend.getResource({
+          spaceId: streamedSpace,
+          collectionId,
+          resourceId: 'streamed-two'
+        }),
+        (err: unknown) => err instanceof ResourceNotFoundError
+      )
+    } finally {
+      await rm(streamedDir, { recursive: true, force: true })
+    }
+  })
+
+  it('gives the reservation back when an import writes nothing', async () => {
+    // Regression: `importSpace` discarded the reservation handle, so a
+    // re-import of an unchanged archive -- every body skipped -- left the whole
+    // archive size sitting in the usage snapshot, refusing unrelated writes
+    // with 507 until the TTL expired.
+    const sourceDir = await mkdtemp(path.join(tmpdir(), 'was-test-src-'))
+    const targetDir = await mkdtemp(path.join(tmpdir(), 'was-test-dst-'))
+    const sourceBackend = new FileSystemBackend({ dataDir: sourceDir })
+    // Capacity fits the archive once, but not the archive twice over.
+    const targetBackend = new FileSystemBackend({
+      dataDir: targetDir,
+      capacityBytes: 120_000
+    })
+    const importSpaceId = `quota-import-${crypto.randomUUID()}`
+    const seed = async (backend: FileSystemBackend) => {
+      await backend.writeSpace({
+        spaceId: importSpaceId,
+        spaceDescription: {
+          id: importSpaceId,
+          type: ['Space'],
+          controller: 'did:key:z6MkImportReleaseController'
+        }
+      })
+      await backend.writeCollection({
+        spaceId: importSpaceId,
+        collectionId,
+        collectionDescription: {
+          id: collectionId,
+          type: ['Collection'],
+          name: 'Credentials'
+        }
+      })
+    }
+    try {
+      await seed(sourceBackend)
+      await sourceBackend.writeResource({
+        spaceId: importSpaceId,
+        collectionId,
+        resourceId: 'bulky',
+        input: {
+          kind: 'binary',
+          contentType: 'application/octet-stream',
+          declaredBytes: 50_000,
+          stream: bufferStream(Buffer.alloc(50_000, 0x61))
+        }
+      })
+      await seed(targetBackend)
+      await targetBackend.importSpace({
+        spaceId: importSpaceId,
+        tarStream: await sourceBackend.exportSpace({ spaceId: importSpaceId })
+      })
+      // Re-import the same archive: every body is skipped, so the reservation
+      // it took must come back rather than linger in the snapshot.
+      await targetBackend.importSpace({
+        spaceId: importSpaceId,
+        tarStream: await sourceBackend.exportSpace({ spaceId: importSpaceId })
+      })
+      // A write that fits the real usage must still be admitted immediately,
+      // without waiting out the cache TTL.
+      await targetBackend.writeResource({
+        spaceId: importSpaceId,
+        collectionId,
+        resourceId: 'after-reimport',
+        input: {
+          kind: 'binary',
+          contentType: 'application/octet-stream',
+          declaredBytes: 40_000,
+          stream: bufferStream(Buffer.alloc(40_000, 0x61))
+        }
+      })
+    } finally {
+      await rm(sourceDir, { recursive: true, force: true })
+      await rm(targetDir, { recursive: true, force: true })
+    }
+  })
+
   it('importSpace rejects a bulk import that exceeds the quota', async () => {
     // Stage an export from an unlimited backend that holds a ~300 KB resource,
     // then import it into a backend whose capacity cannot hold it.

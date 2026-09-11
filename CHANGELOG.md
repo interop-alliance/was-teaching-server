@@ -1,5 +1,62 @@
 # History
 
+## 0.32.0 - TBD
+
+### Fixed
+
+Backend correctness defects found in a review of `src/backends/`.
+
+Postgres backend:
+
+- Overwriting a Resource reset its `updated_at` to the row's creation time,
+  because one bind parameter fed both `created_at` and `updated_at`. The
+  overwrite was therefore invisible to the `changes` query profile, whose keyset
+  seeks past the checkpoint, so a replicating client never saw the new content.
+- Concurrent Collection Description updates could exhaust the connection pool
+  permanently. The encryption-transition check runs inside the write transaction
+  and reads the Collection's governing history log, which checked out a second
+  pooled connection; ten such writes at once deadlocked the backend until
+  restart. A transaction now publishes its client to the reads that run inside
+  it, so a nested read joins the transaction instead of checking out a second
+  connection, and the pool has a connection timeout so a future nesting mistake
+  fails loudly rather than hanging.
+- Deleting a Collection measured the freed bytes with an unlocked `SUM` taken
+  before the cascade delete, so bytes committed in between were removed but
+  never subtracted, inflating the Space's usage counter permanently. The freed
+  total now comes from the `DELETE ... RETURNING` rows themselves.
+- A Resource or chunk write derived its usage delta from a pre-read, which could
+  double-count against a concurrent Space import. The delta now comes from the
+  writing statement's own snapshot.
+- Concurrent writes and deletes of one Collection could deadlock in Postgres and
+  surface as a 500, because transactions took the `spaces` and `collections` row
+  locks in opposite orders. Every transaction that mutates stored bytes now
+  takes the Space row first.
+
+Filesystem backend:
+
+- A blob upload with no `Content-Length` reserved zero bytes against the Space's
+  capacity and was never credited afterwards, so streamed writes could exceed
+  the quota. The reservation is now reconciled with the bytes actually written.
+- Importing a Space wrote each Resource without taking that Resource's write
+  lock, so a concurrent write could leave a stored `ETag` that did not describe
+  the stored bytes: a conditional read would then be answered 304 over different
+  content.
+- Deleting a Collection or a Space concurrently with a write to it could
+  recreate its directory with no description, leaving storage that no route
+  could reach but that still counted against quotas. Container deletes and
+  path-creating writes are now mutually exclusive.
+- Listing a Collection's items reported an I/O failure as an empty listing. Only
+  a missing directory now yields an empty list; every other error surfaces.
+- Deleting a Resource invalidated the Space's cached usage measurement before
+  removing the bytes, so a concurrent measurement could re-cache the pre-delete
+  total and refuse the client's follow-up write for the cache lifetime.
+- A read racing a delete, a chunk listing racing a chunk delete, and a Resource
+  create racing an unrelated Collection delete each surfaced a raw filesystem
+  error as a 500. The first two now answer 404 and omit the vanished chunk
+  respectively, and the third no longer fails.
+- A Space import that wrote nothing, or failed part-way, kept its whole
+  reservation against the Space's capacity until the usage cache expired.
+
 ## 0.31.0 - 2026-09-10
 
 ### Changed

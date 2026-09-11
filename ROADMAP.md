@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 93
+nextAvailableId: 97
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -1019,6 +1019,199 @@ Context: moving the Get Policy auth check from the handler into a route-level
 status changed from 400 to 401. Consistent with PUT and DELETE, which already
 behaved this way, but wire-observable and uncovered by any test.
 
+## Code review follow-ups (2026-09-11)
+
+Findings from a high-effort review of `src/backends/` and the `src/lib/` modules
+it imports. The correctness defects found in that pass were fixed in the working
+tree; WAS-93 is the one finding whose fix changes a wire artifact, so it is
+recorded here rather than coded. WAS-94 and WAS-95 came out of following that
+finding into the sidecar-less Resource paths it depends on.
+
+### WAS-93: Changes-feed keyset is not a total order
+
+- status: todo
+- priority: high
+- labels: changes-feed, wire-contract, replication, filesystem-backend,
+  postgres-backend
+- touches:
+  - wallet-attached-storage-spec: the Query Profile Registry's `changes`
+    profile. Its "Ordering and resumption" paragraph states the feed is ordered
+    by an ascending `(updatedAt, id)` keyset and that the checkpoint is an
+    `{ id, updatedAt }` object; both statements change (the new text is
+    described below)
+  - storage-core: `ChangesCheckpoint` (`src/was.ts`), today
+    `{ id: string, updatedAt: string }`, becomes the opaque checkpoint type, and
+    the wire `ChangeDocument` gains the feed-position member
+  - was-teaching-server: `src/backends/filesystem.ts` (`changesSince` and the
+    Resource write paths that stamp the sidecar), `src/backends/postgres.ts`
+    (`changesSince`, the `resources` table, and its write statements),
+    `src/requests/CollectionRequest.ts` (`#queryChanges`, the checkpoint parse
+    and the wire projection), `src/types.ts` (the `StorageBackend.changesSince`
+    contract)
+  - was-client: `Collection.changes()` passes the checkpoint through unchanged
+    and needs only the new type; the loop guard in `Collection.documents()` that
+    detects a non-advancing checkpoint concatenates `updatedAt` and `id` and
+    must compare the opaque value instead
+  - was-sync: `createPullHandler` (`src/changesQuery.ts`) already treats the
+    checkpoint as opaque; only its `SyncCheckpoint` alias follows the type
+  - conformance-suite: a case that writes two Resources into one Collection
+    within a single millisecond, pages the feed with a checkpoint between them,
+    and asserts neither is skipped; and a case asserting that a checkpoint from
+    before a write, echoed back after it, surfaces the write
+- acceptance:
+  - [ ] Each write to a Collection takes a per-Collection feed position, a
+        sequence number assigned inside the same per-Collection critical section
+        that makes the write visible, so no write can ever land at or before a
+        position already handed to a client
+  - [ ] Both backends order and seek on that position, and a page's returned
+        checkpoint resumes exactly after the last document
+  - [ ] The checkpoint is opaque on the wire: a client stores it, compares it by
+        equality only, and echoes it back verbatim. The server rejects a
+        checkpoint it did not issue (including the retired `{ id, updatedAt }`
+        shape) with `invalid-request-body` (400), and a replica then restarts
+        its pull from the beginning
+  - [ ] Each feed document carries its feed position, so a client can build a
+        checkpoint from any prefix of a page
+  - [ ] `updatedAt` stays a plain wall-clock stamp with no ordering role; the
+        spec's "Ordering and resumption" paragraph says the feed is ordered by
+        the issuing server's feed position, that the checkpoint is opaque and
+        scoped to the server URL that issued it, and that `updatedAt` carries no
+        ordering guarantee
+  - [ ] A test in `test/` (and a conformance case) covers both skips described
+        below, with the backend clock injected or frozen so the same-millisecond
+        condition is asserted rather than raced
+  - [ ] The checkpoint's exact encoding is agreed before it is coded, and the
+        Query Profile Registry states it
+
+Context: both backends key the feed on `(updatedAt, resourceId)` and seek
+strictly past the checkpoint, and both stamp `updatedAt` from
+`new Date().toISOString()` -- millisecond granularity. Two writes in a
+Collection can therefore share an `updatedAt`, and the keyset stops being a
+total order. Two skips follow. A client checkpoints on Resource `x` at time `T`
+and a writer rewrites `x` within that same millisecond: `x` keeps its position,
+every later pull skips it, and the replica serves the stale body until some
+unrelated write moves `x`'s timestamp. And a Resource whose id sorts below the
+checkpoint's id, written in the checkpoint's millisecond, sorts before the
+checkpoint and is skipped the same way. A per-Resource tiebreak such as the
+monotonic `version` the record already carries closes only the first skip. The
+defect is not that two documents share a key; it is that a write can be assigned
+a key behind a checkpoint already handed out. Only a per-Collection quantity
+that only grows closes both.
+
+A third gap hides behind the first two and constrains where the position is
+assigned. A write that takes its key early and becomes visible late can still
+land behind a checkpoint: writer A takes key `T`, is preempted, and finishes
+after writer B took `T+1`, wrote, and was served to a reader who checkpointed
+there. Both backends already serialize writes per Collection (a keyed lock in
+the filesystem backend, an advisory lock in Postgres), so the position must be
+taken inside that critical section, at the point the write becomes visible. This
+is the same rule that makes a WAL log sequence number safe where a plain
+database sequence (`nextval`, which is not commit-ordered) is not.
+
+Two fixes were weighed. Stamping `updatedAt` as
+`max(now, collectionWatermark + 1ms)` keeps the wire checkpoint unchanged and
+makes the existing key a total order, at the cost of an `updatedAt` that runs
+ahead of the wall clock during a burst. It was rejected for a structural reason
+rather than that one: it makes `updatedAt` serve as the feed key, so the
+receiving server must mint it, so it cannot be a fact about the write that
+replicates verbatim between servers. The multi-primary direction recorded in
+WAS-96 needs exactly that separation: a write's metadata (`updatedAt`,
+`version`, `generation`) is owned by the server that accepted it and travels
+with the write, while a feed position is a property of one server's feed and is
+never replicated. The per-Collection sequence number is the design replication
+feeds normally use (CouchDB's per-database update sequence, Postgres's WAL
+position, Kafka's partition offset) and is the one to implement.
+
+The checkpoint is opaque by decision, not merely by convention. CouchDB moved
+its update sequence from an integer to an opaque string between 1.x and 2.x,
+when a clustered feed needed one counter per shard, and broke every client that
+had done arithmetic on it. Declaring the checkpoint opaque and scoped to the
+issuing server now means the per-source or vector checkpoint that multi-primary
+needs (WAS-96) can arrive without a second wire break. The client side is
+already there: the RxDB pull handler in was-sync echoes the checkpoint verbatim
+and RxDB persists it without inspection, so the only client code that reads
+inside the checkpoint is the loop guard named under `touches`.
+
+No compatibility path is offered for a persisted `{ id, updatedAt }` checkpoint.
+The server refuses it as malformed, the replica restarts its pull from the
+beginning, and the apply path, keyed by Resource id, makes that safe.
+
+### WAS-94: Drop the filesystem backend's legacy stat-based fallbacks
+
+- status: todo
+- priority: medium
+- labels: filesystem-backend, cleanup, greenfield
+- acceptance:
+  - [ ] `getResourceMetadata` reports no `createdAt` / `updatedAt` when the
+        Resource has no sidecar, rather than substituting `birthtime` / `mtime`
+        (both members are already optional on `ResourceMetadata`)
+  - [ ] `changesSince` drops the mtime fallback: a sidecar-less Resource has no
+        feed position and is left out of the feed
+  - [ ] The `ETag` path stays as it is -- a Resource with no validator already
+        carries no `ETag` -- and the three sites read consistently
+  - [ ] A test in `test/` writes a representation file into a Collection dir
+        with no sidecar and asserts the metadata read omits the timestamps and
+        the feed omits the Resource
+  - [ ] CHANGELOG.md records the behavior change
+
+Context: three places in `src/backends/filesystem.ts` accommodate a Resource
+written before the `.meta.` sidecar existed. `getResourceMetadata` (line 3506)
+falls back to `stats.birthtime` / `stats.mtime` for `createdAt` / `updatedAt`;
+`changesSince` (line 4341) falls back to the file's mtime for the feed's
+ordering key; the ETag path (line 3620) leaves such a Resource without a content
+`ETag`. The first two are data-migration accommodations for a `data/` tree
+written by an older build, which this project does not carry. They are also
+inconsistent with the neighbouring `createdBy`, which has no stat-based fallback
+and is simply absent ("there is no stat-based fallback for it, as there is for
+the timestamps"). Dropping them is type-clean: both timestamp members are
+optional. The mtime fallback is worse than absence for the feed in particular --
+a stat time bears no relation to the server's write order, so `cp` without `-p`,
+a restore, or a `touch` silently moves a Resource's feed position, and can move
+it below a checkpoint a client already holds (the same skip WAS-93 describes,
+from a different cause). Once WAS-95 lands, the only way to reach these paths is
+writing into `data/` behind the server's back.
+
+### WAS-95: Import writes a Resource with no sidecar, so it has no feed position
+
+- status: todo
+- priority: high
+- labels: import-export, changes-feed, filesystem-backend, postgres-backend
+- blocked-by: WAS-93
+- touches:
+  - was-teaching-server: `src/backends/filesystem.ts` (`importSpace`),
+    `src/backends/postgres.ts` (`importSpace`), and whatever allocates the feed
+    ordering key once WAS-93 settles it
+  - conformance-suite: an import case whose archive carries a Resource with no
+    metadata entry, asserting the imported Resource appears in the changes feed
+- acceptance:
+  - [ ] `importSpace` never creates a Resource without the record that carries
+        its feed ordering key: an archive entry with no metadata gets a
+        synthesized one, stamped by the same allocation path an ordinary write
+        uses, under the same per-Resource lock
+  - [ ] The archive's `createdAt`, `createdBy`, and `custom` are preserved when
+        present; only the ordering key is minted
+  - [ ] A test in `test/` imports an archive carrying a Resource with no
+        metadata entry and asserts the Resource appears in the changes feed at a
+        position after every pre-existing document
+  - [ ] Both backends behave identically, and the storage-backend contract test
+        covers it
+
+Context: discovered-from WAS-93. `importSpace` in `src/backends/filesystem.ts`
+(line 1730) writes the representation unconditionally and the sidecar only if
+the archive carried one: "A metadata sidecar travels with a newly-created
+resource ...; an absent one leaves `getResourceMetadata` to fall back to the
+file's stat times." An archive this server exported always carries the sidecars,
+since export packs the Collection dir verbatim, so the gap is reachable through
+a hand-built or foreign archive -- on a fresh server with no history at all. The
+Postgres backend differs in degree, not in kind: `#insertImportedResource`
+(line 4825) falls back to `sidecar?.updatedAt ?? now`, so an imported Resource
+always has a feed position, but that `now` is stamped outside whatever
+allocation WAS-93 introduces. Whichever ordering key WAS-93 settles on, import
+has to participate in allocating it: a watermarked `updatedAt` is computed on
+the write path an import bypasses, and a per-Collection sequence has no value at
+all for an imported Resource. Blocked on WAS-93 because the key's shape decides
+what import mints.
+
 ## Test coverage gaps (conformance suite + server `test/`)
 
 Produced by a 2026-07-22 coverage analysis: an inventory of the spec's 324
@@ -1156,6 +1349,97 @@ caller-supplied protected-header params"**
 
 Items with no current trigger: blocked on the spec, or on a deployment shape
 nobody runs yet. Parked here so the active sections stay actionable.
+
+### WAS-96: Multi-primary Spaces (replicated write identity and conflict model)
+
+- status: draft
+- priority: medium
+- labels: data-model, replication, changes-feed, etag, spec-blocked
+- discovered-from: WAS-93
+- touches:
+  - wallet-attached-storage-spec: the Resource data model (a replicated origin
+    identity and the validators), the `changes` profile (per-source or vector
+    checkpoints), and a new section on server-to-server sync
+  - storage-core: `ChangeDocument`, `ChangesCheckpoint`, and the Resource
+    metadata model
+  - was-teaching-server: the `ETag` derivation in `src/lib/etag.ts`, the sidecar
+    and `resources` row layouts, both `changesSince` implementations, and a sync
+    facet that pulls a peer's feed under a delegated capability
+  - was-client and was-sync: one checkpoint per server a replica pulls from, and
+    idempotent apply across sources
+
+Draft rather than todo: the done-state depends on a Resource-model decision the
+spec has not made (how two concurrent versions of one Resource are represented
+and resolved), so there are no acceptance criteria yet. This item records what
+multi-primary forces, so that the single-server items filed in the meantime
+(WAS-93 first) do not close the door. Promote it to `todo` once the conflict
+model is decided, with acceptance criteria per bullet below.
+
+The goal: a Space lives on more than one server, each accepts writes to the same
+Collection, and the servers sync with each other. Today a Space lives on one
+server, because every capability's `invocationTarget` embeds that server's URL,
+and the only multi-writer case is many clients pushing to one server that
+serializes them. With two primaries there is no total order over a Collection's
+writes, only each server's local commit order. Everything below follows from
+that.
+
+Feed position is local. A client's checkpoint is a position in one server's feed
+and means nothing on the other. Either a replica keeps one checkpoint per server
+it pulls from (CouchDB's per source-target checkpoint), or the checkpoint
+becomes a vector with one entry per source (CouchDB's clustered sequence).
+WAS-93 makes the checkpoint opaque and server-scoped so either extension fits
+inside it.
+
+A write needs a replicated identity. When server B receives a write that
+originated on A, B assigns it a position in B's own feed, but the write keeps an
+origin stamp: the accepting server's identifier plus a stamp from that server.
+Without it a client pulling both feeds sees the write twice and cannot tell, and
+A cannot recognize its own write returning from B and stop the loop. A hybrid
+logical clock (physical time plus a logical counter, as in CockroachDB and
+MongoDB's cluster time) is the natural stamp: it stays close to wall time and is
+comparable across servers, which a last-writer-wins rule needs, and it lets
+`updatedAt` remain the origin's honest clock rather than the receiving server's.
+The exact members, their encoding, and where they live (sidecar, row, feed
+document, `/meta`) are wire decisions to be made when the item is promoted.
+
+Record metadata must be origin-owned and replicated verbatim. This is the `ETag`
+consideration. Today the validator is `"<generation>.<version>"`, the generation
+a random marker minted by this server when the record's counter starts, and the
+version a per-server counter. If B re-mints either on receive, a client holding
+an `ETag` from A cannot send `If-Match` to B, and the same logical write carries
+different validators on each replica. So `generation`, `version`, `updatedAt`,
+and the `/meta` pair (`metaGeneration`, `metaVersion`) become facts about the
+write, minted once at its origin and stored unchanged by every replica. The
+quoted byte layout of the validator can stay; what changes is who mints it and
+that it travels with the write. The generation could remain random-at-origin or
+be derived from the origin identity; either way it can no longer be a per-server
+marker. The hard-delete rule ("a new record under the same id mints a new
+generation") also needs a multi-server reading, since two servers could
+re-create the same id independently.
+
+Concurrent versions need a merge rule. Two primaries can each accept a write to
+`x` while partitioned, and a single counter cannot express that. The known
+choices are a version vector or revision tree that surfaces the conflict to the
+client (CouchDB, Riak), or last-writer-wins on the origin clock. The `If-Match`
+precondition model assumes one authority per Resource, and multi-primary
+replaces that with the merge rule. This is the spec-level decision the item is
+blocked on. Encrypted Collections constrain it further: the server cannot merge
+opaque envelopes, so any resolution beyond last-writer-wins must be a
+client-side merge of surfaced conflicts.
+
+Server-to-server sync itself. A server can act as a client of its peer: the
+Space controller delegates a capability to the peer server's DID, and the peer
+pulls the changes feed under it, keeping one checkpoint per peer. Received
+writes take a local feed position and keep their origin stamp; a write whose
+origin is the receiving server itself is a loop and is dropped. The capability's
+`invocationTarget` embeds the peer's URL, so a Space on two hosts has two URL
+identities under one controller; how a client discovers the replica set (a
+service entry on the controller document, or the Space Description) is open.
+
+Out of scope until promoted: the reader-safety watermark (closed timestamps)
+that would be needed if per-Collection write serialization were ever relaxed;
+blob and chunk replication (WAS-14); and server-signed checkpoints (WAS-36),
+which interact with per-source checkpoints and should be designed together.
 
 ### WAS-11: Space-level `/query`
 
