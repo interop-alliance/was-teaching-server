@@ -184,9 +184,13 @@ describe('Quota enforcement (backend)', () => {
     // inside the usage-cache TTL was then admitted against the same stale
     // snapshot, and the Space sailed past `capacityBytes`.
     const streamedDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
+    // The bodies are sized well over half the capacity, so the second is
+    // refused with room to spare: `du` measures allocated blocks, so the
+    // Space's baseline (its dirs and description files) costs a few filesystem
+    // blocks, and how many depends on the filesystem the temp dir lives on.
     const streamedBackend = new FileSystemBackend({
       dataDir: streamedDir,
-      capacityBytes: 40_000
+      capacityBytes: 200_000
     })
     const streamedSpace = `quota-streamed-${crypto.randomUUID()}`
     try {
@@ -215,7 +219,7 @@ describe('Quota enforcement (backend)', () => {
         input: {
           kind: 'binary',
           contentType: 'application/octet-stream',
-          stream: bufferStream(Buffer.alloc(30_000, 0x61))
+          stream: bufferStream(Buffer.alloc(120_000, 0x61))
         }
       })
       await assert.rejects(
@@ -226,13 +230,13 @@ describe('Quota enforcement (backend)', () => {
           input: {
             kind: 'binary',
             contentType: 'application/octet-stream',
-            stream: bufferStream(Buffer.alloc(30_000, 0x61))
+            stream: bufferStream(Buffer.alloc(120_000, 0x61))
           }
         }),
         (err: unknown) => err instanceof QuotaExceededError
       )
       // The refused write left nothing behind: only the first blob is stored,
-      // so the Space holds one 30 KB body rather than two.
+      // so the Space holds one 120 KB body rather than two.
       await assert.rejects(
         streamedBackend.getResource({
           spaceId: streamedSpace,
