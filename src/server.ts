@@ -41,6 +41,9 @@ export function createApp({
   logger?: FastifyServerOptions['logger']
 } = {}): FastifyInstance {
   const fastify = Fastify({ logger })
+  // One switch withholds the version from all three places that publish it:
+  // the welcome page, `/health`, and the service description (in the plugin).
+  const version = options.discloseVersion === false ? undefined : SERVER_VERSION
 
   // The WAS protocol surface (decorations, parsers, WAS + WebKMS route groups)
   fastify.register(fastifyWas, options)
@@ -61,7 +64,11 @@ export function createApp({
 
   // Add a human-readable 'Welcome' page
   fastify.get('/', async (request, reply) => {
-    return reply.view('home', { title: 'Welcome', SPEC_URL, SERVER_VERSION })
+    return reply.view('home', {
+      title: 'Welcome',
+      SPEC_URL,
+      SERVER_VERSION: version
+    })
   })
 
   // Operational liveness probe (not a WAS protocol feature). Public,
@@ -72,14 +79,17 @@ export function createApp({
   // When running a built dist/, the version comes from the build stamp (the
   // code actually running, not the package.json on disk) alongside the commit
   // and build time -- so a `curl /health` after a deploy verifies the exact
-  // build is live.
+  // build is live. A deployment that withholds the version gets neither the
+  // version nor the commit and build time, which identify the build as well.
   fastify.get('/health', async (request, reply) => {
     return reply.type('application/health+json').send({
       status: 'pass',
-      version: SERVER_VERSION,
-      ...(BUILD_INFO && {
-        commit: BUILD_INFO.commit,
-        builtAt: BUILD_INFO.builtAt
+      ...(version !== undefined && {
+        version,
+        ...(BUILD_INFO && {
+          commit: BUILD_INFO.commit,
+          builtAt: BUILD_INFO.builtAt
+        })
       })
     })
   })

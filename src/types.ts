@@ -130,7 +130,10 @@ export type {
   Action,
   ActionInput,
   LinkSet,
-  LinkSetEntry
+  LinkSetEntry,
+  ServiceDescription,
+  ServiceDescriptionVersionEntry,
+  PwsVersionEntry
 } from '@interop/storage-core'
 
 /** Return shape of `getResource()`. */

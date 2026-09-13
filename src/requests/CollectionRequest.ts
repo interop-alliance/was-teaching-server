@@ -246,7 +246,7 @@ export class CollectionRequest {
     const {
       params: { spaceId, collectionId }
     } = request
-    const { storage } = request.server
+    const { serverUrl, storage } = request.server
     const requestName = 'Get Collection Linkset'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -262,7 +262,12 @@ export class CollectionRequest {
       requestName
     })
 
-    const linkset = await buildLinkset({ storage, spaceId, collectionId })
+    const linkset = await buildLinkset({
+      storage,
+      serverUrl,
+      spaceId,
+      collectionId
+    })
     return reply
       .status(200)
       .type('application/linkset+json')

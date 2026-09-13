@@ -44,7 +44,8 @@ export async function startServer(): Promise<void> {
       maxResourcesPerSpace: config.maxResourcesPerSpace,
       enabledBackendProviders: config.enabledBackendProviders,
       kmsRecordKek: config.kmsRecordKek,
-      onboardingToken: config.onboardingToken
+      onboardingToken: config.onboardingToken,
+      discloseVersion: config.discloseVersion
     })
     // Warn (once, at startup, where the Fastify logger now exists) about limits
     // left implicitly unbounded. These warnings live only here so library and

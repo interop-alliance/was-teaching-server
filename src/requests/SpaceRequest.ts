@@ -179,7 +179,7 @@ export class SpaceRequest {
     const {
       params: { spaceId }
     } = request
-    const { storage } = request.server
+    const { serverUrl, storage } = request.server
     const requestName = 'Get Space Linkset'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -193,7 +193,7 @@ export class SpaceRequest {
       requestName
     })
 
-    const linkset = await buildLinkset({ storage, spaceId })
+    const linkset = await buildLinkset({ storage, serverUrl, spaceId })
     return reply
       .status(200)
       .type('application/linkset+json')

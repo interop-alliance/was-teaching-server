@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 105
+nextAvailableId: 107
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -41,109 +41,67 @@ under "Roadmap & Task Conventions".
 
 ## WAS v0.5 protocol changes
 
-### WAS-98: Serve the service description (first iteration, spec v0.5)
+### WAS-105: Fix the flaky List Keys ordering assertion
+
+- status: todo
+- priority: low
+- labels: tests, kms
+- acceptance:
+  - [ ] `test/kms-key-api.test.ts` checks the List Keys order with the code-unit
+        comparator the server sorts by (`compareCodeUnits`), not `localeCompare`
+  - [ ] The suite passes regardless of the case mix of the generated key ids
+
+discovered-from: WAS-98. The assertion near line 1009 sorts the listed local ids
+with `localeCompare`, which orders `z1ADnF...` before `z1ADVm...`, while the
+server's keyset order puts uppercase first. It fails only when the random ids
+differ first at a letter-case boundary; it failed once in a full run on
+2026-09-13 and passed on seven reruns.
+
+### WAS-106: Conformance checks for service description discovery
 
 - status: todo
 - priority: high
-- labels: was-v0.5, discovery, routes, cors
-- blocked-by: WAS-97 (DONE) for the `"0.5"` entry to be true. The WASS-30 wire
-  members were signed off 2026-09-11; only the `specs` key string stays
-  provisional until the spec's WASS-36 rename
+- labels: was-v0.5, discovery, conformance, tests
 - touches:
-  - wallet-attached-storage-spec: drafted 2026-09-11 on branch
-    `service-description` (the Service Description section; decision
-    `_spec/decisions/0006-service-description.md`, draft). The spec fixes no
-    path for the document: it is found by a `Link` header
-  - was-teaching-server: `src/server.ts` or `src/plugin.ts` (the route and a
-    global `onSend` hook for the `Link` header), `src/config.default.ts` (the
-    instance-disclosure switch), `src/plugin.ts` (the CORS registration already
-    exposes `Link`), `test/service-description-api.test.ts` (new),
-    `test/cors-preflight.test.ts`; ARCHITECTURE.md (the request lifecycle gains
-    a hook every response passes through); a CHANGELOG entry
-  - storage-core: the service description wire type (item TBD there); this
-    server's route hand-builds the object until it exists
-  - was-client: the fetch/parse helper and version selection before the first
-    structural request (item TBD there)
-  - was-conformance-suite: a discovery check that follows the `Link` from an
-    arbitrary URL, including a 404, and validates the document (item TBD there)
+  - wallet-attached-storage-spec: the Service Description section, drafted on
+    branch `service-description` (decision
+    `_spec/decisions/0006-service-description.md`); the checks' `specRefs`
+    anchor into it
+  - was-conformance-suite: a new `src/suites/service-description-api.ts`,
+    registered in `src/suites/index.ts`; a CHANGELOG entry and a version bump
+  - was-teaching-server: the `@interop/was-conformance-suite` devDependency
+    bump; the server behavior under test shipped with WAS-98
 - acceptance:
-  - [ ] `GET {serverUrl}/service` returns the service description as
-        `application/json` with no authorization,
-        `Access-Control-Allow-Origin: *`, `Cache-Control: public, max-age=...`,
-        and an `ETag`. Fastify's implicit `HEAD` serves the bodyless form. The
-        path is this server's choice, since the spec reserves none
-  - [ ] Every response carries `Link: <{serverUrl}/service>; rel="service"`:
-        200s, the maximum-privacy 404s, 308 redirects, `OPTIONS` preflights, and
-        error responses produced by the error handler. The hook appends to an
-        existing `Link` header rather than replacing it, since pagination and
-        policy responses already set one. A test asserts the header on an
-        unauthorized `HEAD` of a private Resource and on a paginated listing
-        whose `Link` has two relations
-  - [ ] `Access-Control-Expose-Headers` includes `Link` on every response; it
-        already does through the CORS registration, and the test pins it so a
-        CORS change cannot regress it
-  - [ ] The document is `{ url, specs, instance }`. `url` is the absolute
-        service description URL. `specs` carries one entry under the spec's
-        persistent identifier (provisionally `https://w3id.org/pws`) with
-        `version: "0.5"`, `spaces` (absent when the Spaces Repository is
-        disabled by configuration), `features`, `signatureAlgorithms`, and
-        `zcapCryptosuites`. All URLs absolute, built from `serverUrl`
-  - [ ] `features` lists only what this configuration serves. The baseline for
-        the default configuration is `listing`, `collection-management`,
-        `space-management`, `linksets`, `policy`, `metadata`, `export`,
-        `backends`, `query`, `quotas`. A feature the configuration disables (for
-        example an unregistered backend provider) is not listed. Per-Backend
-        tokens (`conditional-writes`, `chunked-streams`, `key-epochs`, the query
-        profiles) stay on the Backend description and are not repeated
-  - [ ] `signatureAlgorithms` and `zcapCryptosuites` are derived from what
-        `zcap.ts` actually verifies (`eddsa-jcs-2022`, and
-        `Ed25519Signature2020` until WAS-69 drops it), not hand-typed, so WAS-69
-        changes the advertisement by construction
-  - [ ] `instance` carries `name` (the package name), `source` (the repository,
-        which also satisfies the AGPL network-source obligation), and
-        `homepage`. `version` is included by default on this server, because
-        `/health` and the welcome page already publish the exact build; one
-        configuration switch removes the version from all three places together,
-        for a hardened deployment
-  - [ ] The `"0.5"` entry is advertised only once WAS-97's route table is what
-        the server serves. If this item lands first, the entry says `"0.4"` and
-        the switch to `"0.5"` is part of WAS-97's acceptance
-  - [ ] The conformance suite's discovery check passes against this server
-  - [ ] Linkset builders (`buildLinkset` in `src/policy.ts`) add the `service`
-        relation to the Space and Collection linksets
+  - [ ] The suite follows the `rel="service"` link rather than assuming
+        `/service`, since the spec reserves no path. It starts from the server
+        base URL and resolves the link target against the response URL
+  - [ ] The `Link` header with the `service` relation is asserted on a 200, on
+        an error response (an unauthenticated read of a Space that does not
+        exist), on a 308 slash-variant redirect, and on a CORS preflight, and
+        every one points at the same URL (spec
+        `#discovering-the-service-description`)
+  - [ ] `Access-Control-Expose-Headers` includes `Link` on those responses, and
+        the document is served with `Access-Control-Allow-Origin: *`
+  - [ ] The document is read with no capability invocation and validated against
+        the data model (spec `#service-description-data-model`): `url` and
+        `specs` present, `specs` an object of arrays, each entry's `version` a
+        bare `major.minor` string, and every URL member absolute
+  - [ ] The `https://w3id.org/pws` key carries an entry whose `version` is
+        `"0.5"`. Its `features`, `signatureAlgorithms`, and `zcapCryptosuites`
+        members are arrays of strings when present, and its `spaces` member,
+        when present, answers `GET` as a Spaces Repository
+  - [ ] The `Cache-Control` and `ETag` SHOULD is an optional case, with a
+        conditional re-read answering 304
+  - [ ] Every check carries `specRefs` into the Service Description section
+  - [ ] The suite is published and consumed here, and `pnpm conformance:local`
+        passes with the new checks
 
-Context: WASS-30 adds the negotiation step WAS lacked. A client choosing a host
-at signup, or deciding which URL layout to speak after WAS-97's breaking change,
-needs an answer before any Space-scoped request is possible, and every signal
-this server emits today (linksets, the Backend `features` array, `/health`) is
-either Space-scoped or not a protocol feature. The spec settles the mechanism:
-no fixed path, a `Link` header with the `service` relation on every response,
-two CORS MUSTs, and a `specs` object keyed by persistent spec identifier whose
-entries carry `version`, endpoint URLs, and feature tokens. A response with no
-`service` link identifies a pre-0.5 server, which is what this server is until
-the item lands.
-
-The implementation is small. The document is static per configuration and can be
-built once at plugin registration. The `Link` header is one global `onSend`
-hook; the only care point is that `reply.header('Link', ...)` elsewhere already
-carries pagination and policy links, so the hook reads the existing value and
-appends. The CORS registration already lists `Link` under `exposedHeaders` and
-uses `origin: '*'`, so the two spec MUSTs hold today for CORS requests; the test
-pins them.
-
-Two things this item does not do. It does not make the server mountable on a
-subpath: `assertValidServerUrl` still rejects a `serverUrl` with a path, and
-that is WAS-23. The spec's discovery design exists so that subpath mounting
-works for clients; this server simply keeps its origin-root constraint until
-WAS-23 lifts it, and the document's absolute URLs are built the same way either
-way. And it does not advertise `exchanges` or a KMS entry: those have no
-specification to be keyed under yet (decision 0006's consequences), so the
-ephemeral-exchanges and keystore routes stay undiscoverable through this
-document until one exists.
-
-Greenfield: no second entry for `"0.4"` alongside `"0.5"`. The spec allows a
-server to list both during a transition; this server switches route tables in
-one release (WAS-97) and advertises one version at a time.
+discovered-from: WAS-98. That item's last acceptance box was the suite's
+discovery check, and it moved here when WAS-98 was archived. The suite repo
+keeps no roadmap of its own, so the item lives in this one. The checks assert
+only what the spec requires of every server. This server's specifics stay in
+`test/service-description-api.test.ts`: the `/service` path, the `features`
+baseline, the `instance` members, and the `WAS_DISCLOSE_VERSION` switch.
 
 ## Backends: external (BYOS) + encryption feature
 
@@ -548,59 +506,78 @@ is load-bearing and must keep working: freewallet's replication invokes
 - labels: security, zcap, authorization
 - touches:
   - wallet-attached-storage-spec: WASS-2 in that repo's ROADMAP.md defines the
-    rule (Delete Space, Update Space Description, Delete Collection, Update
-    Collection Description become direct-root-invocation only, and Collection
-    creation is routed through the reserved `collections` endpoint); this item
-    is the enforcement half and follows the spec text, including the Space
-    DELETE exception and the delegated collection PUT exception below, both of
-    which WASS-2's text must state before this item enforces them
-  - was-teaching-server: `src/requests/SpaceRequest.ts` (`put`, `delete`,
-    `post`), `src/requests/CollectionRequest.ts` (`put`, `delete`),
-    `src/routes.ts` (the `collections` create route),
-    `src/lib/clientAnnexClause.ts` (the clause predicate covering the
-    exception's ladder-signed case, freewallet FW-400 W3), AGENTS.md
-  - was-client: its Collection-create binding moves to the `collections`
-    endpoint once the spec routes it there
+    rule (Delete Space, Update Space Metadata, Delete Collection, Update
+    Collection Metadata become direct-root-invocation only, and Collection
+    creation, a `POST` to the Space URL under v0.5, classifies as exact-target
+    delegable); this item is the enforcement half and follows the spec text,
+    including the Space DELETE exception and the delegated collection PUT
+    exception below, both of which WASS-2's text must state before this item
+    enforces them. WASS-2's targets were restated for the v0.5 layout (WASS-29):
+    the two description writes are `PUT`s of the `meta` sub-resource, and every
+    container URL carries a trailing slash
+  - was-teaching-server: `src/requests/SpaceRequest.ts` (`putMeta`, `delete`,
+    `post`), `src/requests/CollectionRequest.ts` (`putMeta`, `delete`),
+    `src/routes.ts`, `src/lib/clientAnnexClause.ts` (the clause predicate
+    covering the exception's ladder-signed case, freewallet FW-400 W3),
+    AGENTS.md
+  - wallet-core: WC-232 is the annex-side statement of the gap this item closes.
+    Under v0.5 the generation delegation's target (the trailing-slash Space URL)
+    IS the Delete Space URL and contains the Space Metadata URL, and
+    `clientAnnexChainInspector` returns `{ valid: true }` at its
+    `ladderLinks.length === 0` short-circuit, so a generation delegation signed
+    by an enrolled client's promoted signer (the default arm) reaches both
+    writes unchecked. Its action-set comments in `src/clientAnnex/log.ts` name
+    that as an open gap until this lands
+  - was-client: no change expected; its Collection-create binding already posts
+    to the Space URL (WCL-41)
   - conformance-suite: negative-path assertions (a delegated capability with
     `allowedAction` covering `PUT`/`DELETE` invoked at a Space or Collection URL
     is denied with the maximum-privacy 404) and a positive assertion for
     exact-target delegated Collection creation
 - acceptance:
-  - [ ] `PUT /space/{id}` and `DELETE .../{collectionId}` accept only direct
-        root-capability invocation by the Space controller; a delegated
+  - [ ] `PUT /space/{id}/meta` and `DELETE .../{collectionId}/` accept only
+        direct root-capability invocation by the Space controller; a delegated
         capability is refused regardless of its `allowedAction`
-  - [ ] `PUT .../{collectionId}` accepts direct root-capability invocation, and
-        additionally a delegated capability whose `invocationTarget` is the
+  - [ ] `PUT .../{collectionId}/meta` accepts direct root-capability invocation,
+        and additionally a delegated capability whose `invocationTarget` is the
         Space's items subtree (the trailing-slash Space URL, the shape a
         generation delegation carries) and whose `allowedAction` covers `PUT`. A
         delegated capability whose target is the collection container URL
         itself, or a resource URL, is refused. This second exception is
         mandatory (freewallet FW-400 W2, decided 2026-09-01 under its review
         R3); see below
-  - [ ] `DELETE /space/{id}` accepts direct root-capability invocation, and
+  - [ ] `DELETE /space/{id}/` accepts direct root-capability invocation, and
         additionally a delegated capability whose `invocationTarget` is exactly
-        that Space's URL and whose `allowedAction` is exactly `['DELETE']`. This
-        exception is mandatory (see below); it holds whatever DID method the
-        Space's controller uses
+        that Space's canonical (trailing-slash) URL and whose `allowedAction` is
+        exactly `['DELETE']`. This exception is mandatory (see below); it holds
+        whatever DID method the Space's controller uses
   - [ ] Regression tests for the exception: an exactly-`['DELETE']` delegation
-        on the bare Space URL stays admitted, while a two-verb delegation
+        on the Space's canonical URL stays admitted, while a two-verb delegation
         carrying `DELETE` (say `['GET', 'DELETE']`) is refused, as is a
         `['DELETE']` delegation whose target is a prefix rather than that
-        Space's own URL
+        Space's own URL, and one whose target is the slash-less spelling
+  - [ ] Regression tests for the enrolled-client-signed arm (wallet-core
+        WC-232): a generation delegation signed by an enrolled client's key, not
+        a ladder VM's, invoked by a transient visit's annex VM, is refused
+        `DELETE` on the account Space's canonical URL and `PUT` on its Metadata
+        URL; a delegated-clients delegation (`['GET', 'PUT']` over the annex
+        Space's container URL) is refused `PUT` on the annex Space's Metadata
+        URL. The existing clause test covers the ladder-signed chain only
   - [ ] Regression tests for the collection-PUT exception: a delegated
-        `PUT .../{collectionId}` under a Space-subtree delegation is admitted (a
-        transient session's unlock-methods registry write, a generation
-        collection create, and App Connect collection provisioning all ride this
-        shape), while the same PUT under a capability targeting the collection
-        container URL is refused
+        `PUT .../{collectionId}/meta` under a Space-subtree delegation is
+        admitted (a transient session's unlock-methods registry write, a
+        generation collection create, and App Connect collection provisioning
+        all ride this shape), while the same PUT under a capability targeting
+        the collection container URL is refused
   - [ ] Every request freewallet's account-deletion ceremony and transient login
         send stays admitted with enforcement on: freewallet's `tests/e2e-was/`
         suite runs green against this server version before freewallet adopts it
-  - [ ] Collection creation is served at the reserved `collections` endpoint and
+  - [ ] Collection creation (`POST /space/{id}/`) stays where v0.5 put it and
         accepts an exact-target delegated capability (per the WASS-1 / WAS-59
-        classes); the `POST /space/{id}/` create route is retired
-  - [ ] The Update Space Description path keeps its body-controller consent
-        check (`verifyBodyControllerConsent`) on top of the new rule
+        classes); the container rule does not make it controller-only
+  - [ ] The Update Space Metadata path (`SpaceRequest.putMeta`) keeps its
+        body-controller consent check (`verifyBodyControllerConsent`) on top of
+        the new rule
   - [ ] Server `test/` coverage for each refused and permitted case, plus the
         conformance assertions above
 
@@ -608,10 +585,22 @@ Split out of wallet-attached-storage-spec WASS-2 (2026-08-20), which keeps the
 spec half. Today all four container unsafe handlers run capability-only
 verification (`fetchSpaceAndVerify` / `handleZcapVerify`) that accepts a
 delegated chain attenuating from the Space root, so a Space-scoped grant
-carrying `DELETE` can delete the Space or any Collection in it; and Collection
-creation is `POST /space/{id}/` (`SpaceRequest.post`), which the container rule
-would make controller-only unless it moves to `collections`. Sequence after
-WAS-59, since the `collections` create route relies on its exact-target class.
+carrying `DELETE` can delete the Space or any Collection in it. Collection
+creation is `POST /space/{id}/` (`SpaceRequest.post`); this item's original text
+routed it through a reserved `collections` endpoint, which WASS-29 retired, so
+WASS-2 now classifies the `POST` at the Space URL as exact-target delegable
+instead.
+
+Sequencing against WAS-59, revised 2026-09-13: independent, and this item goes
+first. The original ordering rested on the `collections` create route, which
+needed WAS-59's exact-target class for reserved path segments; that route is
+gone. Everything this item governs (the container DELETEs, the two `meta` PUTs,
+the Space-URL create POST) is decided in the Space and Collection request
+handlers on the invoked verb, the invoked URL, and the chain's link shapes,
+while WAS-59 reclassifies what `attenuatedRootTarget` covers at the reserved
+endpoints. Neither needs the other's rule. WC-232 makes this item the one
+closing a live authority gap on every account with a transient login, where
+WAS-59 closes exposures that need a deliberately crafted grant.
 
 The Space DELETE exception is mandatory, not a convenience (freewallet FW-400
 W2, decided 2026-08-31 and widened 2026-09-01 to every Space). Enforcement built
@@ -650,11 +639,28 @@ the container URL, so no attenuation rule separates deleting a resource under a
 collection from deleting the collection itself. A capability whose whole action
 set is `['DELETE']` is not a data grant, which is why the exception is keyed on
 the exact action set rather than on the Space's kind or its controller's DID
-method. The root-only rule stands unchanged for `PUT /space/{id}` and for both
-collection container methods. The ladder-signed case is additionally bounded by
-the client-annex clause's third predicate (FW-400 W3, target-exact against the
-parent capability's own `invocationTarget`, admitting exactly `['DELETE']` and
-exactly `['GET']`), which lands with WAS-67's narrowing of predicate 1.
+method. The root-only rule stands unchanged for `PUT /space/{id}/meta` and for
+both collection container methods. The ladder-signed case is additionally
+bounded by the client-annex clause's third predicate (FW-400 W3, target-exact
+against the parent capability's own `invocationTarget`, admitting exactly
+`['DELETE']` and exactly `['GET']`), which lands with WAS-67's narrowing of
+predicate 1.
+
+The rule must be signer-independent (wallet-core WC-232, 2026-09-13). The
+clause's invocation-time bound (`ladderInvocationRefusal`) already refuses the
+Space Metadata PUT and the non-target-exact Space DELETE, but only on a chain
+carrying a ladder-signed link. The generation delegation is signed by the
+account ladder VM OR by an enrolled client's promoted signer, and the second is
+the default (freewallet's `ensureGenerationDelegation`, the revocation cascade's
+re-mint, wallet-core's GC swap). An enrolled client's key is published under all
+four document relations, so it is not a ladder VM, the chain carries no ladder
+link, and the bound never runs. Before WAS-97 both writes sat outside the
+delegation by layout (the slash-less Space URL); after it, the DELETE is at the
+delegation's target and the Metadata PUT one segment inside it. The remedy is
+this item's route-level rule, keyed on the exact verb-and-target shape of every
+link rather than on who signed one, not a narrowing of the generation
+delegation's action set (a permanent app-connect-spec wire artifact whose
+structural attenuation would cap every transient App Connect grant).
 
 ### WAS-61: Separate `/policy` control from data writes (exposure test + enforcement)
 

@@ -26,6 +26,10 @@ import {
 } from './routes.js'
 import { initExchangeRoutes } from './exchanges.js'
 import {
+  addServiceLinkHook,
+  initServiceDescriptionRoutes
+} from './serviceDescription.js'
+import {
   assertValidServerUrl,
   CORS_PREFLIGHT_MAX_AGE
 } from './config.default.js'
@@ -125,6 +129,12 @@ export interface FastifyWasOptions {
    * default). Mutually exclusive with `authorizeProvisioning`.
    */
   onboardingToken?: string
+  /**
+   * Whether the service description's `instance` member carries the server
+   * version (config `WAS_DISCLOSE_VERSION`); `createApp()` applies the same
+   * switch to `/health` and the welcome page. Defaults to `true`.
+   */
+  discloseVersion?: boolean
 }
 
 /**
@@ -150,7 +160,8 @@ async function wasPlugin(
     enabledBackendProviders,
     kmsRecordKek,
     authorizeProvisioning,
-    onboardingToken
+    onboardingToken,
+    discloseVersion = true
   } = options
 
   // Fail fast on a malformed base URL: a serverUrl carrying a path, query, or
@@ -215,6 +226,10 @@ async function wasPlugin(
     authorizeProvisioning ??
       (onboardingToken ? onboardingTokenAuthorizer(onboardingToken) : undefined)
   )
+
+  // Every response links to the service description (spec "Discovering the
+  // Service Description"), so the hook sits on the root instance.
+  addServiceLinkHook(fastify)
 
   // Disable CORS. `exposedHeaders` is required for browser clients: without
   // it, cross-origin JS cannot read `Location` (space/resource creation),
@@ -287,6 +302,7 @@ async function wasPlugin(
     done(null, payload)
   })
 
+  fastify.register(initServiceDescriptionRoutes, { discloseVersion })
   fastify.register(initSpacesRepositoryRoutes)
   fastify.register(initSpaceRoutes)
   fastify.register(initCollectionRoutes)

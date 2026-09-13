@@ -19,6 +19,16 @@
  */
 
 /**
+ * The service description (`/service`), the server-wide document every
+ * response links to with the `service` relation. The specification fixes no
+ * path for it; this is the one this server serves it at.
+ * @returns {string}
+ */
+export function serviceDescriptionPath(): string {
+  return `/service`
+}
+
+/**
  * The SpacesRepository container (`/spaces/`), the `POST` (Create Space) and
  * `GET` (List Spaces) target. The repository has no member paths: a Space is
  * addressed under `/space/:spaceId`, not under `/spaces/`, so the `Location`

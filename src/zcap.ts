@@ -135,6 +135,21 @@ function delegationProofSuites(): [Ed25519Signature2020, DataIntegrityProof] {
 }
 
 /**
+ * The names of the delegation-proof signature suites this server verifies, as
+ * the service description's `zcapCryptosuites` advertises them. Read off
+ * {@link delegationProofSuites}, so adding or dropping a suite there changes
+ * the advertisement with it. A Data Integrity suite is named by its
+ * `cryptosuite`; a legacy suite that has none, by its proof `type`.
+ * @returns {string[]}
+ */
+export function delegationProofCryptosuites(): string[] {
+  return delegationProofSuites().map(suite => {
+    const named = suite as unknown as { cryptosuite?: string; type: string }
+    return named.cryptosuite ?? named.type
+  })
+}
+
+/**
  * The root capability id convention: `urn:zcap:root:` + the url-encoded
  * invocation target (shared by WAS and webkms).
  * @param target {string}   the root invocation target (full URL)
@@ -339,6 +354,15 @@ async function webvhVerifier({
     verificationMethod: verificationMethod as IVerificationMethod
   }
 }
+
+/**
+ * The signature algorithms an invocation's HTTP signature may use, by their
+ * JSON Web Algorithms identifiers, as the service description's
+ * `signatureAlgorithms` advertises them. Every verifier
+ * {@link createGetVerifier} builds is an `Ed25519VerificationKey` verifier,
+ * whose algorithm JWA names `EdDSA`; a new key type there adds its name here.
+ */
+export const INVOCATION_SIGNATURE_ALGORITHMS = ['EdDSA']
 
 /**
  * Builds the `verifyCapabilityInvocation` HTTP-signature key hook: resolves an

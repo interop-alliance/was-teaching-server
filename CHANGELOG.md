@@ -1,5 +1,29 @@
 # History
 
+## 0.33.0 - TBD
+
+### Added
+
+- The service description: `GET /service` returns the unauthenticated JSON
+  document naming the spec version this server speaks (`0.5`, keyed by
+  `https://w3id.org/pws`), the Spaces Repository URL, the `features` it
+  implements, the accepted `signatureAlgorithms` and `zcapCryptosuites`, and an
+  `instance` member (name, version, source, homepage). It is served with
+  `Access-Control-Allow-Origin: *`, `Cache-Control: public, max-age=3600`, an
+  `ETag`, and 304 on a matching `If-None-Match`.
+- Every response carries `Link: <{serverUrl}/service>; rel="service"`, errors,
+  redirects, and CORS preflights included.
+- The Space and Collection linksets carry a `service` relation to the service
+  description.
+- `WAS_DISCLOSE_VERSION=false` (plugin option `discloseVersion`) withholds the
+  server version from the service description, `/health`, and the welcome page.
+  `/health` then also omits the build commit and time.
+
+### Changed
+
+- Bumped `@interop/storage-core` to 0.15.0, whose `ServiceDescription` type now
+  types the service description.
+
 ## 0.32.0 - 2026-09-12
 
 ### Changed

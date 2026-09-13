@@ -11,13 +11,29 @@ import type { KmsRecordKekRegistry, RecordKek } from './types.js'
 // so '../package.json' from import.meta.dirname resolves in either layout.
 const packageJsonPath = path.join(import.meta.dirname, '..', 'package.json')
 
+const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {
+  name: string
+  version: string
+  repository: { url: string }
+  homepage: string
+}
+
 /**
  * The version package.json declares, read from disk at startup. This is the
  * repo's version, not necessarily the running build's -- see BUILD_INFO.
  */
-export const PACKAGE_VERSION = JSON.parse(
-  fs.readFileSync(packageJsonPath, 'utf8')
-).version as string
+export const PACKAGE_VERSION = packageJson.version
+
+/**
+ * The software identity the service description's `instance` member
+ * discloses: the package name, its source repository, and its project page,
+ * all read from package.json.
+ */
+export const PACKAGE_INSTANCE = {
+  name: packageJson.name,
+  source: packageJson.repository.url,
+  homepage: packageJson.homepage
+}
 
 // The build-provenance stamp sits beside the compiled modules in dist/
 // (written by scripts/write-build-info.ts as the last step of `pnpm build`),
@@ -192,6 +208,33 @@ export const CORS_PROXY_AGENT_CACHE_TTL = 300_000 // milliseconds
  * the provider registry itself is fixed for an instance's lifetime).
  */
 export const RESOLVED_BACKEND_CACHE_MAX = 1_000
+
+/**
+ * The WAS specification's persistent identifier, the key of its entry in the
+ * service description's `specs` object. Provisional until the specification's
+ * rename registers it.
+ */
+export const SPEC_IDENTIFIER = 'https://w3id.org/pws'
+
+/**
+ * The WAS specification version this server's route table implements, as the
+ * service description advertises it (`major.minor`, no patch level).
+ */
+export const SPEC_VERSION = '0.5'
+
+/**
+ * `Cache-Control` `max-age` (seconds) on the service description. The document
+ * changes only when the server is redeployed with a different configuration,
+ * and its `ETag` lets a client revalidate cheaply once the age runs out.
+ */
+export const SERVICE_DESCRIPTION_MAX_AGE = 3_600 // seconds
+
+/**
+ * The link relation naming the service description, both in the `Link` header
+ * every response carries and in the Space and Collection linksets (RFC 5023's
+ * registered `service` relation).
+ */
+export const SERVICE_LINK_RELATION = 'service'
 
 /**
  * Linkset relation URI for the access-control `policy` auxiliary resource
@@ -373,6 +416,11 @@ export interface EnvConfig {
   kmsRecordKek?: KmsRecordKekRegistry
   /** Shared-secret provisioning gate (`WAS_ONBOARDING_TOKEN`); unset = open provisioning. */
   onboardingToken?: string
+  /**
+   * Whether the server version is published (`WAS_DISCLOSE_VERSION`) by
+   * `/health`, the welcome page, and the service description; unset = `true`.
+   */
+  discloseVersion: boolean
 }
 
 /**
@@ -410,7 +458,8 @@ export function loadConfigFromEnv(
       keks: env.KMS_RECORD_KEKS,
       currentKek: env.KMS_RECORD_CURRENT_KEK
     }),
-    onboardingToken: parseOnboardingToken(env.WAS_ONBOARDING_TOKEN)
+    onboardingToken: parseOnboardingToken(env.WAS_ONBOARDING_TOKEN),
+    discloseVersion: parseDiscloseVersion(env.WAS_DISCLOSE_VERSION)
   }
 }
 
@@ -810,6 +859,29 @@ function parseOnboardingToken(raw: string | undefined): string | undefined {
     return undefined
   }
   return raw.trim()
+}
+
+/**
+ * Parses the `WAS_DISCLOSE_VERSION` env value: whether the exact server version
+ * is published by `/health`, the welcome page, and the service description's
+ * `instance` member. Accepts `true` or `false` (case-insensitive, trimmed). An
+ * unset or empty value returns `true`, since `/health` publishes the build for
+ * deploy verification; a hardened deployment sets `false` so version-matching
+ * scanners find nothing to match. A malformed value throws.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {boolean}
+ */
+export function parseDiscloseVersion(raw: string | undefined): boolean {
+  const value = raw?.trim().toLowerCase() ?? ''
+  if (value === '' || value === 'true') {
+    return true
+  }
+  if (value === 'false') {
+    return false
+  }
+  throw new Error(
+    `WAS_DISCLOSE_VERSION must be "true" or "false"; got "${raw}".`
+  )
 }
 
 export const SPEC_URL =

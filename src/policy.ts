@@ -14,7 +14,8 @@ import {
   BACKEND_LINK_RELATION,
   QUOTA_LINK_RELATION,
   BACKENDS_AVAILABLE_LINK_RELATION,
-  QUOTAS_LINK_RELATION
+  QUOTAS_LINK_RELATION,
+  SERVICE_LINK_RELATION
 } from './config.default.js'
 import {
   collectionPath,
@@ -26,6 +27,7 @@ import {
   quotasPath
 } from './lib/paths.js'
 import { getCachedPolicy } from './lib/policyCache.js'
+import { serviceDescriptionUrl } from './serviceDescription.js'
 
 /** The kind of access a request needs; derived from the HTTP method. */
 export type AccessAction = 'read' | 'write'
@@ -122,19 +124,25 @@ export function policyGrants({
  * - On a Space (`collectionId` absent): `backends-available`
  *   (`BACKENDS_AVAILABLE_LINK_RELATION`) and `quotas` (`QUOTAS_LINK_RELATION`),
  *   advertised unconditionally (both endpoints always exist).
+ * - `service` (`SERVICE_LINK_RELATION`) -- the server-wide service
+ *   description, advertised on both, by absolute URL since it is not a
+ *   sub-resource of the container. Omitted when the app has no `serverUrl`.
  *
  * @param options {object}
  * @param options.storage {StorageBackend}   the request's storage backend
+ * @param [options.serverUrl] {string}   the server base URL
  * @param options.spaceId {string}
  * @param [options.collectionId] {string}
  * @returns {Promise<object>} a `{ linkset: [...] }` object
  */
 export async function buildLinkset({
   storage,
+  serverUrl,
   spaceId,
   collectionId
 }: {
   storage: StorageBackend
+  serverUrl?: string
   spaceId: string
   collectionId?: string
 }): Promise<{ linkset: Array<Record<string, unknown>> }> {
@@ -169,6 +177,11 @@ export async function buildLinkset({
     ]
     entry[QUOTAS_LINK_RELATION] = [
       { href: quotasPath({ spaceId }), type: 'application/json' }
+    ]
+  }
+  if (serverUrl !== undefined) {
+    entry[SERVICE_LINK_RELATION] = [
+      { href: serviceDescriptionUrl(serverUrl), type: 'application/json' }
     ]
   }
   return { linkset: [entry] }

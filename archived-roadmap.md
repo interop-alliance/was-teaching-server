@@ -1687,3 +1687,129 @@ Status 2026-09-12: every acceptance box is met. Suite 0.16.0 is consumed and
 `pnpm conformance:local` passes 262 of 262 with optional cases. The maintainer
 waived the wallet-core WC-230 and app-connect-spec decision 0003 touches, so the
 item is done; both stay open in their own repos.
+
+### WAS-98: Serve the service description (first iteration, spec v0.5)
+
+- status: done (2026-09-13)
+- priority: high
+- labels: was-v0.5, discovery, routes, cors
+- blocked-by: WAS-97 (DONE) for the `"0.5"` entry to be true. The WASS-30 wire
+  members were signed off 2026-09-11; only the `specs` key string stays
+  provisional until the spec's WASS-36 rename
+- touches:
+  - wallet-attached-storage-spec: waived -- drafted 2026-09-11 on branch
+    `service-description` (the Service Description section; decision
+    `_spec/decisions/0006-service-description.md`, draft). The spec fixes no
+    path for the document: it is found by a `Link` header
+  - was-teaching-server: shipped -- `src/server.ts` or `src/plugin.ts` (the
+    route and a global `onSend` hook for the `Link` header),
+    `src/config.default.ts` (the instance-disclosure switch), `src/plugin.ts`
+    (the CORS registration already exposes `Link`),
+    `test/service-description-api.test.ts` (new), `test/cors-preflight.test.ts`;
+    ARCHITECTURE.md (the request lifecycle gains a hook every response passes
+    through); a CHANGELOG entry
+  - storage-core: shipped -- SC-5 there, archived 2026-09-13 (0.15.0 exports
+    `ServiceDescription`, `ServiceDescriptionVersionEntry`, `PwsVersionEntry`);
+    consumed from the registry 2026-09-13, and `buildServiceDescription` returns
+    `ServiceDescription`
+  - was-client: waived -- the fetch/parse helper and version selection before
+    the first structural request (WCL-101 there, filed 2026-09-13)
+  - was-conformance-suite: waived -- a discovery check that follows the `Link`
+    from an arbitrary URL, including a 404, and validates the document (moved to
+    WAS-106)
+- acceptance:
+  - [x] `GET {serverUrl}/service` returns the service description as
+        `application/json` with no authorization,
+        `Access-Control-Allow-Origin: *`, `Cache-Control: public, max-age=...`,
+        and an `ETag`. Fastify's implicit `HEAD` serves the bodyless form. The
+        path is this server's choice, since the spec reserves none
+  - [x] Every response carries `Link: <{serverUrl}/service>; rel="service"`:
+        200s, the maximum-privacy 404s, 308 redirects, `OPTIONS` preflights, and
+        error responses produced by the error handler. The hook appends to an
+        existing `Link` header rather than replacing it, since pagination and
+        policy responses already set one. A test asserts the header on an
+        unauthorized `HEAD` of a private Resource and on a paginated listing
+        whose `Link` has two relations
+  - [x] `Access-Control-Expose-Headers` includes `Link` on every response; it
+        already does through the CORS registration, and the test pins it so a
+        CORS change cannot regress it
+  - [x] The document is `{ url, specs, instance }`. `url` is the absolute
+        service description URL. `specs` carries one entry under the spec's
+        persistent identifier (provisionally `https://w3id.org/pws`) with
+        `version: "0.5"`, `spaces` (absent when the Spaces Repository is
+        disabled by configuration), `features`, `signatureAlgorithms`, and
+        `zcapCryptosuites`. All URLs absolute, built from `serverUrl`
+  - [x] `features` lists only what this configuration serves. The baseline for
+        the default configuration is `listing`, `collection-management`,
+        `space-management`, `linksets`, `policy`, `metadata`, `export`,
+        `backends`, `query`, `quotas`. A feature the configuration disables (for
+        example an unregistered backend provider) is not listed. Per-Backend
+        tokens (`conditional-writes`, `chunked-streams`, `key-epochs`, the query
+        profiles) stay on the Backend description and are not repeated
+  - [x] `signatureAlgorithms` and `zcapCryptosuites` are derived from what
+        `zcap.ts` actually verifies (`eddsa-jcs-2022`, and
+        `Ed25519Signature2020` until WAS-69 drops it), not hand-typed, so WAS-69
+        changes the advertisement by construction
+  - [x] `instance` carries `name` (the package name), `source` (the repository,
+        which also satisfies the AGPL network-source obligation), and
+        `homepage`. `version` is included by default on this server, because
+        `/health` and the welcome page already publish the exact build; one
+        configuration switch removes the version from all three places together,
+        for a hardened deployment
+  - [x] The `"0.5"` entry is advertised only once WAS-97's route table is what
+        the server serves. If this item lands first, the entry says `"0.4"` and
+        the switch to `"0.5"` is part of WAS-97's acceptance
+  - [x] The conformance suite's discovery check is tracked by WAS-106 (moved
+        2026-09-13)
+  - [x] Linkset builders (`buildLinkset` in `src/policy.ts`) add the `service`
+        relation to the Space and Collection linksets
+
+Context: WASS-30 adds the negotiation step WAS lacked. A client choosing a host
+at signup, or deciding which URL layout to speak after WAS-97's breaking change,
+needs an answer before any Space-scoped request is possible, and every signal
+this server emits today (linksets, the Backend `features` array, `/health`) is
+either Space-scoped or not a protocol feature. The spec settles the mechanism:
+no fixed path, a `Link` header with the `service` relation on every response,
+two CORS MUSTs, and a `specs` object keyed by persistent spec identifier whose
+entries carry `version`, endpoint URLs, and feature tokens. A response with no
+`service` link identifies a pre-0.5 server, which is what this server is until
+the item lands.
+
+The implementation is small. The document is static per configuration and can be
+built once at plugin registration. The `Link` header is one global `onSend`
+hook; the only care point is that `reply.header('Link', ...)` elsewhere already
+carries pagination and policy links, so the hook reads the existing value and
+appends. The CORS registration already lists `Link` under `exposedHeaders` and
+uses `origin: '*'`, so the two spec MUSTs hold today for CORS requests; the test
+pins them.
+
+Two things this item does not do. It does not make the server mountable on a
+subpath: `assertValidServerUrl` still rejects a `serverUrl` with a path, and
+that is WAS-23. The spec's discovery design exists so that subpath mounting
+works for clients; this server simply keeps its origin-root constraint until
+WAS-23 lifts it, and the document's absolute URLs are built the same way either
+way. And it does not advertise `exchanges` or a KMS entry: those have no
+specification to be keyed under yet (decision 0006's consequences), so the
+ephemeral-exchanges and keystore routes stay undiscoverable through this
+document until one exists.
+
+Greenfield: no second entry for `"0.4"` alongside `"0.5"`. The spec allows a
+server to list both during a transition; this server switches route tables in
+one release (WAS-97) and advertises one version at a time.
+
+Server part landed 2026-09-13 (`src/serviceDescription.ts`). Two notes from
+implementation. No handler sets a `Link` header today: pagination uses the
+body's `next` member and linksets are bodies. The append path is still in the
+hook and is covered by a test with a synthetic route whose `Link` has two
+relations, standing in for the paginated listing the acceptance names. The
+version-disclosure switch is `WAS_DISCLOSE_VERSION` (plugin option
+`discloseVersion`); with it off, `/health` also drops the build commit and time.
+The remaining box waits on the conformance suite's discovery check.
+
+Status 2026-09-13: every server acceptance box is met. The service description
+is typed with storage-core 0.15.0's `ServiceDescription`, and an app composed
+without a `serverUrl` answers 404 at `/service`, since the spec requires `url`.
+The full gate passes (1357 tests) and `pnpm conformance:local` passes 262
+of 262. The maintainer moved the conformance discovery check to WAS-106 and
+waived the spec and was-client touches, so the item is done; WCL-101 stays open
+in was-client and the spec text rides its `service-description` branch.

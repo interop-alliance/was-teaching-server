@@ -170,6 +170,25 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   since its served content changed, but leaves its `updatedAt` untouched -- both
   backends advance only the version counter -- and is serialized with Collection
   Metadata writes through the same per-Collection lock.
+- **`src/serviceDescription.ts`** -- the service description (spec "Service
+  Description"): `GET /service`, unauthenticated, serving the JSON document that
+  names the spec version this server speaks (`0.5`, under the
+  `https://w3id.org/pws` identifier), the Spaces Repository URL, the `features`
+  tokens, and the accepted `signatureAlgorithms` and `zcapCryptosuites`. The
+  last two are read off `zcap.ts` (`INVOCATION_SIGNATURE_ALGORITHMS`,
+  `delegationProofCryptosuites`), so a change to what verification accepts
+  changes the advertisement too. The document is built per `serverUrl` and
+  served with `Cache-Control: public` and a content-hash `ETag`. The module also
+  installs the one hook every response passes through: a root-level `onSend`
+  hook (`addServiceLinkHook`, added by the plugin) that appends
+  `Link: <{serverUrl}/service>; rel="service"` to every response -- successes,
+  errors, 404s for unmatched routes, 308 redirects, 405 refusals, CORS
+  preflights, and the teaching-server extras. It appends to a `Link` header a
+  handler already set rather than replacing it. The CORS registration exposes
+  `Link`, so a cross-origin client can read it. The Space and Collection
+  linksets carry the same URL under the `service` relation. The
+  `discloseVersion` option (`WAS_DISCLOSE_VERSION`) withholds the version from
+  the document's `instance` member, `/health`, and the welcome page together.
 - **`src/storage.ts`** — supplies `defaultBackend()`, the `FileSystemBackend`
   (rooted at `data/`) that `createApp()` uses when no backend is injected. The
   active backend is injected via `createApp({ backend })` and decorated onto the

@@ -49,4 +49,24 @@ describe('CORS preflight', () => {
       'capability-invocation'
     )
   })
+
+  it('links the service description from a preflight and exposes Link', async () => {
+    // A cross-origin client finds the service description through the `Link`
+    // header, which it can read only when `Link` is an exposed header.
+    for (const method of ['OPTIONS', 'GET']) {
+      const response = await fetch(new URL('/space/some-space/', serverUrl), {
+        method,
+        headers: {
+          origin: 'https://wallet.example',
+          'access-control-request-method': 'GET'
+        }
+      })
+      expect(response.headers.get('link')).toBe(
+        `<${serverUrl}/service>; rel="service"`
+      )
+      expect(response.headers.get('access-control-expose-headers')).toContain(
+        'Link'
+      )
+    }
+  })
 })

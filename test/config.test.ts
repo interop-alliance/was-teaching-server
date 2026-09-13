@@ -179,6 +179,7 @@ describe('loadConfigFromEnv', () => {
     assert.equal(config.enabledBackendProviders, undefined)
     assert.equal(config.kmsRecordKek, undefined)
     assert.equal(config.onboardingToken, undefined)
+    assert.equal(config.discloseVersion, true)
   })
 
   it('parses each configured variable', () => {
@@ -189,7 +190,8 @@ describe('loadConfigFromEnv', () => {
       STORAGE_LIMIT_PER_SPACE: '1048576',
       MAX_UPLOAD_BYTES: '65536',
       WAS_ENABLED_BACKENDS: 'gdrive, s3',
-      WAS_ONBOARDING_TOKEN: ' abc123 '
+      WAS_ONBOARDING_TOKEN: ' abc123 ',
+      WAS_DISCLOSE_VERSION: ' FALSE '
     })
     assert.equal(config.serverUrl, 'https://was.example.com')
     assert.equal(config.port, 8080)
@@ -198,6 +200,18 @@ describe('loadConfigFromEnv', () => {
     assert.equal(config.maxUploadBytes, 65536)
     assert.deepEqual(config.enabledBackendProviders, ['gdrive', 's3'])
     assert.equal(config.onboardingToken, 'abc123')
+    assert.equal(config.discloseVersion, false)
+  })
+
+  it('rejects a WAS_DISCLOSE_VERSION other than true or false', () => {
+    assert.throws(
+      () =>
+        loadConfigFromEnv({
+          SERVER_URL: 'http://localhost:3002',
+          WAS_DISCLOSE_VERSION: 'no'
+        }),
+      /WAS_DISCLOSE_VERSION/
+    )
   })
 
   it('resolves "unlimited" limits to Infinity', () => {
