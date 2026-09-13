@@ -23,8 +23,8 @@
  *   `DELETE /space/<S>/<C>/`. It turns on nothing but whether the
  *   `Capability-Invocation` header embeds a delegated capability, so
  *   `handleZcapVerify` decides it from that header before any verification
- *   work rather than in this inspector; the inspector covers the other two
- *   rules, which read the dereferenced chain's tail.
+ *   work; the inspector refuses the same chains as a backstop. The other two
+ *   rules read the dereferenced chain's tail.
  * - `exact-delete` -- a direct root invocation, or a delegated capability
  *   whose tail targets exactly the Space's canonical trailing-slash URL with
  *   `allowedAction` exactly `['DELETE']`. A whole-action-set grant carrying
@@ -54,8 +54,7 @@
  * refusal surfaces as the ordinary masked `not-found` denial.
  */
 import type { InspectCapabilityChain } from '@interop/zcap'
-import { actionsExactly } from './clientAnnexClause.js'
-import type { ChainCapability } from './clientAnnexClause.js'
+import { actionsExactly, type ChainCapability } from './chainCapability.js'
 
 /**
  * Which container rule one verification applies.
@@ -64,18 +63,17 @@ export type ContainerRule =
   'controller-only' | 'exact-delete' | 'space-subtree-put'
 
 /**
- * Builds the container-rule inspection hook for one verification, for the two
- * rules that read the dereferenced chain. `controller-only` is decided from
- * the invocation header before verification (see `handleZcapVerify`) and so is
- * not a case here.
- *
- * A chain of length one is the synthesized root alone -- a direct root
- * invocation -- and always passes. The zcap library runs the hook on that
- * chain too, so the root case needs no separate treatment at the call site.
+ * Builds the container-rule inspection hook for one verification: the whole
+ * decision, for all three rules. A chain of length one is the synthesized
+ * root alone -- a direct root invocation -- and always passes. The zcap
+ * library runs the hook on that chain too, so the root case needs no separate
+ * treatment at the call site. `controller-only` refuses every longer chain;
+ * `handleZcapVerify` reaches the same verdict off the invocation header
+ * before any verification work, so for that rule this hook is the backstop
+ * rather than the deciding check.
  *
  * @param options {object}
- * @param options.rule {'exact-delete'|'space-subtree-put'}   the rule the
- *   invoked operation carries
+ * @param options.rule {ContainerRule}   the rule the invoked operation carries
  * @param options.spaceUrl {string}   the Space's canonical trailing-slash URL
  * @returns {InspectCapabilityChain}
  */
@@ -83,12 +81,21 @@ export function containerRuleInspector({
   rule,
   spaceUrl
 }: {
-  rule: Exclude<ContainerRule, 'controller-only'>
+  rule: ContainerRule
   spaceUrl: string
 }): InspectCapabilityChain {
   return async ({ capabilityChain }) => {
     if (capabilityChain.length <= 1) {
       return { valid: true }
+    }
+    if (rule === 'controller-only') {
+      return {
+        valid: false,
+        error: new Error(
+          'This operation accepts a direct root-capability invocation only; ' +
+            'a delegated capability is refused whatever its allowedAction.'
+        )
+      }
     }
     const tail = capabilityChain[capabilityChain.length - 1] as ChainCapability
     if (rule === 'exact-delete') {

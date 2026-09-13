@@ -26,6 +26,7 @@ import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { spaceRevocationsPath } from '../src/lib/paths.js'
 import {
   client,
+  delegate,
   requestError,
   rootZcap as makeRootZcap,
   startTestServer,
@@ -97,7 +98,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
    * Delegates read/write on a Collection from its Space's root capability --
    * the "session key" shape a controller hands an app.
    */
-  async function delegate({
+  async function sessionDelegate({
     target = collectionUrl,
     root = spaceUrl,
     controller = aliceDelegatedApp.did,
@@ -108,12 +109,12 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
     controller?: string
     allowedActions?: string[]
   } = {}) {
-    return client({ signer: alice.signer }).delegate({
+    return delegate({
+      signer: alice.signer,
       capability: `urn:zcap:root:${encodeURIComponent(root)}`,
       invocationTarget: target,
       controller,
-      allowedActions,
-      expires: new Date(Date.now() + 60 * 60 * 1000)
+      allowedActions
     })
   }
 
@@ -150,15 +151,16 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
 
   /**
    * Mints a two-hop chain whose parent expires first: the app's one-hour
-   * grant from `delegate()`, and under it a 30-minute grant to Bob. Once the
+   * grant from `sessionDelegate()`, and under it a 30-minute grant to Bob. Once the
    * clock is shifted past both (`shiftClockPastExpiry`), the chain walk
    * refuses the expired parent link before the invocation purpose ever looks
    * at the leaf. ezcap refuses to sign an already-expired delegation, which
    * is why the chain is minted before the shift.
    */
   async function mintExpiredParentChain() {
-    const parent = await delegate()
-    const child = await client({ signer: aliceDelegatedApp.signer }).delegate({
+    const parent = await sessionDelegate()
+    const child = await delegate({
+      signer: aliceDelegatedApp.signer,
       capability: parent,
       invocationTarget: collectionUrl,
       controller: bob.did,
@@ -188,7 +190,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
 
   describe('revoking a Space-rooted capability', () => {
     it('the delegator revokes; the delegee loses access', async () => {
-      const zcap = await delegate()
+      const zcap = await sessionDelegate()
       const before = await readDoc({ zcap, signer: aliceDelegatedApp.signer })
       assert.equal(before.status, 200)
 
@@ -217,7 +219,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
     })
 
     it('a revoked capability cannot write either (fetchSpaceAndVerify)', async () => {
-      const zcap = await delegate()
+      const zcap = await sessionDelegate()
       await revoke({
         capabilityToRevoke: zcap,
         signer: alice.signer,
@@ -244,7 +246,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
     })
 
     it('a delegee revokes its own zcap (dual-root rule)', async () => {
-      const zcap = await delegate()
+      const zcap = await sessionDelegate()
 
       // The app is not the Space controller; it qualifies purely as a
       // controller in the to-be-revoked zcap's chain, so it invokes the
@@ -279,7 +281,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
         `/space/${spaceId}/${publicCollectionId}`,
         serverUrl
       ).toString()
-      const zcap = await delegate({ target: publicUrl })
+      const zcap = await sessionDelegate({ target: publicUrl })
       await revoke({
         capabilityToRevoke: zcap,
         signer: alice.signer,
@@ -312,7 +314,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
     })
 
     it('a non-participant cannot revoke (masked 404)', async () => {
-      const zcap = await delegate()
+      const zcap = await sessionDelegate()
 
       // Bob is neither the Space controller nor in the zcap's chain.
       const err = await requestError(
@@ -333,7 +335,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
     })
 
     it('a non-participant resubmitting an already-revoked capability gets the same masked 404 (no revocation-state oracle)', async () => {
-      const zcap = await delegate()
+      const zcap = await sessionDelegate()
       await revoke({
         capabilityToRevoke: zcap,
         signer: alice.signer,
@@ -357,7 +359,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
 
   describe('rejected submissions', () => {
     it('resubmitting a stored revocation is the 400 capability-already-revoked', async () => {
-      const zcap = await delegate()
+      const zcap = await sessionDelegate()
       await revoke({
         capabilityToRevoke: zcap,
         signer: alice.signer,
@@ -393,7 +395,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
     })
 
     it('the capability id must match the revocation URL (400)', async () => {
-      const zcap = await delegate()
+      const zcap = await sessionDelegate()
       const err = await requestError(
         revoke({
           capabilityToRevoke: zcap,
@@ -408,7 +410,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
     it("a chain rooted in another Space can't be revoked here (400)", async () => {
       // A zcap delegated from a *different* Space's root capability, submitted
       // to this Space's revocation endpoint.
-      const foreignZcap = await delegate({
+      const foreignZcap = await sessionDelegate({
         target: otherSpaceUrl,
         root: otherSpaceUrl
       })
@@ -439,7 +441,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       // itself: the body was altered after signing, so the delegation proof no
       // longer covers it. A revocation submission requires a *verifying*
       // chain; a capability that never verified cannot be recorded as revoked.
-      const zcap = await delegate()
+      const zcap = await sessionDelegate()
       const tampered = structuredClone(zcap)
       tampered.allowedAction = ['GET', 'HEAD', 'PUT', 'POST', 'DELETE', 'PATCH']
 
@@ -479,7 +481,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
         // the capability controller before it runs the revocation inspector,
         // so Bob learns nothing about the revocation: his answer is the same
         // masked not-found any unauthorized caller gets.
-        const zcap = await delegate()
+        const zcap = await sessionDelegate()
         await revoke({
           capabilityToRevoke: zcap,
           signer: alice.signer,
@@ -494,7 +496,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
         // The proof is checked before the revocation inspector runs, so a
         // holder presenting a tampered copy of a revoked grant gets the
         // generic failure, not the typed one.
-        const zcap = await delegate()
+        const zcap = await sessionDelegate()
         await revoke({
           capabilityToRevoke: zcap,
           signer: alice.signer,
@@ -511,7 +513,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       it('an expired invoked capability is capability-expired (404)', async () => {
         // The leaf's own `expires` has passed: the invocation purpose refuses
         // it after the chain and the controller match verified.
-        const zcap = await delegate()
+        const zcap = await sessionDelegate()
         shiftClockPastExpiry()
 
         const err = await requestError(
@@ -558,7 +560,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       it('an expired capability that is also revoked reports the expiry', async () => {
         // The verifier checks expiry before it runs the revocation inspector,
         // so the first refusal wins; either way the grant is dead.
-        const zcap = await delegate()
+        const zcap = await sessionDelegate()
         await revoke({
           capabilityToRevoke: zcap,
           signer: alice.signer,
@@ -576,7 +578,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       it('an expired capability invoked by someone other than its controller is the plain not-found', async () => {
         // A leaf's expiry is checked after the controller match, so a holder
         // of a copy without the invoking key sees the generic failure.
-        const zcap = await delegate()
+        const zcap = await sessionDelegate()
         shiftClockPastExpiry()
 
         const err = await requestError(readDoc({ zcap, signer: bob.signer }))
@@ -586,7 +588,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
 
       it('a capability that fails verification for any other reason stays the plain not-found', async () => {
         // Wrong action: the capability grants GET only, the request PUTs.
-        const zcap = await delegate({ allowedActions: ['GET'] })
+        const zcap = await sessionDelegate({ allowedActions: ['GET'] })
         const err = await requestError(
           client({ signer: aliceDelegatedApp.signer }).request({
             url: `${collectionUrl}/doc-3`,
@@ -634,13 +636,13 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       // A second-hop delegation signed by someone who does not control the
       // parent capability: structurally a chain rooted in this Space, but the
       // middle proof does not verify.
-      const parent = await delegate()
-      const forged = await client({ signer: bob.signer }).delegate({
+      const parent = await sessionDelegate()
+      const forged = await delegate({
+        signer: bob.signer,
         capability: parent,
         invocationTarget: collectionUrl,
         controller: bob.did,
-        allowedActions: ['GET'],
-        expires: new Date(Date.now() + 60 * 60 * 1000)
+        allowedActions: ['GET']
       })
 
       const err = await requestError(
@@ -666,7 +668,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
     })
 
     it('an unknown Space is a masked 404', async () => {
-      const zcap = await delegate()
+      const zcap = await sessionDelegate()
       const unknownSpaceId = randomUUID()
       const unknownSpaceUrl = new URL(
         `/space/${unknownSpaceId}/`,

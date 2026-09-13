@@ -129,6 +129,11 @@
  * wallet's assumption is unverified today; a migration path would need one.
  */
 import type { InspectCapabilityChain } from '@interop/zcap'
+import {
+  actionsExactly,
+  actionsWithin,
+  type ChainCapability
+} from './chainCapability.js'
 import type { DIDDoc } from '@interop/did-method-webvh'
 import {
   isSelfHostedWebvhController,
@@ -161,16 +166,6 @@ const WAS_ACTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
  * The reserved segment under a Space URL that addresses its Metadata object.
  */
 const META_SEGMENT = 'meta'
-
-/**
- * A capability as it appears in a dereferenced chain, reduced to the members
- * the clause reads.
- */
-export interface ChainCapability {
-  controller?: string | string[]
-  invocationTarget?: string
-  allowedAction?: string | string[]
-}
 
 /**
  * Runs inspectors in order, returning the first failure (any subsequent
@@ -330,57 +325,6 @@ function clientAnnexDidOf(doc: DIDDoc): string | undefined {
     }
   }
   return undefined
-}
-
-/**
- * Whether a delegation's `allowedAction` stays within an allowlist: present,
- * non-empty, and every member allowed. An absent `allowedAction` permits any
- * action in the zcap model, so it never satisfies a finite allowlist.
- * @param options {object}
- * @param options.capability {object}   the dereferenced capability
- * @param options.allowed {string[]}   the permitted actions
- * @returns {boolean}
- */
-function actionsWithin({
-  capability,
-  allowed
-}: {
-  capability: { allowedAction?: string | string[] }
-  allowed: string[]
-}): boolean {
-  const { allowedAction } = capability
-  if (allowedAction === undefined) {
-    return false
-  }
-  const actions = Array.isArray(allowedAction) ? allowedAction : [allowedAction]
-  return actions.length > 0 && actions.every(action => allowed.includes(action))
-}
-
-/**
- * Whether a delegation's `allowedAction` is exactly one named action: present,
- * and a single-member set holding it. Stricter than {@link actionsWithin},
- * which admits any subset of its allowlist -- a single-verb predicate must
- * refuse a two-verb grant that happens to contain the verb. Exported for the
- * container rule (`lib/containerRule.ts`), whose Delete Space exception is
- * keyed on the same exact action set.
- * @param options {object}
- * @param options.capability {object}   the dereferenced capability
- * @param options.action {string}   the one permitted action
- * @returns {boolean}
- */
-export function actionsExactly({
-  capability,
-  action
-}: {
-  capability: { allowedAction?: string | string[] }
-  action: string
-}): boolean {
-  const { allowedAction } = capability
-  if (allowedAction === undefined) {
-    return false
-  }
-  const actions = Array.isArray(allowedAction) ? allowedAction : [allowedAction]
-  return actions.length === 1 && actions[0] === action
 }
 
 /**

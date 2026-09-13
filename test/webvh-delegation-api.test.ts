@@ -31,6 +31,7 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
   client,
+  delegate,
   requestError,
   startTestServer,
   zcapClients
@@ -138,7 +139,7 @@ describe('did:webvh delegation and chain depth', () => {
 
   describe('delegating to a self-hosted did:webvh (zero membership changes)', () => {
     let account: WebvhIdentity
-    let delegate: WebvhIdentity
+    let grantee: WebvhIdentity
     let collectionUrl: string
     let delegated: any
 
@@ -164,7 +165,7 @@ describe('did:webvh delegation and chain depth', () => {
 
       // The delegate DID is a separate self-hosted `did:webvh`, anchored in a
       // Space of its own. It is never listed in the account DID's document.
-      delegate = await provisionWebvhIdentity()
+      grantee = await provisionWebvhIdentity()
 
       collectionUrl = new URL(
         `/space/${account.spaceId}/credentials`,
@@ -177,21 +178,19 @@ describe('did:webvh delegation and chain depth', () => {
         `/space/${account.spaceId}/`,
         serverUrl
       ).toString()
-      delegated = await client({
-        signer: account.clientKeyPair.signer()
-      }).delegate({
+      delegated = await delegate({
+        signer: account.clientKeyPair.signer(),
         capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
         invocationTarget: collectionUrl,
-        controller: delegate.did,
-        allowedActions: ['GET'],
-        expires: new Date(Date.now() + 60 * 60 * 1000)
+        controller: grantee.did,
+        allowedActions: ['GET']
       })
-      assert.equal(delegated.controller, delegate.did)
+      assert.equal(delegated.controller, grantee.did)
     })
 
     it('the delegate invokes it with its own did:webvh key', async () => {
       const response = await client({
-        signer: delegate.clientKeyPair.signer()
+        signer: grantee.clientKeyPair.signer()
       }).request({
         url: `${collectionUrl}/doc-1`,
         method: 'GET',
@@ -219,8 +218,8 @@ describe('did:webvh delegation and chain depth', () => {
       // Same keyId (the fragment the delegate document lists), different key
       // material: the signature cannot verify against the resolved method.
       const rogueKeyPair = await Ed25519VerificationKey.generate()
-      rogueKeyPair.id = delegate.clientKeyPair.id
-      rogueKeyPair.controller = delegate.did
+      rogueKeyPair.id = grantee.clientKeyPair.id
+      rogueKeyPair.controller = grantee.did
 
       const err = await requestError(
         client({ signer: rogueKeyPair.signer() }).request({
@@ -235,8 +234,8 @@ describe('did:webvh delegation and chain depth', () => {
 
     it('a keyId fragment absent from the delegate document is refused', async () => {
       const unlistedKeyPair = await Ed25519VerificationKey.generate()
-      unlistedKeyPair.id = `${delegate.did}#${unlistedKeyPair.publicKeyMultibase}`
-      unlistedKeyPair.controller = delegate.did
+      unlistedKeyPair.id = `${grantee.did}#${unlistedKeyPair.publicKeyMultibase}`
+      unlistedKeyPair.controller = grantee.did
 
       const err = await requestError(
         client({ signer: unlistedKeyPair.signer() }).request({
@@ -277,15 +276,16 @@ describe('did:webvh delegation and chain depth', () => {
       await space.collection(collectionId).put('doc-1', { hello: 'world' })
 
       // The Space controller delegates the Collection to B...
-      intermediateCap = await client({ signer: alice.signer }).delegate({
+      intermediateCap = await delegate({
+        signer: alice.signer,
         capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
         invocationTarget: collectionUrl,
         controller: aliceDelegatedApp.did,
-        allowedActions: ['GET', 'PUT'],
-        expires: new Date(Date.now() + 60 * 60 * 1000)
+        allowedActions: ['GET', 'PUT']
       })
       // ...and B attenuates it down to one Resource, read-only, for C.
-      tailCap = await client({ signer: aliceDelegatedApp.signer }).delegate({
+      tailCap = await delegate({
+        signer: aliceDelegatedApp.signer,
         capability: intermediateCap,
         invocationTarget: docUrl,
         controller: bob.did,
@@ -328,7 +328,8 @@ describe('did:webvh delegation and chain depth', () => {
       // Bob (the tail) signs the middle-to-tail delegation himself, rather
       // than B: the delegation proof's signer is not the parent capability's
       // controller, so the chain does not verify.
-      const forgedTailCap = await client({ signer: bob.signer }).delegate({
+      const forgedTailCap = await delegate({
+        signer: bob.signer,
         capability: intermediateCap,
         invocationTarget: docUrl,
         controller: bob.did,
@@ -364,12 +365,12 @@ describe('did:webvh delegation and chain depth', () => {
       // its own boundary prefix, so everything under `/space/<id>/` is a valid
       // attenuation of it. The canonical Space URL is also the Space root's
       // own target, so the delegation keeps that target unchanged.
-      subtreeCap = await client({ signer: alice.signer }).delegate({
+      subtreeCap = await delegate({
+        signer: alice.signer,
         capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
         invocationTarget: spaceUrl,
         controller: aliceDelegatedApp.did,
-        allowedActions: ['GET', 'PUT'],
-        expires: new Date(Date.now() + 60 * 60 * 1000)
+        allowedActions: ['GET', 'PUT']
       })
     })
 

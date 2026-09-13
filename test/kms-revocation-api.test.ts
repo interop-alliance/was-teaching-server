@@ -24,6 +24,7 @@ import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { kmsRevocationsPath } from '../src/lib/paths.js'
 import {
   client,
+  delegate,
   requestError,
   rootZcap as makeRootZcap,
   startTestServer,
@@ -94,7 +95,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
    * Delegates an action on `target` (the keystore, or a key under it) from
    * the keystore's root capability.
    */
-  async function delegate({
+  async function keystoreDelegate({
     target,
     controller = aliceDelegatedApp.did,
     allowedActions = ['sign'],
@@ -109,7 +110,8 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
     parent?: any
     expires?: Date
   }) {
-    return client({ signer: delegationSigner }).delegate({
+    return delegate({
+      signer: delegationSigner,
       capability: parent,
       invocationTarget: target,
       controller,
@@ -153,7 +155,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
   describe('revoking (KmsClient.revokeCapability)', () => {
     it('the delegator revokes; the delegee loses access', async () => {
       const key = await generateKey()
-      const zcap = await delegate({ target: key.kmsId! })
+      const zcap = await keystoreDelegate({ target: key.kmsId! })
       const before = await signOp({
         keyUrl: key.kmsId!,
         signer: aliceDelegatedApp.signer,
@@ -183,7 +185,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
 
     it('a delegee revokes its own zcap (dual-root rule)', async () => {
       const key = await generateKey()
-      const zcap = await delegate({ target: key.kmsId! })
+      const zcap = await keystoreDelegate({ target: key.kmsId! })
 
       // The app is not the keystore controller; it qualifies purely as a
       // controller in the to-be-revoked zcap's chain.
@@ -200,7 +202,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
 
     it('a non-participant cannot revoke (masked 404)', async () => {
       const key = await generateKey()
-      const zcap = await delegate({ target: key.kmsId! })
+      const zcap = await keystoreDelegate({ target: key.kmsId! })
 
       // Bob is neither the keystore controller nor in the zcap's chain; his
       // invocation of the revocation URL's root capability does not verify.
@@ -226,7 +228,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
 
     it('resubmitting a stored revocation is the 400 capability-already-revoked', async () => {
       const key = await generateKey()
-      const zcap = await delegate({ target: key.kmsId! })
+      const zcap = await keystoreDelegate({ target: key.kmsId! })
       await kmsClient.revokeCapability({
         capabilityToRevoke: zcap,
         invocationSigner: alice.signer
@@ -266,7 +268,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
 
     it('the capability id must match the revocation URL (400)', async () => {
       const key = await generateKey()
-      const zcap = await delegate({ target: key.kmsId! })
+      const zcap = await keystoreDelegate({ target: key.kmsId! })
       const err = await requestError(
         client({ signer: alice.signer }).request({
           url: revocationUrl('urn:uuid:some-other-capability'),
@@ -286,7 +288,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
         config: { sequence: 0, controller: alice.did },
         invocationSigner: alice.signer
       })
-      const foreignZcap = await delegate({
+      const foreignZcap = await keystoreDelegate({
         target: otherConfig.id!,
         parent: rootZcap(otherConfig.id!)
       })
@@ -305,7 +307,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
 
     it('an unknown keystore is masked (404)', async () => {
       const key = await generateKey()
-      const zcap = await delegate({ target: key.kmsId! })
+      const zcap = await keystoreDelegate({ target: key.kmsId! })
       const unknownKeystore = `${keystoresUrl}/z1111unknown`
       const err = await requestError(
         client({ signer: alice.signer }).request({
@@ -324,8 +326,8 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
     it('revoking a mid-chain delegation kills the whole sub-chain', async () => {
       const key = await generateKey()
       // root -> zcapA (app) -> zcapB (bob)
-      const zcapA = await delegate({ target: keystoreId })
-      const zcapB = await delegate({
+      const zcapA = await keystoreDelegate({ target: keystoreId })
+      const zcapB = await keystoreDelegate({
         target: keystoreId,
         controller: bob.did,
         delegationSigner: aliceDelegatedApp.signer,
@@ -363,7 +365,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
     })
 
     it('a revoked read delegation blocks the keystore config route', async () => {
-      const zcap = await delegate({
+      const zcap = await keystoreDelegate({
         target: keystoreId,
         allowedActions: ['read']
       })
@@ -398,7 +400,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
   describe('delegation policy', () => {
     it('a delegation beyond the 90-day max TTL is rejected (404)', async () => {
       const key = await generateKey()
-      const zcap = await delegate({
+      const zcap = await keystoreDelegate({
         target: key.kmsId!,
         expires: new Date(Date.now() + 91 * 24 * 60 * 60 * 1000)
       })
@@ -415,7 +417,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
       assert.ok((await key.sign({ data })) instanceof Uint8Array)
 
       // Any delegated invocation (chain length 2) exceeds the bound.
-      const zcap = await delegate({ target: key.kmsId! })
+      const zcap = await keystoreDelegate({ target: key.kmsId! })
       const err = await requestError(
         signOp({ keyUrl: key.kmsId!, signer: aliceDelegatedApp.signer, zcap })
       )
@@ -424,7 +426,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
 
     it('per-key maxCapabilityChainLength of 2 admits one delegation, not two', async () => {
       const key = await generateKey({ maxCapabilityChainLength: 2 })
-      const zcapA = await delegate({ target: keystoreId })
+      const zcapA = await keystoreDelegate({ target: keystoreId })
       const direct = await signOp({
         keyUrl: key.kmsId!,
         signer: aliceDelegatedApp.signer,
@@ -432,7 +434,7 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
       })
       assert.equal(direct.status, 200)
 
-      const zcapB = await delegate({
+      const zcapB = await keystoreDelegate({
         target: keystoreId,
         controller: bob.did,
         delegationSigner: aliceDelegatedApp.signer,

@@ -20,7 +20,7 @@ import type { FastifyInstance } from 'fastify'
 import { Collection, Space } from '@interop/was-client'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { client, startTestServer, zcapClients } from './helpers.js'
+import { delegate, startTestServer, zcapClients } from './helpers.js'
 
 describe('Space-rooted session capabilities', () => {
   let fastify: FastifyInstance,
@@ -66,19 +66,19 @@ describe('Space-rooted session capabilities', () => {
     // attenuates its target down to the Collection at delegation time (so the
     // session key can never write outside it -- in particular, never PUT the
     // Space Metadata object).
-    const aliceZcapClient = client({ signer: alice.signer })
-    spaceReadCap = await aliceZcapClient.delegate({
+    spaceReadCap = await delegate({
+      signer: alice.signer,
+      capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
       invocationTarget: spaceUrl,
       controller: aliceDelegatedApp.did,
-      allowedActions: ['GET', 'HEAD'],
-      expires: new Date(Date.now() + 60 * 60 * 1000)
+      allowedActions: ['GET', 'HEAD']
     })
-    collectionWriteCap = await aliceZcapClient.delegate({
+    collectionWriteCap = await delegate({
+      signer: alice.signer,
       capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
       invocationTarget: collectionUrl,
       controller: aliceDelegatedApp.did,
-      allowedActions: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE'],
-      expires: new Date(Date.now() + 60 * 60 * 1000)
+      allowedActions: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
     })
   })
   afterAll(async () => {
@@ -218,12 +218,12 @@ describe('Space-rooted session capabilities', () => {
       // Space's: valid-looking, but the space-family routes only ever accept
       // the Space root (or the exact request target's own root) -- the same
       // single-root rule the keystore routes apply.
-      const aliceZcapClient = client({ signer: alice.signer })
-      const collectionRootedCap = await aliceZcapClient.delegate({
+      const collectionRootedCap = await delegate({
+        signer: alice.signer,
+        capability: `urn:zcap:root:${encodeURIComponent(collectionUrl)}`,
         invocationTarget: collectionUrl,
         controller: aliceDelegatedApp.did,
-        allowedActions: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE'],
-        expires: new Date(Date.now() + 60 * 60 * 1000)
+        allowedActions: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
       })
       await assert.rejects(
         aliceDelegatedApp.was.request({
@@ -252,12 +252,12 @@ describe('Space-rooted session capabilities', () => {
         .space(bobSpaceId)
         .configure({ name: "Bob's Space", controller: bob.did })
       const bobSpaceUrl = new URL(`/space/${bobSpaceId}/`, serverUrl).toString()
-      const bobZcapClient = client({ signer: bob.signer })
-      const bobSessionCap = await bobZcapClient.delegate({
+      const bobSessionCap = await delegate({
+        signer: bob.signer,
+        capability: `urn:zcap:root:${encodeURIComponent(bobSpaceUrl)}`,
         invocationTarget: bobSpaceUrl,
         controller: aliceDelegatedApp.did,
-        allowedActions: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE'],
-        expires: new Date(Date.now() + 60 * 60 * 1000)
+        allowedActions: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
       })
       // Rejected either client-side (the invocation URL is not under the
       // capability's target) or server-side; the write must not land.

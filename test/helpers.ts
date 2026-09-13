@@ -349,11 +349,11 @@ export function anHourFromNow(): Date {
 }
 
 /**
- * Delegates from a parent capability, signed by one key pair. The shared shape
- * the zcap-authorization suites mint their grants with.
+ * Delegates from a parent capability. The shared shape the zcap-authorization
+ * suites mint their grants with.
  *
  * @param options {object}
- * @param options.signerKeyPair {any}   the key signing the delegation proof
+ * @param options.signer {any}   the delegation-proof signer
  * @param options.capability {any}   the parent capability, or its root id
  * @param options.invocationTarget {string}
  * @param options.controller {string}
@@ -363,21 +363,21 @@ export function anHourFromNow(): Date {
  * @returns {Promise<any>}
  */
 export async function delegate({
-  signerKeyPair,
+  signer,
   capability,
   invocationTarget,
   controller,
   allowedActions,
   expires = anHourFromNow()
 }: {
-  signerKeyPair: any
+  signer: any
   capability: any
   invocationTarget: string
   controller: string
   allowedActions: string[]
   expires?: Date
 }): Promise<any> {
-  return client({ signer: signerKeyPair.signer() }).delegate({
+  return client({ signer }).delegate({
     capability,
     invocationTarget,
     controller,

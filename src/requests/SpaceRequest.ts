@@ -301,7 +301,7 @@ export class SpaceRequest {
         // controller-only. A delegated capability is refused whatever its
         // `allowedAction`, because a Space-subtree data grant would otherwise
         // reach the controller rewrite by ordinary attenuation.
-        containerRule: { rule: 'controller-only', spaceUrl }
+        containerRule: 'controller-only'
       })
     } else {
       await verifyBodyControllerConsent({

@@ -39,7 +39,6 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
-  anHourFromNow,
   client,
   delegate,
   requestError,
@@ -113,40 +112,6 @@ describe('container rule (unsafe methods at a container URL)', () => {
       spaceMetaUrl: `${spaceUrl}meta`,
       rootId: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`
     }
-  }
-
-  /**
-   * Delegates from a parent capability signed by a raw signer (Alice's
-   * `did:key` admin signer, which is not an `Ed25519VerificationKey`).
-   *
-   * @param options {object}
-   * @param options.signer {any}   the delegation-proof signer
-   * @param options.capability {any}
-   * @param options.invocationTarget {string}
-   * @param options.controller {string}
-   * @param options.allowedActions {string[]}
-   * @returns {Promise<any>}
-   */
-  async function delegateAs({
-    signer,
-    capability,
-    invocationTarget,
-    controller,
-    allowedActions
-  }: {
-    signer: any
-    capability: any
-    invocationTarget: string
-    controller: string
-    allowedActions: string[]
-  }): Promise<any> {
-    return client({ signer }).delegate({
-      capability,
-      invocationTarget,
-      controller,
-      allowedActions,
-      expires: anHourFromNow()
-    })
   }
 
   /**
@@ -296,7 +261,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
      * @returns {Promise<any>}
      */
     async function subtreeGrant(space: TestSpace): Promise<any> {
-      return delegateAs({
+      return delegate({
         signer: alice.signer,
         capability: space.rootId,
         invocationTarget: space.spaceUrl,
@@ -384,7 +349,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
   describe('the Delete Space exception', () => {
     it('admits an exactly-DELETE grant on the canonical Space URL', async () => {
       const space = await provisionSpace()
-      const capability = await delegateAs({
+      const capability = await delegate({
         signer: alice.signer,
         capability: space.rootId,
         invocationTarget: space.spaceUrl,
@@ -412,14 +377,14 @@ describe('container rule (unsafe methods at a container URL)', () => {
       // out `['GET', 'DELETE']` on the Space URL, and the holder narrows it to
       // a DELETE-only child before invoking. The tail is what the rule reads.
       const space = await provisionSpace()
-      const parent = await delegateAs({
+      const parent = await delegate({
         signer: alice.signer,
         capability: space.rootId,
         invocationTarget: space.spaceUrl,
         controller: bob.did,
         allowedActions: ['GET', 'DELETE']
       })
-      const child = await delegateAs({
+      const child = await delegate({
         signer: bob.signer,
         capability: parent,
         invocationTarget: space.spaceUrl,
@@ -437,7 +402,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
 
     it('refuses a two-verb tail carrying DELETE (404)', async () => {
       const space = await provisionSpace()
-      const capability = await delegateAs({
+      const capability = await delegate({
         signer: alice.signer,
         capability: space.rootId,
         invocationTarget: space.spaceUrl,
@@ -458,7 +423,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
 
     it('refuses a DELETE-only tail whose target is a prefix (404)', async () => {
       const space = await provisionSpace()
-      const capability = await delegateAs({
+      const capability = await delegate({
         signer: alice.signer,
         capability: space.rootId,
         invocationTarget: new URL('/space/', serverUrl).toString(),
@@ -482,7 +447,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
       // zcap library may refuse it before the rule does; either way the
       // request is denied and the Space stays.
       const space = await provisionSpace()
-      const capability = await delegateAs({
+      const capability = await delegate({
         signer: alice.signer,
         capability: space.rootId,
         invocationTarget: space.spaceUrl.replace(/\/$/, ''),
@@ -505,7 +470,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
   describe('the Update Collection Metadata exception', () => {
     it('refuses a grant targeting the Collection container URL (404)', async () => {
       const space = await provisionSpace()
-      const capability = await delegateAs({
+      const capability = await delegate({
         signer: alice.signer,
         capability: space.rootId,
         invocationTarget: `${space.spaceUrl}notes/`,
@@ -528,7 +493,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
 
     it('refuses a grant targeting the Collection Metadata URL itself (404)', async () => {
       const space = await provisionSpace()
-      const capability = await delegateAs({
+      const capability = await delegate({
         signer: alice.signer,
         capability: space.rootId,
         invocationTarget: `${space.spaceUrl}notes/meta`,
@@ -551,7 +516,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
 
     it('refuses a grant targeting a Resource URL', async () => {
       const space = await provisionSpace()
-      const capability = await delegateAs({
+      const capability = await delegate({
         signer: alice.signer,
         capability: space.rootId,
         invocationTarget: `${space.spaceUrl}notes/doc-1`,
@@ -664,7 +629,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
       // descriptor from then on -- so it takes the same rule the sibling
       // `PUT .../meta` takes, not a Collection-container data grant.
       const space = await provisionSpace()
-      const capability = await delegateAs({
+      const capability = await delegate({
         signer: alice.signer,
         capability: space.rootId,
         invocationTarget: `${space.spaceUrl}notes/`,
@@ -680,7 +645,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
 
     it('admits a Space-subtree grant', async () => {
       const space = await provisionSpace()
-      const capability = await delegateAs({
+      const capability = await delegate({
         signer: alice.signer,
         capability: space.rootId,
         invocationTarget: space.spaceUrl,
@@ -738,48 +703,52 @@ describe('container rule (unsafe methods at a container URL)', () => {
           }
         ]
       })
-      await alice.was
-        .space(account.spaceId)
-        .collection('credentials')
-        .configure({ force: true })
-
-      // Promotion by ordering: the Space is created under Alice's `did:key`
-      // and only then handed to the account DID.
-      const promoted = await alice.was.request({
-        path: `/space/${account.spaceId}/meta`,
-        method: 'PUT',
-        json: {
-          id: account.spaceId,
-          name: 'Account Space',
-          controller: account.did
-        }
-      })
-      assert.equal(promoted.status, 204)
-
-      // The delegated-clients bookkeeping Space, typed as such and promoted to
-      // the account DID too.
+      // Promotion by ordering: a Space is created under Alice's `did:key` and
+      // only then handed to the account DID. The account Space and the
+      // delegated-clients bookkeeping Space (typed as such) are independent,
+      // so their two chains run side by side.
       const auxSpaceId = `annex-${randomUUID()}`
-      const createdAux = await alice.was.request({
-        url: new URL('/spaces/', serverUrl).toString(),
-        method: 'POST',
-        json: {
-          id: auxSpaceId,
-          name: 'Delegated Clients',
-          controller: alice.did,
-          type: AUXILIARY_TYPE
-        }
-      })
-      assert.equal(createdAux.status, 201)
-      const auxPromoted = await alice.was.request({
-        path: `/space/${auxSpaceId}/meta`,
-        method: 'PUT',
-        json: {
-          id: auxSpaceId,
-          name: 'Delegated Clients',
-          controller: account.did
-        }
-      })
-      assert.equal(auxPromoted.status, 204)
+      await Promise.all([
+        (async () => {
+          await alice.was
+            .space(account.spaceId)
+            .collection('credentials')
+            .configure({ force: true })
+          const promoted = await alice.was.request({
+            path: `/space/${account.spaceId}/meta`,
+            method: 'PUT',
+            json: {
+              id: account.spaceId,
+              name: 'Account Space',
+              controller: account.did
+            }
+          })
+          assert.equal(promoted.status, 204)
+        })(),
+        (async () => {
+          const createdAux = await alice.was.request({
+            url: new URL('/spaces/', serverUrl).toString(),
+            method: 'POST',
+            json: {
+              id: auxSpaceId,
+              name: 'Delegated Clients',
+              controller: alice.did,
+              type: AUXILIARY_TYPE
+            }
+          })
+          assert.equal(createdAux.status, 201)
+          const auxPromoted = await alice.was.request({
+            path: `/space/${auxSpaceId}/meta`,
+            method: 'PUT',
+            json: {
+              id: auxSpaceId,
+              name: 'Delegated Clients',
+              controller: account.did
+            }
+          })
+          assert.equal(auxPromoted.status, 204)
+        })()
+      ])
       const auxUrl = new URL(`/space/${auxSpaceId}/`, serverUrl).toString()
       auxSpace = {
         spaceId: auxSpaceId,
@@ -889,7 +858,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
      */
     async function generationDelegation(): Promise<any> {
       return delegate({
-        signerKeyPair: account.clientKeyPair,
+        signer: account.clientKeyPair.signer(),
         capability: `urn:zcap:root:${encodeURIComponent(account.spaceUrl)}`,
         invocationTarget: account.spaceUrl,
         controller: clientAnnex.did,
@@ -955,7 +924,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
 
     it('refuses a delegated-clients grant PUT of the annex Space Metadata object (404)', async () => {
       const capability = await delegate({
-        signerKeyPair: account.clientKeyPair,
+        signer: account.clientKeyPair.signer(),
         capability: auxSpace.rootId,
         invocationTarget: auxSpace.spaceUrl,
         controller: clientAnnex.did,
@@ -1015,7 +984,7 @@ describe('container rule (unsafe methods at a container URL)', () => {
       // residual should be narrowed further is tracked separately.
       const parent = await generationDelegation()
       const child = await delegate({
-        signerKeyPair: clientAnnex.transientKeyPair,
+        signer: clientAnnex.transientKeyPair.signer(),
         capability: parent,
         invocationTarget: account.spaceUrl,
         controller: clientAnnex.did,

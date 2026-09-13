@@ -311,7 +311,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
   describe('control: a non-ladder chain is untouched', () => {
     it('an ordinary client VM delegates an arbitrary target end to end', async () => {
       const delegated = await delegate({
-        signerKeyPair: account.clientKeyPair,
+        signer: account.clientKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: credentialsUrl,
         controller: bob.did,
@@ -331,7 +331,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
   describe('predicate (i): the annex DID as controller', () => {
     it('admits a ladder delegation controlled by the annex DID', async () => {
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: credentialsUrl,
         controller: clientAnnex.did,
@@ -351,7 +351,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     it('refuses a ladder delegation to some other controller (404)', async () => {
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: credentialsUrl,
         controller: bob.did,
@@ -370,7 +370,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     it('the refused delegation cannot write either, and nothing lands', async () => {
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: credentialsUrl,
         controller: bob.did,
@@ -406,7 +406,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // URL with the full closed WAS verb vocabulary, granted to the annex
       // DID. Both a read and a write under it land.
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: accountSpaceUrl,
         controller: clientAnnex.did,
@@ -448,7 +448,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // The Metadata URL is carved out of the items subtree: `PUT` there is
       // Update Space Metadata, and so the Space's controller.
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: accountSpaceMetaUrl,
         controller: clientAnnex.did,
@@ -479,7 +479,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // `PUT /space/{s}/meta` is `controller-only`, refused before this clause
       // runs -- which shadows the clause's own PUT bound on the same case.
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: accountSpaceUrl,
         controller: clientAnnex.did,
@@ -543,7 +543,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         serverUrl
       ).toString()
       const delegated = await delegate({
-        signerKeyPair: other.ladderKeyPair,
+        signer: other.ladderKeyPair.signer(),
         capability: `urn:zcap:root:${encodeURIComponent(otherSpaceUrl)}`,
         invocationTarget: otherSpaceUrl,
         controller: clientAnnex.did,
@@ -608,14 +608,14 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       ).toString()
 
       const generationDelegation = await delegate({
-        signerKeyPair: other.ladderKeyPair,
+        signer: other.ladderKeyPair.signer(),
         capability: `urn:zcap:root:${encodeURIComponent(otherSpaceUrl)}`,
         invocationTarget: otherSpaceUrl,
         controller: clientAnnex.did,
         allowedActions: WAS_ACTIONS
       })
       const narrowed = await delegate({
-        signerKeyPair: clientAnnex.transientKeyPair,
+        signer: clientAnnex.transientKeyPair.signer(),
         capability: generationDelegation,
         invocationTarget: otherSpaceUrl,
         controller: bob.did,
@@ -670,7 +670,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         serverUrl
       ).toString()
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: `urn:zcap:root:${encodeURIComponent(otherSpaceUrl)}`,
         invocationTarget: otherSpaceUrl,
         controller: clientAnnex.did,
@@ -689,7 +689,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     it('refuses an action outside the WAS verb vocabulary (404)', async () => {
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: accountSpaceUrl,
         controller: clientAnnex.did,
@@ -710,7 +710,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // An empty `allowedActions` omits `allowedAction` from the delegation,
       // which permits any action in the zcap model.
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: accountSpaceUrl,
         controller: clientAnnex.did,
@@ -741,14 +741,14 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // the annex DID, and the target is an ordinary Collection -- and this
       // read would be a 404.
       const generationDelegation = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: credentialsUrl,
         controller: clientAnnex.did,
         allowedActions: ['GET']
       })
       const grant = await delegate({
-        signerKeyPair: clientAnnex.transientKeyPair,
+        signer: clientAnnex.transientKeyPair.signer(),
         capability: generationDelegation,
         invocationTarget: credentialsUrl,
         controller: bob.did,
@@ -771,14 +771,14 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // verb vocabulary. The clause admits the middle link on all three of its
       // bounds, and skips the annex-signed link as before.
       const generationDelegation = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: accountSpaceUrl,
         controller: clientAnnex.did,
         allowedActions: WAS_ACTIONS
       })
       const grant = await delegate({
-        signerKeyPair: clientAnnex.transientKeyPair,
+        signer: clientAnnex.transientKeyPair.signer(),
         capability: generationDelegation,
         invocationTarget: credentialsUrl,
         controller: bob.did,
@@ -799,7 +799,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
   describe('a refusal still falls through to the access-control policy', () => {
     it('a world-readable target serves a refused ladder invocation (200)', async () => {
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: openCollectionUrl,
         controller: bob.did,
@@ -817,7 +817,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     it('but the policy grants reads only -- a write is still refused', async () => {
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: openCollectionUrl,
         controller: bob.did,
@@ -862,7 +862,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     it("admits a PUT-only delegation of the account's own log", async () => {
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: accountLogUrl,
         controller: bob.did,
@@ -877,7 +877,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     it('refuses the same target granted GET (404)', async () => {
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: accountLogUrl,
         controller: bob.did,
@@ -896,7 +896,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     it('refuses actions outside {PUT} (404)', async () => {
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: accountLogUrl,
         controller: bob.did,
@@ -911,7 +911,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     it("refuses a log-shaped target that is not the account's own log (404)", async () => {
       const otherLogUrl = `${accountSpaceUrl}other/did.jsonl`
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: otherLogUrl,
         controller: bob.did,
@@ -948,7 +948,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       ).toString()
       const decoyLogUrl = `${decoySpaceUrl}id/did.jsonl`
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: `urn:zcap:root:${encodeURIComponent(decoySpaceUrl)}`,
         invocationTarget: decoyLogUrl,
         controller: bob.did,
@@ -984,7 +984,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       ).toString()
       const keysLogUrl = `${keysSpaceUrl}keys/did.jsonl`
       const delegated = await delegate({
-        signerKeyPair: keysAccount.ladderKeyPair,
+        signer: keysAccount.ladderKeyPair.signer(),
         capability: `urn:zcap:root:${encodeURIComponent(keysSpaceUrl)}`,
         invocationTarget: keysLogUrl,
         controller: bob.did,
@@ -1042,7 +1042,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     it('admits a GET/PUT grant on the whole auxiliary Space', async () => {
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: auxSpaceRoot,
         invocationTarget: auxSpaceUrl,
         controller: bob.did,
@@ -1074,7 +1074,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // canonical trailing-slash target explicitly (was-client
       // `GrantOptions.target`).
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: auxSpaceRoot,
         invocationTarget: auxSpaceUrl.slice(0, -1),
         controller: bob.did,
@@ -1098,7 +1098,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // (`controller-only` on `PUT /space/{s}/meta`, decided before this
       // clause runs); the clause's own PUT bound would refuse it too.
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: auxSpaceRoot,
         invocationTarget: auxSpaceUrl,
         controller: bob.did,
@@ -1134,7 +1134,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     it('refuses actions outside {GET, PUT} on the same Space (404)', async () => {
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: auxSpaceRoot,
         invocationTarget: auxSpaceUrl,
         controller: bob.did,
@@ -1155,7 +1155,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // The account's own Space is typed `['Space']` and controlled by the same
       // DID: only the Metadata type separates it from the case above.
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: accountSpaceUrl,
         controller: bob.did,
@@ -1245,7 +1245,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       })
       const ladder = bareDidKeyOf(account.ladderKeyPair)
       const child = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: manage,
         invocationTarget: unlock.url,
         controller: ladder.did,
@@ -1278,7 +1278,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       const space = await makeSpace({ controller: account.did })
       const ladder = bareDidKeyOf(account.ladderKeyPair)
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: space.root,
         invocationTarget: space.url,
         controller: ladder.did,
@@ -1299,7 +1299,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       const space = await makeSpace({ controller: account.did })
       const ladder = bareDidKeyOf(account.ladderKeyPair)
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: space.root,
         invocationTarget: space.metaUrl,
         controller: ladder.did,
@@ -1330,7 +1330,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       })
       const ladder = bareDidKeyOf(account.ladderKeyPair)
       const child = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: manage,
         invocationTarget: unlock.metaUrl,
         controller: ladder.did,
@@ -1350,7 +1350,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     it("refuses a target under the parent's Space rather than the Space (404)", async () => {
       const ladder = bareDidKeyOf(account.ladderKeyPair)
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: credentialsUrl,
         controller: ladder.did,
@@ -1373,7 +1373,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // delegated-clients bookkeeping either.
       const ladder = bareDidKeyOf(account.ladderKeyPair)
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: accountSpaceUrl,
         controller: ladder.did,
@@ -1393,7 +1393,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     it('refuses a two-verb {GET, DELETE} set on the Space URL (404)', async () => {
       const ladder = bareDidKeyOf(account.ladderKeyPair)
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: accountSpaceUrl,
         controller: ladder.did,
@@ -1420,7 +1420,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       const space = await makeSpace({ controller: account.did })
       const ladder = bareDidKeyOf(account.ladderKeyPair)
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: space.root,
         invocationTarget: space.metaUrl,
         controller: ladder.did,
@@ -1443,7 +1443,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // rewrite the Space's controller.
       const ladder = bareDidKeyOf(account.ladderKeyPair)
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: accountSpaceRoot(),
         invocationTarget: accountSpaceMetaUrl,
         controller: ladder.did,
@@ -1475,7 +1475,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       const space = await makeSpace({ controller: retiring.did })
       const ladder = bareDidKeyOf(retiring.ladderKeyPair)
       const deleteChild = await delegate({
-        signerKeyPair: retiring.ladderKeyPair,
+        signer: retiring.ladderKeyPair.signer(),
         capability: space.root,
         invocationTarget: space.url,
         controller: ladder.did,
@@ -1485,7 +1485,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // A GET child on the Metadata URL proves the chain verifies right now,
       // without spending the Space the DELETE child is aimed at.
       const readChild = await delegate({
-        signerKeyPair: retiring.ladderKeyPair,
+        signer: retiring.ladderKeyPair.signer(),
         capability: space.root,
         invocationTarget: space.metaUrl,
         controller: ladder.did,
@@ -1589,7 +1589,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     it('an ordinary client VM still delegates keystore reads (200)', async () => {
       const delegated = await delegate({
-        signerKeyPair: account.clientKeyPair,
+        signer: account.clientKeyPair.signer(),
         capability: rootZcap({
           target: keystoreId,
           controller: account.did
@@ -1611,7 +1611,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // No kms target can be bridge-shaped, and a `/kms/...` path is not
       // inside any Space's items subtree, so no predicate can hold.
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: rootZcap({
           target: keystoreId,
           controller: account.did
@@ -1637,7 +1637,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // refused: a `/kms/...` target is outside the account Space's items
       // subtree.
       const delegated = await delegate({
-        signerKeyPair: account.ladderKeyPair,
+        signer: account.ladderKeyPair.signer(),
         capability: rootZcap({
           target: keystoreId,
           controller: account.did

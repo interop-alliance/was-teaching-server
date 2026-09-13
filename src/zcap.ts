@@ -464,10 +464,10 @@ export function isRootInvocation({
  *   no scope a revocation could be stored under (a create/consent
  *   verification for a not-yet-existing resource, or a collection-level root
  *   like `/kms/keystores`).
- * @param [options.containerRule] {object}   the container rule this operation
- *   carries, when it is an unsafe method at a container URL
- *   (`lib/containerRule.ts`): `{ rule, spaceUrl }`, where `spaceUrl` is the
- *   Space's canonical trailing-slash URL
+ * @param [options.containerRule] {ContainerRule}   the container rule this
+ *   operation carries, when it is an unsafe method at a container URL
+ *   (`lib/containerRule.ts`). The rule is keyed on the Space's canonical
+ *   trailing-slash URL, which `attenuatedRootTarget` must then carry.
  * @param [options.maxChainLength] {number}   max delegation chain length,
  *   root included (see `verifyZcap`)
  * @param [options.maxDelegationTtl] {number}   max delegated-zcap TTL in
@@ -512,7 +512,7 @@ export async function handleZcapVerify({
     { storage: StorageBackend; scope: RevocationScope } | 'no-revocation-scope'
   maxChainLength?: number
   maxDelegationTtl?: number
-  containerRule?: { rule: ContainerRule; spaceUrl: string }
+  containerRule?: ContainerRule
 }): Promise<VerifyCapabilityInvocationResult> {
   // The `controller-only` container rule turns on nothing but whether the
   // `Capability-Invocation` header embeds a delegated capability, so it is
@@ -523,12 +523,15 @@ export async function handleZcapVerify({
   // capability-only handlers carrying this rule could not have surfaced
   // anyway.
   if (
-    containerRule?.rule === 'controller-only' &&
-    !isRootInvocation({
-      invocation: (headers['capability-invocation'] as string) ?? ''
-    })
+    containerRule === 'controller-only' &&
+    !isRootInvocation({ invocation: capabilityInvocationHeader({ headers }) })
   ) {
     throw new UnauthorizedError({ requestName })
+  }
+  if (containerRule && !attenuatedRootTarget) {
+    throw new Error(
+      'A container rule needs attenuatedRootTarget, the Space URL'
+    )
   }
 
   // The chain inspectors, composed into the zcap library's single hook: the
@@ -541,8 +544,13 @@ export async function handleZcapVerify({
   // library's hook sees only the chain: its invocation-time bound needs the
   // target and action.
   const inspectors = [
-    ...(containerRule && containerRule.rule !== 'controller-only'
-      ? [containerRuleInspector({ ...containerRule, rule: containerRule.rule })]
+    ...(containerRule && attenuatedRootTarget
+      ? [
+          containerRuleInspector({
+            rule: containerRule,
+            spaceUrl: attenuatedRootTarget
+          })
+        ]
       : []),
     ...(revocation === 'no-revocation-scope'
       ? []
@@ -584,6 +592,21 @@ export async function handleZcapVerify({
 }
 
 /**
+ * The raw `Capability-Invocation` header, or the empty string when absent.
+ *
+ * @param options {object}
+ * @param options.headers {IncomingHttpHeaders}   the request headers
+ * @returns {string}
+ */
+function capabilityInvocationHeader({
+  headers
+}: {
+  headers: IncomingHttpHeaders
+}): string {
+  return (headers['capability-invocation'] as string | undefined) ?? ''
+}
+
+/**
  * Whether the request's signing key belongs to the invoked capability's
  * controller. The zcap library runs the same match, but only after the chain
  * walk, and the walk names an expired parent link before it gets there. This
@@ -605,7 +628,7 @@ function invokerIsController({
   try {
     const keyId = parseSignatureHeader(headers.authorization ?? '').params.keyId
     const encoded = parseSignatureHeader(
-      headers['capability-invocation'] as string
+      capabilityInvocationHeader({ headers })
     ).params.capability
     if (typeof keyId !== 'string' || typeof encoded !== 'string') {
       return false

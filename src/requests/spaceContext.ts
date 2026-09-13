@@ -241,7 +241,8 @@ export async function fetchSpaceAndAuthorize({
  * @param [options.containerRule] {ContainerRule}   the container rule to
  *   apply, when the operation is an unsafe method at a container URL
  *   (`lib/containerRule.ts`). It is keyed on the Space's canonical
- *   trailing-slash URL, which this prelude already computes.
+ *   trailing-slash URL, which this prelude already passes as
+ *   `attenuatedRootTarget`.
  * @returns {Promise<VerifiedSpaceContext>}
  */
 export async function fetchSpaceAndVerify({
@@ -278,14 +279,7 @@ export async function fetchSpaceAndVerify({
     logger: request.log,
     attenuatedRootTarget: context.spaceRootTarget,
     revocation: { storage, scope: { spaceId } },
-    ...(containerRule
-      ? {
-          containerRule: {
-            rule: containerRule,
-            spaceUrl: context.spaceRootTarget
-          }
-        }
-      : {})
+    containerRule
   })
   return context
 }

@@ -31,6 +31,7 @@ import type { ISigner } from '@interop/data-integrity-core'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { spaceRevocationsPath } from '../src/lib/paths.js'
 import {
+  anHourFromNow,
   client as jcsClient,
   requestError,
   rootZcap as makeRootZcap,
@@ -134,7 +135,7 @@ describe('Delegation-proof cryptosuites', () => {
         invocationTarget: collectionUrl,
         controller: aliceDelegatedApp.did,
         allowedActions: ['GET', 'HEAD'],
-        expires: new Date(Date.now() + 60 * 60 * 1000)
+        expires: anHourFromNow()
       })
       const proof = delegationProof(capability)
       assert.equal(proof.type, 'DataIntegrityProof')
@@ -154,7 +155,7 @@ describe('Delegation-proof cryptosuites', () => {
         invocationTarget: collectionUrl,
         controller: aliceDelegatedApp.did,
         allowedActions: ['GET', 'HEAD'],
-        expires: new Date(Date.now() + 60 * 60 * 1000)
+        expires: anHourFromNow()
       })
       assert.equal(delegationProof(capability).type, 'Ed25519Signature2020')
 
@@ -173,7 +174,7 @@ describe('Delegation-proof cryptosuites', () => {
         invocationTarget: collectionUrl,
         controller: aliceDelegatedApp.did,
         allowedActions: ['GET', 'HEAD'],
-        expires: new Date(Date.now() + 60 * 60 * 1000)
+        expires: anHourFromNow()
       })
       const child = await jcsClient({
         signer: aliceDelegatedApp.signer
@@ -181,7 +182,7 @@ describe('Delegation-proof cryptosuites', () => {
         capability: parent,
         controller: bob.did,
         allowedActions: ['GET'],
-        expires: new Date(Date.now() + 60 * 60 * 1000)
+        expires: anHourFromNow()
       })
 
       const response = await readDoc({ capability: child, signer: bob.signer })
@@ -194,7 +195,7 @@ describe('Delegation-proof cryptosuites', () => {
         invocationTarget: collectionUrl,
         controller: aliceDelegatedApp.did,
         allowedActions: ['GET', 'HEAD'],
-        expires: new Date(Date.now() + 60 * 60 * 1000)
+        expires: anHourFromNow()
       })
       const child = await legacyClient({
         signer: aliceDelegatedApp.signer
@@ -202,7 +203,7 @@ describe('Delegation-proof cryptosuites', () => {
         capability: parent,
         controller: bob.did,
         allowedActions: ['GET'],
-        expires: new Date(Date.now() + 60 * 60 * 1000)
+        expires: anHourFromNow()
       })
 
       const response = await readDoc({ capability: child, signer: bob.signer })
@@ -218,7 +219,7 @@ describe('Delegation-proof cryptosuites', () => {
           invocationTarget: collectionUrl,
           controller: aliceDelegatedApp.did,
           allowedActions: ['GET', 'HEAD'],
-          expires: new Date(Date.now() + 60 * 60 * 1000)
+          expires: anHourFromNow()
         })
         const before = await readDoc({
           capability,

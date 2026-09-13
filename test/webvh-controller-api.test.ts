@@ -41,6 +41,7 @@ import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { spaceRevocationsPath } from '../src/lib/paths.js'
 import {
   client,
+  delegate,
   requestError,
   rootZcap,
   startTestServer,
@@ -337,14 +338,12 @@ describe('did:webvh Space controller', () => {
     })
 
     it('the webvh controller delegates a read capability to a third party', async () => {
-      delegated = await client({
-        signer: space.clientKeyPair.signer()
-      }).delegate({
+      delegated = await delegate({
+        signer: space.clientKeyPair.signer(),
         capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
         invocationTarget: collectionUrl,
         controller: bob.did,
-        allowedActions: ['GET'],
-        expires: new Date(Date.now() + 60 * 60 * 1000)
+        allowedActions: ['GET']
       })
       assert.equal(delegated.controller, bob.did)
     })
@@ -588,14 +587,12 @@ describe('did:webvh Space controller', () => {
         serverUrl
       ).toString()
 
-      const delegated = await client({
-        signer: space.clientKeyPair.signer()
-      }).delegate({
+      const delegated = await delegate({
+        signer: space.clientKeyPair.signer(),
         capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
         invocationTarget: collectionUrl,
         controller: bob.did,
-        allowedActions: ['GET'],
-        expires: new Date(Date.now() + 60 * 60 * 1000)
+        allowedActions: ['GET']
       })
 
       const readDoc = () =>
