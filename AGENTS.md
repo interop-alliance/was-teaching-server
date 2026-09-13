@@ -35,6 +35,10 @@ it before making changes.
 on the matching `*Request` class. Always go through `request.server.storage` —
 never import or instantiate a backend directly from a handler.
 
+An unsafe method at a container URL (a Space or a Collection) passes the
+`containerRule` option through `fetchSpaceAndVerify` / `handleZcapVerify`; see
+`src/lib/containerRule.ts` for which rule each operation carries.
+
 Two facets sit outside that structure, each in its own self-contained module
 with no auth hooks and no storage access: the CORS proxy (`src/corsProxy.ts`,
 `/api/cors`) and the ephemeral exchanges rendezvous (`src/exchanges.ts`,

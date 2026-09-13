@@ -69,6 +69,10 @@ import {
   webvhDidResolverDriver,
   type WebvhResolverContext
 } from './lib/webvhController.js'
+import {
+  containerRuleInspector,
+  type ContainerRule
+} from './lib/containerRule.js'
 import type {
   CapabilitySummary,
   IDID,
@@ -460,6 +464,10 @@ export function isRootInvocation({
  *   no scope a revocation could be stored under (a create/consent
  *   verification for a not-yet-existing resource, or a collection-level root
  *   like `/kms/keystores`).
+ * @param [options.containerRule] {object}   the container rule this operation
+ *   carries, when it is an unsafe method at a container URL
+ *   (`lib/containerRule.ts`): `{ rule, spaceUrl }`, where `spaceUrl` is the
+ *   Space's canonical trailing-slash URL
  * @param [options.maxChainLength] {number}   max delegation chain length,
  *   root included (see `verifyZcap`)
  * @param [options.maxDelegationTtl] {number}   max delegated-zcap TTL in
@@ -484,7 +492,8 @@ export async function handleZcapVerify({
   attenuatedRootTarget,
   revocation,
   maxChainLength,
-  maxDelegationTtl
+  maxDelegationTtl,
+  containerRule
 }: {
   url: string
   allowedTarget: string
@@ -503,15 +512,38 @@ export async function handleZcapVerify({
     { storage: StorageBackend; scope: RevocationScope } | 'no-revocation-scope'
   maxChainLength?: number
   maxDelegationTtl?: number
+  containerRule?: { rule: ContainerRule; spaceUrl: string }
 }): Promise<VerifyCapabilityInvocationResult> {
+  // The `controller-only` container rule turns on nothing but whether the
+  // `Capability-Invocation` header embeds a delegated capability, so it is
+  // decided here, before the library dereferences the chain, verifies every
+  // delegation proof and resolves did:webvh documents. The refusal is the
+  // masked `not-found` the inspector path would have produced -- never a named
+  // `capability-revoked` or `capability-expired` cause, which the two
+  // capability-only handlers carrying this rule could not have surfaced
+  // anyway.
+  if (
+    containerRule?.rule === 'controller-only' &&
+    !isRootInvocation({
+      invocation: (headers['capability-invocation'] as string) ?? ''
+    })
+  ) {
+    throw new UnauthorizedError({ requestName })
+  }
+
   // The chain inspectors, composed into the zcap library's single hook: the
-  // revocation-store check (whenever the target has a scope), then the
-  // annex-chain clause bounding ladder-signed delegations (whenever the
-  // did:webvh resolver is engaged -- without it no did:webvh proof verifies,
-  // so there is no ladder delegation to bound). The clause also takes the
-  // operation being verified, since the zcap library's hook sees only the
-  // chain: its invocation-time bound needs the target and action.
+  // container rule first (the cheapest check -- it reads the chain's tail
+  // and resolves nothing), then the revocation-store check (whenever the
+  // target has a scope), then the annex-chain clause bounding ladder-signed
+  // delegations (whenever the did:webvh resolver is engaged -- without it no
+  // did:webvh proof verifies, so there is no ladder delegation to bound).
+  // The clause also takes the operation being verified, since the zcap
+  // library's hook sees only the chain: its invocation-time bound needs the
+  // target and action.
   const inspectors = [
+    ...(containerRule && containerRule.rule !== 'controller-only'
+      ? [containerRuleInspector({ ...containerRule, rule: containerRule.rule })]
+      : []),
     ...(revocation === 'no-revocation-scope'
       ? []
       : [revocationChainInspector(revocation)]),

@@ -1833,3 +1833,180 @@ differ first at a letter-case boundary; it failed once in a full run on
 Both `localeCompare` sorts in the suite now use `compareCodeUnits` from
 `src/lib/pagination.ts`, the comparator the backends' keyset order uses. The
 paginated case's fixed-width ids were unaffected but switched for consistency.
+
+### WAS-60: Enforce the container rule (unsafe methods at a container URL are controller-only)
+
+- status: done (2026-09-13)
+- priority: high
+- labels: security, zcap, authorization
+- touches:
+  - wallet-attached-storage-spec: WASS-2 in that repo's ROADMAP.md defines the
+    rule (Delete Space, Update Space Metadata, Delete Collection, Update
+    Collection Metadata become direct-root-invocation only, and Collection
+    creation, a `POST` to the Space URL under v0.5, classifies as exact-target
+    delegable); this item is the enforcement half and follows the spec text,
+    including the Space DELETE exception and the delegated collection PUT
+    exception below, both of which WASS-2's text must state before this item
+    enforces them. WASS-2's targets were restated for the v0.5 layout (WASS-29):
+    the two description writes are `PUT`s of the `meta` sub-resource, and every
+    container URL carries a trailing slash
+  - was-teaching-server: `src/requests/SpaceRequest.ts` (`putMeta`, `delete`,
+    `post`), `src/requests/CollectionRequest.ts` (`putMeta`, `delete`),
+    `src/routes.ts`, `src/lib/clientAnnexClause.ts` (the clause predicate
+    covering the exception's ladder-signed case, freewallet FW-400 W3),
+    AGENTS.md
+  - wallet-core: WC-232 is the annex-side statement of the gap this item closes.
+    Under v0.5 the generation delegation's target (the trailing-slash Space URL)
+    IS the Delete Space URL and contains the Space Metadata URL, and
+    `clientAnnexChainInspector` returns `{ valid: true }` at its
+    `ladderLinks.length === 0` short-circuit, so a generation delegation signed
+    by an enrolled client's promoted signer (the default arm) reaches both
+    writes unchecked. Its action-set comments in `src/clientAnnex/log.ts` name
+    that as an open gap until this lands
+  - was-client: no change expected; its Collection-create binding already posts
+    to the Space URL (WCL-41)
+  - conformance-suite: negative-path assertions (a delegated capability with
+    `allowedAction` covering `PUT`/`DELETE` invoked at a Space or Collection URL
+    is denied with the maximum-privacy 404) and a positive assertion for
+    exact-target delegated Collection creation
+- acceptance:
+  - [x] `PUT /space/{id}/meta` and `DELETE .../{collectionId}/` accept only
+        direct root-capability invocation by the Space controller; a delegated
+        capability is refused regardless of its `allowedAction`
+  - [x] `PUT .../{collectionId}/meta` accepts direct root-capability invocation,
+        and additionally a delegated capability whose `invocationTarget` is the
+        Space's items subtree (the trailing-slash Space URL, the shape a
+        generation delegation carries) and whose `allowedAction` covers `PUT`. A
+        delegated capability whose target is the collection container URL
+        itself, or a resource URL, is refused. This second exception is
+        mandatory (freewallet FW-400 W2, decided 2026-09-01 under its review
+        R3); see below
+  - [x] `DELETE /space/{id}/` accepts direct root-capability invocation, and
+        additionally a delegated capability whose `invocationTarget` is exactly
+        that Space's canonical (trailing-slash) URL and whose `allowedAction` is
+        exactly `['DELETE']`. This exception is mandatory (see below); it holds
+        whatever DID method the Space's controller uses
+  - [x] Regression tests for the exception: an exactly-`['DELETE']` delegation
+        on the Space's canonical URL stays admitted, while a two-verb delegation
+        carrying `DELETE` (say `['GET', 'DELETE']`) is refused, as is a
+        `['DELETE']` delegation whose target is a prefix rather than that
+        Space's own URL, and one whose target is the slash-less spelling
+  - [x] Regression tests for the enrolled-client-signed arm (wallet-core
+        WC-232): a generation delegation signed by an enrolled client's key, not
+        a ladder VM's, invoked by a transient visit's annex VM, is refused
+        `DELETE` on the account Space's canonical URL and `PUT` on its Metadata
+        URL; a delegated-clients delegation (`['GET', 'PUT']` over the annex
+        Space's container URL) is refused `PUT` on the annex Space's Metadata
+        URL. The existing clause test covers the ladder-signed chain only
+  - [x] Regression tests for the collection-PUT exception: a delegated
+        `PUT .../{collectionId}/meta` under a Space-subtree delegation is
+        admitted (a transient session's unlock-methods registry write, a
+        generation collection create, and App Connect collection provisioning
+        all ride this shape), while the same PUT under a capability targeting
+        the collection container URL is refused
+  - [ ] Every request freewallet's account-deletion ceremony and transient login
+        send stays admitted with enforcement on: freewallet's `tests/e2e-was/`
+        suite runs green against this server version before freewallet adopts it
+        (waived at close, 2026-09-13: freewallet still pins was-client 0.60, a
+        pre-v0.5 client, so its e2e suite fails at signup with a 405 against any
+        v0.5 server; the run is owed by freewallet's v0.5 adoption item, and
+        every shape those paths send is covered by the server tests and the
+        conformance cases instead)
+  - [x] Collection creation (`POST /space/{id}/`) stays where v0.5 put it and
+        accepts an exact-target delegated capability (per the WASS-1 / WAS-59
+        classes); the container rule does not make it controller-only
+  - [x] The Update Space Metadata path (`SpaceRequest.putMeta`) keeps its
+        body-controller consent check (`verifyBodyControllerConsent`) on top of
+        the new rule
+  - [x] Server `test/` coverage for each refused and permitted case, plus the
+        conformance assertions above
+
+Split out of wallet-attached-storage-spec WASS-2 (2026-08-20), which keeps the
+spec half. Today all four container unsafe handlers run capability-only
+verification (`fetchSpaceAndVerify` / `handleZcapVerify`) that accepts a
+delegated chain attenuating from the Space root, so a Space-scoped grant
+carrying `DELETE` can delete the Space or any Collection in it. Collection
+creation is `POST /space/{id}/` (`SpaceRequest.post`); this item's original text
+routed it through a reserved `collections` endpoint, which WASS-29 retired, so
+WASS-2 now classifies the `POST` at the Space URL as exact-target delegable
+instead.
+
+Sequencing against WAS-59, revised 2026-09-13: independent, and this item goes
+first. The original ordering rested on the `collections` create route, which
+needed WAS-59's exact-target class for reserved path segments; that route is
+gone. Everything this item governs (the container DELETEs, the two `meta` PUTs,
+the Space-URL create POST) is decided in the Space and Collection request
+handlers on the invoked verb, the invoked URL, and the chain's link shapes,
+while WAS-59 reclassifies what `attenuatedRootTarget` covers at the reserved
+endpoints. Neither needs the other's rule. WC-232 makes this item the one
+closing a live authority gap on every account with a transient login, where
+WAS-59 closes exposures that need a deliberately crafted grant.
+
+The Space DELETE exception is mandatory, not a convenience (freewallet FW-400
+W2, decided 2026-08-31 and widened 2026-09-01 to every Space). Enforcement built
+from this item's original text would break three live paths at once. FW-400 v5
+deletes the account Space and the auxiliary annex Space(s) through a
+ladder-VM-signed delegation invoked by the visit's annex key; it deletes each
+sibling unlock Space through a ladder-signed child of the `manageCapability` the
+unlock did:key already delegated to the account; and today's remembered-session
+unlock-Space delete rides that same `manageCapability` child. Every one of those
+is a delegated Space DELETE. Land the exception with the rule or those deletions
+all start failing.
+
+Sequencing, decided 2026-09-01: this item is NOT a precondition of freewallet
+FW-403 or FW-400. Both ship against the unenforced server, where ordinary chain
+verification admits every delegated Space DELETE and collection PUT they send,
+and the ladder-signed ones are bounded by the clause's third predicate (shipped
+in 0.24.0). This item lands separately, later, and must carry both exceptions
+below when it does. Its regression bar is therefore the live wallet traffic, not
+only the spec's table: the freewallet e2e suite is the check.
+
+The second exception, the delegated collection PUT (freewallet FW-400 W2, R3). A
+transient session holds no root authority by construction: every request it
+makes rides the generation delegation, whose `invocationTarget` is the Space's
+items subtree. Three of its writers configure or create a collection through
+that delegation: the unlock-methods registry write, the generation collection
+create during an annex genesis or mend, and App Connect collection provisioning.
+Enforcement built from this item's original text refuses all three, which breaks
+the transient login itself on any account needing a mend. Those writers have no
+migration target, so the rule carves them out instead. The container rule's
+hazard is a data grant whose `invocationTarget` IS the container URL; a
+Space-subtree parent is not that grant, and a capability targeting the
+collection container URL directly stays refused.
+
+WASS-2's rationale is the prefix hazard: a data grant's `invocationTarget` IS
+the container URL, so no attenuation rule separates deleting a resource under a
+collection from deleting the collection itself. A capability whose whole action
+set is `['DELETE']` is not a data grant, which is why the exception is keyed on
+the exact action set rather than on the Space's kind or its controller's DID
+method. The root-only rule stands unchanged for `PUT /space/{id}/meta` and for
+both collection container methods. The ladder-signed case is additionally
+bounded by the client-annex clause's third predicate (FW-400 W3, target-exact
+against the parent capability's own `invocationTarget`, admitting exactly
+`['DELETE']` and exactly `['GET']`), which lands with WAS-67's narrowing of
+predicate 1.
+
+The rule must be signer-independent (wallet-core WC-232, 2026-09-13). The
+clause's invocation-time bound (`ladderInvocationRefusal`) already refuses the
+Space Metadata PUT and the non-target-exact Space DELETE, but only on a chain
+carrying a ladder-signed link. The generation delegation is signed by the
+account ladder VM OR by an enrolled client's promoted signer, and the second is
+the default (freewallet's `ensureGenerationDelegation`, the revocation cascade's
+re-mint, wallet-core's GC swap). An enrolled client's key is published under all
+four document relations, so it is not a ladder VM, the chain carries no ladder
+link, and the bound never runs. Before WAS-97 both writes sat outside the
+delegation by layout (the slash-less Space URL); after it, the DELETE is at the
+delegation's target and the Metadata PUT one segment inside it. The remedy is
+this item's route-level rule, keyed on the exact verb-and-target shape of every
+link rather than on who signed one, not a narrowing of the generation
+delegation's action set (a permanent app-connect-spec wire artifact whose
+structural attenuation would cap every transient App Connect grant).
+
+Closed 2026-09-13. Shipped as a third chain inspector
+(`src/lib/containerRule.ts`) composed into `handleZcapVerify` through a
+`containerRule` option, reading the invoked capability alone. Touches resolved:
+spec text landed (WASS-2 done); wallet-core WC-232 done (comments and changelog
+corrected); conformance suite 0.17.0 carries the `container-rule` cases (273/273
+locally); was-client waived as expected; the freewallet e2e run waived as noted
+in its box. The residual self-narrowing path on the enrolled-client-signed arm
+is WAS-107.

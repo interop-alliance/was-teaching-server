@@ -223,7 +223,9 @@ export function collectionMetaPath({
  * `/space/:spaceId/:collectionId/meta/log` -- the Collection's governing
  * history log sub-resource (the `governed-history-logs` feature), a sibling
  * path under {@link collectionMetaPath}. A capability whose target covers the
- * Collection URL covers it.
+ * Collection URL reaches the `GET`; the `PUT` carries the container rule
+ * (`lib/containerRule.ts`), so it takes a direct root invocation or a grant on
+ * the Space's items subtree.
  * @param options {object}
  * @param options.spaceId {string}
  * @param options.collectionId {string}

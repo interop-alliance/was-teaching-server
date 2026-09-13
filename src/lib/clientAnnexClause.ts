@@ -78,6 +78,21 @@
  * without one (the revocation route, whose target is never a Space URL or a
  * Space Metadata URL) gets the delegation-shape bound alone.
  *
+ * Neither operation rests on this bound alone any more: the container rule
+ * (`lib/containerRule.ts`) governs both from the route, reading the invoked
+ * capability's shape rather than who signed a link, so it also covers a chain
+ * that carries no ladder-signed link. The two operations have since parted
+ * ways. The only route that PUTs a Space Metadata URL carries the
+ * `controller-only` rule, which refuses every delegated invocation before this
+ * clause runs, so the PUT branch of the bound decides no case today; it is
+ * kept as defense in depth, for a route that might verify such a PUT without
+ * the rule, and because the cross-repo decision records state it. The DELETE
+ * branch is the one that still decides a case: `DELETE /space/<S>/` carries
+ * `exact-delete`, which admits a target-exact DELETE-only tail whoever signed
+ * it, and this bound is what refuses such a tail when a ladder-signed link
+ * above it granted the whole subtree -- what a ladder verification method
+ * signed, which no downstream attenuation can restore.
+ *
  * The locked property: no ladder authority whose exercise leaves no record --
  * every admitted ladder delegation either resolves through a loud annex entry
  * and stays inside the account Space's items subtree, can only write a log, or
@@ -151,7 +166,7 @@ const META_SEGMENT = 'meta'
  * A capability as it appears in a dereferenced chain, reduced to the members
  * the clause reads.
  */
-interface ChainCapability {
+export interface ChainCapability {
   controller?: string | string[]
   invocationTarget?: string
   allowedAction?: string | string[]
@@ -345,13 +360,15 @@ function actionsWithin({
  * Whether a delegation's `allowedAction` is exactly one named action: present,
  * and a single-member set holding it. Stricter than {@link actionsWithin},
  * which admits any subset of its allowlist -- a single-verb predicate must
- * refuse a two-verb grant that happens to contain the verb.
+ * refuse a two-verb grant that happens to contain the verb. Exported for the
+ * container rule (`lib/containerRule.ts`), whose Delete Space exception is
+ * keyed on the same exact action set.
  * @param options {object}
  * @param options.capability {object}   the dereferenced capability
  * @param options.action {string}   the one permitted action
  * @returns {boolean}
  */
-function actionsExactly({
+export function actionsExactly({
   capability,
   action
 }: {
@@ -689,7 +706,9 @@ async function ladderDelegationAdmitted({
  * The invocation-time bound on a ladder-descended chain: the reason the
  * invoked operation is refused, or `undefined` when it is allowed. Invoked as
  * `PUT` on a Space Metadata URL (the controller rewrite), the chain is always
- * refused. Invoked as `DELETE` on a canonical Space URL, it is refused unless
+ * refused -- a branch the `controller-only` container rule now shadows at the
+ * only route that PUTs such a URL, kept here as defense in depth. Invoked as
+ * `DELETE` on a canonical Space URL, it is refused unless
  * every ladder-signed link in the chain is itself the predicate 3 DELETE shape
  * for that Space -- carrying exactly that URL as its `invocationTarget` and
  * exactly `['DELETE']` as its `allowedAction`. Every other operation passes:

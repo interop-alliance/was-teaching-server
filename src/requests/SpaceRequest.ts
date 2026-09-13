@@ -296,7 +296,12 @@ export class SpaceRequest {
         webvh: { storage, serverUrl },
         logger: request.log,
         attenuatedRootTarget: spaceUrl,
-        revocation: { storage, scope: { spaceId } }
+        revocation: { storage, scope: { spaceId } },
+        // The container rule: Update Space Metadata on an existing Space is
+        // controller-only. A delegated capability is refused whatever its
+        // `allowedAction`, because a Space-subtree data grant would otherwise
+        // reach the controller rewrite by ordinary attenuation.
+        containerRule: { rule: 'controller-only', spaceUrl }
       })
     } else {
       await verifyBodyControllerConsent({
@@ -451,7 +456,9 @@ export class SpaceRequest {
     }
 
     // Verify (capability-only): creating a Collection requires a valid
-    // capability invocation; no access-control-policy fallback.
+    // capability invocation; no access-control-policy fallback. The container
+    // rule does not apply here: Collection creation stays exact-target
+    // delegable.
     await fetchSpaceAndVerify({
       request,
       spaceId,
@@ -549,11 +556,17 @@ export class SpaceRequest {
 
     // Verify (capability-only): deleting a Space requires a valid capability
     // invocation; no access-control-policy fallback.
+    // The container rule: Delete Space takes a direct root invocation, or a
+    // delegated capability whose invoked grant targets exactly this Space's
+    // canonical URL with `allowedAction` exactly `['DELETE']`. A single-verb
+    // DELETE grant is not a data grant, which is why the exception is keyed on
+    // the exact action set.
     await fetchSpaceAndVerify({
       request,
       spaceId,
       targetPath: spacePath({ spaceId, trailingSlash: true }),
-      requestName
+      requestName,
+      containerRule: 'exact-delete'
     })
 
     // zCap checks out, continue

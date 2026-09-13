@@ -16,6 +16,7 @@
  */
 import type { FastifyRequest } from 'fastify'
 import { handleZcapVerify } from '../zcap.js'
+import type { ContainerRule } from '../lib/containerRule.js'
 import { authorize } from '../authorize.js'
 import { spacePath } from '../lib/paths.js'
 import { isUrlSafeSegment } from '../lib/validateId.js'
@@ -237,18 +238,24 @@ export async function fetchSpaceAndAuthorize({
  *   invocationTarget, resolved against serverUrl (e.g. `/space/${spaceId}/`)
  * @param options.requestName {string}   human-readable request name, used in
  *   error titles
+ * @param [options.containerRule] {ContainerRule}   the container rule to
+ *   apply, when the operation is an unsafe method at a container URL
+ *   (`lib/containerRule.ts`). It is keyed on the Space's canonical
+ *   trailing-slash URL, which this prelude already computes.
  * @returns {Promise<VerifiedSpaceContext>}
  */
 export async function fetchSpaceAndVerify({
   request,
   spaceId,
   targetPath,
-  requestName
+  requestName,
+  containerRule
 }: {
   request: FastifyRequest
   spaceId: string
   targetPath: string
   requestName: string
+  containerRule?: ContainerRule
 }): Promise<VerifiedSpaceContext> {
   const context = await fetchSpaceContext({
     request,
@@ -270,7 +277,15 @@ export async function fetchSpaceAndVerify({
     requestName,
     logger: request.log,
     attenuatedRootTarget: context.spaceRootTarget,
-    revocation: { storage, scope: { spaceId } }
+    revocation: { storage, scope: { spaceId } },
+    ...(containerRule
+      ? {
+          containerRule: {
+            rule: containerRule,
+            spaceUrl: context.spaceRootTarget
+          }
+        }
+      : {})
   })
   return context
 }

@@ -338,3 +338,50 @@ export async function zcapClients({ serverUrl }: { serverUrl: string }) {
     }
   }
 }
+
+/**
+ * One hour out: the default expiry a suite's delegations carry.
+ *
+ * @returns {Date}
+ */
+export function anHourFromNow(): Date {
+  return new Date(Date.now() + 60 * 60 * 1000)
+}
+
+/**
+ * Delegates from a parent capability, signed by one key pair. The shared shape
+ * the zcap-authorization suites mint their grants with.
+ *
+ * @param options {object}
+ * @param options.signerKeyPair {any}   the key signing the delegation proof
+ * @param options.capability {any}   the parent capability, or its root id
+ * @param options.invocationTarget {string}
+ * @param options.controller {string}
+ * @param options.allowedActions {string[]}
+ * @param [options.expires] {Date}   an expiry within the parent's, for a
+ *   sub-delegation; defaults to an hour from now
+ * @returns {Promise<any>}
+ */
+export async function delegate({
+  signerKeyPair,
+  capability,
+  invocationTarget,
+  controller,
+  allowedActions,
+  expires = anHourFromNow()
+}: {
+  signerKeyPair: any
+  capability: any
+  invocationTarget: string
+  controller: string
+  allowedActions: string[]
+  expires?: Date
+}): Promise<any> {
+  return client({ signer: signerKeyPair.signer() }).delegate({
+    capability,
+    invocationTarget,
+    controller,
+    allowedActions,
+    expires
+  })
+}

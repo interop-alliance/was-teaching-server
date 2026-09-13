@@ -23,6 +23,20 @@
 
 - Bumped `@interop/storage-core` to 0.15.0, whose `ServiceDescription` type now
   types the service description.
+- An unsafe method at a container URL is now controller-only, with two
+  exceptions. `PUT /space/{s}/meta` on an existing Space and
+  `DELETE /space/{s}/{c}/` accept a direct root-capability invocation alone; a
+  delegated capability is refused whatever its `allowedAction`.
+  `DELETE /space/{s}/` additionally accepts a delegated capability whose invoked
+  grant targets exactly that Space's canonical trailing-slash URL with
+  `allowedAction` exactly `['DELETE']`. `PUT /space/{s}/{c}/meta` additionally
+  accepts one whose invoked grant targets exactly the Space's items subtree
+  (that same trailing-slash URL). `PUT /space/{s}/{c}/meta/log` (the guarded
+  create and append of a Collection's governing history log) now carries the
+  same rule as `PUT /space/{s}/{c}/meta`. The check reads the invoked
+  capability's shape, so it holds whatever DID method the controller or a
+  delegator uses. Collection creation (`POST /space/{s}/`) is unchanged. A
+  refusal is the ordinary masked 404 `not-found`.
 
 ## 0.32.0 - 2026-09-12
 

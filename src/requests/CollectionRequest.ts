@@ -137,7 +137,8 @@ export class CollectionRequest {
     assertValidIds({ spaceId, collectionId }, { requestName })
 
     // Verify (capability-only): creating a Resource requires a valid capability
-    // invocation; no access-control-policy fallback.
+    // invocation; no access-control-policy fallback. The container rule does
+    // not apply: a POST adds a member rather than writing the container.
     await fetchSpaceAndVerify({
       request,
       spaceId,
@@ -479,11 +480,18 @@ export class CollectionRequest {
 
     // Verify (capability-only): writing the object requires a valid
     // capability invocation; no access-control-policy fallback.
+    // The container rule: Update Collection Metadata takes a direct root
+    // invocation, or a delegated capability whose invoked grant targets
+    // exactly the Space's items subtree (the trailing-slash Space URL, the
+    // shape a wallet's generation delegation carries). A capability targeting
+    // the Collection container URL, this Metadata URL, or a Resource URL is
+    // refused.
     await fetchSpaceAndVerify({
       request,
       spaceId,
       targetPath: collectionMetaPath({ spaceId, collectionId }),
-      requestName
+      requestName,
+      containerRule: 'space-subtree-put'
     })
 
     // zCap checks out, continue. The stored object is read directly (not
@@ -705,11 +713,19 @@ export class CollectionRequest {
 
     assertValidIds({ spaceId, collectionId }, { requestName })
 
+    // The container rule: writing the log takes a direct root invocation, or
+    // a delegated capability whose invoked grant targets exactly the Space's
+    // items subtree (the trailing-slash Space URL). The guarded create puts
+    // the Collection under log governance, and from then on the log's head
+    // derives the served `encryption` descriptor, so a grant aimed at the
+    // Collection container URL, this log URL, or a Resource URL is refused --
+    // as it is for the sibling `PUT /meta`.
     await fetchSpaceAndVerify({
       request,
       spaceId,
       targetPath: collectionLogPath({ spaceId, collectionId }),
-      requestName
+      requestName,
+      containerRule: 'space-subtree-put'
     })
 
     // zCap checks out, continue
@@ -1095,6 +1111,8 @@ export class CollectionRequest {
 
     // Verify (capability-only): deleting a Collection requires a valid
     // capability invocation; no access-control-policy fallback.
+    // The container rule: Delete Collection is controller-only. A delegated
+    // capability is refused whatever its `allowedAction`.
     await fetchSpaceAndVerify({
       request,
       spaceId,
@@ -1103,7 +1121,8 @@ export class CollectionRequest {
         collectionId,
         trailingSlash: true
       }),
-      requestName
+      requestName,
+      containerRule: 'controller-only'
     })
 
     try {

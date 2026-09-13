@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 107
+nextAvailableId: 109
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -483,168 +483,71 @@ Space, `policy` included, exactly as it reaches data paths. The "inherits" class
 is load-bearing and must keep working: freewallet's replication invokes
 `<collection>/query` and resource `meta` under a collection-scoped grant.
 
-### WAS-60: Enforce the container rule (unsafe methods at a container URL are controller-only)
+### WAS-107: Self-narrowing under an enrolled-client-signed Space-subtree grant
 
-- status: todo
-- priority: high
+- status: draft
+- priority: medium
 - labels: security, zcap, authorization
 - touches:
-  - wallet-attached-storage-spec: WASS-2 in that repo's ROADMAP.md defines the
-    rule (Delete Space, Update Space Metadata, Delete Collection, Update
-    Collection Metadata become direct-root-invocation only, and Collection
-    creation, a `POST` to the Space URL under v0.5, classifies as exact-target
-    delegable); this item is the enforcement half and follows the spec text,
-    including the Space DELETE exception and the delegated collection PUT
-    exception below, both of which WASS-2's text must state before this item
-    enforces them. WASS-2's targets were restated for the v0.5 layout (WASS-29):
-    the two description writes are `PUT`s of the `meta` sub-resource, and every
-    container URL carries a trailing slash
-  - was-teaching-server: `src/requests/SpaceRequest.ts` (`putMeta`, `delete`,
-    `post`), `src/requests/CollectionRequest.ts` (`putMeta`, `delete`),
-    `src/routes.ts`, `src/lib/clientAnnexClause.ts` (the clause predicate
-    covering the exception's ladder-signed case, freewallet FW-400 W3),
-    AGENTS.md
-  - wallet-core: WC-232 is the annex-side statement of the gap this item closes.
-    Under v0.5 the generation delegation's target (the trailing-slash Space URL)
-    IS the Delete Space URL and contains the Space Metadata URL, and
-    `clientAnnexChainInspector` returns `{ valid: true }` at its
-    `ladderLinks.length === 0` short-circuit, so a generation delegation signed
-    by an enrolled client's promoted signer (the default arm) reaches both
-    writes unchecked. Its action-set comments in `src/clientAnnex/log.ts` name
-    that as an open gap until this lands
-  - was-client: no change expected; its Collection-create binding already posts
-    to the Space URL (WCL-41)
-  - conformance-suite: negative-path assertions (a delegated capability with
-    `allowedAction` covering `PUT`/`DELETE` invoked at a Space or Collection URL
-    is denied with the maximum-privacy 404) and a positive assertion for
-    exact-target delegated Collection creation
+  - was-teaching-server: `src/lib/containerRule.ts`,
+    `src/lib/clientAnnexClause.ts`
+  - wallet-core: WC-232 records the arm this residual lives on
+  - wallet-attached-storage-spec: the container rule's Delete Space exception is
+    judged on the invoked capability, so a spec change would be needed before
+    any server enforcement here
+
+The container rule's Delete Space exception reads the invoked capability alone:
+target exactly the Space URL, `allowedAction` exactly `['DELETE']`. That is what
+lets freewallet delete an unlock Space through a DELETE-only child of its
+two-verb management grant. The same property leaves one path open on the
+enrolled-client-signed arm. A transient visit holds a generation delegation (the
+Space-subtree grant with the full verb set) signed by an enrolled client's key.
+Its annex verification method stands under `capabilityDelegation` as well as
+`capabilityInvocation`, so it can mint a child of that delegation with the same
+target and `['DELETE']`, and invoke the child. The child satisfies the
+exception, and no ladder link is in the chain, so the client-annex clause's
+ladder bound never runs. The test file `test/container-rule-api.test.ts` asserts
+this admission so a change here is noticed.
+
+The ladder-signed arm is closed by the clause, which reads the ladder-signed
+links rather than the tail. A signer-independent closure on this arm would need
+a rule about the parent of the invoked capability (say: every delegated link in
+a Space DELETE chain is target-exact, and none above the tail carries a verb set
+wider than some bound), which conflicts with the management-grant shape
+freewallet relies on today. Parked here until the wallet side decides whether
+the generation delegation may be excluded from Space DELETE by a distinguishing
+mark of its own, or whether the exposure is accepted.
+
+discovered-from: WAS-60.
+
+### WAS-108: Container rule for the policy and backend-registration writes
+
+- status: todo
+- priority: medium
+- labels: authz, zcap
+- touches:
+  - was-teaching-server: ARCHITECTURE.md's container-rule paragraph
+  - wallet-attached-storage-spec: whether the access-control section needs text
+    here -- to be assessed
 - acceptance:
-  - [ ] `PUT /space/{id}/meta` and `DELETE .../{collectionId}/` accept only
-        direct root-capability invocation by the Space controller; a delegated
-        capability is refused regardless of its `allowedAction`
-  - [ ] `PUT .../{collectionId}/meta` accepts direct root-capability invocation,
-        and additionally a delegated capability whose `invocationTarget` is the
-        Space's items subtree (the trailing-slash Space URL, the shape a
-        generation delegation carries) and whose `allowedAction` covers `PUT`. A
-        delegated capability whose target is the collection container URL
-        itself, or a resource URL, is refused. This second exception is
-        mandatory (freewallet FW-400 W2, decided 2026-09-01 under its review
-        R3); see below
-  - [ ] `DELETE /space/{id}/` accepts direct root-capability invocation, and
-        additionally a delegated capability whose `invocationTarget` is exactly
-        that Space's canonical (trailing-slash) URL and whose `allowedAction` is
-        exactly `['DELETE']`. This exception is mandatory (see below); it holds
-        whatever DID method the Space's controller uses
-  - [ ] Regression tests for the exception: an exactly-`['DELETE']` delegation
-        on the Space's canonical URL stays admitted, while a two-verb delegation
-        carrying `DELETE` (say `['GET', 'DELETE']`) is refused, as is a
-        `['DELETE']` delegation whose target is a prefix rather than that
-        Space's own URL, and one whose target is the slash-less spelling
-  - [ ] Regression tests for the enrolled-client-signed arm (wallet-core
-        WC-232): a generation delegation signed by an enrolled client's key, not
-        a ladder VM's, invoked by a transient visit's annex VM, is refused
-        `DELETE` on the account Space's canonical URL and `PUT` on its Metadata
-        URL; a delegated-clients delegation (`['GET', 'PUT']` over the annex
-        Space's container URL) is refused `PUT` on the annex Space's Metadata
-        URL. The existing clause test covers the ladder-signed chain only
-  - [ ] Regression tests for the collection-PUT exception: a delegated
-        `PUT .../{collectionId}/meta` under a Space-subtree delegation is
-        admitted (a transient session's unlock-methods registry write, a
-        generation collection create, and App Connect collection provisioning
-        all ride this shape), while the same PUT under a capability targeting
-        the collection container URL is refused
-  - [ ] Every request freewallet's account-deletion ceremony and transient login
-        send stays admitted with enforcement on: freewallet's `tests/e2e-was/`
-        suite runs green against this server version before freewallet adopts it
-  - [ ] Collection creation (`POST /space/{id}/`) stays where v0.5 put it and
-        accepts an exact-target delegated capability (per the WASS-1 / WAS-59
-        classes); the container rule does not make it controller-only
-  - [ ] The Update Space Metadata path (`SpaceRequest.putMeta`) keeps its
-        body-controller consent check (`verifyBodyControllerConsent`) on top of
-        the new rule
-  - [ ] Server `test/` coverage for each refused and permitted case, plus the
-        conformance assertions above
+  - [ ] `PUT /space/:spaceId/policy` (Update Policy,
+        `src/requests/PolicyRequest.ts`) and
+        `POST`/`PUT`/`DELETE /space/:spaceId/backends[/:backendId]` (backend
+        registration, `src/requests/BackendRequest.ts`) carry a container rule
+        (decide which: `controller-only` is the natural one)
+  - [ ] Tests in `test/` assert a delegated capability targeting the
+        trailing-slash Space URL with the full WAS verb set is refused at each,
+        and a direct root invocation still succeeds
+  - [ ] ARCHITECTURE.md's container-rule paragraph lists them
 
-Split out of wallet-attached-storage-spec WASS-2 (2026-08-20), which keeps the
-spec half. Today all four container unsafe handlers run capability-only
-verification (`fetchSpaceAndVerify` / `handleZcapVerify`) that accepts a
-delegated chain attenuating from the Space root, so a Space-scoped grant
-carrying `DELETE` can delete the Space or any Collection in it. Collection
-creation is `POST /space/{id}/` (`SpaceRequest.post`); this item's original text
-routed it through a reserved `collections` endpoint, which WASS-29 retired, so
-WASS-2 now classifies the `POST` at the Space URL as exact-target delegable
-instead.
-
-Sequencing against WAS-59, revised 2026-09-13: independent, and this item goes
-first. The original ordering rested on the `collections` create route, which
-needed WAS-59's exact-target class for reserved path segments; that route is
-gone. Everything this item governs (the container DELETEs, the two `meta` PUTs,
-the Space-URL create POST) is decided in the Space and Collection request
-handlers on the invoked verb, the invoked URL, and the chain's link shapes,
-while WAS-59 reclassifies what `attenuatedRootTarget` covers at the reserved
-endpoints. Neither needs the other's rule. WC-232 makes this item the one
-closing a live authority gap on every account with a transient login, where
-WAS-59 closes exposures that need a deliberately crafted grant.
-
-The Space DELETE exception is mandatory, not a convenience (freewallet FW-400
-W2, decided 2026-08-31 and widened 2026-09-01 to every Space). Enforcement built
-from this item's original text would break three live paths at once. FW-400 v5
-deletes the account Space and the auxiliary annex Space(s) through a
-ladder-VM-signed delegation invoked by the visit's annex key; it deletes each
-sibling unlock Space through a ladder-signed child of the `manageCapability` the
-unlock did:key already delegated to the account; and today's remembered-session
-unlock-Space delete rides that same `manageCapability` child. Every one of those
-is a delegated Space DELETE. Land the exception with the rule or those deletions
-all start failing.
-
-Sequencing, decided 2026-09-01: this item is NOT a precondition of freewallet
-FW-403 or FW-400. Both ship against the unenforced server, where ordinary chain
-verification admits every delegated Space DELETE and collection PUT they send,
-and the ladder-signed ones are bounded by the clause's third predicate (shipped
-in 0.24.0). This item lands separately, later, and must carry both exceptions
-below when it does. Its regression bar is therefore the live wallet traffic, not
-only the spec's table: the freewallet e2e suite is the check.
-
-The second exception, the delegated collection PUT (freewallet FW-400 W2, R3). A
-transient session holds no root authority by construction: every request it
-makes rides the generation delegation, whose `invocationTarget` is the Space's
-items subtree. Three of its writers configure or create a collection through
-that delegation: the unlock-methods registry write, the generation collection
-create during an annex genesis or mend, and App Connect collection provisioning.
-Enforcement built from this item's original text refuses all three, which breaks
-the transient login itself on any account needing a mend. Those writers have no
-migration target, so the rule carves them out instead. The container rule's
-hazard is a data grant whose `invocationTarget` IS the container URL; a
-Space-subtree parent is not that grant, and a capability targeting the
-collection container URL directly stays refused.
-
-WASS-2's rationale is the prefix hazard: a data grant's `invocationTarget` IS
-the container URL, so no attenuation rule separates deleting a resource under a
-collection from deleting the collection itself. A capability whose whole action
-set is `['DELETE']` is not a data grant, which is why the exception is keyed on
-the exact action set rather than on the Space's kind or its controller's DID
-method. The root-only rule stands unchanged for `PUT /space/{id}/meta` and for
-both collection container methods. The ladder-signed case is additionally
-bounded by the client-annex clause's third predicate (FW-400 W3, target-exact
-against the parent capability's own `invocationTarget`, admitting exactly
-`['DELETE']` and exactly `['GET']`), which lands with WAS-67's narrowing of
-predicate 1.
-
-The rule must be signer-independent (wallet-core WC-232, 2026-09-13). The
-clause's invocation-time bound (`ladderInvocationRefusal`) already refuses the
-Space Metadata PUT and the non-target-exact Space DELETE, but only on a chain
-carrying a ladder-signed link. The generation delegation is signed by the
-account ladder VM OR by an enrolled client's promoted signer, and the second is
-the default (freewallet's `ensureGenerationDelegation`, the revocation cascade's
-re-mint, wallet-core's GC swap). An enrolled client's key is published under all
-four document relations, so it is not a ladder VM, the chain carries no ladder
-link, and the bound never runs. Before WAS-97 both writes sat outside the
-delegation by layout (the slash-less Space URL); after it, the DELETE is at the
-delegation's target and the Metadata PUT one segment inside it. The remedy is
-this item's route-level rule, keyed on the exact verb-and-target shape of every
-link rather than on who signed one, not a narrowing of the generation
-delegation's action set (a permanent app-connect-spec wire artifact whose
-structural attenuation would cap every transient App Connect grant).
+Today these handlers call `fetchSpaceAndVerify` with no `containerRule`, so a
+wallet's generation delegation on `/space/<S>/` reaches them by the same
+`/`-boundary prefix attenuation the container rule was added to bound: it can
+rewrite the Space's access-control policy, or register or replace a backend
+record carrying secrets. Discovered during code review of the container rule
+(discovered-from: WAS-60). Not changed in that work because it widens the rule
+to operations outside the container URLs the spec discusses; it needs a decision
+on whether a Space-subtree grant should ever manage policy or backends.
 
 ### WAS-61: Separate `/policy` control from data writes (exposure test + enforcement)
 

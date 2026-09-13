@@ -48,7 +48,9 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
+  anHourFromNow,
   client,
+  delegate,
   requestError,
   rootZcap,
   startTestServer,
@@ -63,11 +65,6 @@ const AUXILIARY_TYPE = ['Space', 'AuxiliarySpace', 'DelegatedClientsSpace']
 
 /** The closed WAS verb vocabulary a generation delegation carries. */
 const WAS_ACTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
-
-/** One hour out, the expiry every delegation in this suite carries. */
-function anHourFromNow(): Date {
-  return new Date(Date.now() + 60 * 60 * 1000)
-}
 
 /** A minted, published self-hosted `did:webvh` and the keys it lists. */
 interface WebvhIdentity {
@@ -285,43 +282,6 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     }
   }
 
-  /**
-   * Delegates from a parent capability, signed by one of the account's keys.
-   *
-   * @param options {object}
-   * @param options.signerKeyPair {any}   the key signing the delegation proof
-   * @param options.capability {any}   the parent capability (or its root id)
-   * @param options.invocationTarget {string}
-   * @param options.controller {string}
-   * @param options.allowedActions {string[]}
-   * @param [options.expires] {Date}   an expiry within the parent's, for a
-   *   sub-delegation
-   * @returns {Promise<any>}
-   */
-  async function delegate({
-    signerKeyPair,
-    capability,
-    invocationTarget,
-    controller,
-    allowedActions,
-    expires = anHourFromNow()
-  }: {
-    signerKeyPair: any
-    capability: any
-    invocationTarget: string
-    controller: string
-    allowedActions: string[]
-    expires?: Date
-  }): Promise<any> {
-    return client({ signer: signerKeyPair.signer() }).delegate({
-      capability,
-      invocationTarget,
-      controller,
-      allowedActions,
-      expires
-    })
-  }
-
   /** The account Space's root capability id, the parent of every WAS-route
    * delegation below. */
   function accountSpaceRoot(): string {
@@ -511,11 +471,13 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       await assertAccountController(account.did)
     })
 
-    it('refuses the subtree grant invoked against Update Space Metadata (404)', async () => {
+    it('refuses the subtree grant invoked against Update Space Metadata, now by the container rule (404)', async () => {
       // The generation-delegation shape covers `.../meta` by attenuation under
-      // v0.5, so the refusal is the invocation-time bound's, not the
-      // delegation shape's: the same grant serves ordinary reads and writes
-      // (previous case) and refuses the controller rewrite.
+      // v0.5, so the refusal is not the delegation shape's: the same grant
+      // serves ordinary reads and writes (previous case) and refuses the
+      // controller rewrite. The refusal now comes from the container rule --
+      // `PUT /space/{s}/meta` is `controller-only`, refused before this clause
+      // runs -- which shadows the clause's own PUT bound on the same case.
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: accountSpaceRoot(),
@@ -1129,10 +1091,12 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       assert.equal(err.status, 404)
     })
 
-    it('refuses the whole-Space grant invoked against Update Space Metadata (404)', async () => {
+    it('refuses the whole-Space grant invoked against Update Space Metadata, now by the container rule (404)', async () => {
       // The admitted GET/PUT grant covers `.../meta` by attenuation; the
-      // invocation-time bound keeps the auxiliary Space's controller rewrite
-      // out of ladder reach all the same.
+      // auxiliary Space's controller rewrite stays out of ladder reach all the
+      // same. The refusing check is now the container rule's
+      // (`controller-only` on `PUT /space/{s}/meta`, decided before this
+      // clause runs); the clause's own PUT bound would refuse it too.
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: auxSpaceRoot,

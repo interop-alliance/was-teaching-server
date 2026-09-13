@@ -143,17 +143,19 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   create (`If-None-Match: *`) or a compare-and-swap append (`If-Match` carrying
   the prior bytes verbatim plus one new line), 412 on a lost race. `GET` is
   capability-or-policy at the Collection's target; `PUT` is capability-only,
-  like `/meta`. The guarded create is the declaration that puts the Collection
-  under log governance, and is refused with `encryption-immutable` (409) on a
-  Collection whose Metadata object already carries a client-written `encryption`
-  member. From then on, the Collection's served `encryption` member -- read by
-  Get Collection and by every handler that loads the Collection Metadata object
-  through `getCollectionOrThrow`, so the write-time envelope check sees it too
-  -- is derived from the log's last line's `state`, with a
-  `history: { method, resource }` member stamped on (`method` from the genesis
-  line's `parameters.method`, `resource` the log's own URL); the stored
-  Collection Metadata object never carries that derived member, a direct
-  `encryption` write against it is refused with
+  like `/meta`, and carries the same container rule as `/meta` (see below): a
+  direct root invocation, or a delegated capability whose tail targets exactly
+  the Space's canonical trailing-slash URL. The guarded create is the
+  declaration that puts the Collection under log governance, and is refused with
+  `encryption-immutable` (409) on a Collection whose Metadata object already
+  carries a client-written `encryption` member. From then on, the Collection's
+  served `encryption` member -- read by Get Collection and by every handler that
+  loads the Collection Metadata object through `getCollectionOrThrow`, so the
+  write-time envelope check sees it too -- is derived from the log's last line's
+  `state`, with a `history: { method, resource }` member stamped on (`method`
+  from the genesis line's `parameters.method`, `resource` the log's own URL);
+  the stored Collection Metadata object never carries that derived member, a
+  direct `encryption` write against it is refused with
   `encryption-history-log-governed` (409), and its other fields still update
   normally. The server verifies neither proofs nor a hash chain: it checks that
   the body is JSON Lines, each line a JSON object with an object `state` member
@@ -431,6 +433,55 @@ so a wallet publishes a ladder VM only on a host it assumes enforces the
 client-annex profile. That assumption is unverified: WAS defines no venue at the
 authorization-profile layer for a server to advertise the clause, and this
 server advertises nothing.
+
+**The container rule** (`lib/containerRule.ts`): an unsafe method at a container
+URL is controller-only, with two exceptions. The hazard is that a data grant's
+`invocationTarget` is the container URL itself, and the zcap library's target
+attenuation is a `/`-boundary prefix rule, so nothing separates writing a
+Resource under a Collection from rewriting or deleting the Collection.
+`PUT /space/<S>/meta` on an existing Space and `DELETE /space/<S>/<C>/` accept
+nothing else: any delegated invocation is refused there, whatever its
+`allowedAction`. That refusal turns on nothing but whether the
+`Capability-Invocation` header embeds a delegated capability -- a root
+invocation carries only the capability id, a delegated one embeds the capability
+itself -- so `handleZcapVerify` decides it straight off that header, before
+signature or chain verification: no chain is dereferenced and no delegation
+proof is verified for a request refused this way. The other two rules below
+still need the dereferenced chain, since they admit some delegated shapes and
+not others; a third chain inspector, composed first because it resolves nothing,
+reads the invoked capability -- the chain's tail -- for those. A chain of length
+one is the synthesized root alone, so a direct root invocation always passes.
+`DELETE /space/<S>/` also accepts a delegated capability whose tail targets
+exactly that Space's canonical trailing-slash URL with `allowedAction` exactly
+`['DELETE']`; a single-verb DELETE grant is not a data grant, which is why the
+exception is keyed on the exact action set. `PUT /space/<S>/<C>/meta` and
+`PUT /space/<S>/<C>/meta/log` also accept one whose tail targets exactly the
+Space's items subtree, the trailing-slash Space URL a wallet's generation
+delegation carries, so a transient session can configure and create Collections,
+and can put a Collection under log governance or append to its log -- the
+guarded create of that log is the declaration that starts governing the
+Collection's `encryption` descriptor, so it is a configuration write of the same
+kind as the Metadata object's own. A tail aimed at the Collection container URL,
+at the Collection Metadata URL, or at a Resource stays refused. Create
+Collection (`POST /space/<S>/`) is outside the rule. The tail alone is read, so
+a DELETE-only child of a two-verb management parent still deletes the Space, and
+the rule says nothing about who signed any link: it holds whatever DID method
+the controller or a delegator uses. That is what the client-annex clause's
+invocation-time bound cannot do, since it runs only on a chain carrying a
+ladder-signed link, and a generation delegation signed by an enrolled client's
+key carries none. The two compose rather than overlap. This rule refuses first
+on the invoked shape; the clause still refuses a ladder-signed chain this rule
+would admit, reading the ladder-signed links instead of the tail. The clause's
+`PUT`-on-Space-Metadata branch is now shadowed by this rule: this rule already
+refuses any delegated `PUT /space/<S>/meta` regardless of chain composition, so
+the clause's own refusal there never decides anything on its own and is kept
+only as defense in depth. Its `DELETE`-on-canonical-Space-URL branch still
+decides a case this rule does not: this rule reads only the tail, so a
+ladder-signed link earlier in the chain that is not itself
+target-exact-DELETE-only, later narrowed to that shape by attenuation, passes
+this rule but is still refused by the clause. A refusal binds the capability
+decision only and surfaces as the ordinary masked `not-found`, since all five
+handlers are capability-only.
 
 **Denial reasons:** a refusal is a 404 whose `type` is the merged `not-found`,
 with two exceptions named by `type` only, the status unchanged (`denialError` in
