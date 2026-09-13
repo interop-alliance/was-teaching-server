@@ -36,6 +36,7 @@ import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { KEY_LIST_LIMIT } from '../src/config.default.js'
+import { compareCodeUnits } from '../src/lib/pagination.js'
 import type { IRootZcap } from '../src/types.js'
 import { client, startTestServer, zcapClients } from './helpers.js'
 
@@ -1008,7 +1009,7 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
       // Ascending by local id.
       assert.deepEqual(
         listedLocalIds,
-        [...listedLocalIds].sort((a, b) => a.localeCompare(b))
+        [...listedLocalIds].sort(compareCodeUnits)
       )
     })
 
@@ -1028,7 +1029,7 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
           record: rawKeyRecord(keystore.localId, localId)
         })
       }
-      expectedLocalIds.sort((a, b) => a.localeCompare(b))
+      expectedLocalIds.sort(compareCodeUnits)
 
       // Recover local ids from `keyUrl` -- doubling as the assertion that
       // every entry, on every page, carries the canonical invocation URL.

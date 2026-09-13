@@ -41,22 +41,6 @@ under "Roadmap & Task Conventions".
 
 ## WAS v0.5 protocol changes
 
-### WAS-105: Fix the flaky List Keys ordering assertion
-
-- status: todo
-- priority: low
-- labels: tests, kms
-- acceptance:
-  - [ ] `test/kms-key-api.test.ts` checks the List Keys order with the code-unit
-        comparator the server sorts by (`compareCodeUnits`), not `localeCompare`
-  - [ ] The suite passes regardless of the case mix of the generated key ids
-
-discovered-from: WAS-98. The assertion near line 1009 sorts the listed local ids
-with `localeCompare`, which orders `z1ADnF...` before `z1ADVm...`, while the
-server's keyset order puts uppercase first. It fails only when the random ids
-differ first at a letter-case boundary; it failed once in a full run on
-2026-09-13 and passed on seven reruns.
-
 ### WAS-106: Conformance checks for service description discovery
 
 - status: todo

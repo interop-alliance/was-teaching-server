@@ -1813,3 +1813,23 @@ The full gate passes (1357 tests) and `pnpm conformance:local` passes 262
 of 262. The maintainer moved the conformance discovery check to WAS-106 and
 waived the spec and was-client touches, so the item is done; WCL-101 stays open
 in was-client and the spec text rides its `service-description` branch.
+
+### WAS-105: Fix the flaky List Keys ordering assertion
+
+- status: done (2026-09-13)
+- priority: low
+- labels: tests, kms
+- acceptance:
+  - [x] `test/kms-key-api.test.ts` checks the List Keys order with the code-unit
+        comparator the server sorts by (`compareCodeUnits`), not `localeCompare`
+  - [x] The suite passes regardless of the case mix of the generated key ids
+
+discovered-from: WAS-98. The assertion near line 1009 sorts the listed local ids
+with `localeCompare`, which orders `z1ADnF...` before `z1ADVm...`, while the
+server's keyset order puts uppercase first. It fails only when the random ids
+differ first at a letter-case boundary; it failed once in a full run on
+2026-09-13 and passed on seven reruns.
+
+Both `localeCompare` sorts in the suite now use `compareCodeUnits` from
+`src/lib/pagination.ts`, the comparator the backends' keyset order uses. The
+paginated case's fixed-width ids were unaffected but switched for consistency.
