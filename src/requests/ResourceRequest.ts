@@ -69,7 +69,7 @@ export class ResourceRequest {
     // zCap checks out, continue
 
     // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
+    const collectionMetadata = await getCollectionOrThrow({
       request,
       spaceId,
       collectionId,
@@ -83,7 +83,7 @@ export class ResourceRequest {
     // so a wrong content type is rejected without consuming the upload, and the
     // 422 is only observable by a caller already authorized to write here.
     assertEncryptedWriteConforms({
-      collectionDescription,
+      collectionMetadata,
       contentType: request.headers['content-type'],
       body: request.body
     })
@@ -93,7 +93,7 @@ export class ResourceRequest {
       request,
       spaceId,
       collectionId,
-      collectionDescription
+      collectionMetadata
     })
     const input = await resolveResourceInput(request, dataBackend)
     // A content write into an encrypted Collection MAY declare the key epoch it
@@ -108,7 +108,7 @@ export class ResourceRequest {
     // Any `unique: true` index entries the Collection declares ride along, so
     // the backend enforces the uniqueness claim atomically with the write (409).
     const uniqueIndexes = uniqueIndexesOf({
-      indexes: declaredIndexesOf({ collectionDescription })
+      indexes: declaredIndexesOf({ collectionMetadata })
     })
     // Surface any `If-Match` / `If-None-Match` write precondition to the storage
     // layer, which evaluates it atomically with the write (returning 412
@@ -434,7 +434,7 @@ export class ResourceRequest {
     // `custom` shape check is deferred until after authorization, where the
     // Collection's `encryption` descriptor decides whether `custom` is a plaintext
     // `{ name, tags }` or an opaque envelope (see `resolveMetadataCustom`) --
-    // neither is knowable before reading the Collection Description, and gating
+    // neither is knowable before reading the Collection Metadata object, and gating
     // the check on auth keeps a 422/400 observable only to a caller authorized to
     // write here.
     const body = assertJsonObjectBody({
@@ -455,7 +455,7 @@ export class ResourceRequest {
     // zCap checks out, continue
 
     // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
+    const collectionMetadata = await getCollectionOrThrow({
       request,
       spaceId,
       collectionId,
@@ -467,7 +467,7 @@ export class ResourceRequest {
     // opaquely, `422` on a plaintext/malformed value); on a plaintext Collection
     // it MUST be a well-formed `{ name, tags }` object (`400` otherwise).
     const custom = resolveMetadataCustom({
-      collectionDescription,
+      collectionMetadata,
       body,
       requestName
     })
@@ -487,13 +487,13 @@ export class ResourceRequest {
       request,
       spaceId,
       collectionId,
-      collectionDescription
+      collectionMetadata
     })
     // Any `unique: true` index entries the Collection declares ride along, so
     // the backend enforces the uniqueness claim for custom-sourced attributes
     // atomically with this metadata write (409).
     const uniqueIndexes = uniqueIndexesOf({
-      indexes: declaredIndexesOf({ collectionDescription })
+      indexes: declaredIndexesOf({ collectionMetadata })
     })
     let written
     try {

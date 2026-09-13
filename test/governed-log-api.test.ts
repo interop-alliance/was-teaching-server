@@ -5,7 +5,8 @@
  * Covers the declaration by guarded create, the derived member (head `state`
  * plus `history`), the compare-and-swap append, and the refusals: a direct
  * `encryption` write on a governed Collection, a line-contract break, an
- * epoch-transition violation, and governing an already-described Collection.
+ * epoch-transition violation, and governing a Collection that already carries
+ * a client-written descriptor.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
@@ -105,10 +106,12 @@ describe('Governing history log API (meta/log)', () => {
     await rm(dataDir, { recursive: true, force: true })
   })
 
+  // The canonical (trailing-slash) container URL of a Collection.
   const collectionUrl = (collectionId: string) =>
-    `${serverUrl}/space/${spaceId}/${collectionId}`
-  const logUrl = (collectionId: string) =>
-    `${collectionUrl(collectionId)}/meta/log`
+    `${serverUrl}/space/${spaceId}/${collectionId}/`
+  // The Collection Metadata object's URL.
+  const metaUrl = (collectionId: string) => `${collectionUrl(collectionId)}meta`
+  const logUrl = (collectionId: string) => `${metaUrl(collectionId)}/log`
 
   /** Creates a fresh plaintext-by-default Collection and returns its id. */
   async function freshCollection(body: object = {}): Promise<string> {
@@ -189,7 +192,7 @@ describe('Governing history log API (meta/log)', () => {
       assertEtagVersion({ etag, version: 1 })
 
       const described = await alice.was.request({
-        url: collectionUrl(collectionId),
+        url: metaUrl(collectionId),
         method: 'GET'
       })
       assert.deepEqual(described.data.encryption, {
@@ -242,7 +245,7 @@ describe('Governing history log API (meta/log)', () => {
       const zcap = await alice.was.grant({
         to: aliceDelegatedApp.did,
         actions: ['GET'],
-        target: `${collectionUrl(collectionId)}/`
+        target: collectionUrl(collectionId)
       })
       const read = await aliceDelegatedApp.was.request({
         url: logUrl(collectionId),
@@ -267,7 +270,7 @@ describe('Governing history log API (meta/log)', () => {
       assertEtagVersion({ etag: appended.etag, version: 2 })
 
       const described = await alice.was.request({
-        url: collectionUrl(collectionId),
+        url: metaUrl(collectionId),
         method: 'GET'
       })
       assert.equal(described.data.encryption.currentEpoch, 'urn:epoch:2')
@@ -367,10 +370,10 @@ describe('Governing history log API (meta/log)', () => {
       assert.equal(raced.status, 412)
     })
 
-    it('[signed] a log write bumps the Collection Description ETag', async () => {
+    it('[signed] a log write bumps the Collection Metadata ETag', async () => {
       const { collectionId, body, etag } = await governedCollection()
       const before = await alice.was.request({
-        url: collectionUrl(collectionId),
+        url: metaUrl(collectionId),
         method: 'GET'
       })
       const extended = body + entryLine({ ordinal: 2, state: twoEpochs }) + '\n'
@@ -380,14 +383,14 @@ describe('Governing history log API (meta/log)', () => {
         headers: { 'if-match': etag }
       })
       const after = await alice.was.request({
-        url: collectionUrl(collectionId),
+        url: metaUrl(collectionId),
         method: 'GET'
       })
       assert.notEqual(after.headers.get('etag'), before.headers.get('etag'))
-      // A conditional read against the stale description ETag is a 200.
+      // A conditional read against the stale Collection Metadata ETag is a 200.
       const conditional = await responseOf(
         alice.was.request({
-          url: collectionUrl(collectionId),
+          url: metaUrl(collectionId),
           method: 'GET',
           headers: { 'if-none-match': before.headers.get('etag')! }
         })
@@ -401,7 +404,7 @@ describe('Governing history log API (meta/log)', () => {
       const { collectionId } = await governedCollection()
       const err = await rejection(
         alice.was.request({
-          url: collectionUrl(collectionId),
+          url: metaUrl(collectionId),
           method: 'PUT',
           json: { id: collectionId, encryption: twoEpochs }
         })
@@ -410,22 +413,22 @@ describe('Governing history log API (meta/log)', () => {
       assert.match(err.data.type, /#encryption-history-log-governed$/)
       // The descriptor is unchanged.
       const described = await alice.was.request({
-        url: collectionUrl(collectionId),
+        url: metaUrl(collectionId),
         method: 'GET'
       })
       assert.equal(described.data.encryption.currentEpoch, 'urn:epoch:1')
     })
 
-    it('[signed] a Description update without encryption still lands on a governed Collection', async () => {
+    it('[signed] a Collection Metadata update without encryption still lands on a governed Collection', async () => {
       const { collectionId } = await governedCollection()
       const response = await alice.was.request({
-        url: collectionUrl(collectionId),
+        url: metaUrl(collectionId),
         method: 'PUT',
         json: { id: collectionId, name: 'Renamed' }
       })
       assert.equal(response.status, 204)
       const described = await alice.was.request({
-        url: collectionUrl(collectionId),
+        url: metaUrl(collectionId),
         method: 'GET'
       })
       assert.equal(described.data.name, 'Renamed')
@@ -436,7 +439,7 @@ describe('Governing history log API (meta/log)', () => {
       const { collectionId } = await governedCollection()
       const err = await rejection(
         alice.was.request({
-          url: collectionUrl(collectionId),
+          url: metaUrl(collectionId),
           method: 'PUT',
           json: { id: collectionId, plaintext: {} }
         })
@@ -487,7 +490,7 @@ describe('Governing history log API (meta/log)', () => {
       assert.match(response.problem.type, /#payload-too-large$/)
     })
 
-    it('[signed] a head state that is not a supported descriptor is refused as a Description write would be', async () => {
+    it('[signed] a head state that is not a supported descriptor is refused as a Collection Metadata write would be', async () => {
       const collectionId = await freshCollection()
       const response = await putLog({
         collectionId,
@@ -498,7 +501,7 @@ describe('Governing history log API (meta/log)', () => {
       assert.match(response.problem.type, /#unsupported-encryption-scheme$/)
     })
 
-    it('[signed] an epoch-transition violation on append is refused as the Description PUT refuses it', async () => {
+    it('[signed] an epoch-transition violation on append is refused as a Collection Metadata PUT refuses it', async () => {
       const collectionId = await freshCollection()
       const body = genesisLine(twoEpochs) + '\n'
       const created = await putLog({
@@ -515,7 +518,8 @@ describe('Governing history log API (meta/log)', () => {
         body: rolledBack,
         headers: { 'if-match': created.etag! }
       })
-      // Dropping an epoch is the Description PUT's 400 append-only refusal.
+      // Dropping an epoch is the Collection Metadata PUT's 400 append-only
+      // refusal.
       assert.equal(response.status, 400)
       assert.match(response.problem.type, /#invalid-request-body$/)
       assert.match(response.problem.errors[0].pointer, /epochs/)
@@ -553,14 +557,14 @@ describe('Governing history log API (meta/log)', () => {
       // refused by the envelope rule, a conforming envelope lands...
       const plain = await rejection(
         alice.was.request({
-          url: `${collectionUrl(collectionId)}/`,
+          url: collectionUrl(collectionId),
           method: 'POST',
           json: { hello: 'world' }
         })
       )
       assert.equal(plain.response.status, 422)
       const created = await alice.was.request({
-        url: `${collectionUrl(collectionId)}/`,
+        url: collectionUrl(collectionId),
         method: 'POST',
         body: new TextEncoder().encode(JSON.stringify(envelope)),
         headers: { 'content-type': 'application/json' }
@@ -570,7 +574,7 @@ describe('Governing history log API (meta/log)', () => {
       // create above already succeeded on this Collection.
 
       const listing = await alice.was.request({
-        url: `${collectionUrl(collectionId)}/`,
+        url: collectionUrl(collectionId),
         method: 'GET'
       })
       const ids = listing.data.items.map((item: any) => item.id)
@@ -578,7 +582,7 @@ describe('Governing history log API (meta/log)', () => {
       assert.ok(!ids.some((id: string) => /log|meta/.test(id)))
 
       const feed = await alice.was.request({
-        url: `${collectionUrl(collectionId)}/query`,
+        url: `${collectionUrl(collectionId)}query`,
         method: 'POST',
         json: { profile: 'changes' }
       })
@@ -588,7 +592,7 @@ describe('Governing history log API (meta/log)', () => {
     it('[signed] a PUT /meta does not touch the log', async () => {
       const { collectionId, etag } = await governedCollection()
       const meta = await alice.was.request({
-        url: `${collectionUrl(collectionId)}/meta`,
+        url: metaUrl(collectionId),
         method: 'PUT',
         json: { custom: envelope }
       })
@@ -629,7 +633,7 @@ describe('Governing history log API (meta/log)', () => {
         json: { id: collectionId, name: collectionId }
       })
       const described = await alice.was.request({
-        url: collectionUrl(collectionId),
+        url: metaUrl(collectionId),
         method: 'GET'
       })
       assert.equal(described.data.encryption, undefined)

@@ -202,7 +202,7 @@ describe('Access-control policy API', () => {
       linkset: Array<Record<string, any>>
     }
     const entry = body.linkset[0]!
-    assert.equal(entry.anchor, `/space/${alice.space1.id}/public-credentials`)
+    assert.equal(entry.anchor, `/space/${alice.space1.id}/public-credentials/`)
     assert.equal(
       entry['https://wallet.storage/spec#policy'][0].href,
       `/space/${alice.space1.id}/public-credentials/policy`

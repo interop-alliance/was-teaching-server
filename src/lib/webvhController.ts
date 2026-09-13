@@ -26,7 +26,7 @@
  * Space's stored controller or as a delegation's controller.
  *
  * Verified documents are cached per storage backend (the same backend-scoped
- * shape as the Space Description cache), keyed by the log's location, and
+ * shape as the Space Metadata cache), keyed by the log's location, and
  * invalidated by writes that could change a log at that location. Past the
  * cache's TTL, a cached entry is cheaply revalidated rather than
  * unconditionally re-verified: the log Resource's stored `version` is compared
@@ -173,7 +173,7 @@ function cacheKey({
 /**
  * Drops cached controller documents whose history log a write could have
  * changed (or removed), so the next verification resolves the current log
- * rather than a stale document -- the `invalidateSpaceDescription` pattern.
+ * rather than a stale document -- the `invalidateSpaceMetadata` pattern.
  *
  * Invalidation is keyed by the log's location. A Resource-scoped write path
  * passes both the `collectionId` and the `resourceId` it wrote: any Resource

@@ -107,12 +107,12 @@ describe('FileSystemBackend I/O faults', () => {
     const backend = new FileSystemBackend(options)
     await backend.writeSpace({
       spaceId,
-      spaceDescription: { id: spaceId, type: ['Space'], controller }
+      spaceMetadata: { id: spaceId, type: ['Space'], controller }
     })
     await backend.writeCollection({
       spaceId,
       collectionId,
-      collectionDescription: {
+      collectionMetadata: {
         id: collectionId,
         type: ['Collection'],
         name: 'Credentials'
@@ -130,7 +130,7 @@ describe('FileSystemBackend I/O faults', () => {
     await backend.writeCollection({
       spaceId,
       collectionId: 'doomed',
-      collectionDescription: {
+      collectionMetadata: {
         id: 'doomed',
         type: ['Collection'],
         name: 'Doomed'

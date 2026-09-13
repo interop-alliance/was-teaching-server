@@ -33,27 +33,42 @@ for more details.
 
 #### Spaces API
 
+A container (a Space, a Collection) is canonically addressed WITH a trailing
+slash: `GET` lists its members, `POST` adds one, `DELETE` removes the container,
+and `PUT` is not defined there (405). Its description lives at its `meta`
+sub-resource. The no-slash form of a container URL redirects to the slash form
+with a `308`, so a client should build the canonical form directly (a signed
+request must be re-signed for the redirect target).
+
 - [Create Space](https://w3c-ccg.github.io/wallet-attached-storage-spec/#http-api-post-spaces)
   (`POST /spaces/`)
-- [Get Space by Id](https://w3c-ccg.github.io/wallet-attached-storage-spec/#read-space-operation)
-  (`GET /space/:spaceId`)
+- [List Spaces](https://w3c-ccg.github.io/wallet-attached-storage-spec/#list-spaces-operation)
+  (`GET /spaces/`)
+- [Read Space](https://w3c-ccg.github.io/wallet-attached-storage-spec/#read-space-operation)
+  (`GET /space/:spaceId/meta` -- the Space Metadata object)
 - [Update Space (or Create Space by Id)](https://w3c-ccg.github.io/wallet-attached-storage-spec/#update-or-create-by-id-space-operation)
-  (`PUT /space/:spaceId`)
-- [Delete Space by Id](https://w3c-ccg.github.io/wallet-attached-storage-spec/#delete-space-operation)
-  (`DELETE /space/:spaceId`)
+  (`PUT /space/:spaceId/meta`)
+- [Delete Space](https://w3c-ccg.github.io/wallet-attached-storage-spec/#delete-space-operation)
+  (`DELETE /space/:spaceId/`)
 
 #### Collections API
 
+- [List Collections](https://w3c-ccg.github.io/wallet-attached-storage-spec/#list-all-collections-operation)
+  (`GET /space/:spaceId/`; the retired `/space/:spaceId/collections/` redirects
+  here with a `308`)
 - [Create Collection](https://w3c-ccg.github.io/wallet-attached-storage-spec/#create-collection-add-collection-to-a-space-operation)
   (`POST /space/:spaceId/`)
+- [Read Collection Metadata](https://w3c-ccg.github.io/wallet-attached-storage-spec/#read-collection-metadata-operation)
+  (`GET /space/:spaceId/:collectionId/meta` -- the merged Collection Metadata
+  object: configuration members beside `createdAt` / `updatedAt`, `custom` and
+  `epoch`, under one `ETag`)
 - [Update Collection (or Create Collection by Id)](https://w3c-ccg.github.io/wallet-attached-storage-spec/#update-or-create-by-id-collection-operation)
-  (`PUT /space/:spaceId/:collectionId`)
-- [Get a Collection Description object](https://w3c-ccg.github.io/wallet-attached-storage-spec/#get-collection-description-operation)
-  (`GET /space/:spaceId/:collectionId` - no trailing slash)
+  (`PUT /space/:spaceId/:collectionId/meta` -- a full replacement that creates
+  the Collection when absent)
 - [List Resources in a Collection](https://w3c-ccg.github.io/wallet-attached-storage-spec/#list-collection-operation)
-  (`GET /space/:spaceId/:collectionId/` - with trailing slash)
-- [Delete Collection by Id](https://w3c-ccg.github.io/wallet-attached-storage-spec/#delete-collection-operation)
-  (`DELETE /space/:spaceId/:collectionId`)
+  (`GET /space/:spaceId/:collectionId/`)
+- [Delete Collection](https://w3c-ccg.github.io/wallet-attached-storage-spec/#delete-collection-operation)
+  (`DELETE /space/:spaceId/:collectionId/`)
 
 #### Resources API
 
@@ -94,8 +109,8 @@ a Verifiable Credential).
   - `GET|PUT|DELETE /space/:spaceId/policy`
   - `GET|PUT|DELETE /space/:spaceId/:collectionId/policy`
   - `GET|PUT|DELETE /space/:spaceId/:collectionId/:resourceId/policy`
-- Discover a policy via the `linkset` property on the Space/Collection
-  Description, or `GET /space/:spaceId[/:collectionId]/linkset`
+- Discover a policy via the `linkset` property on the Space/Collection Metadata
+  object, or `GET /space/:spaceId[/:collectionId]/linkset`
   (`application/linkset+json`, RFC9264).
 
 How a read is authorized: the server tries the capability invocation first; if

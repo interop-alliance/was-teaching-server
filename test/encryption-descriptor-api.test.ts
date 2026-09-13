@@ -5,7 +5,7 @@
  * descriptor opaquely, validates only its shape, and enforces set-once immutability.
  *
  * These assert the server's wire contract directly (status codes, problem
- * `type`s, the echoed Description) via the signed `was.request()` escape hatch
+ * `type`s, the echoed Metadata object) via the signed `was.request()` escape hatch
  * (raw `HttpResponse` / raw errors), mirroring `wire-contract-api.test.ts` --
  * the high-level handles hide exactly those details. End-to-end coverage through
  * the high-level client lives in `@interop/was-client`'s own EDV integration
@@ -43,10 +43,10 @@ describe('Encryption descriptor API', () => {
     await rm(dataDir, { recursive: true, force: true })
   })
 
-  /** Reads a Collection Description over the wire (raw JSON). */
+  /** Reads a Collection Metadata object over the wire (raw JSON). */
   async function readDesc(collectionId: string): Promise<any> {
     const response = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}`,
+      path: `/space/${spaceId}/${collectionId}/meta`,
       method: 'GET'
     })
     return response.data
@@ -162,7 +162,7 @@ describe('Encryption descriptor API', () => {
       json: { id: collectionId, name: 'Late' }
     })
     const put = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}`,
+      path: `/space/${spaceId}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, encryption: { scheme: 'edv' } }
     })
@@ -180,7 +180,7 @@ describe('Encryption descriptor API', () => {
       json: { id: collectionId, encryption: { scheme: 'edv' } }
     })
     const put = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}`,
+      path: `/space/${spaceId}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, encryption: { scheme: 'edv' } }
     })
@@ -201,7 +201,7 @@ describe('Encryption descriptor API', () => {
     })
     const err = await rejection(
       alice.was.request({
-        path: `/space/${spaceId}/${collectionId}`,
+        path: `/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, encryption: { scheme: 'other' } }
       })
@@ -214,19 +214,35 @@ describe('Encryption descriptor API', () => {
     })
   })
 
-  it('leaves an existing descriptor untouched when an update omits encryption', async () => {
+  it('a name-only update omitting encryption is refused (full replacement, 409 encryption-immutable)', async () => {
     const collectionId = 'untouched'
     await alice.was.request({
       path: `/space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, encryption: { scheme: 'edv' } }
     })
-    // A name-only update must not clear the descriptor (client #8: merge, not
-    // replace) -- and it must succeed (204), not trip `encryption-immutable`.
+    // `PUT .../meta` is a full replacement: an omitted `encryption` on an
+    // already-encrypted Collection is an attempt to clear it, not a merge, so
+    // a name-only rename is refused rather than silently dropping the
+    // descriptor.
+    const err = await rejection(
+      alice.was.request({
+        path: `/space/${spaceId}/${collectionId}/meta`,
+        method: 'PUT',
+        json: { id: collectionId, name: 'Renamed' }
+      })
+    )
+    assert.equal(err.response.status, 409)
+    assert.match(err.data.type, /#encryption-immutable/)
+    const unchanged = await readDesc(collectionId)
+    assert.deepStrictEqual(unchanged.encryption, { scheme: 'edv' })
+
+    // The correct pattern under full replacement: resend the stored
+    // descriptor alongside the new name.
     const put = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}`,
+      path: `/space/${spaceId}/${collectionId}/meta`,
       method: 'PUT',
-      json: { id: collectionId, name: 'Renamed' }
+      json: { id: collectionId, name: 'Renamed', encryption: { scheme: 'edv' } }
     })
     assert.equal(put.status, 204)
     const desc = await readDesc(collectionId)
@@ -261,7 +277,7 @@ describe('Encryption descriptor API', () => {
       // `version: 1` on a descriptor that had omitted it -- is an idempotent
       // no-op that MUST be accepted.
       const put = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}`,
+        path: `/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, encryption: { scheme: 'edv', version: 1 } }
       })
@@ -284,7 +300,7 @@ describe('Encryption descriptor API', () => {
       // never stores -- the lib transition tests cover that path directly.
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}`,
+          path: `/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, encryption: { scheme: 'edv' } }
         })
@@ -323,7 +339,7 @@ describe('Encryption descriptor API', () => {
       // registry recognizes only `edv` version 1.
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}`,
+          path: `/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, encryption: { scheme: 'edv', version: 2 } }
         })
@@ -435,7 +451,7 @@ describe('Encryption descriptor API', () => {
       })
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}`,
+          path: `/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: {
             id: collectionId,
@@ -464,7 +480,7 @@ describe('Encryption descriptor API', () => {
       })
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}`,
+          path: `/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: {
             id: collectionId,
@@ -491,7 +507,7 @@ describe('Encryption descriptor API', () => {
         ]
       }
       const put = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}`,
+        path: `/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, encryption: grown }
       })
@@ -521,7 +537,7 @@ describe('Encryption descriptor API', () => {
         ]
       }
       const put = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}`,
+        path: `/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, encryption: withNewRecipient }
       })
@@ -600,7 +616,7 @@ describe('Encryption descriptor API', () => {
       changed.hmac.id = 'urn:uuid:blinding-key-2'
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}`,
+          path: `/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, encryption: changed }
         })
@@ -619,7 +635,7 @@ describe('Encryption descriptor API', () => {
       await createWithHmac(collectionId)
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}`,
+          path: `/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, encryption: { scheme: 'edv' } }
         })
@@ -642,7 +658,7 @@ describe('Encryption descriptor API', () => {
         recipient('did:key:zApp3#ka')
       ]
       const put = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}`,
+        path: `/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, encryption: rewrapped }
       })
@@ -661,7 +677,7 @@ describe('Encryption descriptor API', () => {
         json: { id: collectionId, encryption: { scheme: 'edv' } }
       })
       const put = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}`,
+        path: `/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, encryption: hmacDescriptor() }
       })
@@ -772,7 +788,7 @@ describe('Encryption descriptor API', () => {
     })
   })
 
-  describe('Collection Description conditional writes (ETag / If-Match)', () => {
+  describe('Collection Metadata object conditional writes (ETag / If-Match)', () => {
     it('GET returns an ETag; matching If-Match bumps it; stale If-Match 412s', async () => {
       const collectionId = 'cas-col'
       const created = await alice.was.request({
@@ -783,14 +799,14 @@ describe('Encryption descriptor API', () => {
       assert.equal(created.status, 201)
 
       const got = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}`,
+        path: `/space/${spaceId}/${collectionId}/meta`,
         method: 'GET'
       })
       const etag = got.headers.get('etag')
       assert.ok(etag, 'GET Collection surfaces an ETag')
 
       const updated = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}`,
+        path: `/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, name: 'CAS updated' },
         headers: { 'if-match': etag! }
@@ -802,7 +818,7 @@ describe('Encryption descriptor API', () => {
       // The original (now stale) validator is rejected -- the lost-update guard.
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}`,
+          path: `/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, name: 'CAS conflict' },
           headers: { 'if-match': etag! }
@@ -820,7 +836,7 @@ describe('Encryption descriptor API', () => {
         json: { id: collectionId, name: 'Uncond' }
       })
       const put = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}`,
+        path: `/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, name: 'Uncond updated' }
       })
@@ -838,7 +854,7 @@ describe('Encryption descriptor API', () => {
       const etag0 = created.headers.get('etag')!
       // First update with the create ETag succeeds.
       const first = await alice.was.request({
-        path: `/space/${spaceId}/${collectionId}`,
+        path: `/space/${spaceId}/${collectionId}/meta`,
         method: 'PUT',
         json: { id: collectionId, name: 'Seq 1' },
         headers: { 'if-match': etag0 }
@@ -847,7 +863,7 @@ describe('Encryption descriptor API', () => {
       // Second update reusing the now-stale etag0 loses.
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}`,
+          path: `/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, name: 'Seq 2' },
           headers: { 'if-match': etag0 }

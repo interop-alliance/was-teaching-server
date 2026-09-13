@@ -130,9 +130,16 @@ describe('assertValidId', () => {
     // ...and collection-level-only segments are fine as collection ids.
     assert.doesNotThrow(() => assertValidId('backend', { kind: 'collection' }))
     assert.doesNotThrow(() => assertValidId('quota', { kind: 'collection' }))
-    // `meta` is reserved at the resource position (Collection Metadata sits
-    // there), but a Collection may still be named `meta`.
-    assert.doesNotThrow(() => assertValidId('meta', { kind: 'collection' }))
+    // `meta` is reserved at both positions: the Space Metadata object sits at
+    // `/space/{id}/meta` and the Collection's at `/space/{id}/{c}/meta`.
+    assert.throws(
+      () => assertValidId('meta', { kind: 'collection' }),
+      ReservedIdError
+    )
+    assert.throws(
+      () => assertValidId('meta', { kind: 'resource' }),
+      ReservedIdError
+    )
   })
 
   it('throws the error class matching the id kind', () => {

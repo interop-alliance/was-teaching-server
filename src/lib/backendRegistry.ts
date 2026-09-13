@@ -24,7 +24,7 @@ import { UnsupportedBackendError } from '../errors.js'
 import { RESOLVED_BACKEND_CACHE_MAX } from '../config.default.js'
 import type {
   BackendProviderRegistry,
-  CollectionDescription,
+  CollectionMetadata,
   StorageBackend
 } from '../types.js'
 
@@ -63,27 +63,27 @@ function adapterCacheFor(providers: BackendProviderRegistry): LruCache {
  *   non-request instance `log` passed to the memoized adapter factory)
  * @param options.spaceId {string}
  * @param options.collectionId {string}
- * @param [options.collectionDescription] {CollectionDescription}   the
- *   already-fetched description (most handlers fetch it for auth); read from the
- *   control plane when omitted
+ * @param [options.collectionMetadata] {CollectionMetadata}   the
+ *   already-fetched Collection Metadata object (most handlers fetch it for
+ *   auth); read from the control plane when omitted
  * @returns {Promise<StorageBackend>}
  */
 export async function resolveBackend({
   request,
   spaceId,
   collectionId,
-  collectionDescription
+  collectionMetadata
 }: {
   request: FastifyRequest
   spaceId: string
   collectionId: string
-  collectionDescription?: CollectionDescription
+  collectionMetadata?: CollectionMetadata
 }): Promise<StorageBackend> {
   const { storage, backendProviders } = request.server
-  const description =
-    collectionDescription ??
-    (await storage.getCollectionDescription({ spaceId, collectionId }))
-  const backendId = description?.backend?.id
+  const metadata =
+    collectionMetadata ??
+    (await storage.getCollectionMetadata({ spaceId, collectionId }))
+  const backendId = metadata?.backend?.id
   // Fast path: the default backend is both control and data plane (unchanged).
   if (backendId === undefined || backendId === DEFAULT_BACKEND_ID) {
     return storage

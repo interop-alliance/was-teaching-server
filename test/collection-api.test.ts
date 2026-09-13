@@ -93,7 +93,7 @@ describe('Collections API', () => {
     assert.equal(conflict.status, 409)
     assert.equal(conflict.headers.get('cache-control'), 'no-store')
     const read = await alice.was.request({
-      url: `${serverUrl}/space/${alice.space1.id}/${collectionId}`,
+      url: `${serverUrl}/space/${alice.space1.id}/${collectionId}/`,
       method: 'GET'
     })
     assert.equal(read.headers.get('cache-control'), null)
@@ -138,13 +138,20 @@ describe('Collections API', () => {
       name: 'Verifiable Credentials'
     })
     assert.equal(collection.id, 'credentials')
-    assert.deepStrictEqual(await collection.describe(), {
+    // The merged Collection Metadata object carries its timestamps, and the
+    // client surfaces the object's one `ETag` alongside it.
+    const { createdAt, updatedAt, etag, ...description } =
+      (await collection.describe())!
+    assert.ok(!Number.isNaN(Date.parse(createdAt!)))
+    assert.equal(updatedAt, createdAt)
+    assertEtagVersion({ etag: etag ?? null, version: 1 })
+    assert.deepStrictEqual(description, {
       id: 'credentials',
       name: 'Verifiable Credentials',
       type: ['Collection'],
       backend: { id: 'default' },
       createdBy: alice.did,
-      url: `/space/${alice.space1.id}/credentials`,
+      url: `/space/${alice.space1.id}/credentials/`,
       linkset: `/space/${alice.space1.id}/credentials/linkset`
     })
   })
@@ -174,7 +181,7 @@ describe('Collections API', () => {
     )
     assert.equal(expectedError.data.errors[0].pointer, '#/id')
 
-    // The description is untouched.
+    // The Collection Metadata object is untouched.
     const description = await aliceSpace.collection(collectionId).describe()
     assert.equal(description!.name, 'Conflict Test Collection')
   })
@@ -183,7 +190,7 @@ describe('Collections API', () => {
     const listing = await aliceSpace.collection('credentials').list()
     assert.ok(listing)
     assert.equal(listing.id, 'credentials')
-    assert.equal(listing.url, `/space/${alice.space1.id}/credentials`)
+    assert.equal(listing.url, `/space/${alice.space1.id}/credentials/`)
     assert.equal(listing.name, 'Verifiable Credentials')
     assert.deepStrictEqual(listing.type, ['Collection'])
     assert.equal(typeof listing.totalItems, 'number')
@@ -216,12 +223,12 @@ describe('Collections API', () => {
     })
 
     assert.deepStrictEqual(await space.collections(), {
-      url: `/space/${spaceId}/collections/`,
+      url: `/space/${spaceId}/`,
       totalItems: 1,
       items: [
         {
           id: collectionId,
-          url: `/space/${spaceId}/${collectionId}`,
+          url: `/space/${spaceId}/${collectionId}/`,
           name: 'List Collections Test Collection',
           public: false
         }
@@ -229,19 +236,22 @@ describe('Collections API', () => {
     })
   })
 
-  it('[root] get collection description via GET :collectionId', async () => {
-    assert.deepStrictEqual(
-      await aliceSpace.collection('credentials').describe(),
-      {
-        id: 'credentials',
-        name: 'Verifiable Credentials',
-        type: ['Collection'],
-        backend: { id: 'default' },
-        createdBy: alice.did,
-        url: `/space/${alice.space1.id}/credentials`,
-        linkset: `/space/${alice.space1.id}/credentials/linkset`
-      }
-    )
+  it('[root] get the Collection Metadata object via GET :collectionId/meta', async () => {
+    const { createdAt, updatedAt, etag, ...description } = (await aliceSpace
+      .collection('credentials')
+      .describe())!
+    assert.ok(!Number.isNaN(Date.parse(createdAt!)))
+    assert.ok(!Number.isNaN(Date.parse(updatedAt!)))
+    assertEtagVersion({ etag: etag ?? null, version: 1 })
+    assert.deepStrictEqual(description, {
+      id: 'credentials',
+      name: 'Verifiable Credentials',
+      type: ['Collection'],
+      backend: { id: 'default' },
+      createdBy: alice.did,
+      url: `/space/${alice.space1.id}/credentials/`,
+      linkset: `/space/${alice.space1.id}/credentials/linkset`
+    })
   })
 
   it('[root] a PUT whose body carries a forged createdBy does not change the stored value', async () => {
@@ -253,7 +263,7 @@ describe('Collections API', () => {
 
     await alice.was.request({
       url: new URL(
-        `/space/${alice.space1.id}/${collectionId}`,
+        `/space/${alice.space1.id}/${collectionId}/meta`,
         serverUrl
       ).toString(),
       method: 'PUT',
@@ -288,7 +298,7 @@ describe('Collections API', () => {
 
   it('a Collection delete is a hard delete: re-creating starts a new generation', async () => {
     const collectionId = crypto.randomUUID()
-    const collectionUrl = `${serverUrl}/space/${alice.space1.id}/${collectionId}`
+    const metaUrl = `${serverUrl}/space/${alice.space1.id}/${collectionId}/meta`
 
     const created = await alice.was.request({
       url: `${serverUrl}/space/${alice.space1.id}/`,
@@ -296,12 +306,12 @@ describe('Collections API', () => {
       json: { id: collectionId, name: 'Regenerated' }
     })
     const oldEtag = created.headers.get('etag')!
-    assert.ok(oldEtag, 'POST returns a description ETag')
+    assert.ok(oldEtag, 'POST returns a Collection Metadata ETag')
 
     await aliceSpace.collection(collectionId).delete()
 
-    // Re-creating under the same id starts a fresh description sidecar: no
-    // generation survives a hard Collection delete.
+    // Re-creating under the same id starts a fresh Collection Metadata record:
+    // no generation survives a hard Collection delete.
     await alice.was.request({
       url: `${serverUrl}/space/${alice.space1.id}/`,
       method: 'POST',
@@ -309,27 +319,27 @@ describe('Collections API', () => {
     })
 
     // The old validator names a generation the re-created Collection no
-    // longer carries, so a conditional GET with it is the full description,
-    // never a 304.
+    // longer carries, so a conditional GET with it is the full Collection
+    // Metadata object, never a 304.
     const conditional = await responseOf(
       alice.was.request({
-        url: collectionUrl,
+        url: metaUrl,
         method: 'GET',
         headers: { 'if-none-match': oldEtag }
       })
     )
     assert.equal(conditional.status, 200)
     const newEtag = conditional.headers.get('etag')
-    assert.ok(newEtag, 'GET returns a description ETag')
+    assert.ok(newEtag, 'GET returns a Collection Metadata ETag')
     assert.notEqual(etagGeneration(newEtag!), etagGeneration(oldEtag))
   })
 
   it('[root] PUT with If-None-Match: * creates an absent Collection and 412s on a present one', async () => {
     const collectionId = 'guarded-collection'
-    const collectionUrl = `${serverUrl}/space/${alice.space1.id}/${collectionId}`
+    const metaUrl = `${serverUrl}/space/${alice.space1.id}/${collectionId}/meta`
 
     const created = await alice.was.request({
-      url: collectionUrl,
+      url: metaUrl,
       method: 'PUT',
       json: { id: collectionId, name: 'Winner' },
       headers: { 'if-none-match': '*' }
@@ -338,10 +348,10 @@ describe('Collections API', () => {
     assertEtagVersion({ etag: created.headers.get('etag'), version: 1 })
 
     // The loser of a create race: the same guarded PUT against the now-present
-    // Collection is refused and the stored description is untouched.
+    // Collection is refused and the stored Collection Metadata is untouched.
     const thrown = await requestError(
       alice.was.request({
-        url: collectionUrl,
+        url: metaUrl,
         method: 'PUT',
         json: { id: collectionId, name: 'Loser' },
         headers: { 'if-none-match': '*' }
@@ -357,7 +367,7 @@ describe('Collections API', () => {
 
     // An unconditional PUT still upserts.
     const replaced = await alice.was.request({
-      url: collectionUrl,
+      url: metaUrl,
       method: 'PUT',
       json: { id: collectionId, name: 'Replaced' }
     })
@@ -377,7 +387,7 @@ describe('Collections API', () => {
     try {
       await alice.was.request({
         url: new URL(
-          `/space/${alice.space1.id}/${collectionId}`,
+          `/space/${alice.space1.id}/${collectionId}/meta`,
           serverUrl
         ).toString(),
         method: 'PUT',
@@ -413,7 +423,7 @@ describe('Collections API', () => {
       assert.equal(response.status, 201)
       assert.deepStrictEqual(response.data.backend, { id: 'default' })
 
-      // And it is reflected in the Collection description.
+      // And it is reflected in the Collection Metadata object.
       const description = await aliceSpace.collection(collectionId).describe()
       assert.deepStrictEqual(description!.backend, { id: 'default' })
     })
@@ -589,7 +599,7 @@ describe('Collections API', () => {
       return collectionId
     }
 
-    it('[signed] GET /meta of a collection with no metadata yet 200s without an ETag', async () => {
+    it('[signed] GET /meta of a collection with no annotations yet 200s with its create-time ETag', async () => {
       const collectionId = await freshCollection()
       const response = await alice.was.request({
         url: metaUrl(collectionId),
@@ -597,11 +607,14 @@ describe('Collections API', () => {
       })
       assert.equal(response.status, 200)
       assert.match(response.headers.get('content-type')!, /application\/json/)
-      // No metadata has been written, so there is no `metaVersion` validator...
-      assert.equal(response.headers.get('etag'), null)
-      // ...but the server-managed creator (recorded on the description) shows.
+      // Creating the Collection wrote its Metadata object, so the one
+      // `metaVersion` validator is already at version 1 before any annotation
+      // write...
+      assertEtagVersion({ etag: response.headers.get('etag'), version: 1 })
+      // ...and the server-managed creator shows, with no annotations.
       assert.equal(response.data.createdBy, alice.did)
       assert.equal(response.data.custom, undefined)
+      // The validator travels only as the header and stays out of the body.
       assert.equal(response.data.metaVersion, undefined)
     })
 
@@ -661,7 +674,9 @@ describe('Collections API', () => {
       })
       assert.equal(put.status, 204)
       const putEtag = put.headers.get('etag')
-      assertEtagVersion({ etag: putEtag, version: 1 })
+      // Version 1 was the create; the annotation write is the next version of
+      // the same Collection Metadata object.
+      assertEtagVersion({ etag: putEtag, version: 2 })
 
       const got = await alice.was.request({
         url: metaUrl(collectionId),
@@ -689,7 +704,8 @@ describe('Collections API', () => {
         method: 'PUT',
         json: {}
       })
-      assertEtagVersion({ etag: cleared.headers.get('etag'), version: 2 })
+      // Create (1), annotation write (2), clearing write (3).
+      assertEtagVersion({ etag: cleared.headers.get('etag'), version: 3 })
 
       const got = await alice.was.request({
         url: metaUrl(collectionId),
@@ -731,19 +747,25 @@ describe('Collections API', () => {
       assert.equal(after.custom.name, 'After')
     })
 
-    it('[signed] PUT /meta of a nonexistent collection 404s (does not create)', async () => {
-      let thrown: any
-      try {
-        await alice.was.request({
-          url: metaUrl('collection-that-does-not-exist'),
-          method: 'PUT',
-          json: { custom: { name: 'nope' } }
-        })
-      } catch (err) {
-        thrown = err
-      }
-      assert.ok(thrown, 'expected PUT /meta of a missing collection to reject')
-      assert.equal(thrown.response.status, 404)
+    it('[signed] PUT /meta of a nonexistent collection creates it (201)', async () => {
+      // `PUT .../meta` is Update (or Create by Id) Collection: an absent
+      // Collection is created, annotations included.
+      const collectionId = crypto.randomUUID()
+      const created = await alice.was.request({
+        url: metaUrl(collectionId),
+        method: 'PUT',
+        json: { custom: { name: 'Created by meta' } }
+      })
+      assert.equal(created.status, 201)
+      assertEtagVersion({ etag: created.headers.get('etag'), version: 1 })
+
+      const got = await alice.was.request({
+        url: metaUrl(collectionId),
+        method: 'GET'
+      })
+      assert.equal(got.data.id, collectionId)
+      assert.equal(got.data.custom.name, 'Created by meta')
+      assert.equal(got.data.createdBy, alice.did)
     })
 
     it('[signed] PUT /meta with a non-object custom 400s', async () => {
@@ -802,14 +824,14 @@ describe('Collections API', () => {
     })
 
     it('[signed] If-None-Match: * writes once, then 412s', async () => {
-      const collectionId = await freshCollection()
+      const collectionId = crypto.randomUUID()
       const created = await alice.was.request({
         url: metaUrl(collectionId),
         method: 'PUT',
         json: { custom: { name: 'First' } },
         headers: { 'if-none-match': '*' }
       })
-      assert.equal(created.status, 204)
+      assert.equal(created.status, 201)
       assertEtagVersion({ etag: created.headers.get('etag'), version: 1 })
 
       let thrown: any
@@ -825,6 +847,19 @@ describe('Collections API', () => {
       }
       assert.ok(thrown, 'expected create-if-absent on written metadata to fail')
       assert.equal(thrown.response.status, 412)
+
+      // A Collection created by POST already has its Metadata object, so a
+      // guarded write refuses even though no annotation was ever written.
+      const postedId = await freshCollection()
+      const refused = await requestError(
+        alice.was.request({
+          url: metaUrl(postedId),
+          method: 'PUT',
+          json: { custom: { name: 'Too Late' } },
+          headers: { 'if-none-match': '*' }
+        })
+      )
+      assert.equal(refused.response.status, 412)
     })
 
     it('[signed] an omitted epoch CLEARS the stored stamp', async () => {
@@ -854,36 +889,35 @@ describe('Collections API', () => {
       assert.equal(cleared.data.epoch, undefined)
     })
 
-    it('[signed] GET of the description and of /meta with a matching If-None-Match are 304', async () => {
+    it('[signed] GET of /meta with a matching If-None-Match is 304, and a write moves the validator', async () => {
       const collectionId = await freshCollection()
-      const collectionUrl = `${serverUrl}/space/${alice.space1.id}/${collectionId}`
 
       const described = await alice.was.request({
-        url: collectionUrl,
+        url: metaUrl(collectionId),
         method: 'GET'
       })
-      const descriptionEtag = described.headers.get('etag')!
+      const createdEtag = described.headers.get('etag')!
       const unchanged = await responseOf(
         alice.was.request({
-          url: collectionUrl,
+          url: metaUrl(collectionId),
           method: 'GET',
-          headers: { 'if-none-match': descriptionEtag }
+          headers: { 'if-none-match': createdEtag }
         })
       )
       assert.equal(unchanged.status, 304)
-      assert.equal(unchanged.headers.get('etag'), descriptionEtag)
+      assert.equal(unchanged.headers.get('etag'), createdEtag)
       assert.equal(await unchanged.text(), '')
 
-      // A stale validator gets the full description.
+      // A stale validator gets the full Collection Metadata object.
       const stale = await alice.was.request({
-        url: collectionUrl,
+        url: metaUrl(collectionId),
         method: 'GET',
         headers: { 'if-none-match': '"99"' }
       })
       assert.equal(stale.status, 200)
       assert.equal(stale.data.id, collectionId)
 
-      // The `/meta` sub-resource validates against its own ETag.
+      // After a write, the new ETag is the one that validates.
       const written = await alice.was.request({
         url: metaUrl(collectionId),
         method: 'PUT',
@@ -899,55 +933,69 @@ describe('Collections API', () => {
       )
       assert.equal(metaUnchanged.status, 304)
       assert.equal(metaUnchanged.headers.get('etag'), metaEtag)
+      const createdStale = await responseOf(
+        alice.was.request({
+          url: metaUrl(collectionId),
+          method: 'GET',
+          headers: { 'if-none-match': createdEtag }
+        })
+      )
+      assert.equal(createdStale.status, 200)
     })
 
-    it('[signed] metaVersion and descriptionVersion are independent ETags', async () => {
+    it('[signed] a configuration write and an annotation write advance the one Collection Metadata ETag', async () => {
+      // A Collection's configuration and its annotations are one Metadata
+      // object under one validator, so neither kind of write leaves the ETag
+      // in place.
       const collectionId = await freshCollection()
-      const collectionUrl = `${serverUrl}/space/${alice.space1.id}/${collectionId}`
 
       const described = await alice.was.request({
-        url: collectionUrl,
+        url: metaUrl(collectionId),
         method: 'GET'
       })
-      const descriptionEtag = described.headers.get('etag')
-      assert.ok(descriptionEtag, 'the description carries its own ETag')
+      const createdEtag = described.headers.get('etag')!
+      assertEtagVersion({ etag: createdEtag, version: 1 })
 
-      // A metadata write does not disturb the description ETag.
-      await alice.was.request({
+      // An annotation write advances the validator...
+      const annotated = await alice.was.request({
         url: metaUrl(collectionId),
         method: 'PUT',
-        json: { custom: { name: 'Independent' } }
+        json: { name: 'Meta Collection', custom: { name: 'Shared' } }
       })
-      const afterMeta = await alice.was.request({
-        url: collectionUrl,
-        method: 'GET'
-      })
-      assert.equal(afterMeta.headers.get('etag'), descriptionEtag)
+      const annotatedEtag = annotated.headers.get('etag')!
+      assertEtagVersion({ etag: annotatedEtag, version: 2 })
+      assert.equal(etagGeneration(annotatedEtag), etagGeneration(createdEtag))
 
-      // ...and a description write does not disturb the metadata ETag.
-      await alice.was.request({
-        url: collectionUrl,
+      // ...and so does a configuration write, under the same generation.
+      const configured = await alice.was.request({
+        url: metaUrl(collectionId),
         method: 'PUT',
-        json: { id: collectionId, type: ['Collection'], name: 'Renamed' }
+        json: {
+          id: collectionId,
+          type: ['Collection'],
+          name: 'Renamed',
+          custom: { name: 'Shared' }
+        }
       })
-      const afterDescription = await alice.was.request({
-        url: collectionUrl,
-        method: 'GET'
-      })
-      assert.notEqual(afterDescription.headers.get('etag'), descriptionEtag)
+      const configuredEtag = configured.headers.get('etag')!
+      assertEtagVersion({ etag: configuredEtag, version: 3 })
+      assert.equal(etagGeneration(configuredEtag), etagGeneration(createdEtag))
+
       const meta = await alice.was.request({
         url: metaUrl(collectionId),
         method: 'GET'
       })
-      assertEtagVersion({ etag: meta.headers.get('etag'), version: 1 })
-      assert.equal(meta.data.custom.name, 'Independent')
+      assert.equal(meta.headers.get('etag'), configuredEtag)
+      assert.equal(meta.data.name, 'Renamed')
+      assert.equal(meta.data.custom.name, 'Shared')
     })
 
-    it('a Resource named "meta" is rejected as a reserved id (409)', () => {
+    it('a DELETE at the Collection Metadata URL is 405, not a reserved-id 409', () => {
       // The Collection Metadata route occupies the `:resourceId` position, so
-      // `meta` is a reserved Resource id. The GET/PUT verbs at that URL are the
-      // Metadata route itself; DELETE still falls through to the Resource route,
-      // where the reserved-id check rejects it.
+      // `meta` is a reserved Resource id. DELETE used to fall through to the
+      // Resource route and answer the reserved-id 409 -- an answer about ids,
+      // to a request that asked about a method. The URL now registers its own
+      // DELETE, which refuses the method and names what it accepts.
       const collectionId = 'credentials'
       return alice.was
         .request({
@@ -955,10 +1003,11 @@ describe('Collections API', () => {
           method: 'DELETE'
         })
         .then(
-          () => assert.fail('expected a Resource named `meta` to be rejected'),
+          () => assert.fail('expected a DELETE at `meta` to be refused'),
           (thrown: any) => {
-            assert.equal(thrown.response.status, 409)
-            assert.match(thrown.data.type, /#reserved-id$/)
+            assert.equal(thrown.response.status, 405)
+            assert.equal(thrown.response.headers.get('allow'), 'GET, HEAD, PUT')
+            assert.equal(thrown.data.type, 'about:blank')
           }
         )
     })

@@ -1,6 +1,8 @@
 /**
- * Request handlers for Collection operations: get/update/delete a Collection,
- * list its items, and add a Resource to it.
+ * Request handlers for Collection operations: read/write the Collection
+ * Metadata object (at the reserved `meta` sub-resource), delete a Collection,
+ * list its items, add a Resource to it, and serve its query, quota, backend
+ * and history-log sub-resources.
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
@@ -10,43 +12,36 @@ import { buildLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import {
   fetchCollectionAndBackend,
-  getCollectionOrThrow
+  getCollectionOrThrow,
+  governedEncryptionOf
 } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
+import {
+  assertCollectionMetadataTransition,
+  composeCollectionMetadata,
+  parseCollectionMetadataBody
+} from './collectionInput.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidIds } from '../lib/validateId.js'
-import { resolveMetadataCustom } from '../lib/customMetadata.js'
-import { assertJsonObjectBody, readTextBody } from '../lib/requestBody.js'
+import { readTextBody } from '../lib/requestBody.js'
 import {
   LOG_CONTENT_TYPE,
-  assertGoverningLogAppend,
-  deriveGovernedEncryption
+  assertGoverningLogAppend
 } from '../lib/governedLog.js'
-import type { CollectionDescription, StorageBackend } from '../types.js'
+import type { CollectionMetadata, StorageBackend } from '../types.js'
 import { parseBlindedIndexQueryBody } from '../lib/blindedIndex.js'
 import {
-  assertPlaintextNotEncrypted,
-  assertSupportedPlaintext,
   declaredIndexesOf,
   parseEqualityQueryBody,
   parseListFilter,
   uniqueIndexesOf
 } from '../lib/equalityIndex.js'
 import {
-  assertSupportedBackend,
   resolveBackendDescriptor,
   DEFAULT_BACKEND_ID
 } from '../lib/backends.js'
-import {
-  assertSupportedEncryption,
-  assertEncryptionDescriptorTransition,
-  assertEncryptedWriteConforms
-} from '../lib/encryption.js'
-import {
-  assertValidGenerator,
-  assertValidGeneratorOrigin
-} from '../lib/generator.js'
-import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
+import { assertEncryptedWriteConforms } from '../lib/encryption.js'
+import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
 import { parsePageParams } from '../lib/pagination.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
@@ -63,15 +58,14 @@ import {
 } from '../lib/paths.js'
 import {
   type EtagValidator,
-  descriptionEtagOf,
+  metadataEtagOf,
   etagOf,
   formatEtag,
   parseWritePreconditions,
-  stripDescriptionValidator
+  stripMetadataValidator
 } from '../lib/etag.js'
 import {
   CollectionNotFoundError,
-  EncryptionHistoryLogGovernedError,
   EncryptionImmutableError,
   InvalidCollectionError,
   InvalidRequestBodyError,
@@ -91,26 +85,26 @@ import { notModifiedReply } from './notModified.js'
  * time).
  *
  * @param options {object}
- * @param [options.existing] {CollectionDescription}   the Collection's
- *   previously-stored Description
- * @param options.incoming {CollectionDescription}   the Description about to
- *   be persisted
+ * @param [options.existing] {CollectionMetadata}   the Collection's stored
+ *   Metadata object
+ * @param options.incoming {CollectionMetadata}   the object about to be
+ *   persisted
  * @returns {NormalizedIndexDeclaration[]}
  */
 function newlyUniqueDeclarations({
   existing,
   incoming
 }: {
-  existing?: CollectionDescription
-  incoming: CollectionDescription
+  existing?: CollectionMetadata
+  incoming: CollectionMetadata
 }): NormalizedIndexDeclaration[] {
   const existingUnique = new Set(
     uniqueIndexesOf({
-      indexes: declaredIndexesOf({ collectionDescription: existing })
+      indexes: declaredIndexesOf({ collectionMetadata: existing })
     }).map(declaration => declaration.name)
   )
   return uniqueIndexesOf({
-    indexes: declaredIndexesOf({ collectionDescription: incoming })
+    indexes: declaredIndexesOf({ collectionMetadata: incoming })
   }).filter(declaration => !existingUnique.has(declaration.name))
 }
 
@@ -156,7 +150,7 @@ export class CollectionRequest {
     })
 
     // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
+    const collectionMetadata = await getCollectionOrThrow({
       request,
       spaceId,
       collectionId,
@@ -170,7 +164,7 @@ export class CollectionRequest {
     // so a wrong content type is rejected without consuming the upload, and the
     // 422 is only observable by a caller already authorized to write here.
     assertEncryptedWriteConforms({
-      collectionDescription,
+      collectionMetadata,
       contentType: request.headers['content-type'],
       body: request.body
     })
@@ -185,7 +179,7 @@ export class CollectionRequest {
       request,
       spaceId,
       collectionId,
-      collectionDescription
+      collectionMetadata
     })
     const input = await resolveResourceInput(request, dataBackend)
     // A content write into an encrypted Collection MAY declare the key epoch it
@@ -199,7 +193,7 @@ export class CollectionRequest {
     // Any `unique: true` index entries the Collection declares ride along, so
     // the backend enforces the uniqueness claim atomically with the write (409).
     const uniqueIndexes = uniqueIndexesOf({
-      indexes: declaredIndexesOf({ collectionDescription })
+      indexes: declaredIndexesOf({ collectionMetadata })
     })
     try {
       written = await dataBackend.writeResource({
@@ -230,390 +224,6 @@ export class CollectionRequest {
     response.url = createdUrl
 
     return reply.status(201).send(response)
-  }
-
-  /**
-   * PUT /space/:spaceId/:collectionId
-   * Request handler for "Update (or Create By Id) Collection" request
-   * Before this, `parseAuthHeaders()` hook executed, resulting in:
-   * request.zcap: {
-   *   keyId, headers, signature, created, expires, invocation, digest
-   * }
-   *
-   * @param request {import('fastify').FastifyRequest}
-   * @param reply {import('fastify').FastifyReply}
-   * @returns {Promise<FastifyReply>}
-   */
-  static async put(
-    request: FastifyRequest<{
-      Params: { spaceId: string; collectionId: string }
-      Body: {
-        id?: string
-        name?: string
-        backend?: unknown
-        encryption?: unknown
-        plaintext?: unknown
-        generator?: unknown
-        generatorOrigin?: unknown
-      }
-    }>,
-    reply: FastifyReply
-  ): Promise<FastifyReply> {
-    const {
-      params: { spaceId, collectionId },
-      body
-    } = request
-    if (!body) {
-      throw new InvalidCollectionError()
-    }
-    const { serverUrl, storage } = request.server
-    const requestName = 'Update Collection'
-
-    // Reject path-traversal / non-URL-safe ids before any storage access.
-    assertValidIds({ spaceId, collectionId }, { requestName })
-
-    // The Collection `id` is immutable: when the PUT body carries one, it must
-    // match the `{collection_id}` in the URL (spec spells this out for Update
-    // Space; applied here for parity). `invalid-request-body` (400).
-    if (body.id !== undefined && body.id !== collectionId) {
-      throw new InvalidRequestBodyError({
-        requestName,
-        detail: `Collection Description "id" (${body.id}) does not match the URL Collection id (${collectionId}).`,
-        pointer: '#/id'
-      })
-    }
-    // Validate the optional encryption descriptor (shape only); an absent
-    // `encryption` validates to `undefined` and leaves the existing descriptor
-    // untouched. The set-once immutability transition is enforced below, after
-    // the existing Collection is fetched (so an unauthorized caller cannot probe
-    // encryption state).
-    const suppliedEncryption = assertSupportedEncryption({
-      encryption: body.encryption,
-      requestName
-    })
-    // Validate the optional `plaintext` member (shape only); an absent
-    // `plaintext` validates to `undefined` and leaves the stored member
-    // untouched, while a supplied object replaces it (`{}` is the empty state:
-    // no indexes, but still present) -- `plaintext` is updatable, unlike the
-    // set-once `encryption` descriptor. The exclusion with `encryption` and
-    // the unique-add conflict scan are enforced below, against the description
-    // about to be persisted.
-    const suppliedPlaintext = assertSupportedPlaintext({
-      plaintext: body.plaintext,
-      requestName
-    })
-    // Validate the optional app-attribution members (shape only). Both are the
-    // controller's assertions -- stored verbatim, never an authorization input --
-    // and both are updatable, so a controller can backfill a Collection
-    // provisioned before an application recorded its attribution. An absent
-    // value leaves the stored one untouched, like `name`.
-    const suppliedGenerator = assertValidGenerator({
-      generator: body.generator,
-      requestName
-    })
-    const suppliedGeneratorOrigin = assertValidGeneratorOrigin({
-      generatorOrigin: body.generatorOrigin,
-      requestName
-    })
-
-    // Verify (capability-only): updating a Collection requires a valid
-    // capability invocation; no access-control-policy fallback.
-    const { allowedTarget: collectionUrl } = await fetchSpaceAndVerify({
-      request,
-      spaceId,
-      targetPath: collectionPath({ spaceId, collectionId }),
-      requestName
-    })
-
-    // zCap checks out, continue.
-    // Validate a supplied backend against the Space's backends-available (bad
-    // shape 400, unknown id 409). Checked AFTER verification (it reads the
-    // Space's registered backend ids) so an unauthorized caller cannot probe
-    // which ids are registered by distinguishing a 409 from the masked 404 --
-    // like the `id-conflict` / `encryption-immutable` conflict checks. An absent
-    // `backend` resolves to undefined so an update leaves the existing selection
-    // untouched; a create defaults it to the server default below.
-    const suppliedBackend =
-      body.backend !== undefined
-        ? await assertSupportedBackend({
-            storage,
-            spaceId,
-            backend: body.backend,
-            requestName
-          })
-        : undefined
-
-    const existingCollection = await storage.getCollectionDescription({
-      spaceId,
-      collectionId
-    })
-    // A Collection governed by a history log (the `governed-history-logs`
-    // feature) serves its `encryption` member derived from the log head, so
-    // the member is read-only on this path: a direct write is refused with
-    // `encryption-history-log-governed` (409). The stored description carries
-    // no `encryption` for such a Collection, so nothing below re-persists the
-    // derived member. Re-checked under the backend's lock, since a guarded
-    // log create is serialized with description writes.
-    const governedEncryptionOf = async (): Promise<
-      CollectionDescription['encryption']
-    > => {
-      const log = await storage.getCollectionLog({ spaceId, collectionId })
-      return log
-        ? deriveGovernedEncryption({
-            body: log.body,
-            logUrl: `${serverUrl}${collectionLogPath({ spaceId, collectionId })}`
-          })
-        : undefined
-    }
-    const governedEncryption = existingCollection
-      ? await governedEncryptionOf()
-      : undefined
-    if (governedEncryption !== undefined && suppliedEncryption !== undefined) {
-      throw new EncryptionHistoryLogGovernedError()
-    }
-    // The encryption descriptor is set-once (an update may declare one on a
-    // Collection that lacks it, but may not change/clear an existing one --
-    // `encryption-immutable` 409), and the key-epoch safety rails (the
-    // `key-epochs` feature) make epochs append-only with a `currentEpoch` that
-    // never moves backwards; recipient churn within an epoch stays free.
-    // Checked here, after verification, for a clean early rejection --
-    // re-evaluated atomically with the write via `assertTransition` below.
-    if (suppliedEncryption !== undefined) {
-      assertEncryptionDescriptorTransition({
-        existing: existingCollection?.encryption,
-        incoming: suppliedEncryption
-      })
-    }
-    // `name`, `backend`, and `encryption` are optional. On update, only
-    // overwrite each when supplied (otherwise keep the existing value); on
-    // create, default `name` to the Collection id and `backend` to the server
-    // default (spec).
-    const collectionDescription = existingCollection
-      ? // Existing: update only the allowed fields. The stored description's
-        // out-of-band validator is not part of the body handed to storage.
-        {
-          ...stripDescriptionValidator(existingCollection),
-          id: collectionId,
-          ...(body.name !== undefined && { name: body.name }),
-          ...(suppliedBackend !== undefined && { backend: suppliedBackend }),
-          ...(suppliedEncryption !== undefined && {
-            encryption: suppliedEncryption
-          }),
-          ...(suppliedPlaintext !== undefined && {
-            plaintext: suppliedPlaintext
-          }),
-          ...(suppliedGenerator !== undefined && {
-            generator: suppliedGenerator
-          }),
-          ...(suppliedGeneratorOrigin !== undefined && {
-            generatorOrigin: suppliedGeneratorOrigin
-          })
-        }
-      : // New Collection
-        {
-          id: collectionId,
-          type: ['Collection'],
-          name: body.name ?? collectionId,
-          backend: suppliedBackend ?? { id: DEFAULT_BACKEND_ID },
-          ...(suppliedEncryption !== undefined && {
-            encryption: suppliedEncryption
-          }),
-          ...(suppliedPlaintext !== undefined && {
-            plaintext: suppliedPlaintext
-          }),
-          ...(suppliedGenerator !== undefined && {
-            generator: suppliedGenerator
-          }),
-          ...(suppliedGeneratorOrigin !== undefined && {
-            generatorOrigin: suppliedGeneratorOrigin
-          })
-        }
-
-    // Mutual exclusion (spec "Collection Data Model"): the description about to
-    // be persisted MUST NOT carry both `plaintext` and `encryption` -- they are
-    // counterpart members, excluded by presence (an empty `plaintext` counts).
-    // Enforced in BOTH directions (adding `plaintext` to an encrypted
-    // Collection, or `encryption` to one carrying `plaintext`) against the
-    // merged description, so a pre-existing value on the other member is caught
-    // too.
-    assertPlaintextNotEncrypted({
-      plaintext: collectionDescription.plaintext,
-      encryption: collectionDescription.encryption ?? governedEncryption,
-      requestName
-    })
-
-    // Adding a `unique: true` claim for a name that was not unique before MUST
-    // be rejected if the Collection's already-stored Resources already violate
-    // it (spec "Collection Data Model"). Scan for a pre-existing conflict before
-    // acknowledging the update, when the data-plane backend supports the scan.
-    // Best-effort under concurrency (like the count-quota checks): a Resource
-    // write racing this update could still slip a conflicting value in, which
-    // the write-time uniqueness check then rejects.
-    const newlyUnique = newlyUniqueDeclarations({
-      existing: existingCollection,
-      incoming: collectionDescription
-    })
-    if (newlyUnique.length > 0) {
-      const dataBackend = await resolveBackend({
-        request,
-        spaceId,
-        collectionId,
-        collectionDescription
-      })
-      if (dataBackend.findEqualityUniqueViolation) {
-        const violation = await dataBackend.findEqualityUniqueViolation({
-          spaceId,
-          collectionId,
-          indexes: newlyUnique
-        })
-        if (violation) {
-          throw new UniqueAttributeConflictError({ variant: 'equality' })
-        }
-      }
-    }
-
-    // `If-Match` (the `key-epochs` / conditional-Collection-write feature) makes
-    // a Collection Description update a compare-and-swap on its monotonic
-    // description version, so two clients concurrently editing the descriptor (e.g.
-    // both adding a recipient) cannot silently clobber one another, and
-    // `If-None-Match: *` makes the PUT a guarded create (two clients racing to
-    // provision the same Collection cannot both succeed, so the loser cannot
-    // overwrite the winner's `backend`). Both opt-in: an unconditional PUT
-    // still upserts as before. Evaluated atomically with the write inside the
-    // backend; a stale validator or a present Description surfaces as 412
-    // `precondition-failed` (rethrown unchanged).
-    const { ifMatch, ifNoneMatch } = parseWritePreconditions(request.headers)
-    let written: EtagValidator
-    try {
-      written = await storage.writeCollection({
-        spaceId,
-        collectionId,
-        collectionDescription,
-        createdBy: invokerDid(request),
-        ...(ifMatch !== undefined && { ifMatch }),
-        ...(ifNoneMatch !== undefined && { ifNoneMatch }),
-        // Re-evaluate the encryption-descriptor rails and the `plaintext` /
-        // `encryption` exclusion atomically with the write, against the prior
-        // the backend re-reads under its lock: the early checks above ran
-        // against a pre-lock read, so without this a concurrent descriptor
-        // write in between could be silently clobbered (an appended epoch, or a
-        // just-added `plaintext`, dropped by this full replacement) even though
-        // both writers passed the checks -- the guarantees must hold
-        // unconditionally, not just under `If-Match`. The exclusion is checked
-        // against what this write leaves in place: the supplied member, else
-        // the prior's.
-        assertTransition: async prior => {
-          const governed = prior ? await governedEncryptionOf() : undefined
-          if (governed !== undefined && suppliedEncryption !== undefined) {
-            throw new EncryptionHistoryLogGovernedError()
-          }
-          assertEncryptionDescriptorTransition({
-            existing: prior?.encryption,
-            incoming: collectionDescription.encryption
-          })
-          assertPlaintextNotEncrypted({
-            plaintext: suppliedPlaintext ?? prior?.plaintext,
-            encryption: suppliedEncryption ?? prior?.encryption ?? governed,
-            requestName
-          })
-        }
-      })
-    } catch (err) {
-      // Rethrow a typed ProblemError from the data-plane backend unchanged
-      // (e.g. a 507 quota / 412 precondition) rather than flattening it to a
-      // 500; wrap anything genuinely unexpected. `handleError` logs the 5xx once.
-      rethrowOrWrapStorageError({ err, requestName })
-    }
-
-    reply.header('Location', collectionUrl)
-    // Surface the new description ETag so a client can chain a conditional
-    // update (read-modify-CAS on the descriptor).
-    reply.header('etag', formatEtag(written))
-    return existingCollection
-      ? reply.status(204).send() // update
-      : reply.status(201).send(collectionDescription) // create
-  }
-
-  /**
-   * GET /space/:spaceId/:collectionId (no trailing slash): Get Collection details
-   *
-   * @param request {import('fastify').FastifyRequest}
-   * @param reply {import('fastify').FastifyReply}
-   * @returns {Promise<FastifyReply>}
-   */
-  static async get(
-    request: FastifyRequest<{
-      Params: { spaceId: string; collectionId: string }
-    }>,
-    reply: FastifyReply
-  ): Promise<FastifyReply> {
-    const {
-      params: { spaceId, collectionId }
-    } = request
-    const requestName = 'Get Collection'
-
-    // Reject path-traversal / non-URL-safe ids before any storage access.
-    assertValidIds({ spaceId, collectionId }, { requestName })
-
-    // Authorize (capability-or-policy): capability invocation first, then the
-    // effective access-control policy as a fallback (a public-readable Collection).
-    await fetchSpaceAndAuthorize({
-      request,
-      spaceId,
-      collectionId,
-      targetPath: collectionPath({ spaceId, collectionId }),
-      requestName
-    })
-
-    // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
-      request,
-      spaceId,
-      collectionId,
-      requestName
-    })
-
-    // Advertise the Collection's self `url` and linkset (policy discovery) on
-    // the description; both relative, consistent with the other URL fields the
-    // API returns.
-    const url = collectionPath({ spaceId, collectionId })
-    const linkset = linksetPath({ spaceId, collectionId })
-
-    // Report the selected backend, default-filled for Collections created before
-    // the `backend` property existed (spec: an unset backend is `default`).
-    const backend = collectionDescription.backend ?? { id: DEFAULT_BACKEND_ID }
-
-    // The description `version` is the out-of-band ETag validator, not part of
-    // the Collection Description wire body, so strip it before serializing and
-    // surface it as the `ETag` header (so a client can read-modify-CAS the
-    // descriptor). Present only once the Collection has been written under
-    // versioning; a legacy Collection reports none.
-    const descriptionBody = stripDescriptionValidator(collectionDescription)
-    const descriptionEtag = descriptionEtagOf(collectionDescription)
-
-    // A conditional read (spec "Caching") against the description ETag.
-    const notModified = notModifiedReply({
-      request,
-      reply,
-      etag: descriptionEtag
-    })
-    if (notModified) {
-      return notModified
-    }
-
-    const getReply = reply.status(200).type('application/json')
-    if (descriptionEtag !== undefined) {
-      getReply.header('etag', descriptionEtag)
-    }
-    return getReply.send(
-      JSON.stringify({
-        ...descriptionBody,
-        type: [...collectionDescription.type].sort(),
-        backend,
-        url,
-        linkset
-      } satisfies CollectionDescription)
-    )
   }
 
   /**
@@ -666,9 +276,9 @@ export class CollectionRequest {
    * from the Collection's stored `{ id }` against the Space's backends-available;
    * default-filled for Collections created before the property existed).
    *
-   * Authorization is capability-or-policy, the same as Get Collection: the
-   * selected backend is no more sensitive than the Collection description, so a
-   * public-readable Collection may also read its backend.
+   * Authorization is capability-or-policy, the same as Read Collection
+   * Metadata: the selected backend is no more sensitive than the Metadata
+   * object, so a public-readable Collection may also read its backend.
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
@@ -700,7 +310,7 @@ export class CollectionRequest {
     })
 
     // Fetch collection by id
-    const collectionDescription = await getCollectionOrThrow({
+    const collectionMetadata = await getCollectionOrThrow({
       request,
       spaceId,
       collectionId,
@@ -710,28 +320,27 @@ export class CollectionRequest {
     const backend = await resolveBackendDescriptor({
       storage,
       spaceId,
-      collectionDescription
+      collectionMetadata
     })
     return reply.status(200).type('application/json').send(backend)
   }
 
   /**
    * GET /space/:spaceId/:collectionId/meta
-   * Request handler for "Read Collection Metadata": the Collection-level
-   * sibling of Read Resource Metadata. Returns the OPTIONAL server-managed
-   * `createdAt` / `updatedAt` timestamps, the read-only `createdBy` (from the
-   * stored Collection Description), the opaque `epoch` stamp, and the
-   * user-writable `custom` object (omitted when empty). There is no
-   * `contentType` / `size`: a Collection is a container, with no stored
-   * representation to describe.
+   * Request handler for "Read Collection Metadata": the Collection Metadata
+   * object, the "about it" document of the Collection container (spec
+   * "Collection Metadata Data Model") -- its configuration members (`name`,
+   * `backend`, `encryption` / `plaintext`, `generator`, `generatorOrigin`)
+   * beside the server-managed `createdBy`, `createdAt` and `updatedAt`, the
+   * opaque `epoch` stamp and the user-writable `custom` object (omitted when
+   * empty). There is no `contentType` / `size`: a Collection is a container,
+   * with no stored representation to describe. One `ETag` covers the whole
+   * object. On a log-governed Collection the `encryption` member is derived
+   * from the log head (`getCollectionOrThrow`).
    *
-   * Before any metadata has been written this still returns 200 -- carrying
-   * whatever server-managed members are known -- and no `ETag`, since the
-   * `metaVersion` validator only exists once a metadata write has happened.
-   *
-   * Authorization is capability-or-policy, the same as Get Collection: Metadata
-   * reveals nothing the Collection Description does not, so a public-readable
-   * Collection may also read its Metadata.
+   * Authorization is capability-or-policy against the `meta` URL; a capability
+   * on the Collection container covers it too, and the policy level resolves
+   * at the Collection, so a public-readable Collection may read its Metadata.
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
@@ -746,15 +355,14 @@ export class CollectionRequest {
     const {
       params: { spaceId, collectionId }
     } = request
-    const { storage } = request.server
-    const requestName = 'Get Collection Metadata'
+    const requestName = 'Read Collection Metadata'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId, collectionId }, { requestName })
 
     // Authorize (capability-or-policy): the capability's `invocationTarget` is
     // the full `/meta` URL (matching the request URL), and the policy level
-    // resolves at the Collection as for Get Collection.
+    // resolves at the Collection.
     await fetchSpaceAndAuthorize({
       request,
       spaceId,
@@ -763,53 +371,65 @@ export class CollectionRequest {
       requestName
     })
 
-    // authorized, continue
+    // authorized, continue. Metadata cannot exist apart from its Collection:
+    // an absent Collection is a 404, conflated with an unauthorized read.
+    const collectionMetadata = await getCollectionOrThrow({
+      request,
+      spaceId,
+      collectionId,
+      requestName
+    })
 
-    // Collection Metadata is control-plane state, stored beside the Collection
-    // Description rather than in the Collection's selected data-plane backend.
-    let metadata
-    try {
-      metadata = await storage.getCollectionMetadata({ spaceId, collectionId })
-    } catch (err) {
-      rethrowOrWrapStorageError({ err, requestName })
-    }
-    // Metadata cannot exist apart from its Collection: an absent Collection is
-    // a 404, conflated with an unauthorized read exactly as Get Collection is.
-    if (!metadata) {
-      throw new CollectionNotFoundError({ requestName })
-    }
+    // `metaGeneration` / `metaVersion` are the out-of-band `ETag` validator,
+    // not part of the wire body: strip them and emit the `ETag` header. A
+    // legacy Collection written before versioning reports none.
+    const metadataBody = stripMetadataValidator(collectionMetadata)
+    const metaEtag = metadataEtagOf(collectionMetadata)
 
-    // `generation` / `metaVersion` are the out-of-band ETag validator, not
-    // part of the Collection Metadata wire body, so strip them before
-    // serializing and surface them as the `ETag` header. It is present only
-    // once metadata has been written, and is independent of the Collection
-    // Description's ETag, so a metadata edit never disturbs that one.
-    const { generation, metaVersion, ...metadataBody } = metadata
-    const metaEtag = etagOf({ generation, version: metaVersion })
-
-    // A conditional read (spec "Caching") against the `/meta` ETag.
+    // A conditional read (spec "Caching") against the object's `ETag`.
     const notModified = notModifiedReply({ request, reply, etag: metaEtag })
     if (notModified) {
       return notModified
     }
 
+    // Advertise the Collection's self `url` (the canonical trailing-slash
+    // container form) and linkset (policy discovery); both relative,
+    // consistent with the other URL fields the API returns. Report the
+    // selected backend, default-filled for a Collection stored without one
+    // (spec: an unset backend is `default`). `type` is served lexically sorted
+    // (spec SHOULD).
     const metaReply = reply.status(200).type('application/json')
     if (metaEtag !== undefined) {
       metaReply.header('etag', metaEtag)
     }
-    return metaReply.send(JSON.stringify(metadataBody))
+    return metaReply.send(
+      JSON.stringify({
+        ...metadataBody,
+        type: [...collectionMetadata.type].sort(),
+        backend: collectionMetadata.backend ?? { id: DEFAULT_BACKEND_ID },
+        url: collectionPath({ spaceId, collectionId, trailingSlash: true }),
+        linkset: linksetPath({ spaceId, collectionId })
+      } satisfies CollectionMetadata)
+    )
   }
 
   /**
    * PUT /space/:spaceId/:collectionId/meta
-   * Request handler for "Update Collection Metadata". A full replacement of the
-   * Metadata object's user-writable `custom` object (any property omitted is
-   * cleared; a body with no `custom` clears them all). Server-managed properties
-   * are untouched, and any top-level property other than `custom` / `epoch` in
-   * the body is ignored (so a client may GET-modify-PUT the whole object). Does
-   * NOT create: a `PUT` to the `/meta` of a nonexistent Collection is a 404.
-   * Authorization is capability-only (the `PUT` action), the same as Put
-   * Collection. Returns 204.
+   * Request handler for "Update (or Create by Id) Collection": a full
+   * replacement of the Collection Metadata object that creates the Collection
+   * when none exists under the id (201, `Location` naming the Collection
+   * container) and reconfigures it otherwise (204). A writable member the
+   * body omits is cleared, with the spec's exceptions (`plaintext` is kept,
+   * the set-once `encryption` may not be dropped, the read-only members are
+   * ignored); the composition rules live in `composeCollectionMetadata`. One
+   * `ETag` covers the object, so `If-None-Match: *` is the guarded create and
+   * `If-Match` the compare-and-swap on it. Authorization is capability-only
+   * (the `PUT` action) against the `meta` URL; a capability on the Collection
+   * container covers it too.
+   * Before this, `parseAuthHeaders()` hook executed, resulting in:
+   * request.zcap: {
+   *   keyId, headers, signature, created, expires, invocation, digest
+   * }
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
@@ -823,29 +443,37 @@ export class CollectionRequest {
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
-      params: { spaceId, collectionId }
+      params: { spaceId, collectionId },
+      body
     } = request
-    const { storage } = request.server
-    const requestName = 'Update Collection Metadata'
+    if (!body) {
+      throw new InvalidCollectionError()
+    }
+    const { serverUrl, storage } = request.server
+    const requestName = 'Update Collection'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId, collectionId }, { requestName })
 
-    // Pre-auth body shape (400): the body MUST be a JSON object. The deeper
-    // `custom` shape check is deferred until after authorization, where the
-    // Collection's `encryption` descriptor decides whether `custom` is a
-    // plaintext `{ name, tags }` or an opaque envelope (see
-    // `resolveMetadataCustom`) -- neither is knowable before reading the
-    // Collection Description, and gating the check on auth keeps a 422/400
-    // observable only to a caller authorized to write here.
-    const body = assertJsonObjectBody({
-      body: request.body,
-      requestName,
-      detail: 'Request body must be a JSON object.'
-    })
+    // Pre-auth body shape (400). The deeper `custom` check is deferred until
+    // after authorization, where the encryption descriptor in effect decides
+    // whether `custom` is a plaintext `{ name, tags }` or an opaque envelope;
+    // gating it on auth keeps a 422/400 observable only to a caller
+    // authorized to write here.
+    const parsed = parseCollectionMetadataBody({ body, requestName })
+    // The Collection `id` is immutable: when the body carries one, it must
+    // match the `{collection_id}` in the URL (spec spells this out for Update
+    // Space; applied here for parity). `invalid-request-body` (400).
+    if (parsed.body.id !== undefined && parsed.body.id !== collectionId) {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail: `Collection Metadata "id" (${String(parsed.body.id)}) does not match the URL Collection id (${collectionId}).`,
+        pointer: '#/id'
+      })
+    }
 
-    // Verify (capability-only): writing metadata requires a valid capability
-    // invocation (the `PUT` action); no access-control-policy fallback.
+    // Verify (capability-only): writing the object requires a valid
+    // capability invocation; no access-control-policy fallback.
     await fetchSpaceAndVerify({
       request,
       spaceId,
@@ -853,61 +481,129 @@ export class CollectionRequest {
       requestName
     })
 
-    // zCap checks out, continue
-
-    // Fetch collection by id (404 when absent -- this operation does not create)
-    const collectionDescription = await getCollectionOrThrow({
+    // zCap checks out, continue. The stored object is read directly (not
+    // through `getCollectionOrThrow`), since the derived `encryption` of a
+    // log-governed Collection must not be re-persisted; the governed
+    // descriptor is resolved separately for the checks that need it.
+    const [existingCollection, logEncryption] = await Promise.all([
+      storage.getCollectionMetadata({ spaceId, collectionId }),
+      governedEncryptionOf({ storage, serverUrl, spaceId, collectionId })
+    ])
+    const governedEncryption = existingCollection ? logEncryption : undefined
+    const collectionMetadata = await composeCollectionMetadata({
       request,
       spaceId,
       collectionId,
+      parsed,
+      ...(existingCollection && {
+        existing: stripMetadataValidator(existingCollection)
+      }),
+      governedEncryption,
       requestName
     })
 
-    // Branch on the Collection's encryption descriptor. On an encrypted
-    // Collection the `custom` value MUST be a conforming envelope of the scheme
-    // (stored opaquely, `422` on a plaintext/malformed value); on a plaintext
-    // Collection it MUST be a well-formed `{ name, tags }` object (`400`).
-    const custom = resolveMetadataCustom({
-      collectionDescription,
-      body,
-      requestName
+    // Adding a `unique: true` claim for a name that was not unique before MUST
+    // be rejected if the Collection's already-stored Resources already violate
+    // it (spec "Collection Metadata Data Model"). Scan for a pre-existing
+    // conflict before acknowledging the update, when the data-plane backend
+    // supports the scan. Best-effort under concurrency (like the count-quota
+    // checks): a Resource write racing this update could still slip a
+    // conflicting value in, which the write-time uniqueness check then rejects.
+    const newlyUnique = newlyUniqueDeclarations({
+      existing: existingCollection,
+      incoming: collectionMetadata
     })
-
-    // The key-epoch stamp (the `key-epochs` feature) MAY also be declared as a
-    // top-level `epoch` member (a sibling of `custom`); a present value must be
-    // a non-empty string (400). An OMITTED `epoch` CLEARS the stored stamp here
-    // -- the opposite of the Resource-level rule, deliberately. At the Resource
-    // level the stamp describes the CONTENT write, which a metadata write does
-    // not touch, so it survives. A Collection has no separate content: this PUT
-    // replaces the whole `custom` envelope, so carrying the previous stamp
-    // forward would label the new envelope with the epoch of the old one.
-    const { epoch } = parseMetaEpoch({ body, requestName })
-
-    // An `If-Match` / `If-None-Match` precondition (the `conditional-writes`
-    // feature) is evaluated on the Collection's `metaVersion` atomically with
-    // the write; a mismatch surfaces as 412 `precondition-failed` (rethrown
-    // unchanged).
-    let written
-    try {
-      written = await storage.writeCollectionMetadata({
+    if (newlyUnique.length > 0) {
+      const dataBackend = await resolveBackend({
+        request,
         spaceId,
         collectionId,
-        custom,
-        epoch,
-        ...parseWritePreconditions(request.headers)
+        collectionMetadata
       })
-    } catch (err) {
-      rethrowOrWrapStorageError({ err, requestName })
-    }
-    // The Collection was read above, so this only loses a race with a
-    // concurrent Delete Collection -- still a 404, never a create.
-    if (!written) {
-      throw new CollectionNotFoundError({ requestName })
+      if (dataBackend.findEqualityUniqueViolation) {
+        const violation = await dataBackend.findEqualityUniqueViolation({
+          spaceId,
+          collectionId,
+          indexes: newlyUnique
+        })
+        if (violation) {
+          throw new UniqueAttributeConflictError({ variant: 'equality' })
+        }
+      }
     }
 
-    // Return the new `/meta` ETag so a client can chain a subsequent
-    // conditional metadata write.
-    return reply.status(204).header('etag', formatEtag(written)).send()
+    // `If-Match` (the `conditional-writes` feature) makes the write a
+    // compare-and-swap on the object's monotonic version, so two clients
+    // concurrently editing it (e.g. both adding a recipient) cannot silently
+    // clobber one another, and `If-None-Match: *` makes the PUT a guarded
+    // create (two clients racing to provision the same Collection cannot both
+    // succeed, so the loser cannot overwrite the winner's `backend`). Both
+    // opt-in: an unconditional PUT still upserts. Evaluated atomically with
+    // the write inside the backend; a stale validator or a present object
+    // surfaces as 412 `precondition-failed` (rethrown unchanged).
+    const { ifMatch, ifNoneMatch } = parseWritePreconditions(request.headers)
+    const createdBy = invokerDid(request)
+    let written: EtagValidator
+    try {
+      written = await storage.writeCollection({
+        spaceId,
+        collectionId,
+        collectionMetadata,
+        createdBy,
+        ...(ifMatch !== undefined && { ifMatch }),
+        ...(ifNoneMatch !== undefined && { ifNoneMatch }),
+        // Re-evaluate the encryption-descriptor rails and the `plaintext` /
+        // `encryption` exclusion atomically with the write, against the prior
+        // the backend re-reads under its lock: the early checks ran against a
+        // pre-lock read, so without this a concurrent descriptor write in
+        // between could be silently clobbered (an appended epoch, or a
+        // just-added `plaintext`, dropped by this full replacement) even
+        // though both writers passed the checks -- the guarantees must hold
+        // unconditionally, not just under `If-Match`.
+        assertTransition: async prior => {
+          assertCollectionMetadataTransition({
+            parsed,
+            existing: prior,
+            governedEncryption: prior
+              ? await governedEncryptionOf({
+                  storage,
+                  serverUrl,
+                  spaceId,
+                  collectionId
+                })
+              : undefined,
+            requestName
+          })
+        }
+      })
+    } catch (err) {
+      // Rethrow a typed ProblemError from the data-plane backend unchanged
+      // (e.g. a 507 quota / 412 precondition) rather than flattening it to a
+      // 500; wrap anything genuinely unexpected. `handleError` logs the 5xx once.
+      rethrowOrWrapStorageError({ err, requestName })
+    }
+
+    // Surface the new `ETag` so a client can chain a conditional update
+    // (read-modify-CAS on the object).
+    reply.header('etag', formatEtag(written))
+    if (existingCollection) {
+      return reply.status(204).send()
+    }
+    // Created: `Location` names the Collection (its canonical container URL),
+    // not the Metadata object that was written (spec "Update Collection").
+    const collectionUrl = collectionPath({
+      spaceId,
+      collectionId,
+      trailingSlash: true
+    })
+    reply.header('Location', new URL(collectionUrl, serverUrl).toString())
+    // Echo what was persisted, `createdBy` and the container `url` included, so
+    // the create response and a subsequent Read Collection Metadata agree.
+    return reply.status(201).send({
+      ...collectionMetadata,
+      ...(createdBy && { createdBy }),
+      url: collectionUrl
+    })
   }
 
   /**
@@ -978,7 +674,7 @@ export class CollectionRequest {
    * bytes carried verbatim plus the new line), `412` on a lost race. The
    * guarded create is the declaration that makes the Collection log-governed;
    * it is refused with `encryption-immutable` (409) on a Collection whose
-   * Description already holds a client-written `encryption` member. Each
+   * Metadata object already holds a client-written `encryption` member. Each
    * write checks the line contract (`invalid-request-body`, 400) and, against
    * the prior head, the encryption descriptor's transition checks, atomically
    * with the write. Authorization is capability-only (the `PUT` action), as
@@ -1029,15 +725,15 @@ export class CollectionRequest {
         collectionId,
         body,
         ...parseWritePreconditions(request.headers),
-        assertTransition: ({ prior, collectionDescription }) => {
+        assertTransition: ({ prior, collectionMetadata }) => {
           // The declaration: a log may only govern a Collection whose stored
-          // Description holds no client-written descriptor. Pre-release there
-          // is no conversion, only re-provisioning.
-          if (prior === undefined && collectionDescription.encryption) {
+          // Metadata object holds no client-written descriptor. Pre-release
+          // there is no conversion, only re-provisioning.
+          if (prior === undefined && collectionMetadata.encryption) {
             throw new EncryptionImmutableError({
               detail:
                 "A history log cannot govern a Collection whose 'encryption' " +
-                'descriptor was written on its Description.'
+                'descriptor was written on its Metadata object.'
             })
           }
           assertGoverningLogAppend({ body, prior: prior?.body, requestName })
@@ -1186,13 +882,14 @@ export class CollectionRequest {
 
     // Fetch collection by id, and serve the query from the Collection's
     // selected (data-plane) backend.
-    const { collectionDescription, dataBackend } =
-      await fetchCollectionAndBackend({
+    const { collectionMetadata, dataBackend } = await fetchCollectionAndBackend(
+      {
         request,
         spaceId,
         collectionId,
         requestName
-      })
+      }
+    )
 
     // "You did not say which profile" is a malformed request (the Query
     // Profile Registry marks `profile` REQUIRED), not an unsupported feature:
@@ -1233,14 +930,14 @@ export class CollectionRequest {
       // The `equality` profile applies only to plaintext Collections: an
       // encrypted Collection's documents are opaque envelopes the server cannot
       // extract attributes from, so it answers `unsupported-operation` (501).
-      if (collectionDescription.encryption !== undefined) {
+      if (collectionMetadata.encryption !== undefined) {
         throw new UnsupportedOperationError({ requestName })
       }
       // Resolve the declared indexes off the control-plane description: an
       // undeclared/empty declaration means every named attribute fails the
       // fail-closed declared-names check (400). Parse/validate the query body
       // against it, then let the backend extract, match, and paginate.
-      const indexes = declaredIndexesOf({ collectionDescription })
+      const indexes = declaredIndexesOf({ collectionMetadata })
       const parsed = parseEqualityQueryBody({ body, indexes, requestName })
       const result = await dataBackend.queryByEquality({
         spaceId,
@@ -1364,8 +1061,9 @@ export class CollectionRequest {
   }
 
   /**
-   * DELETE /space/:spaceId/:collectionId
-   * Request handler for "Delete Collection" request
+   * DELETE /space/:spaceId/:collectionId/
+   * Request handler for "Delete Collection" request (the Collection container
+   * URL, in its canonical trailing-slash form)
    * Before this, `parseAuthHeaders()` hook executed, resulting in:
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
@@ -1395,7 +1093,11 @@ export class CollectionRequest {
     await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: collectionPath({ spaceId, collectionId }),
+      targetPath: collectionPath({
+        spaceId,
+        collectionId,
+        trailingSlash: true
+      }),
       requestName
     })
 
@@ -1421,8 +1123,9 @@ export class CollectionRequest {
   }
 
   /**
-   * GET /space/:spaceId/:collectionId/ (with trailing slash):
-   * List Collection items.
+   * GET /space/:spaceId/:collectionId/
+   * List Collection items: a `GET` of the Collection container lists its
+   * members (spec "Reading This Document").
    *
    * With one or more `filter[<attr>]=<value>` query parameters this becomes the
    * anonymous-cacheable entry point over the same equality machinery as the
@@ -1479,13 +1182,14 @@ export class CollectionRequest {
 
     // Fetch collection by id, and list (or filter-query) from the Collection's
     // selected (data-plane) backend.
-    const { collectionDescription, dataBackend } =
-      await fetchCollectionAndBackend({
+    const { collectionMetadata, dataBackend } = await fetchCollectionAndBackend(
+      {
         request,
         spaceId,
         collectionId,
         requestName
-      })
+      }
+    )
 
     // GET equality filter: `filter[<attr>]=<value>` maps to the equality profile
     // over the same machinery. Present filters take this cacheable path; their
@@ -1496,7 +1200,7 @@ export class CollectionRequest {
       // every filter attribute MUST be declared in the Collection's
       // `plaintext.indexes` (an encrypted Collection has none, so a filter
       // there is always a 400).
-      const indexes = declaredIndexesOf({ collectionDescription })
+      const indexes = declaredIndexesOf({ collectionMetadata })
       const declared = new Set(indexes.map(declaration => declaration.name))
       for (const name of Object.keys(filters)) {
         if (!declared.has(name)) {
@@ -1530,9 +1234,10 @@ export class CollectionRequest {
     const collectionItems = await dataBackend.listCollectionItems({
       spaceId,
       collectionId,
-      // Pass the control-plane description: a data-plane (external) backend does
-      // not hold it, and the listing's `name`/`type`/encryption flag come from it.
-      collectionDescription,
+      // Pass the control-plane Metadata object: a data-plane (external)
+      // backend does not hold it, and the listing's `name`/`type`/encryption
+      // flag come from it.
+      collectionMetadata,
       ...(limit !== undefined && { limit }),
       ...(cursor !== undefined && { cursor })
     })

@@ -70,15 +70,16 @@ export function assertFreshBuild({
 }
 
 /**
- * Space Description cache (see src/requests/spaceContext.ts). The description is
- * read on every authorized handler, so it is memoized per storage backend.
+ * Space Metadata cache (see src/requests/spaceContext.ts). The Space Metadata
+ * object is read on every authorized handler, so it is memoized per storage
+ * backend.
  * Writes invalidate the entry explicitly; the short TTL is a backstop that also
  * bounds staleness when several server processes share one storage backend (so
  * one process's cache cannot serve another process's write indefinitely).
  */
-export const SPACE_DESCRIPTION_CACHE_TTL = 10_000 // milliseconds
-/** Max number of Space Descriptions held per backend cache (LRU-bounded). */
-export const SPACE_DESCRIPTION_CACHE_MAX = 1_000
+export const SPACE_METADATA_CACHE_TTL = 10_000 // milliseconds
+/** Max number of Space Metadata objects held per backend cache (LRU-bounded). */
+export const SPACE_METADATA_CACHE_MAX = 1_000
 
 /**
  * Resolved `did:webvh` controller-document cache (see
@@ -825,5 +826,3 @@ export const POLICY_URL =
   'https://digitalcredentials.github.io/wallet-attached-storage-spec/#policy'
 export const META_URL =
   'https://digitalcredentials.github.io/wallet-attached-storage-spec/#resource-metadata-data-model'
-export const COLLECTION_META_URL =
-  'https://digitalcredentials.github.io/wallet-attached-storage-spec/#collection-data-model'

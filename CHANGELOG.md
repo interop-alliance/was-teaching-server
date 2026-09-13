@@ -2,7 +2,63 @@
 
 ## 0.32.0 - TBD
 
+### Changed
+
+Breaking: this server now speaks WAS spec v0.5's route table for Spaces and
+Collections.
+
+- A Space or Collection is canonically addressed with a trailing slash: `GET`
+  lists its members, `POST` adds one, `DELETE` removes it, and `PUT` there is
+  405 (`Allow` header, problem type `about:blank`, title `Method Not Allowed`).
+  The no-slash form redirects with a 308 for every method.
+- A method a reserved endpoint does not implement is 405 with an `Allow` header
+  naming the methods it does, at every level. For example, `DELETE` at either
+  Metadata URL is 405 with `Allow: GET, HEAD, PUT`, since the object is removed
+  by deleting its container. Such requests used to fall through to a Collection
+  or Resource operation on the reserved segment and answer 409 `reserved-id`.
+- The Space description moved to `GET`/`PUT /space/:spaceId/meta`, the new Space
+  Metadata object; `PUT` creates the Space when absent or replaces it.
+- The Collection description and the former `/meta` object are merged into one
+  Collection Metadata object at `GET`/`PUT /space/:spaceId/:collectionId/meta`,
+  under one `ETag`; `PUT` is a full replacement that creates the Collection when
+  absent.
+- `GET`/`POST /space/:spaceId/` now list/create Collections. The
+  `/space/:spaceId/collections/` endpoint is retired and 308s to the Space URL;
+  `collections` and `meta` are reserved Collection ids.
+- A Collection Metadata update that omits `backend` keeps the stored backend
+  selection; only a create with none is assigned the default.
+- Container `url` members and the `Location` of a newly created Space or
+  Collection carry the trailing slash; Resource URLs are unchanged.
+- The Space root capability's `invocationTarget` is now the trailing-slash Space
+  URL.
+- The ladder-delegation clause (`lib/clientAnnexClause.ts`) was updated for the
+  new route table: its target-exact shape now splits into a DELETE grant on the
+  Space URL and a GET grant on the Space Metadata URL, and an invocation-time
+  check refuses a ladder-descended chain invoked as `PUT` on a Space Metadata
+  URL or as `DELETE` on a Space URL, unless every ladder-signed delegation in
+  the chain is itself a target-exact DELETE-only grant of that Space.
+- Bumped `@interop/storage-core` to 0.14.1, which adds `meta` to the reserved
+  Collection id registry this server mirrors.
+- Bumped the `@interop/was-client` devDependency to 0.61.0, which speaks the
+  v0.5 route table, and migrated the integration tests to it.
+- Postgres migration v6 renames the `spaces` and `collections` `description`
+  columns to `metadata` and their validator columns to `meta_generation` /
+  `meta_version`. It drops the Collection `/meta` columns without copying their
+  values, so an existing Collection loses its `custom`, `epoch` and timestamps.
+  The filesystem backend's separate Collection `/meta` sidecar file is gone; the
+  merged object lives in the Collection's own metadata file.
+
+`@interop/was-conformance-suite` 0.15.0 still speaks the previous (v0.4) route
+table; running it against this server requires the corresponding suite release.
+
 ### Fixed
+
+- A Create Collection request with no body is 400 `invalid-request-body`; it
+  used to be a 500.
+- A delegated Space Metadata create whose chain is signed by someone other than
+  the body's controller named the wrong cause in its `controller-mismatch`
+  detail. It reported the chain as rooted at the Space URL, a root the server
+  accepts, instead of naming the signer.
 
 Backend correctness defects found in a review of `src/backends/`.
 
@@ -61,6 +117,38 @@ Filesystem backend:
   respectively, and the third no longer fails.
 - A Space import that wrote nothing, or failed part-way, kept its whole
   reservation against the Space's capacity until the usage cache expired.
+
+Defects found in a review of the route-table change above.
+
+- A ladder-signed whole-subtree delegation could still reach Delete Space. The
+  invocation-time bound read only the chain's tail, and a client annex's own
+  verification method -- which holds both capability relations, and so is not
+  ladder authority -- could narrow such a grant into a target-exact DELETE-only
+  child by ordinary attenuation. The bound now reads every ladder-signed link in
+  the chain.
+- An Update Collection Metadata request that omitted `backend` repointed the
+  Collection at the server's default backend, stranding the Resources already
+  written to the selected one. An omitted `backend` now keeps the stored
+  selection; only a create with none takes the default.
+- A Collection created with an `encryption` descriptor and no `custom` could
+  never be updated again, because every later write was judged as a `custom`
+  envelope and refused with 422. An omitted `custom` is now the cleared state on
+  an encrypted Collection as on a plaintext one.
+- The two backends disagreed on `createdAt` for a Collection Metadata object
+  stored without one, which is how every pre-v0.5 archive imports: the
+  filesystem backend left it absent, Postgres stamped the update's own clock as
+  the creation time. Both now share one stamping rule, which preserves it as
+  absent. The shared rule also settles a `custom: null` write, which faulted on
+  the filesystem backend and cleared on Postgres.
+- The retired `/space/:spaceId/collections` redirect rebuilt its `Location` from
+  the router-decoded Space id, so a percent-encoded id redirected to a different
+  resource, and one containing `?` injected a query into the path.
+- `Allow` is exposed through CORS, so a browser client can read what a container
+  accepts from the 405 that names it.
+- The 201 creating a Collection by `PUT .../meta` omitted `createdBy`, so it
+  disagreed with the Read that follows it.
+- A delegated-provisioning grant minted on a Space's container URL could update
+  an existing Space's Metadata object but not create one by `PUT`.
 
 ## 0.31.0 - 2026-09-10
 

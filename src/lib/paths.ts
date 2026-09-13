@@ -7,31 +7,32 @@
  * from one place rather than re-deriving them inline (which risks drift from the
  * routes).
  *
- * Builders return the canonical, no-trailing-slash member form by default. The
- * spec assigns distinct meaning to a trailing slash -- it addresses the
- * container / "list-or-add-to" view of a member -- so the container builders take
- * an explicit `trailingSlash` option (or, for the always-container `/spaces/` and
- * `.../collections/`, bake the slash in) rather than leaving the slash to drift
- * across call sites. A leaf Resource has no children, so `resourcePath` has no
- * container form.
+ * Builders return the no-trailing-slash form by default, the base every
+ * sub-resource path (`meta`, `policy`, `linkset`, ...) extends. A container
+ * (a Space or a Collection) is canonically addressed WITH the trailing slash
+ * (spec "Reading This Document"): that form lists its members, adds one, and
+ * deletes the container, and the bare form only redirects to it. So a call
+ * site that names the container itself passes `trailingSlash: true` (or, for
+ * the always-container `/spaces/`, gets the slash baked in) rather than
+ * leaving the slash to drift. A leaf Resource has no children, so
+ * `resourcePath` has no container form.
  */
 
 /**
- * The SpacesRepository container (`/spaces/`) or one of its members
- * (`/spaces/:spaceId`). The member form is used for the `Location` header of a
- * newly created Space; the container form is the `POST`/`GET` target.
- * @param options {object}
- * @param [options.spaceId] {string}   when present, the repository member path;
- *   otherwise the (trailing-slash) container path
+ * The SpacesRepository container (`/spaces/`), the `POST` (Create Space) and
+ * `GET` (List Spaces) target. The repository has no member paths: a Space is
+ * addressed under `/space/:spaceId`, not under `/spaces/`, so the `Location`
+ * of a newly created Space is `spacePath({ spaceId, trailingSlash: true })`.
  * @returns {string}
  */
-export function spacesPath({ spaceId }: { spaceId?: string } = {}): string {
-  return spaceId !== undefined ? `/spaces/${spaceId}` : `/spaces/`
+export function spacesPath(): string {
+  return `/spaces/`
 }
 
 /**
- * `/space/:spaceId` (member) or `/space/:spaceId/` (container -- the
- * "add a Collection" / Space-as-container view) when `trailingSlash` is set.
+ * `/space/:spaceId` (the base of the Space's sub-resource paths) or
+ * `/space/:spaceId/` (the canonical Space container URL: list Collections,
+ * add one, delete the Space) when `trailingSlash` is set.
  * @param options {object}
  * @param options.spaceId {string}
  * @param [options.trailingSlash] {boolean}   address the container form
@@ -48,13 +49,14 @@ export function spacePath({
 }
 
 /**
- * `/space/:spaceId/collections/` -- the "List Collections" container path.
+ * `/space/:spaceId/meta` -- the Space Metadata object (reserved `meta`
+ * segment), the "about it" document of the Space container.
  * @param options {object}
  * @param options.spaceId {string}
  * @returns {string}
  */
-export function collectionsPath({ spaceId }: { spaceId: string }): string {
-  return `${spacePath({ spaceId })}/collections/`
+export function spaceMetaPath({ spaceId }: { spaceId: string }): string {
+  return `${spacePath({ spaceId })}/meta`
 }
 
 /**
@@ -78,9 +80,10 @@ export function importPath({ spaceId }: { spaceId: string }): string {
 }
 
 /**
- * `/space/:spaceId/:collectionId` (member) or `/space/:spaceId/:collectionId/`
- * (container -- the "add a Resource" / "list items" view) when `trailingSlash`
- * is set.
+ * `/space/:spaceId/:collectionId` (the base of the Collection's sub-resource
+ * paths) or `/space/:spaceId/:collectionId/` (the canonical Collection
+ * container URL: list items, add one, delete the Collection) when
+ * `trailingSlash` is set.
  * @param options {object}
  * @param options.spaceId {string}
  * @param options.collectionId {string}

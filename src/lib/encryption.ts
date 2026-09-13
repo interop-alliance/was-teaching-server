@@ -2,8 +2,8 @@
  * Collection client-side encryption descriptor helpers (spec "Encrypted
  * Collections"). A Collection MAY carry a non-secret `encryption` descriptor
  * declaring that its Resources are client-encrypted and naming the scheme; any
- * authorized reader discovers it by reading the Collection Description and then
- * decrypts with its own keys. The server never decrypts: it validates only the
+ * authorized reader discovers it by reading the Collection Metadata object and
+ * then decrypts with its own keys. The server never decrypts: it validates only the
  * descriptor's *shape* and enforces *set-once* immutability, storing the value
  * opaquely. This mirrors the backend-selection helpers in lib/backends.ts
  * (validate on write / preserve on read), kept separate because encryption is a
@@ -650,23 +650,23 @@ export function assertEncryptionTransition({
  * only to a caller already authorized to write the target.
  *
  * @param options {object}
- * @param options.collectionDescription {{ encryption?: CollectionEncryption }}
- *   the target Collection's stored description
+ * @param options.collectionMetadata {{ encryption?: CollectionEncryption }}
+ *   the target Collection's stored Collection Metadata object
  * @param [options.contentType] {string}   the request `Content-Type` header
  * @param options.body {unknown}   the parsed request body (an object for the
  *   `application/<suffix>+json` media types the scheme registry uses)
  * @returns {void}
  */
 export function assertEncryptedWriteConforms({
-  collectionDescription,
+  collectionMetadata,
   contentType,
   body
 }: {
-  collectionDescription: { encryption?: CollectionEncryption }
+  collectionMetadata: { encryption?: CollectionEncryption }
   contentType?: string
   body: unknown
 }): void {
-  const resolved = resolveEncryptionProfile({ collectionDescription })
+  const resolved = resolveEncryptionProfile({ collectionMetadata })
   if (resolved === undefined) {
     return
   }
@@ -694,18 +694,18 @@ export function assertEncryptedWriteConforms({
  * defensively -- names an unrecognized scheme, so the write-time conformance
  * checks below are a no-op in both cases.
  * @param options {object}
- * @param options.collectionDescription {{ encryption?: CollectionEncryption }}
- *   the target Collection's stored description
+ * @param options.collectionMetadata {{ encryption?: CollectionEncryption }}
+ *   the target Collection's stored Collection Metadata object
  * @returns {{ scheme: string, profile: object } | undefined}
  */
 function resolveEncryptionProfile({
-  collectionDescription
+  collectionMetadata
 }: {
-  collectionDescription: { encryption?: CollectionEncryption }
+  collectionMetadata: { encryption?: CollectionEncryption }
 }):
   | { scheme: string; profile: (typeof SUPPORTED_ENCRYPTION_SCHEMES)[string] }
   | undefined {
-  const scheme = collectionDescription.encryption?.scheme
+  const scheme = collectionMetadata.encryption?.scheme
   if (scheme === undefined) {
     return undefined
   }
@@ -730,19 +730,19 @@ function resolveEncryptionProfile({
  * a caller already authorized to write the target.
  *
  * @param options {object}
- * @param options.collectionDescription {{ encryption?: CollectionEncryption }}
- *   the target Collection's stored description
+ * @param options.collectionMetadata {{ encryption?: CollectionEncryption }}
+ *   the target Collection's stored Collection Metadata object
  * @param options.custom {unknown}   the request body's `custom` value
  * @returns {void}
  */
 export function assertEncryptedMetaConforms({
-  collectionDescription,
+  collectionMetadata,
   custom
 }: {
-  collectionDescription: { encryption?: CollectionEncryption }
+  collectionMetadata: { encryption?: CollectionEncryption }
   custom: unknown
 }): void {
-  const resolved = resolveEncryptionProfile({ collectionDescription })
+  const resolved = resolveEncryptionProfile({ collectionMetadata })
   if (resolved === undefined) {
     return
   }

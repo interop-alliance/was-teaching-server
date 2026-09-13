@@ -1322,3 +1322,368 @@ surface. Denials currently funnel through the generic authorization error in
 `src/zcap.ts` / `src/authorize.ts`; the revocation cause originates in
 `revocationChainInspector` (`src/lib/revocations.ts`) and is distinguishable at
 that point.
+
+### WAS-99: Decide what `DELETE` answers at a container's `meta` sub-resource
+
+- status: done (2026-09-12)
+- priority: medium
+- labels: was-v0.5, routes, wire-contract
+- discovered-from: WAS-97
+- touches:
+  - wallet-attached-storage-spec: the route table says there is no `DELETE` at
+    `meta`, but does not say what a server answers there; whichever status is
+    chosen wants a sentence
+  - was-teaching-server: `src/routes.ts`, `src/requests/CollectionRequest.ts`
+- acceptance:
+  - [ ] `DELETE /space/:s/meta` and `DELETE /space/:s/:c/meta` answer the chosen
+        status, decided by the maintainer
+  - [ ] The case in `test/client-annex-clause-api.test.ts` that asserts a
+        ladder-signed `DELETE` aimed at the Space Metadata URL is refused
+        asserts that status, and still proves the clause refuses the invocation
+        rather than the route refusing it first
+
+`DELETE /space/:s/meta` currently answers `409 reserved-id`, before any
+authorization. The `meta` segment occupies the `{collectionId}` position, so the
+request routes to Delete Collection, whose `assertValidIds` rejects the reserved
+id. The status is defensible but accidental, and it is unauthenticated where the
+neighbouring refusals are masked as 404.
+
+Three candidates. `405` with an `Allow` header naming `GET, HEAD, PUT` matches
+what the v0.5 container rule already does for a `PUT` at a container URL, and
+says the true thing: the method is not defined at this URL. `404` matches the
+masking every other under-authorized refusal uses. `409 reserved-id` is what
+falls out today. This is a wire-contract choice, so it is the maintainer's.
+
+Found while fixing the invocation-time ladder bound: the clause test asserting
+that a ladder-signed `DELETE` aimed at the Space Metadata URL is refused now
+never reaches the clause, because the route refuses it first. That assertion is
+left failing rather than retargeted, since retargeting it would bake in the
+accidental status.
+
+2026-09-12: resolved as 405. Both Metadata URLs register an explicit `DELETE`
+that raises `MethodNotAllowedError`, so the request no longer falls through to
+the parametric route one level up. The maintainer took the reading that a 405
+says the true thing (the method is not defined at this URL) while 409
+`reserved-id` answered a question the request had not asked, and that the
+404-masking argument does not apply, since which methods a Metadata URL accepts
+is static route-table knowledge rather than anything per-Space.
+
+### WAS-6: Resource `id` supplied on POST create
+
+- status: done (2026-09-12)
+- priority: low
+- labels: data-model, spec-blocked
+- acceptance: none yet -- implement only once the spec defines a
+  content-type-independent mechanism
+
+`CollectionRequest.post` always generates a uuid and ignores any client-chosen
+id. The spec's Create Resource error list (`reserved-id`, `id-conflict` for "the
+supplied Resource `id`") implies a client can supply one, and its POST example
+narrates "since no Resource id was specified, the server auto-generated an id"
+-- but the Resource section never states the _mechanism_.
+
+The spec defines it only for **Collections**: "When a Collection is created via
+a `POST`, the client can specify the `id` of the Collection. If the `id` is not
+specified, one is auto-generated." The Resource POST section leans on that
+convention without restating it. A body `id` property works for a Collection
+Description, whose body is a JSON object the server owns the schema of; it does
+not generalize to a Resource, whose POST body **is** the stored content and may
+be an opaque binary blob. There is no `Slug` header in the spec (grepped: zero
+hits). So this is a spec ambiguity before it is a server gap. Implement only
+once the spec nails a content-type-independent mechanism.
+
+Resolved 2026-09-12 without implementation (WAS-104): the spec now says Create
+Resource generates the id and a client choosing one uses Update (or Create by
+Id) Resource, and it no longer lists `reserved-id` or an existing-id
+`id-conflict` there. No POST mechanism is coming, so nothing remains to build.
+
+### WAS-100: Spec text for `backend` surviving an omitting Collection Metadata update
+
+- status: done (2026-09-12)
+- priority: medium
+- labels: was-v0.5, spec-gap, wire-contract
+- discovered-from: WAS-97
+- touches:
+  - wallet-attached-storage-spec: "Update (or Create by Id) Collection" lists
+    the qualifications to full replacement; `backend` needs to join `plaintext`
+    there, or the server's deviation needs removing
+  - was-teaching-server: `src/requests/collectionInput.ts`
+  - was-conformance-suite: shipped -- suite 0.16.0, consumed 2026-09-12, as the
+    optional `collection.meta-update-omits-backend-keeps-selection` (optional
+    because registering a backend to select has no spec'd wire contract)
+- acceptance:
+  - [x] The spec says what an update omitting `backend` does
+  - [x] The server matches it, and the comment in `composeCollectionMetadata`
+        citing the rule points at the spec rather than at the reasoning
+
+The spec makes a Collection Metadata `PUT` a full replacement, qualified only
+for the server-managed members and for a log-governed `encryption`. `plaintext`
+carries its own carve-out in its member definition. `backend` carries none, so
+by the letter of the spec an update that omits it clears it, and a cleared
+`backend` means the server default.
+
+That is what this server did until 2026-09-12, and it silently stranded data: a
+Collection selecting a registered external backend, updated with a body that
+omits `backend` -- a rename, say -- repointed its data plane at the default,
+leaving every Resource already stored in the external backend unreachable and
+sending later writes elsewhere. The server now keeps the stored selection on an
+omitting update, which deviates from the spec as written. Either the spec gains
+the carve-out, or the rule becomes something else deliberately (a set-once
+member like `encryption`, say, refusing a change outright once the Collection
+holds Resources).
+
+Status 2026-09-12: the carve-out was chosen over a set-once rule. The spec now
+requires an update that omits `backend` to keep the stored selection (Update (or
+Create by Id) Collection, the `backend` member definition, and Backends), and
+the server comment cites it. The conformance case for the omitting update is the
+remaining touch; it rides the suite's v0.5 pass.
+
+### WAS-101: Answer 405 for every method a reserved endpoint does not implement
+
+- status: done (2026-09-12)
+- priority: medium
+- labels: was-v0.5, routes, wire-contract, errors
+- discovered-from: WAS-99
+- touches:
+  - wallet-attached-storage-spec: shipped -- WASS-38 landed 2026-09-12 (the
+    `#methods-at-reserved-endpoints` subsection; container-`PUT` 405 raised to
+    MUST; decision 0005 Amendment 4)
+  - was-teaching-server: `src/routes.ts` (`refuseUnimplementedMethods`, called
+    last in the Space, Collection and Resource groups), `src/errors.ts`
+    (`MethodNotAllowedError` title and detail), ARCHITECTURE.md, CHANGELOG.md
+  - storage-core: unaffected (no new problem type; the refusal is `about:blank`)
+  - was-client: unaffected (`mapError` maps a 405 to a generic `WasError`
+    through its status fallback)
+  - was-conformance-suite: shipped -- suite 0.16.0, consumed 2026-09-12: the new
+    `reserved-methods-api` suite loops over the reserved endpoints at all three
+    levels, with container-`PUT` 405 and absent-Space cases;
+    `collection.meta-reserved-resource-id-409` became
+    `collection.meta-delete-405-not-reserved-id`
+- acceptance:
+  - [x] Every reserved endpoint answers each method it does not implement with
+        405 and an `Allow` header read from the router, at all three levels;
+        `OPTIONS` still reaches CORS preflight and `HEAD` follows `GET`
+  - [x] The 405 is identical for an existing and an absent Space
+  - [x] `MethodNotAllowedError` titles every 405 `Method Not Allowed` (RFC 9457
+        section 4.2.1) and names the refusing URL in `detail`
+  - [x] `test/error-registry-api.test.ts` covers the endpoints at each level,
+        the absent-Space case, the empty `Allow`, `HEAD`, and CORS preflight
+  - [x] The conformance suite's v0.5 pass asserts the rule
+
+The WAS-99 fix answered `DELETE` at the two `meta` URLs with 405. A probe then
+showed `meta` was not special: every other reserved endpoint still fell through
+to the parametric route one level up and answered a `409 reserved-id` for a
+method it lacked (`DELETE /space/{s}/linkset`, `GET /space/{s}/export`,
+`PUT /space/{s}/{c}/quota`, `GET /space/{s}/{c}/query`). The maintainer chose a
+general spec rule over a `meta`-only one, and this item is the server half.
+
+The refusals are data-driven. Each group ends by reading which methods its
+reserved endpoints implement from the router and registering a 405 for every
+other method Fastify routes, so the `Allow` header cannot drift from the routes.
+That helper must stay last in its group.
+
+One consequence worth knowing: every Collection-level reserved segment is now a
+static route for every method, so a reserved Resource id can no longer reach the
+Resource `PUT` over HTTP. `assertValidId`'s reserved-id guard stays covered by
+its unit tests and by tar import. The cross-collection `/space/{s}/query` is
+anchored but served by nothing here, so it answers every method with an empty
+`Allow`, which RFC 9110 permits.
+
+### WAS-104: Reserved and duplicate Resource ids on Create Resource are unreachable
+
+- status: done (2026-09-12)
+- priority: medium
+- labels: was-v0.5, spec-gap, wire-contract
+- discovered-from: WAS-97
+- touches:
+  - wallet-attached-storage-spec: shipped -- WASS-39 landed 2026-09-12 (Create
+    Resource and Update (or Create by Id) Resource drop `reserved-id`, Create
+    Resource drops the existing-id `id-conflict`, the Collection `meta`
+    paragraph drops the `POST` body `id` wording, Version History bullet)
+  - was-teaching-server: unaffected (Create Resource already generates the id)
+  - was-conformance-suite: shipped -- suite 0.16.0, consumed 2026-09-12:
+    `write-validation.resource-reserved-id-put` and
+    `ordering.resource-post-conflict-404` removed
+- acceptance:
+  - [x] The spec no longer lists an error for Resource creation that no HTTP
+        request can produce
+  - [x] The suite asserts no Resource `reserved-id` or existing-id `id-conflict`
+  - [x] Suite 0.16.0 is published and consumed here
+
+The spec listed `reserved-id` (409) and `id-conflict` (409) among the errors of
+Create Resource (`POST /space/{s}/{c}/`), and said a reserved Resource id is
+rejected "where a Resource id is supplied explicitly, as in a `POST` body's
+`id`". The operation never said a body `id` names the Resource, though, and its
+example has the server generate one. This server has always ignored a body `id`
+there and minted a UUID, so neither error could occur.
+
+Under v0.4 the suite reached the reserved-id guard with a `PUT` at a reserved
+Resource id such as `.../quota`. Since WAS-101 every Collection-level reserved
+segment is a static route that answers 405 for a method it lacks, so that path
+is gone and no HTTP request produces `reserved-id` for a Resource. The suite's
+first v0.5 replacement case sent the reserved id in a `POST` body and failed
+here (201 with a generated id).
+
+Decision 2026-09-12 (maintainer): the spec drops the errors rather than the
+server honoring a body `id`. Honoring it would have been new wire behavior, and
+a JSON Resource carrying its own `id` (a Verifiable Credential with a URL id,
+say) would have been refused or placed at that id. `PUT` stays the only way to
+choose a Resource id. The same reasoning removed `reserved-id` from Update (or
+Create by Id) Resource, whose path a reserved segment turns into a reserved
+endpoint. `assertValidId`'s reserved-id guard stays, covering tar import.
+
+### WAS-97: Serve the v0.5 route table -- container descriptions at `meta`, the merged Collection Metadata object, trailing-slash canonical URLs
+
+- status: done (2026-09-12)
+- priority: high
+- labels: was-v0.5, breaking, routes, persistence, zcap, migration
+- design: settled 2026-09-11 (four points, each an ask answered in session):
+  1. Predicate 3 splits by verb. DELETE branch: the target is the canonical
+     Space URL `/space/{s}/`, equal to the parent's target unchanged, with
+     `allowedAction` exactly `['DELETE']` (the shape WASS-2 restates). GET
+     branch: the target is `/space/{s}/meta` with `allowedAction` exactly
+     `['GET']`, and the parent's target is that meta URL or the Space URL. The
+     DELETE grant's reach is unchanged: the zcap library's `/`-boundary prefix
+     rule already let the old bare `/space/{s}` target cover the subtree, so the
+     old bare-vs-slash distinction was cosmetic. What the distinction did carry
+     was that a subtree grant (predicates 1 and 2) reached neither Update Space
+     nor Delete Space; under v0.5 both sit inside the subtree, so the clause
+     adds an invocation-time bound (the inspector receives the invoked target
+     and action from `handleZcapVerify`): a chain carrying a ladder-signed link
+     is refused on `PUT /space/{s}/meta`, and on `DELETE /space/{s}/` unless
+     every ladder-signed link in the chain is exactly the DELETE shape above.
+     (Amended 2026-09-12 from a check of the invoked capability alone, which an
+     annex verification method's narrowing could satisfy. Signed off
+     2026-09-12.) The app-connect-spec decision 0003 amendment and wallet-core
+     WC-230 shape follow from this (drafted in the 2026-09-11 session report,
+     not yet carried over).
+  2. The Space root capability target (`attenuatedRootTarget`, and the
+     `urn:zcap:root:` id a client mints for the Space) is the canonical
+     `/space/{s}/`. The prefix rule covers `/meta` and every Collection; the
+     bare form only redirects. WCL-41 mints the same string.
+  3. `meta` joins the server's local reserved-Collection-id set now;
+     storage-core 0.14.0 lacks it, so the drift-guard test stays red until a
+     storage-core 0.14.1 adds it upstream and the devDependency is bumped.
+  4. The server lands ahead of WCL-41: was-client 0.60.0 still speaks the v0.4
+     table, so the `test/` API suites that drive the server through it stay red
+     until the client half ships. Backend-contract and unit suites stay green.
+     Persistence: one storage-port pair per container (`writeSpace` /
+     `getSpaceMetadata`, `writeCollection` / `getCollectionMetadata`), one
+     validator surfaced out of band as `metaGeneration` / `metaVersion`, stored
+     as the `_generation` / `_version` file members on the filesystem and the
+     `meta_generation` / `meta_version` columns in Postgres (migration v6
+     renames the `description` jsonb to `metadata`, folds the Collection
+     `meta_*` annotation columns into it, and drops the `description_*` pair).
+     The Collection metadata sidecar file is gone; `custom`, `epoch`,
+     `createdAt`, `updatedAt` live in the one Collection metadata file.
+- design-approved: 2026-09-11
+- blocked-by: storage-core SC-4 (DONE)
+- touches:
+  - wallet-attached-storage-spec: shipped -- WASS-29 landed 2026-09-11 (decision
+    `_spec/decisions/0005-container-descriptions-live-at-meta.md`, with its two
+    2026-09-11 amendments)
+  - was-teaching-server: `src/routes.ts` (the Space and Collection route
+    tables),
+    `src/requests/{SpaceRequest,CollectionRequest,SpacesRepositoryRequest,spaceContext}.ts`,
+    `src/types.ts` (the storage-port methods for descriptions and metadata),
+    `src/backends/filesystem.ts` and `src/backends/postgresSchema.ts` (the
+    merge, plus a Postgres migration),
+    `src/lib/{collectionListing,paths,validateId,metadataWrite}.ts`,
+    `src/lib/clientAnnexClause.ts`; ARCHITECTURE.md and AGENTS.md; a CHANGELOG
+    entry naming the break
+  - storage-core: shipped -- SC-4 shipped the merged type (0.14.0), and 0.14.1
+    added `meta` to the reserved-Collection-id registry; consumed here
+    2026-09-12, so the drift-guard test is green
+  - was-client: shipped -- WCL-41 released as 0.61.0; consumed here 2026-09-12,
+    with the raw-request `test/` suites migrated to the v0.5 table, so the full
+    Vitest suite is green
+  - was-conformance-suite: shipped -- the v0.5 pass released as 0.16.0 and
+    consumed here 2026-09-12 (`pnpm conformance:local` 262/262). Retired the
+    two-validator case in favor of one asserting a shared `ETag`
+  - wallet-core: waived 2026-09-12 (maintainer) -- WC-230 stays open in
+    wallet-core. WC-230 filed 2026-09-11 is the minting half of the
+    ladder-delegation redesign below -- `clientAnnex/spaceCapability.ts` mints
+    exactly the single-verb, bare-Space-URL capability predicate 3 admits. The
+    two items settle one shape together; neither should guess ahead of the other
+  - freewallet: FW-523 filed 2026-09-11 (the downstream grant minters and the
+    durable activity history that records their targets); it is blocked by this
+    item, not blocking it
+  - app-connect-spec: waived 2026-09-12 (maintainer) -- the decision 0003
+    amendment for the invocation-time ladder bound (design point 1) is not
+    carried over yet
+- acceptance:
+  - [x] Space routes: `GET`/`PUT` at `/space/:spaceId/meta` read and write the
+        Space Metadata object; `GET /space/:spaceId/` lists Collections and
+        `POST /space/:spaceId/` creates one; `DELETE /space/:spaceId/` deletes
+        the Space; `PUT` at the bare Space URL is 405; the bare form
+        308-redirects to the trailing-slash form
+  - [x] `/space/:spaceId/collections` and `/collections/` are retired, the
+        segment stays reserved, and the path MAY 308 to the Space URL
+  - [x] Collection routes: `GET`/`PUT` at `/space/:s/:c/meta` read and write the
+        merged object, `PUT` creating the Collection when absent;
+        `GET /space/:s/:c/` lists members, `POST` adds one,
+        `DELETE /space/:s/:c/` removes the Collection, `PUT` at the bare
+        Collection URL is 405
+  - [x] One validator. The description and metadata storage-port pairs collapse
+        into one, the filesystem sidecar merges into the description file, and
+        the Postgres `description_*` / `meta_*` column pairs unify under a
+        migration. The lock namespaces that are deliberately disjoint today
+        become one, and the comments saying why they were disjoint are replaced
+  - [x] `If-None-Match: *` on the merged `PUT` means "create only if the
+        Collection does not exist"; there is no never-written metadata state and
+        no `DELETE` at `meta`
+  - [x] `meta` joins the Space-level reserved Collection ids (it is already a
+        reserved Resource id), and the Space-level route guard mirrors the one
+        the Resource routes already have
+  - [x] Container `url` members carry the trailing slash everywhere the server
+        stamps one: the Space Metadata object, the List Spaces items, the
+        Collection Metadata object, and the List Collection envelope. Resource
+        URLs are unchanged. `lib/paths.ts` already has the `trailingSlash`
+        option, so these are call-site fixes
+  - [x] The ladder-delegation target rule is redesigned, not renamed. See the
+        paragraph below; this box does not close on a mechanical substitution
+  - [x] The conformance suite passes against the new route table
+
+Context: WAS v0.5 moves a container's description to its `meta` sub-resource,
+merges a Collection's description with its Metadata object into one object with
+one validator, makes the trailing-slash form of a container URL canonical, and
+turns the Space into an ordinary container whose `GET` lists Collections and
+whose `POST` creates one. This server is the reference implementation and the
+canonical "does the spec match an implementation?" check, so until it serves the
+new table the spec text is unverified.
+
+The persistence merge is the bulk of the work. A Collection's description and
+its metadata are two objects today, with two validators, two storage-port method
+pairs, a separate filesystem sidecar, and two sets of Postgres columns whose
+schema comment states they are "deliberately INDEPENDENT". The filesystem
+backend even takes disjoint locks so a metadata write and a description write
+cannot block one another. All of that collapses into one object, one
+`metaVersion`, and one lock.
+
+The part that needs design before code is the ladder-delegation target rule in
+`clientAnnexClause.ts`. Its predicate 3 exists precisely because the bare Space
+URL and the trailing-slash Space URL are different targets today: the bare one
+addresses the Space Description, so a narrow single-verb grant on it reaches
+Update Space Description and Delete Space without being read as the broad
+items-subtree grant. Under v0.5 the bare URL addresses nothing (it redirects),
+the description moves to `/space/:spaceId/meta`, and `DELETE` keeps the trailing
+slash -- so a `DELETE`-only grant on the Space URL is, by target string, the
+same string as a broad subtree grant. The distinction the predicate rests on is
+gone. Re-pointing `isBareSpaceUrlTarget` at the `meta` path handles the read
+side, but expressing "DELETE the Space itself" narrowly needs a new answer. This
+also intersects the spec's own WASS-2 (the container rule), which restated its
+targets against the v0.5 layout.
+
+Greenfield: no compatibility route table beyond the 308s the canonical-form rule
+itself requires.
+
+Status 2026-09-11: the server half is implemented (all acceptance boxes but the
+conformance run). The `test/` API suites driven through `@interop/was-client`
+0.60.0 fail against the new table by design until WCL-41 ships, and
+`pnpm conformance:local` cannot pass until the suite's v0.5 pass lands; both are
+the open touches above.
+
+Status 2026-09-12: every acceptance box is met. Suite 0.16.0 is consumed and
+`pnpm conformance:local` passes 262 of 262 with optional cases. The maintainer
+waived the wallet-core WC-230 and app-connect-spec decision 0003 touches, so the
+item is done; both stay open in their own repos.

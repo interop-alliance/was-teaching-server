@@ -39,7 +39,7 @@ describe('GET Collection equality filter', () => {
     documents: Array<{ id: string } & Record<string, unknown>>
   ): Promise<void> {
     await alice.was.request({
-      path: `/space/${spaceId()}/${collectionId}`,
+      path: `/space/${spaceId()}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, name: collectionId, plaintext: { indexes } }
     })
@@ -252,7 +252,7 @@ describe('GET Collection equality filter', () => {
 
   it('a filter on an encrypted Collection is a 400 (it can never carry plaintext)', async () => {
     await alice.was.request({
-      path: `/space/${spaceId()}/f-encrypted`,
+      path: `/space/${spaceId()}/f-encrypted/meta`,
       method: 'PUT',
       json: { id: 'f-encrypted', encryption: { scheme: 'edv' } }
     })

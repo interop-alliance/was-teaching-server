@@ -275,12 +275,18 @@ describe('Encryption enforcement API', () => {
 
   it('PUT the Collection /meta of an edv Collection rejects a plaintext custom (422)', async () => {
     // Collection Metadata takes the same branch as Resource Metadata: on an
-    // encrypted Collection its `custom` IS the opaque envelope.
+    // encrypted Collection its `custom` IS the opaque envelope. `PUT .../meta`
+    // is a full replacement and `encryption` is set-once, so the descriptor
+    // must be resent alongside `custom` or the write never reaches the
+    // envelope check (it 409s as an attempted clear instead).
     const err = await rejection(
       alice.was.request({
         path: `/space/${spaceId}/${edvCollection}/meta`,
         method: 'PUT',
-        json: { custom: { name: 'labeled' } }
+        json: {
+          encryption: { scheme: 'edv' },
+          custom: { name: 'labeled' }
+        }
       })
     )
     assert.equal(err.response.status, 422)
@@ -291,7 +297,7 @@ describe('Encryption enforcement API', () => {
     const put = await alice.was.request({
       path: `/space/${spaceId}/${edvCollection}/meta`,
       method: 'PUT',
-      json: { custom: envelope }
+      json: { encryption: { scheme: 'edv' }, custom: envelope }
     })
     assert.equal(put.status, 204)
     const metaEtag = put.headers.get('etag')

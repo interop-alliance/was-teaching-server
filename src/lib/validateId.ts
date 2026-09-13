@@ -66,10 +66,15 @@ export function isUrlSafeSegment(id: string): boolean {
  */
 export const RESERVED_COLLECTION_IDS = new Set([
   'backends',
+  // Retired in v0.5 (the Space URL lists Collections); the segment stays
+  // reserved and the path answers with a 308 to the Space URL.
   'collections',
   'export',
   'import', // non-spec: this server's tar-import endpoint
   'linkset',
+  // The Space Metadata object is addressed at `/space/{id}/meta`, which
+  // occupies the `{collectionId}` position.
+  'meta',
   'policy',
   'query',
   'quotas'

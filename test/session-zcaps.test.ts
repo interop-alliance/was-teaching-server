@@ -47,7 +47,7 @@ describe('Space-rooted session capabilities', () => {
     }))
     ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
 
-    spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
+    spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
     collectionUrl = new URL(
       `/space/${spaceId}/${collectionId}`,
       serverUrl
@@ -62,9 +62,10 @@ describe('Space-rooted session capabilities', () => {
 
     // ...then delegates the session pair to her app's did:key. Both chains
     // root at the *Space's* root capability: the read capability targets the
-    // Space URL itself; the write capability attenuates its target down to
-    // the Collection at delegation time (so the session key can never write
-    // outside it -- in particular, never PUT the Space Description).
+    // canonical (trailing-slash) Space URL itself; the write capability
+    // attenuates its target down to the Collection at delegation time (so the
+    // session key can never write outside it -- in particular, never PUT the
+    // Space Metadata object).
     const aliceZcapClient = client({ signer: alice.signer })
     spaceReadCap = await aliceZcapClient.delegate({
       invocationTarget: spaceUrl,
@@ -86,7 +87,7 @@ describe('Space-rooted session capabilities', () => {
   })
 
   describe('space-scoped read capability', () => {
-    it('reads the Space Description at the capability target itself', async () => {
+    it('reads the Space Metadata object underneath the capability target', async () => {
       const handle = aliceDelegatedApp.was.fromCapability(spaceReadCap)
       assert.ok(handle instanceof Space)
       const description = await handle.describe()
@@ -196,10 +197,10 @@ describe('Space-rooted session capabilities', () => {
       assert.equal(doc, null)
     })
 
-    it('cannot PUT the Space Description (no Space takeover)', async () => {
+    it('cannot PUT the Space Metadata object (no Space takeover)', async () => {
       await assert.rejects(
         aliceDelegatedApp.was.request({
-          path: `/space/${spaceId}`,
+          path: `/space/${spaceId}/meta`,
           method: 'PUT',
           json: { id: spaceId, controller: aliceDelegatedApp.did },
           capability: collectionWriteCap
@@ -250,7 +251,7 @@ describe('Space-rooted session capabilities', () => {
       await bob.was
         .space(bobSpaceId)
         .configure({ name: "Bob's Space", controller: bob.did })
-      const bobSpaceUrl = new URL(`/space/${bobSpaceId}`, serverUrl).toString()
+      const bobSpaceUrl = new URL(`/space/${bobSpaceId}/`, serverUrl).toString()
       const bobZcapClient = client({ signer: bob.signer })
       const bobSessionCap = await bobZcapClient.delegate({
         invocationTarget: bobSpaceUrl,

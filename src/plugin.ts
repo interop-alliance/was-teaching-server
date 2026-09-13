@@ -218,13 +218,15 @@ async function wasPlugin(
 
   // Disable CORS. `exposedHeaders` is required for browser clients: without
   // it, cross-origin JS cannot read `Location` (space/resource creation),
-  // `ETag` (metaVersion concurrency), or `Link` (pagination, policy linksets).
-  // `maxAge` lets browsers cache the preflight answer instead of re-asking
-  // before nearly every signed request.
+  // `ETag` (metaVersion concurrency), `Link` (pagination, policy linksets), or
+  // `Allow` -- which RFC 9110 makes the whole point of the `405` a `PUT` at a
+  // container URL answers, since it names the methods the container does
+  // accept. `maxAge` lets browsers cache the preflight answer instead of
+  // re-asking before nearly every signed request.
   fastify.register(cors, {
     origin: '*',
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    exposedHeaders: ['Location', 'ETag', 'Link'],
+    exposedHeaders: ['Location', 'ETag', 'Link', 'Allow'],
     maxAge: CORS_PREFLIGHT_MAX_AGE
   })
 

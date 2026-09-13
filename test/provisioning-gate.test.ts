@@ -86,17 +86,17 @@ describe('Provisioning gate', () => {
       assert.equal(response.status, 201)
       assert.equal(
         response.headers.get('location'),
-        `${serverUrl}/spaces/${spaceId}`
+        `${serverUrl}/space/${spaceId}/`
       )
       // The space landed in storage with the body's controller.
-      const stored = await backend.getSpaceDescription({ spaceId })
+      const stored = await backend.getSpaceMetadata({ spaceId })
       assert.equal(stored?.controller, alice.did)
 
       // Normal auth still works afterwards: a signed GET by the controller
-      // returns the space description (200), proving the token gate does not
+      // returns the Space Metadata object (200), proving the token gate does not
       // disturb the zcap path for subsequent operations.
       const signed = await alice.was.request({
-        path: `/space/${spaceId}`,
+        path: `/space/${spaceId}/meta`,
         method: 'GET'
       })
       assert.equal(signed.status, 200)
@@ -217,7 +217,7 @@ describe('Provisioning gate', () => {
         body: JSON.stringify(createSpaceBody(spaceId))
       })
       assert.equal(response.status, 201)
-      const stored = await backend.getSpaceDescription({ spaceId })
+      const stored = await backend.getSpaceMetadata({ spaceId })
       assert.equal(stored?.controller, alice.did)
     })
 

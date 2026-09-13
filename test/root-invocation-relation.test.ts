@@ -70,7 +70,10 @@ import {
  */
 interface PromotedSpace {
   spaceId: string
+  /** the canonical trailing-slash Space URL, the root capability's target */
   spaceUrl: string
+  /** the Space Metadata URL, where the description is read */
+  metaUrl: string
   did: IDID
   /** listed under all four verification relationships */
   allRelations: any
@@ -185,7 +188,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
     // Promotion by ordering: created under Alice's `did:key`, handed to the
     // `did:webvh` by a PUT the stored `did:key` still authorizes.
     const promoted = await alice.was.request({
-      path: `/space/${spaceId}`,
+      path: `/space/${spaceId}/meta`,
       method: 'PUT',
       json: {
         id: spaceId,
@@ -195,9 +198,11 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
     })
     assert.equal(promoted.status, 204)
 
+    const spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
     return {
       spaceId,
-      spaceUrl: new URL(`/space/${spaceId}`, serverUrl).toString(),
+      spaceUrl,
+      metaUrl: `${spaceUrl}meta`,
       did: created.did as IDID,
       allRelations,
       invocationOnly,
@@ -207,8 +212,10 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
   }
 
   /**
-   * Root-invokes one HTTP verb on a Space URL, signed by one of the DID
-   * document's keys.
+   * Root-invokes one HTTP verb on a Space, signed by one of the DID
+   * document's keys: `DELETE` on the canonical Space URL (Delete Space), any
+   * other verb on its Metadata URL (Read Space Metadata), both under the
+   * Space's root capability.
    *
    * @param options {object}
    * @param options.space {PromotedSpace}
@@ -226,7 +233,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
     method: string
   }): Promise<any> {
     return client({ signer: signerKeyPair.signer() }).request({
-      url: space.spaceUrl,
+      url: method === 'DELETE' ? space.spaceUrl : space.metaUrl,
       method,
       action: method,
       capability: rootZcap({ target: space.spaceUrl, controller: space.did })
@@ -234,7 +241,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
   }
 
   /**
-   * Asserts the Space Description still reads back, using the key listed under
+   * Asserts the Space Metadata still reads back, using the key listed under
    * all four relations. The survival check after a refused `DELETE`.
    *
    * @param options {object}
@@ -256,7 +263,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
   }
 
   describe('a method under all four relations', () => {
-    it('reads the Space Description (200)', async () => {
+    it('reads the Space Metadata (200)', async () => {
       const space = await promotedSpace()
       const response = await rootInvoke({
         space,
@@ -279,7 +286,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
   })
 
   describe('a capabilityInvocation-only method', () => {
-    it('reads the Space Description (200)', async () => {
+    it('reads the Space Metadata (200)', async () => {
       const space = await promotedSpace()
       const response = await rootInvoke({
         space,
@@ -302,7 +309,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
   })
 
   describe('a ladder VM (assertionMethod + capabilityDelegation only)', () => {
-    it('cannot read the Space Description (404)', async () => {
+    it('cannot read the Space Metadata (404)', async () => {
       const space = await promotedSpace()
       const err = await requestError(
         rootInvoke({ space, signerKeyPair: space.ladder, method: 'GET' })
@@ -321,7 +328,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
   })
 
   describe('an authentication-only method', () => {
-    it('cannot read the Space Description (404)', async () => {
+    it('cannot read the Space Metadata (404)', async () => {
       const space = await promotedSpace()
       const err = await requestError(
         rootInvoke({
@@ -350,8 +357,10 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
   describe('the verifier message behind the 404', () => {
     /**
      * Runs one root invocation through `verifyZcap` directly, over headers
-     * signed exactly as the ezcap client signs them. The route masks the
-     * outcome as a 404, so this is where the refusal is legible.
+     * signed exactly as the ezcap client signs them, with the same target
+     * routing as `rootInvoke` and the Space URL as the attenuated root the
+     * handlers accept. The route masks the outcome as a 404, so this is where
+     * the refusal is legible.
      *
      * @param options {object}
      * @param options.space {PromotedSpace}
@@ -368,8 +377,9 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
       signerKeyPair: any
       method: string
     }) {
+      const url = method === 'DELETE' ? space.spaceUrl : space.metaUrl
       const headers = await signCapabilityInvocation({
-        url: space.spaceUrl,
+        url,
         method,
         headers: { host: new URL(serverUrl).host },
         capability: rootZcap({
@@ -380,14 +390,15 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
         invocationSigner: signerKeyPair.signer()
       })
       return verifyZcap({
-        url: `/space/${space.spaceId}`,
-        allowedTarget: space.spaceUrl,
+        url,
+        allowedTarget: url,
         allowedAction: method,
         method,
         headers,
         serverUrl,
         spaceController: space.did,
-        webvh: { storage: backend, serverUrl }
+        webvh: { storage: backend, serverUrl },
+        attenuatedRootTarget: space.spaceUrl
       })
     }
 

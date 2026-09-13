@@ -5,12 +5,18 @@
  * A ladder VM is recognized by relation asymmetry alone -- listed under
  * `capabilityDelegation`, absent from `capabilityInvocation`. A delegation it
  * signs is admitted only when it names the account document's annex DID as its
- * sole controller with a target inside the account Space's items subtree and
- * actions within the closed WAS verb vocabulary, when its target is
- * bridge-shaped (the account's own history log with `PUT`, or the subtree URL
- * of a delegated-clients bookkeeping Space with `GET`/`PUT`), or when its
- * target is a bare Space URL equal to its parent capability's own, granted
- * exactly `GET` or exactly `DELETE`.
+ * sole controller with a target inside the account Space's items subtree (the
+ * Space Metadata URL excluded) and actions within the closed WAS verb
+ * vocabulary, when its target is bridge-shaped (the account's own history log
+ * with `PUT`, or the canonical URL of a delegated-clients bookkeeping Space
+ * with `GET`/`PUT`), or when it is target-exact and single-verb: the canonical
+ * Space URL equal to its parent capability's own, granted exactly `DELETE`, or
+ * the Space Metadata URL under a parent on that URL or on the Space, granted
+ * exactly `GET`. On top of the delegation shapes, a chain carrying any
+ * ladder-signed link is refused at invocation time against Update Space
+ * Metadata (`PUT .../meta`) and against Delete Space (`DELETE /space/{s}/`)
+ * unless the invoked capability is that DELETE-only shape -- under v0.5 both
+ * operations sit inside the subtree a generation delegation covers.
  * Everything else is refused, and the refusal is masked as a 404 like any other
  * unauthorized invocation -- while still falling through to the access-control
  * policy, so a world-readable target keeps serving.
@@ -90,6 +96,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
   /** The annex DID the account document's service entry names. */
   let clientAnnex: WebvhIdentity
   let accountSpaceUrl: string
+  let accountSpaceMetaUrl: string
   let accountLogUrl: string
   let credentialsUrl: string
   let openCollectionUrl: string
@@ -118,10 +125,14 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       ]
     })
 
-    accountSpaceUrl = new URL(`/space/${account.spaceId}`, serverUrl).toString()
-    accountLogUrl = `${accountSpaceUrl}/id/did.jsonl`
-    credentialsUrl = `${accountSpaceUrl}/credentials`
-    openCollectionUrl = `${accountSpaceUrl}/open`
+    accountSpaceUrl = new URL(
+      `/space/${account.spaceId}/`,
+      serverUrl
+    ).toString()
+    accountSpaceMetaUrl = `${accountSpaceUrl}meta`
+    accountLogUrl = `${accountSpaceUrl}id/did.jsonl`
+    credentialsUrl = `${accountSpaceUrl}credentials`
+    openCollectionUrl = `${accountSpaceUrl}open`
 
     const accountSpace = alice.was.space(account.spaceId)
     await accountSpace.collection('credentials').configure({ force: true })
@@ -139,7 +150,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     // Promotion by ordering: the Space is created under Alice's `did:key`,
     // populated, and only then handed to the account DID.
     const promoted = await alice.was.request({
-      path: `/space/${account.spaceId}`,
+      path: `/space/${account.spaceId}/meta`,
       method: 'PUT',
       json: {
         id: account.spaceId,
@@ -317,6 +328,26 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     return `urn:zcap:root:${encodeURIComponent(accountSpaceUrl)}`
   }
 
+  /**
+   * Asserts the account Space's stored controller, read from its Metadata
+   * object under the account's own client key. The survival check after a
+   * refused controller rewrite.
+   *
+   * @param expected {string}   the controller DID the Space should still carry
+   * @returns {Promise<void>}
+   */
+  async function assertAccountController(expected: string): Promise<void> {
+    const metadata = await client({
+      signer: account.clientKeyPair.signer()
+    }).request({
+      url: accountSpaceMetaUrl,
+      method: 'GET',
+      action: 'GET',
+      capability: rootZcap({ target: accountSpaceUrl, controller: account.did })
+    })
+    assert.equal((metadata.data as { controller: string }).controller, expected)
+  }
+
   describe('control: a non-ladder chain is untouched', () => {
     it('an ordinary client VM delegates an arbitrary target end to end', async () => {
       const delegated = await delegate({
@@ -417,7 +448,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: accountSpaceRoot(),
-        invocationTarget: `${accountSpaceUrl}/`,
+        invocationTarget: accountSpaceUrl,
         controller: clientAnnex.did,
         allowedActions: WAS_ACTIONS
       })
@@ -453,19 +484,19 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       })
     })
 
-    it('refuses a Space-level target to the same grantee (404)', async () => {
-      // The bare Space URL is outside the items subtree: it reaches Update
-      // Space Description, and so the Space's controller.
+    it('refuses the Space Metadata URL as a target to the same grantee (404)', async () => {
+      // The Metadata URL is carved out of the items subtree: `PUT` there is
+      // Update Space Metadata, and so the Space's controller.
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: accountSpaceRoot(),
-        invocationTarget: accountSpaceUrl,
+        invocationTarget: accountSpaceMetaUrl,
         controller: clientAnnex.did,
         allowedActions: ['GET', 'PUT']
       })
       const err = await requestError(
         client({ signer: clientAnnex.clientKeyPair.signer() }).request({
-          url: accountSpaceUrl,
+          url: accountSpaceMetaUrl,
           method: 'PUT',
           action: 'PUT',
           capability: delegated,
@@ -477,23 +508,182 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         })
       )
       assert.equal(err.status, 404)
+      await assertAccountController(account.did)
+    })
 
-      // The controller rewrite did not land.
-      const description = await client({
-        signer: account.clientKeyPair.signer()
+    it('refuses the subtree grant invoked against Update Space Metadata (404)', async () => {
+      // The generation-delegation shape covers `.../meta` by attenuation under
+      // v0.5, so the refusal is the invocation-time bound's, not the
+      // delegation shape's: the same grant serves ordinary reads and writes
+      // (previous case) and refuses the controller rewrite.
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: accountSpaceRoot(),
+        invocationTarget: accountSpaceUrl,
+        controller: clientAnnex.did,
+        allowedActions: WAS_ACTIONS
+      })
+      const annex = client({ signer: clientAnnex.clientKeyPair.signer() })
+      const err = await requestError(
+        annex.request({
+          url: accountSpaceMetaUrl,
+          method: 'PUT',
+          action: 'PUT',
+          capability: delegated,
+          json: {
+            id: account.spaceId,
+            name: 'Account Space',
+            controller: bob.did
+          }
+        })
+      )
+      assert.equal(err.status, 404)
+      await assertAccountController(account.did)
+
+      // The GET half of the same URL is an ordinary read under the subtree.
+      const read = await annex.request({
+        url: accountSpaceMetaUrl,
+        method: 'GET',
+        action: 'GET',
+        capability: delegated
+      })
+      assert.equal(read.status, 200)
+    })
+
+    it('refuses the subtree grant invoked against Delete Space (404)', async () => {
+      // `DELETE /space/{s}/` is the subtree URL itself, so a whole-subtree
+      // grant matches it exactly; the invocation-time bound refuses any
+      // ladder-descended chain there unless the invoked capability is the
+      // DELETE-only shape of predicate (iii). A fresh account, so a failure
+      // cannot take the suite's shared Space with it.
+      const other = await provisionWebvhIdentity({
+        withLadderKey: true,
+        services: [
+          {
+            id: '#delegated-clients',
+            type: DELEGATED_CLIENTS_SERVICE_TYPE,
+            serviceEndpoint: clientAnnex.did
+          }
+        ]
+      })
+      const promoted = await alice.was.request({
+        path: `/space/${other.spaceId}/meta`,
+        method: 'PUT',
+        json: {
+          id: other.spaceId,
+          name: 'Other Account',
+          controller: other.did
+        }
+      })
+      assert.equal(promoted.status, 204)
+      const otherSpaceUrl = new URL(
+        `/space/${other.spaceId}/`,
+        serverUrl
+      ).toString()
+      const delegated = await delegate({
+        signerKeyPair: other.ladderKeyPair,
+        capability: `urn:zcap:root:${encodeURIComponent(otherSpaceUrl)}`,
+        invocationTarget: otherSpaceUrl,
+        controller: clientAnnex.did,
+        allowedActions: WAS_ACTIONS
+      })
+      const annex = client({ signer: clientAnnex.clientKeyPair.signer() })
+      const err = await requestError(
+        annex.request({
+          url: otherSpaceUrl,
+          method: 'DELETE',
+          action: 'DELETE',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+
+      // The Space survives: its Metadata object still reads back under the
+      // same grant.
+      const read = await annex.request({
+        url: `${otherSpaceUrl}meta`,
+        method: 'GET',
+        action: 'GET',
+        capability: delegated
+      })
+      assert.equal(read.status, 200)
+      assert.equal((read.data as { controller: string }).controller, other.did)
+    })
+
+    it('refuses a subtree grant narrowed onward into the DELETE-only shape (404)', async () => {
+      // The bypass the invocation-time bound has to survive. The annex's
+      // per-visit verification method holds `capabilityInvocation` beside
+      // `capabilityDelegation`, so it is not ladder authority and may mint
+      // onward grants. Handed the ladder-signed whole-subtree grant, it
+      // narrows its own child to the Space URL with exactly `DELETE` -- a
+      // legal attenuation that lands a chain tail indistinguishable from the
+      // predicate (iii) DELETE shape. A bound reading only the tail would
+      // admit it and delete the Space; the bound reads the ladder-signed
+      // links, which here carry the whole verb vocabulary.
+      const other = await provisionWebvhIdentity({
+        withLadderKey: true,
+        services: [
+          {
+            id: '#delegated-clients',
+            type: DELEGATED_CLIENTS_SERVICE_TYPE,
+            serviceEndpoint: clientAnnex.did
+          }
+        ]
+      })
+      const promoted = await alice.was.request({
+        path: `/space/${other.spaceId}/meta`,
+        method: 'PUT',
+        json: {
+          id: other.spaceId,
+          name: 'Narrowed Account',
+          controller: other.did
+        }
+      })
+      assert.equal(promoted.status, 204)
+      const otherSpaceUrl = new URL(
+        `/space/${other.spaceId}/`,
+        serverUrl
+      ).toString()
+
+      const generationDelegation = await delegate({
+        signerKeyPair: other.ladderKeyPair,
+        capability: `urn:zcap:root:${encodeURIComponent(otherSpaceUrl)}`,
+        invocationTarget: otherSpaceUrl,
+        controller: clientAnnex.did,
+        allowedActions: WAS_ACTIONS
+      })
+      const narrowed = await delegate({
+        signerKeyPair: clientAnnex.transientKeyPair,
+        capability: generationDelegation,
+        invocationTarget: otherSpaceUrl,
+        controller: bob.did,
+        allowedActions: ['DELETE'],
+        expires: new Date(generationDelegation.expires)
+      })
+      const err = await requestError(
+        client({ signer: bob.signer }).request({
+          url: otherSpaceUrl,
+          method: 'DELETE',
+          action: 'DELETE',
+          capability: narrowed
+        })
+      )
+      assert.equal(err.status, 404)
+
+      // The Space survives the refusal.
+      const read = await client({
+        signer: other.clientKeyPair.signer()
       }).request({
-        url: accountSpaceUrl,
+        url: `${otherSpaceUrl}meta`,
         method: 'GET',
         action: 'GET',
         capability: rootZcap({
-          target: accountSpaceUrl,
-          controller: account.did
+          target: otherSpaceUrl,
+          controller: other.did
         })
       })
-      assert.equal(
-        (description.data as { controller: string }).controller,
-        account.did
-      )
+      assert.equal(read.status, 200)
+      assert.equal((read.data as { controller: string }).controller, other.did)
     })
 
     it("refuses a subtree target in another of the account's Spaces (404)", async () => {
@@ -507,26 +697,26 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       await otherSpace.collection('notes').configure({ force: true })
       await otherSpace.collection('notes').put('note-1', { other: true })
       const promoted = await alice.was.request({
-        path: `/space/${otherSpaceId}`,
+        path: `/space/${otherSpaceId}/meta`,
         method: 'PUT',
         json: { id: otherSpaceId, name: 'Other', controller: account.did }
       })
       assert.equal(promoted.status, 204)
 
       const otherSpaceUrl = new URL(
-        `/space/${otherSpaceId}`,
+        `/space/${otherSpaceId}/`,
         serverUrl
       ).toString()
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: `urn:zcap:root:${encodeURIComponent(otherSpaceUrl)}`,
-        invocationTarget: `${otherSpaceUrl}/`,
+        invocationTarget: otherSpaceUrl,
         controller: clientAnnex.did,
         allowedActions: WAS_ACTIONS
       })
       const err = await requestError(
         client({ signer: clientAnnex.clientKeyPair.signer() }).request({
-          url: `${otherSpaceUrl}/notes/note-1`,
+          url: `${otherSpaceUrl}notes/note-1`,
           method: 'GET',
           action: 'GET',
           capability: delegated
@@ -539,7 +729,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: accountSpaceRoot(),
-        invocationTarget: `${accountSpaceUrl}/`,
+        invocationTarget: accountSpaceUrl,
         controller: clientAnnex.did,
         allowedActions: ['GET', 'PATCH']
       })
@@ -560,7 +750,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: accountSpaceRoot(),
-        invocationTarget: `${accountSpaceUrl}/`,
+        invocationTarget: accountSpaceUrl,
         controller: clientAnnex.did,
         allowedActions: []
       })
@@ -621,7 +811,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       const generationDelegation = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: accountSpaceRoot(),
-        invocationTarget: `${accountSpaceUrl}/`,
+        invocationTarget: accountSpaceUrl,
         controller: clientAnnex.did,
         allowedActions: WAS_ACTIONS
       })
@@ -757,7 +947,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     })
 
     it("refuses a log-shaped target that is not the account's own log (404)", async () => {
-      const otherLogUrl = `${accountSpaceUrl}/other/did.jsonl`
+      const otherLogUrl = `${accountSpaceUrl}other/did.jsonl`
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: accountSpaceRoot(),
@@ -784,17 +974,17 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       await decoySpace.configure({ name: 'Decoy', controller: alice.did })
       await decoySpace.collection('id').configure({ force: true })
       const promoted = await alice.was.request({
-        path: `/space/${decoySpaceId}`,
+        path: `/space/${decoySpaceId}/meta`,
         method: 'PUT',
         json: { id: decoySpaceId, name: 'Decoy', controller: account.did }
       })
       assert.equal(promoted.status, 204)
 
       const decoySpaceUrl = new URL(
-        `/space/${decoySpaceId}`,
+        `/space/${decoySpaceId}/`,
         serverUrl
       ).toString()
-      const decoyLogUrl = `${decoySpaceUrl}/id/did.jsonl`
+      const decoyLogUrl = `${decoySpaceUrl}id/did.jsonl`
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: `urn:zcap:root:${encodeURIComponent(decoySpaceUrl)}`,
@@ -816,7 +1006,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         collectionId: 'keys'
       })
       const promoted = await alice.was.request({
-        path: `/space/${keysAccount.spaceId}`,
+        path: `/space/${keysAccount.spaceId}/meta`,
         method: 'PUT',
         json: {
           id: keysAccount.spaceId,
@@ -827,10 +1017,10 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       assert.equal(promoted.status, 204)
 
       const keysSpaceUrl = new URL(
-        `/space/${keysAccount.spaceId}`,
+        `/space/${keysAccount.spaceId}/`,
         serverUrl
       ).toString()
-      const keysLogUrl = `${keysSpaceUrl}/keys/did.jsonl`
+      const keysLogUrl = `${keysSpaceUrl}keys/did.jsonl`
       const delegated = await delegate({
         signerKeyPair: keysAccount.ladderKeyPair,
         capability: `urn:zcap:root:${encodeURIComponent(keysSpaceUrl)}`,
@@ -857,7 +1047,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // Creation is `did:key`-only, so the auxiliary Space is created (and its
       // Collection provisioned) under Alice, then promoted to the account DID.
       auxSpaceId = randomUUID()
-      auxSpaceUrl = new URL(`/space/${auxSpaceId}`, serverUrl).toString()
+      auxSpaceUrl = new URL(`/space/${auxSpaceId}/`, serverUrl).toString()
       auxSpaceRoot = `urn:zcap:root:${encodeURIComponent(auxSpaceUrl)}`
 
       const created = await alice.was.request({
@@ -877,7 +1067,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         .configure({ force: true })
 
       const promoted = await alice.was.request({
-        path: `/space/${auxSpaceId}`,
+        path: `/space/${auxSpaceId}/meta`,
         method: 'PUT',
         json: {
           id: auxSpaceId,
@@ -892,11 +1082,11 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: auxSpaceRoot,
-        invocationTarget: `${auxSpaceUrl}/`,
+        invocationTarget: auxSpaceUrl,
         controller: bob.did,
         allowedActions: ['GET', 'PUT']
       })
-      const recordUrl = `${auxSpaceUrl}/clients/rec-1`
+      const recordUrl = `${auxSpaceUrl}clients/rec-1`
       const written = await client({ signer: bob.signer }).request({
         url: recordUrl,
         method: 'PUT',
@@ -917,10 +1107,32 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     })
 
     it('refuses the no-slash form of the same Space URL (404)', async () => {
-      // Only the subtree (trailing-slash) target is admitted: a no-slash
-      // grant would also cover Update Space Description under target
-      // attenuation. Annex-profile grants pass the subtree target
-      // explicitly (was-client `GrantOptions.target`).
+      // Under v0.5 the no-slash form is not a canonical target (the route only
+      // redirects), so it matches nothing here. Annex-profile grants pass the
+      // canonical trailing-slash target explicitly (was-client
+      // `GrantOptions.target`).
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: auxSpaceRoot,
+        invocationTarget: auxSpaceUrl.slice(0, -1),
+        controller: bob.did,
+        allowedActions: ['GET', 'PUT']
+      })
+      const err = await requestError(
+        client({ signer: bob.signer }).request({
+          url: `${auxSpaceUrl}clients/rec-1`,
+          method: 'GET',
+          action: 'GET',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('refuses the whole-Space grant invoked against Update Space Metadata (404)', async () => {
+      // The admitted GET/PUT grant covers `.../meta` by attenuation; the
+      // invocation-time bound keeps the auxiliary Space's controller rewrite
+      // out of ladder reach all the same.
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: auxSpaceRoot,
@@ -930,26 +1142,43 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       })
       const err = await requestError(
         client({ signer: bob.signer }).request({
-          url: `${auxSpaceUrl}/clients/rec-1`,
-          method: 'GET',
-          action: 'GET',
-          capability: delegated
+          url: `${auxSpaceUrl}meta`,
+          method: 'PUT',
+          action: 'PUT',
+          capability: delegated,
+          json: {
+            id: auxSpaceId,
+            name: 'Delegated Clients',
+            controller: bob.did
+          }
         })
       )
       assert.equal(err.status, 404)
+
+      const metadata = await client({ signer: bob.signer }).request({
+        url: `${auxSpaceUrl}meta`,
+        method: 'GET',
+        action: 'GET',
+        capability: delegated
+      })
+      assert.equal(metadata.status, 200)
+      assert.equal(
+        (metadata.data as { controller: string }).controller,
+        account.did
+      )
     })
 
     it('refuses actions outside {GET, PUT} on the same Space (404)', async () => {
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: auxSpaceRoot,
-        invocationTarget: `${auxSpaceUrl}/`,
+        invocationTarget: auxSpaceUrl,
         controller: bob.did,
         allowedActions: ['GET', 'PUT', 'DELETE']
       })
       const err = await requestError(
         client({ signer: bob.signer }).request({
-          url: `${auxSpaceUrl}/clients/rec-1`,
+          url: `${auxSpaceUrl}clients/rec-1`,
           method: 'GET',
           action: 'GET',
           capability: delegated
@@ -960,11 +1189,11 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
     it('refuses the same shape over an ordinary Space (404)', async () => {
       // The account's own Space is typed `['Space']` and controlled by the same
-      // DID: only the Description type separates it from the case above.
+      // DID: only the Metadata type separates it from the case above.
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: accountSpaceRoot(),
-        invocationTarget: `${accountSpaceUrl}/`,
+        invocationTarget: accountSpaceUrl,
         controller: bob.did,
         allowedActions: ['GET', 'PUT']
       })
@@ -980,7 +1209,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     })
   })
 
-  describe('predicate (iii): a target-exact single-verb GET or DELETE on a Space', () => {
+  describe('predicate (iii): a target-exact DELETE of a Space or GET of its Metadata', () => {
     /**
      * The ladder VM's own bare `did:key` identity: the DID a predicate (iii)
      * delegation names as controller, and the verification method the matching
@@ -1001,16 +1230,19 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     /**
      * Creates an ordinary Space under Alice's `did:key` and, when `controller`
      * is given, promotes it to that DID (Space creation is `did:key`-only).
+     * `url` is the canonical trailing-slash Space URL, the target of the
+     * Space's root capability; `metaUrl` addresses its Metadata object.
      *
      * @param [options] {object}
      * @param [options.controller] {string}   promote the Space to this DID
-     * @returns {Promise<{ spaceId: string, url: string, root: string }>}
+     * @returns {Promise<{ spaceId: string, url: string, metaUrl: string, root: string }>}
      */
     async function makeSpace({
       controller
     }: { controller?: string } = {}): Promise<{
       spaceId: string
       url: string
+      metaUrl: string
       root: string
     }> {
       const spaceId = randomUUID()
@@ -1019,21 +1251,26 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         .configure({ name: 'Unlock Space', controller: alice.did })
       if (controller !== undefined) {
         const promoted = await alice.was.request({
-          path: `/space/${spaceId}`,
+          path: `/space/${spaceId}/meta`,
           method: 'PUT',
           json: { id: spaceId, name: 'Unlock Space', controller }
         })
         assert.equal(promoted.status, 204)
       }
-      const url = new URL(`/space/${spaceId}`, serverUrl).toString()
-      return { spaceId, url, root: `urn:zcap:root:${encodeURIComponent(url)}` }
+      const url = new URL(`/space/${spaceId}/`, serverUrl).toString()
+      return {
+        spaceId,
+        url,
+        metaUrl: `${url}meta`,
+        root: `urn:zcap:root:${encodeURIComponent(url)}`
+      }
     }
 
     it('admits a DELETE under a manageCapability parent, and the Space goes', async () => {
       // The three-link chain: a sibling unlock Space's root, the
       // `manageCapability` its `did:key` controller delegated to the account
-      // DID, then the ladder-signed child that keeps the same bare target and
-      // narrows the actions to `DELETE` alone.
+      // DID, then the ladder-signed child that keeps the same canonical Space
+      // target and narrows the actions to `DELETE` alone.
       const unlock = await makeSpace()
       const manage = await client({ signer: alice.signer }).delegate({
         capability: unlock.root,
@@ -1062,7 +1299,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
       const gone = await requestError(
         client({ signer: alice.signer }).request({
-          url: unlock.url,
+          url: unlock.metaUrl,
           method: 'GET',
           action: 'GET',
           capability: rootZcap({ target: unlock.url, controller: alice.did })
@@ -1072,7 +1309,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     })
 
     it("admits a DELETE straight off an account Space's own root", async () => {
-      // The two-link chain: the synthesized root's own target is the bare
+      // The two-link chain: the synthesized root's own target is the canonical
       // Space URL, so the ladder-signed child matches it unchanged.
       const space = await makeSpace({ controller: account.did })
       const ladder = bareDidKeyOf(account.ladderKeyPair)
@@ -1092,26 +1329,58 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       assert.equal(deleted.status, 204)
     })
 
-    it('admits the GET half: a Space Description read (200)', async () => {
+    it('admits the GET half under the Space root: a Space Metadata read (200)', async () => {
+      // The parent is the Space's synthesized root, on the canonical Space
+      // URL; the child narrows to the Metadata URL with `GET` alone.
       const space = await makeSpace({ controller: account.did })
       const ladder = bareDidKeyOf(account.ladderKeyPair)
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: space.root,
-        invocationTarget: space.url,
+        invocationTarget: space.metaUrl,
         controller: ladder.did,
         allowedActions: ['GET']
       })
       const response = await client({ signer: ladder.signer }).request({
-        url: space.url,
+        url: space.metaUrl,
         method: 'GET',
         action: 'GET',
         capability: delegated
       })
       assert.equal(response.status, 200)
-      const description = response.data as { id: string; controller: string }
-      assert.equal(description.id, space.spaceId)
-      assert.equal(description.controller, account.did)
+      const metadata = response.data as { id: string; controller: string }
+      assert.equal(metadata.id, space.spaceId)
+      assert.equal(metadata.controller, account.did)
+    })
+
+    it('admits the GET half under a parent already on the Metadata URL (200)', async () => {
+      // The other parent shape: a delegated capability whose own target is
+      // the Metadata URL, so the child keeps it unchanged.
+      const unlock = await makeSpace()
+      const manage = await client({ signer: alice.signer }).delegate({
+        capability: unlock.root,
+        invocationTarget: unlock.metaUrl,
+        controller: account.did,
+        allowedActions: ['GET', 'PUT'],
+        expires: anHourFromNow()
+      })
+      const ladder = bareDidKeyOf(account.ladderKeyPair)
+      const child = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: manage,
+        invocationTarget: unlock.metaUrl,
+        controller: ladder.did,
+        allowedActions: ['GET'],
+        expires: new Date(manage.expires)
+      })
+      const response = await client({ signer: ladder.signer }).request({
+        url: unlock.metaUrl,
+        method: 'GET',
+        action: 'GET',
+        capability: child
+      })
+      assert.equal(response.status, 200)
+      assert.equal((response.data as { id: string }).id, unlock.spaceId)
     })
 
     it("refuses a target under the parent's Space rather than the Space (404)", async () => {
@@ -1134,14 +1403,15 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       assert.equal(err.status, 404)
     })
 
-    it('refuses the trailing-slash form under a bare parent (404)', async () => {
-      // The subtree URL is a different target from the parent's bare one, and
-      // the account Space is not delegated-clients bookkeeping either.
+    it('refuses a GET on the Space URL itself (404)', async () => {
+      // The GET branch admits the Metadata URL only: a GET on the container
+      // would cover every member by attenuation, and the account Space is not
+      // delegated-clients bookkeeping either.
       const ladder = bareDidKeyOf(account.ladderKeyPair)
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: accountSpaceRoot(),
-        invocationTarget: `${accountSpaceUrl}/`,
+        invocationTarget: accountSpaceUrl,
         controller: ladder.did,
         allowedActions: ['GET']
       })
@@ -1156,7 +1426,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       assert.equal(err.status, 404)
     })
 
-    it('refuses a two-verb {GET, DELETE} set on the bare target (404)', async () => {
+    it('refuses a two-verb {GET, DELETE} set on the Space URL (404)', async () => {
       const ladder = bareDidKeyOf(account.ladderKeyPair)
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
@@ -1176,20 +1446,48 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       assert.equal(err.status, 404)
     })
 
+    it('never reaches the clause with a DELETE aimed at the Metadata URL (405)', async () => {
+      // The DELETE branch takes the Space URL alone; the Metadata URL is the
+      // GET branch's, and only with `GET`. The clause never gets to say so
+      // here: there is no `DELETE` at a Metadata URL, and the route answers
+      // 405 before authorization runs at all. The refusal of a wrong verb at
+      // this target is still observed one case below, where `PUT` is routable
+      // and so does reach the clause.
+      const space = await makeSpace({ controller: account.did })
+      const ladder = bareDidKeyOf(account.ladderKeyPair)
+      const delegated = await delegate({
+        signerKeyPair: account.ladderKeyPair,
+        capability: space.root,
+        invocationTarget: space.metaUrl,
+        controller: ladder.did,
+        allowedActions: ['DELETE']
+      })
+      const err = await requestError(
+        client({ signer: ladder.signer }).request({
+          url: space.metaUrl,
+          method: 'DELETE',
+          action: 'DELETE',
+          capability: delegated
+        })
+      )
+      assert.equal(err.status, 405)
+      assert.equal(err.response.headers.get('allow'), 'GET, HEAD, PUT')
+    })
+
     it('refuses a single verb outside {GET} and {DELETE} (404)', async () => {
-      // `PUT` on the bare Space URL is Update Space Description, which could
+      // `PUT` on the Metadata URL is Update Space Metadata, which could
       // rewrite the Space's controller.
       const ladder = bareDidKeyOf(account.ladderKeyPair)
       const delegated = await delegate({
         signerKeyPair: account.ladderKeyPair,
         capability: accountSpaceRoot(),
-        invocationTarget: accountSpaceUrl,
+        invocationTarget: accountSpaceMetaUrl,
         controller: ladder.did,
         allowedActions: ['PUT']
       })
       const err = await requestError(
         client({ signer: ladder.signer }).request({
-          url: accountSpaceUrl,
+          url: accountSpaceMetaUrl,
           method: 'PUT',
           action: 'PUT',
           capability: delegated,
@@ -1220,17 +1518,17 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         allowedActions: ['DELETE']
       })
 
-      // A GET child of the same shape proves the chain verifies right now,
+      // A GET child on the Metadata URL proves the chain verifies right now,
       // without spending the Space the DELETE child is aimed at.
       const readChild = await delegate({
         signerKeyPair: retiring.ladderKeyPair,
         capability: space.root,
-        invocationTarget: space.url,
+        invocationTarget: space.metaUrl,
         controller: ladder.did,
         allowedActions: ['GET']
       })
       const before = await client({ signer: ladder.signer }).request({
-        url: space.url,
+        url: space.metaUrl,
         method: 'GET',
         action: 'GET',
         capability: readChild
@@ -1277,21 +1575,21 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
       // The Space the refused DELETE was aimed at is still there, read back
       // under the client key the removal entry kept.
-      const description = await client({
+      const metadata = await client({
         signer: retiring.clientKeyPair.signer()
       }).request({
-        url: space.url,
+        url: space.metaUrl,
         method: 'GET',
         action: 'GET',
         capability: rootZcap({ target: space.url, controller: retiring.did })
       })
-      assert.equal(description.status, 200)
+      assert.equal(metadata.status, 200)
 
       // The read half stops verifying with it, so nothing the ladder signed
       // survives the removal.
       const readErr = await requestError(
         client({ signer: ladder.signer }).request({
-          url: space.url,
+          url: space.metaUrl,
           method: 'GET',
           action: 'GET',
           capability: readChild

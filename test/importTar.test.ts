@@ -161,7 +161,7 @@ describe('buildImportPlan', () => {
     )
 
     const [colA, colB] = plan.collections
-    assert.equal(colA!.collectionDescription.name, 'A')
+    assert.equal(colA!.collectionMetadata.name, 'A')
     assert.deepStrictEqual(colA!.collectionPolicy, {
       type: 'PublicCanRead',
       scope: 'collection'
@@ -182,19 +182,19 @@ describe('buildImportPlan', () => {
       custom: { name: 'Resource One' }
     })
 
-    // colB has only a description (no policy, no resources).
+    // colB has only its metadata file (no policy, no resources).
     assert.equal(colB!.resources.length, 0)
     assert.equal(colB!.collectionPolicy, undefined)
   })
 
-  it('synthesizes a default Collection description when none is in the archive', () => {
+  it('synthesizes a default Collection Metadata object when none is in the archive', () => {
     const entries = new Map<string, TarEntry>([
       ['manifest.yml', fileEntry(validManifestYaml())],
       ['space/S1/colA/r.res1.text%2Fplain.txt', fileEntry('hi')]
     ])
     const plan = buildImportPlan(entries)
     const [colA] = plan.collections
-    assert.deepStrictEqual(colA!.collectionDescription, {
+    assert.deepStrictEqual(colA!.collectionMetadata, {
       id: 'colA',
       type: ['Collection'],
       name: 'colA'

@@ -80,7 +80,7 @@ describe('Spaces', () => {
         type: ['Space'],
         controller: alice.did,
         createdBy: alice.did,
-        url: `/space/${alice.space1.id}`,
+        url: `/space/${alice.space1.id}/`,
         linkset: `/space/${alice.space1.id}/linkset`
       })
     })
@@ -123,7 +123,7 @@ describe('Spaces', () => {
       const statuses = await Promise.all([post('First'), post('Second')])
       assert.deepEqual(statuses.slice().sort(), [201, 409])
       // The guarded write inside the backend refused the loser, so the
-      // winner's description is what is stored (its name was not replaced).
+      // winner's Space Metadata is what is stored (its name was not replaced).
       const stored = await alice.was.space(spaceId).describe()
       assert.equal(stored!.name, statuses[0] === 201 ? 'First' : 'Second')
     })
@@ -180,7 +180,7 @@ describe('Spaces', () => {
       assert.ok(expectedError, 'expected the takeover POST to be rejected')
       assert.equal(expectedError.response.status, 409)
 
-      // Alice's description (controller included) is untouched.
+      // Alice's Space Metadata (controller included) is untouched.
       const description = await alice.was.space(spaceId).describe()
       assert.equal(description.controller, alice.did)
       assert.equal(description.name, "Alice's Space")
@@ -222,7 +222,7 @@ describe('Spaces', () => {
       })
 
       await alice.was.request({
-        url: new URL(`/space/${spaceId}`, serverUrl).toString(),
+        url: new URL(`/space/${spaceId}/meta`, serverUrl).toString(),
         method: 'PUT',
         json: {
           name: 'Renamed',
@@ -240,7 +240,7 @@ describe('Spaces', () => {
       // Reads no longer 401 at the hook: an anonymous read is allowed to attempt,
       // and is denied as 404 (no-leak) when no access-control policy grants it.
       const spaceUrl = new URL(
-        `/space/${alice.space1.id}`,
+        `/space/${alice.space1.id}/meta`,
         serverUrl
       ).toString()
       const response = await fetch(spaceUrl, { method: 'GET' })
@@ -266,12 +266,12 @@ describe('Spaces', () => {
         type: ['Space'],
         controller: alice.did,
         createdBy: alice.did,
-        url: `/space/${alice.space1.id}`,
+        url: `/space/${alice.space1.id}/`,
         linkset: `/space/${alice.space1.id}/linkset`
       })
     })
 
-    it('[delegated] authorized app should GET /space/:spaceId', async () => {
+    it('[delegated] authorized app should GET /space/:spaceId/meta', async () => {
       // First, Alice (re-)provisions the Space -- via the idempotent PUT path,
       // since POSTing an existing id now yields `id-conflict` (409).
       const space = alice.was.space(alice.space1.id)
@@ -295,7 +295,7 @@ describe('Spaces', () => {
         type: ['Space'],
         controller: alice.did,
         createdBy: alice.did,
-        url: `/space/${alice.space1.id}`,
+        url: `/space/${alice.space1.id}/`,
         linkset: `/space/${alice.space1.id}/linkset`
       })
     })
@@ -330,47 +330,47 @@ describe('Spaces', () => {
     })
   })
 
-  describe('Space Description ETag and conditional writes', () => {
-    const spaceUrl = (spaceId: string) => `${serverUrl}/space/${spaceId}`
-    const description = (spaceId: string, name: string) => ({
+  describe('Space Metadata ETag and conditional writes', () => {
+    const metaUrl = (spaceId: string) => `${serverUrl}/space/${spaceId}/meta`
+    const spaceMetadata = (spaceId: string, name: string) => ({
       id: spaceId,
       name,
       controller: alice.did
     })
 
-    it('[root] Create Space (POST and PUT) and Get Space emit the description ETag', async () => {
+    it('[root] Create Space (POST and PUT) and Get Space emit the Space Metadata ETag', async () => {
       const posted = await alice.was.request({
         url: `${serverUrl}/spaces/`,
         method: 'POST',
-        json: description('etag-post', 'Posted')
+        json: spaceMetadata('etag-post', 'Posted')
       })
       assertEtagVersion({ etag: posted.headers.get('etag'), version: 1 })
 
       const put = await alice.was.request({
-        url: spaceUrl('etag-put'),
+        url: metaUrl('etag-put'),
         method: 'PUT',
-        json: description('etag-put', 'Put')
+        json: spaceMetadata('etag-put', 'Put')
       })
       assert.equal(put.status, 201)
       const createdEtag = put.headers.get('etag')
       assertEtagVersion({ etag: createdEtag, version: 1 })
 
       const read = await alice.was.request({
-        url: spaceUrl('etag-put'),
+        url: metaUrl('etag-put'),
         method: 'GET'
       })
       assert.equal(read.headers.get('etag'), createdEtag)
       // The validator travels only as the header and stays out of the body.
-      assert.equal(read.data.descriptionGeneration, undefined)
-      assert.equal(read.data.descriptionVersion, undefined)
+      assert.equal(read.data.metaGeneration, undefined)
+      assert.equal(read.data.metaVersion, undefined)
       assert.equal(read.data._generation, undefined)
       assert.equal(read.data._version, undefined)
 
       // An update bumps the version under the same generation.
       const updated = await alice.was.request({
-        url: spaceUrl('etag-put'),
+        url: metaUrl('etag-put'),
         method: 'PUT',
-        json: description('etag-put', 'Put Again')
+        json: spaceMetadata('etag-put', 'Put Again')
       })
       assert.equal(updated.status, 204)
       const updatedEtag = updated.headers.get('etag')
@@ -380,14 +380,14 @@ describe('Spaces', () => {
 
     it('[root] Get Space with a matching If-None-Match is 304', async () => {
       const created = await alice.was.request({
-        url: spaceUrl('etag-304'),
+        url: metaUrl('etag-304'),
         method: 'PUT',
-        json: description('etag-304', 'Cached')
+        json: spaceMetadata('etag-304', 'Cached')
       })
       const etag = created.headers.get('etag')!
       const unchanged = await responseOf(
         alice.was.request({
-          url: spaceUrl('etag-304'),
+          url: metaUrl('etag-304'),
           method: 'GET',
           headers: { 'if-none-match': etag }
         })
@@ -396,9 +396,9 @@ describe('Spaces', () => {
       assert.equal(unchanged.headers.get('etag'), etag)
       assert.equal(await unchanged.text(), '')
 
-      // A stale validator gets the full description.
+      // A stale validator gets the full Space Metadata object.
       const stale = await alice.was.request({
-        url: spaceUrl('etag-304'),
+        url: metaUrl('etag-304'),
         method: 'GET',
         headers: { 'if-none-match': '"99"' }
       })
@@ -408,14 +408,14 @@ describe('Spaces', () => {
 
     it('[root] an under-authorized conditional GET still gets the 404 mask', async () => {
       const created = await alice.was.request({
-        url: spaceUrl('etag-masked'),
+        url: metaUrl('etag-masked'),
         method: 'PUT',
-        json: description('etag-masked', 'Masked')
+        json: spaceMetadata('etag-masked', 'Masked')
       })
       const etag = created.headers.get('etag')!
       const masked = await responseOf(
         bob.was.request({
-          url: spaceUrl('etag-masked'),
+          url: metaUrl('etag-masked'),
           method: 'GET',
           headers: { 'if-none-match': etag }
         })
@@ -425,21 +425,21 @@ describe('Spaces', () => {
 
     it('[root] PUT with If-None-Match: * creates an absent Space and 412s on a present one', async () => {
       const created = await alice.was.request({
-        url: spaceUrl('guarded-create'),
+        url: metaUrl('guarded-create'),
         method: 'PUT',
-        json: { ...description('guarded-create', 'Winner'), type: ['Space'] },
+        json: { ...spaceMetadata('guarded-create', 'Winner'), type: ['Space'] },
         headers: { 'if-none-match': '*' }
       })
       assert.equal(created.status, 201)
       assertEtagVersion({ etag: created.headers.get('etag'), version: 1 })
 
       // The loser of a create race: same guarded PUT against the now-present
-      // Space, refused without touching the stored description.
+      // Space, refused without touching the stored Space Metadata object.
       const thrown = await requestError(
         alice.was.request({
-          url: spaceUrl('guarded-create'),
+          url: metaUrl('guarded-create'),
           method: 'PUT',
-          json: description('guarded-create', 'Loser'),
+          json: spaceMetadata('guarded-create', 'Loser'),
           headers: { 'if-none-match': '*' }
         })
       )
@@ -452,19 +452,19 @@ describe('Spaces', () => {
       assert.equal(stored.name, 'Winner')
     })
 
-    it('[root] PUT with If-Match is a compare-and-swap on the description version', async () => {
+    it('[root] PUT with If-Match is a compare-and-swap on the Space Metadata version', async () => {
       const created = await alice.was.request({
-        url: spaceUrl('cas'),
+        url: metaUrl('cas'),
         method: 'PUT',
-        json: description('cas', 'One')
+        json: spaceMetadata('cas', 'One')
       })
       const current = created.headers.get('etag')!
 
       const stale = await requestError(
         alice.was.request({
-          url: spaceUrl('cas'),
+          url: metaUrl('cas'),
           method: 'PUT',
-          json: description('cas', 'Stale'),
+          json: spaceMetadata('cas', 'Stale'),
           headers: { 'if-match': '"99"' }
         })
       )
@@ -472,9 +472,9 @@ describe('Spaces', () => {
       assert.equal((await alice.was.space('cas').describe()).name, 'One')
 
       const swapped = await alice.was.request({
-        url: spaceUrl('cas'),
+        url: metaUrl('cas'),
         method: 'PUT',
-        json: description('cas', 'Two'),
+        json: spaceMetadata('cas', 'Two'),
         headers: { 'if-match': current }
       })
       assert.equal(swapped.status, 204)
@@ -484,9 +484,9 @@ describe('Spaces', () => {
       // The consumed validator no longer matches.
       const replay = await requestError(
         alice.was.request({
-          url: spaceUrl('cas'),
+          url: metaUrl('cas'),
           method: 'PUT',
-          json: description('cas', 'Three'),
+          json: spaceMetadata('cas', 'Three'),
           headers: { 'if-match': current }
         })
       )
@@ -496,9 +496,9 @@ describe('Spaces', () => {
     it('[root] If-Match on an absent Space is 412, not a create', async () => {
       const thrown = await requestError(
         alice.was.request({
-          url: spaceUrl('cas-absent'),
+          url: metaUrl('cas-absent'),
           method: 'PUT',
-          json: description('cas-absent', 'Never'),
+          json: spaceMetadata('cas-absent', 'Never'),
           headers: { 'if-match': '"abc.1"' }
         })
       )
@@ -508,14 +508,14 @@ describe('Spaces', () => {
 
     it('[root] an unconditional PUT still upserts (last writer wins)', async () => {
       await alice.was.request({
-        url: spaceUrl('unconditional'),
+        url: metaUrl('unconditional'),
         method: 'PUT',
-        json: description('unconditional', 'First')
+        json: spaceMetadata('unconditional', 'First')
       })
       const second = await alice.was.request({
-        url: spaceUrl('unconditional'),
+        url: metaUrl('unconditional'),
         method: 'PUT',
-        json: description('unconditional', 'Second')
+        json: spaceMetadata('unconditional', 'Second')
       })
       assert.equal(second.status, 204)
       assert.equal(
@@ -526,16 +526,16 @@ describe('Spaces', () => {
 
     it('[root] a Space deleted and re-created under the same id gets a fresh generation', async () => {
       const first = await alice.was.request({
-        url: spaceUrl('regen'),
+        url: metaUrl('regen'),
         method: 'PUT',
-        json: description('regen', 'First life')
+        json: spaceMetadata('regen', 'First life')
       })
       const oldEtag = first.headers.get('etag')!
       await alice.was.space('regen').delete()
       const second = await alice.was.request({
-        url: spaceUrl('regen'),
+        url: metaUrl('regen'),
         method: 'PUT',
-        json: description('regen', 'Second life')
+        json: spaceMetadata('regen', 'Second life')
       })
       const newEtag = second.headers.get('etag')!
       assertEtagVersion({ etag: newEtag, version: 1 })
@@ -543,7 +543,7 @@ describe('Spaces', () => {
       // The old validator matches nothing on the new record.
       const conditional = await responseOf(
         alice.was.request({
-          url: spaceUrl('regen'),
+          url: metaUrl('regen'),
           method: 'GET',
           headers: { 'if-none-match': oldEtag }
         })
@@ -756,7 +756,7 @@ describe('Spaces', () => {
       const expectedError = await requestError({
         client: bob.was,
         request: {
-          url: new URL(`/space/${spaceId}`, serverUrl).toString(),
+          url: new URL(`/space/${spaceId}/meta`, serverUrl).toString(),
           method: 'PUT',
           json: { name: 'Unconsented', controller: alice.did }
         }
@@ -776,7 +776,7 @@ describe('Spaces', () => {
       const expectedError = await requestError({
         client: alice.was,
         request: {
-          url: new URL(`/space/${spaceId}`, serverUrl).toString(),
+          url: new URL(`/space/${spaceId}/meta`, serverUrl).toString(),
           method: 'PUT',
           json: { id: crypto.randomUUID(), controller: alice.did }
         }
@@ -793,17 +793,18 @@ describe('Spaces', () => {
     })
 
     it("[delegated] a provisioning service creates a Space on Alice's behalf via PUT", async () => {
-      // Alice delegates a PUT capability for the (not yet existing) Space URL.
+      // Alice delegates a PUT capability for the (not yet existing) Space's
+      // Metadata URL.
       const spaceId = crypto.randomUUID()
-      const spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
+      const metaUrl = new URL(`/space/${spaceId}/meta`, serverUrl).toString()
       const zcap = await alice.was.grant({
         to: aliceDelegatedApp.did,
         actions: ['PUT'],
-        target: spaceUrl
+        target: metaUrl
       })
 
       const response = await aliceDelegatedApp.was.request({
-        url: spaceUrl,
+        url: metaUrl,
         method: 'PUT',
         capability: zcap,
         json: { name: 'Provisioned by PUT', controller: alice.did }
@@ -817,17 +818,17 @@ describe('Spaces', () => {
 
     it('[delegated] a PUT-create chain not rooted in the body controller yields controller-mismatch (400)', async () => {
       const spaceId = crypto.randomUUID()
-      const spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
+      const metaUrl = new URL(`/space/${spaceId}/meta`, serverUrl).toString()
       const zcap = await alice.was.grant({
         to: aliceDelegatedApp.did,
         actions: ['PUT'],
-        target: spaceUrl
+        target: metaUrl
       })
 
       const expectedError = await requestError({
         client: aliceDelegatedApp.was,
         request: {
-          url: spaceUrl,
+          url: metaUrl,
           method: 'PUT',
           capability: zcap,
           json: { name: 'Squatted on Bob', controller: bob.did }
@@ -847,26 +848,28 @@ describe('Spaces', () => {
 
     it('[delegated] a PUT-create chain rooted at a different target names the root target in the detail', async () => {
       // Alice's delegation chain roots at Space A's root capability, but its
-      // invocationTarget (and the app's invocation) is Space B's URL: the
-      // differentiated cause (spec SHOULD) names the mismatched root target.
+      // invocationTarget (and the app's invocation) is Space B's Metadata URL:
+      // the differentiated cause (spec SHOULD) names the mismatched root
+      // target and Space B's root target.
       const grantedSpaceId = crypto.randomUUID()
       const grantedSpaceUrl = new URL(
-        `/space/${grantedSpaceId}`,
+        `/space/${grantedSpaceId}/`,
         serverUrl
       ).toString()
 
       const spaceId = crypto.randomUUID()
-      const spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
+      const spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
+      const metaUrl = new URL(`/space/${spaceId}/meta`, serverUrl).toString()
       const zcap = await alice.was.grant({
         to: aliceDelegatedApp.did,
         actions: ['PUT'],
-        target: spaceUrl,
+        target: metaUrl,
         capability: `urn:zcap:root:${encodeURIComponent(grantedSpaceUrl)}`
       })
       const expectedError = await requestError({
         client: aliceDelegatedApp.was,
         request: {
-          url: spaceUrl,
+          url: metaUrl,
           method: 'PUT',
           capability: zcap,
           json: { name: 'Wrong Root', controller: alice.did }
@@ -899,7 +902,7 @@ describe('Spaces', () => {
       const expectedError = await requestError({
         client: bob.was,
         request: {
-          url: new URL(`/space/${spaceId}`, serverUrl).toString(),
+          url: new URL(`/space/${spaceId}/meta`, serverUrl).toString(),
           method: 'PUT',
           json: { name: 'Seized', controller: bob.did }
         }
@@ -938,7 +941,7 @@ describe('Spaces', () => {
         {
           id: aliceSpaceId,
           name: 'Alice Listing Test',
-          url: `/space/${aliceSpaceId}`
+          url: `/space/${aliceSpaceId}/`
         }
       )
       // Bob's space is invisible to Alice...

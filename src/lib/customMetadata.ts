@@ -94,24 +94,24 @@ export function parseCustomMetadata({
  * it after authorization and the 404-if-missing check, so a 422/400 is
  * observable only to a caller authorized to write the target.
  * @param options {object}
- * @param options.collectionDescription {{ encryption?: CollectionEncryption }}
- *   the target Collection's stored description
+ * @param options.collectionMetadata {{ encryption?: CollectionEncryption }}
+ *   the target Collection's stored Collection Metadata object
  * @param options.body {Record<string, unknown>}   the parsed request body
  * @param options.requestName {string}   request name for the 400 error title
  * @returns {ResourceMetadataCustom | Record<string, unknown>}
  */
 export function resolveMetadataCustom({
-  collectionDescription,
+  collectionMetadata,
   body,
   requestName
 }: {
-  collectionDescription: { encryption?: CollectionEncryption }
+  collectionMetadata: { encryption?: CollectionEncryption }
   body: Record<string, unknown>
   requestName: string
 }): ResourceMetadataCustom | Record<string, unknown> {
-  if (collectionDescription.encryption?.scheme !== undefined) {
+  if (collectionMetadata.encryption?.scheme !== undefined) {
     const { custom } = body
-    assertEncryptedMetaConforms({ collectionDescription, custom })
+    assertEncryptedMetaConforms({ collectionMetadata, custom })
     return custom as Record<string, unknown>
   }
   return parseCustomMetadata({ body, requestName })

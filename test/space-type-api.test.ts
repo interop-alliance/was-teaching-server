@@ -76,15 +76,17 @@ describe('Space Description type', () => {
   }
 
   /**
-   * PUTs a Space Description by id, signed by `identity`.
+   * PUTs a Space's Metadata object by Space id, signed by `identity`. The
+   * Space itself is written at its `meta` sub-resource: the container URL
+   * `/space/:spaceId/` answers `PUT` with 405.
    *
    * @param options {object}
    * @param options.identity {any}   the test identity signing the request
    * @param options.spaceId {string}
-   * @param options.body {object}    the Space Description request body
+   * @param options.body {object}    the Space Metadata request body
    * @returns {Promise<any>}
    */
-  async function putSpace({
+  async function putSpaceMeta({
     identity,
     spaceId,
     body
@@ -94,7 +96,7 @@ describe('Space Description type', () => {
     body: object
   }): Promise<any> {
     return identity.was.request({
-      url: new URL(`/space/${spaceId}`, serverUrl).toString(),
+      url: new URL(`/space/${spaceId}/meta`, serverUrl).toString(),
       method: 'PUT',
       json: body
     })
@@ -173,10 +175,10 @@ describe('Space Description type', () => {
     }
   })
 
-  describe('Create Space by id (PUT /space/:spaceId)', () => {
+  describe('Create Space by id (PUT /space/:spaceId/meta)', () => {
     it('accepts a type array on the create path, like POST', async () => {
       const spaceId = randomUUID()
-      const response = await putSpace({
+      const response = await putSpaceMeta({
         identity: alice,
         spaceId,
         body: {
@@ -198,7 +200,7 @@ describe('Space Description type', () => {
 
     it('defaults the type to ["Space"] on the create path too', async () => {
       const spaceId = randomUUID()
-      const response = await putSpace({
+      const response = await putSpaceMeta({
         identity: alice,
         spaceId,
         body: { id: spaceId, name: 'PUT-created', controller: alice.did }
@@ -212,7 +214,7 @@ describe('Space Description type', () => {
     it('rejects an invalid type on the create path (400, #/type)', async () => {
       const spaceId = randomUUID()
       const err = await requestError(
-        putSpace({
+        putSpaceMeta({
           identity: alice,
           spaceId,
           body: { id: spaceId, controller: alice.did, type: [] }
@@ -224,7 +226,7 @@ describe('Space Description type', () => {
     })
   })
 
-  describe('Update Space (PUT /space/:spaceId): type is immutable', () => {
+  describe('Update Space (PUT /space/:spaceId/meta): type is immutable', () => {
     let spaceId: string
 
     beforeAll(async () => {
@@ -242,7 +244,7 @@ describe('Space Description type', () => {
 
     it('rejects an update whose type names a different set (400, #/type)', async () => {
       const err = await requestError(
-        putSpace({
+        putSpaceMeta({
           identity: alice,
           spaceId,
           body: {
@@ -272,7 +274,7 @@ describe('Space Description type', () => {
 
     it('rejects an update that adds a type to the stored set (400)', async () => {
       const err = await requestError(
-        putSpace({
+        putSpaceMeta({
           identity: alice,
           spaceId,
           body: {
@@ -287,7 +289,7 @@ describe('Space Description type', () => {
     })
 
     it('accepts the same type set in a different order', async () => {
-      const response = await putSpace({
+      const response = await putSpaceMeta({
         identity: alice,
         spaceId,
         body: {
@@ -309,7 +311,7 @@ describe('Space Description type', () => {
     })
 
     it('preserves the stored type when the update body carries none', async () => {
-      const response = await putSpace({
+      const response = await putSpaceMeta({
         identity: alice,
         spaceId,
         body: { id: spaceId, name: 'Renamed', controller: alice.did }
@@ -329,7 +331,7 @@ describe('Space Description type', () => {
       // Bob may not update Alice's Space at all, so he must not be able to
       // distinguish a type mismatch from a Space he cannot see.
       const err = await requestError(
-        putSpace({
+        putSpaceMeta({
           identity: bob,
           spaceId,
           body: { id: spaceId, controller: bob.did, type: ['Space'] }
@@ -372,7 +374,8 @@ describe('Space Description type', () => {
         {
           id: ordinarySpaceId,
           name: "Bob's Data",
-          url: `/space/${ordinarySpaceId}`
+          // List Spaces names a Space in its canonical container form.
+          url: `/space/${ordinarySpaceId}/`
         }
       ])
       assert.equal(listing.totalItems, 1)

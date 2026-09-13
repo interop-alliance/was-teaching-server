@@ -56,8 +56,8 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
     }))
     ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
 
-    spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
-    otherSpaceUrl = new URL(`/space/${otherSpaceId}`, serverUrl).toString()
+    spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
+    otherSpaceUrl = new URL(`/space/${otherSpaceId}/`, serverUrl).toString()
     collectionUrl = new URL(
       `/space/${spaceId}/${collectionId}`,
       serverUrl
@@ -669,7 +669,7 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       const zcap = await delegate()
       const unknownSpaceId = randomUUID()
       const unknownSpaceUrl = new URL(
-        `/space/${unknownSpaceId}`,
+        `/space/${unknownSpaceId}/`,
         serverUrl
       ).toString()
       const err = await requestError(

@@ -50,7 +50,7 @@ describe('Storage API', () => {
       try {
         await backend.writeSpace({
           spaceId,
-          spaceDescription: {
+          spaceMetadata: {
             id: spaceId,
             type: ['Space'],
             name: 'Export Test Space',
@@ -60,7 +60,7 @@ describe('Storage API', () => {
         await backend.writeCollection({
           spaceId,
           collectionId,
-          collectionDescription: {
+          collectionMetadata: {
             id: collectionId,
             type: ['Collection'],
             name: 'Verifiable Credentials'
@@ -154,7 +154,7 @@ describe('Storage API', () => {
       try {
         await backend.writeSpace({
           spaceId,
-          spaceDescription: {
+          spaceMetadata: {
             id: spaceId,
             type: ['Space'],
             name: 'Repro Test Space',
@@ -164,7 +164,7 @@ describe('Storage API', () => {
         await backend.writeCollection({
           spaceId,
           collectionId: 'credentials',
-          collectionDescription: { id: 'credentials', type: ['Collection'] }
+          collectionMetadata: { id: 'credentials', type: ['Collection'] }
         })
         await backend.writeResource({
           spaceId,
@@ -235,7 +235,7 @@ describe('Storage API', () => {
         // Populate the source space with a policy at every level.
         await backend.writeSpace({
           spaceId: src,
-          spaceDescription: {
+          spaceMetadata: {
             id: src,
             type: ['Space'],
             name: 'Source',
@@ -245,7 +245,7 @@ describe('Storage API', () => {
         await backend.writeCollection({
           spaceId: src,
           collectionId,
-          collectionDescription: {
+          collectionMetadata: {
             id: collectionId,
             type: ['Collection'],
             name: 'Verifiable Credentials'
@@ -281,7 +281,7 @@ describe('Storage API', () => {
         const pack = await backend.exportSpace({ spaceId: src })
         await backend.writeSpace({
           spaceId: dst,
-          spaceDescription: {
+          spaceMetadata: {
             id: dst,
             type: ['Space'],
             name: 'Target',
@@ -325,7 +325,7 @@ describe('Storage API', () => {
       try {
         await backend.writeSpace({
           spaceId: src,
-          spaceDescription: {
+          spaceMetadata: {
             id: src,
             type: ['Space'],
             name: 'Source',
@@ -335,7 +335,7 @@ describe('Storage API', () => {
         await backend.writeCollection({
           spaceId: src,
           collectionId,
-          collectionDescription: {
+          collectionMetadata: {
             id: collectionId,
             type: ['Collection'],
             name: 'Verifiable Credentials'
@@ -366,7 +366,7 @@ describe('Storage API', () => {
         const pack = await backend.exportSpace({ spaceId: src })
         await backend.writeSpace({
           spaceId: dst,
-          spaceDescription: {
+          spaceMetadata: {
             id: dst,
             type: ['Space'],
             name: 'Target',
@@ -405,7 +405,7 @@ describe('Storage API', () => {
       try {
         await backend.writeSpace({
           spaceId: src,
-          spaceDescription: {
+          spaceMetadata: {
             id: src,
             type: ['Space'],
             name: 'Source',
@@ -415,7 +415,7 @@ describe('Storage API', () => {
         await backend.writeCollection({
           spaceId: src,
           collectionId,
-          collectionDescription: {
+          collectionMetadata: {
             id: collectionId,
             type: ['Collection'],
             name: 'Notes'
@@ -456,7 +456,7 @@ describe('Storage API', () => {
         const pack = await backend.exportSpace({ spaceId: src })
         await backend.writeSpace({
           spaceId: dst,
-          spaceDescription: {
+          spaceMetadata: {
             id: dst,
             type: ['Space'],
             name: 'Target',
@@ -512,7 +512,7 @@ describe('Storage API', () => {
       try {
         await backend.writeSpace({
           spaceId,
-          spaceDescription: {
+          spaceMetadata: {
             id: spaceId,
             type: ['Space'],
             name: 'Prefix Test Space',
@@ -522,7 +522,7 @@ describe('Storage API', () => {
         await backend.writeCollection({
           spaceId,
           collectionId,
-          collectionDescription: {
+          collectionMetadata: {
             id: collectionId,
             type: ['Collection'],
             name: 'Notes'
@@ -604,7 +604,7 @@ describe('Storage API', () => {
       const collectionId = 'notes'
       await backend.writeSpace({
         spaceId,
-        spaceDescription: {
+        spaceMetadata: {
           id: spaceId,
           type: ['Space'],
           name: 'Tombstone Test Space',
@@ -614,7 +614,7 @@ describe('Storage API', () => {
       await backend.writeCollection({
         spaceId,
         collectionId,
-        collectionDescription: {
+        collectionMetadata: {
           id: collectionId,
           type: ['Collection'],
           name: 'Notes'
@@ -794,7 +794,7 @@ describe('Storage API', () => {
       const collectionId = 'notes'
       await backend.writeSpace({
         spaceId,
-        spaceDescription: {
+        spaceMetadata: {
           id: spaceId,
           type: ['Space'],
           name: 'Changes Test Space',
@@ -804,7 +804,7 @@ describe('Storage API', () => {
       await backend.writeCollection({
         spaceId,
         collectionId,
-        collectionDescription: {
+        collectionMetadata: {
           id: collectionId,
           type: ['Collection'],
           name: 'Notes'
@@ -1177,7 +1177,7 @@ describe('Storage API', () => {
         await backend.writeCollection({
           spaceId,
           collectionId: 'enc',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'enc',
             type: ['Collection'],
             name: 'Encrypted',
@@ -1243,7 +1243,7 @@ describe('Storage API', () => {
       const collectionId = 'credentials'
       await backend.writeSpace({
         spaceId,
-        spaceDescription: {
+        spaceMetadata: {
           id: spaceId,
           type: ['Space'],
           name: 'Usage Test Space',
@@ -1253,7 +1253,7 @@ describe('Storage API', () => {
       await backend.writeCollection({
         spaceId,
         collectionId,
-        collectionDescription: {
+        collectionMetadata: {
           id: collectionId,
           type: ['Collection'],
           name: 'Credentials'

@@ -253,7 +253,7 @@ async function bypassMemoize<T>({ fn }: { fn: () => Promise<T> }): Promise<T> {
 
 /**
  * One did:key + did:web + did:webvh resolver per storage backend and base URL,
- * scoped to the backend via the same factory as the Space Description and
+ * scoped to the backend via the same factory as the Space Metadata cache and
  * did:webvh document caches (two backends in one process never share a
  * resolver, and the resolvers go with their backend), and within a backend
  * keyed by `serverUrl`, because the local `did:webvh` driver closes over the
@@ -484,12 +484,21 @@ export async function handleZcapVerify({
   // revocation-store check (whenever the target has a scope), then the
   // annex-chain clause bounding ladder-signed delegations (whenever the
   // did:webvh resolver is engaged -- without it no did:webvh proof verifies,
-  // so there is no ladder delegation to bound).
+  // so there is no ladder delegation to bound). The clause also takes the
+  // operation being verified, since the zcap library's hook sees only the
+  // chain: its invocation-time bound needs the target and action.
   const inspectors = [
     ...(revocation === 'no-revocation-scope'
       ? []
       : [revocationChainInspector(revocation)]),
-    ...(webvh ? [clientAnnexChainInspector(webvh)] : [])
+    ...(webvh
+      ? [
+          clientAnnexChainInspector({
+            ...webvh,
+            invocation: { target: allowedTarget, action: allowedAction }
+          })
+        ]
+      : [])
   ]
   const inspectCapabilityChain =
     inspectors.length > 0 ? composeChainInspectors(inspectors) : undefined
@@ -822,8 +831,9 @@ export async function verifyZcap({
  * (`CapabilityDelegation` proof purpose over the embedded chain), throwing
  * `InvalidRevocationError` (400) when it does not verify. The chain must root
  * in the revocation's scope: its root capability's invocation target must be
- * `rootTarget` -- the keystore URL, or the Space URL for a WAS-route
- * revocation -- or a path under it (enforced where the root is synthesized,
+ * `rootTarget` -- the keystore URL, or the canonical (trailing-slash) Space
+ * URL for a WAS-route revocation -- or a path under it (enforced where the
+ * root is synthesized,
  * so a chain aimed at another keystore or Space -- or another service --
  * cannot be submitted here, per ezcap-express `authorizeZcapRevocation`).
  * Deliberately structural only -- it does NOT consult the revocation store:
@@ -873,7 +883,11 @@ export async function verifyRevocationChain({
   let capabilities: CapabilitySummary[] = []
   const documentLoader = rootCapabilityLoader({
     controllerFor: target => {
-      if (target !== rootTarget && !target.startsWith(`${rootTarget}/`)) {
+      // `rootTarget` is a container URL (the Space's carries its trailing
+      // slash; the keystore's does not), so the subtree prefix is formed on a
+      // slash boundary either way.
+      const subtree = rootTarget.endsWith('/') ? rootTarget : `${rootTarget}/`
+      if (target !== rootTarget && !target.startsWith(subtree)) {
         throw new Error(
           `The root capability from the revocation's delegation chain must` +
             ` have an invocation target that starts with "${rootTarget}".`

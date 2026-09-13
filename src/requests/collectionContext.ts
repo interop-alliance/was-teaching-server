@@ -1,8 +1,8 @@
 /**
- * Shared handler prelude: fetch a Collection Description or 404 (paralleling
+ * Shared handler prelude: fetch a Collection Metadata object or 404 (paralleling
  * spaceContext.ts / keystoreContext.ts). Nearly every Collection- and
  * Resource-level handler repeats the same shape after authorization -- load
- * the Collection Description for context, throw `CollectionNotFoundError`
+ * the Collection Metadata object for context, throw `CollectionNotFoundError`
  * when absent, then resolve the Collection's data-plane backend -- so it lives
  * here, along with the Resource-Metadata and chunk-metadata reads the
  * Resource- and chunk-level handlers share.
@@ -18,21 +18,23 @@ import {
 } from '../errors.js'
 import type {
   ChunkMetadata,
+  CollectionMetadata,
   ResourceMetadata,
   StorageBackend,
-  StoredCollectionDescription,
+  StoredCollectionMetadata,
   VersionedMetadata
 } from '../types.js'
 
 /**
- * Fetches a Collection Description as served, or throws
- * CollectionNotFoundError (404) when absent. For a Collection governed by a
- * history log (the `governed-history-logs` feature) the `encryption` member
- * is derived here from the log head, so every handler that reads the
- * description through this prelude -- describe, the envelope enforcement on
- * writes, the listing's name suppression -- sees the governed descriptor.
- * Update Collection reads the stored description directly instead, since it
- * must not persist the derived member.
+ * Fetches a Collection Metadata object as served, or throws
+ * CollectionNotFoundError (404) when absent. The out-of-band validator parts
+ * (`metaGeneration` / `metaVersion`) ride along. For a Collection governed by
+ * a history log (the `governed-history-logs` feature) the `encryption` member
+ * is derived here from the log head, so every handler that reads the object
+ * through this prelude -- Read Collection Metadata, the envelope enforcement
+ * on writes, the listing's name suppression -- sees the governed descriptor.
+ * Update Collection reads the stored object directly instead, since it must
+ * not persist the derived member.
  * @param options {object}
  * @param options.request {FastifyRequest}   supplies `request.server.storage`
  *   and `serverUrl`
@@ -40,7 +42,7 @@ import type {
  * @param options.collectionId {string}
  * @param options.requestName {string}   human-readable request name, used in
  *   error titles
- * @returns {Promise<StoredCollectionDescription>}
+ * @returns {Promise<StoredCollectionMetadata>}
  */
 export async function getCollectionOrThrow({
   request,
@@ -52,30 +54,56 @@ export async function getCollectionOrThrow({
   spaceId: string
   collectionId: string
   requestName: string
-}): Promise<StoredCollectionDescription> {
+}): Promise<StoredCollectionMetadata> {
   const { storage, serverUrl } = request.server
-  const [collectionDescription, log] = await Promise.all([
-    storage.getCollectionDescription({ spaceId, collectionId }),
-    storage.getCollectionLog({ spaceId, collectionId })
+  const [collectionMetadata, governedEncryption] = await Promise.all([
+    storage.getCollectionMetadata({ spaceId, collectionId }),
+    governedEncryptionOf({ storage, serverUrl, spaceId, collectionId })
   ])
-  if (!collectionDescription) {
+  if (!collectionMetadata) {
     throw new CollectionNotFoundError({ requestName })
   }
-  if (!log) {
-    return collectionDescription
+  if (governedEncryption === undefined) {
+    return collectionMetadata
   }
-  return {
-    ...collectionDescription,
-    encryption: deriveGovernedEncryption({
-      body: log.body,
-      logUrl: `${serverUrl}${collectionLogPath({ spaceId, collectionId })}`
-    })
-  }
+  return { ...collectionMetadata, encryption: governedEncryption }
+}
+
+/**
+ * The `encryption` descriptor a log-governed Collection serves, derived from
+ * its history log's head (the `governed-history-logs` feature), or
+ * `undefined` when the Collection has no log. The stored object carries no
+ * `encryption` for such a Collection; a direct write of the member is refused.
+ * @param options {object}
+ * @param options.storage {StorageBackend}
+ * @param options.serverUrl {string}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @returns {Promise<CollectionMetadata['encryption']>}
+ */
+export async function governedEncryptionOf({
+  storage,
+  serverUrl,
+  spaceId,
+  collectionId
+}: {
+  storage: StorageBackend
+  serverUrl: string
+  spaceId: string
+  collectionId: string
+}): Promise<CollectionMetadata['encryption']> {
+  const log = await storage.getCollectionLog({ spaceId, collectionId })
+  return log
+    ? deriveGovernedEncryption({
+        body: log.body,
+        logUrl: `${serverUrl}${collectionLogPath({ spaceId, collectionId })}`
+      })
+    : undefined
 }
 
 /**
  * The pair every Collection-scoped handler needs before it can touch Resource
- * bytes: the Collection Description (404 when absent) plus the Collection's
+ * bytes: the Collection Metadata object (404 when absent) plus the Collection's
  * selected (data-plane) backend, resolved from it. Only for handlers that run
  * the two back to back -- a handler with a validation step BETWEEN them (whose
  * error must precede a backend-resolution error) keeps the calls separate.
@@ -86,8 +114,8 @@ export async function getCollectionOrThrow({
  * @param options.collectionId {string}
  * @param options.requestName {string}   human-readable request name, used in
  *   error titles
- * @returns {Promise<{ collectionDescription: CollectionDescription &
- *   StoredCollectionDescription, dataBackend: StorageBackend }>}
+ * @returns {Promise<{ collectionMetadata: StoredCollectionMetadata,
+ *   dataBackend: StorageBackend }>}
  */
 export async function fetchCollectionAndBackend({
   request,
@@ -100,10 +128,10 @@ export async function fetchCollectionAndBackend({
   collectionId: string
   requestName: string
 }): Promise<{
-  collectionDescription: StoredCollectionDescription
+  collectionMetadata: StoredCollectionMetadata
   dataBackend: StorageBackend
 }> {
-  const collectionDescription = await getCollectionOrThrow({
+  const collectionMetadata = await getCollectionOrThrow({
     request,
     spaceId,
     collectionId,
@@ -113,9 +141,9 @@ export async function fetchCollectionAndBackend({
     request,
     spaceId,
     collectionId,
-    collectionDescription
+    collectionMetadata
   })
-  return { collectionDescription, dataBackend }
+  return { collectionMetadata, dataBackend }
 }
 
 /**

@@ -38,8 +38,10 @@ describe('Request validation API', () => {
   describe('Path traversal', () => {
     it('rejects a traversal spaceId with a typed 400, no filesystem escape', async () => {
       // `%2e%2e%2f` decodes to `../` in the route param, never splitting the
-      // route -- the handler sees a spaceId of `../../pwned`.
-      const traversalUrl = `${serverUrl}/space/%2e%2e%2f%2e%2e%2fpwned`
+      // route -- the handler sees a spaceId of `../../pwned`. The Space is
+      // written at its `meta` sub-resource, so that is the write the id
+      // validation must refuse.
+      const traversalUrl = `${serverUrl}/space/%2e%2e%2f%2e%2e%2fpwned/meta`
       let expectedError: any
       try {
         await alice.was.request({
@@ -70,7 +72,7 @@ describe('Request validation API', () => {
     })
 
     it('rejects a traversal collectionId with a typed 400', async () => {
-      const url = `${serverUrl}/space/${alice.space1.id}/%2e%2e%2fevil`
+      const url = `${serverUrl}/space/${alice.space1.id}/%2e%2e%2fevil/meta`
       let expectedError: any
       try {
         await alice.was.request({
@@ -88,14 +90,14 @@ describe('Request validation API', () => {
   })
 
   describe('Reserved path segments', () => {
-    it('PUT /space/:spaceId/export cannot create a Collection named "export" (409)', async () => {
-      // No static PUT route exists at /export (export is POST-only), so the
-      // request falls through to the parametric Create Collection route --
-      // which must reject the reserved id rather than create the Collection.
+    it('PUT /space/:spaceId/export/meta cannot create a Collection named "export" (409)', async () => {
+      // No static PUT route exists at /export/meta (export is POST-only), so
+      // the request falls through to the parametric Collection Metadata route
+      // -- which must reject the reserved id rather than create the Collection.
       let expectedError: any
       try {
         await alice.was.request({
-          url: `${serverUrl}/space/${alice.space1.id}/export`,
+          url: `${serverUrl}/space/${alice.space1.id}/export/meta`,
           method: 'PUT',
           json: { name: 'export' }
         })
@@ -111,9 +113,12 @@ describe('Request validation API', () => {
       )
     })
 
-    it('PUT of a Resource named "quota" is rejected (409)', async () => {
-      // `quota` is reserved at the Collection level (the future per-Collection
-      // quota report endpoint).
+    it('PUT at the reserved "quota" segment creates no Resource (405)', async () => {
+      // `quota` is reserved at the Collection level (the per-Collection quota
+      // report). The URL is that endpoint, not a Resource, and it implements
+      // only `GET`, so a `PUT` is refused as a method the endpoint lacks. It
+      // used to fall through to Update Resource and answer a reserved-id 409;
+      // either way no Resource named `quota` can be written.
       let expectedError: any
       try {
         await alice.was.request({
@@ -124,12 +129,9 @@ describe('Request validation API', () => {
       } catch (error) {
         expectedError = error
       }
-      assert.ok(expectedError, 'expected the reserved id to be rejected')
-      assert.equal(expectedError.response.status, 409)
-      assert.equal(
-        expectedError.data.type,
-        'https://wallet.storage/spec#reserved-id'
-      )
+      assert.ok(expectedError, 'expected the PUT to be refused')
+      assert.equal(expectedError.response.status, 405)
+      assert.equal(expectedError.response.headers.get('allow'), 'GET, HEAD')
     })
   })
 
@@ -164,15 +166,15 @@ describe('Request validation API', () => {
       assert.equal(expectedError.data.errors[0].pointer, '#/controller')
     })
 
-    it('PUT /space/:spaceId without a name succeeds (name is optional)', async () => {
-      // The Space Description `name` property is optional per the spec, so an
-      // update request that omits it must succeed.
-      const spaceUrl = new URL(
-        `/space/${alice.space1.id}`,
+    it('PUT /space/:spaceId/meta without a name succeeds (name is optional)', async () => {
+      // The Space Metadata object's `name` property is optional per the spec,
+      // so an update request that omits it must succeed.
+      const spaceMetaUrl = new URL(
+        `/space/${alice.space1.id}/meta`,
         serverUrl
       ).toString()
       const response = await alice.was.request({
-        url: spaceUrl,
+        url: spaceMetaUrl,
         method: 'PUT',
         json: { controller: alice.did }
       })

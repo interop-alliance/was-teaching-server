@@ -220,42 +220,34 @@ export const RESOURCE_POLICY_FILE_PREFIX = '.r.'
 export const META_FILE_PREFIX = '.meta.'
 
 /**
- * Prefix of a Collection metadata sidecar (`.collectionmeta.<collectionId>.json`).
- * Deliberately NOT `.meta.<collectionId>.json`: a Collection's metadata sidecar
- * lives in the same directory as the Resource sidecars of that Collection, where
- * `.meta.<id>.json` already means "the Resource `<id>`'s metadata", so a shared
- * prefix would make a Collection's own metadata indistinguishable from that of a
- * Resource whose id happens to equal the Collection id.
- */
-export const COLLECTION_META_FILE_PREFIX = '.collectionmeta.'
-
-/**
  * Prefix of a Collection's governing history log file
  * (`.collectionlog.<collectionId>.json`, the `governed-history-logs` feature):
  * the JSON Lines log body with its own `ETag` validator, kept beside the
- * Collection's metadata sidecar. Its own prefix, disjoint from `.meta.` and
- * `.collectionmeta.`, keeps it out of the Resource listing, the `changes`
- * feed's tombstone scan, and the metadata import branches.
+ * Collection's metadata file. Its own prefix, disjoint from `.meta.`, keeps it
+ * out of the Resource listing, the `changes` feed's tombstone scan, and the
+ * metadata import branches.
  */
 export const COLLECTION_LOG_FILE_PREFIX = '.collectionlog.'
 
 /**
- * Builds the file name of a Space description document:
+ * Builds the file name of a Space Metadata object's file:
  * `.space.<spaceId>.json`.
  * @param spaceId {string}
  * @returns {string}
  */
-export function spaceDescriptionFileName(spaceId: string): string {
+export function spaceMetadataFileName(spaceId: string): string {
   return `${SPACE_FILE_PREFIX}${spaceId}${JSON_FILE_SUFFIX}`
 }
 
 /**
- * Builds the file name of a Collection description document:
- * `.collection.<collectionId>.json`.
+ * Builds the file name of a Collection Metadata object's file:
+ * `.collection.<collectionId>.json`. The one file holds the whole merged
+ * object: the configuration members beside `createdAt`, `updatedAt`,
+ * `custom`, and `epoch`.
  * @param collectionId {string}
  * @returns {string}
  */
-export function collectionDescriptionFileName(collectionId: string): string {
+export function collectionMetadataFileName(collectionId: string): string {
   return `${COLLECTION_FILE_PREFIX}${collectionId}${JSON_FILE_SUFFIX}`
 }
 
@@ -328,21 +320,9 @@ export function metaSidecarFileName(resourceId: string): string {
 }
 
 /**
- * Builds the file name of a Collection's metadata sidecar:
- * `.collectionmeta.<collectionId>.json`. A dot-file kept in the Collection dir
- * alongside the Collection description it is versioned independently of.
- * @param collectionId {string}
- * @returns {string}
- */
-export function collectionMetaFileName(collectionId: string): string {
-  return `${COLLECTION_META_FILE_PREFIX}${collectionId}${JSON_FILE_SUFFIX}`
-}
-
-/**
  * Builds the file name of a Collection's governing history log:
  * `.collectionlog.<collectionId>.json`, a dot-file in the Collection dir
- * beside the metadata sidecar, versioned independently of both the sidecar
- * and the Collection description.
+ * beside the Collection Metadata file, versioned independently of it.
  * @param collectionId {string}
  * @returns {string}
  */

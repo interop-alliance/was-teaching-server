@@ -21,7 +21,9 @@ export type { Problem }
  * entries; `handleError` serializes these to the wire. Subclasses set their
  * distinguishing values via `super({ ... })`.
  * @param options {object}
- * @param options.type {ProblemType}   problem-kind URI (see @interop/storage-core)
+ * @param options.type {ProblemType | 'about:blank'}   problem-kind URI (see
+ *   @interop/storage-core), or RFC 9457's `about:blank` for a problem whose
+ *   whole meaning is its HTTP status code
  * @param options.title {string}   short human-readable summary
  * @param options.detail {string}   specific explanation of the occurrence
  * @param options.statusCode {number}   HTTP status code
@@ -29,7 +31,7 @@ export type { Problem }
  * @param [options.cause] {Error}   the underlying error, when wrapping one
  */
 export class ProblemError extends Error {
-  type: ProblemType
+  type: ProblemType | 'about:blank'
   title: string
   detail: string
   statusCode: number
@@ -42,7 +44,7 @@ export class ProblemError extends Error {
     problems,
     cause
   }: {
-    type: ProblemType
+    type: ProblemType | 'about:blank'
     title: string
     detail: string
     statusCode: number
@@ -327,7 +329,7 @@ export class EncryptionImmutableError extends ProblemError {
  * 409 -- an Update Collection wrote the `encryption` member directly on a
  * Collection whose descriptor is governed by its history log (the
  * `.../meta/log` sub-resource, the `governed-history-logs` feature). The served
- * member is derived from the log head, so the Description path is read-only
+ * member is derived from the log head, so the Metadata object path is read-only
  * for it: a change is an append to the log. Like `encryption-immutable`, only
  * observable by a caller already authorized to update the Collection.
  */
@@ -470,16 +472,65 @@ export class InvalidCursorError extends ProblemError {
 }
 
 /**
- * 400 — the Collection Description request body is missing or invalid.
+ * 400 -- the Collection Metadata request body is missing or invalid.
  */
 export class InvalidCollectionError extends ProblemError {
   constructor() {
     super({
       type: ProblemTypes.INVALID_REQUEST_BODY,
-      title: 'Invalid Collection Description body',
-      detail: 'Collection Description body is missing or invalid.',
+      title: 'Invalid Collection Metadata body',
+      detail: 'Collection Metadata body is missing or invalid.',
       statusCode: 400
     })
+  }
+}
+
+/**
+ * 405 -- the method is not defined at this URL. Two places raise it: a `PUT`
+ * of a container URL (a Space or Collection: the container is described at
+ * its `meta` sub-resource instead; spec "Space Metadata Data Model" /
+ * "Collection Metadata Data Model"), and a `DELETE` of a container's Metadata
+ * URL (spec "Lifecycle": there is no `DELETE` at `meta`; the object is
+ * removed by deleting the container). The spec assigns this refusal no error
+ * `type`, so the problem `type` is RFC 9457's `about:blank`: the HTTP status
+ * is the whole meaning. For that reason the `title` is the status phrase
+ * itself, `Method Not Allowed`, as RFC 9457 section 4.2.1 says it SHOULD be
+ * when `type` is `about:blank`; which URL refused the method is a
+ * per-occurrence specific, and so goes in `detail`. `handleError` emits the
+ * RFC 9110 `Allow` header from `allow`, the methods the URL does accept.
+ * @param options {object}
+ * @param options.allow {string[]}   the methods defined at the URL
+ * @param [options.hint] {string}   one sentence naming where the refused
+ *   operation lives instead, sited between the refusal and the `Allow` list
+ * @param [options.targetName] {string}   what the URL addresses (e.g.
+ *   `Space Metadata`), named in the detail
+ */
+export class MethodNotAllowedError extends ProblemError {
+  allow: string[]
+  constructor({
+    allow,
+    hint,
+    targetName
+  }: {
+    allow: string[]
+    hint?: string
+    targetName?: string
+  }) {
+    super({
+      type: 'about:blank',
+      title: 'Method Not Allowed',
+      detail: [
+        `The method is not defined at this ${targetName ? `${targetName} ` : ''}URL.`,
+        ...(hint ? [hint] : []),
+        // An empty `Allow` is legal (RFC 9110: the URL allows no methods), and
+        // a reserved endpoint the server anchors but serves nothing at has one.
+        allow.length > 0
+          ? `Allowed methods: ${allow.join(', ')}.`
+          : 'No methods are allowed at this URL.'
+      ].join(' '),
+      statusCode: 405
+    })
+    this.allow = allow
   }
 }
 
@@ -1332,8 +1383,9 @@ export class DuplicateRevocationError extends ProblemError {
  * an `application/problem+json` response using its `type` / `title` / `detail`
  * (or `problems`), defaulting to a 500 internal error when no statusCode is
  * present. The spec requires `type` and `title`, so both always fall back to a
- * sensible value.
- * @param error {Error & { statusCode?: number, type?: string, title?: string, detail?: string, problems?: Problem[] }}
+ * sensible value. A `MethodNotAllowedError` also sets the `Allow` header RFC
+ * 9110 requires on a 405.
+ * @param error {Error & { statusCode?: number, type?: string, title?: string, detail?: string, problems?: Problem[], allow?: string[] }}
  * @param request {import('fastify').FastifyRequest}
  * @param reply {import('fastify').FastifyReply}
  * @returns {Promise<FastifyReply>}
@@ -1345,11 +1397,15 @@ export async function handleError(
     title?: string
     detail?: string
     problems?: Problem[]
+    allow?: string[]
   },
   request: FastifyRequest,
   reply: FastifyReply
 ): Promise<FastifyReply> {
   const statusCode = error.statusCode || 500
+  if (error.allow) {
+    reply.header('allow', error.allow.join(', '))
+  }
   // Log server-side faults (5xx, e.g. a StorageError and its underlying
   // `cause`) here through the request logger -- rather than in the error
   // constructors -- so logging lives in one place. Client errors (4xx) are

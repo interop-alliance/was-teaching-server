@@ -1,7 +1,7 @@
 /**
- * Validation and inspection of a Space Description's `type` member.
+ * Validation and inspection of a Space Metadata object's `type` member.
  *
- * A Space Description's `type` is an array of type names subtyping `Space`, so
+ * A Space Metadata object's `type` is an array of type names subtyping `Space`, so
  * a Space may declare a more specific role while every consumer keeps matching
  * on the base `Space` type. An auxiliary Space -- one holding server-side
  * bookkeeping rather than user data, e.g.
@@ -13,7 +13,7 @@
  */
 import { InvalidRequestBodyError } from '../errors.js'
 
-/** The base type every Space Description carries. */
+/** The base type every Space Metadata object carries. */
 const BASE_SPACE_TYPE = 'Space'
 
 /**
@@ -34,7 +34,7 @@ export const AUXILIARY_SPACE_TYPE = 'AuxiliarySpace'
 export const DELEGATED_CLIENTS_SPACE_TYPE = 'DelegatedClientsSpace'
 
 /**
- * Validates a client-supplied Space Description `type` and returns it, or
+ * Validates a client-supplied Space Metadata `type` and returns it, or
  * `undefined` when the request body carries none (the caller defaults it).
  *
  * A supplied `type` MUST be a non-empty array of non-empty strings that
@@ -63,7 +63,7 @@ export function assertValidSpaceType(
     throw new InvalidRequestBodyError({
       requestName,
       detail:
-        'The Space Description "type" property must be a non-empty array of' +
+        'The Space Metadata "type" property must be a non-empty array of' +
         ` type names that includes "${BASE_SPACE_TYPE}".`,
       pointer: '#/type'
     })
@@ -76,7 +76,7 @@ export function assertValidSpaceType(
     throw new InvalidRequestBodyError({
       requestName,
       detail:
-        `A Space Description "type" naming "${DELEGATED_CLIENTS_SPACE_TYPE}"` +
+        `A Space Metadata "type" naming "${DELEGATED_CLIENTS_SPACE_TYPE}"` +
         ` must also name "${AUXILIARY_SPACE_TYPE}".`,
       pointer: '#/type'
     })
@@ -85,7 +85,7 @@ export function assertValidSpaceType(
 }
 
 /**
- * The default `type` for a Space Description created without one.
+ * The default `type` for a Space created without one.
  * @returns {string[]}
  */
 export function defaultSpaceType(): string[] {
@@ -93,7 +93,7 @@ export function defaultSpaceType(): string[] {
 }
 
 /**
- * Whether two Space Description `type` values name the same set of types,
+ * Whether two Space Metadata `type` values name the same set of types,
  * ignoring order and repetition. The immutability comparison behind Update
  * Space.
  * @param options {object}
@@ -122,29 +122,29 @@ export function isSameTypeSet({
 }
 
 /**
- * Whether a Space Description declares itself an auxiliary Space.
- * @param spaceDescription {{ type?: unknown } | undefined}
+ * Whether a Space Metadata object declares itself an auxiliary Space.
+ * @param spaceMetadata {{ type?: unknown } | undefined}
  * @returns {boolean}
  */
 export function isAuxiliarySpace(
-  spaceDescription: { type?: unknown } | undefined
+  spaceMetadata: { type?: unknown } | undefined
 ): boolean {
-  const { type } = spaceDescription ?? {}
+  const { type } = spaceMetadata ?? {}
   return Array.isArray(type) && type.includes(AUXILIARY_SPACE_TYPE)
 }
 
 /**
- * Whether a Space Description declares itself a delegated-clients bookkeeping
+ * Whether a Space Metadata object declares itself a delegated-clients bookkeeping
  * Space: typed with both `AuxiliarySpace` and `DelegatedClientsSpace`, the
  * only combination {@link assertValidSpaceType} admits for the latter. The
  * membership check behind the annex clause's whole-Space branch.
- * @param spaceDescription {{ type?: unknown } | undefined}
+ * @param spaceMetadata {{ type?: unknown } | undefined}
  * @returns {boolean}
  */
 export function isDelegatedClientsSpace(
-  spaceDescription: { type?: unknown } | undefined
+  spaceMetadata: { type?: unknown } | undefined
 ): boolean {
-  const { type } = spaceDescription ?? {}
+  const { type } = spaceMetadata ?? {}
   return (
     Array.isArray(type) &&
     type.includes(AUXILIARY_SPACE_TYPE) &&

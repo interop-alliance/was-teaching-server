@@ -152,7 +152,7 @@ describe('did:webvh delegation and chain depth', () => {
         .collection('credentials')
         .put('doc-1', { hello: 'world' })
       const promoted = await alice.was.request({
-        path: `/space/${account.spaceId}`,
+        path: `/space/${account.spaceId}/meta`,
         method: 'PUT',
         json: {
           id: account.spaceId,
@@ -174,7 +174,7 @@ describe('did:webvh delegation and chain depth', () => {
 
     it('the account controller delegates to the delegate did:webvh', async () => {
       const spaceUrl = new URL(
-        `/space/${account.spaceId}`,
+        `/space/${account.spaceId}/`,
         serverUrl
       ).toString()
       delegated = await client({
@@ -264,7 +264,7 @@ describe('did:webvh delegation and chain depth', () => {
     let tailCap: any
 
     beforeAll(async () => {
-      spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
+      spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
       collectionUrl = new URL(
         `/space/${spaceId}/${collectionId}`,
         serverUrl
@@ -354,7 +354,7 @@ describe('did:webvh delegation and chain depth', () => {
     let subtreeCap: any
 
     beforeAll(async () => {
-      spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
+      spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
       const space = alice.was.space(spaceId)
       await space.configure({ name: 'Subtree Space', controller: alice.did })
       await space.collection(collectionId).configure({ force: true })
@@ -362,10 +362,11 @@ describe('did:webvh delegation and chain depth', () => {
 
       // One capability for the whole Space *subtree*: the trailing slash is
       // its own boundary prefix, so everything under `/space/<id>/` is a valid
-      // attenuation of it.
+      // attenuation of it. The canonical Space URL is also the Space root's
+      // own target, so the delegation keeps that target unchanged.
       subtreeCap = await client({ signer: alice.signer }).delegate({
         capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
-        invocationTarget: `${spaceUrl}/`,
+        invocationTarget: spaceUrl,
         controller: aliceDelegatedApp.did,
         allowedActions: ['GET', 'PUT'],
         expires: new Date(Date.now() + 60 * 60 * 1000)

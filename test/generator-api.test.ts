@@ -1,7 +1,7 @@
 /**
  * Collection app-attribution API tests (Vitest): the server's accept /
  * validate / persist / echo handling of the OPTIONAL `generator` and
- * `generatorOrigin` members of a Collection Description (spec "Collection Data
+ * `generatorOrigin` members of a Collection Metadata object (spec "Collection Data
  * Model"). Both are assertions by the Space controller -- writable at create
  * AND on update (so a wallet can backfill an existing Collection), stored
  * verbatim, never verified by the server and never an authorization input --
@@ -9,7 +9,7 @@
  * writes must leave untouched.
  *
  * These assert the server's wire contract directly (status codes, problem
- * `type`s, the echoed Description) via the signed `was.request()` escape hatch
+ * `type`s, the echoed Metadata object) via the signed `was.request()` escape hatch
  * (raw `HttpResponse` / raw errors), mirroring
  * `encryption-descriptor-api.test.ts` -- the high-level handles hide exactly
  * those details.
@@ -48,10 +48,10 @@ describe('Collection generator attribution API', () => {
     await rm(dataDir, { recursive: true, force: true })
   })
 
-  /** Reads a Collection Description over the wire (raw JSON). */
+  /** Reads a Collection Metadata object over the wire (raw JSON). */
   async function readDesc(collectionId: string): Promise<any> {
     const response = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}`,
+      path: `/space/${spaceId}/${collectionId}/meta`,
       method: 'GET'
     })
     return response.data
@@ -102,16 +102,18 @@ describe('Collection generator attribution API', () => {
       method: 'POST',
       json: { id: collectionId, name: 'Backfill' }
     })
+    // `PUT .../meta` is a full replacement (spec "Update (or Create by Id)
+    // Collection"), so the backfill must resend the stored `name` alongside
+    // the new attribution or lose it.
     const put = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}`,
+      path: `/space/${spaceId}/${collectionId}/meta`,
       method: 'PUT',
-      json: { id: collectionId, generator, generatorOrigin }
+      json: { id: collectionId, name: 'Backfill', generator, generatorOrigin }
     })
     assert.equal(put.status, 204)
     const desc = await readDesc(collectionId)
     assert.equal(desc.generator, generator)
     assert.equal(desc.generatorOrigin, generatorOrigin)
-    // The backfill left the rest of the Description alone.
     assert.equal(desc.name, 'Backfill')
   })
 
@@ -123,7 +125,7 @@ describe('Collection generator attribution API', () => {
       json: { id: collectionId, generator, generatorOrigin }
     })
     const put = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}`,
+      path: `/space/${spaceId}/${collectionId}/meta`,
       method: 'PUT',
       json: {
         id: collectionId,
@@ -137,29 +139,32 @@ describe('Collection generator attribution API', () => {
     assert.equal(desc.generatorOrigin, 'https://other.example.com')
   })
 
-  it('preserves stored attribution when an update supplies only a name', async () => {
+  it('clears stored attribution when an update supplies only a name (full replacement)', async () => {
     const collectionId = 'name-only-update'
     await alice.was.request({
       path: `/space/${spaceId}/`,
       method: 'POST',
       json: { id: collectionId, name: 'Before', generator, generatorOrigin }
     })
+    // `PUT .../meta` is a full replacement: `generator` and `generatorOrigin`
+    // are taken from the body alone, so omitting them here clears them --
+    // unlike `backend`, they have no carry-forward-when-absent rule.
     const put = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}`,
+      path: `/space/${spaceId}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, name: 'After' }
     })
     assert.equal(put.status, 204)
     const desc = await readDesc(collectionId)
     assert.equal(desc.name, 'After')
-    assert.equal(desc.generator, generator)
-    assert.equal(desc.generatorOrigin, generatorOrigin)
+    assert.equal(desc.generator, undefined)
+    assert.equal(desc.generatorOrigin, undefined)
   })
 
   it('creates a collection by id with attribution (PUT create branch)', async () => {
     const collectionId = 'put-created'
     const put = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}`,
+      path: `/space/${spaceId}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, generator, generatorOrigin }
     })
@@ -178,7 +183,7 @@ describe('Collection generator attribution API', () => {
     })
     assert.equal((await readDesc(collectionId)).createdBy, alice.did)
     await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}`,
+      path: `/space/${spaceId}/${collectionId}/meta`,
       method: 'PUT',
       json: {
         id: collectionId,
@@ -271,7 +276,7 @@ describe('Collection generator attribution API', () => {
       })
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}`,
+          path: `/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, generator: 'not-a-did' }
         })

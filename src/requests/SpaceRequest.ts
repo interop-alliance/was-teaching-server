@@ -1,6 +1,7 @@
 /**
- * Request handlers for Space operations: get/update/delete a Space, add a
- * Collection to it, list its Collections, and export it.
+ * Request handlers for Space operations: read/write the Space Metadata object
+ * (at the reserved `meta` sub-resource), delete the Space, add a Collection to
+ * it, list its Collections, and export/import it.
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { Readable } from 'node:stream'
@@ -8,7 +9,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
 import { buildLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
-import { invalidateSpaceDescription } from '../lib/spaceDescriptionCache.js'
+import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
 import { invalidateSpacePolicies } from '../lib/policyCache.js'
 import {
   assertBodyController,
@@ -16,6 +17,10 @@ import {
 } from './controllerConsent.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidIds, assertValidId } from '../lib/validateId.js'
+import {
+  composeCollectionMetadata,
+  parseCollectionMetadataBody
+} from './collectionInput.js'
 import {
   assertValidSpaceController,
   isSelfHostedWebvhController
@@ -29,30 +34,18 @@ import {
   defaultSpaceType,
   isSameTypeSet
 } from '../lib/spaceType.js'
+import { listRegisteredBackends } from '../lib/backends.js'
 import {
-  assertSupportedBackend,
-  listRegisteredBackends
-} from '../lib/backends.js'
-import { assertSupportedEncryption } from '../lib/encryption.js'
-import {
-  assertPlaintextNotEncrypted,
-  assertSupportedPlaintext
-} from '../lib/equalityIndex.js'
-import {
-  assertValidGenerator,
-  assertValidGeneratorOrigin
-} from '../lib/generator.js'
-import {
-  descriptionEtagOf,
+  metadataEtagOf,
   formatEtag,
   parseWritePreconditions,
-  stripDescriptionValidator
+  stripMetadataValidator
 } from '../lib/etag.js'
 import { notModifiedReply } from './notModified.js'
 import {
   spacePath,
+  spaceMetaPath,
   collectionPath,
-  collectionsPath,
   exportPath,
   importPath,
   linksetPath,
@@ -65,61 +58,67 @@ import {
   InvalidImportError,
   InvalidRequestBodyError,
   IdConflictError,
+  PreconditionFailedError,
   SpaceControllerMismatchError,
   UnresolvableControllerError,
   SpaceNotFoundError
 } from '../errors.js'
 import type {
   IDID,
-  SpaceDescription,
+  SpaceMetadata,
   CollectionsList,
   SpaceQuotaReport
 } from '../types.js'
 
 export class SpaceRequest {
   /**
-   * GET /space/:spaceId
-   * Request handler for "Read Space" request
+   * GET /space/:spaceId/meta
+   * Request handler for "Read Space" request: the Space Metadata object, the
+   * "about it" document of the Space container (spec "Space Metadata Data
+   * Model"). Authorization is capability-or-policy against the `meta` URL; a
+   * capability on the Space container covers it too.
    * Before this, `parseAuthHeaders()` hook executed, resulting in:
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
    * }
    *
-   * Example Space Description Object:
+   * Example Space Metadata object:
    * {
    *   "id": "6b5be748-5f39-4936-a895-409e393c399c",
    *   "type": ["Space"],
    *   "name": "Alice's space",
-   *   "controller": "did:key:z6MkpBMbMaRSv5nsgifRAwEKvHHoiKDMhiAHShTFNmkJNdVW"
+   *   "controller": "did:key:z6MkpBMbMaRSv5nsgifRAwEKvHHoiKDMhiAHShTFNmkJNdVW",
+   *   "url": "/space/6b5be748-5f39-4936-a895-409e393c399c/",
+   *   "linkset": "/space/6b5be748-5f39-4936-a895-409e393c399c/linkset"
    * }
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
    * @returns {Promise<FastifyReply>}
    */
-  static async get(
+  static async getMeta(
     request: FastifyRequest<{ Params: { spaceId: string } }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
       params: { spaceId }
     } = request
-    const requestName = 'Get Space'
+    const requestName = 'Read Space'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId }, { requestName })
 
-    // The description served (and the validator the 304 decision below is
+    // The object served (and the validator the 304 decision below is
     // made on) is read from storage directly, not from the short-TTL
     // per-process cache the authorization prelude would use: with several
     // server instances over one backend, another instance's write invalidates
     // only its own cache, and a 304 affirms that the client's copy is
     // current, so it must be decided on the stored state. The same read
     // supplies the prelude its controller, so the Space is read once.
-    const spaceDescription = await request.server.storage.getSpaceDescription({
+    const spaceMetadata = await request.server.storage.getSpaceMetadata({
       spaceId
     })
-    if (!spaceDescription) {
+    if (!spaceMetadata) {
       throw new SpaceNotFoundError({ requestName })
     }
     // Authorize (capability-or-policy): capability invocation first, then the
@@ -127,44 +126,40 @@ export class SpaceRequest {
     await fetchSpaceAndAuthorize({
       request,
       spaceId,
-      targetPath: spacePath({ spaceId }),
+      targetPath: spaceMetaPath({ spaceId }),
       requestName,
-      spaceDescription
+      spaceMetadata
     })
 
-    // `descriptionGeneration` / `descriptionVersion` are the out-of-band
-    // `ETag` validator, not part of the wire body: strip them and emit the
-    // `ETag` header instead. A legacy Space written before description
-    // versioning reports none.
-    const storedDescription = stripDescriptionValidator(spaceDescription)
-    const descriptionEtag = descriptionEtagOf(spaceDescription)
+    // `metaGeneration` / `metaVersion` are the out-of-band `ETag` validator,
+    // not part of the wire body: strip them and emit the `ETag` header
+    // instead. A legacy Space written before versioning reports none.
+    const storedMetadata = stripMetadataValidator(spaceMetadata)
+    const metaEtag = metadataEtagOf(spaceMetadata)
     // A conditional read (`If-None-Match` covering the current validator) is
     // answered 304 with no body, after authorization so an under-authorized
     // read still got the 404 mask above.
-    const notModified = notModifiedReply({
-      request,
-      reply,
-      etag: descriptionEtag
-    })
+    const notModified = notModifiedReply({ request, reply, etag: metaEtag })
     if (notModified) {
       return notModified
     }
 
-    // authorized, continue. Advertise the Space's self `url` and linkset (policy
-    // discovery); both relative, consistent with the other URL fields the API
-    // returns. `type` is served lexically sorted (spec SHOULD).
-    const url = spacePath({ spaceId })
+    // authorized, continue. Advertise the Space's self `url` (the canonical
+    // trailing-slash container form) and linkset (policy discovery); both
+    // relative, consistent with the other URL fields the API returns. `type`
+    // is served lexically sorted (spec SHOULD).
+    const url = spacePath({ spaceId, trailingSlash: true })
     const linkset = linksetPath({ spaceId })
     const getReply = reply.status(200)
-    if (descriptionEtag !== undefined) {
-      getReply.header('etag', descriptionEtag)
+    if (metaEtag !== undefined) {
+      getReply.header('etag', metaEtag)
     }
     return getReply.send({
-      ...storedDescription,
-      type: [...storedDescription.type].sort(),
+      ...storedMetadata,
+      type: [...storedMetadata.type].sort(),
       url,
       linkset
-    } satisfies SpaceDescription)
+    } satisfies SpaceMetadata)
   }
 
   /**
@@ -206,8 +201,13 @@ export class SpaceRequest {
   }
 
   /**
-   * PUT /space/:spaceId
-   * Request handler for "Update or Create Space by Id" request
+   * PUT /space/:spaceId/meta
+   * Request handler for "Update (or Create by Id) Space" request: a full
+   * replacement of the Space Metadata object that creates the Space when none
+   * exists under the id (201, `Location` naming the Space container) and
+   * updates it otherwise (204). The read-only `url`, `linkset` and `createdBy`
+   * are ignored in the body. Authorization is capability-only against the
+   * `meta` URL; a capability on the Space container covers it too.
    * Before this, `parseAuthHeaders()` hook executed, resulting in:
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
@@ -217,7 +217,7 @@ export class SpaceRequest {
    * @param reply {import('fastify').FastifyReply}
    * @returns {Promise<FastifyReply>}
    */
-  static async put(
+  static async putMeta(
     request: FastifyRequest<{
       Params: { spaceId: string }
       Body: { id?: string; name?: string; type?: unknown; controller: IDID }
@@ -241,12 +241,12 @@ export class SpaceRequest {
     if (body?.id !== undefined && body.id !== spaceId) {
       throw new InvalidRequestBodyError({
         requestName: 'Update Space',
-        detail: `Space Description "id" (${body.id}) does not match the URL Space id (${spaceId}).`,
+        detail: `Space Metadata "id" (${body.id}) does not match the URL Space id (${spaceId}).`,
         pointer: '#/id'
       })
     }
 
-    // The Space Description body must carry a controller DID.
+    // The Space Metadata body must carry a controller DID.
     assertBodyController({ body, requestName: 'Update Space' })
     // Reject a controller shape this server cannot authorize against before it
     // is stored. Update Space is the one call site that also accepts a
@@ -264,12 +264,19 @@ export class SpaceRequest {
     })
 
     // Check to see if space already exists (if yes, this will be an Update)
-    const existingSpaceDescription = await storage.getSpaceDescription({
+    const existingSpaceMetadata = await storage.getSpaceMetadata({
       spaceId
     })
 
-    // Perform zCap signature verification (throws appropriate errors)
-    const spaceUrl = new URL(spacePath({ spaceId }), serverUrl).toString()
+    // Perform zCap signature verification (throws appropriate errors). The
+    // capability target is the `meta` URL; the Space's root capability (its
+    // canonical container URL) is accepted as the root of a delegated chain
+    // attenuating down to it, as on every space-family route.
+    const metaUrl = new URL(spaceMetaPath({ spaceId }), serverUrl).toString()
+    const spaceUrl = new URL(
+      spacePath({ spaceId, trailingSlash: true }),
+      serverUrl
+    ).toString()
 
     // Important. For existing Spaces, the request must carry authorization
     // matching the *stored* controller (the body's controller is just the
@@ -277,25 +284,32 @@ export class SpaceRequest {
     // as with Create Space via POST -- the invocation must be authorized by
     // the *body's* controller: signed directly by it, or via a delegation
     // chain rooted in it (see `verifyBodyControllerConsent`).
-    if (existingSpaceDescription) {
+    if (existingSpaceMetadata) {
       await handleZcapVerify({
         url,
-        allowedTarget: spaceUrl,
+        allowedTarget: metaUrl,
         allowedAction: 'PUT',
         method,
         headers,
         serverUrl,
-        spaceController: existingSpaceDescription.controller,
+        spaceController: existingSpaceMetadata.controller,
         webvh: { storage, serverUrl },
         logger: request.log,
+        attenuatedRootTarget: spaceUrl,
         revocation: { storage, scope: { spaceId } }
       })
     } else {
       await verifyBodyControllerConsent({
         request,
         controller: body.controller,
-        allowedTarget: spaceUrl,
+        allowedTarget: metaUrl,
         allowedAction: 'PUT',
+        // The Space container URL's root capability is accepted as the base of
+        // a delegated chain here too, as on the update branch above: a
+        // delegated-provisioning grant is minted on the container, and without
+        // this it could update an existing Space's Metadata object but not
+        // create one by `PUT`.
+        attenuatedRootTarget: spaceUrl,
         MismatchError: SpaceControllerMismatchError
       })
     }
@@ -322,32 +336,31 @@ export class SpaceRequest {
       }
     }
 
-    // A Space Description's `type` is set at creation and immutable after it,
+    // A Space Metadata object's `type` is set at creation and immutable after it,
     // so a Space cannot change role under a consumer that already classified
     // it. An absent (or set-equal) `type` preserves the stored value.
     if (
-      existingSpaceDescription &&
+      existingSpaceMetadata &&
       requestedType &&
       !isSameTypeSet({
         left: requestedType,
-        right: existingSpaceDescription.type
+        right: existingSpaceMetadata.type
       })
     ) {
       throw new InvalidRequestBodyError({
         requestName: 'Update Space',
-        detail:
-          'The Space Description "type" is immutable once the Space exists.',
+        detail: 'The Space Metadata "type" is immutable once the Space exists.',
         pointer: '#/type'
       })
     }
 
-    // Compose Space Description object body, new or updated. `name` is
-    // optional, so only include it when the request supplies one.
-    const spaceDescription = existingSpaceDescription
-      ? // Existing: update only the allowed fields. The stored description's
+    // Compose the Space Metadata object, new or updated. `name` is optional,
+    // so only include it when the request supplies one.
+    const spaceMetadata = existingSpaceMetadata
+      ? // Existing: update only the allowed fields. The stored object's
         // out-of-band validator is not part of the body handed to storage.
         {
-          ...stripDescriptionValidator(existingSpaceDescription),
+          ...stripMetadataValidator(existingSpaceMetadata),
           id: spaceId,
           controller: body.controller,
           ...(body.name !== undefined && { name: body.name })
@@ -366,27 +379,33 @@ export class SpaceRequest {
     // winner's `type`) and `If-Match` a compare-and-swap on the description's
     // monotonic version. Both opt-in: an unconditional PUT still upserts as
     // before. Evaluated atomically with the write inside the backend, against
-    // the description it re-reads under its lock -- the `existingSpaceDescription`
+    // the object it re-reads under its lock -- the `existingSpaceMetadata`
     // read above chose the authorization path, and a Space created in between
     // by a concurrent writer surfaces here as 412 `precondition-failed`.
     const { ifMatch, ifNoneMatch } = parseWritePreconditions(request.headers)
     const written = await storage.writeSpace({
       spaceId,
-      spaceDescription,
+      spaceMetadata,
       createdBy: invokerDid(request),
       ...(ifMatch !== undefined && { ifMatch }),
       ...(ifNoneMatch !== undefined && { ifNoneMatch })
     })
-    // Bust any cached (now-stale) description so the next read sees this write.
-    invalidateSpaceDescription({ storage, spaceId })
+    // Bust any cached (now-stale) object so the next read sees this write.
+    invalidateSpaceMetadata({ storage, spaceId })
 
-    reply.header('Location', spaceUrl)
-    // Surface the new description ETag so a client can chain a conditional
-    // update (read-modify-CAS on the Space Description).
+    // Surface the new `ETag` so a client can chain a conditional update
+    // (read-modify-CAS on the Space Metadata object).
     reply.header('etag', formatEtag(written))
-    return existingSpaceDescription
-      ? reply.status(204).send() // update
-      : reply.status(201).send(spaceDescription) // create
+    if (existingSpaceMetadata) {
+      return reply.status(204).send()
+    }
+    // Created: `Location` names the Space (its canonical container URL), not
+    // the Metadata object that was written (spec "Update Space").
+    reply.header('Location', spaceUrl)
+    return reply.status(201).send({
+      ...spaceMetadata,
+      url: spacePath({ spaceId, trailingSlash: true })
+    })
   }
 
   /**
@@ -404,15 +423,7 @@ export class SpaceRequest {
   static async post(
     request: FastifyRequest<{
       Params: { spaceId: string }
-      Body: {
-        id?: string
-        name?: string
-        backend?: unknown
-        encryption?: unknown
-        plaintext?: unknown
-        generator?: unknown
-        generatorOrigin?: unknown
-      }
+      Body: { id?: unknown }
     }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
@@ -423,37 +434,21 @@ export class SpaceRequest {
     const { serverUrl, storage } = request.server
     const requestName = 'Create Collection'
 
-    // Reject path-traversal / non-URL-safe ids before any storage access.
+    // Reject path-traversal / non-URL-safe ids before any storage access. The
+    // body is the Collection Metadata object (spec "Create Collection"); its
+    // shape is checked before authorization, on the same terms as the PUT.
     assertValidIds({ spaceId }, { requestName })
-    if (body?.id !== undefined) {
+    const parsed = parseCollectionMetadataBody({ body, requestName })
+    if (body.id !== undefined) {
+      if (typeof body.id !== 'string') {
+        throw new InvalidRequestBodyError({
+          requestName,
+          detail: 'The Collection Metadata "id" must be a string.',
+          pointer: '#/id'
+        })
+      }
       assertValidId(body.id, { kind: 'collection', requestName })
     }
-    // Validate the optional client-side encryption descriptor (shape only; the
-    // server stores it opaquely and never decrypts). Absent => plaintext.
-    const encryption = assertSupportedEncryption({
-      encryption: body?.encryption,
-      requestName
-    })
-    // Validate the optional `plaintext` member (its `indexes` declaration is
-    // the `equality-query` feature) on the same terms as the PUT path, and
-    // enforce the presence-based exclusion here too: a Collection cannot be
-    // born carrying both `plaintext` and `encryption`.
-    const plaintext = assertSupportedPlaintext({
-      plaintext: body?.plaintext,
-      requestName
-    })
-    assertPlaintextNotEncrypted({ plaintext, encryption, requestName })
-    // Validate the optional app-attribution members (shape only). Both are the
-    // controller's assertions: stored verbatim, echoed on reads, never an
-    // authorization input and never defaulted by the server.
-    const generator = assertValidGenerator({
-      generator: body?.generator,
-      requestName
-    })
-    const generatorOrigin = assertValidGeneratorOrigin({
-      generatorOrigin: body?.generatorOrigin,
-      requestName
-    })
 
     // Verify (capability-only): creating a Collection requires a valid
     // capability invocation; no access-control-policy fallback.
@@ -465,72 +460,71 @@ export class SpaceRequest {
     })
 
     // zCap checks out, continue.
-    // Validate (and default-fill) the selected backend against the Space's
-    // backends-available: a bad shape is 400, an unknown id is 409. Checked
-    // AFTER verification (it reads the Space's registered backend ids) so an
-    // unauthorized caller cannot enumerate registered ids by distinguishing a
-    // 409 from the masked 404 -- like the `id-conflict` check below.
-    const backend = await assertSupportedBackend({
-      storage,
-      spaceId,
-      backend: body?.backend,
-      requestName
-    })
     // POST must not replace an existing Collection: spec `id-conflict` (409);
     // create-or-replace by id is PUT's job. Checked after the capability
-    // verification so an unauthorized caller cannot probe Collection ids.
+    // verification so an unauthorized caller cannot probe Collection ids --
+    // like the backend allowlist check inside `composeCollectionMetadata`.
+    const collectionId = body.id !== undefined ? body.id : uuidv4()
     if (
-      body?.id !== undefined &&
-      (await storage.getCollectionDescription({
-        spaceId,
-        collectionId: body.id
-      }))
+      body.id !== undefined &&
+      (await storage.getCollectionMetadata({ spaceId, collectionId }))
     ) {
       throw new IdConflictError({ kind: 'Collection' })
     }
 
-    // TODO: Protect against .space resource id collision
-    const collectionId = body.id || uuidv4()
-    // `name` is optional; default it to the Collection id when missing (spec).
-    const name = body.name ?? collectionId
-    const collectionDescription = {
-      id: collectionId,
-      type: ['Collection'],
-      name,
-      backend,
-      ...(encryption !== undefined && { encryption }),
-      ...(plaintext !== undefined && { plaintext }),
-      ...(generator !== undefined && { generator }),
-      ...(generatorOrigin !== undefined && { generatorOrigin })
-    }
-
-    const createdBy = invokerDid(request)
-    const written = await storage.writeCollection({
+    const collectionMetadata = await composeCollectionMetadata({
+      request,
       spaceId,
       collectionId,
-      collectionDescription,
-      createdBy
+      parsed,
+      requestName
     })
 
+    const createdBy = invokerDid(request)
+    let written
+    try {
+      written = await storage.writeCollection({
+        spaceId,
+        collectionId,
+        collectionMetadata,
+        createdBy,
+        // Two creates racing on one client-supplied id both pass the check
+        // above; the guarded write lets exactly one through, and the loser's
+        // 412 is served as the spec's `id-conflict`, as for Create Space.
+        ifNoneMatch: '*'
+      })
+    } catch (err) {
+      if (err instanceof PreconditionFailedError) {
+        throw new IdConflictError({ kind: 'Collection' })
+      }
+      throw err
+    }
+
+    // `Location` names the Collection in its canonical trailing-slash
+    // (container) form.
     const createdUrl = new URL(
-      collectionPath({ spaceId, collectionId }),
+      collectionPath({ spaceId, collectionId, trailingSlash: true }),
       serverUrl
     ).toString()
     reply.header('Location', createdUrl)
-    // Surface the new Collection Description ETag so a client can chain a
+    // Surface the new Collection Metadata `ETag` so a client can chain a
     // conditional update (the `key-epochs` conditional-Collection-write feature).
     reply.header('etag', formatEtag(written))
-    // Echo what was persisted, `createdBy` included, so the create response and
-    // a subsequent Get Collection agree. An id already in use was rejected as a
-    // 409 above, so this write created the Collection.
-    return reply
-      .status(201)
-      .send({ ...collectionDescription, ...(createdBy && { createdBy }) })
+    // Echo what was persisted, `createdBy` and the container `url` included, so
+    // the create response and a subsequent Read Collection Metadata agree. An
+    // id already in use was rejected as a 409 above, so this write created the
+    // Collection.
+    return reply.status(201).send({
+      ...collectionMetadata,
+      ...(createdBy && { createdBy }),
+      url: collectionPath({ spaceId, collectionId, trailingSlash: true })
+    })
   }
 
   /**
-   * DELETE /space/:spaceId
-   * Request handler for "Delete Space" request
+   * DELETE /space/:spaceId/
+   * Request handler for "Delete Space" request (the Space container URL, in
+   * its canonical trailing-slash form)
    * Before this, `parseAuthHeaders()` hook executed, resulting in:
    * request.zcap: {
    *   keyId, headers, signature, created, expires, invocation, digest
@@ -558,7 +552,7 @@ export class SpaceRequest {
     await fetchSpaceAndVerify({
       request,
       spaceId,
-      targetPath: spacePath({ spaceId }),
+      targetPath: spacePath({ spaceId, trailingSlash: true }),
       requestName
     })
 
@@ -569,9 +563,9 @@ export class SpaceRequest {
       // Invalidate in `finally` because a recursive delete is not atomic: a
       // failure partway through has already removed some of what the caches
       // describe.
-      // Bust the cached description so the next read sees the Space as gone
-      // (404).
-      invalidateSpaceDescription({ storage, spaceId })
+      // Bust the cached Metadata object so the next read sees the Space as
+      // gone (404).
+      invalidateSpaceMetadata({ storage, spaceId })
       // Every Collection in the Space went with it, so any controller document
       // resolved out of a history log there is stale too.
       invalidateResolvedWebvhDid({ storage, spaceId })
@@ -680,8 +674,10 @@ export class SpaceRequest {
   }
 
   /**
-   * GET /space/:spaceId/collections/
-   * Request handler for "List Collections" request, OPTIONALLY cursor-paginated
+   * GET /space/:spaceId/
+   * Request handler for "List Collections" request -- a `GET` of the Space
+   * container lists its members (spec "Reading This Document"). OPTIONALLY
+   * cursor-paginated
    * (spec "Pagination"): `?limit`/`cursor` select a page of the Space's
    * Collections, and the response carries a `next` continuation link when a
    * further page may follow. Each listed Collection carries a `public` flag
@@ -720,7 +716,7 @@ export class SpaceRequest {
     await fetchSpaceAndAuthorize({
       request,
       spaceId,
-      targetPath: collectionsPath({ spaceId }),
+      targetPath: spacePath({ spaceId, trailingSlash: true }),
       requestName,
       allowTargetQuery: true
     })
@@ -744,7 +740,7 @@ export class SpaceRequest {
    * one entry, derived from the active backend's own `describe()`.
    *
    * Authorization is capability-or-policy, the same as List Collections: the
-   * backends list is no more sensitive than the Space description, so a
+   * backends list is no more sensitive than the Space Metadata object, so a
    * public-readable Space may also list its backends.
    *
    * @param request {import('fastify').FastifyRequest}

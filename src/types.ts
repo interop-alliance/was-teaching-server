@@ -55,8 +55,7 @@ import type {
 // whole data-model surface so the rest of the server keeps importing it from
 // this one module.
 import type {
-  SpaceDescription,
-  CollectionDescription,
+  SpaceMetadata,
   CollectionsList,
   CollectionResourcesList,
   ResourceMetadata,
@@ -102,7 +101,7 @@ export type {
 
 // Re-export the shared WAS wire model from `@interop/storage-core`.
 export type {
-  SpaceDescription,
+  SpaceMetadata,
   BackendReference,
   SpaceSummary,
   SpaceListing,
@@ -110,7 +109,6 @@ export type {
   CollectionsList,
   ResourceSummary,
   CollectionResourcesList,
-  CollectionDescription,
   CollectionIndexDeclaration,
   CollectionEncryption,
   CollectionEncryptionEpoch,
@@ -462,29 +460,32 @@ export type BackendProviderRegistry = Map<string, BackendProvider>
  * `Readable` it extends (tar-stream ships no types).
  */
 /**
- * The out-of-band description `ETag` validator parts a stored Space or
- * Collection Description carries beside its wire body, both absent for a
- * legacy record written before description versioning. The handler strips
- * them from the wire body and sets the `ETag` header from them.
+ * The out-of-band `ETag` validator parts a stored Space or Collection Metadata
+ * object carries beside its wire body: the generation minted by the record's
+ * first write and kept for its life, and the monotonic `metaVersion` every
+ * write bumps. One validator covers the whole object -- configuration and
+ * annotation writes alike. Both are absent only for a Postgres placeholder row
+ * with no metadata written yet. The handler strips them from the wire body and
+ * sets the `ETag` header from them.
  */
-export interface DescriptionValidatorParts {
-  descriptionGeneration?: string
-  descriptionVersion?: number
+export interface MetadataValidatorParts {
+  metaGeneration?: string
+  metaVersion?: number
 }
 
 /**
- * A stored Collection Description as the backends surface it: the wire body
- * plus the out-of-band validator parts.
+ * A stored Collection Metadata object as the backends surface it: the merged
+ * wire body (configuration members beside `createdAt`, `updatedAt`, `custom`,
+ * `epoch`) plus the out-of-band validator parts.
  */
-export type StoredCollectionDescription = CollectionDescription &
-  DescriptionValidatorParts
+export type StoredCollectionMetadata = CollectionMetadata &
+  MetadataValidatorParts
 
 /**
- * A stored Space Description as the backends surface it: the wire body plus
- * the out-of-band validator parts.
+ * A stored Space Metadata object as the backends surface it: the wire body
+ * plus the out-of-band validator parts.
  */
-export type StoredSpaceDescription = SpaceDescription &
-  DescriptionValidatorParts
+export type StoredSpaceMetadata = SpaceMetadata & MetadataValidatorParts
 
 /**
  * The out-of-band validator parts a Resource Metadata read carries: the
@@ -497,16 +498,6 @@ export interface VersionedMetadata {
   generation?: string
   version?: number
   metaGeneration?: string
-  metaVersion?: number
-}
-
-/**
- * A Collection Metadata object as read from storage: the wire body plus the
- * out-of-band `/meta` validator parts, `generation` and `metaVersion`, both
- * absent until the first metadata write.
- */
-export type StoredCollectionMetadata = CollectionMetadata & {
-  generation?: string
   metaVersion?: number
 }
 
@@ -592,39 +583,38 @@ export interface StorageBackend {
   }): Promise<BackendUsage>
 
   /**
-   * Writes a Space Description (full replacement), bumping its monotonic
-   * description `version` (with its `generation`, the `ETag` validator behind
-   * conditional Space writes) and returning the new validator. The
-   * server-managed `createdBy` is authoritative, never taken from
-   * `spaceDescription`: the backend drops any value carried in that
-   * (client-supplied) document and records `createdBy` from the first write's
-   * invoker, preserving it verbatim on every later write. Omitting `createdBy`
-   * on a first write leaves it unrecorded rather than letting the body supply
-   * one. `ifMatch` / `ifNoneMatch` are evaluated atomically with the write on
-   * the same terms as `writeCollection`'s: `ifNoneMatch` is the guarded create
-   * (412 `precondition-failed` when a Description exists), `ifMatch` the
-   * compare-and-swap on the current description `ETag`. The validator travels
-   * only as the `ETag` header -- it is kept OUT of the wire Space Description
-   * body, and a backend strips any validator-bearing member the supplied
-   * document carries through `normalizeDescriptionWrite` before storing it.
+   * Writes a Space Metadata object (full replacement), bumping its monotonic
+   * `metaVersion` (with its generation, the `ETag` validator behind conditional
+   * Space writes) and returning the new validator. The server-managed
+   * `createdBy` is authoritative, never taken from `spaceMetadata`: the backend
+   * drops any value carried in that (client-supplied) document and records
+   * `createdBy` from the first write's invoker, preserving it verbatim on every
+   * later write. Omitting `createdBy` on a first write leaves it unrecorded
+   * rather than letting the body supply one. `ifMatch` / `ifNoneMatch` are
+   * evaluated atomically with the write on the same terms as
+   * `writeCollection`'s: `ifNoneMatch` is the guarded create (412
+   * `precondition-failed` when the Space exists), `ifMatch` the
+   * compare-and-swap on the current `ETag`. The validator travels only as the
+   * `ETag` header -- it is kept OUT of the wire body, and a backend strips any
+   * validator-bearing member the supplied document carries through
+   * `normalizeMetadataWrite` before storing it.
    */
   writeSpace(options: {
     spaceId: string
-    spaceDescription: SpaceDescription
+    spaceMetadata: SpaceMetadata
     /** DID of the invoker; recorded as `createdBy` on first write only */
     createdBy?: IDID
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator>
   /**
-   * Reads a Space Description. Resolves falsy when the Space does not exist.
-   * `descriptionGeneration` / `descriptionVersion` are the out-of-band `ETag`
-   * validator; absent for a legacy Space written before description
-   * versioning.
+   * Reads a Space Metadata object. Resolves falsy when the Space does not
+   * exist. `metaGeneration` / `metaVersion` are the out-of-band `ETag`
+   * validator, absent only on a placeholder never written.
    */
-  getSpaceDescription(options: {
+  getSpaceMetadata(options: {
     spaceId: string
-  }): Promise<StoredSpaceDescription | undefined>
+  }): Promise<StoredSpaceMetadata | undefined>
   deleteSpace(options: { spaceId: string }): Promise<void>
   /**
    * Enumerates every Space stored on this backend (the candidate set for the
@@ -632,7 +622,7 @@ export interface StorageBackend {
    * caller is authorized to see). Resolves an empty array when nothing is
    * stored yet (must not throw on an absent storage root).
    */
-  listSpaces(): Promise<SpaceDescription[]>
+  listSpaces(): Promise<SpaceMetadata[]>
   /**
    * Lists a Space's Collections, OPTIONALLY cursor-paginated (spec
    * "Pagination"), on the same keyset machinery as `listCollectionItems`:
@@ -673,24 +663,29 @@ export interface StorageBackend {
   }): Promise<ImportStats>
 
   /**
-   * Writes a Collection Description (full replacement), bumping its monotonic
-   * description `version` (with its `generation`, the `ETag` validator behind
-   * conditional Collection writes; the `key-epochs` feature) and returning the
-   * new validator. `createdBy`
-   * is server-managed on the same terms as `writeSpace`'s. When `ifMatch` is
-   * supplied it is evaluated atomically with the write: the current description
-   * ETag must equal it (an update-if-unchanged compare-and-swap that keeps two
-   * concurrent recipient edits from clobbering one another), else
-   * `precondition-failed` (412). The validator travels only as the `ETag`
-   * header -- it is kept OUT of the stored/wire Collection Description body.
+   * Writes a Collection Metadata object (full replacement of the merged
+   * object: the configuration members beside the annotation members `custom`
+   * and `epoch`), bumping its one monotonic `metaVersion` (with its
+   * generation, the `ETag` validator behind conditional Collection writes) and
+   * returning the new validator. Server-managed members are the backend's:
+   * `createdBy` on the same terms as `writeSpace`'s, `createdAt` stamped by
+   * the creating write and preserved, `updatedAt` by every write. `custom` is
+   * stored verbatim (`{ name, tags }` on a plaintext Collection, the opaque
+   * encryption envelope on an encrypted one) and an absent or empty `custom`
+   * clears it; an absent `epoch` clears the stored stamp, since it describes
+   * the envelope this write replaces. When `ifMatch` is supplied it is
+   * evaluated atomically with the write: the current `ETag` must equal it (an
+   * update-if-unchanged compare-and-swap), else `precondition-failed` (412).
    * `ifNoneMatch` (`If-None-Match: *`) is the guarded create: the write
-   * proceeds only if no Description exists yet, else `precondition-failed`
-   * (412), evaluated under the same lock.
+   * proceeds only if the Collection does not exist yet, else
+   * `precondition-failed` (412), evaluated under the same lock. The validator
+   * travels only as the `ETag` header -- it is kept OUT of the stored/wire
+   * body.
    */
   writeCollection(options: {
     spaceId: string
     collectionId: string
-    collectionDescription: CollectionDescription
+    collectionMetadata: CollectionMetadata
     /** DID of the invoker; recorded as `createdBy` on first write only */
     createdBy?: IDID
     ifMatch?: string
@@ -698,26 +693,25 @@ export interface StorageBackend {
     /**
      * Invoked atomically with the write (inside the backend's per-Collection
      * lock / row-locking transaction) against the freshly re-read current
-     * description (`undefined` on a create); throwing aborts the write. Carries
-     * the request layer's state-transition rails -- e.g. the epoch append-only
-     * check -- which are otherwise evaluated against a pre-lock read and could
-     * miss a concurrent write.
+     * object (`undefined` on a create); throwing aborts the write. Carries
+     * the request layer's state-transition checks -- e.g. the epoch
+     * append-only rule -- which are otherwise evaluated against a pre-lock
+     * read and could miss a concurrent write.
      */
     assertTransition?: (
-      prior?: StoredCollectionDescription
+      prior?: StoredCollectionMetadata
     ) => void | Promise<void>
   }): Promise<EtagValidator>
   /**
-   * Reads a Collection Description. Resolves falsy when the Collection does not
-   * exist. `descriptionGeneration` / `descriptionVersion` are the out-of-band
+   * Reads a Collection Metadata object. Resolves falsy when the Collection
+   * does not exist. `metaGeneration` / `metaVersion` are the out-of-band
    * `ETag` validator (the handler strips them from the wire body and sets the
-   * `ETag` header from them); absent for a legacy Collection written before
-   * description versioning.
+   * `ETag` header from them).
    */
-  getCollectionDescription(options: {
+  getCollectionMetadata(options: {
     spaceId: string
     collectionId: string
-  }): Promise<StoredCollectionDescription | undefined>
+  }): Promise<StoredCollectionMetadata | undefined>
   deleteCollection(options: {
     spaceId: string
     collectionId: string
@@ -732,18 +726,18 @@ export interface StorageBackend {
    * absence marks the last page. A malformed/un-honorable `cursor` rejects with
    * `InvalidCursorError` (400 `invalid-cursor`).
    *
-   * `collectionDescription` (the caller's already-fetched control-plane
-   * description) supplies the listing's `name` / `type` and encryption flag; a
-   * data-plane backend selected by a Collection never holds the description
-   * itself (it lives on the control plane), so it MUST be passed in for such a
-   * backend.
+   * `collectionMetadata` (the caller's already-fetched control-plane
+   * object) supplies the listing's `name` / `type` and encryption flag; a
+   * data-plane backend selected by a Collection never holds the Collection
+   * Metadata itself (it lives on the control plane), so it MUST be passed in
+   * for such a backend.
    */
   listCollectionItems(options: {
     spaceId: string
     collectionId: string
     limit?: number
     cursor?: string
-    collectionDescription?: CollectionDescription
+    collectionMetadata?: CollectionMetadata
   }): Promise<CollectionResourcesList>
 
   /**
@@ -881,53 +875,6 @@ export interface StorageBackend {
   }): Promise<EtagValidator | undefined>
 
   /**
-   * Reads a Collection's Metadata object -- the Collection-level sibling of
-   * `getResourceMetadata`. Resolves `undefined` when the Collection does not
-   * exist; a Collection that exists but has never had metadata written resolves
-   * an object carrying only whatever server-managed members are known (its
-   * `createdBy`, read from the stored description), with no validator.
-   *
-   * `generation` / `metaVersion` are the out-of-band ETag validator (the
-   * handler strips them from the wire body), independent of the Collection's
-   * description validator.
-   */
-  getCollectionMetadata(options: {
-    spaceId: string
-    collectionId: string
-  }): Promise<StoredCollectionMetadata | undefined>
-  /**
-   * Replaces the user-writable `custom` object of a Collection's Metadata (full
-   * replacement; pass `{}` to clear). Resolves `undefined` when the Collection
-   * does not exist (this operation does not create one) so the handler can 404,
-   * else the Collection's new `metaVersion` -- bumped on each metadata write and
-   * independent of both `descriptionVersion` and every Resource's versions.
-   *
-   * On an encrypted Collection `custom` is the opaque encryption envelope (an
-   * arbitrary JSON object) rather than a `{ name, tags }` object; the backend
-   * stores it verbatim. When `ifMatch` / `ifNoneMatch` is supplied
-   * (`conditional-writes`), the write is gated on the current `metaVersion`
-   * atomically, rejecting a mismatch with `precondition-failed` (412).
-   *
-   * Unlike `writeResourceMetadata` there are no `uniqueIndexes`: an equality
-   * index indexes Resources, and a Collection is not one of its own items.
-   */
-  writeCollectionMetadata(options: {
-    spaceId: string
-    collectionId: string
-    custom: ResourceMetadataCustom | Record<string, unknown>
-    /**
-     * The client-declared key epoch (the `key-epochs` feature), a sibling of
-     * `custom`. Unlike the Resource-level stamp, an OMITTED `epoch` CLEARS the
-     * stored value: it describes the `custom` envelope this write replaces
-     * wholesale, so preserving it would mislabel the new envelope. Stored
-     * opaquely.
-     */
-    epoch?: string
-    ifMatch?: string
-    ifNoneMatch?: HeldValidators
-  }): Promise<EtagValidator | undefined>
-
-  /**
    * Reads a Collection's governing history log (the `governed-history-logs`
    * feature): the JSON Lines body as last written, with its validator.
    * Resolves `undefined` when the Collection has no log (it is not governed)
@@ -945,10 +892,10 @@ export interface StorageBackend {
    * write (`precondition-failed`, 412, on a mismatch). Resolves `undefined`
    * when the Collection does not exist (this operation never creates one).
    *
-   * The write also bumps the Collection Description's validator: the served
-   * description's `encryption` member is derived from the log head, so a
-   * description `ETag` must change with it. The write is serialized with
-   * description writes, so `assertTransition` and a concurrent
+   * The write also bumps the Collection Metadata object's validator: the
+   * served object's `encryption` member is derived from the log head, so its
+   * `ETag` must change with it. The write is serialized with Collection
+   * Metadata writes, so `assertTransition` and a concurrent
    * `writeCollection`'s own callback each see the other's outcome.
    */
   writeCollectionLog(options: {
@@ -959,13 +906,13 @@ export interface StorageBackend {
     ifNoneMatch?: HeldValidators
     /**
      * Invoked atomically with the write against the freshly re-read current
-     * log (`undefined` on a create) and Collection Description; throwing
+     * log (`undefined` on a create) and Collection Metadata object; throwing
      * aborts the write. Carries the request layer's line contract and
      * descriptor-transition checks.
      */
     assertTransition?: (context: {
       prior?: StoredCollectionLog
-      collectionDescription: StoredCollectionDescription
+      collectionMetadata: StoredCollectionMetadata
     }) => void | Promise<void>
   }): Promise<EtagValidator | undefined>
 

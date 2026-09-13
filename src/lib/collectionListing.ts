@@ -13,7 +13,7 @@
  * suppressed shape too.
  */
 import type {
-  CollectionDescription,
+  CollectionMetadata,
   CollectionResourcesList,
   ResourceMetadataCustom,
   ResourceSummary
@@ -29,15 +29,15 @@ import { nextPageUrl } from './pagination.js'
  * envelope already yields `undefined`; the explicit rule makes that a
  * guarantee rather than an accident of the envelope's shape.)
  * @param options {object}
- * @param [options.collectionDescription] {CollectionDescription}
+ * @param [options.collectionMetadata] {CollectionMetadata}
  * @returns {boolean}
  */
 export function suppressesItemNames({
-  collectionDescription
+  collectionMetadata
 }: {
-  collectionDescription?: CollectionDescription
+  collectionMetadata?: CollectionMetadata
 }): boolean {
-  return collectionDescription?.encryption !== undefined
+  return collectionMetadata?.encryption !== undefined
 }
 
 /**
@@ -88,9 +88,10 @@ export function collectionListingItem({
 /**
  * Wraps a page of listing items in the List Collection envelope. `name` and
  * `type` fall back to the Collection's id and `['Collection']` when the
- * Collection Description carries none (or none was resolvable -- an external
- * backend serving a data plane does not hold the description). `totalItems` is
- * the count of the whole Collection, not of the page.
+ * Collection Metadata object carries none (or none was resolvable -- an
+ * external backend serving a data plane does not hold it). `url` is the
+ * canonical container form, with the trailing slash. `totalItems` is the
+ * count of the whole Collection, not of the page.
  *
  * The `next` continuation link is present if and only if a further page may
  * follow -- its absence is the authoritative end-of-list signal. It resumes
@@ -99,7 +100,7 @@ export function collectionListingItem({
  * @param options {object}
  * @param options.spaceId {string}
  * @param options.collectionId {string}
- * @param [options.collectionDescription] {CollectionDescription}
+ * @param [options.collectionMetadata] {CollectionMetadata}
  * @param options.totalItems {number}   the Collection's full count
  * @param options.items {ResourceSummary[]}   this page's items
  * @param options.hasMore {boolean}   whether a further page may follow
@@ -109,7 +110,7 @@ export function collectionListingItem({
 export function collectionResourcesList({
   spaceId,
   collectionId,
-  collectionDescription,
+  collectionMetadata,
   totalItems,
   items,
   hasMore,
@@ -117,7 +118,7 @@ export function collectionResourcesList({
 }: {
   spaceId: string
   collectionId: string
-  collectionDescription?: CollectionDescription
+  collectionMetadata?: CollectionMetadata
   totalItems: number
   items: ResourceSummary[]
   hasMore: boolean
@@ -139,9 +140,9 @@ export function collectionResourcesList({
 
   return {
     id: collectionId,
-    url: collectionPath({ spaceId, collectionId }),
-    name: collectionDescription?.name ?? collectionId,
-    type: collectionDescription?.type || ['Collection'],
+    url: collectionPath({ spaceId, collectionId, trailingSlash: true }),
+    name: collectionMetadata?.name ?? collectionId,
+    type: collectionMetadata?.type || ['Collection'],
     totalItems,
     items,
     ...(next !== undefined && { next })

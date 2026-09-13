@@ -2,15 +2,15 @@
  * Backend-agnostic conditional-write precondition evaluation (the
  * `conditional-writes` feature). Both storage backends evaluate `If-Match` /
  * `If-None-Match` against the current state of a Resource, a Space or
- * Collection Description, or a Metadata object through these helpers, so the
- * 412 semantics cannot drift between them. Callers MUST invoke
- * them atomically with the write that follows (under the filesystem backend's
- * per-Resource lock, or inside the Postgres backend's row-locking
- * transaction). The current state arrives as the record's `ETag` (from
- * `etagOf`), `undefined` when the record has none: a legacy record written
- * before generations, or a metadata object never written. An `If-Match` can
- * never be satisfied against such a record, since no client holds a validator
- * for it.
+ * Collection Metadata object, a Resource Metadata object, or a history log
+ * through these helpers, so the 412 semantics cannot drift between them.
+ * Callers MUST invoke them atomically with the write that follows (under the
+ * filesystem backend's per-record lock, or inside the Postgres backend's
+ * row-locking transaction). The current state arrives as the record's `ETag`
+ * (from `etagOf`), `undefined` when the record has none: a legacy Resource
+ * written before generations, or a Resource Metadata object never written. An
+ * `If-Match` can never be satisfied against such a record, since no client
+ * holds a validator for it.
  *
  * The two headers are evaluated in the order RFC 9110 section 13.2.2
  * prescribes: `If-Match` first, then `If-None-Match`. A request carrying both
@@ -64,22 +64,22 @@ export function assertWritePrecondition({
 }
 
 /**
- * Evaluates a Collection Description write precondition against the
- * Collection's current state (the `key-epochs` / conditional-Collection-write
- * feature). Throws `PreconditionFailedError` (412) when it is not met.
- * `If-None-Match: *` is the guarded create: the write proceeds only if no
- * Description exists yet (a legacy Description with no `ETag` still exists,
- * so it still refuses). `If-Match` is the update-if-unchanged compare-and-swap
- * on the current description `ETag`. An unconditional PUT is unaffected. MUST
- * be called atomically with the write (under the filesystem backend's
+ * Evaluates a Collection Metadata write precondition against the Collection's
+ * current state. One validator covers the whole object, configuration and
+ * annotation members alike, so this is the single check behind every
+ * conditional Collection write. Throws `PreconditionFailedError` (412) when
+ * it is not met. `If-None-Match: *` is the guarded create: the write proceeds
+ * only if the Collection does not exist yet (a Collection with no `ETag`
+ * still exists, so it still refuses). `If-Match` is the update-if-unchanged
+ * compare-and-swap on the current `ETag`. An unconditional PUT is unaffected.
+ * MUST be called atomically with the write (under the filesystem backend's
  * per-Collection lock, or inside the Postgres backend's row-locking
  * transaction).
  * @param options {object}
  * @param options.collectionId {string}   for the error detail
- * @param options.exists {boolean}   whether a Description is stored
- * @param [options.currentEtag] {string}   the Collection's current description
- *   `ETag`; absent for a legacy Collection without one, or before its first
- *   write
+ * @param options.exists {boolean}   whether the Collection is stored
+ * @param [options.currentEtag] {string}   the Collection Metadata object's
+ *   current `ETag`; absent before the Collection's first write
  * @param [options.ifMatch] {string}   the `If-Match` header value
  * @param [options.ifNoneMatch] {HeldValidators}   the parsed `If-None-Match`
  * @returns {void}
@@ -107,16 +107,16 @@ export function assertCollectionWritePrecondition({
 }
 
 /**
- * Evaluates a Space Description write precondition against the Space's
- * current state, on the same terms as
- * {@link assertCollectionWritePrecondition}: `If-None-Match: *` is the guarded
- * create (412 when a Description exists), `If-Match` the compare-and-swap on
- * the current description `ETag`. MUST be called atomically with the write.
+ * Evaluates a Space Metadata write precondition against the Space's current
+ * state, on the same terms as {@link assertCollectionWritePrecondition}:
+ * `If-None-Match: *` is the guarded create (412 when the Space exists),
+ * `If-Match` the compare-and-swap on the current `ETag`. MUST be called
+ * atomically with the write.
  * @param options {object}
  * @param options.spaceId {string}   for the error detail
- * @param options.exists {boolean}   whether a Description is stored
- * @param [options.currentEtag] {string}   the Space's current description
- *   `ETag`; absent for a legacy Space without one
+ * @param options.exists {boolean}   whether the Space is stored
+ * @param [options.currentEtag] {string}   the Space Metadata object's current
+ *   `ETag`; absent before the Space's first write
  * @param [options.ifMatch] {string}   the `If-Match` header value
  * @param [options.ifNoneMatch] {HeldValidators}   the parsed `If-None-Match`
  * @returns {void}
@@ -169,41 +169,6 @@ export function assertMetaWritePrecondition({
 }): void {
   assertPrecondition({
     subject: `Resource '${resourceId}' metadata`,
-    exists: currentEtag !== undefined,
-    currentEtag,
-    ifMatch,
-    ifNoneMatch
-  })
-}
-
-/**
- * Evaluates a metadata-write (`/meta`) precondition against a **Collection's**
- * current metadata `ETag` -- the Collection-level sibling of
- * {@link assertMetaWritePrecondition}, with identical 412 semantics. The
- * Collection's metadata validator is independent of its description validator,
- * so this never consults the description (see
- * {@link assertCollectionWritePrecondition} for that one).
- * @param options {object}
- * @param options.collectionId {string}   for the error detail
- * @param [options.currentEtag] {string}   the current metadata `ETag`
- *   (`undefined` until the first metadata write)
- * @param [options.ifMatch] {string}   the `If-Match` header value
- * @param [options.ifNoneMatch] {HeldValidators}   the parsed `If-None-Match`
- * @returns {void}
- */
-export function assertCollectionMetaWritePrecondition({
-  collectionId,
-  currentEtag,
-  ifMatch,
-  ifNoneMatch
-}: {
-  collectionId: string
-  currentEtag?: string
-  ifMatch?: string
-  ifNoneMatch?: HeldValidators
-}): void {
-  assertPrecondition({
-    subject: `Collection '${collectionId}' metadata`,
     exists: currentEtag !== undefined,
     currentEtag,
     ifMatch,

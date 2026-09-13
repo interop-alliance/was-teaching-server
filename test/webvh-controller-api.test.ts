@@ -5,8 +5,8 @@
  *
  * The flow under test is "promotion by ordering": a Space is created with a
  * `did:key` controller, its history log is published into one of its
- * Collections, and a PUT of the Space Description -- still authorized by the
- * stored `did:key` -- swaps the controller to the `did:webvh` that log resolves
+ * Collections, and a PUT of the Space Metadata object -- still authorized by
+ * the stored `did:key` -- swaps the controller to the `did:webvh` that log resolves
  * to. From then on every invocation is verified against the *currently
  * resolved* document, read out of local storage and fully verified (never
  * fetched, never trusted).
@@ -228,8 +228,8 @@ describe('did:webvh Space controller', () => {
   }
 
   /**
-   * Swaps a Space's controller to `controller`, authorized by whichever client
-   * currently controls it.
+   * Swaps a Space's controller to `controller` by a PUT of its Space Metadata
+   * object, authorized by whichever client currently controls it.
    *
    * @param options {object}
    * @param options.signerClient {any}   the authorized WAS client
@@ -247,7 +247,7 @@ describe('did:webvh Space controller', () => {
     controller: string
   }) {
     return signerClient.request({
-      path: `/space/${spaceId}`,
+      path: `/space/${spaceId}/meta`,
       method: 'PUT',
       json: { id: spaceId, name: 'Promotable Space', controller }
     })
@@ -260,7 +260,7 @@ describe('did:webvh Space controller', () => {
       space = await provisionSpace()
     })
 
-    it('PUT Space with a self-hosted did:webvh controller succeeds (204)', async () => {
+    it('PUT Space Metadata with a self-hosted did:webvh controller succeeds (204)', async () => {
       const response = await promote({
         signerClient: alice.was,
         spaceId: space.spaceId,
@@ -306,7 +306,7 @@ describe('did:webvh Space controller', () => {
           method: 'GET',
           action: 'GET',
           capability: rootZcap({
-            target: new URL(`/space/${space.spaceId}`, serverUrl).toString(),
+            target: new URL(`/space/${space.spaceId}/`, serverUrl).toString(),
             controller: alice.did
           })
         })
@@ -329,7 +329,7 @@ describe('did:webvh Space controller', () => {
         controller: space.did
       })
       assert.equal(response.status, 204)
-      spaceUrl = new URL(`/space/${space.spaceId}`, serverUrl).toString()
+      spaceUrl = new URL(`/space/${space.spaceId}/`, serverUrl).toString()
       collectionUrl = new URL(
         `/space/${space.spaceId}/credentials`,
         serverUrl
@@ -560,7 +560,7 @@ describe('did:webvh Space controller', () => {
           method: 'GET',
           action: 'GET',
           capability: rootZcap({
-            target: new URL(`/space/${space.spaceId}`, serverUrl).toString(),
+            target: new URL(`/space/${space.spaceId}/`, serverUrl).toString(),
             controller: space.did
           })
         })
@@ -582,7 +582,7 @@ describe('did:webvh Space controller', () => {
         ).status,
         204
       )
-      const spaceUrl = new URL(`/space/${space.spaceId}`, serverUrl).toString()
+      const spaceUrl = new URL(`/space/${space.spaceId}/`, serverUrl).toString()
       const collectionUrl = new URL(
         `/space/${space.spaceId}/credentials`,
         serverUrl
@@ -802,7 +802,7 @@ describe('did:webvh Space controller', () => {
       // verified invocation is masked as).
       const readErr = await requestError(
         logSpace.was.request({
-          path: `/space/${controlledSpaceId}`,
+          path: `/space/${controlledSpaceId}/`,
           method: 'GET'
         })
       )

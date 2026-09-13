@@ -32,8 +32,9 @@ import type {
   KmsKeyRecord,
   RevocationRecord,
   ResourceInput,
-  StoredCollectionDescription,
-  SpaceDescription,
+  CollectionMetadata,
+  StoredCollectionMetadata,
+  SpaceMetadata,
   IDID
 } from '../src/types.js'
 
@@ -130,7 +131,7 @@ async function provisionSpace(
 ): Promise<void> {
   await backend.writeSpace({
     spaceId,
-    spaceDescription: {
+    spaceMetadata: {
       id: spaceId,
       type: ['Space'],
       name: `Space ${spaceId}`,
@@ -140,7 +141,7 @@ async function provisionSpace(
   await backend.writeCollection({
     spaceId,
     collectionId,
-    collectionDescription: {
+    collectionMetadata: {
       id: collectionId,
       type: ['Collection'],
       name: `Collection ${collectionId}`
@@ -217,11 +218,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       it('getters resolve falsy (never throw) on absent targets', async () => {
         const { backend } = harness
         assert.equal(
-          await backend.getSpaceDescription({ spaceId: 'nope' }),
+          await backend.getSpaceMetadata({ spaceId: 'nope' }),
           undefined
         )
         assert.equal(
-          await backend.getCollectionDescription({
+          await backend.getCollectionMetadata({
             spaceId: 'nope',
             collectionId: 'nope'
           }),
@@ -284,7 +285,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       })
     })
 
-    describe('descriptions, upserts, listings', () => {
+    describe('metadata, upserts, listings', () => {
       let harness: BackendHarness
       beforeAll(async () => {
         harness = await makeBackend()
@@ -299,7 +300,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await provisionSpace(backend, 'space-a')
         await backend.writeSpace({
           spaceId: 'space-b',
-          spaceDescription: {
+          spaceMetadata: {
             id: 'space-b',
             type: ['Space'],
             name: 'Renamed',
@@ -312,7 +313,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           ['space-a', 'space-b']
         )
         assert.equal(
-          (await backend.getSpaceDescription({ spaceId: 'space-b' }))?.name,
+          (await backend.getSpaceMetadata({ spaceId: 'space-b' }))?.name,
           'Renamed'
         )
       })
@@ -322,7 +323,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await backend.writeCollection({
           spaceId: 'space-a',
           collectionId: 'zeta',
-          collectionDescription: { id: 'zeta', type: ['Collection'], name: 'Z' }
+          collectionMetadata: { id: 'zeta', type: ['Collection'], name: 'Z' }
         })
         const listing = await backend.listCollections({
           spaceId: 'space-a'
@@ -347,12 +348,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await backend.writeCollection({
           spaceId,
           collectionId: 'closed',
-          collectionDescription: { id: 'closed', type: ['Collection'] }
+          collectionMetadata: { id: 'closed', type: ['Collection'] }
         })
         await backend.writeCollection({
           spaceId,
           collectionId: 'other',
-          collectionDescription: { id: 'other', type: ['Collection'] }
+          collectionMetadata: { id: 'other', type: ['Collection'] }
         })
         await backend.writePolicy({
           spaceId,
@@ -385,7 +386,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         })
         await backend.deleteSpace({ spaceId: 'space-gone' })
         assert.equal(
-          await backend.getSpaceDescription({ spaceId: 'space-gone' }),
+          await backend.getSpaceMetadata({ spaceId: 'space-gone' }),
           undefined
         )
         assert.equal(
@@ -642,77 +643,234 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await harness.cleanup()
       })
 
+      /** The configuration members of a fresh Collection, by id. */
+      function baseMetadata(collectionId: string): CollectionMetadata {
+        return { id: collectionId, type: ['Collection'], name: collectionId }
+      }
+
       /** Creates a fresh Collection in this suite's Space and returns its id. */
       async function freshCollection(createdBy?: IDID): Promise<string> {
         const collectionId = `col-${crypto.randomUUID()}`
         await harness.backend.writeCollection({
           spaceId,
           collectionId,
-          collectionDescription: {
-            id: collectionId,
-            type: ['Collection'],
-            name: collectionId
-          },
+          collectionMetadata: baseMetadata(collectionId),
           ...(createdBy !== undefined && { createdBy })
         })
         return collectionId
       }
 
-      it('round-trips custom, with metaVersion monotonic from 1', async () => {
+      it('is one object: a configuration write and an annotation write bump the same ETag', async () => {
         const { backend } = harness
         const collectionId = await freshCollection()
 
-        // Before any write: the Collection exists, so metadata reads resolve --
-        // with no `metaVersion` (nothing has been written).
-        const fresh = await backend.getCollectionMetadata({
+        // The creating write is version 1 of the one object; the merged read
+        // carries the configuration members, the timestamps, and no `custom`.
+        const created = await backend.getCollectionMetadata({
           spaceId,
           collectionId
         })
-        assert.ok(fresh, 'an existing Collection resolves a Metadata object')
-        assert.equal(fresh.metaVersion, undefined)
-        assert.equal(fresh.custom, undefined)
+        assert.ok(
+          created,
+          'an existing Collection resolves its Metadata object'
+        )
+        assert.equal(created.metaVersion, 1)
+        assert.equal(created.name, collectionId)
+        assert.equal(created.custom, undefined)
+        assert.ok(!Number.isNaN(Date.parse(created.createdAt!)))
+        assert.ok(!Number.isNaN(Date.parse(created.updatedAt!)))
 
-        const first = await backend.writeCollectionMetadata({
+        // An annotation write (custom only) bumps the same validator.
+        const annotated = await backend.writeCollection({
           spaceId,
           collectionId,
-          custom: { name: 'First', tags: { a: 'b' } }
+          collectionMetadata: {
+            ...baseMetadata(collectionId),
+            custom: { name: 'First', tags: { a: 'b' } }
+          }
         })
-        assert.equal(first?.version, 1)
-
+        assert.equal(annotated.version, 2)
+        assert.equal(annotated.generation, created.metaGeneration)
         const stored = await backend.getCollectionMetadata({
           spaceId,
           collectionId
         })
         assert.deepEqual(stored?.custom, { name: 'First', tags: { a: 'b' } })
-        assert.equal(stored?.metaVersion, 1)
-        assert.ok(!Number.isNaN(Date.parse(stored!.createdAt!)))
-        assert.ok(!Number.isNaN(Date.parse(stored!.updatedAt!)))
+        assert.equal(stored?.metaVersion, 2)
+        assert.equal(stored?.name, collectionId)
 
-        const second = await backend.writeCollectionMetadata({
+        // A configuration write (rename) bumps it again, carrying `custom`.
+        const renamed = await backend.writeCollection({
           spaceId,
           collectionId,
-          custom: { name: 'Second' }
+          collectionMetadata: {
+            ...baseMetadata(collectionId),
+            name: 'Renamed',
+            custom: { name: 'First', tags: { a: 'b' } }
+          }
         })
-        assert.equal(second?.version, 2)
-        // A full replacement: the tags of the first write are gone.
+        assert.equal(renamed.version, 3)
+        assert.equal(renamed.generation, created.metaGeneration)
+        const reread = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        assert.equal(reread?.name, 'Renamed')
+        assert.deepEqual(reread?.custom, { name: 'First', tags: { a: 'b' } })
+        assert.equal(reread?.metaVersion, 3)
+
+        // A full replacement: the tags of the earlier write are gone.
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: {
+            ...baseMetadata(collectionId),
+            custom: { name: 'Second' }
+          }
+        })
         const replaced = await backend.getCollectionMetadata({
           spaceId,
           collectionId
         })
         assert.deepEqual(replaced?.custom, { name: 'Second' })
+        assert.equal(replaced?.metaVersion, 4)
+      })
 
-        // An empty custom clears it (and still bumps the version).
-        await backend.writeCollectionMetadata({
+      it('an absent or empty custom clears the stored custom', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        await backend.writeCollection({
           spaceId,
           collectionId,
-          custom: {}
+          collectionMetadata: {
+            ...baseMetadata(collectionId),
+            custom: { name: 'temp' }
+          }
+        })
+        // An empty object clears it (and still bumps the version)...
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: { ...baseMetadata(collectionId), custom: {} }
         })
         const cleared = await backend.getCollectionMetadata({
           spaceId,
           collectionId
         })
         assert.equal(cleared?.custom, undefined)
+        assert.ok(!('custom' in cleared!))
         assert.equal(cleared?.metaVersion, 3)
+
+        // ...and so does omitting it: the write is a full replacement.
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: {
+            ...baseMetadata(collectionId),
+            custom: { name: 'again' }
+          }
+        })
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: baseMetadata(collectionId)
+        })
+        const omitted = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        assert.equal(omitted?.custom, undefined)
+        assert.equal(omitted?.metaVersion, 5)
+      })
+
+      it('a null custom clears the stored custom rather than faulting', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: {
+            ...baseMetadata(collectionId),
+            custom: { name: 'temp' }
+          }
+        })
+        // `null` is not reachable over HTTP, but `StorageBackend` is a
+        // published interface: a `custom` that is not a non-empty object
+        // clears the stored one on every backend, rather than faulting on one
+        // and succeeding on another.
+        const cleared = await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: {
+            ...baseMetadata(collectionId),
+            custom: null as unknown as CollectionMetadata['custom']
+          }
+        })
+        assert.equal(cleared.version, 3)
+        const stored = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        assert.equal(stored?.custom, undefined)
+        assert.ok(!('custom' in stored!))
+      })
+
+      it('a later write does not backfill createdAt onto a Collection stored without one', async () => {
+        // A pre-v0.5 archive carries no `.collection.<id>.json`, so the import
+        // plan falls back to `{ id, type, name }` and the Collection lands
+        // with no `createdAt` at all. A later write must not stamp its own
+        // clock as the creation time -- that would date the container later
+        // than the contents it already holds -- so an absent `createdAt` is
+        // preserved as absent, on the same terms as `createdBy`.
+        const legacy = await makeBackend()
+        try {
+          const { backend } = legacy
+          const legacySpaceId = 'space-legacy-created-at'
+          const legacyCollectionId = 'legacy'
+          await provisionSpace(backend, legacySpaceId)
+
+          const pack = tar.pack()
+          pack.entry(
+            { name: 'manifest.yml' },
+            'ubc-version: "0.1"\ncontents:\n  space: https://example/spec#spaces\n'
+          )
+          pack.entry({
+            name: `space/${legacySpaceId}/${legacyCollectionId}/`,
+            type: 'directory'
+          })
+          pack.finalize()
+          await backend.importSpace({
+            spaceId: legacySpaceId,
+            tarStream: Readable.from(pack)
+          })
+
+          const imported = await backend.getCollectionMetadata({
+            spaceId: legacySpaceId,
+            collectionId: legacyCollectionId
+          })
+          assert.ok(imported, 'the archive created the Collection')
+          assert.equal(imported.createdAt, undefined)
+
+          await backend.writeCollection({
+            spaceId: legacySpaceId,
+            collectionId: legacyCollectionId,
+            collectionMetadata: {
+              id: legacyCollectionId,
+              type: ['Collection'],
+              name: 'Renamed'
+            }
+          })
+          const updated = await backend.getCollectionMetadata({
+            spaceId: legacySpaceId,
+            collectionId: legacyCollectionId
+          })
+          assert.equal(updated?.name, 'Renamed')
+          assert.equal(updated?.createdAt, undefined)
+          assert.ok(!('createdAt' in updated!))
+          assert.ok(!Number.isNaN(Date.parse(updated!.updatedAt!)))
+        } finally {
+          await legacy.cleanup()
+        }
       })
 
       it('resolves undefined for a Collection that does not exist', async () => {
@@ -724,72 +882,118 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           }),
           undefined
         )
-        // ...and a write does not create one.
-        assert.equal(
-          await backend.writeCollectionMetadata({
-            spaceId,
-            collectionId: 'absent',
-            custom: { name: 'x' }
-          }),
-          undefined
-        )
       })
 
-      it('evaluates If-Match / If-None-Match on the metadata ETag', async () => {
+      it('If-None-Match: * fails once the Collection exists; If-Match compare-and-swaps on the one ETag', async () => {
         const { backend } = harness
-        const collectionId = await freshCollection()
+        const collectionId = `col-${crypto.randomUUID()}`
 
-        // `If-None-Match: *` writes once...
-        const created = await backend.writeCollectionMetadata({
+        // `If-None-Match: *` creates the Collection once...
+        const created = await backend.writeCollection({
           spaceId,
           collectionId,
-          custom: { name: 'Created' },
+          collectionMetadata: baseMetadata(collectionId),
           ifNoneMatch: '*'
         })
-        // ...and rejects a second create-if-absent.
+        assert.equal(created.version, 1)
+        // ...and refuses against the existing Collection, for an annotation
+        // write as much as for a configuration one: there is no separate
+        // "metadata never written" state.
         await expect(
-          backend.writeCollectionMetadata({
+          backend.writeCollection({
             spaceId,
             collectionId,
-            custom: { name: 'Again' },
+            collectionMetadata: {
+              ...baseMetadata(collectionId),
+              custom: { name: 'Again' }
+            },
             ifNoneMatch: '*'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
 
         // A stale `If-Match` is rejected; the matching one succeeds.
         await expect(
-          backend.writeCollectionMetadata({
+          backend.writeCollection({
             spaceId,
             collectionId,
-            custom: { name: 'Stale' },
-            ifMatch: formatEtag({
-              generation: created!.generation,
-              version: 99
-            })
+            collectionMetadata: {
+              ...baseMetadata(collectionId),
+              custom: { name: 'Stale' }
+            },
+            ifMatch: formatEtag({ generation: created.generation, version: 99 })
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
-        const fresh = await backend.writeCollectionMetadata({
+        const fresh = await backend.writeCollection({
           spaceId,
           collectionId,
-          custom: { name: 'Fresh' },
-          ifMatch: formatEtag(created!)
+          collectionMetadata: {
+            ...baseMetadata(collectionId),
+            custom: { name: 'Fresh' }
+          },
+          ifMatch: formatEtag(created)
         })
-        assert.equal(fresh?.version, 2)
+        assert.equal(fresh.version, 2)
         assert.equal(
-          fresh?.generation,
-          created!.generation,
-          'the metadata generation is kept across writes'
+          fresh.generation,
+          created.generation,
+          'the generation is kept across writes'
+        )
+        // The annotation write moved the ETag, so its predecessor is stale for
+        // a configuration write too.
+        await expect(
+          backend.writeCollection({
+            spaceId,
+            collectionId,
+            collectionMetadata: { ...baseMetadata(collectionId), name: 'X' },
+            ifMatch: formatEtag(created)
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+      })
+
+      it('stamps createdAt on create and preserves it; updatedAt tracks each write', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        const created = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        assert.ok(created?.createdAt)
+        assert.ok(created?.updatedAt)
+
+        await new Promise(resolve => setTimeout(resolve, 5))
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: {
+            ...baseMetadata(collectionId),
+            // A client-supplied timestamp is ignored: both are server-managed.
+            createdAt: '2000-01-01T00:00:00.000Z',
+            updatedAt: '2000-01-01T00:00:00.000Z',
+            custom: { name: 'Later' }
+          }
+        })
+        const after = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        assert.equal(after?.createdAt, created.createdAt)
+        assert.ok(
+          Date.parse(after!.updatedAt!) > Date.parse(created.updatedAt!),
+          'updatedAt advanced with the write'
         )
       })
 
       it('an omitted epoch CLEARS the stored stamp', async () => {
         const { backend } = harness
         const collectionId = await freshCollection()
-        await backend.writeCollectionMetadata({
+        await backend.writeCollection({
           spaceId,
           collectionId,
-          custom: { name: 'Stamped' },
-          epoch: 'epoch-1'
+          collectionMetadata: {
+            ...baseMetadata(collectionId),
+            custom: { name: 'Stamped' },
+            epoch: 'epoch-1'
+          }
         })
         assert.equal(
           (await backend.getCollectionMetadata({ spaceId, collectionId }))
@@ -797,64 +1001,38 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           'epoch-1'
         )
         // Unlike `writeResourceMetadata` (which preserves the content stamp), a
-        // Collection metadata write with no epoch clears it: it replaces the
+        // Collection Metadata write with no epoch clears it: it replaces the
         // very `custom` envelope the stamp described.
-        await backend.writeCollectionMetadata({
+        await backend.writeCollection({
           spaceId,
           collectionId,
-          custom: { name: 'Restamped' }
-        })
-        assert.equal(
-          (await backend.getCollectionMetadata({ spaceId, collectionId }))
-            ?.epoch,
-          undefined
-        )
-      })
-
-      it('metaVersion and descriptionVersion are independent', async () => {
-        const { backend } = harness
-        const collectionId = await freshCollection()
-
-        // A metadata write leaves the description version alone.
-        await backend.writeCollectionMetadata({
-          spaceId,
-          collectionId,
-          custom: { name: 'Meta' }
-        })
-        const described = await backend.getCollectionDescription({
-          spaceId,
-          collectionId
-        })
-        assert.equal(described?.descriptionVersion, 1)
-
-        // ...and a description write leaves the metadata version alone.
-        const { version } = await backend.writeCollection({
-          spaceId,
-          collectionId,
-          collectionDescription: {
-            id: collectionId,
-            type: ['Collection'],
-            name: 'Renamed'
+          collectionMetadata: {
+            ...baseMetadata(collectionId),
+            custom: { name: 'Restamped' }
           }
         })
-        assert.equal(version, 2)
-        const metadata = await backend.getCollectionMetadata({
+        const restamped = await backend.getCollectionMetadata({
           spaceId,
           collectionId
         })
-        assert.equal(metadata?.metaVersion, 1)
-        assert.deepEqual(metadata?.custom, { name: 'Meta' })
+        assert.equal(restamped?.epoch, undefined)
+        assert.ok(!('epoch' in restamped!))
       })
 
-      it('surfaces createdBy but never lets a custom write set it', async () => {
+      it('surfaces createdBy but never lets a write set it', async () => {
         const { backend } = harness
         const collectionId = await freshCollection(CREATOR_ONE)
-        await backend.writeCollectionMetadata({
+        await backend.writeCollection({
           spaceId,
           collectionId,
-          // A forged `createdBy` inside `custom` stays inside `custom`; the
-          // server-managed one is read from the description.
-          custom: { createdBy: CREATOR_TWO } as never
+          collectionMetadata: {
+            ...baseMetadata(collectionId),
+            // A forged top-level `createdBy` is dropped; one inside `custom`
+            // stays inside `custom`. The server-managed one is preserved.
+            createdBy: CREATOR_TWO,
+            custom: { createdBy: CREATOR_TWO } as never
+          },
+          createdBy: CREATOR_TWO
         })
         const metadata = await backend.getCollectionMetadata({
           spaceId,
@@ -866,76 +1044,76 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       it('deleting the Collection removes its metadata', async () => {
         const { backend } = harness
         const collectionId = await freshCollection()
-        await backend.writeCollectionMetadata({
+        await backend.writeCollection({
           spaceId,
           collectionId,
-          custom: { name: 'Doomed' }
+          collectionMetadata: {
+            ...baseMetadata(collectionId),
+            custom: { name: 'Doomed' }
+          }
         })
         await backend.deleteCollection({ spaceId, collectionId })
         assert.equal(
           await backend.getCollectionMetadata({ spaceId, collectionId }),
           undefined
         )
-        // A Collection re-created under the same id starts with no metadata.
+        // A Collection re-created under the same id starts a fresh life: no
+        // annotations, version 1 again.
         await backend.writeCollection({
           spaceId,
           collectionId,
-          collectionDescription: {
-            id: collectionId,
-            type: ['Collection'],
-            name: collectionId
-          }
+          collectionMetadata: baseMetadata(collectionId)
         })
         const revived = await backend.getCollectionMetadata({
           spaceId,
           collectionId
         })
-        assert.equal(revived?.metaVersion, undefined)
+        assert.equal(revived?.metaVersion, 1)
         assert.equal(revived?.custom, undefined)
       })
 
-      it('a Collection re-created under the same id gets a new descriptionGeneration', async () => {
+      it('a Collection re-created under the same id gets a new metaGeneration', async () => {
         const { backend } = harness
         const collectionId = await freshCollection()
-        const before = await backend.getCollectionDescription({
+        const before = await backend.getCollectionMetadata({
           spaceId,
           collectionId
         })
         await backend.deleteCollection({ spaceId, collectionId })
-        // A Collection delete is a hard delete: the description counter goes
+        // A Collection delete is a hard delete: the metadata counter goes
         // with it, so the re-created Collection restarts at version 1 under a
         // FRESH generation and the old validator matches nothing.
         const recreated = await backend.writeCollection({
           spaceId,
           collectionId,
-          collectionDescription: {
+          collectionMetadata: {
             id: collectionId,
             type: ['Collection'],
             name: collectionId
           }
         })
         assert.equal(recreated.version, 1)
-        assert.notEqual(recreated.generation, before?.descriptionGeneration)
+        assert.notEqual(recreated.generation, before?.metaGeneration)
         // The pre-delete validator can no longer satisfy an If-Match.
         await expect(
           backend.writeCollection({
             spaceId,
             collectionId,
-            collectionDescription: {
+            collectionMetadata: {
               id: collectionId,
               type: ['Collection'],
               name: 'Clobber'
             },
             ifMatch: formatEtag({
-              generation: before!.descriptionGeneration!,
-              version: before!.descriptionVersion!
+              generation: before!.metaGeneration!,
+              version: before!.metaVersion!
             })
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
       })
     })
 
-    describe('Description write preconditions', () => {
+    describe('Metadata write preconditions', () => {
       let harness: BackendHarness
       beforeAll(async () => {
         harness = await makeBackend()
@@ -944,65 +1122,65 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await harness.cleanup()
       })
 
-      const spaceDescription = (spaceId: string) => ({
+      const spaceMetadata = (spaceId: string) => ({
         id: spaceId,
         type: ['Space'],
         name: `Space ${spaceId}`,
         controller: CONTROLLER
       })
 
-      it('writeSpace returns a validator that getSpaceDescription surfaces and bumps per write', async () => {
+      it('writeSpace returns a validator that getSpaceMetadata surfaces and bumps per write', async () => {
         const { backend } = harness
         const created = await backend.writeSpace({
           spaceId: 'space-etag',
-          spaceDescription: spaceDescription('space-etag')
+          spaceMetadata: spaceMetadata('space-etag')
         })
         assert.equal(created.version, 1)
-        const stored = await backend.getSpaceDescription({
+        const stored = await backend.getSpaceMetadata({
           spaceId: 'space-etag'
         })
-        assert.equal(stored?.descriptionGeneration, created.generation)
-        assert.equal(stored?.descriptionVersion, 1)
+        assert.equal(stored?.metaGeneration, created.generation)
+        assert.equal(stored?.metaVersion, 1)
         // A caller spreading the read result back in does not smuggle the
         // validator into the stored body.
         const updated = await backend.writeSpace({
           spaceId: 'space-etag',
-          spaceDescription: { ...stored!, name: 'Renamed' }
+          spaceMetadata: { ...stored!, name: 'Renamed' }
         })
         assert.deepEqual(updated, {
           generation: created.generation,
           version: 2
         })
-        const reread = await backend.getSpaceDescription({
+        const reread = await backend.getSpaceMetadata({
           spaceId: 'space-etag'
         })
         assert.equal(reread?.name, 'Renamed')
-        assert.equal(reread?.descriptionVersion, 2)
+        assert.equal(reread?.metaVersion, 2)
         // The listing is the plain wire shape, validator stripped.
         const listed = (await backend.listSpaces()).find(
           space => space.id === 'space-etag'
         )
         assert.ok(listed)
-        assert.equal('descriptionGeneration' in listed!, false)
-        assert.equal('descriptionVersion' in listed!, false)
+        assert.equal('metaGeneration' in listed!, false)
+        assert.equal('metaVersion' in listed!, false)
       })
 
       it('writeSpace If-None-Match: * creates when absent, 412s when present', async () => {
         const { backend } = harness
         await backend.writeSpace({
           spaceId: 'space-inm',
-          spaceDescription: spaceDescription('space-inm'),
+          spaceMetadata: spaceMetadata('space-inm'),
           ifNoneMatch: '*'
         })
         await expect(
           backend.writeSpace({
             spaceId: 'space-inm',
-            spaceDescription: { ...spaceDescription('space-inm'), name: 'Two' },
+            spaceMetadata: { ...spaceMetadata('space-inm'), name: 'Two' },
             ifNoneMatch: '*'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         assert.equal(
-          (await backend.getSpaceDescription({ spaceId: 'space-inm' }))?.name,
+          (await backend.getSpaceMetadata({ spaceId: 'space-inm' }))?.name,
           'Space space-inm'
         )
       })
@@ -1011,18 +1189,18 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const { backend } = harness
         const created = await backend.writeSpace({
           spaceId: 'space-im',
-          spaceDescription: spaceDescription('space-im')
+          spaceMetadata: spaceMetadata('space-im')
         })
         await expect(
           backend.writeSpace({
             spaceId: 'space-im',
-            spaceDescription: spaceDescription('space-im'),
+            spaceMetadata: spaceMetadata('space-im'),
             ifMatch: formatEtag({ generation: created.generation, version: 9 })
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         const second = await backend.writeSpace({
           spaceId: 'space-im',
-          spaceDescription: spaceDescription('space-im'),
+          spaceMetadata: spaceMetadata('space-im'),
           ifMatch: formatEtag(created)
         })
         assert.equal(second.version, 2)
@@ -1030,7 +1208,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await expect(
           backend.writeSpace({
             spaceId: 'space-im',
-            spaceDescription: spaceDescription('space-im'),
+            spaceMetadata: spaceMetadata('space-im'),
             ifMatch: formatEtag(created)
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
@@ -1040,19 +1218,19 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const { backend } = harness
         const written = await backend.writeSpace({
           spaceId: 'space-smuggle',
-          spaceDescription: {
-            ...spaceDescription('space-smuggle'),
+          spaceMetadata: {
+            ...spaceMetadata('space-smuggle'),
             _generation: 'fake',
             _version: 999
-          } as SpaceDescription
+          } as SpaceMetadata
         })
-        const stored = await backend.getSpaceDescription({
+        const stored = await backend.getSpaceMetadata({
           spaceId: 'space-smuggle'
         })
         assert.equal('_generation' in stored!, false)
         assert.equal('_version' in stored!, false)
-        assert.equal(stored?.descriptionGeneration, written.generation)
-        assert.equal(stored?.descriptionVersion, 1)
+        assert.equal(stored?.metaGeneration, written.generation)
+        assert.equal(stored?.metaVersion, 1)
       })
 
       it('writeSpace If-Match honors the * and list forms', async () => {
@@ -1060,23 +1238,23 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await expect(
           backend.writeSpace({
             spaceId: 'space-im-forms',
-            spaceDescription: spaceDescription('space-im-forms'),
+            spaceMetadata: spaceMetadata('space-im-forms'),
             ifMatch: '*'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         const created = await backend.writeSpace({
           spaceId: 'space-im-forms',
-          spaceDescription: spaceDescription('space-im-forms')
+          spaceMetadata: spaceMetadata('space-im-forms')
         })
         const second = await backend.writeSpace({
           spaceId: 'space-im-forms',
-          spaceDescription: spaceDescription('space-im-forms'),
+          spaceMetadata: spaceMetadata('space-im-forms'),
           ifMatch: '*'
         })
         assert.equal(second.version, 2)
         const third = await backend.writeSpace({
           spaceId: 'space-im-forms',
-          spaceDescription: spaceDescription('space-im-forms'),
+          spaceMetadata: spaceMetadata('space-im-forms'),
           ifMatch: `${formatEtag(created)}, ${formatEtag(second)}`
         })
         assert.equal(third.version, 3)
@@ -1084,7 +1262,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await expect(
           backend.writeSpace({
             spaceId: 'space-im-forms',
-            spaceDescription: spaceDescription('space-im-forms'),
+            spaceMetadata: spaceMetadata('space-im-forms'),
             ifMatch: `W/${formatEtag(third)}`
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
@@ -1094,18 +1272,18 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const { backend } = harness
         const created = await backend.writeSpace({
           spaceId: 'space-inm-list',
-          spaceDescription: spaceDescription('space-inm-list')
+          spaceMetadata: spaceMetadata('space-inm-list')
         })
         await expect(
           backend.writeSpace({
             spaceId: 'space-inm-list',
-            spaceDescription: spaceDescription('space-inm-list'),
+            spaceMetadata: spaceMetadata('space-inm-list'),
             ifNoneMatch: new Set([formatEtag(created)])
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         const second = await backend.writeSpace({
           spaceId: 'space-inm-list',
-          spaceDescription: spaceDescription('space-inm-list'),
+          spaceMetadata: spaceMetadata('space-inm-list'),
           ifNoneMatch: new Set([
             formatEtag({ generation: created.generation, version: 7 })
           ])
@@ -1118,23 +1296,23 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await expect(
           backend.writeSpace({
             spaceId: 'space-both',
-            spaceDescription: spaceDescription('space-both'),
+            spaceMetadata: spaceMetadata('space-both'),
             ifMatch: formatEtag({ generation: 'noSuchGen', version: 1 }),
             ifNoneMatch: '*'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         assert.equal(
-          await backend.getSpaceDescription({ spaceId: 'space-both' }),
+          await backend.getSpaceMetadata({ spaceId: 'space-both' }),
           undefined
         )
         const created = await backend.writeSpace({
           spaceId: 'space-both',
-          spaceDescription: spaceDescription('space-both')
+          spaceMetadata: spaceMetadata('space-both')
         })
         await expect(
           backend.writeSpace({
             spaceId: 'space-both',
-            spaceDescription: spaceDescription('space-both'),
+            spaceMetadata: spaceMetadata('space-both'),
             ifMatch: formatEtag(created),
             ifNoneMatch: '*'
           })
@@ -1145,12 +1323,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await expect(
           harness.backend.writeSpace({
             spaceId: 'space-im-absent',
-            spaceDescription: spaceDescription('space-im-absent'),
+            spaceMetadata: spaceMetadata('space-im-absent'),
             ifMatch: formatEtag({ generation: 'noSuchGen', version: 1 })
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         assert.equal(
-          await harness.backend.getSpaceDescription({
+          await harness.backend.getSpaceMetadata({
             spaceId: 'space-im-absent'
           }),
           undefined
@@ -1161,12 +1339,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const { backend } = harness
         const first = await backend.writeSpace({
           spaceId: 'space-regen',
-          spaceDescription: spaceDescription('space-regen')
+          spaceMetadata: spaceMetadata('space-regen')
         })
         await backend.deleteSpace({ spaceId: 'space-regen' })
         const second = await backend.writeSpace({
           spaceId: 'space-regen',
-          spaceDescription: spaceDescription('space-regen')
+          spaceMetadata: spaceMetadata('space-regen')
         })
         assert.equal(second.version, 1)
         assert.notEqual(second.generation, first.generation)
@@ -1176,12 +1354,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const { backend } = harness
         await backend.writeSpace({
           spaceId: 'space-col-inm',
-          spaceDescription: spaceDescription('space-col-inm')
+          spaceMetadata: spaceMetadata('space-col-inm')
         })
         const created = await backend.writeCollection({
           spaceId: 'space-col-inm',
           collectionId: 'guarded',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'guarded',
             type: ['Collection'],
             name: 'One'
@@ -1193,7 +1371,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           backend.writeCollection({
             spaceId: 'space-col-inm',
             collectionId: 'guarded',
-            collectionDescription: {
+            collectionMetadata: {
               id: 'guarded',
               type: ['Collection'],
               name: 'Two'
@@ -1203,7 +1381,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         assert.equal(
           (
-            await backend.getCollectionDescription({
+            await backend.getCollectionMetadata({
               spaceId: 'space-col-inm',
               collectionId: 'guarded'
             })
@@ -1289,7 +1467,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         // A token-provisioned Create Space records no invoker.
         await backend.writeSpace({
           spaceId: noCreatorSpaceId,
-          spaceDescription: {
+          spaceMetadata: {
             id: noCreatorSpaceId,
             type: ['Space'],
             controller: CONTROLLER
@@ -1298,7 +1476,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         // The controller's first authenticated update must not become "creator".
         await backend.writeSpace({
           spaceId: noCreatorSpaceId,
-          spaceDescription: {
+          spaceMetadata: {
             id: noCreatorSpaceId,
             type: ['Space'],
             name: 'Renamed',
@@ -1306,11 +1484,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           },
           createdBy: CREATOR_TWO
         })
-        const description = await backend.getSpaceDescription({
+        const metadata = await backend.getSpaceMetadata({
           spaceId: noCreatorSpaceId
         })
-        assert.equal(description?.name, 'Renamed')
-        assert.equal(description?.createdBy, undefined)
+        assert.equal(metadata?.name, 'Renamed')
+        assert.equal(metadata?.createdBy, undefined)
       })
 
       it('a later writeCollection does not backfill createdBy onto a Collection created without one', async () => {
@@ -1318,7 +1496,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await backend.writeCollection({
           spaceId,
           collectionId: 'cb-no-backfill-collection',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'cb-no-backfill-collection',
             type: ['Collection']
           }
@@ -1326,19 +1504,19 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await backend.writeCollection({
           spaceId,
           collectionId: 'cb-no-backfill-collection',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'cb-no-backfill-collection',
             type: ['Collection'],
             name: 'Renamed'
           },
           createdBy: CREATOR_TWO
         })
-        const description = await backend.getCollectionDescription({
+        const metadata = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'cb-no-backfill-collection'
         })
-        assert.equal(description?.name, 'Renamed')
-        assert.equal(description?.createdBy, undefined)
+        assert.equal(metadata?.name, 'Renamed')
+        assert.equal(metadata?.createdBy, undefined)
       })
 
       it('writeResource with no createdBy records none (absent key)', async () => {
@@ -1419,7 +1597,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const createdBySpaceId = 'space-created-by-space'
         await backend.writeSpace({
           spaceId: createdBySpaceId,
-          spaceDescription: {
+          spaceMetadata: {
             id: createdBySpaceId,
             type: ['Space'],
             name: 'Created By Space',
@@ -1427,15 +1605,15 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           },
           createdBy: CREATOR_ONE
         })
-        let description = await backend.getSpaceDescription({
+        let metadata = await backend.getSpaceMetadata({
           spaceId: createdBySpaceId
         })
-        assert.equal(description?.createdBy, CREATOR_ONE)
+        assert.equal(metadata?.createdBy, CREATOR_ONE)
 
         // A second write by a different invoker does not change the creator.
         await backend.writeSpace({
           spaceId: createdBySpaceId,
-          spaceDescription: {
+          spaceMetadata: {
             id: createdBySpaceId,
             type: ['Space'],
             name: 'Renamed Created By Space',
@@ -1443,19 +1621,19 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           },
           createdBy: CREATOR_TWO
         })
-        description = await backend.getSpaceDescription({
+        metadata = await backend.getSpaceMetadata({
           spaceId: createdBySpaceId
         })
-        assert.equal(description?.createdBy, CREATOR_ONE)
-        assert.equal(description?.name, 'Renamed Created By Space')
+        assert.equal(metadata?.createdBy, CREATOR_ONE)
+        assert.equal(metadata?.name, 'Renamed Created By Space')
       })
 
-      it('writeSpace drops a client-supplied createdBy inside the description document', async () => {
+      it('writeSpace drops a client-supplied createdBy inside the metadata document', async () => {
         const { backend } = harness
         const forgedSpaceId = 'space-created-by-forged'
         await backend.writeSpace({
           spaceId: forgedSpaceId,
-          spaceDescription: {
+          spaceMetadata: {
             id: forgedSpaceId,
             type: ['Space'],
             name: 'Forged createdBy Space',
@@ -1464,10 +1642,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           },
           createdBy: CREATOR_ONE
         })
-        const description = await backend.getSpaceDescription({
+        const metadata = await backend.getSpaceMetadata({
           spaceId: forgedSpaceId
         })
-        assert.equal(description?.createdBy, CREATOR_ONE)
+        assert.equal(metadata?.createdBy, CREATOR_ONE)
       })
 
       it('writeSpace with no invoker drops a client-supplied createdBy rather than honoring it', async () => {
@@ -1475,7 +1653,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const forgedSpaceId = 'space-created-by-forged-no-invoker'
         await backend.writeSpace({
           spaceId: forgedSpaceId,
-          spaceDescription: {
+          spaceMetadata: {
             id: forgedSpaceId,
             type: ['Space'],
             name: 'Forged createdBy Space, no invoker',
@@ -1483,12 +1661,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             createdBy: 'did:key:zEVIL'
           }
         })
-        const description = await backend.getSpaceDescription({
+        const metadata = await backend.getSpaceMetadata({
           spaceId: forgedSpaceId
         })
         // Fail closed: unrecorded, not the value the body asked for.
-        assert.equal(description?.createdBy, undefined)
-        assert.ok(!('createdBy' in description!))
+        assert.equal(metadata?.createdBy, undefined)
+        assert.ok(!('createdBy' in metadata!))
       })
 
       it('writeCollection records the first invoker as createdBy and preserves it on overwrite', async () => {
@@ -1496,43 +1674,43 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await backend.writeCollection({
           spaceId,
           collectionId: 'cb-collection',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'cb-collection',
             type: ['Collection'],
             name: 'Created By Collection'
           },
           createdBy: CREATOR_ONE
         })
-        let description = await backend.getCollectionDescription({
+        let metadata = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'cb-collection'
         })
-        assert.equal(description?.createdBy, CREATOR_ONE)
+        assert.equal(metadata?.createdBy, CREATOR_ONE)
 
         await backend.writeCollection({
           spaceId,
           collectionId: 'cb-collection',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'cb-collection',
             type: ['Collection'],
             name: 'Renamed Created By Collection'
           },
           createdBy: CREATOR_TWO
         })
-        description = await backend.getCollectionDescription({
+        metadata = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'cb-collection'
         })
-        assert.equal(description?.createdBy, CREATOR_ONE)
-        assert.equal(description?.name, 'Renamed Created By Collection')
+        assert.equal(metadata?.createdBy, CREATOR_ONE)
+        assert.equal(metadata?.name, 'Renamed Created By Collection')
       })
 
-      it('writeCollection drops a client-supplied createdBy inside the description document', async () => {
+      it('writeCollection drops a client-supplied createdBy inside the metadata document', async () => {
         const { backend } = harness
         await backend.writeCollection({
           spaceId,
           collectionId: 'cb-collection-forged',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'cb-collection-forged',
             type: ['Collection'],
             name: 'Forged createdBy Collection',
@@ -1540,11 +1718,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           },
           createdBy: CREATOR_ONE
         })
-        const description = await backend.getCollectionDescription({
+        const metadata = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'cb-collection-forged'
         })
-        assert.equal(description?.createdBy, CREATOR_ONE)
+        assert.equal(metadata?.createdBy, CREATOR_ONE)
       })
     })
 
@@ -1879,7 +2057,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       })
     })
 
-    describe('key-epoch stamping and Collection Description versioning', () => {
+    describe('key-epoch stamping and Collection Metadata versioning', () => {
       let harness: BackendHarness
       const spaceId = 'space-epochs'
       beforeAll(async () => {
@@ -1978,13 +2156,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(metadata?.epoch, 'urn:epoch:2')
       })
 
-      it('writeCollection returns a monotonic description version', async () => {
+      it('writeCollection returns a monotonic metaVersion', async () => {
         const { backend } = harness
         // The Collection was created in `provisionSpace` (version 1); update it.
         const first = await backend.writeCollection({
           spaceId,
           collectionId: 'col',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'col',
             type: ['Collection'],
             name: 'Renamed once'
@@ -1993,53 +2171,53 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const second = await backend.writeCollection({
           spaceId,
           collectionId: 'col',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'col',
             type: ['Collection'],
             name: 'Renamed twice'
           }
         })
         assert.equal(second.version, first.version + 1)
-        const description = await backend.getCollectionDescription({
+        const metadata = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'col'
         })
-        assert.equal(description?.descriptionVersion, second.version)
+        assert.equal(metadata?.metaVersion, second.version)
       })
 
-      it('If-Match on the description compare-and-swaps (stale validator 412)', async () => {
+      it('If-Match on the Collection Metadata object compare-and-swaps (stale validator 412)', async () => {
         const { backend } = harness
-        const current = await backend.getCollectionDescription({
+        const current = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'col'
         })
         const currentEtag = formatEtag({
-          generation: current!.descriptionGeneration!,
-          version: current!.descriptionVersion!
+          generation: current!.metaGeneration!,
+          version: current!.metaVersion!
         })
         // A matching If-Match succeeds and bumps the version.
         const ok = await backend.writeCollection({
           spaceId,
           collectionId: 'col',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'col',
             type: ['Collection'],
             name: 'CAS ok'
           },
           ifMatch: currentEtag
         })
-        assert.equal(ok.version, current!.descriptionVersion! + 1)
+        assert.equal(ok.version, current!.metaVersion! + 1)
         assert.equal(
           ok.generation,
-          current!.descriptionGeneration,
-          'a description write keeps the Collection generation'
+          current!.metaGeneration,
+          'a metadata write keeps the Collection generation'
         )
         // The now-stale validator is rejected.
         await expect(
           backend.writeCollection({
             spaceId,
             collectionId: 'col',
-            collectionDescription: {
+            collectionMetadata: {
               id: 'col',
               type: ['Collection'],
               name: 'CAS stale'
@@ -2051,20 +2229,20 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
       it('an unconditional writeCollection still upserts (no If-Match)', async () => {
         const { backend } = harness
-        const before = await backend.getCollectionDescription({
+        const before = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'col'
         })
         const result = await backend.writeCollection({
           spaceId,
           collectionId: 'col',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'col',
             type: ['Collection'],
             name: 'Unconditional'
           }
         })
-        assert.equal(result.version, before!.descriptionVersion! + 1)
+        assert.equal(result.version, before!.metaVersion! + 1)
       })
 
       it('the epoch survives an export / import round trip', async () => {
@@ -2081,7 +2259,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         try {
           await target.backend.writeSpace({
             spaceId,
-            spaceDescription: {
+            spaceMetadata: {
               id: spaceId,
               type: ['Space'],
               name: `Space ${spaceId}`,
@@ -2101,7 +2279,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       })
     })
 
-    describe('Collection description write atomicity (key-epochs review fixes)', () => {
+    describe('Collection Metadata write atomicity (key-epochs review fixes)', () => {
       let harness: BackendHarness
       const spaceId = 'space-atomicity'
       beforeAll(async () => {
@@ -2118,7 +2296,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await backend.writeCollection({
           spaceId,
           collectionId: 'at-create',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'at-create',
             type: ['Collection'],
             name: 'Created'
@@ -2127,26 +2305,26 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             seen = prior
           }
         })
-        // A create has no prior description to re-read under the lock.
+        // A create has no prior object to re-read under the lock.
         assert.equal(seen, undefined)
       })
 
-      it('invokes assertTransition with the current description (and its validator) on an update', async () => {
+      it('invokes assertTransition with the current object (and its validator) on an update', async () => {
         const { backend } = harness
         await backend.writeCollection({
           spaceId,
           collectionId: 'at-update',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'at-update',
             type: ['Collection'],
             name: 'First'
           }
         })
-        let seen: StoredCollectionDescription | undefined
+        let seen: StoredCollectionMetadata | undefined
         await backend.writeCollection({
           spaceId,
           collectionId: 'at-update',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'at-update',
             type: ['Collection'],
             name: 'Second'
@@ -2155,25 +2333,25 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             seen = prior
           }
         })
-        // The callback sees the freshly re-read current description, carrying
+        // The callback sees the freshly re-read current object, carrying
         // the version it is about to supersede.
         assert.equal(seen?.name, 'First')
-        assert.equal(seen?.descriptionVersion, 1)
-        assert.ok(seen?.descriptionGeneration)
+        assert.equal(seen?.metaVersion, 1)
+        assert.ok(seen?.metaGeneration)
       })
 
-      it('a throwing assertTransition aborts the write (description and version unchanged)', async () => {
+      it('a throwing assertTransition aborts the write (object and version unchanged)', async () => {
         const { backend } = harness
         await backend.writeCollection({
           spaceId,
           collectionId: 'at-abort',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'at-abort',
             type: ['Collection'],
             name: 'Keep'
           }
         })
-        const before = await backend.getCollectionDescription({
+        const before = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'at-abort'
         })
@@ -2182,7 +2360,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           backend.writeCollection({
             spaceId,
             collectionId: 'at-abort',
-            collectionDescription: {
+            collectionMetadata: {
               id: 'at-abort',
               type: ['Collection'],
               name: 'Clobber'
@@ -2193,18 +2371,18 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           })
         ).rejects.toBeInstanceOf(TransitionRejected)
         // The write was aborted inside the lock: nothing changed, no version bump.
-        const after = await backend.getCollectionDescription({
+        const after = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'at-abort'
         })
         assert.equal(after?.name, 'Keep')
-        assert.equal(after?.descriptionVersion, before?.descriptionVersion)
+        assert.equal(after?.metaVersion, before?.metaVersion)
       })
 
-      it('a first description write on a placeholder (policy-created) row returns version 1', async () => {
+      it('a first metadata write on a placeholder (policy-created) row returns version 1', async () => {
         const { backend } = harness
-        // A policy write with no described Collection creates a placeholder row
-        // (description NULL). The first real description write must start at 1,
+        // A policy write with no Collection Metadata creates a placeholder row
+        // (metadata NULL). The first real metadata write must start at 1,
         // identically on both backends (the Postgres off-by-one fix).
         await backend.writePolicy({
           spaceId,
@@ -2214,56 +2392,56 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const { version } = await backend.writeCollection({
           spaceId,
           collectionId: 'ph',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'ph',
             type: ['Collection'],
             name: 'Placeholder'
           }
         })
         assert.equal(version, 1)
-        const description = await backend.getCollectionDescription({
+        const metadata = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'ph'
         })
-        assert.equal(description?.descriptionVersion, 1)
+        assert.equal(metadata?.metaVersion, 1)
       })
 
-      it('does not persist a stale validator member; the archive carries _generation / _version, not descriptionGeneration / descriptionVersion', async () => {
+      it('does not persist a stale validator member; the archive carries _generation / _version, not metaGeneration / metaVersion', async () => {
         const { backend } = harness
         await backend.writeCollection({
           spaceId,
           collectionId: 'merge',
-          collectionDescription: {
+          collectionMetadata: {
             id: 'merge',
             type: ['Collection'],
             name: 'V1'
           }
         })
         // Simulate the request handler's read-merge-write: the read attaches
-        // the out-of-band `descriptionGeneration` / `descriptionVersion`, which
+        // the out-of-band `metaGeneration` / `metaVersion`, which
         // the handler spreads back into the next write. No validator member may
         // leak into the stored body.
-        const read = await backend.getCollectionDescription({
+        const read = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'merge'
         })
         await backend.writeCollection({
           spaceId,
           collectionId: 'merge',
-          collectionDescription: { ...read!, name: 'V2' }
+          collectionMetadata: { ...read!, name: 'V2' }
         })
-        const after = await backend.getCollectionDescription({
+        const after = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'merge'
         })
-        assert.equal(after?.descriptionVersion, 2)
-        assert.equal(after?.descriptionGeneration, read?.descriptionGeneration)
+        assert.equal(after?.metaVersion, 2)
+        assert.equal(after?.metaGeneration, read?.metaGeneration)
         assert.ok(!Object.prototype.hasOwnProperty.call(after, '_version'))
         assert.ok(!Object.prototype.hasOwnProperty.call(after, '_generation'))
 
         // The archived `.collection.` body carries the internal `_generation` /
         // `_version` interchange tokens and never the out-of-band
-        // `descriptionGeneration` / `descriptionVersion` -- identical members on
+        // `metaGeneration` / `metaVersion` -- identical members on
         // both backends (the Postgres jsonb-strip fix).
         const entries = await extractTarEntries(
           await backend.exportSpace({ spaceId })
@@ -2274,13 +2452,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.ok(entry, 'expected an archived .collection.merge.json entry')
         const body = JSON.parse(entry![1].body!.toString('utf8'))
         assert.equal(body._version, 2)
-        assert.equal(body._generation, after?.descriptionGeneration)
-        assert.ok(
-          !Object.prototype.hasOwnProperty.call(body, 'descriptionVersion')
-        )
-        assert.ok(
-          !Object.prototype.hasOwnProperty.call(body, 'descriptionGeneration')
-        )
+        assert.equal(body._generation, after?.metaGeneration)
+        assert.ok(!Object.prototype.hasOwnProperty.call(body, 'metaVersion'))
+        assert.ok(!Object.prototype.hasOwnProperty.call(body, 'metaGeneration'))
       })
 
       // The transactional space-row lock guarantee: two concurrent creates of
@@ -2300,7 +2474,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
                 quotaHarness.backend.writeCollection({
                   spaceId: 'cc-quota',
                   collectionId,
-                  collectionDescription: {
+                  collectionMetadata: {
                     id: collectionId,
                     type: ['Collection'],
                     name: collectionId
@@ -2463,7 +2637,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await backend.writeCollection({
           spaceId,
           collectionId,
-          collectionDescription: {
+          collectionMetadata: {
             id: collectionId,
             type: ['Collection'],
             name: collectionId
@@ -3091,7 +3265,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
     describe('quotas and upload caps', () => {
       // Capacities are sized generously (hundreds of KB) so the filesystem
-      // backend's `du` figure -- which includes description files and block
+      // backend's `du` figure -- which includes metadata files and block
       // overhead -- stays negligible next to the resource bodies.
       it('rejects a write that would exceed capacity with QuotaExceededError (507)', async () => {
         const harness = await makeBackend({ capacityBytes: 200_000 })
@@ -3321,7 +3495,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const writeSpace = (spaceId: string, controller: IDID) =>
           harness.backend.writeSpace({
             spaceId,
-            spaceDescription: {
+            spaceMetadata: {
               id: spaceId,
               type: ['Space'],
               name: spaceId,
@@ -3338,7 +3512,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             error = err
           }
           assertCountQuota(error)
-          // Overwriting an existing Space's description still succeeds at the
+          // Overwriting an existing Space's metadata still succeeds at the
           // limit (an update is not a create).
           await writeSpace('cq-a1', alice)
           // A different controller can still create.
@@ -3354,7 +3528,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           harness.backend.writeCollection({
             spaceId: 'cq-cols',
             collectionId,
-            collectionDescription: {
+            collectionMetadata: {
               id: collectionId,
               type: ['Collection'],
               name: collectionId
@@ -3372,7 +3546,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             error = err
           }
           assertCountQuota(error)
-          // Overwriting an existing Collection description at the limit is fine.
+          // Overwriting an existing Collection metadata at the limit is fine.
           await writeCollection('col2')
         } finally {
           await harness.cleanup()
@@ -3451,7 +3625,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             await source.backend.writeCollection({
               spaceId,
               collectionId,
-              collectionDescription: {
+              collectionMetadata: {
                 id: collectionId,
                 type: ['Collection'],
                 name: collectionId
@@ -4455,7 +4629,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
               race.backend.writeCollection({
                 spaceId,
                 collectionId: 'raced-col',
-                collectionDescription: {
+                collectionMetadata: {
                   id: 'raced-col',
                   type: ['Collection'],
                   name: 'raced-col'
@@ -4496,7 +4670,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await harness.backend.writeCollection({
           spaceId,
           collectionId,
-          collectionDescription: {
+          collectionMetadata: {
             id: collectionId,
             type: ['Collection'],
             name: collectionId
@@ -4560,8 +4734,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId,
           body: line1,
           ifNoneMatch: '*',
-          assertTransition: ({ prior, collectionDescription }) => {
-            seen.push(prior, collectionDescription.id)
+          assertTransition: ({ prior, collectionMetadata }) => {
+            seen.push(prior, collectionMetadata.id)
           }
         })
         assert.deepEqual(seen, [undefined, collectionId])
@@ -4600,10 +4774,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(stored?.version, 1)
       })
 
-      it('bumps the description validator on each log write, keeping its generation', async () => {
+      it('bumps the Collection Metadata validator on each log write, keeping its generation', async () => {
         const { backend } = harness
         const collectionId = await freshCollection()
-        const before = await backend.getCollectionDescription({
+        const before = await backend.getCollectionMetadata({
           spaceId,
           collectionId
         })
@@ -4613,16 +4787,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           body: line1,
           ifNoneMatch: '*'
         })
-        const after = await backend.getCollectionDescription({
+        const after = await backend.getCollectionMetadata({
           spaceId,
           collectionId
         })
-        assert.equal(
-          after?.descriptionGeneration,
-          before?.descriptionGeneration
-        )
-        assert.equal(after?.descriptionVersion, before!.descriptionVersion! + 1)
-        // The stored description itself is untouched (no derived member).
+        assert.equal(after?.metaGeneration, before?.metaGeneration)
+        assert.equal(after?.metaVersion, before!.metaVersion! + 1)
+        // The stored object itself is untouched (no derived member).
         assert.equal(after?.encryption, undefined)
         assert.equal(after?.name, collectionId)
       })
@@ -4664,7 +4835,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           await source.backend.writeCollection({
             spaceId: exportSpaceId,
             collectionId: 'governed',
-            collectionDescription: {
+            collectionMetadata: {
               id: 'governed',
               type: ['Collection'],
               name: 'governed'
@@ -4698,7 +4869,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
     })
 
     describe('export / import round-trip', () => {
-      it('round-trips a Space (descriptions, resources, policies, metadata, tombstones) within the backend', async () => {
+      it('round-trips a Space (metadata, resources, policies, tombstones) within the backend', async () => {
         const source = await makeBackend()
         const target = await makeBackend()
         try {
@@ -4823,17 +4994,22 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         try {
           const spaceId = 'space-exp-collection-meta'
           await provisionSpace(source.backend, spaceId)
-          await source.backend.writeCollectionMetadata({
+          await source.backend.writeCollection({
             spaceId,
             collectionId: 'col',
-            custom: { name: 'Collection Label', tags: { kind: 'demo' } },
-            epoch: 'epoch-exp'
+            collectionMetadata: {
+              id: 'col',
+              type: ['Collection'],
+              name: 'col',
+              custom: { name: 'Collection Label', tags: { kind: 'demo' } },
+              epoch: 'epoch-exp'
+            }
           })
 
           const tarStream = await source.backend.exportSpace({ spaceId })
           // Provision the destination Space around a DIFFERENT Collection, so
           // the archived 'col' is created rather than skipped (an existing
-          // Collection keeps its own metadata, like its description and policy).
+          // Collection keeps its own metadata, as it keeps its policy).
           await provisionSpace(target.backend, spaceId, 'other')
           await target.backend.importSpace({ spaceId, tarStream })
 
@@ -4846,7 +5022,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             tags: { kind: 'demo' }
           })
           assert.equal(metadata?.epoch, 'epoch-exp')
-          assert.equal(metadata?.metaVersion, 1)
+          // The archived validator travels verbatim: version 2 (the create,
+          // then the annotation write), not a fresh count on the destination.
+          assert.equal(metadata?.metaVersion, 2)
           assert.ok(!Number.isNaN(Date.parse(metadata!.createdAt!)))
         } finally {
           await source.cleanup()

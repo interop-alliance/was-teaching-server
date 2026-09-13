@@ -24,7 +24,7 @@
  */
 import { randomBytes } from 'node:crypto'
 import { base58 } from '@scure/base'
-import type { DescriptionValidatorParts } from '../types.js'
+import type { MetadataValidatorParts } from '../types.js'
 
 /**
  * The parts of a strong `ETag` validator: the record's `generation` and its
@@ -93,53 +93,53 @@ export function etagOf({
 }
 
 /**
- * The `ETag` of a stored Space or Collection Description, from its
- * out-of-band validator parts; `undefined` for a legacy record or an absent
- * one (a create's prior state).
- * @param [stored] {DescriptionValidatorParts}
+ * The `ETag` of a stored Space or Collection Metadata object, from its
+ * out-of-band validator parts; `undefined` for an absent one (a create's
+ * prior state) or a placeholder never written.
+ * @param [stored] {MetadataValidatorParts}
  * @returns {string | undefined}
  */
-export function descriptionEtagOf(
-  stored?: DescriptionValidatorParts
+export function metadataEtagOf(
+  stored?: MetadataValidatorParts
 ): string | undefined {
   return etagOf({
-    generation: stored?.descriptionGeneration,
-    version: stored?.descriptionVersion
+    generation: stored?.metaGeneration,
+    version: stored?.metaVersion
   })
 }
 
 /**
- * Lifts a description file's on-disk layout (the wire body plus the reserved
+ * Lifts a metadata file's on-disk layout (the wire body plus the reserved
  * `_generation` / `_version` members, the filesystem backend's convention and
  * the archive interchange shape) into the stored read shape: the validator
- * re-surfaced out of band as `descriptionGeneration` / `descriptionVersion`,
- * both absent for a legacy record. The inverse of `embedDescriptionValidator`.
+ * re-surfaced out of band as `metaGeneration` / `metaVersion`. The inverse of
+ * `embedMetadataValidator`.
  * @param raw {T & { _generation?: string, _version?: number }}
- * @returns {T & DescriptionValidatorParts}
+ * @returns {T & MetadataValidatorParts}
  */
-export function storedDescriptionFromFile<T extends object>(
+export function storedMetadataFromFile<T extends object>(
   raw: T & { _generation?: string; _version?: number }
-): T & DescriptionValidatorParts {
-  const { _generation, _version, ...description } = raw
+): T & MetadataValidatorParts {
+  const { _generation, _version, ...body } = raw
   return {
-    ...(description as T),
-    ...(_generation !== undefined && { descriptionGeneration: _generation }),
-    ...(_version !== undefined && { descriptionVersion: _version })
+    ...(body as T),
+    ...(_generation !== undefined && { metaGeneration: _generation }),
+    ...(_version !== undefined && { metaVersion: _version })
   }
 }
 
 /**
- * Embeds a description validator into a wire body as the reserved
- * `_generation` / `_version` members, the layout a description file on disk
- * and an archived description share. A missing generation (a legacy record)
- * is left out rather than written as `undefined`, and so is a missing version.
+ * Embeds a metadata validator into a wire body as the reserved
+ * `_generation` / `_version` members, the layout a metadata file on disk
+ * and an archived one share. A missing generation is left out rather than
+ * written as `undefined`, and so is a missing version.
  * @param options {object}
  * @param options.body {T}   the wire body, validator already stripped
  * @param [options.generation] {string}
  * @param [options.version] {number}
  * @returns {T & { _generation?: string, _version?: number }}
  */
-export function embedDescriptionValidator<T extends object>({
+export function embedMetadataValidator<T extends object>({
   body,
   generation,
   version
@@ -157,20 +157,16 @@ export function embedDescriptionValidator<T extends object>({
 
 /**
  * Drops the out-of-band validator parts from a stored Space or Collection
- * Description read result, leaving the wire body. A handler that composes an
- * update from the stored description spreads this, so the document handed to
+ * Metadata read result, leaving the wire body. A handler that composes an
+ * update from the stored object spreads this, so the document handed to
  * storage carries no validator of its own.
- * @param stored {T & DescriptionValidatorParts}
+ * @param stored {T & MetadataValidatorParts}
  * @returns {T}
  */
-export function stripDescriptionValidator<T extends object>(
-  stored: T & DescriptionValidatorParts
+export function stripMetadataValidator<T extends object>(
+  stored: T & MetadataValidatorParts
 ): T {
-  const {
-    descriptionGeneration: _generation,
-    descriptionVersion: _version,
-    ...body
-  } = stored
+  const { metaGeneration: _generation, metaVersion: _version, ...body } = stored
   return body as T
 }
 

@@ -750,7 +750,7 @@ describe('assertEncryptedWriteConforms', () => {
   it('is a no-op for a plaintext Collection (any body/content type)', () => {
     assert.doesNotThrow(() =>
       assertEncryptedWriteConforms({
-        collectionDescription: {},
+        collectionMetadata: {},
         contentType: 'application/json',
         body: { hello: 'world' }
       })
@@ -759,7 +759,7 @@ describe('assertEncryptedWriteConforms', () => {
   it('accepts a conforming EDV Document under application/json', () => {
     assert.doesNotThrow(() =>
       assertEncryptedWriteConforms({
-        collectionDescription: edv,
+        collectionMetadata: edv,
         contentType: 'application/json',
         body: edvDocument
       })
@@ -768,7 +768,7 @@ describe('assertEncryptedWriteConforms', () => {
   it('accepts the media type with parameters (charset)', () => {
     assert.doesNotThrow(() =>
       assertEncryptedWriteConforms({
-        collectionDescription: edv,
+        collectionMetadata: edv,
         contentType: 'application/JSON; charset=utf-8',
         body: edvDocument
       })
@@ -778,7 +778,7 @@ describe('assertEncryptedWriteConforms', () => {
     assert.throws(
       () =>
         assertEncryptedWriteConforms({
-          collectionDescription: edv,
+          collectionMetadata: edv,
           contentType: 'application/octet-stream',
           body: edvDocument
         }),
@@ -789,7 +789,7 @@ describe('assertEncryptedWriteConforms', () => {
     assert.throws(
       () =>
         assertEncryptedWriteConforms({
-          collectionDescription: edv,
+          collectionMetadata: edv,
           contentType: undefined,
           body: edvDocument
         }),
@@ -800,7 +800,7 @@ describe('assertEncryptedWriteConforms', () => {
     assert.throws(
       () =>
         assertEncryptedWriteConforms({
-          collectionDescription: edv,
+          collectionMetadata: edv,
           contentType: 'application/json',
           body: { hello: 'world' }
         }),
@@ -811,7 +811,7 @@ describe('assertEncryptedWriteConforms', () => {
     assert.throws(
       () =>
         assertEncryptedWriteConforms({
-          collectionDescription: edv,
+          collectionMetadata: edv,
           contentType: 'application/json',
           body: flattened
         }),
@@ -826,7 +826,7 @@ describe('assertEncryptedMetaConforms', () => {
   it('is a no-op for a plaintext Collection (any custom)', () => {
     assert.doesNotThrow(() =>
       assertEncryptedMetaConforms({
-        collectionDescription: {},
+        collectionMetadata: {},
         custom: { name: 'Hello', tags: { x: 'y' } }
       })
     )
@@ -834,7 +834,7 @@ describe('assertEncryptedMetaConforms', () => {
   it('accepts a conforming EDV Document `custom` (no media-type gate)', () => {
     assert.doesNotThrow(() =>
       assertEncryptedMetaConforms({
-        collectionDescription: edv,
+        collectionMetadata: edv,
         custom: edvDocument
       })
     )
@@ -843,7 +843,7 @@ describe('assertEncryptedMetaConforms', () => {
     assert.throws(
       () =>
         assertEncryptedMetaConforms({
-          collectionDescription: edv,
+          collectionMetadata: edv,
           custom: { name: 'Hello', tags: { x: 'y' } }
         }),
       EncryptionSchemeMismatchError
@@ -853,7 +853,7 @@ describe('assertEncryptedMetaConforms', () => {
     assert.throws(
       () =>
         assertEncryptedMetaConforms({
-          collectionDescription: edv,
+          collectionMetadata: edv,
           custom: undefined
         }),
       EncryptionSchemeMismatchError
@@ -863,7 +863,7 @@ describe('assertEncryptedMetaConforms', () => {
     assert.throws(
       () =>
         assertEncryptedMetaConforms({
-          collectionDescription: edv,
+          collectionMetadata: edv,
           custom: flattened
         }),
       EncryptionSchemeMismatchError

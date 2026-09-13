@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 97
+nextAvailableId: 105
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -38,6 +38,112 @@ the record of what landed). Full conventions live in [AGENTS.md](AGENTS.md)
 under "Roadmap & Task Conventions".
 
 ---
+
+## WAS v0.5 protocol changes
+
+### WAS-98: Serve the service description (first iteration, spec v0.5)
+
+- status: todo
+- priority: high
+- labels: was-v0.5, discovery, routes, cors
+- blocked-by: WAS-97 (DONE) for the `"0.5"` entry to be true. The WASS-30 wire
+  members were signed off 2026-09-11; only the `specs` key string stays
+  provisional until the spec's WASS-36 rename
+- touches:
+  - wallet-attached-storage-spec: drafted 2026-09-11 on branch
+    `service-description` (the Service Description section; decision
+    `_spec/decisions/0006-service-description.md`, draft). The spec fixes no
+    path for the document: it is found by a `Link` header
+  - was-teaching-server: `src/server.ts` or `src/plugin.ts` (the route and a
+    global `onSend` hook for the `Link` header), `src/config.default.ts` (the
+    instance-disclosure switch), `src/plugin.ts` (the CORS registration already
+    exposes `Link`), `test/service-description-api.test.ts` (new),
+    `test/cors-preflight.test.ts`; ARCHITECTURE.md (the request lifecycle gains
+    a hook every response passes through); a CHANGELOG entry
+  - storage-core: the service description wire type (item TBD there); this
+    server's route hand-builds the object until it exists
+  - was-client: the fetch/parse helper and version selection before the first
+    structural request (item TBD there)
+  - was-conformance-suite: a discovery check that follows the `Link` from an
+    arbitrary URL, including a 404, and validates the document (item TBD there)
+- acceptance:
+  - [ ] `GET {serverUrl}/service` returns the service description as
+        `application/json` with no authorization,
+        `Access-Control-Allow-Origin: *`, `Cache-Control: public, max-age=...`,
+        and an `ETag`. Fastify's implicit `HEAD` serves the bodyless form. The
+        path is this server's choice, since the spec reserves none
+  - [ ] Every response carries `Link: <{serverUrl}/service>; rel="service"`:
+        200s, the maximum-privacy 404s, 308 redirects, `OPTIONS` preflights, and
+        error responses produced by the error handler. The hook appends to an
+        existing `Link` header rather than replacing it, since pagination and
+        policy responses already set one. A test asserts the header on an
+        unauthorized `HEAD` of a private Resource and on a paginated listing
+        whose `Link` has two relations
+  - [ ] `Access-Control-Expose-Headers` includes `Link` on every response; it
+        already does through the CORS registration, and the test pins it so a
+        CORS change cannot regress it
+  - [ ] The document is `{ url, specs, instance }`. `url` is the absolute
+        service description URL. `specs` carries one entry under the spec's
+        persistent identifier (provisionally `https://w3id.org/pws`) with
+        `version: "0.5"`, `spaces` (absent when the Spaces Repository is
+        disabled by configuration), `features`, `signatureAlgorithms`, and
+        `zcapCryptosuites`. All URLs absolute, built from `serverUrl`
+  - [ ] `features` lists only what this configuration serves. The baseline for
+        the default configuration is `listing`, `collection-management`,
+        `space-management`, `linksets`, `policy`, `metadata`, `export`,
+        `backends`, `query`, `quotas`. A feature the configuration disables (for
+        example an unregistered backend provider) is not listed. Per-Backend
+        tokens (`conditional-writes`, `chunked-streams`, `key-epochs`, the query
+        profiles) stay on the Backend description and are not repeated
+  - [ ] `signatureAlgorithms` and `zcapCryptosuites` are derived from what
+        `zcap.ts` actually verifies (`eddsa-jcs-2022`, and
+        `Ed25519Signature2020` until WAS-69 drops it), not hand-typed, so WAS-69
+        changes the advertisement by construction
+  - [ ] `instance` carries `name` (the package name), `source` (the repository,
+        which also satisfies the AGPL network-source obligation), and
+        `homepage`. `version` is included by default on this server, because
+        `/health` and the welcome page already publish the exact build; one
+        configuration switch removes the version from all three places together,
+        for a hardened deployment
+  - [ ] The `"0.5"` entry is advertised only once WAS-97's route table is what
+        the server serves. If this item lands first, the entry says `"0.4"` and
+        the switch to `"0.5"` is part of WAS-97's acceptance
+  - [ ] The conformance suite's discovery check passes against this server
+  - [ ] Linkset builders (`buildLinkset` in `src/policy.ts`) add the `service`
+        relation to the Space and Collection linksets
+
+Context: WASS-30 adds the negotiation step WAS lacked. A client choosing a host
+at signup, or deciding which URL layout to speak after WAS-97's breaking change,
+needs an answer before any Space-scoped request is possible, and every signal
+this server emits today (linksets, the Backend `features` array, `/health`) is
+either Space-scoped or not a protocol feature. The spec settles the mechanism:
+no fixed path, a `Link` header with the `service` relation on every response,
+two CORS MUSTs, and a `specs` object keyed by persistent spec identifier whose
+entries carry `version`, endpoint URLs, and feature tokens. A response with no
+`service` link identifies a pre-0.5 server, which is what this server is until
+the item lands.
+
+The implementation is small. The document is static per configuration and can be
+built once at plugin registration. The `Link` header is one global `onSend`
+hook; the only care point is that `reply.header('Link', ...)` elsewhere already
+carries pagination and policy links, so the hook reads the existing value and
+appends. The CORS registration already lists `Link` under `exposedHeaders` and
+uses `origin: '*'`, so the two spec MUSTs hold today for CORS requests; the test
+pins them.
+
+Two things this item does not do. It does not make the server mountable on a
+subpath: `assertValidServerUrl` still rejects a `serverUrl` with a path, and
+that is WAS-23. The spec's discovery design exists so that subpath mounting
+works for clients; this server simply keeps its origin-root constraint until
+WAS-23 lifts it, and the document's absolute URLs are built the same way either
+way. And it does not advertise `exchanges` or a KMS entry: those have no
+specification to be keyed under yet (decision 0006's consequences), so the
+ephemeral-exchanges and keystore routes stay undiscoverable through this
+document until one exists.
+
+Greenfield: no second entry for `"0.4"` alongside `"0.5"`. The spec allows a
+server to list both during a transition; this server switches route tables in
+one release (WAS-97) and advertises one version at a time.
 
 ## Backends: external (BYOS) + encryption feature
 
@@ -160,30 +266,6 @@ BYOS; frame WAS in any OAuth verification as _primary, user-driven storage_
 legal/policy item, not a technical one.
 
 ## Data model gaps
-
-### WAS-6: Resource `id` supplied on POST create
-
-- status: draft (spec-blocked)
-- priority: low
-- labels: data-model, spec-blocked
-- acceptance: none yet -- implement only once the spec defines a
-  content-type-independent mechanism
-
-`CollectionRequest.post` always generates a uuid and ignores any client-chosen
-id. The spec's Create Resource error list (`reserved-id`, `id-conflict` for "the
-supplied Resource `id`") implies a client can supply one, and its POST example
-narrates "since no Resource id was specified, the server auto-generated an id"
--- but the Resource section never states the _mechanism_.
-
-The spec defines it only for **Collections**: "When a Collection is created via
-a `POST`, the client can specify the `id` of the Collection. If the `id` is not
-specified, one is auto-generated." The Resource POST section leans on that
-convention without restating it. A body `id` property works for a Collection
-Description, whose body is a JSON object the server owns the schema of; it does
-not generalize to a Resource, whose POST body **is** the stored content and may
-be an opaque binary blob. There is no `Slug` header in the spec (grepped: zero
-hits). So this is a spec ambiguity before it is a server gap. Implement only
-once the spec nails a content-type-independent mechanism.
 
 ### WAS-7: Authenticated provenance across export/import (server DID + signed metadata)
 
@@ -1211,6 +1293,74 @@ has to participate in allocating it: a watermarked `updatedAt` is computed on
 the write path an import bypasses, and a per-Collection sequence has no value at
 all for an imported Resource. Blocked on WAS-93 because the key's shape decides
 what import mints.
+
+## Simplify pass follow-ups (2026-09-12)
+
+Findings from a cleanup review of the v0.5 route-table change that were too
+large to apply in that pass.
+
+### WAS-102: Stop re-parsing a governed Collection's history log on every Metadata read
+
+- status: todo
+- priority: low
+- labels: governed-history-logs, performance, filesystem-backend,
+  postgres-backend
+- acceptance:
+  - [ ] A `PUT /space/:spaceId/:collectionId/meta` on a log-governed Collection
+        parses the log at most once per request, while the recheck under the
+        backend's lock still sees the log state as of the lock
+  - [ ] `getCollectionOrThrow` no longer parses the whole log on each call:
+        either the derived `encryption` is cached per Collection (invalidated by
+        every `writeCollectionLog` and by Delete Collection / Delete Space /
+        import), or the derivation reads only the head line it needs
+  - [ ] The Postgres `writeCollection` recheck reads the log columns from the
+        row it already holds `FOR UPDATE` instead of issuing a second `SELECT`
+  - [ ] Existing governed-log tests stay green, plus a test that a log append is
+        visible to the very next Metadata read and write
+
+Context: `CollectionRequest.putMeta` calls `governedEncryptionOf`
+(`src/requests/collectionContext.ts`) twice per write, once for the early
+rejection and again inside `assertTransition` under the per-Collection lock.
+Each call reads the whole log body and `deriveGovernedEncryption`
+(`src/lib/governedLog.ts`) runs `parseGoverningLog` over every line, though only
+the last line's `state` and the genesis line's `parameters.method` are used. The
+log is append-only and grows without bound, so the cost is O(log size), twice.
+Before v0.5 an annotation-only write (a rename, a `custom` or `epoch` edit) went
+through a narrower endpoint that never touched the log; the merged full-replace
+`PUT /meta` now pays it on every write. `getCollectionOrThrow`, which nearly
+every Collection- and Resource-level handler calls, pays it once per request
+too. A cache would follow the per-backend `LruCache` pattern of
+`src/lib/spaceMetadataCache.ts` and `src/lib/policyCache.ts`. On Postgres the
+recheck's log read is a second query against the `collections` row whose
+`FOR UPDATE` lock `writeCollection` already holds, so the lock is held across an
+extra round trip.
+
+### WAS-103: Make `spacePath` / `collectionPath` return the canonical container URL by default
+
+- status: todo
+- priority: low
+- labels: cleanup, paths
+- acceptance:
+  - [ ] `spacePath` and `collectionPath` in `src/lib/paths.ts` return the
+        trailing-slash container form with no option
+  - [ ] The no-slash base the sub-resource builders extend (`spaceMetaPath`,
+        `collectionMetaPath`, `policyPath`, `exportPath`, and so on) comes from
+        a separately named internal builder, not from a flag on the public one
+  - [ ] No call site in `src/` or `test/` passes `trailingSlash` any more
+  - [ ] Every `url`, `Location`, `targetPath` and root-capability target is
+        byte-identical before and after (the full `test/` run and the
+        conformance suite stay green)
+
+Context: v0.5 made the trailing-slash form the canonical address of a Space and
+a Collection, used for their `url` members, the `Location` of a create, the
+authorization `targetPath` of container operations, and the root capability's
+`invocationTarget`. The builders kept their v0.4 default of the no-slash form,
+so about 33 call sites outside `paths.ts` pass `trailingSlash: true`. Dropping
+the flag at any of them is not a type error and yields a URL that is wrong only
+by its last character, in exactly the members that need to be canonical. The
+no-slash form is wanted mostly inside `paths.ts` itself, as the prefix the
+sub-resource builders extend; about 9 external call sites use it, and each
+should move to the named base builder or a sub-resource builder.
 
 ## Test coverage gaps (conformance suite + server `test/`)
 

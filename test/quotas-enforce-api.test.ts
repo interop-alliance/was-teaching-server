@@ -115,7 +115,7 @@ describe('Quota enforcement (backend)', () => {
     backend = new FileSystemBackend({ dataDir, capacityBytes })
     await backend.writeSpace({
       spaceId,
-      spaceDescription: {
+      spaceMetadata: {
         id: spaceId,
         type: ['Space'],
         controller: 'did:key:z6MkBackendTestController'
@@ -124,7 +124,7 @@ describe('Quota enforcement (backend)', () => {
     await backend.writeCollection({
       spaceId,
       collectionId,
-      collectionDescription: {
+      collectionMetadata: {
         id: collectionId,
         type: ['Collection'],
         name: 'Credentials'
@@ -196,7 +196,7 @@ describe('Quota enforcement (backend)', () => {
     try {
       await streamedBackend.writeSpace({
         spaceId: streamedSpace,
-        spaceDescription: {
+        spaceMetadata: {
           id: streamedSpace,
           type: ['Space'],
           controller: 'did:key:z6MkStreamedQuotaController'
@@ -205,7 +205,7 @@ describe('Quota enforcement (backend)', () => {
       await streamedBackend.writeCollection({
         spaceId: streamedSpace,
         collectionId,
-        collectionDescription: {
+        collectionMetadata: {
           id: collectionId,
           type: ['Collection'],
           name: 'Credentials'
@@ -267,7 +267,7 @@ describe('Quota enforcement (backend)', () => {
     const seed = async (backend: FileSystemBackend) => {
       await backend.writeSpace({
         spaceId: importSpaceId,
-        spaceDescription: {
+        spaceMetadata: {
           id: importSpaceId,
           type: ['Space'],
           controller: 'did:key:z6MkImportReleaseController'
@@ -276,7 +276,7 @@ describe('Quota enforcement (backend)', () => {
       await backend.writeCollection({
         spaceId: importSpaceId,
         collectionId,
-        collectionDescription: {
+        collectionMetadata: {
           id: collectionId,
           type: ['Collection'],
           name: 'Credentials'
@@ -333,7 +333,7 @@ describe('Quota enforcement (backend)', () => {
     const source = new FileSystemBackend({ dataDir: sourceDir })
     await source.writeSpace({
       spaceId,
-      spaceDescription: {
+      spaceMetadata: {
         id: spaceId,
         type: ['Space'],
         controller: 'did:key:z6MkBackendTestController'
@@ -342,7 +342,7 @@ describe('Quota enforcement (backend)', () => {
     await source.writeCollection({
       spaceId,
       collectionId,
-      collectionDescription: {
+      collectionMetadata: {
         id: collectionId,
         type: ['Collection'],
         name: 'Credentials'
@@ -480,7 +480,7 @@ describe('Upload cap (maxUploadBytes) (backend)', () => {
     })
     await backend.writeSpace({
       spaceId,
-      spaceDescription: {
+      spaceMetadata: {
         id: spaceId,
         type: ['Space'],
         controller: 'did:key:z6MkUploadCapController'
@@ -489,7 +489,7 @@ describe('Upload cap (maxUploadBytes) (backend)', () => {
     await backend.writeCollection({
       spaceId,
       collectionId,
-      collectionDescription: {
+      collectionMetadata: {
         id: collectionId,
         type: ['Collection'],
         name: 'Credentials'

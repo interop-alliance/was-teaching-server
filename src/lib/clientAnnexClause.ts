@@ -8,44 +8,87 @@
  * the stable, credential-derived method a wallet publishes on a
  * ladder-anchored account document. It is recognized purely by relation
  * asymmetry -- a `capabilityDelegation` member absent from
- * `capabilityInvocation` -- so no marker vocabulary is consulted. A delegation whose proof VM resolves to a
- * ladder VM is admitted iff one of three predicates holds:
+ * `capabilityInvocation` -- so no marker vocabulary is consulted. A delegation
+ * whose proof VM resolves to a ladder VM is admitted iff one of three
+ * predicates holds:
  *
  * 1. Annex-DID controller inside the account Space's items subtree. Three
  *    bounds hold together. The delegation's sole `controller` equals the annex
  *    DID named by the `https://w3id.org/byoe#DelegatedClients` service entry of
  *    the account document the chain already resolved as delegator (a memoized
  *    read, so no extra I/O), behind the syntactic gate that the string parses
- *    as a self-hosted did:webvh. Its `invocationTarget` is the trailing-slash
- *    URL of the Space carrying that account's log, or a path under that URL --
- *    the bare Space URL is refused, and so is any keystore target. Its
- *    `allowedAction` is present, non-empty, and within the closed WAS verb
- *    vocabulary.
+ *    as a self-hosted did:webvh. Its `invocationTarget` is the canonical
+ *    trailing-slash URL of the Space carrying that account's log, or a path
+ *    under that URL, except the Space Metadata URL `/space/<S>/meta` and
+ *    anything under it; the no-slash Space URL and any keystore target are
+ *    refused. Its `allowedAction` is present, non-empty, and within the closed
+ *    WAS verb vocabulary.
  * 2. Bridge-shaped target, two branches: the delegation's `invocationTarget`
  *    equals the delegator account's own history log resource URL -- derived
  *    from the account DID itself, which carries its log's Space and Collection
- *    -- with `allowedAction` within {PUT}; or equals the trailing-slash URL of
- *    a Space whose Description declares it delegated-clients bookkeeping
- *    (typed `AuxiliarySpace` + `DelegatedClientsSpace`), with `allowedAction`
- *    within {GET, PUT} (one memoized Space Description read).
- * 3. Target-exact single-verb Space read or delete: the delegation's
- *    `invocationTarget` is a bare (no-trailing-slash) Space URL, it equals the
- *    parent capability's `invocationTarget` unchanged, and its `allowedAction`
- *    is exactly `['GET']` or exactly `['DELETE']`. The parent is either a
- *    delegated capability or the Space's synthesized root, whose own target is
- *    that same Space URL. A two-verb set never qualifies.
+ *    -- with `allowedAction` within {PUT}; or equals the canonical
+ *    trailing-slash URL of a Space whose Metadata object declares it
+ *    delegated-clients bookkeeping (typed `AuxiliarySpace` +
+ *    `DelegatedClientsSpace`), with `allowedAction` within {GET, PUT} (one
+ *    memoized Space Metadata read).
+ * 3. Target-exact single-verb Space delete or Space Metadata read, split by
+ *    verb. DELETE branch: the delegation's `invocationTarget` is the canonical
+ *    trailing-slash Space URL, it equals the parent capability's
+ *    `invocationTarget` unchanged, and its `allowedAction` is exactly
+ *    `['DELETE']`. The parent is either a delegated capability or the Space's
+ *    synthesized root, whose own target is that same trailing-slash URL. This
+ *    is the shape the spec's container rule restates for Delete Space. GET
+ *    branch: the `invocationTarget` is the Space Metadata URL
+ *    `/space/<S>/meta`, its `allowedAction` is exactly `['GET']`, and the
+ *    parent's `invocationTarget` is either that same Metadata URL or the
+ *    Space's canonical trailing-slash URL -- a narrowing down to the one read
+ *    the ladder VM may sign, never a widening. A two-verb set never qualifies
+ *    on either branch.
+ *
+ * Under the v0.4 layout predicate 3 targeted the bare (no-slash) Space URL.
+ * That gave DELETE no different reach from today's: the zcap library's target
+ * attenuation is a `/`-boundary prefix rule, so a `/space/<S>` DELETE grant
+ * already covered `/space/<S>/...`, and the bare-vs-slash distinction was
+ * cosmetic for DELETE. What the distinction did carry was the bound on the
+ * subtree grants of predicates 1 and 2: the same prefix rule refuses the
+ * slashless parent, so a `/space/<S>/` grant covered neither
+ * `PUT /space/<S>` (Update Space Description) nor `DELETE /space/<S>`.
+ *
+ * The v0.5 consequence: both operations moved inside the subtree. The Space
+ * Metadata object is at `/space/<S>/meta`, so the controller rewrite is
+ * `PUT /space/<S>/meta`, and Delete Space is `DELETE /space/<S>/`, the subtree
+ * URL itself. A subtree grant admitted under predicate 1 or predicate 2 branch
+ * two therefore reaches both by attenuation at invocation time, and the target
+ * bound on the delegation's own `invocationTarget` no longer holds the locked
+ * property by path alone. The `meta` exclusion in predicate 1 refuses a ladder
+ * delegation aimed at the Metadata URL directly, but a delegation targeting the
+ * whole subtree still covers it. So the clause adds an invocation-time bound,
+ * applied to every chain that carries a ladder-signed link, whatever predicate
+ * admitted it: invoked as `PUT` on a Space Metadata URL, the chain is refused;
+ * invoked as `DELETE` on a canonical Space URL, it is refused unless every
+ * ladder-signed link in the chain is itself the predicate 3 DELETE shape for
+ * that Space -- target-exact, `allowedAction` exactly `['DELETE']`. The bound
+ * reads the ladder-signed links and not the chain's tail, because a holder
+ * below a ladder-signed link can narrow its own grant into the target-exact
+ * DELETE-only shape by ordinary attenuation; see `ladderInvocationRefusal`.
+ * The zcap library's hook receives only the
+ * dereferenced chain, so `handleZcapVerify` (which builds this inspector per
+ * verification, with the operation's target and action in hand) threads them
+ * in through the `invocation` option. A route that builds the inspector
+ * without one (the revocation route, whose target is never a Space URL or a
+ * Space Metadata URL) gets the delegation-shape bound alone.
  *
  * The locked property: no ladder authority whose exercise leaves no record --
  * every admitted ladder delegation either resolves through a loud annex entry
  * and stays inside the account Space's items subtree, can only write a log, or
- * is a target-exact single-verb GET or DELETE on one Space of the delegator's
- * own account. That third shape is a read, or a destruction whose
- * account-Space case removes the log any record would live in. A DELETE
- * admitted under predicate 3 writes no log. Two bounds keep that predicate
- * narrow. On the `manageCapability` arm the parent already carries DELETE on
- * exactly that Space URL, so the predicate widens who signs the last link
- * rather than what the account may do. And the child's target is its parent's
- * unchanged, so the ladder VM cannot aim it anywhere new.
+ * is a target-exact single-verb DELETE of one Space or GET of one Space
+ * Metadata object of the delegator's own account. That third shape is a read,
+ * or a destruction whose account-Space case removes the log any record would
+ * live in. A DELETE admitted under predicate 3 writes no log. Two bounds keep
+ * that predicate narrow. On the `manageCapability` arm the parent already
+ * carries DELETE on exactly that Space URL, so the predicate widens who signs
+ * the last link rather than what the account may do. And the child's target is
+ * its parent's unchanged, so the ladder VM cannot aim it anywhere new.
  *
  * The disjuncts carry different grades of record. Disjunct 2 is exact: all the
  * delegation can do is write a log, and the write is the record. Disjunct 1 is
@@ -53,12 +96,13 @@
  * method publishes under `capabilityDelegation` beside `capabilityInvocation`
  * (wallet-core decision 0013), so it can mint onward grants that no annex entry
  * records. Every such grant is a child of the admitted delegation, so none of
- * them can exceed the account Space's items subtree. The Space Description PUT
- * that rewrites the Space's controller sits outside that subtree, and so does
- * Space DELETE; both are out of reach by construction. Keystores are outside
- * it too. What stays free is to whom an onward grant goes, and for how long
- * within the parent's expiry. That freedom is the trade the annex entry's
- * loudness covers: the entry says a per-visit key exists and may delegate.
+ * them can exceed the account Space's items subtree. The Space Metadata PUT
+ * that rewrites the Space's controller, and Space DELETE, are inside that
+ * subtree under v0.5 and are held out of reach by the invocation-time bound
+ * above. Keystores are outside the subtree by path. What stays free is to whom
+ * an onward grant goes, and for how long within the parent's expiry. That
+ * freedom is the trade the annex entry's loudness covers: the entry says a
+ * per-visit key exists and may delegate.
  *
  * The clause binds the capability decision only: a refused delegation does not
  * authorize, and the refusal falls through to the access-control policy like
@@ -78,10 +122,10 @@ import {
 } from './validateDid.js'
 import { resolveWebvhController } from './webvhController.js'
 import type { WebvhResolverContext } from './webvhController.js'
-import { getCachedSpaceDescription } from './spaceDescriptionCache.js'
+import { getCachedSpaceMetadata } from './spaceMetadataCache.js'
 import { isDelegatedClientsSpace } from './spaceType.js'
 import { isUrlSafeSegment } from './validateId.js'
-import { resourcePath, spacePath } from './paths.js'
+import { resourcePath, spaceMetaPath, spacePath } from './paths.js'
 
 /**
  * The service-entry type IRI naming the account's current annex DID.
@@ -97,6 +141,21 @@ const DELEGATED_CLIENTS_SERVICE_TYPE = 'https://w3id.org/byoe#DelegatedClients'
  * bound does the narrowing.
  */
 const WAS_ACTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
+
+/**
+ * The reserved segment under a Space URL that addresses its Metadata object.
+ */
+const META_SEGMENT = 'meta'
+
+/**
+ * A capability as it appears in a dereferenced chain, reduced to the members
+ * the clause reads.
+ */
+interface ChainCapability {
+  controller?: string | string[]
+  invocationTarget?: string
+  allowedAction?: string | string[]
+}
 
 /**
  * Runs inspectors in order, returning the first failure (any subsequent
@@ -374,15 +433,14 @@ function isOwnAccountLogTarget({
 }
 
 /**
- * The Space id when a target is a trailing-slash Space URL
+ * The Space id when a target is the canonical trailing-slash Space URL
  * (`<base>/space/<S>/`), matched by exact string equality against the
- * canonical form; `undefined` otherwise. Deliberately the trailing-slash form
- * only: it is the Space-subtree target a delegated chain attenuates under,
- * and it excludes `PUT <base>/space/<S>` (Update Space Description, which can
- * rewrite the Space's controller) -- a no-slash grant would cover that under
- * target attenuation. The client-annex profile therefore grants the bookkeeping
- * Space with the subtree target; a `@interop/was-client` caller passes it via
- * the grant's `target` option rather than the `space.grant()` default.
+ * canonical form; `undefined` otherwise. It is the Space-as-container target a
+ * delegated chain attenuates under, the target a generation delegation already
+ * carries, and the target of the Space's synthesized root. The no-slash form
+ * is not a canonical target under v0.5 (the route only redirects), so it
+ * matches nothing here. A `@interop/was-client` caller passes the canonical
+ * form via the grant's `target` option.
  * @param options {object}
  * @param options.target {string}   the delegation's `invocationTarget`
  * @param options.serverUrl {string}   this server's base URL
@@ -417,15 +475,54 @@ function spaceUrlTargetId({
 }
 
 /**
+ * The Space id when a target is a Space Metadata URL (`<base>/space/<S>/meta`),
+ * matched by exact string equality against the canonical form; `undefined`
+ * otherwise. The sibling of {@link spaceUrlTargetId}, which matches the
+ * container form instead; the two address different things, so neither helper
+ * is loosened to cover both.
+ * @param options {object}
+ * @param options.target {string}   the delegation's `invocationTarget`
+ * @param options.serverUrl {string}   this server's base URL
+ * @returns {string | undefined}
+ */
+function spaceMetaUrlTargetId({
+  target,
+  serverUrl
+}: {
+  target: string
+  serverUrl: string
+}): string | undefined {
+  const segments = localPathSegments({ target, serverUrl })
+  if (
+    !segments ||
+    segments.length !== 4 ||
+    segments[0] !== '' ||
+    segments[1] !== 'space' ||
+    segments[3] !== META_SEGMENT
+  ) {
+    return undefined
+  }
+  const spaceId = segments[2]!
+  if (!isUrlSafeSegment(spaceId)) {
+    return undefined
+  }
+  const canonical = new URL(spaceMetaPath({ spaceId }), serverUrl).toString()
+  return target === canonical ? spaceId : undefined
+}
+
+/**
  * Whether a target lies within one Space's items subtree: a clean local URL
  * whose path is `<base>/space/<S>/` or any path under it, with the Space id
- * segment equal to `spaceId` as an exact string.
+ * segment equal to `spaceId` as an exact string, except the Space Metadata
+ * URL `<base>/space/<S>/meta` and anything under it.
  *
- * The bare Space URL `<base>/space/<S>` is excluded. It addresses the Space
- * Description, so a grant carrying it reaches Update Space Description -- which
- * rewrites the Space's controller -- and Delete Space. The trailing-slash form
- * is the Space-as-container view, and it is the target a generation delegation
- * already carries.
+ * The `meta` exclusion refuses a ladder delegation aimed at the Metadata
+ * object directly, whose `PUT` rewrites the Space's controller. It is a bound
+ * on the delegation's own target only: a grant on the whole subtree still
+ * covers the Metadata URL by attenuation at invocation time, which is what
+ * {@link ladderInvocationRefusal} holds. The no-slash Space URL
+ * `<base>/space/<S>` is not a canonical target under v0.5 and is excluded by
+ * the segment count.
  *
  * Keystore targets (`<base>/kms/...`) are outside the subtree: their second
  * path segment is `kms`, so they never match the `/space/<S>/` shape.
@@ -451,46 +548,9 @@ function isWithinSpaceItemsSubtree({
     segments.length >= 4 &&
     segments[0] === '' &&
     segments[1] === 'space' &&
-    segments[2] === spaceId
+    segments[2] === spaceId &&
+    segments[3] !== META_SEGMENT
   )
-}
-
-/**
- * Whether a target is a bare Space URL (`<base>/space/<S>`, no trailing
- * slash), matched by exact string equality against the canonical form. The
- * sibling of {@link spaceUrlTargetId}, which matches the trailing-slash
- * subtree form instead; the two forms address different things, so neither
- * helper is loosened to cover both.
- * @param options {object}
- * @param options.target {string}   the delegation's `invocationTarget`
- * @param options.serverUrl {string}   this server's base URL
- * @returns {boolean}
- */
-function isBareSpaceUrlTarget({
-  target,
-  serverUrl
-}: {
-  target: string
-  serverUrl: string
-}): boolean {
-  const segments = localPathSegments({ target, serverUrl })
-  if (
-    !segments ||
-    segments.length !== 3 ||
-    segments[0] !== '' ||
-    segments[1] !== 'space'
-  ) {
-    return false
-  }
-  const spaceId = segments[2]!
-  if (!isUrlSafeSegment(spaceId)) {
-    return false
-  }
-  const canonical = new URL(
-    spacePath({ spaceId, trailingSlash: false }),
-    serverUrl
-  ).toString()
-  return target === canonical
 }
 
 /**
@@ -505,7 +565,7 @@ function isBareSpaceUrlTarget({
  * @param options.parent {object}   the chain link this delegation hangs from,
  *   a delegated capability or the synthesized root
  * @param [options.parent.invocationTarget] {string}
- * @param options.storage {StorageBackend}   for the Space Description read
+ * @param options.storage {StorageBackend}   for the Space Metadata read
  * @param options.serverUrl {string}   this server's base URL
  * @returns {Promise<boolean>}   true when admitted
  */
@@ -517,11 +577,7 @@ async function ladderDelegationAdmitted({
   storage,
   serverUrl
 }: {
-  capability: {
-    controller?: string | string[]
-    invocationTarget?: string
-    allowedAction?: string | string[]
-  }
+  capability: ChainCapability
   doc: DIDDoc
   logLocation: { spaceId: string; collectionId: string }
   parent: { invocationTarget?: string }
@@ -540,10 +596,13 @@ async function ladderDelegationAdmitted({
   // self-hosted gate keeps the admitted controller resolvable here.
   //
   // Bound two -- the target. The grant stays within the items subtree of the
-  // account Space, the Space carrying the delegator DID's own log. The bare
-  // Space URL is outside the subtree, so Update Space Description (a controller
-  // rewrite) and Delete Space stay out of reach. Keystore targets (`/kms/...`)
-  // are outside it as well, since they are not under `/space/<S>/` at all.
+  // account Space, the Space carrying the delegator DID's own log, and may not
+  // aim at the Space Metadata URL directly. Keystore targets (`/kms/...`) are
+  // outside the subtree, since they are not under `/space/<S>/` at all. Under
+  // v0.5 the subtree itself contains Update Space Metadata (a controller
+  // rewrite) and Delete Space, so a whole-subtree grant reaches both by
+  // attenuation; the invocation-time bound in `clientAnnexChainInspector`
+  // is what keeps them out of ladder reach.
   //
   // Bound three -- the action. `allowedAction` must be present, non-empty, and
   // drawn from the full closed WAS verb vocabulary. The full set is admitted
@@ -580,53 +639,149 @@ async function ladderDelegationAdmitted({
   }
 
   // Predicate 2, branch two: a whole-Space grant, but only on a Space whose
-  // Description declares it delegated-clients bookkeeping -- a path-shape
+  // Metadata object declares it delegated-clients bookkeeping -- a path-shape
   // match alone would hand the ladder VM any Space wholesale.
   const spaceId = spaceUrlTargetId({ target, serverUrl })
   if (
     spaceId !== undefined &&
     actionsWithin({ capability, allowed: ['GET', 'PUT'] })
   ) {
-    const spaceDescription = await getCachedSpaceDescription({
-      storage,
-      spaceId
-    })
-    if (isDelegatedClientsSpace(spaceDescription)) {
+    const spaceMetadata = await getCachedSpaceMetadata({ storage, spaceId })
+    if (isDelegatedClientsSpace(spaceMetadata)) {
       return true
     }
   }
 
-  // Predicate 3: a target-exact single-verb read or delete of one Space. The
-  // target is a bare Space URL and is the parent's own target unchanged --
-  // whether the parent is a delegated capability or the Space's synthesized
-  // root -- so the ladder VM cannot aim the grant anywhere new, only sign the
-  // last link. Exactly one of GET or DELETE: a two-verb grant is refused.
-  // Reached only after the trailing-slash branch above declined, which a bare
-  // target does before any storage read.
-  return (
+  // Predicate 3, DELETE branch: a target-exact DELETE of one Space. The target
+  // is the canonical trailing-slash Space URL and is the parent's own target
+  // unchanged -- whether the parent is a delegated capability or the Space's
+  // synthesized root -- so the ladder VM cannot aim the grant anywhere new,
+  // only sign the last link. Exactly DELETE: a two-verb grant is refused. The
+  // target shape is shared with predicate 2 branch two, which declined on the
+  // action before any storage read.
+  if (
+    spaceId !== undefined &&
     parent.invocationTarget === target &&
-    isBareSpaceUrlTarget({ target, serverUrl }) &&
-    (actionsExactly({ capability, action: 'GET' }) ||
-      actionsExactly({ capability, action: 'DELETE' }))
+    actionsExactly({ capability, action: 'DELETE' })
+  ) {
+    return true
+  }
+
+  // Predicate 3, GET branch: a target-exact GET of one Space Metadata object.
+  // The parent's target is either that same Metadata URL or the Space's
+  // canonical URL, so the grant only ever narrows toward the one read.
+  const metaSpaceId = spaceMetaUrlTargetId({ target, serverUrl })
+  if (metaSpaceId === undefined || parent.invocationTarget === undefined) {
+    return false
+  }
+  const parentSpaceUrl = new URL(
+    spacePath({ spaceId: metaSpaceId, trailingSlash: true }),
+    serverUrl
+  ).toString()
+  return (
+    (parent.invocationTarget === target ||
+      parent.invocationTarget === parentSpaceUrl) &&
+    actionsExactly({ capability, action: 'GET' })
   )
+}
+
+/**
+ * The invocation-time bound on a ladder-descended chain: the reason the
+ * invoked operation is refused, or `undefined` when it is allowed. Invoked as
+ * `PUT` on a Space Metadata URL (the controller rewrite), the chain is always
+ * refused. Invoked as `DELETE` on a canonical Space URL, it is refused unless
+ * every ladder-signed link in the chain is itself the predicate 3 DELETE shape
+ * for that Space -- carrying exactly that URL as its `invocationTarget` and
+ * exactly `['DELETE']` as its `allowedAction`. Every other operation passes:
+ * the delegation-shape predicates already bound it.
+ *
+ * The bound is evaluated on the ladder-signed links rather than on the chain's
+ * tail, because the tail's shape is not the ladder VM's to determine. Anything
+ * below a ladder-signed link can narrow itself INTO the target-exact
+ * DELETE-only shape, and a tail-only check would read that narrowing as the
+ * predicate 3 grant it is not. Concretely: a ladder VM signs a predicate 1
+ * whole-subtree grant (target `/space/<S>/`, the full WAS verb vocabulary) to
+ * the annex DID; the annex verification method publishes under
+ * `capabilityInvocation` beside `capabilityDelegation` (wallet-core decision
+ * 0013), so it is not itself a ladder VM and may mint onward grants; it mints
+ * a child with the same target and `allowedAction: ['DELETE']`, which is a
+ * legal attenuation and lands a conforming tail on the chain. Checking the
+ * ladder-signed links closes that: a subtree grant yields no Space DELETE
+ * however it is narrowed downstream, while a genuine predicate 3 grant still
+ * verifies and may still be delegated onward, since attenuation can only keep
+ * such a child target-exact and DELETE-only.
+ * @param options {object}
+ * @param options.invocation {object}   the operation being verified
+ * @param options.invocation.target {string}   its canonical target URL
+ * @param options.invocation.action {string}   its zcap action (the HTTP verb)
+ * @param options.ladderLinks {object[]}   the chain's ladder-signed links, in
+ *   chain order
+ * @param options.serverUrl {string}   this server's base URL
+ * @returns {string | undefined}   the refusal reason, or `undefined`
+ */
+function ladderInvocationRefusal({
+  invocation,
+  ladderLinks,
+  serverUrl
+}: {
+  invocation: { target: string; action: string }
+  ladderLinks: ChainCapability[]
+  serverUrl: string
+}): string | undefined {
+  const { target, action } = invocation
+  if (
+    action === 'PUT' &&
+    spaceMetaUrlTargetId({ target, serverUrl }) !== undefined
+  ) {
+    return 'invoked as PUT on a Space Metadata URL'
+  }
+  if (
+    action === 'DELETE' &&
+    spaceUrlTargetId({ target, serverUrl }) !== undefined &&
+    !ladderLinks.every(
+      link =>
+        link.invocationTarget === target &&
+        actionsExactly({ capability: link, action: 'DELETE' })
+    )
+  ) {
+    return (
+      'invoked as DELETE on a Space URL under a chain whose ladder-signed ' +
+      'delegation is not a target-exact DELETE-only grant of that Space'
+    )
+  }
+  return undefined
 }
 
 /**
  * Builds the annex-chain inspection hook for one verification: valid when
  * no delegated capability in the chain is ladder-signed, or when every
- * ladder-signed one satisfies an admission predicate. Non-`did:webvh` proof
- * methods (and cross-host ones, which could not have verified here) are
- * outside the clause and pass untouched, so a chain of ordinary client
- * delegations pays one string check per link.
- * @param options {WebvhResolverContext}   storage + serverUrl, as threaded to
- *   the local `did:webvh` resolver
+ * ladder-signed one satisfies an admission predicate and the invoked operation
+ * passes the invocation-time bound. Non-`did:webvh` proof methods (and
+ * cross-host ones, which could not have verified here) are outside the clause
+ * and pass untouched, so a chain of ordinary client delegations pays one
+ * string check per link.
+ * @param options {object}
+ * @param options.storage {StorageBackend}   as threaded to the local
+ *   `did:webvh` resolver
+ * @param options.serverUrl {string}   this server's base URL
+ * @param [options.invocation] {object}   the operation being verified, when
+ *   the caller has one: the invocation-time bound is applied only when given
+ * @param options.invocation.target {string}   its canonical target URL
+ * @param options.invocation.action {string}   its zcap action
  * @returns {InspectCapabilityChain}
  */
 export function clientAnnexChainInspector({
   storage,
-  serverUrl
-}: WebvhResolverContext): InspectCapabilityChain {
+  serverUrl,
+  invocation
+}: WebvhResolverContext & {
+  invocation?: { target: string; action: string }
+}): InspectCapabilityChain {
   return async ({ capabilityChain, capabilityChainMeta }) => {
+    // The ladder-signed links themselves, not merely whether the chain has
+    // one: the invocation-time bound below is a statement about what a ladder
+    // VM signed, which no downstream attenuation can restore.
+    const ladderLinks: ChainCapability[] = []
     for (const [index, capability] of capabilityChain.entries()) {
       // The root is synthesized rather than delegated.
       if (index === 0) {
@@ -655,8 +810,9 @@ export function clientAnnexChainInspector({
       if (!isLadderVerificationMethod({ doc, verificationMethod })) {
         continue
       }
+      ladderLinks.push(capability as ChainCapability)
       const admitted = await ladderDelegationAdmitted({
-        capability,
+        capability: capability as ChainCapability,
         doc,
         logLocation,
         parent: capabilityChain[index - 1] as { invocationTarget?: string },
@@ -671,11 +827,30 @@ export function clientAnnexChainInspector({
               '(ladder) verification method and is none of the admitted ' +
               "shapes: it neither names the account document's client-annex " +
               "DID as sole controller with a target inside the account Space's " +
-              'items subtree, nor carries a bridge-shaped invocation target, ' +
-              'nor is a single-verb GET or DELETE on the parent ' +
-              "capability's own bare Space URL."
+              'items subtree (its Metadata URL excluded), nor carries a ' +
+              'bridge-shaped invocation target, nor is a DELETE-only grant ' +
+              "of the parent capability's own Space URL, nor a GET-only " +
+              "grant of that Space's Metadata URL."
           )
         }
+      }
+    }
+    if (ladderLinks.length === 0 || invocation === undefined) {
+      return { valid: true }
+    }
+    const refusal = ladderInvocationRefusal({
+      invocation,
+      ladderLinks,
+      serverUrl
+    })
+    if (refusal !== undefined) {
+      return {
+        valid: false,
+        error: new Error(
+          'A chain carrying a delegation signed by a delegation-only ' +
+            `(ladder) verification method is ${refusal}: Update Space ` +
+            'Metadata and Delete Space are outside ladder reach.'
+        )
       }
     }
     return { valid: true }

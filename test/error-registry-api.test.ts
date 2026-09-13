@@ -1,10 +1,11 @@
 /**
- * Error-registry wire-coverage stragglers (Vitest): the last two error classes
- * in `src/errors.ts` that previously had no wire-level regression guard --
- * `EncryptionImmutableError` (409) and `InvalidCollectionError` (400). These
- * assert the server's wire contract directly (status codes, problem `type`s)
- * via the signed `was.request()` escape hatch (raw `HttpResponse` / raw
- * errors), mirroring `wire-contract-api.test.ts`.
+ * Error-registry wire-coverage stragglers (Vitest): the error classes in
+ * `src/errors.ts` that would otherwise have no wire-level regression guard --
+ * `EncryptionImmutableError` (409), `InvalidCollectionError` (400) and
+ * `MethodNotAllowedError` (405). These assert the server's wire contract
+ * directly (status codes, problem `type`s, headers) via the signed
+ * `was.request()` escape hatch (raw `HttpResponse` / raw errors), mirroring
+ * `wire-contract-api.test.ts`.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
@@ -27,10 +28,12 @@ describe('Error registry wire coverage', () => {
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
-    await alice.was.createSpace({
-      id: spaceId,
-      name: 'Error Registry Space',
-      controller: alice.did
+    // Provisioned over the wire: the high-level handles still speak the
+    // pre-v0.5 table.
+    await alice.was.request({
+      path: '/spaces/',
+      method: 'POST',
+      json: { id: spaceId, name: 'Error Registry Space', controller: alice.did }
     })
   })
   afterAll(async () => {
@@ -48,44 +51,22 @@ describe('Error registry wire coverage', () => {
     }
   }
 
-  /** Reads a Collection Description over the wire (raw JSON). */
-  async function readDesc(collectionId: string): Promise<any> {
+  /** Reads a Collection Metadata object over the wire (raw JSON). */
+  async function readMeta(collectionId: string): Promise<any> {
     const response = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}`,
+      path: `/space/${spaceId}/${collectionId}/meta`,
       method: 'GET'
     })
     return response.data
   }
 
   describe('EncryptionImmutableError (409)', () => {
-    // FINDING (WAS-49): `EncryptionImmutableError` is NOT reachable over the
-    // HTTP wire in this server -- `UnsupportedEncryptionSchemeError` (400)
-    // always fires first on the only path that could otherwise reach it.
-    //
-    // The 409 has two throw sites (src/lib/encryption.ts:376 and :457):
-    //
-    //  1. The scheme-CHANGE site (`assertEncryptionTransition`, :457) requires
-    //     an `incoming` descriptor whose `scheme` differs from the persisted one.
-    //     But an update's descriptor must first pass `assertSupportedEncryption`
-    //     (CollectionRequest.put), whose fail-closed gate rejects any `scheme`
-    //     not in `SUPPORTED_ENCRYPTION_SCHEMES` with
-    //     `unsupported-encryption-scheme` (400). v1 registers exactly one
-    //     scheme (`edv`), so any scheme that DIFFERS from an existing `edv`
-    //     descriptor is by definition unrecognized and 400s at that earlier gate --
-    //     never reaching the 409. (Re-sending the same `edv` scheme is a no-op,
-    //     not a change.) A second recognized scheme would be needed to reach
-    //     the 409 over the wire; that requires a `src/` change, out of scope.
-    //
-    //  2. The descriptor-CLEAR site (`assertEncryptionDescriptorTransition`, :376,
-    //     `incoming === undefined`) is unreachable from the handler: the PUT
-    //     handler only calls the transition when `suppliedEncryption !==
-    //     undefined`, and an absent body `encryption` leaves the existing
-    //     descriptor untouched rather than clearing it. There is no wire request
-    //     that reaches the transition with an undefined `incoming`.
-    //
-    // The 409 keeps its lib-layer guard in `test/encryption-lib.test.ts`. Here
-    // we pin the reachable wire shape: the masking 400, plus proof the stored
-    // descriptor is not corrupted.
+    // The scheme-CHANGE path cannot reach the 409 over the wire: an update's
+    // descriptor must first pass `assertSupportedEncryption`, whose
+    // fail-closed gate rejects any `scheme` not in
+    // `SUPPORTED_ENCRYPTION_SCHEMES` with `unsupported-encryption-scheme`
+    // (400), and v1 registers exactly one scheme (`edv`). Pin that masking
+    // shape, plus proof the stored descriptor is not corrupted.
     it('scheme change masked by unsupported-encryption-scheme (400), descriptor intact', async () => {
       const collectionId = 'immutable-wire'
       await alice.was.request({
@@ -95,7 +76,7 @@ describe('Error registry wire coverage', () => {
       })
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/${collectionId}`,
+          path: `/space/${spaceId}/${collectionId}/meta`,
           method: 'PUT',
           json: { id: collectionId, encryption: { scheme: 'aes-gcm-siv' } }
         })
@@ -108,23 +89,219 @@ describe('Error registry wire coverage', () => {
       )
       assert.equal(err.data.errors?.[0]?.pointer, '#/encryption/scheme')
       // The stored descriptor is unchanged -- the 409's invariant still holds.
-      assert.deepStrictEqual((await readDesc(collectionId)).encryption, {
+      assert.deepStrictEqual((await readMeta(collectionId)).encryption, {
+        scheme: 'edv'
+      })
+    })
+
+    // The descriptor-CLEAR path is reachable since v0.5: the merged
+    // `PUT .../meta` is a full replacement, so a body that omits `encryption`
+    // on an encrypted Collection is an attempt to clear the set-once
+    // descriptor (spec "Update Collection": `encryption-immutable`).
+    it('omitting `encryption` on an encrypted Collection is encryption-immutable (409)', async () => {
+      const collectionId = 'immutable-clear-wire'
+      await alice.was.request({
+        path: `/space/${spaceId}/`,
+        method: 'POST',
+        json: { id: collectionId, encryption: { scheme: 'edv' } }
+      })
+      const err = await rejection(
+        alice.was.request({
+          path: `/space/${spaceId}/${collectionId}/meta`,
+          method: 'PUT',
+          json: { id: collectionId, name: 'Now plaintext?' }
+        })
+      )
+      assert.equal(err.response.status, 409)
+      assert.equal(
+        err.data.type,
+        'https://wallet.storage/spec#encryption-immutable'
+      )
+      assert.deepStrictEqual((await readMeta(collectionId)).encryption, {
         scheme: 'edv'
       })
     })
   })
 
+  describe('MethodNotAllowedError (405)', () => {
+    // A container's description is written at its `meta` sub-resource, so
+    // `PUT` is not defined at the container URL itself (spec "Space Metadata
+    // Data Model" / "Collection Metadata Data Model": SHOULD answer 405).
+    for (const path of [`/space/${spaceId}/`, `/space/${spaceId}/some-id/`]) {
+      it(`PUT ${path.replace(spaceId, ':spaceId')} is 405 with an Allow header`, async () => {
+        const err = await rejection(
+          alice.was.request({ path, method: 'PUT', json: { name: 'x' } })
+        )
+        assert.equal(err.response.status, 405)
+        assert.equal(
+          err.response.headers.get('allow'),
+          'GET, HEAD, POST, DELETE'
+        )
+        assert.match(
+          err.response.headers.get('content-type'),
+          /application\/problem\+json/
+        )
+        assert.equal(err.data.type, 'about:blank')
+        // With `type: about:blank` the title is the status phrase itself
+        // (RFC 9457 section 4.2.1); the refusing URL is named in the detail.
+        assert.equal(err.data.title, 'Method Not Allowed')
+        assert.match(
+          err.data.errors[0].detail,
+          /^The method is not defined at this (Space|Collection) URL\./
+        )
+      })
+    }
+
+    // There is no `DELETE` at a container's Metadata URL (spec "Lifecycle":
+    // deleting the container removes its Metadata object with it). Registered
+    // explicitly so the refusal is about the method: without it the request
+    // falls through to the parametric route one level up, whose reserved-id
+    // guard answers the unrelated `409 reserved-id`.
+    for (const path of [
+      `/space/${spaceId}/meta`,
+      `/space/${spaceId}/some-id/meta`
+    ]) {
+      it(`DELETE ${path.replace(spaceId, ':spaceId')} is 405 with an Allow header`, async () => {
+        const err = await rejection(
+          alice.was.request({ path, method: 'DELETE' })
+        )
+        assert.equal(err.response.status, 405)
+        assert.equal(err.response.headers.get('allow'), 'GET, HEAD, PUT')
+        assert.match(
+          err.response.headers.get('content-type'),
+          /application\/problem\+json/
+        )
+        assert.equal(err.data.type, 'about:blank')
+        assert.equal(err.data.title, 'Method Not Allowed')
+        assert.match(
+          err.data.errors[0].detail,
+          /^The method is not defined at this (Space|Collection) Metadata URL\./
+        )
+        // The detail names where the operation lives instead, and says
+        // nothing about the `meta` sub-resource of a container -- that is the
+        // container-`PUT` refusal's sentence, not this one's.
+        assert.match(
+          err.data.errors[0].detail,
+          /removed by deleting the container it describes/
+        )
+      })
+    }
+
+    // Every reserved endpoint (spec "Methods at Reserved Endpoints") refuses
+    // a method it does not implement with a 405 naming what it does, at all
+    // three levels. Without the refusal these fell through to a Collection or
+    // Resource operation on the reserved segment as an id, answering a
+    // `409 reserved-id`. The Collection `c` and Resource `r` need not exist:
+    // the refusal reads no ids.
+    const refusals: { method: string; path: string; allow: string }[] = [
+      { method: 'DELETE', path: '/space/:s/linkset', allow: 'GET, HEAD' },
+      { method: 'GET', path: '/space/:s/export', allow: 'POST' },
+      { method: 'PUT', path: '/space/:s/quotas', allow: 'GET, HEAD' },
+      {
+        method: 'DELETE',
+        path: '/space/:s/collections',
+        allow: 'GET, HEAD, POST'
+      },
+      {
+        method: 'PATCH',
+        path: '/space/:s/policy',
+        allow: 'GET, HEAD, PUT, DELETE'
+      },
+      { method: 'PUT', path: '/space/:s/c/quota', allow: 'GET, HEAD' },
+      { method: 'GET', path: '/space/:s/c/query', allow: 'POST' },
+      { method: 'DELETE', path: '/space/:s/c/backend', allow: 'GET, HEAD' },
+      {
+        method: 'DELETE',
+        path: '/space/:s/c/meta/log',
+        allow: 'GET, HEAD, PUT'
+      },
+      { method: 'POST', path: '/space/:s/c/r/meta', allow: 'GET, HEAD, PUT' },
+      { method: 'DELETE', path: '/space/:s/c/r/chunks/', allow: 'GET, HEAD' }
+    ]
+    for (const { method, path, allow } of refusals) {
+      it(`${method} ${path} is 405 with Allow: ${allow}`, async () => {
+        const err = await rejection(
+          alice.was.request({
+            path: path.replace(':s', spaceId),
+            method,
+            ...(['PUT', 'POST', 'PATCH'].includes(method) && { json: {} })
+          })
+        )
+        assert.equal(err.response.status, 405)
+        assert.equal(err.response.headers.get('allow'), allow)
+        assert.equal(err.data.type, 'about:blank')
+        assert.equal(err.data.title, 'Method Not Allowed')
+      })
+    }
+
+    it('answers the same 405 whether or not the Space exists', async () => {
+      // The refusal must reveal nothing the not-found rule protects, so an
+      // unknown Space gets exactly the answer a real one does.
+      const answers = []
+      for (const id of [spaceId, `absent-${crypto.randomUUID()}`]) {
+        const err = await rejection(
+          alice.was.request({ path: `/space/${id}/linkset`, method: 'DELETE' })
+        )
+        answers.push({
+          status: err.response.status,
+          allow: err.response.headers.get('allow'),
+          body: err.data
+        })
+      }
+      assert.equal(answers[0]!.status, 405)
+      assert.deepStrictEqual(answers[1], answers[0])
+    })
+
+    it('a reserved endpoint serving no methods sends an empty Allow', async () => {
+      // `/space/:s/query` is anchored for cross-collection queries, which this
+      // server does not serve. RFC 9110 allows an empty `Allow`.
+      const err = await rejection(
+        alice.was.request({
+          path: `/space/${spaceId}/query`,
+          method: 'POST',
+          json: {}
+        })
+      )
+      assert.equal(err.response.status, 405)
+      assert.equal(err.response.headers.get('allow'), '')
+      assert.match(
+        err.data.errors[0].detail,
+        /No methods are allowed at this URL\.$/
+      )
+    })
+
+    it('a HEAD at a reserved endpoint refusing GET is 405 too', async () => {
+      // Fastify exposes a HEAD beside every GET, the refusal included.
+      const response = await fetch(`${serverUrl}/space/${spaceId}/export`, {
+        method: 'HEAD'
+      })
+      assert.equal(response.status, 405)
+      assert.equal(response.headers.get('allow'), 'POST')
+    })
+
+    it('leaves the CORS preflight at a reserved endpoint alone', async () => {
+      const response = await fetch(`${serverUrl}/space/${spaceId}/linkset`, {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://app.example',
+          'Access-Control-Request-Method': 'DELETE'
+        }
+      })
+      assert.equal(response.status, 204)
+      assert.equal(response.headers.get('access-control-allow-origin'), '*')
+    })
+  })
+
   describe('InvalidCollectionError (400)', () => {
-    // `InvalidCollectionError` (src/errors.ts:401) is thrown at
-    // CollectionRequest.put (src/requests/CollectionRequest.ts:239) when the
-    // Update (or Create By Id) Collection request has no body. A signed,
+    // `InvalidCollectionError` is thrown at `CollectionRequest.putMeta` when
+    // the Update (or Create By Id) Collection request has no body. A signed,
     // bodyless PUT (no Content-Type, so the digest hooks pass through) reaches
     // the handler and trips the `if (!body)` guard -- a plain wire-reachable
     // `invalid-request-body` (400).
-    it('a bodyless PUT to a Collection yields invalid-request-body (400)', async () => {
+    it('a bodyless PUT to a Collection Metadata object yields invalid-request-body (400)', async () => {
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/no-body-collection`,
+          path: `/space/${spaceId}/no-body-collection/meta`,
           method: 'PUT'
         })
       )
@@ -133,16 +310,16 @@ describe('Error registry wire coverage', () => {
         err.data.type,
         'https://wallet.storage/spec#invalid-request-body'
       )
-      assert.equal(err.data.title, 'Invalid Collection Description body')
+      assert.equal(err.data.title, 'Invalid Collection Metadata body')
     })
 
-    it('a JSON `null` body PUT to a Collection yields invalid-request-body (400)', async () => {
+    it('a JSON `null` body PUT to a Collection Metadata object yields invalid-request-body (400)', async () => {
       // A parsed body of `null` is also falsy, so the same guard fires -- this
       // covers the bodied (signed `Digest`) path to the error in addition to
       // the bodyless one above.
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId}/null-body-collection`,
+          path: `/space/${spaceId}/null-body-collection/meta`,
           method: 'PUT',
           json: null
         })
@@ -152,7 +329,21 @@ describe('Error registry wire coverage', () => {
         err.data.type,
         'https://wallet.storage/spec#invalid-request-body'
       )
-      assert.equal(err.data.title, 'Invalid Collection Description body')
+      assert.equal(err.data.title, 'Invalid Collection Metadata body')
+    })
+
+    // Create Collection takes the same Metadata object, so a bodyless POST to
+    // the Space is refused the same way. The smallest valid body is `{}`.
+    it('a bodyless POST to a Space yields invalid-request-body (400)', async () => {
+      const err = await rejection(
+        alice.was.request({ path: `/space/${spaceId}/`, method: 'POST' })
+      )
+      assert.equal(err.response.status, 400)
+      assert.equal(
+        err.data.type,
+        'https://wallet.storage/spec#invalid-request-body'
+      )
+      assert.equal(err.data.title, 'Invalid Create Collection body')
     })
   })
 })

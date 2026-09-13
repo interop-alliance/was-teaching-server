@@ -268,14 +268,19 @@ export class RevocationRequest {
     const { serverUrl } = request.server
 
     // 404-masks an unknown Space before any verification work.
-    const spaceDescription = await fetchSpace({ request, spaceId, requestName })
+    const spaceMetadata = await fetchSpace({ request, spaceId, requestName })
 
     await submitRevocation({
       request,
       revocationId,
       scope: { spaceId },
-      rootTarget: new URL(spacePath({ spaceId }), serverUrl).toString(),
-      rootController: spaceDescription.controller,
+      // The Space's root capability target is its canonical (trailing-slash)
+      // container URL, the same root every space-family route accepts.
+      rootTarget: new URL(
+        spacePath({ spaceId, trailingSlash: true }),
+        serverUrl
+      ).toString(),
+      rootController: spaceMetadata.controller,
       expectedAction: request.method,
       requestName
     })

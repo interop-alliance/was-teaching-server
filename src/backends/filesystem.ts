@@ -40,7 +40,7 @@ import {
   assertImportBodiesFit,
   metaSidecarFileId
 } from '../lib/importTar.js'
-import { collectionPath, collectionsPath } from '../lib/paths.js'
+import { collectionPath, spacePath } from '../lib/paths.js'
 import {
   encodeFilenameSegment,
   fileNameFor,
@@ -48,16 +48,15 @@ import {
   chunkDirName,
   CHUNK_DIR_PREFIX,
   isRepresentationFileName,
-  spaceDescriptionFileName,
-  collectionDescriptionFileName,
+  spaceMetadataFileName,
+  collectionMetadataFileName,
   COLLECTION_POLICY_FILE_NAME,
   resourcePolicyFileName,
   SPACE_POLICY_FILE_NAME,
   metaSidecarFileName,
-  collectionMetaFileName,
   collectionLogFileName
 } from '../lib/resourceFileName.js'
-import type { MetaSidecar, CollectionMetaSidecar } from '../lib/metaSidecar.js'
+import type { MetaSidecar } from '../lib/metaSidecar.js'
 import {
   sanitizeBackendRecord,
   serverBackendDescriptor
@@ -74,16 +73,20 @@ import { revocationFileName } from '../lib/revocations.js'
 import { policyGrants } from '../policy.js'
 import { KeyedMutex, KeyedReadWriteLock } from '../lib/keyedMutex.js'
 import { isJson } from '../lib/isJson.js'
-import { normalizeDescriptionWrite } from '../lib/descriptionWrite.js'
+import {
+  normalizeMetadataWrite,
+  stampCollectionMetadata,
+  stampSpaceMetadata
+} from '../lib/metadataWrite.js'
 import {
   type EtagValidator,
   type HeldValidators,
-  descriptionEtagOf,
-  embedDescriptionValidator,
+  metadataEtagOf,
+  embedMetadataValidator,
   etagOf,
   resolveGeneration,
-  storedDescriptionFromFile,
-  stripDescriptionValidator
+  storedMetadataFromFile,
+  stripMetadataValidator
 } from '../lib/etag.js'
 import {
   atomicWriteFile,
@@ -124,12 +127,11 @@ import {
   assertMetaWritePrecondition,
   assertCollectionWritePrecondition,
   assertSpaceWritePrecondition,
-  assertCollectionMetaWritePrecondition,
   assertCollectionLogWritePrecondition
 } from '../lib/preconditions.js'
 import type {
-  SpaceDescription,
-  CollectionDescription,
+  SpaceMetadata,
+  CollectionMetadata,
   CollectionSummary,
   CollectionsList,
   CollectionResourcesList,
@@ -146,9 +148,8 @@ import type {
   CollectionUsage,
   StorageBackend,
   StoredBackendRecord,
-  StoredCollectionDescription,
-  StoredSpaceDescription,
   StoredCollectionMetadata,
+  StoredSpaceMetadata,
   StoredCollectionLog,
   VersionedMetadata,
   KeystoreConfig,
@@ -257,7 +258,7 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Max Collections a single Space may hold (spec "Quotas", a default-on count
    * quota). `undefined` means no cap. Enforced on the Collection create path
-   * (`writeCollection`); overwriting an existing Collection description never
+   * (`writeCollection`); overwriting an existing Collection's metadata never
    * trips it. Normalized like {@link maxSpacesPerController}.
    */
   maxCollectionsPerSpace?: number
@@ -287,7 +288,7 @@ export class FileSystemBackend implements StorageBackend {
    * exclusive side (`#underSpaceRemoval`), alone. Without it a removal can land
    * between a write's `mkdir` and its file write, leaving the directory
    * recreated behind the delete: a Collection dir holding Resources but no
-   * description (listed, unreadable, still counted against the Collection cap
+   * metadata file (listed, unreadable, still counted against the Collection cap
    * and the quota), or a Space dir holding data no route can reach.
    *
    * Lock order, the one this backend uses everywhere: the Space gate is taken
@@ -1006,60 +1007,59 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * @param options {object}
    * @param options.spaceId {string}
-   * @param options.spaceDescription {SpaceDescription}
+   * @param options.spaceMetadata {SpaceMetadata}
    * @param [options.createdBy] {string}   DID of the invoker, recorded as the
    *   Space's `createdBy` on first write only
    * @param [options.ifMatch] {string}   an `If-Match` compare-and-swap on the
-   *   current description `ETag`; a stale validator throws
-   *   `PreconditionFailedError` (412)
+   *   current `ETag`; a stale validator throws `PreconditionFailedError` (412)
    * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *`, the guarded
-   *   create; an existing Description throws `PreconditionFailedError` (412)
-   * @returns {Promise<EtagValidator>}   the Space's new description validator
-   *   (its `generation` and bumped `version`, the `ETag`)
+   *   create; an existing Space throws `PreconditionFailedError` (412)
+   * @returns {Promise<EtagValidator>}   the Space Metadata object's new
+   *   validator (its `generation` and bumped `version`, the `ETag`)
    */
   async writeSpace({
     spaceId,
-    spaceDescription,
+    spaceMetadata,
     createdBy,
     ifMatch,
     ifNoneMatch
   }: {
     spaceId: string
-    spaceDescription: SpaceDescription
+    spaceMetadata: SpaceMetadata
     createdBy?: IDID
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator> {
-    // Serialize the read-check-write under a per-Space-description lock so the
+    // Serialize the read-check-write under a per-Space-metadata lock so the
     // precondition check and the monotonic version bump are atomic with the
     // write (two clients racing a guarded create cannot both succeed). Its own
-    // lock namespace: a Space Description write touches no Collection file.
+    // lock namespace: a Space Metadata write touches no Collection file.
     // The Space gate goes on the outside, as on every path-creating write:
     // this one creates the Space dir.
     return this.#underSpaceWrite({
       spaceId,
       write: () =>
-        this.#writeMutex.run(this.#spaceDescLockKey({ spaceId }), async () => {
-          // Prior description, read once and reused below: for the precondition,
-          // the create-path quota check (a brand-new Space has none yet), and to
-          // resolve `createdBy`.
-          const prior = await this.getSpaceDescription({ spaceId })
+        this.#writeMutex.run(this.#spaceMetaLockKey({ spaceId }), async () => {
+          // Prior Space Metadata object, read once and reused below: for the
+          // precondition, the create-path quota check (a brand-new Space has none
+          // yet), and to resolve `createdBy`.
+          const prior = await this.getSpaceMetadata({ spaceId })
 
           assertSpaceWritePrecondition({
             spaceId,
             exists: prior !== undefined,
-            currentEtag: descriptionEtagOf(prior),
+            currentEtag: metadataEtagOf(prior),
             ifMatch,
             ifNoneMatch
           })
 
-          // Count quota (create path only): a brand-new Space (no description yet)
-          // must not push its controller past `maxSpacesPerController`.
-          // Overwriting an existing Space's description never trips it. Space
+          // Count quota (create path only): a brand-new Space (no metadata file
+          // yet) must not push its controller past `maxSpacesPerController`.
+          // Overwriting an existing Space's metadata never trips it. Space
           // creation is rare, so the O(all Spaces) enumeration is acceptable; soft
           // under concurrency across controllers, like the byte quota.
           if (this.maxSpacesPerController !== undefined && !prior) {
-            const { controller } = spaceDescription
+            const { controller } = spaceMetadata
             const spaces = await this.listSpaces()
             const owned = spaces.filter(
               space => space.controller === controller
@@ -1072,45 +1072,39 @@ export class FileSystemBackend implements StorageBackend {
             }
           }
 
-          // `createdBy` names the Space's creator, not its last writer: taken from
-          // this write's invoker only when this write CREATES the description, and
-          // preserved verbatim afterward -- including preserved-as-absent, so a
-          // Space created with no invoker (a token-provisioned create) never has a
-          // later writer backfilled into it as its creator. The client-supplied
-          // `spaceDescription` is wire input and may carry its own `createdBy` --
-          // discard it, since the server alone is authoritative for it. The
-          // validator-bearing members it may carry are stripped by the shared
-          // normalization (lib/descriptionWrite.ts), so the stored body never
-          // holds a client-supplied `_generation` / `_version` on either backend.
-          const creator = prior ? prior.createdBy : createdBy
-          // The description keeps its generation for the Space's whole life; a
-          // Space deleted and re-created under the same id mints a new one, so the
-          // two lives' validators can never coincide.
+          // `createdBy` and the validator-bearing members the wire input may
+          // carry are resolved by the shared rules (lib/metadataWrite.ts), so
+          // the stored body never holds a client-supplied `createdBy`,
+          // `_generation` or `_version` on either backend.
+          // The object keeps its generation for the Space's whole life; a Space
+          // deleted and re-created under the same id mints a new one, so the two
+          // lives' validators can never coincide.
           const validator = {
-            generation: resolveGeneration(prior?.descriptionGeneration),
-            version: (prior?.descriptionVersion ?? 0) + 1
+            generation: resolveGeneration(prior?.metaGeneration),
+            version: (prior?.metaVersion ?? 0) + 1
           }
-          const { body } = normalizeDescriptionWrite({
-            description: spaceDescription,
+          const { body } = normalizeMetadataWrite({
+            metadata: spaceMetadata,
             validator
           })
-          const { createdBy: _suppliedCreatedBy, ...rest } = body
+          const stamped = stampSpaceMetadata({
+            spaceMetadata: body,
+            prior,
+            createdBy
+          })
 
           const spaceDir = await this.#ensureSpaceDir({ spaceId })
-          const filename = spaceDescriptionFileName(spaceId)
+          const filename = spaceMetadataFileName(spaceId)
           // Durable full replacement: `MetadataJsonStore.read` parses plain JSON,
           // so an atomically-written JSON string round-trips through the same read
           // path. The validator is stored under the reserved `_generation` /
-          // `_version` members that `getSpaceDescription` strips and re-surfaces
-          // out of band, the same layout as a Collection Description file.
+          // `_version` members that `getSpaceMetadata` strips and re-surfaces
+          // out of band, the same layout as a Collection Metadata file.
           await atomicWriteFile({
             filePath: path.join(spaceDir, filename),
             data: JSON.stringify(
-              embedDescriptionValidator({
-                body: {
-                  ...rest,
-                  ...(creator !== undefined && { createdBy: creator })
-                },
+              embedMetadataValidator({
+                body: stamped,
                 ...validator
               })
             )
@@ -1121,8 +1115,8 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Reads one JSON metadata file (a description, sidecar, policy, log, backend
-   * record, or keystore config), `undefined` when absent.
+   * Reads one JSON metadata file (a Space or Collection Metadata object, a
+   * sidecar, policy, log, backend record, or keystore config), `undefined` when absent.
    * `MetadataJsonStore.read` checks the file exists and then reads it, two
    * steps a concurrent hard delete (Delete Space / Delete Collection removing
    * the directory) can land between; the `ENOENT` the second step then throws
@@ -1148,22 +1142,22 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * @param options {object}
    * @param options.spaceId {string}
-   * @returns {Promise<StoredSpaceDescription|undefined>}
+   * @returns {Promise<StoredSpaceMetadata|undefined>}
    *   Resolves falsy when the Space does not exist (must not throw).
-   *   `descriptionGeneration` / `descriptionVersion` are the out-of-band `ETag`
+   *   `metaGeneration` / `metaVersion` are the out-of-band `ETag`
    *   validator, absent for a legacy Space.
    */
-  async getSpaceDescription({
+  async getSpaceMetadata({
     spaceId
   }: {
     spaceId: string
-  }): Promise<StoredSpaceDescription | undefined> {
+  }): Promise<StoredSpaceMetadata | undefined> {
     const spaceDir = this.#spaceDir(spaceId)
-    const filename = spaceDescriptionFileName(spaceId)
+    const filename = spaceMetadataFileName(spaceId)
     const raw = await this.#readJsonFile<
-      SpaceDescription & { _generation?: string; _version?: number }
+      SpaceMetadata & { _generation?: string; _version?: number }
     >(path.join(spaceDir, filename))
-    return raw && storedDescriptionFromFile(raw)
+    return raw && storedMetadataFromFile(raw)
   }
 
   /**
@@ -1176,18 +1170,18 @@ export class FileSystemBackend implements StorageBackend {
    * @returns {Promise<void>}
    */
   async deleteSpace({ spaceId }: { spaceId: string }): Promise<void> {
-    // Under the Space Description lock, so the delete cannot land between a
+    // Under the Space Metadata lock, so the delete cannot land between a
     // concurrent `writeSpace`'s prior read and its file write: that write
     // would recreate the directory and carry the deleted life's generation
     // into the new one, where a re-create must mint a fresh generation. Under
     // the Space gate's exclusive side as well, which holds off every OTHER
     // write into the Space for the duration: a Resource write recreates the
     // Collection dir on its way past (`mkdir ... recursive`), so one landing
-    // mid-`rm` would leave a description-less directory behind the delete.
+    // mid-`rm` would leave a metadata-less directory behind the delete.
     return this.#underSpaceRemoval({
       spaceId,
       remove: () =>
-        this.#writeMutex.run(this.#spaceDescLockKey({ spaceId }), async () => {
+        this.#writeMutex.run(this.#spaceMetaLockKey({ spaceId }), async () => {
           // Freed bytes and slots: drop the cached quota figures so the next write
           // re-measures.
           this.#usageCache.delete(spaceId)
@@ -1208,10 +1202,10 @@ export class FileSystemBackend implements StorageBackend {
    * Enumerates every Space stored on this backend (each immediate subdirectory
    * of the spaces root), sorted by Space id. An absent spaces root (nothing
    * stored yet) resolves an empty list, not an error; a directory without a
-   * readable description file (e.g. a partially deleted Space) is skipped.
-   * @returns {Promise<SpaceDescription[]>}
+   * readable metadata file (e.g. a partially deleted Space) is skipped.
+   * @returns {Promise<SpaceMetadata[]>}
    */
-  async listSpaces(): Promise<SpaceDescription[]> {
+  async listSpaces(): Promise<SpaceMetadata[]> {
     let rootEntries: fs.Dirent[]
     try {
       rootEntries = await fs.promises.readdir(this.spacesDir, {
@@ -1226,20 +1220,18 @@ export class FileSystemBackend implements StorageBackend {
     const spaceEntries = rootEntries
       .filter(entry => entry.isDirectory())
       .sort((a, b) => a.name.localeCompare(b.name))
-    // Each description is an independent file read, so read them in parallel;
+    // Each metadata file is an independent read, so read them in parallel;
     // `Promise.all` preserves the sorted order.
-    const descriptions = await Promise.all(
-      spaceEntries.map(entry =>
-        this.getSpaceDescription({ spaceId: entry.name })
-      )
+    const spaces = await Promise.all(
+      spaceEntries.map(entry => this.getSpaceMetadata({ spaceId: entry.name }))
     )
-    // The listing is the plain wire shape: drop each description's out-of-band
+    // The listing is the plain wire shape: drop each object's out-of-band
     // validator (a listing carries no per-item `ETag`).
-    return descriptions
-      .filter((spaceDescription): spaceDescription is StoredSpaceDescription =>
-        Boolean(spaceDescription)
+    return spaces
+      .filter((spaceMetadata): spaceMetadata is StoredSpaceMetadata =>
+        Boolean(spaceMetadata)
       )
-      .map(spaceDescription => stripDescriptionValidator(spaceDescription))
+      .map(spaceMetadata => stripMetadataValidator(spaceMetadata))
   }
 
   /**
@@ -1358,7 +1350,7 @@ export class FileSystemBackend implements StorageBackend {
     // parallel; `Promise.all` preserves the keyset order of `pageIds`.
     const items: CollectionSummary[] = await Promise.all(
       pageIds.map(async collectionId => {
-        const collectionDescription = await this.getCollectionDescription({
+        const collectionMetadata = await this.getCollectionMetadata({
           spaceId,
           collectionId
         })
@@ -1370,13 +1362,14 @@ export class FileSystemBackend implements StorageBackend {
         const policy = await this.getPolicy({ spaceId, collectionId })
         return {
           id: collectionId,
-          url: collectionPath({ spaceId, collectionId }),
+          // The canonical container form, with the trailing slash.
+          url: collectionPath({ spaceId, collectionId, trailingSlash: true }),
           // `name` is optional on the wire type; a stored Collection normally has
           // one (create defaults it to the id). Fall back to the dir name for a
-          // description-less directory too (e.g. one left by a policy write to a
+          // metadata-less directory too (e.g. one left by a policy write to a
           // never-created Collection) -- reading `.name` off `undefined` here would
           // 500 the entire Space listing.
-          name: collectionDescription?.name ?? collectionId,
+          name: collectionMetadata?.name ?? collectionId,
           public: policyGrants({ policy, action: 'read', logger: this.logger })
         }
       })
@@ -1387,14 +1380,15 @@ export class FileSystemBackend implements StorageBackend {
     let next: string | undefined
     if (hasMore) {
       next = nextPageUrl({
-        path: collectionsPath({ spaceId }),
+        path: spacePath({ spaceId, trailingSlash: true }),
         limit: pageSize,
         after: pageIds[pageIds.length - 1]!
       })
     }
 
     return {
-      url: collectionsPath({ spaceId }),
+      // The listing is the Space container itself, `/space/:spaceId/`.
+      url: spacePath({ spaceId, trailingSlash: true }),
       totalItems,
       items,
       ...(next !== undefined && { next })
@@ -1407,8 +1401,8 @@ export class FileSystemBackend implements StorageBackend {
    * @returns {Promise<Readable>} tar-stream pack
    */
   async exportSpace({ spaceId }: { spaceId: string }): Promise<Readable> {
-    const spaceDescription = await this.getSpaceDescription({ spaceId })
-    if (!spaceDescription) {
+    const spaceMetadata = await this.getSpaceMetadata({ spaceId })
+    if (!spaceMetadata) {
       throw new SpaceNotFoundError({ requestName: 'Export Space' })
     }
 
@@ -1539,7 +1533,7 @@ export class FileSystemBackend implements StorageBackend {
     const incomingBytes = await assertImportBodiesFit({
       collections,
       existingCollection: collectionId =>
-        this.getCollectionDescription({ spaceId, collectionId }),
+        this.getCollectionMetadata({ spaceId, collectionId }),
       assertUploadSize: uploadBytes =>
         this.#assertUploadSize({ maxUploadBytes, uploadBytes }),
       chunkBodiesFor: collection => collection.chunkFiles
@@ -1610,9 +1604,8 @@ export class FileSystemBackend implements StorageBackend {
 
           for (const {
             collectionId,
-            collectionDescription,
-            collectionPolicy,
             collectionMetadata,
+            collectionPolicy,
             collectionLog,
             resources,
             resourcePolicies,
@@ -1621,14 +1614,14 @@ export class FileSystemBackend implements StorageBackend {
           } of collections) {
             // check if collection already exists
             const collectionExisted = Boolean(
-              await this.getCollectionDescription({ spaceId, collectionId })
+              await this.getCollectionMetadata({ spaceId, collectionId })
             )
             if (collectionExisted) {
               stats.collectionsSkipped++
             } else {
               // A brand-new Collection (one whose id the Space did not already hold,
-              // even as a description-less directory) counts against the cap; filling
-              // in the description of an existing directory does not.
+              // even as a metadata-less directory) counts against the cap; filling
+              // in the metadata of an existing directory does not.
               if (
                 maxCollectionsPerSpace !== undefined &&
                 !collectionIds.has(collectionId) &&
@@ -1643,23 +1636,14 @@ export class FileSystemBackend implements StorageBackend {
               await this.#persistCollection({
                 spaceId,
                 collectionId,
-                collectionDescription
+                collectionMetadata
               })
               stats.collectionsCreated++
             }
 
-            // The Collection's own metadata sidecar travels with a newly-created
-            // Collection (preserving its timestamps, `metaVersion`, and user-writable
-            // `custom`); for an existing (skipped) Collection, leave its metadata
-            // untouched, exactly as its policy and description are left alone.
-            if (collectionMetadata && !collectionExisted) {
-              await atomicWriteFile({
-                filePath: this.#collectionMetaPath({ spaceId, collectionId }),
-                data: collectionMetadata
-              })
-              bytesWritten += collectionMetadata.length
-            }
-            // Its governing history log travels on the same terms.
+            // Its governing history log travels with a newly-created Collection
+            // (an existing, skipped one keeps its own, as it keeps its policy and
+            // metadata).
             if (collectionLog && !collectionExisted) {
               await atomicWriteFile({
                 filePath: this.#collectionLogPath({ spaceId, collectionId }),
@@ -1904,24 +1888,32 @@ export class FileSystemBackend implements StorageBackend {
   // Collections
 
   /**
+   * Writes a Collection Metadata object (full replacement of the merged
+   * object: the configuration members beside the annotation members `custom`
+   * and `epoch`), under the Collection's one metadata lock, bumping its one
+   * monotonic `metaVersion`. Server-managed members are stamped here:
+   * `createdBy` and `createdAt` by the creating write only, `updatedAt` by
+   * every write.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @param options.collectionDescription {CollectionDescription}
+   * @param options.collectionMetadata {CollectionMetadata}
    * @param [options.createdBy] {string}   DID of the invoker, recorded as the
    *   Collection's `createdBy` on first write only
    * @param [options.ifMatch] {string}   an `If-Match` compare-and-swap on the
-   *   current description `ETag` (the `key-epochs` feature); a stale validator
-   *   throws `PreconditionFailedError` (412)
+   *   current `ETag`; a stale validator throws `PreconditionFailedError` (412)
    * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *`, the guarded
-   *   create; an existing Description throws `PreconditionFailedError` (412)
-   * @returns {Promise<EtagValidator>}   the Collection's new description
+   *   create; an existing Collection throws `PreconditionFailedError` (412)
+   * @param [options.assertTransition] {Function}   the request layer's
+   *   state-transition checks, run atomically with the write against the
+   *   prior object
+   * @returns {Promise<EtagValidator>}   the Collection Metadata object's new
    *   validator (its `generation` and bumped `version`, the `ETag`)
    */
   async writeCollection({
     spaceId,
     collectionId,
-    collectionDescription,
+    collectionMetadata,
     createdBy,
     ifMatch,
     ifNoneMatch,
@@ -1929,53 +1921,55 @@ export class FileSystemBackend implements StorageBackend {
   }: {
     spaceId: string
     collectionId: string
-    collectionDescription: CollectionDescription
+    collectionMetadata: CollectionMetadata
     createdBy?: IDID
     ifMatch?: string
     ifNoneMatch?: HeldValidators
     assertTransition?: (
-      prior?: StoredCollectionDescription
+      prior?: StoredCollectionMetadata
     ) => void | Promise<void>
   }): Promise<EtagValidator> {
-    // Serialize the read-check-write under a per-Collection-description lock so
+    // Serialize the read-check-write under the per-Collection metadata lock so
     // the `If-Match` compare-and-swap and the monotonic version bump are atomic
-    // with the write (two concurrent recipient edits cannot clobber one
-    // another). A distinct lock namespace from the per-Resource / unique-scan
-    // locks: a description write and a Resource write touch different files.
-    // The Space gate wraps it, as on every path-creating write: this one
-    // creates the Collection dir.
+    // with the write (two concurrent edits cannot clobber one another). A
+    // distinct lock namespace from the per-Resource / unique-scan locks: a
+    // metadata write and a Resource write touch different files. The Space
+    // gate wraps it, as on every path-creating write: this one creates the
+    // Collection dir.
     return this.#underSpaceWrite({
       spaceId,
       write: () =>
         this.#writeMutex.run(
-          this.#collectionDescLockKey({ spaceId, collectionId }),
+          this.#collectionMetaLockKey({ spaceId, collectionId }),
           async () => {
-            // Prior description, read once and reused below: for the create-path
-            // quota check, `createdBy` resolution, and the CAS validator.
-            const prior = await this.getCollectionDescription({
+            // Prior object, read once and reused below: for the precondition,
+            // the create-path quota check, the server-managed members, and the
+            // CAS validator.
+            const prior = await this.getCollectionMetadata({
               spaceId,
               collectionId
             })
 
             // Guarded create (`If-None-Match: *`) or compare-and-swap on the
-            // current description `ETag` (`If-Match`), both opt-in: a present
-            // Description or a stale validator throws 412. An unconditional write
-            // skips this.
+            // current `ETag` (`If-Match`), both opt-in: an existing Collection
+            // or a stale validator throws 412. An unconditional write skips
+            // this.
             assertCollectionWritePrecondition({
               collectionId,
               exists: prior !== undefined,
-              currentEtag: descriptionEtagOf(prior),
+              currentEtag: metadataEtagOf(prior),
               ifMatch,
               ifNoneMatch
             })
 
-            // The request layer's state-transition rails (e.g. epoch append-only),
-            // re-evaluated here against the description just read under the lock.
+            // The request layer's state-transition checks (e.g. epoch
+            // append-only), re-evaluated here against the object just read
+            // under the lock.
             await assertTransition?.(prior)
 
             // Count quota (create path only): a new Collection must not push its
             // Space past `maxCollectionsPerSpace`; overwriting an existing
-            // Collection's description never trips it.
+            // Collection's metadata never trips it.
             if (this.maxCollectionsPerSpace !== undefined && !prior) {
               const collectionIds = await this.#collectionIds({ spaceId })
               if (collectionIds.length >= this.maxCollectionsPerSpace) {
@@ -1986,31 +1980,28 @@ export class FileSystemBackend implements StorageBackend {
               }
             }
 
-            // `createdBy` names the Collection's creator, not its last writer: taken
-            // from this write's invoker only when this write CREATES the
-            // description, and preserved verbatim afterward -- including
-            // preserved-as-absent. The client-supplied `collectionDescription` is
-            // wire input and may carry its own `createdBy` -- discard it, since the
-            // server alone is authoritative for it (`#persistCollection` strips
-            // the validator-bearing members the same way).
-            const { createdBy: _suppliedCreatedBy, ...rest } =
-              collectionDescription
-            const creator = prior ? prior.createdBy : createdBy
-            // The description keeps its generation for the Collection's whole life;
-            // a Collection deleted and re-created under the same id mints a new one,
-            // so the two lives' validators can never coincide.
+            // The server-managed members are the backend's, never the body's;
+            // both backends resolve them through the same shared rule
+            // (lib/metadataWrite.ts), which discards the ones the wire input
+            // may carry (`#persistCollection` strips the validator-bearing
+            // members the same way).
+            const stamped = stampCollectionMetadata({
+              collectionMetadata,
+              prior,
+              createdBy
+            })
+            // The object keeps its generation for the Collection's whole life;
+            // a Collection deleted and re-created under the same id mints a new
+            // one, so the two lives' validators can never coincide.
             const validator = {
-              generation: resolveGeneration(prior?.descriptionGeneration),
-              version: (prior?.descriptionVersion ?? 0) + 1
+              generation: resolveGeneration(prior?.metaGeneration),
+              version: (prior?.metaVersion ?? 0) + 1
             }
 
             await this.#persistCollection({
               spaceId,
               collectionId,
-              collectionDescription: {
-                ...rest,
-                ...(creator !== undefined && { createdBy: creator })
-              },
+              collectionMetadata: stamped,
               validator
             })
             return validator
@@ -2020,158 +2011,22 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Lock key serializing a Space's Description writes and its delete, so a
+   * Lock key serializing a Space's Metadata writes and its delete, so a
    * precondition check and the version bump are atomic against each other.
    * @param options {object}
    * @param options.spaceId {string}
    * @returns {string}
    */
-  #spaceDescLockKey({ spaceId }: { spaceId: string }): string {
-    return `spacedesc:${spaceId}`
+  #spaceMetaLockKey({ spaceId }: { spaceId: string }): string {
+    return `spacemeta:${spaceId}`
   }
 
   /**
-   * Builds the per-Collection-description serialization key for `#writeMutex`
-   * (`desc:<spaceId>/<collectionId>`), so a Collection Description compare-and-
-   * swap serializes with itself while staying disjoint from the per-Resource and
-   * unique-scan lock namespaces.
-   * @param options {object}
-   * @param options.spaceId {string}
-   * @param options.collectionId {string}
-   * @returns {string}
-   */
-  #collectionDescLockKey({
-    spaceId,
-    collectionId
-  }: {
-    spaceId: string
-    collectionId: string
-  }): string {
-    return `desc:${spaceId}/${collectionId}`
-  }
-
-  /**
-   * Writes a Collection's description file (creating the Collection dir if
-   * needed), with NO count-quota check. The count guard lives in the public
-   * `writeCollection`; `importSpace` tracks the Space's Collection count itself
-   * (measured once up front) and calls this directly, so it does not
-   * re-enumerate the Space per created Collection.
-   * @param options {object}
-   * @param options.spaceId {string}
-   * @param options.collectionId {string}
-   * @param options.collectionDescription {CollectionDescription}
-   * @param [options.validator] {EtagValidator}   the description validator to
-   *   persist (its `generation` and monotonic `version`, the `ETag`; the
-   *   `key-epochs` feature). Kept OUT of the wire body -- stored under the
-   *   reserved `_generation` / `_version` members that
-   *   `getCollectionDescription` strips and re-surfaces as
-   *   `descriptionGeneration` / `descriptionVersion`. When omitted (the import
-   *   path), a `_generation` / `_version` pair already on the incoming
-   *   description is preserved, else a fresh generation starts at version 1.
-   * @returns {Promise<void>}
-   */
-  async #persistCollection({
-    spaceId,
-    collectionId,
-    collectionDescription,
-    validator
-  }: {
-    spaceId: string
-    collectionId: string
-    collectionDescription: CollectionDescription
-    validator?: EtagValidator
-  }): Promise<void> {
-    const collectionDir = await this.#ensureCollectionDir({
-      spaceId,
-      collectionId
-    })
-    const filename = collectionDescriptionFileName(collectionId)
-    // Shared normalization (lib/descriptionWrite.ts): strip the
-    // validator-bearing members from the incoming body and re-stamp -- an
-    // explicit `validator` wins, else the `_generation` / `_version` pair
-    // already on the incoming (imported) description is kept, else a fresh
-    // generation starts at version 1.
-    const { body, validator: stamped } = normalizeDescriptionWrite({
-      description: collectionDescription,
-      validator
-    })
-    await atomicWriteFile({
-      filePath: path.join(collectionDir, filename),
-      data: JSON.stringify(embedDescriptionValidator({ body, ...stamped }))
-    })
-  }
-
-  /**
-   * @param options {object}
-   * @param options.spaceId {string}
-   * @param options.collectionId {string}
-   * @returns {Promise<StoredCollectionDescription|undefined>}
-   *   Resolves falsy when the Collection does not exist (must not throw).
-   */
-  async getCollectionDescription({
-    spaceId,
-    collectionId
-  }: {
-    spaceId: string
-    collectionId: string
-  }): Promise<StoredCollectionDescription | undefined> {
-    const collectionDir = this.#collectionDir({ spaceId, collectionId })
-    const filename = collectionDescriptionFileName(collectionId)
-    const raw = await this.#readJsonFile<
-      CollectionDescription & { _generation?: string; _version?: number }
-    >(path.join(collectionDir, filename))
-    return raw && storedDescriptionFromFile(raw)
-  }
-
-  /**
-   * @param options {object}
-   * @param options.spaceId {string}
-   * @param options.collectionId {string}
-   * @returns {Promise<void>}
-   */
-  async deleteCollection({
-    spaceId,
-    collectionId
-  }: {
-    spaceId: string
-    collectionId: string
-  }): Promise<void> {
-    // Under the Collection Description lock, for the same reason as
-    // `deleteSpace`: a concurrent `writeCollection` must not recreate the
-    // directory with the deleted life's generation. And under the Space gate's
-    // exclusive side, which excludes the Resource writes that would otherwise
-    // recreate this directory mid-`rm` as a description-less phantom.
-    return this.#underSpaceRemoval({
-      spaceId,
-      remove: () =>
-        this.#writeMutex.run(
-          this.#collectionDescLockKey({ spaceId, collectionId }),
-          async () => {
-            // Freed bytes and slots: drop the cached quota figures so the next
-            // write re-measures.
-            this.#usageCache.delete(spaceId)
-            this.#liveCountCache.delete(spaceId)
-            // `force: true` keeps delete idempotent (spec / `StorageBackend`
-            // contract): removing an absent (or already-deleted) Collection
-            // resolves rather than rejecting with `ENOENT` (which the request
-            // layer would wrap as a 500). The Collection's metadata sidecar lives
-            // inside that dir, so it goes with it -- a re-created Collection of
-            // the same id starts with no metadata.
-            await rm(this.#collectionDir({ spaceId, collectionId }), {
-              recursive: true,
-              force: true
-            })
-          }
-        )
-    })
-  }
-
-  /**
-   * Builds the per-Collection-metadata serialization key for `#writeMutex`
-   * (`cmeta:<spaceId>/<collectionId>`). A namespace of its own, disjoint from
-   * the `desc:` description lock: a metadata write and a description write touch
-   * different files and are versioned independently, so they must not block one
-   * another.
+   * Builds the per-Collection metadata serialization key for `#writeMutex`
+   * (`cmeta:<spaceId>/<collectionId>`), so a Collection Metadata
+   * compare-and-swap serializes with itself (and with the history-log write
+   * that bumps the same validator) while staying disjoint from the
+   * per-Resource and unique-scan lock namespaces.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -2188,60 +2043,66 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Builds the on-disk path for a Collection's metadata sidecar
-   * (`.collectionmeta.<collectionId>.json`) in its own Collection dir.
+   * Writes a Collection's metadata file (creating the Collection dir if
+   * needed), with NO count-quota check and no server-managed-member stamping:
+   * the count guard and the stamps live in the public `writeCollection`;
+   * `importSpace` tracks the Space's Collection count itself (measured once up
+   * front) and calls this directly with the archived object verbatim, so it
+   * neither re-enumerates the Space per created Collection nor rewrites the
+   * archived timestamps.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @returns {string}
+   * @param options.collectionMetadata {CollectionMetadata}
+   * @param [options.validator] {EtagValidator}   the validator to persist (its
+   *   `generation` and monotonic `version`, the `ETag`). Kept OUT of the wire
+   *   body -- stored under the reserved `_generation` / `_version` members
+   *   that `getCollectionMetadata` strips and re-surfaces as `metaGeneration`
+   *   / `metaVersion`. When omitted (the import path), a `_generation` /
+   *   `_version` pair already on the incoming object is preserved, else a
+   *   fresh generation starts at version 1.
+   * @returns {Promise<void>}
    */
-  #collectionMetaPath({
+  async #persistCollection({
     spaceId,
-    collectionId
+    collectionId,
+    collectionMetadata,
+    validator
   }: {
     spaceId: string
     collectionId: string
-  }): string {
-    const filePath = path.join(
-      this.#collectionDir({ spaceId, collectionId }),
-      collectionMetaFileName(collectionId)
-    )
-    this.#assertContained(filePath)
-    return filePath
+    collectionMetadata: CollectionMetadata
+    validator?: EtagValidator
+  }): Promise<void> {
+    const collectionDir = await this.#ensureCollectionDir({
+      spaceId,
+      collectionId
+    })
+    const filename = collectionMetadataFileName(collectionId)
+    // Shared normalization (lib/metadataWrite.ts): strip the
+    // validator-bearing members from the incoming body and re-stamp -- an
+    // explicit `validator` wins, else the `_generation` / `_version` pair
+    // already on the incoming (imported) object is kept, else a fresh
+    // generation starts at version 1.
+    const { body, validator: stamped } = normalizeMetadataWrite({
+      metadata: collectionMetadata,
+      validator
+    })
+    await atomicWriteFile({
+      filePath: path.join(collectionDir, filename),
+      data: JSON.stringify(embedMetadataValidator({ body, ...stamped }))
+    })
   }
 
   /**
-   * Reads a Collection's metadata sidecar. Resolves `undefined` when no metadata
-   * has been written for the Collection yet.
+   * Reads a Collection Metadata object: the one file holds the configuration
+   * members beside `createdAt`, `updatedAt`, `custom`, and `epoch`, with the
+   * validator re-surfaced out of band as `metaGeneration` / `metaVersion`.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @returns {Promise<CollectionMetaSidecar|undefined>}
-   */
-  async #readCollectionMetaSidecar({
-    spaceId,
-    collectionId
-  }: {
-    spaceId: string
-    collectionId: string
-  }): Promise<CollectionMetaSidecar | undefined> {
-    return await this.#readJsonFile<CollectionMetaSidecar>(
-      this.#collectionMetaPath({ spaceId, collectionId })
-    )
-  }
-
-  /**
-   * Reads a Collection's Metadata object: the server-managed timestamps and the
-   * user-writable `custom` object from the sidecar, plus `createdBy` merged in
-   * from the stored Collection Description (where the creator is recorded; it is
-   * never duplicated into the sidecar). Resolves `undefined` when the Collection
-   * does not exist. A Collection with no metadata written yet resolves an object
-   * carrying only what is known -- and no validator, so the request layer emits
-   * no `ETag`.
-   * @param options {object}
-   * @param options.spaceId {string}
-   * @param options.collectionId {string}
-   * @returns {Promise<StoredCollectionMetadata | undefined>}
+   * @returns {Promise<StoredCollectionMetadata|undefined>}
+   *   Resolves falsy when the Collection does not exist (must not throw).
    */
   async getCollectionMetadata({
     spaceId,
@@ -2250,135 +2111,52 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
   }): Promise<StoredCollectionMetadata | undefined> {
-    const collectionDescription = await this.getCollectionDescription({
-      spaceId,
-      collectionId
-    })
-    if (!collectionDescription) {
-      return undefined
-    }
-    const sidecar = await this.#readCollectionMetaSidecar({
-      spaceId,
-      collectionId
-    })
-    const hasCustom = sidecar?.custom && Object.keys(sidecar.custom).length > 0
-    return {
-      ...(sidecar?.createdAt !== undefined && { createdAt: sidecar.createdAt }),
-      ...(sidecar?.updatedAt !== undefined && { updatedAt: sidecar.updatedAt }),
-      // The creator lives on the description (server-managed, set on create);
-      // absent for a Collection written before `createdBy` was recorded.
-      ...(collectionDescription.createdBy !== undefined && {
-        createdBy: collectionDescription.createdBy
-      }),
-      // `custom` is returned verbatim -- `{ name, tags }` on a plaintext
-      // Collection, the opaque encryption envelope on an encrypted one.
-      ...(hasCustom && { custom: sidecar!.custom as ResourceMetadataCustom }),
-      // The client-declared key epoch (the `key-epochs` feature), when stamped.
-      ...(sidecar?.epoch !== undefined && { epoch: sidecar.epoch }),
-      // The `/meta` ETag validator: the sidecar's generation with its
-      // monotonic `metaVersion`.
-      ...(sidecar?.generation !== undefined && {
-        generation: sidecar.generation
-      }),
-      ...(sidecar?.metaVersion !== undefined && {
-        metaVersion: sidecar.metaVersion
-      })
-    }
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
+    const filename = collectionMetadataFileName(collectionId)
+    const raw = await this.#readJsonFile<
+      CollectionMetadata & { _generation?: string; _version?: number }
+    >(path.join(collectionDir, filename))
+    return raw && storedMetadataFromFile(raw)
   }
 
   /**
-   * Replaces the user-writable `custom` object of a Collection's metadata
-   * sidecar (full replacement; `{}` clears it), bumping `updatedAt` and the
-   * monotonic `metaVersion` (the `/meta` ETag). Does not create a Collection:
-   * resolves `undefined` when it does not exist so the handler can 404. The
-   * Collection Description -- and therefore its `descriptionVersion` ETag and
-   * its `createdBy` -- is untouched.
-   *
-   * An omitted `epoch` CLEARS the stored stamp (unlike the Resource-level
-   * write, which preserves it): the stamp describes the `custom` envelope this
-   * write replaces wholesale, so carrying it forward would label the new
-   * envelope with the old envelope's epoch.
-   *
-   * Runs under the Collection's own metadata lock, so an `If-Match` /
-   * `If-None-Match` precondition (evaluated on the metadata `ETag`) is atomic
-   * with the write. A mismatch throws `PreconditionFailedError` (412).
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @param options.custom {ResourceMetadataCustom | Record<string, unknown>}
-   * @param [options.epoch] {string}   the key-epoch stamp; omitted clears it
-   * @param [options.ifMatch] {string}   `If-Match` on the current metadata
-   *   `ETag`
-   * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *` -- write only if
-   *   no metadata has been written yet (`metaVersion` unset)
-   * @returns {Promise<EtagValidator | undefined>}   the metadata object's new
-   *   validator (the sidecar's `generation` with the bumped `metaVersion` as
-   *   the `version`), or `undefined` when the Collection does not exist
+   * @returns {Promise<void>}
    */
-  async writeCollectionMetadata({
+  async deleteCollection({
     spaceId,
-    collectionId,
-    custom,
-    epoch,
-    ifMatch,
-    ifNoneMatch
+    collectionId
   }: {
     spaceId: string
     collectionId: string
-    custom: ResourceMetadataCustom | Record<string, unknown>
-    epoch?: string
-    ifMatch?: string
-    ifNoneMatch?: HeldValidators
-  }): Promise<EtagValidator | undefined> {
-    return this.#underSpaceWrite({
+  }): Promise<void> {
+    // Under the Collection Metadata lock, for the same reason as
+    // `deleteSpace`: a concurrent `writeCollection` must not recreate the
+    // directory with the deleted life's generation. And under the Space gate's
+    // exclusive side, which excludes the Resource writes that would otherwise
+    // recreate this directory mid-`rm` as a metadata-less phantom.
+    return this.#underSpaceRemoval({
       spaceId,
-      write: () =>
+      remove: () =>
         this.#writeMutex.run(
           this.#collectionMetaLockKey({ spaceId, collectionId }),
           async () => {
-            const collectionDescription = await this.getCollectionDescription({
-              spaceId,
-              collectionId
+            // Freed bytes and slots: drop the cached quota figures so the next
+            // write re-measures.
+            this.#usageCache.delete(spaceId)
+            this.#liveCountCache.delete(spaceId)
+            // `force: true` keeps delete idempotent (spec / `StorageBackend`
+            // contract): removing an absent (or already-deleted) Collection
+            // resolves rather than rejecting with `ENOENT` (which the request
+            // layer would wrap as a 500). The Collection's metadata file and
+            // history log live inside that dir, so they go with it -- a re-created
+            // Collection of the same id starts a fresh life.
+            await rm(this.#collectionDir({ spaceId, collectionId }), {
+              recursive: true,
+              force: true
             })
-            if (!collectionDescription) {
-              return undefined
-            }
-            const prior = await this.#readCollectionMetaSidecar({
-              spaceId,
-              collectionId
-            })
-            // Evaluate the `/meta` precondition against the current metadata
-            // `ETag` atomically under the lock, before writing.
-            assertCollectionMetaWritePrecondition({
-              collectionId,
-              currentEtag: etagOf({
-                generation: prior?.generation,
-                version: prior?.metaVersion
-              }),
-              ifMatch,
-              ifNoneMatch
-            })
-
-            const now = new Date().toISOString()
-            // The generation is minted by the first metadata write and kept
-            // thereafter (the sidecar only ever goes away with its Collection).
-            const generation = resolveGeneration(prior?.generation)
-            const metaVersion = (prior?.metaVersion ?? 0) + 1
-            const hasCustom = Object.keys(custom).length > 0
-            await atomicWriteFile({
-              filePath: this.#collectionMetaPath({ spaceId, collectionId }),
-              data: JSON.stringify({
-                // `createdAt` is stamped by the first metadata write and preserved
-                // thereafter; `updatedAt` tracks this one.
-                createdAt: prior?.createdAt ?? now,
-                updatedAt: now,
-                generation,
-                metaVersion,
-                ...(hasCustom && { custom }),
-                ...(epoch !== undefined && { epoch })
-              } satisfies CollectionMetaSidecar)
-            })
-            return { generation, version: metaVersion }
           }
         )
     })
@@ -2386,9 +2164,9 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Builds the per-Collection history-log serialization key for
-   * `#writeMutex`. A log write also takes the `desc:` lock first (a log write
-   * bumps the description validator, and the request layer's checks on either
-   * side read the other record), so the two never interleave.
+   * `#writeMutex`. A log write also takes the `cmeta:` lock first (a log write
+   * bumps the Collection Metadata validator, and the request layer's checks on
+   * either side read the other record), so the two never interleave.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -2450,11 +2228,11 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Replaces a Collection's governing history log (guarded create or
-   * compare-and-swap append), under the description lock and then the log
-   * lock: the precondition is evaluated on the log's current `ETag`, the
-   * request layer's `assertTransition` runs against the log and description
-   * just read, and the description validator is bumped in the same critical
-   * section, since the served description's `encryption` member is derived
+   * compare-and-swap append), under the Collection Metadata lock and then the
+   * log lock: the precondition is evaluated on the log's current `ETag`, the
+   * request layer's `assertTransition` runs against the log and Collection
+   * Metadata object just read, and that object's validator is bumped in the
+   * same critical section, since its served `encryption` member is derived
    * from this log's head.
    * @param options {object}
    * @param options.spaceId {string}
@@ -2482,24 +2260,23 @@ export class FileSystemBackend implements StorageBackend {
     ifNoneMatch?: HeldValidators
     assertTransition?: (context: {
       prior?: StoredCollectionLog
-      collectionDescription: StoredCollectionDescription
+      collectionMetadata: StoredCollectionMetadata
     }) => void | Promise<void>
   }): Promise<EtagValidator | undefined> {
     return this.#underSpaceWrite({
       spaceId,
       write: () =>
         this.#writeMutex.run(
-          this.#collectionDescLockKey({ spaceId, collectionId }),
+          this.#collectionMetaLockKey({ spaceId, collectionId }),
           () =>
             this.#writeMutex.run(
               this.#collectionLogLockKey({ spaceId, collectionId }),
               async () => {
-                const collectionDescription =
-                  await this.getCollectionDescription({
-                    spaceId,
-                    collectionId
-                  })
-                if (!collectionDescription) {
+                const collectionMetadata = await this.getCollectionMetadata({
+                  spaceId,
+                  collectionId
+                })
+                if (!collectionMetadata) {
                   return undefined
                 }
                 const prior = await this.getCollectionLog({
@@ -2515,7 +2292,7 @@ export class FileSystemBackend implements StorageBackend {
                   ifMatch,
                   ifNoneMatch
                 })
-                await assertTransition?.({ prior, collectionDescription })
+                await assertTransition?.({ prior, collectionMetadata })
 
                 const validator = {
                   generation: resolveGeneration(prior?.generation),
@@ -2528,17 +2305,18 @@ export class FileSystemBackend implements StorageBackend {
                     body
                   } satisfies StoredCollectionLog)
                 })
-                // The served description changed with its derived member, so its
-                // validator advances too (generation kept, version bumped).
+                // The served Collection Metadata object changed with its derived
+                // member, so its validator advances too (generation kept, version
+                // bumped); the stored body is carried verbatim.
                 await this.#persistCollection({
                   spaceId,
                   collectionId,
-                  collectionDescription,
+                  collectionMetadata,
                   validator: {
                     generation: resolveGeneration(
-                      collectionDescription.descriptionGeneration
+                      collectionMetadata.metaGeneration
                     ),
-                    version: (collectionDescription.descriptionVersion ?? 0) + 1
+                    version: (collectionMetadata.metaVersion ?? 0) + 1
                   }
                 })
                 return validator
@@ -2569,28 +2347,28 @@ export class FileSystemBackend implements StorageBackend {
     collectionId,
     limit,
     cursor,
-    collectionDescription: providedDescription
+    collectionMetadata: providedMetadata
   }: {
     spaceId: string
     collectionId: string
     limit?: number
     cursor?: string
-    collectionDescription?: CollectionDescription
+    collectionMetadata?: CollectionMetadata
   }): Promise<CollectionResourcesList> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
-    // Prefer the caller's control-plane description. When this backend serves a
-    // Collection's data plane (an external backend), it does NOT hold the
-    // description locally, so its own `getCollectionDescription` would resolve
-    // `undefined` and reading `.name`/`.type` off it would 500.
-    const collectionDescription =
-      providedDescription ??
-      (await this.getCollectionDescription({ spaceId, collectionId }))
+    // Prefer the caller's control-plane Collection Metadata object. When this
+    // backend serves a Collection's data plane (an external backend), it does
+    // NOT hold that object locally, so its own `getCollectionMetadata` would
+    // resolve `undefined` and reading `.name`/`.type` off it would 500.
+    const collectionMetadata =
+      providedMetadata ??
+      (await this.getCollectionMetadata({ spaceId, collectionId }))
 
     // Enumerate the Collection dir directly rather than globbing: glob v13 does
     // not sort, so its order is nondeterministic -- pagination needs a stable
     // keyset. Keep only resource representations (`r.<id>.<type>.<ext>`), which
     // drops the `.meta.` / `.collection.` / policy dot-files.
-    // An absent directory lists nothing (a Collection whose description exists
+    // An absent directory lists nothing (a Collection whose metadata file exists
     // but which holds no Resource yet). Any other failure -- `EACCES`, `EIO`,
     // `EMFILE` -- is a real fault and must surface: swallowing it would serve a
     // 200 with an empty listing for a Collection that provably exists, which a
@@ -2621,7 +2399,7 @@ export class FileSystemBackend implements StorageBackend {
     // Read `.meta` sidecars ONLY for the items on this page (the previous
     // implementation read a sidecar for every resource on every list); the
     // shared item builder projects each one onto the wire shape.
-    const encrypted = suppressesItemNames({ collectionDescription })
+    const encrypted = suppressesItemNames({ collectionMetadata })
     const items = await Promise.all(
       pageEntries.map(async ({ resourceId, contentType }) => {
         const sidecar = await this.readMetaSidecar({
@@ -2643,7 +2421,7 @@ export class FileSystemBackend implements StorageBackend {
     return collectionResourcesList({
       spaceId,
       collectionId,
-      collectionDescription,
+      collectionMetadata,
       totalItems,
       items,
       hasMore,
@@ -4558,7 +4336,8 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.collectionId {string}
    * @param options.query {EqualityQuery}
    * @param options.indexes {NormalizedIndexDeclaration[]}   the normalized
-   *   declared indexes (the request layer resolves them from the description)
+   *   declared indexes (the request layer resolves them from the Collection
+   *   Metadata object)
    * @param [options.count] {boolean}   return only the match count
    * @param [options.limit] {number}   requested page size
    * @param [options.cursor] {string}   opaque cursor from a prior page
@@ -4735,7 +4514,7 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Builds the on-disk path for a policy document. Stored as a dot-file
-   * alongside the matching `.space.` / `.collection.` description: the Space's
+   * alongside the matching `.space.` / `.collection.` metadata file: the Space's
    * own policy is `.space.policy.json` in the Space dir, the Collection's own
    * policy is `.collection.policy.json` in the Collection dir, and a Resource's
    * policy is `.r.<resourceId>.policy.json` in that same Collection dir. The
@@ -5287,7 +5066,7 @@ export class FileSystemBackend implements StorageBackend {
     const scopeExists =
       'keystoreId' in scope
         ? Boolean(await this.getKeystore({ keystoreId: scope.keystoreId }))
-        : Boolean(await this.getSpaceDescription({ spaceId: scope.spaceId }))
+        : Boolean(await this.getSpaceMetadata({ spaceId: scope.spaceId }))
     if (!scopeExists) {
       throw new StorageError({
         cause: new Error(

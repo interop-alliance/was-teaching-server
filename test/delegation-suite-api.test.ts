@@ -109,7 +109,7 @@ describe('Delegation-proof cryptosuites', () => {
     }))
     ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
 
-    spaceUrl = new URL(`/space/${spaceId}`, serverUrl).toString()
+    spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
     collectionUrl = new URL(
       `/space/${spaceId}/${collectionId}`,
       serverUrl

@@ -25,8 +25,36 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   handler methods. Every group installs the same hook chain first: the
   `requireAuthHeadersOrPublicRead` then `parseAuthHeaders` `onRequest` hooks,
   then the `captureRawBody` (preParsing) and `verifyBodyDigest` (preValidation)
-  digest hooks. Slash/no-slash variants redirect to the canonical form
-  (spec-defined; see Glossary note on trailing slashes).
+  digest hooks. A container -- a Space or a Collection -- is canonically
+  addressed with a trailing slash: `GET` lists its members, `POST` adds one,
+  `DELETE` removes the container, and `PUT` is not defined there. What a
+  container _is_ lives at its `meta` sub-resource instead:
+  `GET`/`PUT /space/:spaceId/meta` is the Space Metadata object and
+  `GET`/`PUT /space/:spaceId/:collectionId/meta` the Collection Metadata object.
+  A `PUT` of a container URL answers 405, with an `Allow` header naming the
+  methods the container accepts (the spec assigns this refusal no problem
+  `type`, so it is RFC 9457's `about:blank`, and its `title` is the status
+  phrase `Method Not Allowed`, as RFC 9457 asks of an `about:blank` problem; the
+  refusing URL is named in the `detail`). Every reserved endpoint (spec
+  "Reserved Path Segment Registry") answers the same 405 for each method it does
+  not implement -- a `DELETE` of either Metadata URL, a `GET` of `export`, a
+  `PUT` of a Collection's `quota`. Each group ends with
+  `refuseUnimplementedMethods`, which reads the implemented set from the router
+  (`hasRoute`) and registers a refusal for every other method Fastify routes, so
+  the `Allow` header cannot drift from the routes. It must stay last in its
+  group. `OPTIONS` is left to the CORS preflight, and `HEAD` follows `GET`.
+  Without these refusals such a request fell through to the parametric route one
+  level up and was refused as a 409 `reserved-id`, an answer about ids to a
+  request about a method. The refusal reads no ids, so it answers the same
+  whether or not the Space, Collection, or Resource exists. A reserved endpoint
+  this server anchors but serves nothing at (the cross-collection
+  `/space/:spaceId/query`) sends an empty `Allow`. The no-slash form of a
+  container URL redirects to the slash form with a 308 for every method
+  (spec-defined; see the Glossary's Trailing slashes note), so a signed request
+  must be re-signed for the redirect target rather than replay its
+  `Authorization` header. The retired `/space/:spaceId/collections/` endpoint
+  308s to the Space URL, which lists and creates Collections since v0.5;
+  `collections` and `meta` stay reserved Collection ids.
 - **`src/requests/*Request.ts`** — request handlers as static class methods
   (`SpaceRequest.post`, etc.). Each handler follows the same shape: fetch the
   Space/Collection for context, call `handleZcapVerify(...)`, then call a
@@ -45,41 +73,53 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
 - **`src/zcap.ts`** — `handleZcapVerify()` performs the capability-invocation
   signature verification against the Space controller's key.
 - **`src/lib/etag.ts`** and **`src/lib/preconditions.ts`** — the `ETag`
-  validators (spec "Caching" and "Conditional Requests"). A Resource, chunk,
-  Space Description, Collection Description, and each `/meta` object carries a
-  generation and a monotonic version that `formatEtag` emits together as one
-  strong `ETag` (`"<generation>.<version>"`) on GET/HEAD. The generation is a
-  random base58 marker minted when the record's counter starts and kept for the
-  record's life. A Resource's content counter continues through a tombstone and
-  its re-create, so its generation does too. The Resource's `/meta` object is a
-  record of its own with its own generation (`metaGeneration` in the sidecar,
-  `meta_generation` in Postgres), and a soft delete drops it together with
-  `custom` and `metaVersion`, so a re-create's first metadata write starts a
-  fresh generation at version 1 and a `/meta` `ETag` held from before the delete
-  cannot pass `If-Match` against it. A hard delete (a chunk, a Collection, a
-  Space) removes the counter with the record, so the next record under the same
-  id mints a new generation and its validators never coincide with the old
-  record's; a client's stale cached `ETag` then matches nothing instead of being
-  answered 304 over different bytes. A client treats the whole quoted value as
-  opaque and may read the trailing integer as the revision number. Writes are
-  gated by `If-Match` / `If-None-Match: *`, which `parseWritePreconditions`
-  normalizes and the backends evaluate atomically with the write through
-  `preconditions.ts`. The Space and Collection Descriptions take both: the
-  `If-None-Match: *` guarded create is what resolves two clients provisioning
-  the same Space or Collection at once (the loser's replace-semantics `PUT`
-  would otherwise rewrite the winner's `type` array or `backend`), and it
-  refuses on any existing Description, `ETag` or not. The Space validator is
-  stored beside the description on the same terms as the Collection's
-  (`_generation` / `_version` members in the filesystem description file,
-  `description_generation` / `description_version` columns on the Postgres
-  `spaces` row), kept out of the wire body, and is emitted on Read Space and on
-  the Create Space and Update Space responses; the Space Description write is
-  serialized per Space (a lock in the filesystem backend, an advisory lock plus
-  row lock in Postgres) so the check and the version bump are atomic. Reads are
-  conditional the other way round: a GET/HEAD carrying `If-None-Match` is parsed
-  by `parseIfNoneMatch` into the set of validators the client holds (RFC 9110
-  weak comparison, list and `*` forms), and a handler answers 304 Not Modified
-  with the `ETag` and no body when that set covers the current one
+  validators (spec "Caching" and "Conditional Requests"). A Resource, a chunk, a
+  Resource's `/meta` object, and each container's Metadata object (the Space
+  Metadata object, the Collection Metadata object) carries a generation and a
+  monotonic version that `formatEtag` emits together as one strong `ETag`
+  (`"<generation>.<version>"`) on GET/HEAD. One validator covers a container's
+  whole Metadata object: v0.5 merged what used to be a separate Collection
+  description and its `/meta` annotation object into one `CollectionMetadata`
+  record, so `metaVersion` advances on a configuration write (`backend`,
+  `encryption`, `generator`) and an annotation write (`custom`, `epoch`) alike.
+  The terms "Space Description" and "Collection Description" are retired;
+  storage exposes one validator pair per container, `metaGeneration` /
+  `metaVersion`, through `writeSpace` / `getSpaceMetadata` and `writeCollection`
+  / `getCollectionMetadata` -- there is no separate `writeCollectionMetadata` /
+  `getCollectionMetadata` pair. The generation is a random base58 marker minted
+  when the record's counter starts and kept for the record's life. A Resource's
+  content counter continues through a tombstone and its re-create, so its
+  generation does too. The Resource's `/meta` object is a record of its own with
+  its own generation (`metaGeneration` in the sidecar, `meta_generation` in
+  Postgres), and a soft delete drops it together with `custom` and
+  `metaVersion`, so a re-create's first metadata write starts a fresh generation
+  at version 1 and a `/meta` `ETag` held from before the delete cannot pass
+  `If-Match` against it. A hard delete (a chunk, a Collection, a Space) removes
+  the counter with the record, so the next record under the same id mints a new
+  generation and its validators never coincide with the old record's; a client's
+  stale cached `ETag` then matches nothing instead of being answered 304 over
+  different bytes. A client treats the whole quoted value as opaque and may read
+  the trailing integer as the revision number. Writes are gated by `If-Match` /
+  `If-None-Match: *`, which `parseWritePreconditions` normalizes and the
+  backends evaluate atomically with the write through `preconditions.ts`. The
+  Space and Collection Metadata objects take both: the `If-None-Match: *`
+  guarded create is what resolves two clients provisioning the same Space or
+  Collection at once (the loser's replace-semantics `PUT` would otherwise
+  rewrite the winner's `type` array or `backend`), and it refuses whenever the
+  container already has a Metadata object, `ETag` or not. The validator is
+  embedded in the stored record as reserved `_generation` / `_version` members
+  -- the filesystem backend keeps one file per container (`.space.<id>.json`,
+  `.collection.<id>.json`) holding the wire body and the validator together --
+  and as `meta_generation` / `meta_version` columns on the Postgres `spaces` and
+  `collections` rows, kept out of the wire body; it is emitted on Read Space /
+  Read Collection and on the Create/Update responses. A Space Metadata write is
+  serialized per Space (the `spacemeta:` lock in the filesystem backend, an
+  advisory lock plus row lock in Postgres) and a Collection Metadata write per
+  Collection (the `cmeta:` lock), so the check and the version bump are atomic.
+  Reads are conditional the other way round: a GET/HEAD carrying `If-None-Match`
+  is parsed by `parseIfNoneMatch` into the set of validators the client holds
+  (RFC 9110 weak comparison, list and `*` forms), and a handler answers 304 Not
+  Modified with the `ETag` and no body when that set covers the current one
   (`isNotModified`, sent by the shared `requests/notModified.ts` helper). The
   decision sits in each read handler, after authorization, so an
   under-authorized conditional read still gets the 404 mask. A Resource or chunk
@@ -105,30 +145,31 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   capability-or-policy at the Collection's target; `PUT` is capability-only,
   like `/meta`. The guarded create is the declaration that puts the Collection
   under log governance, and is refused with `encryption-immutable` (409) on a
-  Collection whose Description already carries a client-written `encryption`
+  Collection whose Metadata object already carries a client-written `encryption`
   member. From then on, the Collection's served `encryption` member -- read by
-  Get Collection and by every handler that loads the Description through
-  `getCollectionOrThrow`, so the write-time envelope check sees it too -- is
-  derived from the log's last line's `state`, with a
+  Get Collection and by every handler that loads the Collection Metadata object
+  through `getCollectionOrThrow`, so the write-time envelope check sees it too
+  -- is derived from the log's last line's `state`, with a
   `history: { method, resource }` member stamped on (`method` from the genesis
   line's `parameters.method`, `resource` the log's own URL); the stored
-  Description never carries that derived member, a direct `encryption` write
-  against it is refused with `encryption-history-log-governed` (409), and its
-  other fields still update normally. The server verifies neither proofs nor a
-  hash chain: it checks that the body is JSON Lines, each line a JSON object
-  with an object `state` member and the last line the head
-  (`invalid-request-body`, 400 on a break), that an append fast-forwards the
-  stored log (the stored bytes verbatim followed by exactly one new line; a body
-  the stored log is not a prefix of is `precondition-failed`, 412, with or
-  without `If-Match`, and one adding other than one line is
-  `invalid-request-body`, 400), and on every append it runs the same
-  encryption-descriptor transition checks against the prior head that an
-  ordinary Description update runs. The fast-forward rule keeps the log
+  Collection Metadata object never carries that derived member, a direct
+  `encryption` write against it is refused with
+  `encryption-history-log-governed` (409), and its other fields still update
+  normally. The server verifies neither proofs nor a hash chain: it checks that
+  the body is JSON Lines, each line a JSON object with an object `state` member
+  and the last line the head (`invalid-request-body`, 400 on a break), that an
+  append fast-forwards the stored log (the stored bytes verbatim followed by
+  exactly one new line; a body the stored log is not a prefix of is
+  `precondition-failed`, 412, with or without `If-Match`, and one adding other
+  than one line is `invalid-request-body`, 400), and on every append it runs the
+  same encryption-descriptor transition checks against the prior head that an
+  ordinary Collection Metadata update runs. The fast-forward rule keeps the log
   append-only at the server: a write capability can add history but not erase
   it, while a break inside an appended entry stays the verifying reader's to
-  detect. A log write also bumps the Description's own `ETag`, since its served
-  content changed, and is serialized with Description writes through the same
-  per-Collection lock.
+  detect. A log write also bumps the Collection Metadata object's own `ETag`,
+  since its served content changed, but leaves its `updatedAt` untouched -- both
+  backends advance only the version counter -- and is serialized with Collection
+  Metadata writes through the same per-Collection lock.
 - **`src/storage.ts`** — supplies `defaultBackend()`, the `FileSystemBackend`
   (rooted at `data/`) that `createApp()` uses when no backend is injected. The
   active backend is injected via `createApp({ backend })` and decorated onto the
@@ -169,15 +210,28 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
 
 - **SpacesRepository** — the top-level container the server hosts. New Spaces
   are created under it via `POST /spaces/`.
-- **Space** — a storage area identified by `spaceId`. Has a `controller` (a DID)
-  that owns it and authorizes access. Contains Collections. Its Space
-  Description carries a `type` array subtyping `Space`, set at creation and
-  immutable afterward. A Space typed `AuxiliarySpace` (e.g.
-  `['Space', 'AuxiliarySpace', 'DelegatedClientsSpace']`) holds bookkeeping
-  rather than user data and is excluded from List Spaces; a wallet reaches its
-  auxiliary Space through the account document's service entry instead.
-- **Collection** — a named grouping of Resources within a Space
-  (`/space/:spaceId/:collectionId`). Has a description object.
+- **Space** — a storage area identified by `spaceId`, canonically addressed with
+  a trailing slash (`/space/:spaceId/`): `GET` lists its Collections, `POST`
+  adds one, `DELETE` removes the Space. Has a `controller` (a DID) that owns it
+  and authorizes access. Its Space Metadata object, at `/space/:spaceId/meta`,
+  carries the `controller` and a `type` array subtyping `Space`, set at creation
+  and immutable afterward; `PUT` there creates the Space when absent or replaces
+  it (`PUT` at the bare Space URL answers 405). A Space typed `AuxiliarySpace`
+  (e.g. `['Space', 'AuxiliarySpace', 'DelegatedClientsSpace']`) holds
+  bookkeeping rather than user data and is excluded from List Spaces; a wallet
+  reaches its auxiliary Space through the account document's service entry
+  instead. Its `url`, and the `Location` of a newly created Space, carry the
+  trailing slash.
+- **Collection** — a named grouping of Resources within a Space, canonically
+  addressed with a trailing slash (`/space/:spaceId/:collectionId/`): `GET`
+  lists its Resources, `POST` adds one, `DELETE` removes the Collection. Its
+  Metadata object, at `/space/:spaceId/:collectionId/meta`, merges what were
+  once two separate objects -- the Collection description (`backend`,
+  `encryption`, `generator`) and the `/meta` annotation object (`createdAt`,
+  `updatedAt`, `custom`, `epoch`) -- into one object under one `ETag`; `PUT`
+  there is a full replacement that creates the Collection when absent. Its
+  `url`, and the `Location` of a newly created Collection, carry the trailing
+  slash.
 - **Resource** — an individual stored item, JSON object or binary blob, within a
   Collection (`/space/:spaceId/:collectionId/:resourceId`).
 - **Controller** — the DID that owns a Space; its Ed25519 key signs capability
@@ -194,7 +248,10 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   authorizes. Must exactly match the server's `serverUrl`-derived URL — see the
   ZCap constraint under Test Suite in [AGENTS.md](AGENTS.md).
 - **Root capability** — `urn:zcap:root:<url-encoded target>`, whose controller
-  is the Space controller. Synthesized by the document loader in `zcap.ts`.
+  is the Space controller. Synthesized by the document loader in `zcap.ts`. For
+  the WAS route family, `target` is the Space's canonical trailing-slash URL
+  (`spaceRootTarget` in `requests/spaceContext.ts`), the same URL a delegated
+  chain attenuates from.
 - **`did:key`** — the default DID method here; keys are Ed25519
   (`Ed25519VerificationKey2020` / `Ed25519Signature2020`). Space creation, and
   the `/kms` keystore routes, accept nothing else.
@@ -207,31 +264,32 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   encoding. WAS Collection ids are restricted to the RFC 3986 unreserved
   charset, which is never percent-encoded, so the rule is just that check; a
   final DID segment carrying `%` or another reserved character is refused by the
-  parser. A Space is **promoted** to one by PUTting its Space Description with
-  the new `controller`, still authorized by the stored `did:key` — creation
-  stays `did:key`-only. Resolution is a **local storage read, never a network
-  fetch**: cross-host `did:webvh`, `did:web`, and every other method are
-  refused. The log's Space need not be the Space an invocation targets: the DID
-  string carries the log's own `spaceId`, so a cross-Space controller resolves
-  through the same path as any other. A capability-gated Collection works too —
-  the server reads its own storage regardless of read policy, so such a DID
-  resolves for authorization while its log stays unreadable without a
-  capability. The log is verified, not trusted (SCID pinning plus full
-  hash-chain / update-key verification via `@interop/did-method-webvh`), because
-  after promotion the writes to that log are authorized by the very document
-  being resolved. The proposed controller must resolve _before_ it is stored, or
-  the Space would be deadlocked. Key validity is the **current-key-set rule**:
-  an invocation or delegation verifies iff its verification method is in the
-  currently resolved document, under the right verification relationship. One
-  piece of code carries that on both sides. `webvhVerifier` finds the invocation
-  key by membership in the flat `verificationMethod` array and restates
-  `controller: <did>` on the method it reconstructs. That string sends jsigs'
-  `ControllerProofPurpose` to dereference the controller document through the
-  local webvh resolver driver (`webvhDidResolverDriver` / `dereferenceFragment`)
-  and read `capabilityInvocation` out of it. So a root invocation and a
-  delegation proof are relation-scoped identically, and a delegation-only method
-  cannot root-invoke. Before promotion the Space controller is a `did:key` and
-  takes the `did:key` branch of `createGetVerifier`, where no relation applies.
+  parser. A Space is **promoted** to one by PUTting its Space Metadata object
+  (at `meta`) with the new `controller`, still authorized by the stored
+  `did:key` — creation stays `did:key`-only. Resolution is a **local storage
+  read, never a network fetch**: cross-host `did:webvh`, `did:web`, and every
+  other method are refused. The log's Space need not be the Space an invocation
+  targets: the DID string carries the log's own `spaceId`, so a cross-Space
+  controller resolves through the same path as any other. A capability-gated
+  Collection works too — the server reads its own storage regardless of read
+  policy, so such a DID resolves for authorization while its log stays
+  unreadable without a capability. The log is verified, not trusted (SCID
+  pinning plus full hash-chain / update-key verification via
+  `@interop/did-method-webvh`), because after promotion the writes to that log
+  are authorized by the very document being resolved. The proposed controller
+  must resolve _before_ it is stored, or the Space would be deadlocked. Key
+  validity is the **current-key-set rule**: an invocation or delegation verifies
+  iff its verification method is in the currently resolved document, under the
+  right verification relationship. One piece of code carries that on both sides.
+  `webvhVerifier` finds the invocation key by membership in the flat
+  `verificationMethod` array and restates `controller: <did>` on the method it
+  reconstructs. That string sends jsigs' `ControllerProofPurpose` to dereference
+  the controller document through the local webvh resolver driver
+  (`webvhDidResolverDriver` / `dereferenceFragment`) and read
+  `capabilityInvocation` out of it. So a root invocation and a delegation proof
+  are relation-scoped identically, and a delegation-only method cannot
+  root-invoke. Before promotion the Space controller is a `did:key` and takes
+  the `did:key` branch of `createGetVerifier`, where no relation applies.
   Resolved documents are cached, keyed by the log's location (Space plus
   Collection), and a write that could change a log at that location drops the
   entry. Entries exist only for DIDs actually resolved for authorization, so a
@@ -243,10 +301,14 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   Space's stored controller, or by a capability delegated to it -- never by
   where its log happens to live.
 
-**Trailing slashes:** the spec assigns distinct meaning to `.../` vs `...`. By
-convention, "create/update by id" (`PUT`) uses the no-trailing-slash form, while
-"list" and "add to" (`GET` / `POST`) use the trailing-slash form. Routes
-redirect mismatches to the canonical variant.
+**Trailing slashes:** a trailing slash marks a container -- a Space or a
+Collection -- in its canonical form: `GET` lists its members, `POST` adds one,
+`DELETE` removes it, and `PUT` is not defined there. Everything else -- a
+container's `meta` sub-resource, a Resource, and every other sub-resource path
+-- carries no trailing slash. No two registered paths differ only by a trailing
+slash. Routes redirect the non-canonical form to the canonical one with a `308`,
+so a signed request must be re-signed for the redirect target rather than replay
+its `Authorization` header.
 
 ## ZCap Structure
 
@@ -284,35 +346,63 @@ The first shape is bounded by grantee, target, and action together. Its sole
 `https://w3id.org/byoe#DelegatedClients` service entry (a self-hosted
 `did:webvh` string, compared by pointer equality). Its `invocationTarget` lies
 within the items subtree of the Space that carries the delegator's own history
-log: the trailing-slash Space URL, or any path under it. Its `allowedAction` is
+log: the trailing-slash Space URL, or any path under it, except the Space
+Metadata URL `/space/<S>/meta` and anything under it. Its `allowedAction` is
 present, non-empty, and drawn from the closed WAS verb vocabulary {GET, HEAD,
-POST, PUT, DELETE}. The bare Space URL sits outside that subtree, so Update
-Space Description -- which rewrites the Space's controller -- and Delete Space
-stay out of reach; keystore targets are outside it as well. The whole vocabulary
-is admitted rather than a chosen subset, because the generation delegation a
-wallet already mints carries exactly it, and a child capability may not exceed
-its parent. The target bound does the narrowing. An onward grant minted by a
-two-relation annex verification method is a child of the admitted delegation, so
-it cannot exceed that subtree either.
+POST, PUT, DELETE}. The whole vocabulary is admitted rather than a chosen
+subset, because the generation delegation a wallet already mints carries exactly
+it, and a child capability may not exceed its parent. The target bound does the
+narrowing: keystore targets are outside the subtree by path, and the `meta`
+exclusion refuses a ladder delegation aimed at the Metadata object directly,
+though a whole-subtree grant still covers it by attenuation at invocation time
+(see the invocation-time bound below). An onward grant minted by a two-relation
+annex verification method is a child of the admitted delegation, so it cannot
+exceed that subtree either.
 
 The second shape is bridge-shaped, with two branches. The `invocationTarget` is
 the delegator account's own history log resource URL (derived from the account
 DID, which carries its log's Space and Collection) with `allowedAction` within
-{PUT}. Or it is the trailing-slash URL of a Space whose Description declares it
-delegated-clients bookkeeping (typed `AuxiliarySpace` + `DelegatedClientsSpace`,
-the only combination Create Space accepts for the latter) with `allowedAction`
-within {GET, PUT}. The trailing-slash (subtree) form is required in both bounded
-shapes: it keeps Update Space Description outside ladder reach, so annex-profile
-grants pass the subtree target explicitly rather than the client's no-slash
-default.
+{PUT}. Or it is the trailing-slash URL of a Space whose Metadata object declares
+it delegated-clients bookkeeping (typed `AuxiliarySpace` +
+`DelegatedClientsSpace`, the only combination Create Space accepts for the
+latter) with `allowedAction` within {GET, PUT}.
 
-The third shape is a target-exact single-verb read or delete of one Space. Its
-`invocationTarget` is a bare (no-trailing-slash) Space URL, equal to the parent
-capability's own target unchanged -- whether that parent is a delegated
-capability or the Space's synthesized root -- and its `allowedAction` is exactly
-{GET} or exactly {DELETE}. A two-verb set does not qualify, so the ladder VM
-signs the last link of a grant its parent already carries rather than aiming one
-anywhere new.
+The third shape is a target-exact single-verb grant on the Space itself, split
+by verb. Its DELETE branch: `invocationTarget` is the canonical trailing-slash
+Space URL, equal to the parent capability's own target unchanged -- whether that
+parent is a delegated capability or the Space's synthesized root -- and
+`allowedAction` is exactly {DELETE}. Its GET branch: `invocationTarget` is the
+Space Metadata URL `/space/<S>/meta`, `allowedAction` is exactly {GET}, and the
+parent's target is either that same Metadata URL or the Space's canonical
+trailing-slash URL. Either branch only narrows toward the one read or delete the
+ladder VM may sign and cannot widen it; a two-verb set does not qualify on
+either branch.
+
+Under v0.4 the Space Description sat outside the container: a `/space/<S>/`
+subtree grant could not reach `PUT /space/<S>` (the controller rewrite) or
+`DELETE /space/<S>` at all, since the zcap library's target attenuation is a
+`/`-boundary prefix rule. v0.5 moved both operations inside the subtree -- the
+controller rewrite is now `PUT /space/<S>/meta`, and Delete Space is
+`DELETE /space/<S>/`, the subtree URL itself -- so a subtree grant admitted
+under the first shape or the second shape's Space branch now reaches both by
+ordinary attenuation. The clause closes that gap with an invocation-time bound,
+applied to any chain carrying a ladder-signed link regardless of which shape
+admitted it: invoked as `PUT` on a Space Metadata URL, the chain is refused
+outright; invoked as `DELETE` on a canonical Space URL, it is refused unless
+every ladder-signed link in the chain is itself the third shape's DELETE branch
+(target-exact, action exactly `DELETE`). The bound reads the ladder-signed links
+rather than the chain's tail, because the tail's shape is not the ladder VM's to
+determine: an annex verification method, which holds both relations and so is
+not ladder authority, can narrow a whole-subtree grant into a target-exact
+DELETE-only child by ordinary attenuation, and a tail-only check would read that
+narrowing as the third shape it is not. A genuine third-shape grant still
+verifies, and may still be delegated onward, since attenuation can only keep
+such a child target-exact and DELETE-only. `handleZcapVerify` threads the
+operation's target and action into the inspector through its `invocation`
+option, since the zcap library's chain-inspection hook otherwise sees only the
+dereferenced chain; the revocation route, whose target is never a Space or Space
+Metadata URL, builds the inspector without one and gets the delegation-shape
+bound alone.
 
 Both inspectors bind the capability decision only. A refusal falls through to
 the target's access-control policy like any other failed verification, so a

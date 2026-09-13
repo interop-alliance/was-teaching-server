@@ -1,6 +1,6 @@
 /**
  * Cursor-based pagination tests for the List Collections (`GET
- * /space/:spaceId/collections/`) and List Spaces (`GET /spaces/`) operations
+ * /space/:spaceId/`) and List Spaces (`GET /spaces/`) operations
  * (Vitest, spec "Pagination").
  *
  * Signed paginated reads use the raw `was.request` escape hatch with a full URL
@@ -56,7 +56,7 @@ describe('List Collections pagination', () => {
 
   /**
    * Creates a fresh Space and, in it, a Collection per id (in the given
-   * insertion order). Returns the collections-listing path for that Space.
+   * insertion order). Returns the Space URL, which lists its Collections.
    */
   async function seedSpaceWithCollections(
     spaceId: string,
@@ -70,7 +70,7 @@ describe('List Collections pagination', () => {
     for (const id of collectionIds) {
       await space.createCollection({ id, name: id })
     }
-    return `/space/${spaceId}/collections/`
+    return `/space/${spaceId}/`
   }
 
   it('returns every Collection (no next) when it fits in one page', async () => {
@@ -188,7 +188,7 @@ describe('List Collections pagination', () => {
     try {
       await bob.was.request({
         url: new URL(
-          `/space/${spaceId}/collections/?cursor=garbage%%%`,
+          `/space/${spaceId}/?cursor=garbage%%%`,
           serverUrl
         ).toString(),
         method: 'GET'
@@ -205,7 +205,7 @@ describe('List Collections pagination', () => {
     for (const id of ['f1', 'f2', 'f3']) {
       await aliceSpace.createCollection({ id, name: id })
     }
-    const listPath = `/space/${alice.space1.id}/collections/`
+    const listPath = `/space/${alice.space1.id}/`
     const { data: page1 } = await aliceGet(`${listPath}?limit=1`)
     assert.ok(page1.next, 'first page should advertise a next link')
     const { status, data: page2 } = await aliceGet(page1.next)

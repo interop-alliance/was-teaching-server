@@ -21,7 +21,8 @@ import type pg from 'pg'
  * never edit an applied entry.
  */
 const MIGRATIONS: string[] = [
-  // v1: the full WAS + WebKMS + chunked-storage surface.
+  // v1: the full WAS + WebKMS + chunked-storage surface. (The 'description'
+  // columns its comments describe were renamed by v6.)
   `
   -- The Spaces tree. 'description' is NULL for a placeholder row created by a
   -- write below the Space level (a resource/policy write to a Space whose
@@ -207,7 +208,9 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (keystore_id, delegator, capability_id)
   );
   `,
-  // v2: Collection Metadata (the reserved 'meta' segment of a Collection) --
+  // v2 (dropped by v6, which keeps these members inside the one Collection
+  // Metadata object): Collection Metadata (the reserved 'meta' segment of a
+  // Collection) --
   // the Collection-level sibling of the resource metadata columns. Kept on the
   // 'collections' row rather than in its own table: it is exactly one optional
   // metadata object per Collection, and it dies with the Collection.
@@ -257,7 +260,8 @@ const MIGRATIONS: string[] = [
   ALTER TABLE resources
     ADD COLUMN meta_generation text;
   `,
-  // v5: the Space Description's own ETag validator, the Space-level twin of
+  // v5 (renamed by v6): the Space Description's own ETag validator, the
+  // Space-level twin of
   // the collections columns of the same names: 'description_generation' is
   // minted by the first real description write and kept for the Space's whole
   // life (NULL on a placeholder row, which has no description to validate
@@ -269,6 +273,32 @@ const MIGRATIONS: string[] = [
   ALTER TABLE spaces
     ADD COLUMN description_generation text,
     ADD COLUMN description_version    integer NOT NULL DEFAULT 1;
+  `,
+  // v6: the Space and Collection Metadata objects (spec v0.5). A container's
+  // description and its '/meta' Metadata object are one object now, served at
+  // the container's reserved 'meta' segment. The 'description' jsonb of each
+  // table becomes 'metadata', and its validator pair becomes
+  // 'meta_generation' / 'meta_version'. On 'collections' the separate
+  // '/meta' columns are dropped first, together with the annotation values
+  // they held, since the merged object keeps 'custom', 'epoch' and the
+  // timestamps inside the jsonb. Nothing is copied across: a Collection
+  // written before v6 carries no annotations or timestamps until its next
+  // Metadata write. The 'log_*' columns are untouched.
+  `
+  ALTER TABLE collections
+    DROP COLUMN meta_generation,
+    DROP COLUMN meta_version,
+    DROP COLUMN meta_custom,
+    DROP COLUMN meta_epoch,
+    DROP COLUMN meta_created_at,
+    DROP COLUMN meta_updated_at;
+  ALTER TABLE collections RENAME COLUMN description TO metadata;
+  ALTER TABLE collections RENAME COLUMN description_generation TO meta_generation;
+  ALTER TABLE collections RENAME COLUMN description_version TO meta_version;
+
+  ALTER TABLE spaces RENAME COLUMN description TO metadata;
+  ALTER TABLE spaces RENAME COLUMN description_generation TO meta_generation;
+  ALTER TABLE spaces RENAME COLUMN description_version TO meta_version;
   `
 ]
 

@@ -14,7 +14,7 @@ import type {
   BackendDescriptor,
   BackendConnectionPublic,
   BackendRegistration,
-  CollectionDescription,
+  CollectionMetadata,
   StorageBackend,
   StoredBackendRecord
 } from '../types.js'
@@ -41,7 +41,7 @@ export const DEFAULT_BACKEND_ID = 'default'
  *   (`queryByEquality`), plus the GET `filter[attr]=value` equality filter.
  * - `key-epochs`: multi-recipient encrypted Collections -- per-epoch wrapped
  *   keys on the `encryption` descriptor, a client-declared `epoch` stamp on
- *   Resources, and conditional (`If-Match`) Collection Description writes.
+ *   Resources, and conditional (`If-Match`) Collection Metadata writes.
  * - `chunked-streams`: chunk addressing (`/{resourceId}/chunks/{n}`) for a
  *   large Resource, each chunk stored opaquely (raw bytes plus content type).
  * - `governed-history-logs`: a Collection's `encryption` descriptor may be
@@ -167,19 +167,19 @@ export async function assertSupportedBackend({
  * @param options {object}
  * @param options.storage {StorageBackend}   the request's storage backend
  * @param options.spaceId {string}   the Space whose backends-available is checked
- * @param options.collectionDescription {CollectionDescription}
+ * @param options.collectionMetadata {CollectionMetadata}
  * @returns {Promise<BackendDescriptor>}
  */
 export async function resolveBackendDescriptor({
   storage,
   spaceId,
-  collectionDescription
+  collectionMetadata
 }: {
   storage: StorageBackend
   spaceId: string
-  collectionDescription: CollectionDescription
+  collectionMetadata: CollectionMetadata
 }): Promise<BackendDescriptor> {
-  const id = collectionDescription.backend?.id ?? DEFAULT_BACKEND_ID
+  const id = collectionMetadata.backend?.id ?? DEFAULT_BACKEND_ID
   const available = await listRegisteredBackends({ storage, spaceId })
   const descriptor = available.find(entry => entry.id === id)
   // A stored backend id should always resolve (it was validated on write); fall

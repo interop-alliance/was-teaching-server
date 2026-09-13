@@ -6,7 +6,7 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
 import { isRootInvocation, verifyZcap } from '../zcap.js'
-import { invalidateSpaceDescription } from '../lib/spaceDescriptionCache.js'
+import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
 import { type EtagValidator, formatEtag } from '../lib/etag.js'
 import {
   assertBodyController,
@@ -182,9 +182,11 @@ export class SpacesRepositoryRequest {
         hasMore = true
         break
       }
+      // A Space is a container, so its `url` is the canonical trailing-slash
+      // form (spec "Space Metadata Data Model").
       const item: SpaceSummary = {
         id: space.id,
-        url: spacePath({ spaceId: space.id })
+        url: spacePath({ spaceId: space.id, trailingSlash: true })
       }
       if (space.name !== undefined) {
         item.name = space.name
@@ -235,7 +237,7 @@ export class SpacesRepositoryRequest {
     const { body } = request
     const { serverUrl, storage } = request.server
 
-    // The Space Description body must carry a controller DID.
+    // The Space Metadata body must carry a controller DID.
     assertBodyController({ body, requestName: 'Create Space' })
     // Reject a malformed / non-`did:key` controller before it is stored.
     assertValidController(body.controller, { requestName: 'Create Space' })
@@ -254,7 +256,7 @@ export class SpacesRepositoryRequest {
       // This unlocked read answers the common case before the (costlier)
       // consent verification, so a conflicting id gets 409 whoever signed;
       // the guarded write below is what closes the race between two creates.
-      if (await storage.getSpaceDescription({ spaceId: body.id })) {
+      if (await storage.getSpaceMetadata({ spaceId: body.id })) {
         throw new IdConflictError({ kind: 'Space' })
       }
     }
@@ -262,7 +264,7 @@ export class SpacesRepositoryRequest {
     const spaceId = body.id || uuidv4()
     // The server-decided members are applied after the body, so the validated
     // `type` wins over whatever shape the body carried under that name.
-    const spaceDescription = { ...body, id: spaceId, type }
+    const spaceMetadata = { ...body, id: spaceId, type }
 
     // The invocation must be *authorized by* the body's controller (spec:
     // Create Space): signed directly by it, or via a delegation chain rooted
@@ -292,7 +294,7 @@ export class SpacesRepositoryRequest {
     try {
       written = await storage.writeSpace({
         spaceId,
-        spaceDescription,
+        spaceMetadata,
         createdBy,
         ifNoneMatch: '*'
       })
@@ -304,22 +306,26 @@ export class SpacesRepositoryRequest {
     }
     // Bust any cached (e.g. negatively cached) description for this id so the
     // next read sees the freshly created Space.
-    invalidateSpaceDescription({ storage, spaceId })
+    invalidateSpaceMetadata({ storage, spaceId })
 
+    // `Location` names the Space that was created, in its canonical
+    // trailing-slash (container) form (spec "Create Space").
     const createdSpaceUrl = new URL(
-      spacesPath({ spaceId }),
+      spacePath({ spaceId, trailingSlash: true }),
       serverUrl
     ).toString()
     reply.header('Location', createdSpaceUrl)
-    // Surface the description ETag so a client can chain a conditional Update
-    // Space (read-modify-CAS on the Space Description).
+    // Surface the Metadata object's ETag so a client can chain a conditional
+    // Update Space (read-modify-CAS on the Space Metadata object).
     reply.header('etag', formatEtag(written))
-    // Echo what was persisted, `createdBy` included, so the create response and
-    // a subsequent Get Space agree. An id already in use was rejected as a 409
-    // by the guarded write, so it created the Space and its creator is this
-    // invoker.
-    return reply
-      .status(201)
-      .send({ ...spaceDescription, ...(createdBy && { createdBy }) })
+    // Echo what was persisted, `createdBy` included and the container `url`
+    // stamped, so the create response and a subsequent Read Space agree. An id
+    // already in use was rejected as a 409 by the guarded write, so it created
+    // the Space and its creator is this invoker.
+    return reply.status(201).send({
+      ...spaceMetadata,
+      ...(createdBy && { createdBy }),
+      url: spacePath({ spaceId, trailingSlash: true })
+    })
   }
 }

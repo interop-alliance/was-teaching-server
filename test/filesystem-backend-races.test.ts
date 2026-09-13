@@ -29,12 +29,12 @@ describe('FileSystemBackend races', () => {
     backend = new FileSystemBackend({ dataDir })
     await backend.writeSpace({
       spaceId,
-      spaceDescription: { id: spaceId, type: ['Space'], controller }
+      spaceMetadata: { id: spaceId, type: ['Space'], controller }
     })
     await backend.writeCollection({
       spaceId,
       collectionId,
-      collectionDescription: {
+      collectionMetadata: {
         id: collectionId,
         type: ['Collection'],
         name: 'Credentials'
@@ -61,9 +61,9 @@ describe('FileSystemBackend races', () => {
   }
 
   it('a Collection delete racing a Resource write leaves no phantom directory', async () => {
-    // Regression: the delete serialized only on the description key while the
+    // Regression: the delete serialized only on the metadata key while the
     // write recreated the Collection dir under its own per-Resource key, so the
-    // dir came back holding Resources but no description -- listed by
+    // dir came back holding Resources but no metadata file -- listed by
     // `listCollections`, 404 on read, and still counted against the quota.
     const writes = Array.from({ length: 40 }, (_unused, index) =>
       backend
@@ -82,13 +82,13 @@ describe('FileSystemBackend races', () => {
     await backend.deleteCollection({ spaceId, collectionId })
     await Promise.all(writes)
 
-    const description = await backend.getCollectionDescription({
+    const metadata = await backend.getCollectionMetadata({
       spaceId,
       collectionId
     })
     // Either the Collection is gone outright, or it exists WITH its
-    // description. What must never happen is content with no description.
-    if (description === undefined) {
+    // metadata file. What must never happen is content with no metadata.
+    if (metadata === undefined) {
       assert.deepEqual(
         await collectionDirEntries(),
         [],
@@ -115,8 +115,8 @@ describe('FileSystemBackend races', () => {
     await backend.deleteSpace({ spaceId })
     await Promise.all(writes)
 
-    const description = await backend.getSpaceDescription({ spaceId })
-    if (description === undefined) {
+    const metadata = await backend.getSpaceMetadata({ spaceId })
+    if (metadata === undefined) {
       const spaceDir = path.join(dataDir, 'spaces', spaceId)
       let entries: string[] = []
       try {
@@ -150,12 +150,12 @@ describe('FileSystemBackend races', () => {
     try {
       await sourceBackend.writeSpace({
         spaceId,
-        spaceDescription: { id: spaceId, type: ['Space'], controller }
+        spaceMetadata: { id: spaceId, type: ['Space'], controller }
       })
       await sourceBackend.writeCollection({
         spaceId,
         collectionId,
-        collectionDescription: {
+        collectionMetadata: {
           id: collectionId,
           type: ['Collection'],
           name: 'Credentials'
@@ -286,14 +286,14 @@ describe('FileSystemBackend races', () => {
       resourceId: 'doc',
       input: { kind: 'json', contentType: 'application/json', data: { a: 1 } }
     })
-    // Pass the description in, as the request layer does once it has fetched it
+    // Pass the metadata in, as the request layer does once it has fetched it
     // (`CollectionRequest`): the Collection provably exists, so the only thing
     // that can fail below is the directory enumeration itself.
-    const collectionDescription = await backend.getCollectionDescription({
+    const collectionMetadata = await backend.getCollectionMetadata({
       spaceId,
       collectionId
     })
-    assert.ok(collectionDescription)
+    assert.ok(collectionMetadata)
     const collectionDir = path.join(dataDir, 'spaces', spaceId, collectionId)
     await chmod(collectionDir, 0o000)
     try {
@@ -301,7 +301,7 @@ describe('FileSystemBackend races', () => {
         backend.listCollectionItems({
           spaceId,
           collectionId,
-          collectionDescription
+          collectionMetadata
         }),
         (err: unknown) => (err as NodeJS.ErrnoException).code === 'EACCES'
       )

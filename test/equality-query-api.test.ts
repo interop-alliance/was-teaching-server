@@ -60,7 +60,7 @@ describe('Collection equality query profile', () => {
     plaintext: unknown
   ): Promise<any> {
     return alice.was.request({
-      path: `/space/${spaceId()}/${collectionId}`,
+      path: `/space/${spaceId()}/${collectionId}/meta`,
       method: 'PUT',
       json: { id: collectionId, name: collectionId, plaintext }
     })
@@ -169,7 +169,7 @@ describe('Collection equality query profile', () => {
       })
       assert.equal(created.data.indexes, undefined)
       const desc = await alice.was.request({
-        path: `/space/${spaceId()}/decl-echo`,
+        path: `/space/${spaceId()}/decl-echo/meta`,
         method: 'GET'
       })
       assert.deepStrictEqual(desc.data.plaintext, {
@@ -185,7 +185,7 @@ describe('Collection equality query profile', () => {
       // The whole `plaintext` object round-trips, like `encryption`: a member
       // the server does not type yet is stored and echoed, not dropped.
       const created = await alice.was.request({
-        path: `/space/${spaceId()}/decl-extra`,
+        path: `/space/${spaceId()}/decl-extra/meta`,
         method: 'PUT',
         json: {
           id: 'decl-extra',
@@ -195,7 +195,7 @@ describe('Collection equality query profile', () => {
       })
       assert.equal(created.status, 201)
       const desc = await alice.was.request({
-        path: `/space/${spaceId()}/decl-extra`,
+        path: `/space/${spaceId()}/decl-extra/meta`,
         method: 'GET'
       })
       assert.deepStrictEqual(desc.data.plaintext, {
@@ -206,7 +206,7 @@ describe('Collection equality query profile', () => {
 
     it('a top-level indexes member is ignored, not read or stored', async () => {
       const created = await alice.was.request({
-        path: `/space/${spaceId()}/decl-flat`,
+        path: `/space/${spaceId()}/decl-flat/meta`,
         method: 'PUT',
         json: { id: 'decl-flat', name: 'decl-flat', indexes: ['parentId'] }
       })
@@ -228,7 +228,7 @@ describe('Collection equality query profile', () => {
       assert.equal(created.status, 201)
       assert.deepStrictEqual(created.data.plaintext, { indexes: ['parentId'] })
       const desc = await alice.was.request({
-        path: `/space/${spaceId()}/decl-post`,
+        path: `/space/${spaceId()}/decl-post/meta`,
         method: 'GET'
       })
       assert.deepStrictEqual(desc.data.plaintext, { indexes: ['parentId'] })
@@ -255,12 +255,12 @@ describe('Collection equality query profile', () => {
       await createIndexedCollection('decl-clear', ['parentId'])
       // A name-only update does not touch the stored `plaintext`.
       await alice.was.request({
-        path: `/space/${spaceId()}/decl-clear`,
+        path: `/space/${spaceId()}/decl-clear/meta`,
         method: 'PUT',
         json: { id: 'decl-clear', name: 'Renamed' }
       })
       let desc = await alice.was.request({
-        path: `/space/${spaceId()}/decl-clear`,
+        path: `/space/${spaceId()}/decl-clear/meta`,
         method: 'GET'
       })
       assert.deepStrictEqual(desc.data.plaintext, { indexes: ['parentId'] })
@@ -268,12 +268,12 @@ describe('Collection equality query profile', () => {
 
       // A changed declaration replaces the stored one.
       await alice.was.request({
-        path: `/space/${spaceId()}/decl-clear`,
+        path: `/space/${spaceId()}/decl-clear/meta`,
         method: 'PUT',
         json: { id: 'decl-clear', plaintext: { indexes: ['author'] } }
       })
       desc = await alice.was.request({
-        path: `/space/${spaceId()}/decl-clear`,
+        path: `/space/${spaceId()}/decl-clear/meta`,
         method: 'GET'
       })
       assert.deepStrictEqual(desc.data.plaintext, { indexes: ['author'] })
@@ -282,12 +282,12 @@ describe('Collection equality query profile', () => {
       // excluding `encryption`) with no declaration, and a later query naming
       // the old attribute now 400s.
       await alice.was.request({
-        path: `/space/${spaceId()}/decl-clear`,
+        path: `/space/${spaceId()}/decl-clear/meta`,
         method: 'PUT',
         json: { id: 'decl-clear', plaintext: {} }
       })
       desc = await alice.was.request({
-        path: `/space/${spaceId()}/decl-clear`,
+        path: `/space/${spaceId()}/decl-clear/meta`,
         method: 'GET'
       })
       assert.deepStrictEqual(desc.data.plaintext, {})
@@ -295,7 +295,7 @@ describe('Collection equality query profile', () => {
       assert.equal(err.response.status, 400)
       const enc = await rejection(
         alice.was.request({
-          path: `/space/${spaceId()}/decl-clear`,
+          path: `/space/${spaceId()}/decl-clear/meta`,
           method: 'PUT',
           json: { id: 'decl-clear', encryption: { scheme: 'edv' } }
         })
@@ -372,7 +372,7 @@ describe('Collection equality query profile', () => {
     it('rejects declaring plaintext together with an encryption descriptor (400)', async () => {
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId()}/mx-create`,
+          path: `/space/${spaceId()}/mx-create/meta`,
           method: 'PUT',
           json: {
             id: 'mx-create',
@@ -387,25 +387,34 @@ describe('Collection equality query profile', () => {
     })
 
     it('rejects adding plaintext to an already-encrypted Collection (400), even an empty one', async () => {
+      const descriptor = { scheme: 'edv' }
       await alice.was.request({
-        path: `/space/${spaceId()}/mx-enc-first`,
+        path: `/space/${spaceId()}/mx-enc-first/meta`,
         method: 'PUT',
-        json: { id: 'mx-enc-first', encryption: { scheme: 'edv' } }
+        json: { id: 'mx-enc-first', encryption: descriptor }
       })
+      // `encryption` is set-once and cleared by omission (`PUT .../meta` is a
+      // full replacement), so every update must resend it -- this test
+      // exercises the mutual-exclusion check, not that immutability rail, so
+      // both requests carry the descriptor forward alongside `plaintext`.
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId()}/mx-enc-first`,
+          path: `/space/${spaceId()}/mx-enc-first/meta`,
           method: 'PUT',
-          json: { id: 'mx-enc-first', plaintext: { indexes: ['parentId'] } }
+          json: {
+            id: 'mx-enc-first',
+            encryption: descriptor,
+            plaintext: { indexes: ['parentId'] }
+          }
         })
       )
       assert.equal(err.response.status, 400)
       assert.equal(err.data.errors?.[0]?.pointer, '#/plaintext')
       const empty = await rejection(
         alice.was.request({
-          path: `/space/${spaceId()}/mx-enc-first`,
+          path: `/space/${spaceId()}/mx-enc-first/meta`,
           method: 'PUT',
-          json: { id: 'mx-enc-first', plaintext: {} }
+          json: { id: 'mx-enc-first', encryption: descriptor, plaintext: {} }
         })
       )
       assert.equal(empty.response.status, 400)
@@ -416,7 +425,7 @@ describe('Collection equality query profile', () => {
       await createIndexedCollection('mx-idx-first', ['parentId'])
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId()}/mx-idx-first`,
+          path: `/space/${spaceId()}/mx-idx-first/meta`,
           method: 'PUT',
           json: { id: 'mx-idx-first', encryption: { scheme: 'edv' } }
         })
@@ -659,7 +668,7 @@ describe('Collection equality query profile', () => {
 
     it('answers an equality query against an encrypted Collection with 501', async () => {
       await alice.was.request({
-        path: `/space/${spaceId()}/q-encrypted`,
+        path: `/space/${spaceId()}/q-encrypted/meta`,
         method: 'PUT',
         json: { id: 'q-encrypted', encryption: { scheme: 'edv' } }
       })
@@ -683,7 +692,7 @@ describe('Collection equality query profile', () => {
 
       // Declare `author` (no reindex, no rewrite of the Resources).
       await alice.was.request({
-        path: `/space/${spaceId()}/u-reindex`,
+        path: `/space/${spaceId()}/u-reindex/meta`,
         method: 'PUT',
         json: {
           id: 'u-reindex',
@@ -776,7 +785,7 @@ describe('Collection equality query profile', () => {
       // already violate it.
       const err = await rejection(
         alice.was.request({
-          path: `/space/${spaceId()}/uq-add`,
+          path: `/space/${spaceId()}/uq-add/meta`,
           method: 'PUT',
           json: {
             id: 'uq-add',

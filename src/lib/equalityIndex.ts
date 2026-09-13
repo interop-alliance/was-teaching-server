@@ -10,7 +10,7 @@
  * queryable.
  *
  * A Collection opts in by declaring `plaintext.indexes` in its Collection
- * Description (the `plaintext` member is the counterpart of `encryption`; see
+ * Metadata object (the `plaintext` member is the counterpart of `encryption`; see
  * the `CollectionIndexDeclaration` wire type). Each declared entry names an
  * attribute plus the `source` it is extracted from (`content` = a JSON
  * Resource's stored content, `custom` = any Resource's `custom` metadata object
@@ -29,7 +29,7 @@
  * (`lib/cursor.ts`), keyset-ordered by ascending `resourceId`.
  */
 import type {
-  CollectionDescription,
+  CollectionMetadata,
   CollectionIndexDeclaration
 } from '../types.js'
 import { encodeCursor } from './cursor.js'
@@ -121,7 +121,7 @@ function isIndexableValue(value: unknown): value is EqualityValue {
 }
 
 /**
- * Normalizes a Collection Description's declared `plaintext.indexes` into the
+ * Normalizes a Collection Metadata object's declared `plaintext.indexes` into the
  * uniform {@link NormalizedIndexDeclaration} shape: a bare string entry becomes
  * `{ name, source: 'content', unique: false }`, and an object entry has its
  * optional `source` / `unique` defaulted. An absent declaration normalizes to
@@ -131,7 +131,7 @@ function isIndexableValue(value: unknown): value is EqualityValue {
  *
  * @param options {object}
  * @param [options.indexes] {Array<string | CollectionIndexDeclaration>}   the
- *   Collection Description's declared `plaintext.indexes`
+ *   Collection Metadata object's declared `plaintext.indexes`
  * @returns {NormalizedIndexDeclaration[]}
  */
 export function normalizeIndexes({
@@ -155,23 +155,23 @@ export function normalizeIndexes({
 }
 
 /**
- * The normalized declared indexes of a Collection Description: the one place
+ * The normalized declared indexes of a Collection Metadata object: the one place
  * that knows the declaration lives at `plaintext.indexes`. An absent
- * Description, an absent `plaintext` member, or an index-free one yields an
+ * object, an absent `plaintext` member, or an index-free one yields an
  * empty array (so, for an encrypted Collection, every named attribute fails
  * the declared-names check).
  *
  * @param options {object}
- * @param [options.collectionDescription] {CollectionDescription}
+ * @param [options.collectionMetadata] {CollectionMetadata}
  * @returns {NormalizedIndexDeclaration[]}
  */
 export function declaredIndexesOf({
-  collectionDescription
+  collectionMetadata
 }: {
-  collectionDescription?: Pick<CollectionDescription, 'plaintext'>
+  collectionMetadata?: Pick<CollectionMetadata, 'plaintext'>
 }): NormalizedIndexDeclaration[] {
   return normalizeIndexes({
-    indexes: collectionDescription?.plaintext?.indexes
+    indexes: collectionMetadata?.plaintext?.indexes
   })
 }
 
@@ -190,7 +190,7 @@ export function declaredIndexesOf({
  *
  * @param options {object}
  * @param [options.indexes] {Array<string | CollectionIndexDeclaration>}   the
- *   Collection Description's declared `plaintext.indexes`
+ *   Collection Metadata object's declared `plaintext.indexes`
  * @returns {NormalizedIndexDeclaration[]}
  */
 export function uniqueIndexesOf({
@@ -204,7 +204,7 @@ export function uniqueIndexesOf({
 /**
  * Enforces the `plaintext` / `encryption` mutual exclusion (spec "Collection
  * Data Model"): the two are counterpart members describing how the server may
- * treat a Collection's Resources, and a Collection Description MUST NOT carry
+ * treat a Collection's Resources, and a Collection Metadata object MUST NOT carry
  * both. The exclusion is by presence -- an empty `plaintext` object still
  * excludes `encryption` -- so it reads as a structural fact rather than a rule
  * about `indexes`. Rejects with `invalid-request-body` (400) pointing at
@@ -267,7 +267,7 @@ export function assertPlaintextNotEncrypted({
  * @param options {object}
  * @param [options.plaintext] {unknown}   the request body's `plaintext` value
  * @param [options.requestName] {string}   request name for the 400 error title
- * @returns {CollectionDescription['plaintext']}   the member to store, or
+ * @returns {CollectionMetadata['plaintext']}   the member to store, or
  *   undefined when absent
  */
 export function assertSupportedPlaintext({
@@ -276,7 +276,7 @@ export function assertSupportedPlaintext({
 }: {
   plaintext?: unknown
   requestName?: string
-}): CollectionDescription['plaintext'] {
+}): CollectionMetadata['plaintext'] {
   if (plaintext === undefined) {
     return undefined
   }
@@ -289,7 +289,7 @@ export function assertSupportedPlaintext({
   }
   const { indexes } = plaintext
   if (indexes === undefined) {
-    return plaintext as CollectionDescription['plaintext']
+    return plaintext as CollectionMetadata['plaintext']
   }
   if (!Array.isArray(indexes)) {
     throw new InvalidRequestBodyError({
@@ -357,7 +357,7 @@ export function assertSupportedPlaintext({
   })
   // Persist verbatim (bare strings and objects alike survive the round-trip);
   // normalization for extraction/matching happens at query/write time.
-  return plaintext as CollectionDescription['plaintext']
+  return plaintext as CollectionMetadata['plaintext']
 }
 
 /**

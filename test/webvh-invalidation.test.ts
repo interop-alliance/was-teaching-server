@@ -140,7 +140,7 @@ async function publishDid({
   await storage.writeCollection({
     spaceId,
     collectionId,
-    collectionDescription: {
+    collectionMetadata: {
       id: collectionId,
       type: ['Collection'],
       name: collectionId
@@ -166,7 +166,7 @@ describe('did:webvh resolution cache invalidation', () => {
     spaceId = randomUUID()
     await storage.writeSpace({
       spaceId,
-      spaceDescription: {
+      spaceMetadata: {
         id: spaceId,
         type: ['Space'],
         controller: 'did:key:z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD'
@@ -311,7 +311,7 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
     spaceId = randomUUID()
     await storage.writeSpace({
       spaceId,
-      spaceDescription: {
+      spaceMetadata: {
         id: spaceId,
         type: ['Space'],
         controller: 'did:key:z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD'

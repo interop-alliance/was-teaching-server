@@ -12,7 +12,7 @@ import assert from 'node:assert'
 import {
   spacesPath,
   spacePath,
-  collectionsPath,
+  spaceMetaPath,
   exportPath,
   importPath,
   collectionPath,
@@ -26,12 +26,8 @@ import {
 } from '../src/lib/paths.js'
 
 describe('spacesPath', () => {
-  it('builds the repository container path (trailing slash) with no id', () => {
+  it('builds the repository container path (trailing slash)', () => {
     assert.equal(spacesPath(), '/spaces/')
-  })
-
-  it('builds a repository member path (no trailing slash) with a spaceId', () => {
-    assert.equal(spacesPath({ spaceId: 's1' }), '/spaces/s1')
   })
 })
 
@@ -48,9 +44,9 @@ describe('spacePath', () => {
   })
 })
 
-describe('collectionsPath', () => {
-  it('builds the List Collections container path', () => {
-    assert.equal(collectionsPath({ spaceId: 's1' }), '/space/s1/collections/')
+describe('spaceMetaPath', () => {
+  it('builds the Space Metadata path', () => {
+    assert.equal(spaceMetaPath({ spaceId: 's1' }), '/space/s1/meta')
   })
 })
 

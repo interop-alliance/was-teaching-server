@@ -95,7 +95,7 @@ if (!connectionString) {
       const { backend } = harness
       await backend.writeSpace({
         spaceId,
-        spaceDescription: {
+        spaceMetadata: {
           id: spaceId,
           type: ['Space'],
           name: 'Round Trip',
@@ -105,7 +105,7 @@ if (!connectionString) {
       await backend.writeCollection({
         spaceId,
         collectionId: 'docs',
-        collectionDescription: {
+        collectionMetadata: {
           id: 'docs',
           type: ['Collection'],
           name: 'Documents'
@@ -204,7 +204,7 @@ if (!connectionString) {
           // FS to PG: import, then re-export and compare.
           await pgTarget.backend.writeSpace({
             spaceId,
-            spaceDescription: {
+            spaceMetadata: {
               id: spaceId,
               type: ['Space'],
               name: 'Round Trip',
@@ -227,7 +227,7 @@ if (!connectionString) {
             )
           }
           for (const [name, doc] of fsArchive.parsed) {
-            // The Space Description file is ignored on import (the target
+            // The Space Metadata file is ignored on import (the target
             // Space was written independently), so its `_generation` /
             // `_version` validator is that Space's own and cannot match.
             const withoutSpaceValidator = (document: unknown) =>
@@ -248,7 +248,7 @@ if (!connectionString) {
           // And back: PG to FS.
           await fsTarget.backend.writeSpace({
             spaceId,
-            spaceDescription: {
+            spaceMetadata: {
               id: spaceId,
               type: ['Space'],
               name: 'Round Trip',

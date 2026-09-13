@@ -1,20 +1,31 @@
 /**
  * Route layer: maps URL patterns to *Request handler methods. Each group first
  * installs the `requireAuthHeadersOrPublicRead` then `parseAuthHeaders`
- * onRequest hooks, and redirects slash/no-slash variants to the canonical form.
- * (The WebKMS `/kms` group is the exception on both counts: it installs the
- * strict `requireAuthHeaders` -- the webkms protocol has no public reads --
- * and no slash redirects, since the protocol's URLs are exact.)
+ * onRequest hooks, and redirects the non-canonical slash variant of a path to
+ * the canonical form with a 308 (spec "Reading This Document"). A container
+ * -- the `/spaces/` repository, a Space, a Collection, a Resource's `chunks/`
+ * -- is canonically addressed WITH the trailing slash: `GET` lists its
+ * members, `POST` adds one, `DELETE` removes the container, and `PUT` is not
+ * defined there (405). What a container *is* lives at its `meta`
+ * sub-resource: `GET`/`PUT /space/:spaceId/meta` is the Space Metadata object
+ * and `GET`/`PUT /space/:spaceId/:collectionId/meta` the Collection Metadata
+ * object, and every other sub-resource path (`policy`, `linkset`, `meta`,
+ * a Resource) carries no trailing slash. No two registered paths differ only
+ * by a trailing slash. (The WebKMS `/kms` group is the exception on both
+ * counts: it installs the strict `requireAuthHeaders` -- the webkms protocol
+ * has no public reads -- and no slash redirects, since the protocol's URLs
+ * are exact.)
  */
 import type {
   FastifyInstance,
   FastifyPluginOptions,
   FastifyReply,
-  FastifyRequest
+  FastifyRequest,
+  HTTPMethods
 } from 'fastify'
 import { SpacesRepositoryRequest } from './requests/SpacesRepositoryRequest.js'
 import { SpaceRequest } from './requests/SpaceRequest.js'
-import { handleError } from './errors.js'
+import { handleError, MethodNotAllowedError } from './errors.js'
 import { ResourceRequest } from './requests/ResourceRequest.js'
 import { ChunkRequest } from './requests/ChunkRequest.js'
 import { CollectionRequest } from './requests/CollectionRequest.js'
@@ -128,6 +139,19 @@ async function markPostNoStore(
 const safeRoute = { config: { safe: true } }
 
 /**
+ * Splits a request URL into its path and its query string (`?` included, or
+ * empty), so a redirect can rewrite the path and carry the query over.
+ * @param url {string}   the request URL (path plus optional query string)
+ * @returns {{ pathPart: string, query: string }}
+ */
+function splitQuery(url: string): { pathPart: string; query: string } {
+  const queryIndex = url.indexOf('?')
+  return queryIndex === -1
+    ? { pathPart: url, query: '' }
+    : { pathPart: url.slice(0, queryIndex), query: url.slice(queryIndex) }
+}
+
+/**
  * Toggles the trailing slash on the request's actual path (preserving any query
  * string), returning the canonical target for a slash/no-slash redirect. Built
  * from `request.url` rather than the route template so the `Location` carries
@@ -138,9 +162,7 @@ const safeRoute = { config: { safe: true } }
  * @returns {string}
  */
 function toggleTrailingSlash(url: string, addSlash: boolean): string {
-  const queryIndex = url.indexOf('?')
-  const pathPart = queryIndex === -1 ? url : url.slice(0, queryIndex)
-  const query = queryIndex === -1 ? '' : url.slice(queryIndex)
+  const { pathPart, query } = splitQuery(url)
   const canonical = addSlash
     ? pathPart.endsWith('/')
       ? pathPart
@@ -182,6 +204,144 @@ function redirectStripSlash(
 }
 
 /**
+ * Redirects the retired `/space/:spaceId/collections` endpoint (either slash
+ * form) to the Space container URL, which lists and creates Collections since
+ * v0.5, with a `308` so a POST is replayed as a POST (spec "Reserved Path
+ * Segment Registry": a server MAY answer the retired path with a 308 to the
+ * Space URL). Rewrites the path rather than toggling its slash, preserving
+ * any query string. The rewrite strips the trailing `collections` segment off
+ * the request path as sent, rather than rebuilding the path from
+ * `request.params.spaceId` -- the router has already percent-decoded that
+ * param, so rebuilding from it would emit a `Location` naming a different
+ * resource (`/space/a%2Fb/collections` would redirect to `/space/a/b/`) or
+ * inject a query into the path (`a%3Fx=1`). Toggling the request path
+ * verbatim, as the slash redirects do, keeps the id byte-identical to what
+ * the client sent.
+ * @param request {import('fastify').FastifyRequest}
+ * @param reply {import('fastify').FastifyReply}
+ * @returns {FastifyReply}
+ */
+function redirectCollectionsToSpace(
+  request: FastifyRequest,
+  reply: FastifyReply
+): FastifyReply {
+  const { pathPart, query } = splitQuery(request.url)
+  // Both registered forms end in `collections` or `collections/`; dropping
+  // that leaves the Space container URL, trailing slash included.
+  const spaceUrl = pathPart.replace(/collections\/?$/, '')
+  return reply.redirect(`${spaceUrl}${query}`, 308)
+}
+
+/**
+ * Answers a method that is not defined at a URL with `405 Method Not Allowed`.
+ * Two kinds of URL use it. A container URL refuses `PUT` (spec: a server MUST
+ * answer a `PUT` at the Space URL with 405; the same for a Collection), since a
+ * container is described at its `meta` sub-resource. And a reserved endpoint
+ * refuses every method it does not implement (spec "Methods at Reserved
+ * Endpoints"; see `refuseUnimplementedMethods`). Registered explicitly rather
+ * than left to fall through, so the `Allow` header can name what the URL does
+ * accept -- and so a request to a reserved endpoint does not reach the
+ * parametric route one level up, whose reserved-id guard would answer the
+ * unrelated `409 reserved-id`.
+ * @param allow {string[]}   the methods implemented at the URL
+ * @param targetName {string}   what the URL addresses, named in the detail
+ * @param [hint] {string}   one sentence naming where the refused operation
+ *   lives instead
+ * @returns {(request: FastifyRequest) => never}
+ */
+function methodNotAllowed(
+  allow: string[],
+  targetName: string,
+  hint?: string
+): (request: FastifyRequest) => never {
+  return () => {
+    throw new MethodNotAllowedError({
+      allow,
+      targetName,
+      ...(hint !== undefined && { hint })
+    })
+  }
+}
+
+/**
+ * The methods a WAS container URL (a Space or a Collection) accepts: list its
+ * members, add one, delete the container.
+ */
+const CONTAINER_METHODS: HTTPMethods[] = ['GET', 'HEAD', 'POST', 'DELETE']
+
+/**
+ * The order an `Allow` header lists methods in, so the header reads the same
+ * however the routes happen to be registered.
+ */
+const ALLOW_ORDER = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'QUERY']
+
+/** The sentence a container-URL `PUT` refusal carries. */
+const CONTAINER_PUT_HINT =
+  'A container is described at its "meta" sub-resource.'
+
+/** The sentence a Metadata-URL `DELETE` refusal carries. */
+const CONTAINER_META_DELETE_HINT =
+  'A Metadata object is removed by deleting the container it describes.'
+
+/**
+ * Registers a `405 Method Not Allowed` route for every method a reserved
+ * endpoint does not implement (spec "Methods at Reserved Endpoints"), with an
+ * `Allow` header naming the methods it does. Without these, a method the
+ * endpoint lacks falls through to the parametric route one level up -- a
+ * Collection or Resource operation on the reserved segment as an id -- and is
+ * refused as a `409 reserved-id`, which answers a question the request never
+ * asked. The refusal is registered before any storage access and does not
+ * look at the path's ids, so it answers the same whether or not the Space,
+ * Collection, or Resource exists.
+ *
+ * The implemented set is read from the router itself (`hasRoute`), so the
+ * `Allow` header cannot drift from the routes. That makes the call order
+ * matter: call it at the end of the route group that owns the endpoints, after
+ * their real routes and before any refusal is added. Every method Fastify
+ * routes is considered except `OPTIONS`, which the CORS plugin's preflight
+ * route answers. `HEAD` is never registered here: Fastify exposes it beside
+ * every `GET`, so it is implemented wherever `GET` is and refused wherever a
+ * `GET` refusal is registered.
+ * @param app {import('fastify').FastifyInstance}   the owning route group
+ * @param endpoints {object[]}   the reserved endpoints, each a route `url`
+ *   template, the `targetName` its refusal names, and optional per-method
+ *   `hints`
+ * @returns {void}
+ */
+function refuseUnimplementedMethods(
+  app: FastifyInstance,
+  endpoints: {
+    url: string
+    targetName: string
+    hints?: Partial<Record<string, string>>
+  }[]
+): void {
+  const candidates = app.supportedMethods.filter(method => method !== 'OPTIONS')
+  for (const { url, targetName, hints = {} } of endpoints) {
+    const allow = candidates
+      .filter(method => app.hasRoute({ url, method: method as HTTPMethods }))
+      .sort((a, b) => ALLOW_ORDER.indexOf(a) - ALLOW_ORDER.indexOf(b))
+    for (const method of candidates) {
+      if (method === 'HEAD' || allow.includes(method)) {
+        continue
+      }
+      app.route({
+        method: method as HTTPMethods,
+        url,
+        handler: methodNotAllowed(allow, targetName, hints[method])
+      })
+    }
+  }
+}
+
+/**
+ * The methods the bare (no-slash) form of a container URL redirects for: the
+ * container's own plus `PUT`, so a `PUT` at the bare form reaches the 405
+ * rather than a 404. OPTIONS is left to the CORS plugin's preflight route.
+ */
+const CONTAINER_REDIRECT_METHODS: HTTPMethods[] = [...CONTAINER_METHODS, 'PUT']
+
+/**
  * Registers SpacesRepository routes (POST/GET /spaces). Installs the
  * `requireAuthHeadersOrPublicRead` then `parseAuthHeaders` onRequest hooks and
  * the `handleError` error handler.
@@ -208,8 +368,11 @@ export async function initSpacesRepositoryRoutes(
 }
 
 /**
- * Registers Space routes (get/update/delete a Space, add/list Collections,
- * export/import). Installs the auth hooks and the `handleError` error handler.
+ * Registers Space routes: the Space container (list/add Collections, delete
+ * the Space), its Metadata object at `meta`, the retired `collections`
+ * redirect, and the policy / linkset / backends / quotas / revocation /
+ * export / import sub-resources. Installs the auth hooks and the
+ * `handleError` error handler.
  * @param app {import('fastify').FastifyInstance}
  * @param options {object}   Fastify plugin options
  * @returns {Promise<void>}
@@ -220,21 +383,42 @@ export async function initSpaceRoutes(
 ): Promise<void> {
   installGroupHooks(app)
 
-  // Get Space description object
-  app.get('/space/:spaceId', SpaceRequest.get)
-
-  // Update or Create Space by Id (only "no trailing slash" is valid)
-  app.put('/space/:spaceId/', redirectStripSlash)
-  app.put('/space/:spaceId', SpaceRequest.put)
-
+  // The Space container: canonically `/space/:spaceId/`; the bare form
+  // redirects there for every WAS method (a 308 replays the method and body).
+  // Listed explicitly rather than `app.all`, which would also claim OPTIONS
+  // and shadow the CORS plugin's preflight route with a redirect a browser
+  // will not follow.
+  app.route({
+    method: CONTAINER_REDIRECT_METHODS,
+    url: '/space/:spaceId',
+    handler: redirectAddSlash
+  })
+  // List Collections (a `GET` of the container lists its members)
+  app.get('/space/:spaceId/', SpaceRequest.listCollections)
+  // Add Collection to a Space
+  app.post('/space/:spaceId/', SpaceRequest.post)
   // Delete Space
-  app.delete('/space/:spaceId', SpaceRequest.delete)
+  app.delete('/space/:spaceId/', SpaceRequest.delete)
+  // `PUT` is not defined at the container: the Space is written at `meta`.
+  app.put(
+    '/space/:spaceId/',
+    methodNotAllowed(CONTAINER_METHODS, 'Space', CONTAINER_PUT_HINT)
+  )
 
-  // List Collections for a space (the canonical form has a trailing slash;
-  // registered as GET so `GET /space/:spaceId/collections` redirects there
-  // rather than falling through to the Collection GET route).
-  app.get('/space/:spaceId/collections', redirectAddSlash)
-  app.get('/space/:spaceId/collections/', SpaceRequest.listCollections)
+  // The Space Metadata object (reserved `meta` segment; static-beats-parametric
+  // routing keeps it ahead of the `:collectionId` parameter in the Collection
+  // routes, and `meta` is a reserved Collection id -- see `lib/validateId.ts`).
+  // Read Space, and Update (or Create by Id) Space.
+  app.get('/space/:spaceId/meta', SpaceRequest.getMeta)
+  app.put('/space/:spaceId/meta', SpaceRequest.putMeta)
+
+  // The retired `collections` endpoint (reserved segment): listing and
+  // creating Collections moved to the Space URL in v0.5, so both slash forms
+  // redirect there for the two methods it served.
+  app.get('/space/:spaceId/collections', redirectCollectionsToSpace)
+  app.get('/space/:spaceId/collections/', redirectCollectionsToSpace)
+  app.post('/space/:spaceId/collections', redirectCollectionsToSpace)
+  app.post('/space/:spaceId/collections/', redirectCollectionsToSpace)
 
   // Space access-control policy (reserved segment; Fastify routes static
   // segments ahead of the `:collectionId` parameter, so this never collides).
@@ -279,10 +463,6 @@ export async function initSpaceRoutes(
     RevocationRequest.postSpace
   )
 
-  // Add Collection to a Space
-  app.post('/space/:spaceId', redirectAddSlash)
-  app.post('/space/:spaceId/', SpaceRequest.post)
-
   // POST /space/12345/export
   app.post('/space/:spaceId/export', safeRoute, SpaceRequest.export)
 
@@ -291,11 +471,34 @@ export async function initSpaceRoutes(
     done(null, body)
   })
   app.post('/space/:spaceId/import', SpaceRequest.import)
+
+  // Every Space-level reserved endpoint refuses the methods it does not
+  // implement with a 405, rather than letting them fall through to a
+  // Collection operation on the reserved segment. Last in the group, so the
+  // implemented set above is complete when it is read.
+  refuseUnimplementedMethods(app, [
+    {
+      url: '/space/:spaceId/meta',
+      targetName: 'Space Metadata',
+      hints: { DELETE: CONTAINER_META_DELETE_HINT }
+    },
+    { url: '/space/:spaceId/policy', targetName: 'Space policy' },
+    { url: '/space/:spaceId/backends', targetName: 'Space backends' },
+    { url: '/space/:spaceId/collections', targetName: 'retired collections' },
+    { url: '/space/:spaceId/collections/', targetName: 'retired collections' },
+    { url: '/space/:spaceId/export', targetName: 'Space export' },
+    { url: '/space/:spaceId/import', targetName: 'Space import' },
+    { url: '/space/:spaceId/linkset', targetName: 'Space linkset' },
+    { url: '/space/:spaceId/query', targetName: 'Space query' },
+    { url: '/space/:spaceId/quotas', targetName: 'Space quotas' }
+  ])
 }
 
 /**
- * Registers Collection routes (get/update/delete a Collection, list its items,
- * add a Resource). Installs the auth hooks and the `handleError` error handler.
+ * Registers Collection routes: the Collection container (list/add Resources,
+ * delete the Collection), its Metadata object at `meta` with the governing
+ * history log beneath it, and the policy / linkset / backend / quota / query
+ * sub-resources. Installs the auth hooks and the `handleError` error handler.
  * @param app {import('fastify').FastifyInstance}
  * @param options {object}   Fastify plugin options
  * @returns {Promise<void>}
@@ -306,10 +509,25 @@ export async function initCollectionRoutes(
 ): Promise<void> {
   installGroupHooks(app)
 
-  // Get Collection description
-  app.get('/space/:spaceId/:collectionId', CollectionRequest.get)
-  // List Collection items
+  // The Collection container: canonically `/space/:spaceId/:collectionId/`;
+  // the bare form redirects there for every WAS method (see the Space
+  // container's note on OPTIONS).
+  app.route({
+    method: CONTAINER_REDIRECT_METHODS,
+    url: '/space/:spaceId/:collectionId',
+    handler: redirectAddSlash
+  })
+  // List Collection items (a `GET` of the container lists its members)
   app.get('/space/:spaceId/:collectionId/', CollectionRequest.list)
+  // Add Resource to a Collection
+  app.post('/space/:spaceId/:collectionId/', CollectionRequest.post)
+  // Delete Collection
+  app.delete('/space/:spaceId/:collectionId/', CollectionRequest.delete)
+  // `PUT` is not defined at the container: the Collection is written at `meta`.
+  app.put(
+    '/space/:spaceId/:collectionId/',
+    methodNotAllowed(CONTAINER_METHODS, 'Collection', CONTAINER_PUT_HINT)
+  )
 
   // Collection access-control policy (reserved segment; static-beats-parametric
   // routing keeps this ahead of the `:resourceId` parameter).
@@ -324,12 +542,14 @@ export async function initCollectionRoutes(
   // Collection linkset (RFC9264 policy discovery)
   app.get('/space/:spaceId/:collectionId/linkset', CollectionRequest.linkset)
 
-  // Collection Metadata (reserved segment). Unlike the Resource-level `/meta`,
-  // this one sits at the `:resourceId` position, so `meta` is a reserved
-  // Resource id; static-beats-parametric routing keeps it ahead of the
-  // `:resourceId` parameter in Resource routes.
+  // The Collection Metadata object (reserved `meta` segment): the merged
+  // description-plus-annotations object. Like the Space-level `meta`, this one
+  // sits at the next level's id position (`:resourceId`), so `meta` is a
+  // reserved Resource id; static-beats-parametric routing keeps it ahead of
+  // the `:resourceId` parameter in Resource routes.
+  // Read Collection Metadata, and Update (or Create by Id) Collection: a full
+  // replacement that creates the Collection when absent.
   app.get('/space/:spaceId/:collectionId/meta', CollectionRequest.getMeta)
-  // Update Collection Metadata (full replacement of the user-writable `custom`).
   app.put('/space/:spaceId/:collectionId/meta', CollectionRequest.putMeta)
   // The Collection's governing history log (the `governed-history-logs`
   // feature), a sub-resource beside `/meta`: not a Resource of the Collection,
@@ -357,23 +577,39 @@ export async function initCollectionRoutes(
     CollectionRequest.query
   )
 
-  // Add Resource to a Collection
-  app.post('/space/:spaceId/:collectionId', redirectAddSlash)
-  app.post('/space/:spaceId/:collectionId/', CollectionRequest.post)
-
-  // Create a Collection by Id
-  app.put(
-    '/space/:spaceId/:collectionId/', // no trailing slash allowed
-    redirectStripSlash
-  )
-  app.put('/space/:spaceId/:collectionId', CollectionRequest.put)
-
-  // Delete Collection by Id
-  app.delete(
-    '/space/:spaceId/:collectionId/', // no trailing slash allowed
-    redirectStripSlash
-  )
-  app.delete('/space/:spaceId/:collectionId', CollectionRequest.delete)
+  // Every Collection-level reserved endpoint refuses the methods it does not
+  // implement with a 405 (see the Space group's note).
+  refuseUnimplementedMethods(app, [
+    {
+      url: '/space/:spaceId/:collectionId/policy',
+      targetName: 'Collection policy'
+    },
+    {
+      url: '/space/:spaceId/:collectionId/linkset',
+      targetName: 'Collection linkset'
+    },
+    {
+      url: '/space/:spaceId/:collectionId/meta',
+      targetName: 'Collection Metadata',
+      hints: { DELETE: CONTAINER_META_DELETE_HINT }
+    },
+    {
+      url: '/space/:spaceId/:collectionId/meta/log',
+      targetName: 'Collection history log'
+    },
+    {
+      url: '/space/:spaceId/:collectionId/backend',
+      targetName: 'Collection backend'
+    },
+    {
+      url: '/space/:spaceId/:collectionId/quota',
+      targetName: 'Collection quota'
+    },
+    {
+      url: '/space/:spaceId/:collectionId/query',
+      targetName: 'Collection query'
+    }
+  ])
 }
 
 /**
@@ -438,7 +674,7 @@ export async function initResourceRoutes(
   // (`chunks/:chunkIndex`) addresses one stored chunk; the container form
   // (`chunks/`) is the discovery/reassembly listing. The `chunks` segment sits
   // below the Resource level, so it needs no reserved-id entry (`meta` does,
-  // because it is also addressed one level up, on a Collection).
+  // because it is also addressed one level up, on a Collection and a Space).
 
   // Store a chunk by index
   app.put(
@@ -479,6 +715,27 @@ export async function initResourceRoutes(
     '/space/:spaceId/:collectionId/:resourceId/chunks/',
     ChunkRequest.list
   )
+
+  // Every Resource-level reserved endpoint refuses the methods it does not
+  // implement with a 405 (see the Space group's note).
+  refuseUnimplementedMethods(app, [
+    {
+      url: '/space/:spaceId/:collectionId/:resourceId/policy',
+      targetName: 'Resource policy'
+    },
+    {
+      url: '/space/:spaceId/:collectionId/:resourceId/meta',
+      targetName: 'Resource metadata'
+    },
+    {
+      url: '/space/:spaceId/:collectionId/:resourceId/chunks',
+      targetName: 'Resource chunks'
+    },
+    {
+      url: '/space/:spaceId/:collectionId/:resourceId/chunks/',
+      targetName: 'Resource chunks'
+    }
+  ])
 }
 
 /**

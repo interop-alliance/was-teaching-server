@@ -7,13 +7,12 @@ import {
   parseChunkIndexSegment,
   parseResourceFileName,
   isRepresentationFileName,
-  collectionDescriptionFileName,
+  collectionMetadataFileName,
   parseResourcePolicyFileName,
   COLLECTION_POLICY_FILE_NAME,
   SPACE_POLICY_FILE_NAME,
   JSON_FILE_SUFFIX,
   META_FILE_PREFIX,
-  COLLECTION_META_FILE_PREFIX,
   COLLECTION_LOG_FILE_PREFIX
 } from './resourceFileName.js'
 import { assertEncryptedWriteConforms } from './encryption.js'
@@ -21,7 +20,7 @@ import { assertGoverningLogAppend } from './governedLog.js'
 import { isPlainObject } from './isPlainObject.js'
 import { InvalidImportError, ProblemError } from '../errors.js'
 import type {
-  CollectionDescription,
+  CollectionMetadata,
   PolicyDocument,
   RevocationRecord
 } from '../types.js'
@@ -50,17 +49,6 @@ function dotFileId(fileName: string, prefix: string): string | undefined {
  */
 export function metaSidecarFileId(fileName: string): string | undefined {
   return dotFileId(fileName, META_FILE_PREFIX)
-}
-
-/**
- * If `fileName` is a Collection metadata sidecar
- * (`.collectionmeta.<collectionId>.json`), returns the `<collectionId>` it is
- * keyed by; otherwise undefined.
- * @param fileName {string}
- * @returns {string | undefined}
- */
-function collectionMetaFileId(fileName: string): string | undefined {
-  return dotFileId(fileName, COLLECTION_META_FILE_PREFIX)
 }
 
 /**
@@ -278,7 +266,15 @@ export interface ImportPlanChunkFile {
 /** One collection (plus its resources and policies) staged for import. */
 export interface ImportPlanCollection {
   collectionId: string
-  collectionDescription: CollectionDescription
+  /**
+   * The Collection Metadata object parsed from the archive's
+   * `.collection.<id>.json` file (the merged object: configuration members
+   * beside `createdAt`, `updatedAt`, `custom`, `epoch`, and `createdBy`),
+   * carrying the archived `_generation` / `_version` validator members when
+   * the file had them. Defaults to a minimal object for a Collection dir the
+   * archive carries no file for.
+   */
+  collectionMetadata: CollectionMetadata
   /** Collection-level access-control policy, if the archive carries one. */
   collectionPolicy?: PolicyDocument
   resources: ImportPlanResource[]
@@ -287,14 +283,9 @@ export interface ImportPlanCollection {
   /** Resource metadata sidecars (raw `.meta.<id>.json` bytes), keyed by resourceId. */
   resourceMetadata: Map<string, Buffer>
   /**
-   * The Collection's own metadata sidecar (raw `.collectionmeta.<id>.json`
-   * bytes), when the archive carries one. Travels with a newly-created
-   * Collection, like its description and policy.
-   */
-  collectionMetadata?: Buffer
-  /**
    * The Collection's governing history log (raw `.collectionlog.<id>.json`
-   * bytes), when the archive carries one; travels like the metadata sidecar.
+   * bytes), when the archive carries one; travels with a newly-created
+   * Collection, like its metadata file and policy.
    */
   collectionLog?: Buffer
   /** Chunk files of chunked Resources in this Collection, carried verbatim. */
@@ -404,8 +395,7 @@ export function validateManifest(entries: Map<string, TarEntry>): void {
  * - space/<sourceSpaceId>/.space.policy.json (space-level policy)
  * - space/<sourceSpaceId>/<collectionId>/
  * - space/<sourceSpaceId>/<collectionId>/.collection.<collectionId>.json
- * - space/<sourceSpaceId>/<collectionId>/.collectionmeta.<collectionId>.json
- *   (collection metadata)
+ *   (the Collection Metadata object, with its archived validator)
  * - space/<sourceSpaceId>/<collectionId>/.collection.policy.json (collection policy)
  * - space/<sourceSpaceId>/<collectionId>/.r.<resourceId>.policy.json (resource policy)
  * - space/<sourceSpaceId>/<collectionId>/r.<resourceId>.<encodedContentType>.<ext>
@@ -461,16 +451,15 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
   }
 
   const collections = [...collectionIds].sort().map(collectionId => {
-    const collectionMetaKey = `${prefix}${collectionId}/${collectionDescriptionFileName(collectionId)}`
+    const collectionMetaKey = `${prefix}${collectionId}/${collectionMetadataFileName(collectionId)}`
     const metaEntry = entries.get(collectionMetaKey)
-    const collectionDescription: CollectionDescription = metaEntry?.body
+    const collectionMetadata: CollectionMetadata = metaEntry?.body
       ? JSON.parse(metaEntry.body.toString('utf8'))
       : { id: collectionId, type: ['Collection'], name: collectionId }
 
     const collectionPrefix = `${prefix}${collectionId}/`
     const resources: ImportPlanResource[] = []
     let collectionPolicy: PolicyDocument | undefined
-    let collectionMetadata: Buffer | undefined
     let collectionLog: Buffer | undefined
     const resourcePolicies = new Map<string, PolicyDocument>()
     const resourceMetadata = new Map<string, Buffer>()
@@ -542,23 +531,11 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
         continue
       }
 
-      // The Collection's own metadata sidecar
-      // (`.collectionmeta.<collectionId>.json`): carried as raw bytes. Checked
-      // before the Resource sidecar branch below, though the two prefixes are
-      // disjoint by construction. A sidecar keyed by any other id is a stray
-      // file and is dropped.
-      const collectionMetaId = collectionMetaFileId(fileName)
-      if (collectionMetaId !== undefined) {
-        if (collectionMetaId === collectionId) {
-          collectionMetadata = entry.body
-        }
-        continue
-      }
-
       // The Collection's governing history log
-      // (`.collectionlog.<collectionId>.json`): carried as raw bytes, on the
-      // same terms as the metadata sidecar, once its stored-record shape and
-      // line contract check out (the read path parses it strictly).
+      // (`.collectionlog.<collectionId>.json`): carried as raw bytes once its
+      // stored-record shape and line contract check out (the read path parses
+      // it strictly). A log keyed by any other id is a stray file and is
+      // dropped.
       const collectionLogId = collectionLogFileId(fileName)
       if (collectionLogId !== undefined) {
         if (collectionLogId === collectionId) {
@@ -611,9 +588,8 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
 
     return {
       collectionId,
-      collectionDescription,
+      collectionMetadata,
       collectionPolicy,
-      ...(collectionMetadata !== undefined && { collectionMetadata }),
       ...(collectionLog !== undefined && { collectionLog }),
       resources,
       resourcePolicies,
@@ -642,7 +618,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
  * is engine-specific (a `du` snapshot vs. a transactional usage counter).
  *
  * The effective encryption descriptor is the merged-into Collection's existing
- * one, else the import's own Collection description (a new Collection); how an
+ * one, else the import's own Collection Metadata object (a new Collection); how an
  * existing Collection is looked up differs per backend, hence
  * `existingCollection`. Skips (existing ids) are counted conservatively, as for
  * the quota estimate.
@@ -659,9 +635,9 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
  * @param options {object}
  * @param options.collections {ImportPlanCollection[]}   the staged plan
  * @param options.existingCollection {(collectionId: string) =>
- *   Promise<CollectionDescription | undefined> | CollectionDescription |
- *   undefined}   the destination's current description for a Collection id,
- *   falsy when it does not exist
+ *   Promise<CollectionMetadata | undefined> | CollectionMetadata |
+ *   undefined}   the destination's current Collection Metadata object for a
+ *   Collection id, falsy when it does not exist
  * @param options.assertUploadSize {(uploadBytes: number) => void}   throws the
  *   backend's 413 when one body exceeds its per-upload cap
  * @param [options.chunkBodiesFor] {(collection: ImportPlanCollection) =>
@@ -681,10 +657,7 @@ export async function assertImportBodiesFit({
   collections: ImportPlanCollection[]
   existingCollection: (
     collectionId: string
-  ) =>
-    | Promise<CollectionDescription | undefined>
-    | CollectionDescription
-    | undefined
+  ) => Promise<CollectionMetadata | undefined> | CollectionMetadata | undefined
   assertUploadSize: (uploadBytes: number) => void
   chunkBodiesFor?: (
     collection: ImportPlanCollection
@@ -693,11 +666,11 @@ export async function assertImportBodiesFit({
 }): Promise<number> {
   let incomingBytes = 0
   for (const collection of collections) {
-    const { collectionId, collectionDescription, resources } = collection
+    const { collectionId, collectionMetadata, resources } = collection
     const existing = await existingCollection(collectionId)
     const effectiveEncryption = existing
       ? existing.encryption
-      : collectionDescription.encryption
+      : collectionMetadata.encryption
     for (const { fileName, body } of resources) {
       assertUploadSize(body.length)
       if (effectiveEncryption?.scheme !== undefined) {
@@ -709,7 +682,7 @@ export async function assertImportBodiesFit({
           parsedBody = undefined
         }
         assertEncryptedWriteConforms({
-          collectionDescription: { encryption: effectiveEncryption },
+          collectionMetadata: { encryption: effectiveEncryption },
           contentType,
           body: parsedBody
         })

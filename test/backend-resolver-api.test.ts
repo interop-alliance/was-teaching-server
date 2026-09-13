@@ -85,7 +85,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     // Create a Collection that selects the registered backend.
     const collectionId = 'photos'
     const createCol = await alice.was.request({
-      url: url(`/space/${spaceId}/${collectionId}`),
+      url: url(`/space/${spaceId}/${collectionId}/meta`),
       method: 'PUT',
       json: { id: collectionId, backend: { id: 'mem-1' } }
     })
@@ -139,7 +139,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     const collectionId = 'notes'
     // No `backend` selection -> defaults to the server `default`.
     await alice.was.request({
-      url: url(`/space/${spaceId}/${collectionId}`),
+      url: url(`/space/${spaceId}/${collectionId}/meta`),
       method: 'PUT',
       json: { id: collectionId }
     })
@@ -173,7 +173,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     await registerBackend(spaceId, 'orphan-1', 'no-such-provider')
     const collectionId = 'docs'
     const createCol = await alice.was.request({
-      url: url(`/space/${spaceId}/${collectionId}`),
+      url: url(`/space/${spaceId}/${collectionId}/meta`),
       method: 'PUT',
       json: { id: collectionId, backend: { id: 'orphan-1' } }
     })
@@ -199,7 +199,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     let thrown: any
     try {
       await alice.was.request({
-        url: url(`/space/${spaceId}/docs`),
+        url: url(`/space/${spaceId}/docs/meta`),
         method: 'PUT',
         json: { id: 'docs', backend: { id: 'does-not-exist' } }
       })

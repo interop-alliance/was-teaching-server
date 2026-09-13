@@ -37,8 +37,8 @@ interface SubmittedCapability {
  * `Capability-Invocation` header -- WITHOUT verifying signatures; verification
  * already failed -- and distinguishes, in order:
  *
- * - chain rooted elsewhere: the chain's root capability targets a different
- *   URL, or the base delegation is signed by a DID other than the body's
+ * - chain rooted elsewhere: the chain's root capability targets a URL other
+ *   than the accepted root targets, or the base delegation is signed by a DID other than the body's
  *   controller;
  * - expired delegation: a delegation in the chain carries an `expires` in the
  *   past;
@@ -58,17 +58,22 @@ interface SubmittedCapability {
  *   body, which the chain must root in
  * @param options.allowedTarget {string}   the expected root invocationTarget
  *   (full URL, including host and port)
+ * @param [options.attenuatedRootTarget] {string}   an ancestor URL whose root
+ *   capability is also accepted, and which the detail names as the expected
+ *   root when present
  * @returns {string | undefined}   a cause clause for the error detail, or
  *   `undefined` when the submitted capability cannot be decoded
  */
 function triageDelegatedConsentFailure({
   invocation,
   controller,
-  allowedTarget
+  allowedTarget,
+  attenuatedRootTarget
 }: {
   invocation: string
   controller: IDID
   allowedTarget: string
+  attenuatedRootTarget?: string
 }): string | undefined {
   const rootIdPrefix = 'urn:zcap:root:'
   let capability: SubmittedCapability
@@ -93,13 +98,15 @@ function triageDelegatedConsentFailure({
   const rootId =
     typeof chain[0] === 'string' ? chain[0] : capability.parentCapability
   // Chain rooted elsewhere (a): the root capability at the base of the chain
-  // targets some other URL (another endpoint, or another server entirely).
+  // targets neither accepted root (another endpoint, or another server
+  // entirely). The verifier accepts the attenuated root as well as the target
+  // itself, so a chain rooted at either is not the cause.
   if (typeof rootId === 'string' && rootId.startsWith(rootIdPrefix)) {
     const rootTarget = decodeURIComponent(rootId.slice(rootIdPrefix.length))
-    if (rootTarget !== allowedTarget) {
+    if (rootTarget !== allowedTarget && rootTarget !== attenuatedRootTarget) {
       return (
         `the delegation chain is rooted at "${rootTarget}",` +
-        ` not at "${allowedTarget}"`
+        ` not at "${attenuatedRootTarget ?? allowedTarget}"`
       )
     }
   }
@@ -156,6 +163,10 @@ function triageDelegatedConsentFailure({
  * @param options.MismatchError {new (options) => ProblemError}   the
  *   operation's `controller-mismatch` error class (constructed with
  *   `{ zcapSigningDid, controller, causeDetail?, cause? }`)
+ * @param [options.attenuatedRootTarget] {string}   an ancestor URL whose root
+ *   capability is also accepted as the base of a delegated chain, so a grant
+ *   minted on the container attenuates down to the sub-resource being written
+ *   (see `verifyZcap`)
  * @param [options.requestName] {string}   human-readable request name, used
  *   in error titles
  * @param [options.maxChainLength] {number}   max delegation chain length,
@@ -169,6 +180,7 @@ export async function verifyBodyControllerConsent({
   controller,
   allowedTarget,
   allowedAction,
+  attenuatedRootTarget,
   MismatchError,
   requestName,
   maxChainLength,
@@ -178,6 +190,7 @@ export async function verifyBodyControllerConsent({
   controller: IDID
   allowedTarget: string
   allowedAction: string
+  attenuatedRootTarget?: string
   MismatchError: new (options: {
     zcapSigningDid: string
     controller: string
@@ -210,6 +223,7 @@ export async function verifyBodyControllerConsent({
       spaceController: controller,
       requestName,
       logger: request.log,
+      ...(attenuatedRootTarget !== undefined && { attenuatedRootTarget }),
       // Consent verifies a chain rooted in the BODY's controller for a
       // resource that does not exist yet, so there is no keystore or Space
       // scope a revocation could have been stored under.
@@ -225,7 +239,8 @@ export async function verifyBodyControllerConsent({
         causeDetail: triageDelegatedConsentFailure({
           invocation,
           controller,
-          allowedTarget
+          allowedTarget,
+          attenuatedRootTarget
         }),
         cause: err as Error
       })
@@ -235,10 +250,10 @@ export async function verifyBodyControllerConsent({
 }
 
 /**
- * Asserts a Space Description body carries a `controller` DID (the `name`
- * property is optional; see spec: Space Description object), narrowing it.
+ * Asserts a Space Metadata body carries a `controller` DID (the `name`
+ * property is optional; see spec: Space Metadata object), narrowing it.
  * Shared by Create Space and Update Space, the two operations that take a
- * Space Description body.
+ * Space Metadata body.
  * @param options {object}
  * @param [options.body] {{ controller?: unknown }}   the parsed request body
  * @param options.requestName {string}   request name used in the error title
@@ -254,7 +269,7 @@ export function assertBodyController({
   if (!body?.controller) {
     throw new InvalidRequestBodyError({
       requestName,
-      detail: 'Space Description body requires a "controller" property.',
+      detail: 'Space Metadata body requires a "controller" property.',
       pointer: '#/controller'
     })
   }
