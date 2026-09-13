@@ -2010,3 +2010,76 @@ corrected); conformance suite 0.17.0 carries the `container-rule` cases (273/273
 locally); was-client waived as expected; the freewallet e2e run waived as noted
 in its box. The residual self-narrowing path on the enrolled-client-signed arm
 is WAS-107.
+
+### WAS-109: A ladder-signed read of one Resource in an unlock Space
+
+- status: done (2026-09-13)
+- priority: medium
+- labels: was-v0.5, zcap, authorization, client-annex
+- touches:
+  - was-teaching-server: `src/lib/clientAnnexClause.ts` (the admission
+    predicates and the invocation-time bound), ARCHITECTURE.md's client-annex
+    clause paragraph
+  - wallet-core: WC-231 mints whatever shape this settles on
+    (`src/clientAnnex/spaceCapability.ts`) -- waived 2026-09-13 (maintainer):
+    the minter lands under WC-231 in its own repo
+  - freewallet: `src/session/unlockMethods.ts` (`unlockEntryReaderFor`) and
+    `src/session/accountSettings.ts`'s copy of the same reader -- waived
+    2026-09-13 (maintainer): the readers follow WC-231 in their own repo
+  - wallet-attached-storage-spec and app-connect-spec decision 0003: to be
+    assessed if the clause gains a predicate, since predicate 3's shape is
+    restated there -- waived 2026-09-13 (maintainer): the dated amendment adding
+    the fourth admitted form is handled by the user
+- acceptance:
+  - [x] A decision, signed off before any code, between (a) the clause admits a
+        ladder-signed read of one Resource in an unlock Space, with its exact
+        target, verb set, and parent bounds, and (b) the clause stays as it is
+        and the wallet reads the keyring record through an authority that is not
+        ladder-signed
+  - [x] On (a): the predicate is implemented, the invocation-time bound still
+        refuses every write it refuses today, and tests in `test/` assert the
+        new shape is admitted and a widened sibling (another Resource path, a
+        second verb, a Collection target) is refused
+  - [ ] (n/a) On (b): the clause's header comment states that a ladder-signed
+        Resource read is refused on purpose, and WC-231 is told which authority
+        the wallet uses instead
+
+WAS-97 split predicate 3 by verb. Its GET branch admits only a target-exact
+`GET` of the Space Metadata object (`/space/<S>/meta`, `allowedAction` exactly
+`['GET']`). Under the v0.4 layout the GET branch targeted the bare Space URL,
+and WAS-97's own design note records that the zcap library's `/`-boundary prefix
+rule let that target cover the Space's subtree. So a GET-only child of a stored
+management zcap could read a Resource inside the Space. WAS-97 removed that
+reach, and nothing replaced it.
+
+freewallet relied on it. A transient session holds no enrolled-client key, only
+the ladder VM, which stands under `capabilityDelegation` but not
+`capabilityInvocation`. To read an unlock Space's keyring record it mints a
+three-link chain: the unlock Space's root, the management zcap the unlock
+identity delegated to the account DID at bind time, and a `['GET']` child signed
+by the ladder VM for its own bare did:key. wallet-core now narrows that child's
+target to the Space Metadata object, which serves the Space existence probe but
+cannot name the keyring record. No current predicate admits a ladder-signed read
+of that Resource: predicate 1 is bound to the annex DID and the account Space,
+predicate 2 to the bridge and delegated-clients targets, and predicate 3 to
+Space delete and Space Metadata read.
+
+Option (a) would widen what a ladder VM may sign, so it has to keep the clause's
+locked property (no ladder authority whose exercise leaves no record beyond a
+read or a destruction). A plausible bound is a `['GET']` child whose target is a
+Resource URL under the parent's own Space URL, parented on a delegated
+capability whose target is that Space. Whether it is limited to unlock Spaces,
+and how the server would recognize one, is part of the decision.
+
+discovered-from: WAS-97. Filed from wallet-core WC-231.
+
+Decided 2026-09-13: option (a), with no unlock Space special-casing. The shape
+is predicate 4 in `src/lib/clientAnnexClause.ts`: a `['GET']` delegation whose
+target is a Resource URL `/space/<S>/<C>/<R>` (reserved segments excluded),
+under a parent targeting that same URL or the Space's canonical trailing-slash
+URL, root or delegated. Touches: the server half shipped; the wallet-core,
+freewallet, and decision 0003 entries were waived at close (2026-09-13), so
+WC-231 and the freewallet readers stay open in their repos (they mint the
+shape), and app-connect-spec decision 0003, which restates the clause's locked
+property with the admitted forms, still needs a dated amendment adding this one,
+handled by the user.

@@ -37,6 +37,15 @@
   capability's shape, so it holds whatever DID method the controller or a
   delegator uses. Collection creation (`POST /space/{s}/`) is unchanged. A
   refusal is the ordinary masked 404 `not-found`.
+- The client-annex clause admits a fourth ladder-signed delegation shape: a
+  target-exact read of one Resource. The delegation targets a Resource URL
+  `/space/{s}/{c}/{r}` (a Collection Metadata object, a policy, or a query
+  endpoint does not qualify) with `allowedAction` exactly `['GET']`, under a
+  parent whose target is that same URL or the Space's canonical trailing-slash
+  URL. It restores the read a transient wallet session makes of an unlock
+  Space's keyring record, which the v0.5 narrowing of the Space Metadata read
+  had removed. No Space is special-cased; the parent bounds which Space the read
+  can target.
 
 ## 0.32.0 - 2026-09-12
 

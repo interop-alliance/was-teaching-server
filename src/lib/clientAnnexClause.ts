@@ -9,7 +9,7 @@
  * ladder-anchored account document. It is recognized purely by relation
  * asymmetry -- a `capabilityDelegation` member absent from
  * `capabilityInvocation` -- so no marker vocabulary is consulted. A delegation
- * whose proof VM resolves to a ladder VM is admitted iff one of three
+ * whose proof VM resolves to a ladder VM is admitted iff one of four
  * predicates holds:
  *
  * 1. Annex-DID controller inside the account Space's items subtree. Three
@@ -44,6 +44,25 @@
  *    Space's canonical trailing-slash URL -- a narrowing down to the one read
  *    the ladder VM may sign, never a widening. A two-verb set never qualifies
  *    on either branch.
+ * 4. Target-exact single-verb read of one Resource. The delegation's
+ *    `invocationTarget` is a Resource URL `/space/<S>/<C>/<R>` (three
+ *    URL-safe segments, `<C>` and `<R>` outside the reserved path-segment
+ *    registry, so a Collection Metadata object, a policy, or a query endpoint
+ *    is not a Resource here), its `allowedAction` is exactly `['GET']`, and
+ *    the parent's `invocationTarget` is either that same Resource URL or the
+ *    canonical trailing-slash URL of the Resource's Space. The parent may be
+ *    a delegated capability or the Space's synthesized root. This is the
+ *    shape a transient wallet session mints to read one record (the keyring
+ *    record of an unlock Space) under a management delegation the Space's
+ *    controller granted the account: a narrowing from the whole Space down
+ *    to the one read. Nothing recognizes an unlock Space: the bound holds
+ *    for any Space, since the parent already bounds which Space the read
+ *    can target. By attenuation the grant also reaches the reads under that
+ *    Resource URL (its `/meta`, `/policy`, and chunks), all reads. The
+ *    delegator's own `did.jsonl` history log is a Resource like any other
+ *    here, so a GET-only grant of it is admitted by this predicate; the
+ *    {PUT} bound of predicate 2's first branch says what the bridge shape
+ *    may write, not that the log is excluded from reads.
  *
  * Under the v0.4 layout predicate 3 targeted the bare (no-slash) Space URL.
  * That gave DELETE no different reach from today's: the zcap library's target
@@ -97,10 +116,11 @@
  * every admitted ladder delegation either resolves through a loud annex entry
  * and stays inside the account Space's items subtree, can only write a log, or
  * is a target-exact single-verb DELETE of one Space or GET of one Space
- * Metadata object of the delegator's own account. That third shape is a read,
- * or a destruction whose account-Space case removes the log any record would
- * live in. A DELETE admitted under predicate 3 writes no log. Two bounds keep
- * that predicate narrow. On the `manageCapability` arm the parent already
+ * Metadata object of the delegator's own account, or a target-exact GET of
+ * one Resource. The third shape is a read, or a destruction whose
+ * account-Space case removes the log any record would live in; the fourth is
+ * a read alone. A DELETE admitted under predicate 3 writes no log. Two bounds
+ * keep that predicate narrow. On the `manageCapability` arm the parent already
  * carries DELETE on exactly that Space URL, so the predicate widens who signs
  * the last link rather than what the account may do. And the child's target is
  * its parent's unchanged, so the ladder VM cannot aim it anywhere new.
@@ -144,7 +164,11 @@ import { resolveWebvhController } from './webvhController.js'
 import type { WebvhResolverContext } from './webvhController.js'
 import { getCachedSpaceMetadata } from './spaceMetadataCache.js'
 import { isDelegatedClientsSpace } from './spaceType.js'
-import { isUrlSafeSegment } from './validateId.js'
+import {
+  isUrlSafeSegment,
+  RESERVED_COLLECTION_IDS,
+  RESERVED_RESOURCE_IDS
+} from './validateId.js'
 import { resourcePath, spaceMetaPath, spacePath } from './paths.js'
 
 /**
@@ -394,14 +418,57 @@ function isOwnAccountLogTarget({
 }
 
 /**
+ * The Space id when a target is a clean URL on this server of one shape under
+ * `/space/<S>/`, matched by exact string equality against the canonical form;
+ * `undefined` otherwise. The shared skeleton of the three target matchers
+ * below: parse, require the `/space/<S>` prefix with a URL-safe Space id, hand
+ * the tail segments after it to `canonicalPath`, and compare the target against
+ * the canonical URL that path names. An alternate encoding of the same path
+ * never passes.
+ * @param options {object}
+ * @param options.target {string}   the delegation's `invocationTarget`
+ * @param options.serverUrl {string}   this server's base URL
+ * @param options.canonicalPath {function}   maps the Space id and the tail
+ *   segments after it to the shape's canonical path, or `undefined` when the
+ *   tail is not that shape (its length included)
+ * @returns {string | undefined}
+ */
+function localSpaceTargetId({
+  target,
+  serverUrl,
+  canonicalPath
+}: {
+  target: string
+  serverUrl: string
+  canonicalPath: (options: {
+    spaceId: string
+    tail: string[]
+  }) => string | undefined
+}): string | undefined {
+  const segments = localPathSegments({ target, serverUrl })
+  if (!segments || segments[0] !== '' || segments[1] !== 'space') {
+    return undefined
+  }
+  const spaceId = segments[2]!
+  if (!isUrlSafeSegment(spaceId)) {
+    return undefined
+  }
+  const path = canonicalPath({ spaceId, tail: segments.slice(3) })
+  if (path === undefined) {
+    return undefined
+  }
+  const canonical = new URL(path, serverUrl).toString()
+  return target === canonical ? spaceId : undefined
+}
+
+/**
  * The Space id when a target is the canonical trailing-slash Space URL
- * (`<base>/space/<S>/`), matched by exact string equality against the
- * canonical form; `undefined` otherwise. It is the Space-as-container target a
- * delegated chain attenuates under, the target a generation delegation already
- * carries, and the target of the Space's synthesized root. The no-slash form
- * is not a canonical target under v0.5 (the route only redirects), so it
- * matches nothing here. A `@interop/was-client` caller passes the canonical
- * form via the grant's `target` option.
+ * (`<base>/space/<S>/`); `undefined` otherwise. It is the Space-as-container
+ * target a delegated chain attenuates under, the target a generation
+ * delegation already carries, and the target of the Space's synthesized root.
+ * The no-slash form is not a canonical target under v0.5 (the route only
+ * redirects), so it matches nothing here. A `@interop/was-client` caller
+ * passes the canonical form via the grant's `target` option.
  * @param options {object}
  * @param options.target {string}   the delegation's `invocationTarget`
  * @param options.serverUrl {string}   this server's base URL
@@ -414,33 +481,21 @@ function spaceUrlTargetId({
   target: string
   serverUrl: string
 }): string | undefined {
-  const segments = localPathSegments({ target, serverUrl })
-  if (
-    !segments ||
-    segments.length !== 4 ||
-    segments[0] !== '' ||
-    segments[1] !== 'space' ||
-    segments[3] !== ''
-  ) {
-    return undefined
-  }
-  const spaceId = segments[2]!
-  if (!isUrlSafeSegment(spaceId)) {
-    return undefined
-  }
-  const canonical = new URL(
-    spacePath({ spaceId, trailingSlash: true }),
-    serverUrl
-  ).toString()
-  return target === canonical ? spaceId : undefined
+  return localSpaceTargetId({
+    target,
+    serverUrl,
+    canonicalPath: ({ spaceId, tail }) =>
+      tail.length === 1 && tail[0] === ''
+        ? spacePath({ spaceId, trailingSlash: true })
+        : undefined
+  })
 }
 
 /**
- * The Space id when a target is a Space Metadata URL (`<base>/space/<S>/meta`),
- * matched by exact string equality against the canonical form; `undefined`
- * otherwise. The sibling of {@link spaceUrlTargetId}, which matches the
- * container form instead; the two address different things, so neither helper
- * is loosened to cover both.
+ * The Space id when a target is a Space Metadata URL (`<base>/space/<S>/meta`);
+ * `undefined` otherwise. The sibling of {@link spaceUrlTargetId}, which
+ * matches the container form instead; the two address different things, so
+ * neither helper is loosened to cover both.
  * @param options {object}
  * @param options.target {string}   the delegation's `invocationTarget`
  * @param options.serverUrl {string}   this server's base URL
@@ -453,22 +508,55 @@ function spaceMetaUrlTargetId({
   target: string
   serverUrl: string
 }): string | undefined {
-  const segments = localPathSegments({ target, serverUrl })
-  if (
-    !segments ||
-    segments.length !== 4 ||
-    segments[0] !== '' ||
-    segments[1] !== 'space' ||
-    segments[3] !== META_SEGMENT
-  ) {
-    return undefined
-  }
-  const spaceId = segments[2]!
-  if (!isUrlSafeSegment(spaceId)) {
-    return undefined
-  }
-  const canonical = new URL(spaceMetaPath({ spaceId }), serverUrl).toString()
-  return target === canonical ? spaceId : undefined
+  return localSpaceTargetId({
+    target,
+    serverUrl,
+    canonicalPath: ({ spaceId, tail }) =>
+      tail.length === 1 && tail[0] === META_SEGMENT
+        ? spaceMetaPath({ spaceId })
+        : undefined
+  })
+}
+
+/**
+ * The Space id when a target is a Resource URL (`<base>/space/<S>/<C>/<R>`);
+ * `undefined` otherwise. All three ids are URL-safe segments, and `<C>` and
+ * `<R>` are outside the reserved path-segment registry, so a Collection
+ * Metadata URL (`/space/<S>/<C>/meta`), a policy, or a query endpoint does not
+ * match: the predicate admits a read of one Resource, not of any three-segment
+ * path. A Collection URL (trailing slash, so an empty fourth segment) matches
+ * nothing either.
+ * @param options {object}
+ * @param options.target {string}   the delegation's `invocationTarget`
+ * @param options.serverUrl {string}   this server's base URL
+ * @returns {string | undefined}
+ */
+function resourceUrlTargetSpaceId({
+  target,
+  serverUrl
+}: {
+  target: string
+  serverUrl: string
+}): string | undefined {
+  return localSpaceTargetId({
+    target,
+    serverUrl,
+    canonicalPath: ({ spaceId, tail }) => {
+      if (tail.length !== 2) {
+        return undefined
+      }
+      const [collectionId, resourceId] = tail as [string, string]
+      if (
+        !isUrlSafeSegment(collectionId) ||
+        !isUrlSafeSegment(resourceId) ||
+        RESERVED_COLLECTION_IDS.has(collectionId) ||
+        RESERVED_RESOURCE_IDS.has(resourceId)
+      ) {
+        return undefined
+      }
+      return resourcePath({ spaceId, collectionId, resourceId })
+    }
+  })
 }
 
 /**
@@ -515,7 +603,7 @@ function isWithinSpaceItemsSubtree({
 }
 
 /**
- * Judges one ladder-signed delegation against the three admission predicates.
+ * Judges one ladder-signed delegation against the four admission predicates.
  * @param options {object}
  * @param options.capability {object}   the dereferenced delegation
  * @param options.doc {DIDDoc}   the resolved account document (the delegator)
@@ -629,14 +717,18 @@ async function ladderDelegationAdmitted({
   }
 
   // Predicate 3, GET branch: a target-exact GET of one Space Metadata object.
-  // The parent's target is either that same Metadata URL or the Space's
-  // canonical URL, so the grant only ever narrows toward the one read.
-  const metaSpaceId = spaceMetaUrlTargetId({ target, serverUrl })
-  if (metaSpaceId === undefined || parent.invocationTarget === undefined) {
+  // Predicate 4: a target-exact GET of one Resource, `/space/<S>/<C>/<R>`.
+  // Predicate 4 shares the parent bound: the parent's target is either the
+  // delegation's own target or the Space's canonical URL, so the grant only
+  // ever narrows toward the one read. Both are GET-only.
+  const readSpaceId =
+    spaceMetaUrlTargetId({ target, serverUrl }) ??
+    resourceUrlTargetSpaceId({ target, serverUrl })
+  if (readSpaceId === undefined || parent.invocationTarget === undefined) {
     return false
   }
   const parentSpaceUrl = new URL(
-    spacePath({ spaceId: metaSpaceId, trailingSlash: true }),
+    spacePath({ spaceId: readSpaceId, trailingSlash: true }),
     serverUrl
   ).toString()
   return (
@@ -793,7 +885,7 @@ export function clientAnnexChainInspector({
               'items subtree (its Metadata URL excluded), nor carries a ' +
               'bridge-shaped invocation target, nor is a DELETE-only grant ' +
               "of the parent capability's own Space URL, nor a GET-only " +
-              "grant of that Space's Metadata URL."
+              "grant of that Space's Metadata URL or of one Resource in it."
           )
         }
       }

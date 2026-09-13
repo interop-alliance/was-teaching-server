@@ -360,7 +360,7 @@ method may delegate. A ladder VM is the stable, credential-derived method a
 wallet publishes on a ladder-anchored account document, recognized by relation
 asymmetry: a `capabilityDelegation` member of the resolved self-hosted
 `did:webvh` document that is absent from `capabilityInvocation`. A delegation
-signed by one is admitted only in one of three shapes.
+signed by one is admitted only in one of four shapes.
 
 The first shape is bounded by grantee, target, and action together. Its sole
 `controller` equals the client-annex DID named by the account document's
@@ -398,6 +398,20 @@ parent's target is either that same Metadata URL or the Space's canonical
 trailing-slash URL. Either branch only narrows toward the one read or delete the
 ladder VM may sign and cannot widen it; a two-verb set does not qualify on
 either branch.
+
+The fourth shape is a target-exact single-verb read of one Resource. Its
+`invocationTarget` is a Resource URL `/space/<S>/<C>/<R>`, three URL-safe
+segments with `<C>` and `<R>` outside the reserved path-segment registry, so a
+Collection Metadata object, a policy, or a query endpoint does not qualify. Its
+`allowedAction` is exactly {GET}, and the parent's target is either that same
+Resource URL or the Space's canonical trailing-slash URL; the parent may be a
+delegated capability or the Space's synthesized root. This is the shape a
+transient wallet session mints to read one record, the keyring record of an
+unlock Space, under the management delegation the Space's controller granted the
+account at bind time. The server recognizes no unlock Space: the shape holds for
+any Space, since the parent already bounds which Space the read can target. By
+attenuation the grant also reaches the reads under that Resource URL (its
+`/meta`, `/policy`, and chunks), all reads.
 
 Under v0.4 the Space Description sat outside the container: a `/space/<S>/`
 subtree grant could not reach `PUT /space/<S>` (the controller rewrite) or

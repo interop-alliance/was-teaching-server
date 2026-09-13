@@ -72,9 +72,10 @@ Each work item follows this schema:
 - `touches:` is the field defined in the canonical schema in
   isomorphic-lib-template's AGENTS.md ("Roadmap & Task Conventions"): required
   for any item changing a spec, a wire contract, or a shared `@interop/*` API,
-  it lists the affected repos and their ARCHITECTURE/AGENTS files, and each
-  entry must be resolved (shipped or explicitly waived) before the item may go
-  `done`. See that file for the full definition.
+  it lists the affected repos and their ARCHITECTURE/AGENTS files. Each entry is
+  a reminder to file follow-up work in that repo, annotated before `done` with
+  the item filed there, what already shipped, or `unaffected: <repo> (<why>)`;
+  it does not block `done`. See that file for the full definition.
 
 Rules:
 
