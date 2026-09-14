@@ -1,5 +1,11 @@
 # History
 
+## 0.35.1 - TBD
+
+### Fixed
+
+- Fix pnpm lock.
+
 ## 0.35.0 - 2026-09-14
 
 ### Fixed
