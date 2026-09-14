@@ -2137,3 +2137,52 @@ and deletes every Resource in it, the `encryption` descriptor is immutable once
 set, and Delete Collection stays controller-only. The log write keeps the rule,
 since was-react never writes it and the guarded create is a permanent governance
 declaration.
+
+### WAS-106: Conformance checks for service description discovery
+
+- status: done (2026-09-14)
+- priority: high
+- labels: was-v0.5, discovery, conformance, tests
+- touches:
+  - wallet-attached-storage-spec: the Service Description section, drafted on
+    branch `service-description` (decision
+    `_spec/decisions/0006-service-description.md`); the checks' `specRefs`
+    anchor into it. Unaffected: the anchors already exist on that branch, no
+    spec change needed
+  - was-conformance-suite: a new `src/suites/service-description-api.ts`,
+    registered in `src/suites/index.ts`; a CHANGELOG entry and a version bump.
+    Done 2026-09-14 (suite 0.19.0 published, 9 checks)
+  - was-teaching-server: the `@interop/was-conformance-suite` devDependency
+    bump; the server behavior under test shipped with WAS-98. Done 2026-09-14
+    (suite 0.19.0 published and consumed, `pnpm conformance:local` 282/282)
+- acceptance:
+  - [x] The suite follows the `rel="service"` link rather than assuming
+        `/service`, since the spec reserves no path. It starts from the server
+        base URL and resolves the link target against the response URL
+  - [x] The `Link` header with the `service` relation is asserted on a 200, on
+        an error response (an unauthenticated read of a Space that does not
+        exist), on a 308 slash-variant redirect, and on a CORS preflight, and
+        every one points at the same URL (spec
+        `#discovering-the-service-description`)
+  - [x] `Access-Control-Expose-Headers` includes `Link` on those responses, and
+        the document is served with `Access-Control-Allow-Origin: *`
+  - [x] The document is read with no capability invocation and validated against
+        the data model (spec `#service-description-data-model`): `url` and
+        `specs` present, `specs` an object of arrays, each entry's `version` a
+        bare `major.minor` string, and every URL member absolute
+  - [x] The `https://w3id.org/pws` key carries an entry whose `version` is
+        `"0.5"`. Its `features`, `signatureAlgorithms`, and `zcapCryptosuites`
+        members are arrays of strings when present, and its `spaces` member,
+        when present, answers `GET` as a Spaces Repository
+  - [x] The `Cache-Control` and `ETag` SHOULD is an optional case, with a
+        conditional re-read answering 304
+  - [x] Every check carries `specRefs` into the Service Description section
+  - [x] The suite is published and consumed here, and `pnpm conformance:local`
+        passes with the new checks
+
+discovered-from: WAS-98. That item's last acceptance box was the suite's
+discovery check, and it moved here when WAS-98 was archived. The suite repo
+keeps no roadmap of its own, so the item lives in this one. The checks assert
+only what the spec requires of every server. This server's specifics stay in
+`test/service-description-api.test.ts`: the `/service` path, the `features`
+baseline, the `instance` members, and the `WAS_DISCLOSE_VERSION` switch.

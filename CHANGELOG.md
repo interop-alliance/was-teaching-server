@@ -1,5 +1,12 @@
 # History
 
+## 0.34.0 - TBD
+
+### Changed
+
+- `@interop/was-conformance-suite` devDependency raised to 0.19.0, which adds
+  the Service Description suite; `pnpm conformance:local` runs its nine checks.
+
 ## 0.33.0 - 2026-09-14
 
 ### Added
