@@ -549,44 +549,6 @@ record carrying secrets. Discovered during code review of the container rule
 to operations outside the container URLs the spec discusses; it needs a decision
 on whether a Space-subtree grant should ever manage policy or backends.
 
-### WAS-110: `space-subtree-put` refuses a collection-scoped grant's Metadata writes
-
-- status: draft
-- priority: high
-- labels: was-v0.5, security, zcap, authorization
-- touches:
-  - was-react: WR-47 records the app-side half of this conflict;
-    `src/storage/wasSync.ts` and `src/storage/wasRemoteStore.ts` make the
-    three writes this rule refuses
-  - wallet-core: if the resolution moves the index declarations wallet-side,
-    it would own minting them at provisioning or consent time
-  - wallet-attached-storage-spec: has no such rule today; a resolution that
-    keeps some form of the rule would need it specified there first
-
-Draft rather than todo: the unreleased `space-subtree-put` container rule
-(`src/lib/containerRule.ts`, in 0.33.0) guards `PUT /space/{s}/{c}/meta` and
-`PUT /space/{s}/{c}/meta/log`. It accepts a direct root-capability invocation,
-or a delegated capability whose tail targets exactly the Space's canonical
-trailing-slash URL. A capability targeting the Collection container URL, the
-Collection Metadata URL, or a Resource URL is refused.
-
-was-react never holds a Space-subtree grant: every grant it gets, from a
-wallet or from a dev-mode provisioner, is scoped to one Collection. Under this
-rule that refuses three app-side writes to the merged Metadata object:
-marking a collection encrypted when the wallet did not already declare it, a
-public collection's plaintext index declaration, and the compare-and-swap
-that declares a private collection's blinded-index schema. All three are
-best-effort on the was-react side and degrade with a warning instead of
-failing the session, but equality queries on an undeclared index then fail.
-
-The spec does not mandate this rule, so the conflict is a server decision,
-not a spec violation, and there is nothing to accept yet. Three ways out:
-relax the rule to also admit a collection-scoped grant on these two paths;
-move the index declarations wallet-side, provisioned at grant time instead of
-written by the app during sync; or have the wallet delegate a Space-subtree
-grant for this purpose instead of a Collection-scoped one. See was-react
-WR-47 for the app-side half of this.
-
 ### WAS-61: Separate `/policy` control from data writes (exposure test + enforcement)
 
 - status: todo

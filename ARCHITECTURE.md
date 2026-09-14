@@ -468,34 +468,39 @@ one is the synthesized root alone, so a direct root invocation always passes.
 `DELETE /space/<S>/` also accepts a delegated capability whose tail targets
 exactly that Space's canonical trailing-slash URL with `allowedAction` exactly
 `['DELETE']`; a single-verb DELETE grant is not a data grant, which is why the
-exception is keyed on the exact action set. `PUT /space/<S>/<C>/meta` and
-`PUT /space/<S>/<C>/meta/log` also accept one whose tail targets exactly the
-Space's items subtree, the trailing-slash Space URL a wallet's generation
-delegation carries, so a transient session can configure and create Collections,
-and can put a Collection under log governance or append to its log -- the
-guarded create of that log is the declaration that starts governing the
-Collection's `encryption` descriptor, so it is a configuration write of the same
-kind as the Metadata object's own. A tail aimed at the Collection container URL,
-at the Collection Metadata URL, or at a Resource stays refused. Create
-Collection (`POST /space/<S>/`) is outside the rule. The tail alone is read, so
-a DELETE-only child of a two-verb management parent still deletes the Space, and
-the rule says nothing about who signed any link: it holds whatever DID method
-the controller or a delegator uses. That is what the client-annex clause's
-invocation-time bound cannot do, since it runs only on a chain carrying a
-ladder-signed link, and a generation delegation signed by an enrolled client's
-key carries none. The two compose rather than overlap. This rule refuses first
-on the invoked shape; the clause still refuses a ladder-signed chain this rule
-would admit, reading the ladder-signed links instead of the tail. The clause's
-`PUT`-on-Space-Metadata branch is now shadowed by this rule: this rule already
-refuses any delegated `PUT /space/<S>/meta` regardless of chain composition, so
-the clause's own refusal there never decides anything on its own and is kept
-only as defense in depth. Its `DELETE`-on-canonical-Space-URL branch still
-decides a case this rule does not: this rule reads only the tail, so a
-ladder-signed link earlier in the chain that is not itself
-target-exact-DELETE-only, later narrowed to that shape by attenuation, passes
-this rule but is still refused by the clause. A refusal binds the capability
-decision only and surfaces as the ordinary masked `not-found`, since all five
-handlers are capability-only.
+exception is keyed on the exact action set. `PUT /space/<S>/<C>/meta/log` also
+accepts one whose tail targets exactly the Space's items subtree, the
+trailing-slash Space URL a wallet's generation delegation carries, so a
+transient session can put a Collection under log governance or append to its
+log; the guarded create of that log is the declaration that starts governing the
+Collection's `encryption` descriptor and refuses every direct `encryption` write
+from then on. A tail aimed at the Collection container URL, at the log URL, or
+at a Resource stays refused there. `PUT /space/<S>/<C>/meta` carries no rule: a
+tail on the Space subtree, on the Collection container URL, or on the Metadata
+URL itself writes the object. An app holds a Collection-scoped grant, not a
+Space-subtree one, and declares its own indexes and `encryption` on that
+Collection through this write. The prefix hazard is weak there, since a holder
+of a Collection data grant already writes and deletes every Resource in it, the
+`encryption` descriptor is immutable once set, and Delete Collection stays
+controller-only. Create Collection (`POST /space/<S>/`) is outside the rule. The
+tail alone is read, so a DELETE-only child of a two-verb management parent still
+deletes the Space, and the rule says nothing about who signed any link: it holds
+whatever DID method the controller or a delegator uses. That is what the
+client-annex clause's invocation-time bound cannot do, since it runs only on a
+chain carrying a ladder-signed link, and a generation delegation signed by an
+enrolled client's key carries none. The two compose rather than overlap. This
+rule refuses first on the invoked shape; the clause still refuses a
+ladder-signed chain this rule would admit, reading the ladder-signed links
+instead of the tail. The clause's `PUT`-on-Space-Metadata branch is now shadowed
+by this rule: this rule already refuses any delegated `PUT /space/<S>/meta`
+regardless of chain composition, so the clause's own refusal there never decides
+anything on its own and is kept only as defense in depth. Its
+`DELETE`-on-canonical-Space-URL branch still decides a case this rule does not:
+this rule reads only the tail, so a ladder-signed link earlier in the chain that
+is not itself target-exact-DELETE-only, later narrowed to that shape by
+attenuation, passes this rule but is still refused by the clause. A refusal
+binds the capability decision only and surfaces as the ordinary masked
+`not-found`, since all four handlers are capability-only.
 
 **Denial reasons:** a refusal is a 404 whose `type` is the merged `not-found`,
 with two exceptions named by `type` only, the status unchanged (`denialError` in

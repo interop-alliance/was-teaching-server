@@ -2083,3 +2083,57 @@ WC-231 and the freewallet readers stay open in their repos (they mint the
 shape), and app-connect-spec decision 0003, which restates the clause's locked
 property with the admitted forms, still needs a dated amendment adding this one,
 handled by the user.
+
+### WAS-110: `space-subtree-put` refuses a collection-scoped grant's Metadata writes
+
+- status: done (2026-09-14)
+- priority: high
+- labels: was-v0.5, security, zcap, authorization
+- touches:
+  - was-react: WR-47 records the app-side half of this conflict;
+    `src/storage/wasSync.ts` and `src/storage/wasRemoteStore.ts` make the three
+    writes this rule refused -- WR-47 closed 2026-09-14 (done, no code change:
+    the writes pass as written)
+  - wallet-core: unaffected (the index declarations stay app-side)
+  - wallet-attached-storage-spec: unaffected (the spec has no such rule, and
+    none is added)
+  - was-conformance-suite: `container-rule-api`'s Collection-URL grant case
+    flipped from a refusal to an admission (0.18.0, TBD)
+- acceptance:
+  - [x] `PUT /space/{s}/{c}/meta` carries no container rule: a delegated
+        capability targeting the Collection container URL or the Collection
+        Metadata URL writes the object (`src/requests/CollectionRequest.ts`)
+  - [x] `PUT /space/{s}/{c}/meta/log` keeps `space-subtree-put`
+  - [x] `test/container-rule-api.test.ts` asserts both admissions
+  - [x] ARCHITECTURE.md's container-rule paragraph and CHANGELOG.md restated
+
+Draft rather than todo: the unreleased `space-subtree-put` container rule
+(`src/lib/containerRule.ts`, in 0.33.0) guards `PUT /space/{s}/{c}/meta` and
+`PUT /space/{s}/{c}/meta/log`. It accepts a direct root-capability invocation,
+or a delegated capability whose tail targets exactly the Space's canonical
+trailing-slash URL. A capability targeting the Collection container URL, the
+Collection Metadata URL, or a Resource URL is refused.
+
+was-react never holds a Space-subtree grant: every grant it gets, from a wallet
+or from a dev-mode provisioner, is scoped to one Collection. Under this rule
+that refuses three app-side writes to the merged Metadata object: marking a
+collection encrypted when the wallet did not already declare it, a public
+collection's plaintext index declaration, and the compare-and-swap that declares
+a private collection's blinded-index schema. All three are best-effort on the
+was-react side and degrade with a warning instead of failing the session, but
+equality queries on an undeclared index then fail.
+
+The spec does not mandate this rule, so the conflict is a server decision, not a
+spec violation, and there is nothing to accept yet. Three ways out: relax the
+rule to also admit a collection-scoped grant on these two paths; move the index
+declarations wallet-side, provisioned at grant time instead of written by the
+app during sync; or have the wallet delegate a Space-subtree grant for this
+purpose instead of a Collection-scoped one. See was-react WR-47 for the app-side
+half of this.
+
+Resolved 2026-09-14 by relaxing the rule on `PUT .../meta` only. The prefix
+hazard is weak on that path: a holder of a Collection data grant already writes
+and deletes every Resource in it, the `encryption` descriptor is immutable once
+set, and Delete Collection stays controller-only. The log write keeps the rule,
+since was-react never writes it and the guarded create is a permanent governance
+declaration.

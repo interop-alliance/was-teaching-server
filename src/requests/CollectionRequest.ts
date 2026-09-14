@@ -479,19 +479,17 @@ export class CollectionRequest {
     }
 
     // Verify (capability-only): writing the object requires a valid
-    // capability invocation; no access-control-policy fallback.
-    // The container rule: Update Collection Metadata takes a direct root
-    // invocation, or a delegated capability whose invoked grant targets
-    // exactly the Space's items subtree (the trailing-slash Space URL, the
-    // shape a wallet's generation delegation carries). A capability targeting
-    // the Collection container URL, this Metadata URL, or a Resource URL is
-    // refused.
+    // capability invocation; no access-control-policy fallback. No container
+    // rule here: a grant on the Space subtree, on the Collection container
+    // URL, or on this Metadata URL all write the object, so an app holding a
+    // Collection-scoped grant can declare its own indexes and `encryption`.
+    // Delete Collection stays controller-only, and the sibling `meta/log`
+    // write keeps the Space-subtree rule.
     await fetchSpaceAndVerify({
       request,
       spaceId,
       targetPath: collectionMetaPath({ spaceId, collectionId }),
-      requestName,
-      containerRule: 'space-subtree-put'
+      requestName
     })
 
     // zCap checks out, continue. The stored object is read directly (not
@@ -717,9 +715,10 @@ export class CollectionRequest {
     // a delegated capability whose invoked grant targets exactly the Space's
     // items subtree (the trailing-slash Space URL). The guarded create puts
     // the Collection under log governance, and from then on the log's head
-    // derives the served `encryption` descriptor, so a grant aimed at the
-    // Collection container URL, this log URL, or a Resource URL is refused --
-    // as it is for the sibling `PUT /meta`.
+    // derives the served `encryption` descriptor and refuses every direct
+    // `encryption` write, so a grant aimed at the Collection container URL,
+    // this log URL, or a Resource URL is refused. The sibling `PUT /meta`
+    // carries no such rule.
     await fetchSpaceAndVerify({
       request,
       spaceId,

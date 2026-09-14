@@ -8,11 +8,14 @@
  * existing Space and `DELETE /space/{s}/{c}/` take a direct root-capability
  * invocation alone. `DELETE /space/{s}/` additionally takes a delegated
  * capability whose tail targets exactly that Space's canonical trailing-slash
- * URL with `allowedAction` exactly `['DELETE']`. `PUT /space/{s}/{c}/meta`
- * additionally takes one whose tail targets exactly the Space's items subtree
- * (that same trailing-slash URL), the shape a wallet's generation delegation
- * carries, and so does `PUT /space/{s}/{c}/meta/log`, the guarded create that
- * puts a Collection under history-log governance.
+ * URL with `allowedAction` exactly `['DELETE']`. `PUT /space/{s}/{c}/meta/log`,
+ * the guarded create that puts a Collection under history-log governance,
+ * takes a direct root invocation or a delegated capability whose tail targets
+ * exactly the Space's items subtree (that same trailing-slash URL), the shape
+ * a wallet's generation delegation carries. `PUT /space/{s}/{c}/meta` carries
+ * no rule: a grant on the Space subtree, on the Collection container URL, or
+ * on the Metadata URL itself writes the object, so an app holding a
+ * Collection-scoped grant can declare its own indexes and `encryption`.
  *
  * Refusals are masked as a 404 like any other unauthorized invocation, and
  * each negative case reads the target back to show nothing changed.
@@ -467,8 +470,8 @@ describe('container rule (unsafe methods at a container URL)', () => {
     })
   })
 
-  describe('the Update Collection Metadata exception', () => {
-    it('refuses a grant targeting the Collection container URL (404)', async () => {
+  describe('Update Collection Metadata carries no container rule', () => {
+    it('admits a grant targeting the Collection container URL', async () => {
       const space = await provisionSpace()
       const capability = await delegate({
         signer: alice.signer,
@@ -477,21 +480,19 @@ describe('container rule (unsafe methods at a container URL)', () => {
         controller: bob.did,
         allowedActions: WAS_ACTIONS
       })
-      const err = await requestError(
-        client({ signer: bob.signer }).request({
-          url: `${space.spaceUrl}notes/meta`,
-          method: 'PUT',
-          action: 'PUT',
-          capability,
-          json: { name: 'Renamed under a container grant' }
-        })
-      )
-      assert.equal(err.status, 404)
+      const response = await client({ signer: bob.signer }).request({
+        url: `${space.spaceUrl}notes/meta`,
+        method: 'PUT',
+        action: 'PUT',
+        capability,
+        json: { name: 'Renamed under a container grant' }
+      })
+      assert.equal(response.status, 204)
       const meta = await readCollectionMeta({ space, collectionId: 'notes' })
-      assert.notEqual(meta.name, 'Renamed under a container grant')
+      assert.equal(meta.name, 'Renamed under a container grant')
     })
 
-    it('refuses a grant targeting the Collection Metadata URL itself (404)', async () => {
+    it('admits a grant targeting the Collection Metadata URL itself', async () => {
       const space = await provisionSpace()
       const capability = await delegate({
         signer: alice.signer,
@@ -500,18 +501,16 @@ describe('container rule (unsafe methods at a container URL)', () => {
         controller: bob.did,
         allowedActions: ['GET', 'PUT']
       })
-      const err = await requestError(
-        client({ signer: bob.signer }).request({
-          url: `${space.spaceUrl}notes/meta`,
-          method: 'PUT',
-          action: 'PUT',
-          capability,
-          json: { name: 'Renamed under a meta grant' }
-        })
-      )
-      assert.equal(err.status, 404)
+      const response = await client({ signer: bob.signer }).request({
+        url: `${space.spaceUrl}notes/meta`,
+        method: 'PUT',
+        action: 'PUT',
+        capability,
+        json: { name: 'Renamed under a meta grant' }
+      })
+      assert.equal(response.status, 204)
       const meta = await readCollectionMeta({ space, collectionId: 'notes' })
-      assert.notEqual(meta.name, 'Renamed under a meta grant')
+      assert.equal(meta.name, 'Renamed under a meta grant')
     })
 
     it('refuses a grant targeting a Resource URL', async () => {
