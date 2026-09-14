@@ -439,6 +439,39 @@ dereferenced chain; the revocation route, whose target is never a Space or Space
 Metadata URL, builds the inspector without one and gets the delegation-shape
 bound alone.
 
+A second invocation-time bound targets a different signer: the _transient annex
+VM_, a per-visit method a wallet publishes in its client-annex document under
+`capabilityInvocation` and `capabilityDelegation` and under no other relation.
+It is not a ladder VM, so the bound above never sees the links it signs. That
+left a path open: a transient VM holding a generation delegation -- the
+Space-subtree grant with the full verb vocabulary, signed by an enrolled
+client's key, so no ladder link is anywhere in the chain -- could narrow it into
+a target-exact DELETE-only child and invoke it, satisfying the container rule's
+DELETE exception without tripping the ladder bound. A `DELETE` on a canonical
+Space URL is now refused whenever any link in the chain is signed by a transient
+annex VM, whoever signed the links above it. The bound reads who signed a link,
+not who invokes it: a per-visit key's own delegation never ends an account or
+its annex, while a DELETE-only child an enrolled client signs to the annex DID
+stays admitted. A wallet's own delete flows sign their DELETE-only children with
+the ladder VM and invoke them under a `did:key`, and the annex garbage
+collector's re-mint is signed by an enrolled client, so no admitted shape is
+lost. A `PUT` on a Space Metadata URL needs no branch of this bound: the
+container rule's `controller-only` rule refuses every delegated invocation
+there, off the header, before any chain is read.
+
+A transient annex VM is recognized by the shape of the signer's own document
+alone: listed under `capabilityInvocation` and `capabilityDelegation`, and
+absent from `authentication`, `assertionMethod`, and `keyAgreement`. Nothing
+else a wallet publishes has that shape. An enrolled-client method carries all
+four signing relations, and a ladder VM is absent from `capabilityInvocation`.
+The document is the one the delegation-proof verification just resolved, so the
+check costs no further read. Reading nothing but the signer's document keeps the
+bound total. It holds for a retired annex generation the account document's
+`DelegatedClients` entry no longer names but whose grant is still live, since
+the annex garbage collector re-points that entry first and tolerates a refused
+revocation. It also holds for an annex a `did:key` controller delegated to
+directly, where no delegator document exists to walk.
+
 Both inspectors bind the capability decision only. A refusal falls through to
 the target's access-control policy like any other failed verification, so a
 world-readable read still serves. The clause is fail-open across servers: a
@@ -485,22 +518,28 @@ of a Collection data grant already writes and deletes every Resource in it, the
 controller-only. Create Collection (`POST /space/<S>/`) is outside the rule. The
 tail alone is read, so a DELETE-only child of a two-verb management parent still
 deletes the Space, and the rule says nothing about who signed any link: it holds
-whatever DID method the controller or a delegator uses. That is what the
-client-annex clause's invocation-time bound cannot do, since it runs only on a
-chain carrying a ladder-signed link, and a generation delegation signed by an
-enrolled client's key carries none. The two compose rather than overlap. This
-rule refuses first on the invoked shape; the clause still refuses a
-ladder-signed chain this rule would admit, reading the ladder-signed links
-instead of the tail. The clause's `PUT`-on-Space-Metadata branch is now shadowed
-by this rule: this rule already refuses any delegated `PUT /space/<S>/meta`
-regardless of chain composition, so the clause's own refusal there never decides
-anything on its own and is kept only as defense in depth. Its
-`DELETE`-on-canonical-Space-URL branch still decides a case this rule does not:
-this rule reads only the tail, so a ladder-signed link earlier in the chain that
-is not itself target-exact-DELETE-only, later narrowed to that shape by
-attenuation, passes this rule but is still refused by the clause. A refusal
-binds the capability decision only and surfaces as the ordinary masked
-`not-found`, since all four handlers are capability-only.
+whatever DID method the controller or a delegator uses. The client-annex
+clause's two invocation-time bounds close that gap between them. The ladder
+bound runs on a chain carrying a ladder-signed link. The transient-annex bound
+covers the case the ladder bound cannot: a generation delegation signed by an
+enrolled client's key, carrying no ladder-signed link at all, narrowed
+downstream into a DELETE-only child by a transient annex verification method. It
+refuses any chain carrying a link signed by that kind of method outright,
+whatever shape the link or the links above it have. The two compose rather than
+overlap. This rule refuses first on the invoked shape; the clause still refuses
+a ladder-signed or transient-annex-signed chain this rule would admit, reading
+those links instead of the tail. The clause's `PUT`-on-Space-Metadata branches
+are now shadowed by this rule: this rule already refuses any delegated
+`PUT /space/<S>/meta` regardless of chain composition, so the clause's own
+refusal there never decides anything on its own and is kept only as defense in
+depth. Its `DELETE`-on-canonical-Space-URL branches still decide a case this
+rule does not: this rule reads only the tail, so a ladder-signed link earlier in
+the chain that is not itself target-exact-DELETE-only, later narrowed to that
+shape by attenuation, passes this rule but is still refused by the ladder bound.
+Any chain carrying a transient-annex-signed link is refused by the
+transient-annex bound regardless of the tail's shape. A refusal binds the
+capability decision only and surfaces as the ordinary masked `not-found`, since
+all four handlers are capability-only.
 
 **Denial reasons:** a refusal is a 404 whose `type` is the merged `not-found`,
 with two exceptions named by `type` only, the status unchanged (`denialError` in

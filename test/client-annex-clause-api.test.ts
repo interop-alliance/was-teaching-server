@@ -39,25 +39,23 @@ import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { KmsClient } from '@interop/webkms-client'
 
-import {
-  createDID,
-  logToJsonlString,
-  signerFromExternalKey,
-  updateDID
-} from '@interop/did-method-webvh'
-import type { DIDLog, ServiceEndpoint } from '@interop/did-method-webvh'
-import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
+import { logToJsonlString, updateDID } from '@interop/did-method-webvh'
+import type { DIDLog } from '@interop/did-method-webvh'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
   anHourFromNow,
+  assertSpaceController,
+  bareDidKeyOf,
   client,
   delegate,
   requestError,
   rootZcap,
+  provisionWebvhIdentity,
   startTestServer,
   zcapClients
 } from './helpers.js'
+import type { WebvhIdentity } from './helpers.js'
 
 /** The service-entry type IRI naming an account's current annex DID. */
 const DELEGATED_CLIENTS_SERVICE_TYPE = 'https://w3id.org/byoe#DelegatedClients'
@@ -67,21 +65,6 @@ const AUXILIARY_TYPE = ['Space', 'AuxiliarySpace', 'DelegatedClientsSpace']
 
 /** The closed WAS verb vocabulary a generation delegation carries. */
 const WAS_ACTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
-
-/** A minted, published self-hosted `did:webvh` and the keys it lists. */
-interface WebvhIdentity {
-  spaceId: string
-  did: string
-  log: DIDLog
-  /** the update-key signer every log entry of this identity is signed by */
-  logSigner: any
-  /** the ordinary client key: invocation *and* delegation */
-  clientKeyPair: any
-  /** the delegation-only (ladder) key, when the document lists one */
-  ladderKeyPair?: any
-  /** the invocation-and-delegation (transient annex) key, when listed */
-  transientKeyPair?: any
-}
 
 describe('client-annex clause (ladder-VM delegation bounds)', () => {
   let fastify: FastifyInstance,
@@ -110,10 +93,14 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     // The annex identity is provisioned first: the account document's service entry
     // has to name it, and a DID string is only known once its log is minted.
     clientAnnex = await provisionWebvhIdentity({
+      owner: alice,
+      serverUrl,
       withLadderKey: false,
       withTransientKey: true
     })
     account = await provisionWebvhIdentity({
+      owner: alice,
+      serverUrl,
       withLadderKey: true,
       services: [
         {
@@ -165,149 +152,10 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
     await rm(dataDir, { recursive: true, force: true })
   })
 
-  /**
-   * Provisions a Space controlled by Alice's `did:key`, mints a `did:webvh`
-   * anchored in a Collection of that Space (`id` unless overridden), and
-   * publishes its history log there. The log Collection is deliberately *not*
-   * world-readable: local resolution is a storage read, and a public policy
-   * would mask the refusals this suite asserts on the log URL. Promotion is
-   * left to the caller.
-   *
-   * @param options {object}
-   * @param options.withLadderKey {boolean}   also list a delegation-only
-   *   verification method (the ladder VM)
-   * @param [options.withTransientKey] {boolean}   also list a method under
-   *   `capabilityInvocation` *and* `capabilityDelegation`, the shape a
-   *   per-visit annex verification method publishes under
-   * @param [options.collectionId] {string}   the Collection anchoring the log
-   * @param [options.services] {ServiceEndpoint[]}   service entries for the
-   *   created document
-   * @returns {Promise<WebvhIdentity>}
-   */
-  async function provisionWebvhIdentity({
-    withLadderKey,
-    withTransientKey = false,
-    collectionId = 'id',
-    services
-  }: {
-    withLadderKey: boolean
-    withTransientKey?: boolean
-    collectionId?: string
-    services?: ServiceEndpoint[]
-  }): Promise<WebvhIdentity> {
-    const spaceId = randomUUID()
-    const space = alice.was.space(spaceId)
-    await space.configure({ name: 'Identity Space', controller: alice.did })
-    await space.collection(collectionId).configure({ force: true })
-
-    const updateKeyPair = await Ed25519VerificationKey.generate()
-    const updateKeySigner = updateKeyPair.didKeySigner()
-    const logSigner = signerFromExternalKey({
-      publicKeyMultibase: updateKeyPair.publicKeyMultibase!,
-      sign: async ({ data }: { data: Uint8Array }) =>
-        await updateKeySigner.sign({ data })
-    })
-
-    const clientKeyPair = await Ed25519VerificationKey.generate()
-    const ladderKeyPair = withLadderKey
-      ? await Ed25519VerificationKey.generate()
-      : undefined
-    const transientKeyPair = withTransientKey
-      ? await Ed25519VerificationKey.generate()
-      : undefined
-
-    // Relationship wiring is driven entirely through `purpose`: passing
-    // explicit relationship arrays alongside would override it wholesale.
-    const verificationMethods = [
-      {
-        type: 'Multikey',
-        publicKeyMultibase: clientKeyPair.publicKeyMultibase!,
-        purpose: [
-          'authentication',
-          'assertionMethod',
-          'capabilityInvocation',
-          'capabilityDelegation'
-        ]
-      }
-    ]
-    if (ladderKeyPair) {
-      verificationMethods.push({
-        type: 'Multikey',
-        publicKeyMultibase: ladderKeyPair.publicKeyMultibase!,
-        purpose: ['assertionMethod', 'capabilityDelegation']
-      })
-    }
-    if (transientKeyPair) {
-      verificationMethods.push({
-        type: 'Multikey',
-        publicKeyMultibase: transientKeyPair.publicKeyMultibase!,
-        purpose: ['capabilityInvocation', 'capabilityDelegation']
-      })
-    }
-
-    const created = await createDID({
-      address: `${serverUrl}/space/${spaceId}/${collectionId}`,
-      signer: logSigner,
-      updateKeys: [updateKeyPair.publicKeyMultibase!],
-      vmIdFragment: 'multibase',
-      verificationMethods: verificationMethods as any,
-      ...(services ? { services } : {})
-    })
-
-    clientKeyPair.id = `${created.did}#${clientKeyPair.publicKeyMultibase}`
-    clientKeyPair.controller = created.did
-    if (ladderKeyPair) {
-      ladderKeyPair.id = `${created.did}#${ladderKeyPair.publicKeyMultibase}`
-      ladderKeyPair.controller = created.did
-    }
-    if (transientKeyPair) {
-      transientKeyPair.id = `${created.did}#${transientKeyPair.publicKeyMultibase}`
-      transientKeyPair.controller = created.did
-    }
-
-    const published = await alice.was.request({
-      path: `/space/${spaceId}/${collectionId}/did.jsonl`,
-      method: 'PUT',
-      headers: { 'content-type': 'text/jsonl' },
-      body: new Blob([logToJsonlString(created.log)], { type: 'text/jsonl' })
-    })
-    assert.equal(published.status, 204)
-
-    return {
-      spaceId,
-      did: created.did,
-      log: created.log,
-      logSigner,
-      clientKeyPair,
-      ladderKeyPair,
-      transientKeyPair
-    }
-  }
-
   /** The account Space's root capability id, the parent of every WAS-route
    * delegation below. */
   function accountSpaceRoot(): string {
     return `urn:zcap:root:${encodeURIComponent(accountSpaceUrl)}`
-  }
-
-  /**
-   * Asserts the account Space's stored controller, read from its Metadata
-   * object under the account's own client key. The survival check after a
-   * refused controller rewrite.
-   *
-   * @param expected {string}   the controller DID the Space should still carry
-   * @returns {Promise<void>}
-   */
-  async function assertAccountController(expected: string): Promise<void> {
-    const metadata = await client({
-      signer: account.clientKeyPair.signer()
-    }).request({
-      url: accountSpaceMetaUrl,
-      method: 'GET',
-      action: 'GET',
-      capability: rootZcap({ target: accountSpaceUrl, controller: account.did })
-    })
-    assert.equal((metadata.data as { controller: string }).controller, expected)
   }
 
   describe('control: a non-ladder chain is untouched', () => {
@@ -470,7 +318,11 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         })
       )
       assert.equal(err.status, 404)
-      await assertAccountController(account.did)
+      await assertSpaceController({
+        spaceUrl: accountSpaceUrl,
+        controller: account.did,
+        signer: account.clientKeyPair.signer()
+      })
     })
 
     it('refuses the subtree grant invoked against Update Space Metadata, now by the container rule (404)', async () => {
@@ -502,7 +354,11 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         })
       )
       assert.equal(err.status, 404)
-      await assertAccountController(account.did)
+      await assertSpaceController({
+        spaceUrl: accountSpaceUrl,
+        controller: account.did,
+        signer: account.clientKeyPair.signer()
+      })
 
       // The GET half of the same URL is an ordinary read under the subtree.
       const read = await annex.request({
@@ -521,6 +377,8 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // DELETE-only shape of predicate (iii). A fresh account, so a failure
       // cannot take the suite's shared Space with it.
       const other = await provisionWebvhIdentity({
+        owner: alice,
+        serverUrl,
         withLadderKey: true,
         services: [
           {
@@ -585,6 +443,8 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // admit it and delete the Space; the bound reads the ladder-signed
       // links, which here carry the whole verb vocabulary.
       const other = await provisionWebvhIdentity({
+        owner: alice,
+        serverUrl,
         withLadderKey: true,
         services: [
           {
@@ -967,6 +827,8 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // The DID string carries its own log Collection, so an account anchored
       // in a `keys` Collection reaches the same bridge.
       const keysAccount = await provisionWebvhIdentity({
+        owner: alice,
+        serverUrl,
         withLadderKey: true,
         collectionId: 'keys'
       })
@@ -1177,23 +1039,6 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
   })
 
   /**
-   * The ladder VM's own bare `did:key` identity: the DID a predicate (iii)
-   * delegation names as controller, and the verification method the matching
-   * invocation is signed under. The deletion ceremony's delegatee is this key
-   * rather than the `did:webvh` fragment -- it is the one identity that keeps
-   * resolving while the walk deletes the Spaces every hosted document lives
-   * in. Predicate (i) can never admit these chains: the controller is a bare
-   * `did:key`, not the account document's annex `did:webvh`.
-   *
-   * @param keyPair {any}   the account's ladder key pair
-   * @returns {{ did: string, signer: any }}
-   */
-  function bareDidKeyOf(keyPair: any): { did: string; signer: any } {
-    const did = `did:key:${keyPair.publicKeyMultibase}`
-    return { did, signer: keyPair.didKeySigner() }
-  }
-
-  /**
    * Creates an ordinary Space under Alice's `did:key` and, when `controller`
    * is given, promotes it to that DID (Space creation is `did:key`-only).
    * `url` is the canonical trailing-slash Space URL, the target of the
@@ -1245,8 +1090,11 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
   /**
    * Mints the ladder-signed child of a chain: `controller` is the ladder
-   * key's bare `did:key`, the signer that key, `allowedActions` defaults to
-   * `['GET']`, and `keyPair` to the account's ladder key.
+   * key's bare `did:key` (`bareDidKeyOf` in the helpers), the signer that
+   * key, `allowedActions` defaults to `['GET']`, and `keyPair` to the
+   * account's ladder key. Predicate (i) can never admit these chains: the
+   * controller is a bare `did:key`, not the account document's annex
+   * `did:webvh`.
    *
    * @param options {object}
    * @param options.invocationTarget {string}   the child's target
@@ -1493,7 +1341,11 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       // drops that method from the document and the same still-unexpired child
       // refuses. A fresh account identity, so the removal leaves the suite's
       // shared one untouched.
-      const retiring = await provisionWebvhIdentity({ withLadderKey: true })
+      const retiring = await provisionWebvhIdentity({
+        owner: alice,
+        serverUrl,
+        withLadderKey: true
+      })
       const space = await makeSpace({ controller: retiring.did })
       const { child: deleteChild, ladder } = await ladderChild({
         capability: space.root,

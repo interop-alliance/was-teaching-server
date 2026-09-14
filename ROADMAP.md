@@ -437,43 +437,6 @@ Space, `policy` included, exactly as it reaches data paths. The "inherits" class
 is load-bearing and must keep working: freewallet's replication invokes
 `<collection>/query` and resource `meta` under a collection-scoped grant.
 
-### WAS-107: Self-narrowing under an enrolled-client-signed Space-subtree grant
-
-- status: draft
-- priority: medium
-- labels: security, zcap, authorization
-- touches:
-  - was-teaching-server: `src/lib/containerRule.ts`,
-    `src/lib/clientAnnexClause.ts`
-  - wallet-core: WC-232 records the arm this residual lives on
-  - wallet-attached-storage-spec: the container rule's Delete Space exception is
-    judged on the invoked capability, so a spec change would be needed before
-    any server enforcement here
-
-The container rule's Delete Space exception reads the invoked capability alone:
-target exactly the Space URL, `allowedAction` exactly `['DELETE']`. That is what
-lets freewallet delete an unlock Space through a DELETE-only child of its
-two-verb management grant. The same property leaves one path open on the
-enrolled-client-signed arm. A transient visit holds a generation delegation (the
-Space-subtree grant with the full verb set) signed by an enrolled client's key.
-Its annex verification method stands under `capabilityDelegation` as well as
-`capabilityInvocation`, so it can mint a child of that delegation with the same
-target and `['DELETE']`, and invoke the child. The child satisfies the
-exception, and no ladder link is in the chain, so the client-annex clause's
-ladder bound never runs. The test file `test/container-rule-api.test.ts` asserts
-this admission so a change here is noticed.
-
-The ladder-signed arm is closed by the clause, which reads the ladder-signed
-links rather than the tail. A signer-independent closure on this arm would need
-a rule about the parent of the invoked capability (say: every delegated link in
-a Space DELETE chain is target-exact, and none above the tail carries a verb set
-wider than some bound), which conflicts with the management-grant shape
-freewallet relies on today. Parked here until the wallet side decides whether
-the generation delegation may be excluded from Space DELETE by a distinguishing
-mark of its own, or whether the exposure is accepted.
-
-discovered-from: WAS-60.
-
 ### WAS-108: Container rule for the policy and backend-registration writes
 
 - status: todo

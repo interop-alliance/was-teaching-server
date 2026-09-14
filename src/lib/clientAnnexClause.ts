@@ -112,6 +112,34 @@
  * above it granted the whole subtree -- what a ladder verification method
  * signed, which no downstream attenuation can restore.
  *
+ * A second invocation-time bound keys on a different signer: the *transient
+ * annex VM*, the per-visit method a wallet publishes in its client-annex
+ * document under `capabilityInvocation` and `capabilityDelegation` and under
+ * no other relation (wallet-core decision 0013). It is not a ladder VM (no
+ * relation asymmetry), so the bound above never sees the links it signs, and
+ * the container rule reads the invoked capability alone. That left one path
+ * open: a transient VM holding a generation delegation (the Space-subtree
+ * grant with the full verb set, signed by an enrolled client, so no ladder
+ * link anywhere) could narrow it into a target-exact DELETE-only child,
+ * invoke the child, and satisfy the container rule's Delete Space exception.
+ * So a `DELETE` on a canonical Space URL is refused whenever any link in the
+ * chain is signed by a transient annex VM, whoever signed the links above it.
+ * The bound reads who signed a link, not who invokes: a per-visit key's own
+ * delegation never ends an account or its annex, while a DELETE-only child an
+ * enrolled client signs to the annex DID stays admitted, as the wallet's own
+ * delete flows are. A `PUT` on a Space Metadata URL needs no branch here:
+ * the `controller-only` container rule refuses every delegated invocation at
+ * the only route that PUTs one, off the header, before any chain is read.
+ *
+ * Recognizing the signer is `signerKindOf`'s job, off the signer's own
+ * document alone. That keeps the bound total: it holds for a retired annex
+ * generation the account document's `DelegatedClients` entry no longer names
+ * but whose grant is still live (the annex GC re-points first and tolerates
+ * a refused revocation), and for an annex delegated to by a `did:key`
+ * controller, which a walk through the delegator's document would miss. The
+ * document is the one the signature verification just resolved, so the check
+ * costs no read.
+ *
  * The locked property: no ladder authority whose exercise leaves no record --
  * every admitted ladder delegation either resolves through a loud annex entry
  * and stays inside the account Space's items subtree, can only write a log, or
@@ -300,34 +328,44 @@ function relationshipMethodIds({
 }
 
 /**
- * Whether a verification method is the document's ladder VM: listed under
- * `capabilityDelegation` and absent from `capabilityInvocation` (relation
- * asymmetry -- the recognition convention). A method in both is an ordinary
- * client method; a method in neither could not have verified a delegation
- * proof at all.
+ * Which signer a delegation proof's verification method is, read off the
+ * signer's own resolved document. The ladder VM is recognized by relation
+ * asymmetry: listed under `capabilityDelegation` and absent from
+ * `capabilityInvocation`. The transient annex VM is the per-visit method a
+ * wallet publishes in its client-annex document under `capabilityInvocation`
+ * and `capabilityDelegation` and under no other relation (wallet-core
+ * decision 0013); reading the signer's document alone keeps that
+ * recognition total, whatever document names the annex and whether it still
+ * does. Anything else -- an enrolled-client method, which carries
+ * `authentication` and `assertionMethod` as well -- is `other`. A method in
+ * neither capability relation could not have verified a delegation proof at
+ * all.
  * @param options {object}
- * @param options.doc {DIDDoc}   the resolved account document
+ * @param options.doc {DIDDoc}   the signer's resolved document
  * @param options.verificationMethod {string}   the proof's method id
- * @returns {boolean}
+ * @returns {'ladder' | 'transient' | 'other'}
  */
-function isLadderVerificationMethod({
+function signerKindOf({
   doc,
   verificationMethod
 }: {
   doc: DIDDoc
   verificationMethod: string
-}): boolean {
+}): 'ladder' | 'transient' | 'other' {
   const docId = doc.id ?? ''
-  return (
-    relationshipMethodIds({
-      entries: doc.capabilityDelegation,
-      docId
-    }).includes(verificationMethod) &&
-    !relationshipMethodIds({
-      entries: doc.capabilityInvocation,
-      docId
-    }).includes(verificationMethod)
-  )
+  const listedUnder = (entries: unknown): boolean =>
+    relationshipMethodIds({ entries, docId }).includes(verificationMethod)
+  if (!listedUnder(doc.capabilityDelegation)) {
+    return 'other'
+  }
+  if (!listedUnder(doc.capabilityInvocation)) {
+    return 'ladder'
+  }
+  const transient =
+    !listedUnder(doc.authentication) &&
+    !listedUnder(doc.assertionMethod) &&
+    !listedUnder(doc.keyAgreement)
+  return transient ? 'transient' : 'other'
 }
 
 /**
@@ -739,6 +777,40 @@ async function ladderDelegationAdmitted({
 }
 
 /**
+ * Which of the two operations the invocation-time bounds read an invocation
+ * as: a `PUT` on a Space Metadata URL (the controller rewrite), a `DELETE`
+ * on a canonical Space URL, or neither. Both bounds classify the same way;
+ * each then applies its own condition.
+ * @param options {object}
+ * @param options.invocation {object}   the operation being verified
+ * @param options.invocation.target {string}   its canonical target URL
+ * @param options.invocation.action {string}   its zcap action (the HTTP verb)
+ * @param options.serverUrl {string}   this server's base URL
+ * @returns {'put-space-meta' | 'delete-space' | undefined}
+ */
+function spaceOperationOf({
+  invocation: { target, action },
+  serverUrl
+}: {
+  invocation: { target: string; action: string }
+  serverUrl: string
+}): 'put-space-meta' | 'delete-space' | undefined {
+  if (
+    action === 'PUT' &&
+    spaceMetaUrlTargetId({ target, serverUrl }) !== undefined
+  ) {
+    return 'put-space-meta'
+  }
+  if (
+    action === 'DELETE' &&
+    spaceUrlTargetId({ target, serverUrl }) !== undefined
+  ) {
+    return 'delete-space'
+  }
+  return undefined
+}
+
+/**
  * The invocation-time bound on a ladder-descended chain: the reason the
  * invoked operation is refused, or `undefined` when it is allowed. Invoked as
  * `PUT` on a Space Metadata URL (the controller rewrite), the chain is always
@@ -766,33 +838,28 @@ async function ladderDelegationAdmitted({
  * verifies and may still be delegated onward, since attenuation can only keep
  * such a child target-exact and DELETE-only.
  * @param options {object}
- * @param options.invocation {object}   the operation being verified
- * @param options.invocation.target {string}   its canonical target URL
- * @param options.invocation.action {string}   its zcap action (the HTTP verb)
+ * @param options.target {string}   the invoked operation's canonical target
+ *   URL
+ * @param options.operation {'put-space-meta' | 'delete-space' | undefined}
+ *   which Space operation the invocation is, per `spaceOperationOf`
  * @param options.ladderLinks {object[]}   the chain's ladder-signed links, in
  *   chain order
- * @param options.serverUrl {string}   this server's base URL
  * @returns {string | undefined}   the refusal reason, or `undefined`
  */
 function ladderInvocationRefusal({
-  invocation,
-  ladderLinks,
-  serverUrl
+  target,
+  operation,
+  ladderLinks
 }: {
-  invocation: { target: string; action: string }
+  target: string
+  operation: 'put-space-meta' | 'delete-space' | undefined
   ladderLinks: ChainCapability[]
-  serverUrl: string
 }): string | undefined {
-  const { target, action } = invocation
-  if (
-    action === 'PUT' &&
-    spaceMetaUrlTargetId({ target, serverUrl }) !== undefined
-  ) {
+  if (operation === 'put-space-meta') {
     return 'invoked as PUT on a Space Metadata URL'
   }
   if (
-    action === 'DELETE' &&
-    spaceUrlTargetId({ target, serverUrl }) !== undefined &&
+    operation === 'delete-space' &&
     !ladderLinks.every(
       link =>
         link.invocationTarget === target &&
@@ -809,12 +876,17 @@ function ladderInvocationRefusal({
 
 /**
  * Builds the annex-chain inspection hook for one verification: valid when
- * no delegated capability in the chain is ladder-signed, or when every
- * ladder-signed one satisfies an admission predicate and the invoked operation
- * passes the invocation-time bound. Non-`did:webvh` proof methods (and
- * cross-host ones, which could not have verified here) are outside the clause
- * and pass untouched, so a chain of ordinary client delegations pays one
- * string check per link.
+ * no delegated capability in the chain is ladder-signed or transient-annex-
+ * signed, or when every ladder-signed one satisfies an admission predicate
+ * and the invoked operation passes both invocation-time bounds.
+ * Non-`did:webvh` proof methods (and cross-host ones, which could not have
+ * verified here) are outside the clause and pass untouched, so a chain of
+ * ordinary client delegations pays one string check per link. A `did:webvh`
+ * signer is classified once by `signerKindOf`, off its already-resolved
+ * document; the transient bound then applies only to a Space DELETE. Invoked
+ * as `PUT` on a Space Metadata URL, such a chain is already refused by the
+ * `controller-only` container rule at the only route that PUTs one, before
+ * any chain is dereferenced, so that bound carries no PUT branch of its own.
  * @param options {object}
  * @param options.storage {StorageBackend}   as threaded to the local
  *   `did:webvh` resolver
@@ -834,9 +906,9 @@ export function clientAnnexChainInspector({
 }): InspectCapabilityChain {
   return async ({ capabilityChain, capabilityChainMeta }) => {
     // The ladder-signed links themselves, not merely whether the chain has
-    // one: the invocation-time bound below is a statement about what a ladder
-    // VM signed, which no downstream attenuation can restore.
+    // one; for a transient annex VM one signed link is the whole statement.
     const ladderLinks: ChainCapability[] = []
+    let transientAnnexSigned = false
     for (const [index, capability] of capabilityChain.entries()) {
       // The root is synthesized rather than delegated.
       if (index === 0) {
@@ -862,7 +934,9 @@ export function clientAnnexChainInspector({
       } catch (err) {
         return { valid: false, error: err as Error }
       }
-      if (!isLadderVerificationMethod({ doc, verificationMethod })) {
+      const signer = signerKindOf({ doc, verificationMethod })
+      if (signer !== 'ladder') {
+        transientAnnexSigned ||= signer === 'transient'
         continue
       }
       ladderLinks.push(capability as ChainCapability)
@@ -890,13 +964,28 @@ export function clientAnnexChainInspector({
         }
       }
     }
-    if (ladderLinks.length === 0 || invocation === undefined) {
+    if (invocation === undefined) {
+      return { valid: true }
+    }
+    const operation = spaceOperationOf({ invocation, serverUrl })
+    if (transientAnnexSigned && operation === 'delete-space') {
+      return {
+        valid: false,
+        error: new Error(
+          'A chain carrying a delegation signed by a transient annex ' +
+            'verification method (a per-visit key) is invoked as DELETE on ' +
+            "a Space URL: a per-visit key's own delegation never ends an " +
+            'account or its annex.'
+        )
+      }
+    }
+    if (ladderLinks.length === 0) {
       return { valid: true }
     }
     const refusal = ladderInvocationRefusal({
-      invocation,
-      ladderLinks,
-      serverUrl
+      target: invocation.target,
+      operation,
+      ladderLinks
     })
     if (refusal !== undefined) {
       return {

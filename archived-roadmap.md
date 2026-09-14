@@ -2186,3 +2186,82 @@ keeps no roadmap of its own, so the item lives in this one. The checks assert
 only what the spec requires of every server. This server's specifics stay in
 `test/service-description-api.test.ts`: the `/service` path, the `features`
 baseline, the `instance` members, and the `WAS_DISCLOSE_VERSION` switch.
+
+### WAS-107: Self-narrowing under an enrolled-client-signed Space-subtree grant
+
+- status: done (2026-09-14)
+- priority: high
+- labels: security, zcap, authorization, client-annex
+- touches:
+  - was-teaching-server: `src/lib/clientAnnexClause.ts` (the chain walk and
+    `ladderInvocationRefusal`), `src/lib/containerRule.ts` (unchanged, its
+    tail-only reading stays), ARCHITECTURE.md's "Chain inspection" and
+    container-rule paragraphs (done here: `transientAnnexInvocationRefusal`
+    beside the ladder bound)
+  - wallet-core: WC-233 is the annex-side statement of this gap; its
+    `GENERATION_DELEGATION_ACTIONS` comment states the closing rule (already
+    shipped there; nothing further to file)
+  - wallet-attached-storage-spec: unaffected (the container rule's Delete Space
+    exception keeps reading the invoked capability; the new bound is a
+    client-annex clause rule, not a container-rule change)
+  - app-connect-spec: unaffected (the generation delegation's shape and its
+    re-delegation are unchanged)
+  - freewallet / dcw: unaffected (no code change; the admitted delete shapes
+    gain server tests)
+- acceptance:
+  - [x] The client-annex clause's chain walk classifies a link whose delegation
+        proof method resolves in the annex document under `capabilityInvocation`
+        (a transient annex VM) beside the ladder-signed category it already
+        collects
+  - [x] A Space DELETE on a canonical Space URL, or a Space Metadata PUT, is
+        refused when any link in the chain is signed by a transient annex VM,
+        whoever signed the links above it
+  - [x] The residual admission test in `test/container-rule-api.test.ts`
+        ("admits an annex-VM DELETE-only target-exact child of the generation
+        delegation") flips to a 404 with the Space surviving
+  - [x] The same refusal is tested against the delegated-clients sibling
+        delegation targeting the auxiliary annex Space URL
+  - [x] Admit tests stay green for the shapes freewallet invokes: a DELETE-only
+        child of a two-verb `['GET', 'DELETE']` management parent (existing), a
+        DELETE-only child of a three-verb `['GET', 'PUT', 'DELETE']` management
+        parent with a ladder-VM-signed tail (new), and a two-link
+        root-then-DELETE-only child signed by a ladder VM (new)
+  - [x] ARCHITECTURE.md's "Chain inspection" paragraph states the bound, and the
+        container-rule paragraph stops describing this arm as open
+  - [x] CHANGELOG entry
+
+The container rule's Delete Space exception reads the invoked capability alone:
+target exactly the Space URL, `allowedAction` exactly `['DELETE']`. That is what
+lets freewallet delete an unlock Space through a DELETE-only child of its
+two-verb management grant. The same property leaves one path open on the
+enrolled-client-signed arm. A transient visit holds a generation delegation (the
+Space-subtree grant with the full verb set) signed by an enrolled client's key.
+Its annex verification method stands under `capabilityDelegation` as well as
+`capabilityInvocation`, so it can mint a child of that delegation with the same
+target and `['DELETE']`, and invoke the child. The child satisfies the
+exception, and no ladder link is in the chain, so the client-annex clause's
+ladder bound never runs. The test file `test/container-rule-api.test.ts` asserts
+this admission so a change here is noticed.
+
+Remedy (decided with wallet-core WC-233, 2026-09-14): the bound keys on the
+signer, not on the delegation's shape. A per-visit key's own delegation never
+ends an account or its annex, so a Space DELETE whose chain carries a link
+signed by a transient annex VM is refused (a Space Metadata PUT is already
+controller-only at the route). The clause already resolves every
+did:webvh-signed link's proof method to classify ladder VMs by relation
+asymmetry; the transient VM is recognized by the shape of the signer's own
+document, under `capabilityInvocation` and `capabilityDelegation` and no other
+relation, rather than against the annex DID the `DelegatedClients` service entry
+names, so a retired generation the entry no longer names and an annex a did:key
+controller delegated to directly are covered too. The container rule stays
+tail-only, so the management-grant shape freewallet relies on is untouched. No
+legitimate delete is signed by a transient VM: freewallet's transient-login
+deletion signs its DELETE-only children with the ladder VM and invokes them
+under a did:key, and the annex GC's re-mint is signed by an enrolled client.
+
+The alternative, reading the links above a DELETE-only tail in the container
+rule and refusing any that grant POST, was set aside: it draws the management
+line at one verb, and a signer-independent rule was no longer needed once the
+transient VM was identified as the only signer with no legitimate delete.
+
+discovered-from: WAS-60.

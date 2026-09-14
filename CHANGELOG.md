@@ -1,5 +1,16 @@
 # History
 
+## 0.35.0 - TBD
+
+### Fixed
+
+- Closed an authorization gap where a delegation signed by a transient per-visit
+  client-annex key could be narrowed into a Delete Space invocation without ever
+  passing through a ladder-signed link. Such a chain is now refused outright.
+  The per-visit key is recognized by the relation shape of its own DID document,
+  so the refusal also covers a retired annex generation whose grant is still
+  live and an annex a `did:key` controller delegated to directly.
+
 ## 0.34.0 - 2026-09-14
 
 ### Changed

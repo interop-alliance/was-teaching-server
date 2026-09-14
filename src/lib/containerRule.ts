@@ -11,9 +11,10 @@
  * v0.5 layout the Space Metadata object sits at `/space/<S>/meta` and Delete
  * Space is `DELETE /space/<S>/`, so a Space-subtree grant reaches both by
  * ordinary attenuation. This rule is the route-level answer: it reads the
- * shape of the invoked capability -- the chain's tail -- and is independent of
+ * shape of the invoked capability -- the chain's tail -- and nothing about
  * who signed any link, so it holds whatever DID method the controller or any
- * delegator uses.
+ * delegator uses. It is not the whole answer for Delete Space: the
+ * client-annex clause adds two signer-keyed bounds on top of it (below).
  *
  * Three rules, spread over four protected operations:
  *
@@ -52,11 +53,13 @@
  * The tail alone is read, not every link. A wallet mints a DELETE-only child
  * of a two-verb management parent and invokes the child; that shape stays
  * admitted, and it is the invoked grant that says what the caller may do. The
- * client-annex clause's `ladderInvocationRefusal` reads the ladder-signed
- * links instead, because that bound is a statement about what a ladder
- * verification method signed. The two compose: this rule refuses first (it is
- * the cheapest check, and needs no resolution), and the clause still refuses a
- * ladder-signed chain that this rule would admit.
+ * client-annex clause's two invocation-time bounds read the signers instead:
+ * `ladderInvocationRefusal` reads the ladder-signed links, because that bound
+ * is a statement about what a ladder verification method signed, and the
+ * transient-annex bound refuses a Space DELETE under any link signed by a
+ * per-visit annex key. The three compose: this rule refuses first (it is the
+ * cheapest check, and needs no resolution), and the clause still refuses a
+ * ladder-signed or transient-annex-signed chain that this rule would admit.
  *
  * A refusal binds the capability decision only, like every other chain
  * inspection failure. All four protected handlers are capability-only, so a

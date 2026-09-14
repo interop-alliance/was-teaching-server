@@ -1,4 +1,5 @@
 import assert from 'node:assert'
+import { randomUUID } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import type { FastifyInstance } from 'fastify'
 import { ZcapClient } from '@interop/ezcap'
@@ -7,6 +8,12 @@ import { decodeSecretKeySeed } from '@digitalcredentials/bnid'
 import { EddsaJcs2022 } from '@interop/ed25519-signature/eddsa-jcs-2022'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import type { ISigner } from '@interop/data-integrity-core'
+import {
+  createDID,
+  logToJsonlString,
+  signerFromExternalKey
+} from '@interop/did-method-webvh'
+import type { DIDLog, ServiceEndpoint } from '@interop/did-method-webvh'
 
 import { createApp } from '../src/server.js'
 import type { IRootZcap } from '../src/types.js'
@@ -340,6 +347,22 @@ export async function zcapClients({ serverUrl }: { serverUrl: string }) {
 }
 
 /**
+ * A published `did:webvh` key pair's own bare `did:key` identity: the DID a
+ * ladder-signed DELETE-only child names as controller, and the signer the
+ * matching invocation is signed under. The deletion ceremony's delegatee is
+ * this key rather than the `did:webvh` fragment -- it is the one identity
+ * that keeps resolving while the walk deletes the Spaces every hosted
+ * document lives in.
+ *
+ * @param keyPair {any}   the key pair (typically an account's ladder key)
+ * @returns {{ did: string, signer: any }}
+ */
+export function bareDidKeyOf(keyPair: any): { did: string; signer: any } {
+  const did = `did:key:${keyPair.publicKeyMultibase}`
+  return { did, signer: keyPair.didKeySigner() }
+}
+
+/**
  * One hour out: the default expiry a suite's delegations carry.
  *
  * @returns {Date}
@@ -384,4 +407,173 @@ export async function delegate({
     allowedActions,
     expires
   })
+}
+
+/**
+ * A minted, published self-hosted `did:webvh` and the keys it lists.
+ */
+export interface WebvhIdentity {
+  spaceId: string
+  /** the Space's canonical trailing-slash URL */
+  spaceUrl: string
+  did: string
+  log: DIDLog
+  /** the update-key signer every log entry of this identity is signed by */
+  logSigner: any
+  /** the enrolled-client key: all four relations */
+  clientKeyPair: any
+  /** the delegation-only (ladder) key, when the document lists one */
+  ladderKeyPair?: any
+  /** the invocation-and-delegation (transient annex) key, when listed */
+  transientKeyPair?: any
+}
+
+/**
+ * Provisions a Space controlled by a `did:key` client, mints a `did:webvh`
+ * anchored in one of its Collections, and publishes the history log there.
+ * Promotion of the Space to the new DID is left to the caller (Space creation
+ * is `did:key`-only).
+ *
+ * @param options {object}
+ * @param options.owner {any}   a `zcapClients` entry whose `was` handle
+ *   creates the Space
+ * @param options.serverUrl {string}   the server the log is anchored on
+ * @param [options.withLadderKey] {boolean}   also list a method under
+ *   `assertionMethod` and `capabilityDelegation` alone -- the ladder VM
+ *   shape, recognized by relation asymmetry
+ * @param [options.withTransientKey] {boolean}   also list a method under
+ *   `capabilityInvocation` and `capabilityDelegation` alone -- the shape a
+ *   per-visit annex verification method publishes under
+ * @param [options.collectionId] {string}   the Collection anchoring the log
+ * @param [options.services] {ServiceEndpoint[]}   service entries for the
+ *   created document
+ * @returns {Promise<WebvhIdentity>}
+ */
+export async function provisionWebvhIdentity({
+  owner,
+  serverUrl,
+  withLadderKey = false,
+  withTransientKey = false,
+  collectionId = 'id',
+  services
+}: {
+  owner: any
+  serverUrl: string
+  withLadderKey?: boolean
+  withTransientKey?: boolean
+  collectionId?: string
+  services?: ServiceEndpoint[]
+}): Promise<WebvhIdentity> {
+  const spaceId = randomUUID()
+  const space = owner.was.space(spaceId)
+  await space.configure({ name: 'Identity Space', controller: owner.did })
+  await space.collection(collectionId).configure({ force: true })
+
+  const [updateKeyPair, clientKeyPair, ladderKeyPair, transientKeyPair] =
+    await Promise.all([
+      Ed25519VerificationKey.generate(),
+      Ed25519VerificationKey.generate(),
+      withLadderKey ? Ed25519VerificationKey.generate() : undefined,
+      withTransientKey ? Ed25519VerificationKey.generate() : undefined
+    ])
+  const updateKeySigner = updateKeyPair.didKeySigner()
+  const logSigner = signerFromExternalKey({
+    publicKeyMultibase: updateKeyPair.publicKeyMultibase!,
+    sign: async ({ data }: { data: Uint8Array }) =>
+      await updateKeySigner.sign({ data })
+  })
+
+  // Relationship wiring is driven entirely through `purpose`: passing
+  // explicit relationship arrays alongside would override it wholesale.
+  const verificationMethods = [
+    {
+      type: 'Multikey',
+      publicKeyMultibase: clientKeyPair.publicKeyMultibase!,
+      purpose: [
+        'authentication',
+        'assertionMethod',
+        'capabilityInvocation',
+        'capabilityDelegation'
+      ]
+    }
+  ]
+  if (ladderKeyPair) {
+    verificationMethods.push({
+      type: 'Multikey',
+      publicKeyMultibase: ladderKeyPair.publicKeyMultibase!,
+      purpose: ['assertionMethod', 'capabilityDelegation']
+    })
+  }
+  if (transientKeyPair) {
+    verificationMethods.push({
+      type: 'Multikey',
+      publicKeyMultibase: transientKeyPair.publicKeyMultibase!,
+      purpose: ['capabilityInvocation', 'capabilityDelegation']
+    })
+  }
+
+  const created = await createDID({
+    address: `${serverUrl}/space/${spaceId}/${collectionId}`,
+    signer: logSigner,
+    updateKeys: [updateKeyPair.publicKeyMultibase!],
+    vmIdFragment: 'multibase',
+    verificationMethods: verificationMethods as any,
+    ...(services ? { services } : {})
+  })
+
+  for (const keyPair of [clientKeyPair, ladderKeyPair, transientKeyPair]) {
+    if (keyPair) {
+      keyPair.id = `${created.did}#${keyPair.publicKeyMultibase}`
+      keyPair.controller = created.did
+    }
+  }
+
+  const published = await owner.was.request({
+    path: `/space/${spaceId}/${collectionId}/did.jsonl`,
+    method: 'PUT',
+    headers: { 'content-type': 'text/jsonl' },
+    body: new Blob([logToJsonlString(created.log)], { type: 'text/jsonl' })
+  })
+  assert.equal(published.status, 204)
+
+  return {
+    spaceId,
+    spaceUrl: new URL(`/space/${spaceId}/`, serverUrl).toString(),
+    did: created.did,
+    log: created.log,
+    logSigner,
+    clientKeyPair,
+    ladderKeyPair,
+    transientKeyPair
+  }
+}
+
+/**
+ * Asserts a Space still carries `controller`, read from its Metadata object
+ * under a root invocation by that controller's key. The survival check after
+ * a refused controller rewrite or delete.
+ *
+ * @param options {object}
+ * @param options.spaceUrl {string}   the Space's canonical trailing-slash URL
+ * @param options.controller {string}   the DID the Space should still carry,
+ *   and the one the root capability is invoked under
+ * @param options.signer {ISigner}   that controller's key
+ * @returns {Promise<void>}
+ */
+export async function assertSpaceController({
+  spaceUrl,
+  controller,
+  signer
+}: {
+  spaceUrl: string
+  controller: string
+  signer: ISigner
+}): Promise<void> {
+  const metadata = await client({ signer }).request({
+    url: `${spaceUrl}meta`,
+    method: 'GET',
+    action: 'GET',
+    capability: rootZcap({ target: spaceUrl, controller })
+  })
+  assert.equal((metadata.data as { controller: string }).controller, controller)
 }
