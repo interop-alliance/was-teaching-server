@@ -2265,3 +2265,60 @@ line at one verb, and a signer-independent rule was no longer needed once the
 transient VM was identified as the only signer with no legitimate delete.
 
 discovered-from: WAS-60.
+
+---
+
+### WAS-112: List the authorization profile's service description entry and move the two signature members onto it
+
+- status: done
+- done: 2026-09-16
+- priority: high
+- labels: service-description, authorization, spec-alignment, breaking,
+  wire-contract
+- touches:
+  - wallet-attached-storage-spec: WASS-44. SHIPPED (2026-09-16): the zCap
+    profile is the companion spec `PWS-AUTHZ`
+    (`https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/`)
+    with persistent identifier `https://w3id.org/pws/authz-profile` and version
+    `0.1`; core requires a server to list every authorization profile it
+    implements under the profile's identifier in `specs`, and the profile's
+    entry (not core's) carries `signatureAlgorithms` and `zcapCryptosuites`.
+    Decision 0008 in that repo records the wire move
+  - storage-core: `PwsVersionEntry` (`src/was.ts:839-843`) loses
+    `signatureAlgorithms` / `zcapCryptosuites`, and a new
+    `AuthzProfileVersionEntry` type carries them: SC-7 (filed 2026-09-16,
+    published as v0.17.0)
+  - was-client: WCL-107 carries the client-side check for the profile entry
+    (filed 2026-09-16, still `todo` in that repo)
+  - was-conformance-suite: unaffected for now -- its service-description suite
+    reads the two members off the core entry only when they are present, so it
+    stays green (282/282) with them gone. Asserting the profile entry and its
+    members, and re-citing the profile's anchors from the authorization, digest,
+    delegation-cryptosuites, invocation-target, authz-ordering, and policy
+    suites, is follow-up work; itemized there when scheduled
+- acceptance:
+  - [x] `buildServiceDescription` (`src/serviceDescription.ts`) lists a second
+        key, `https://w3id.org/pws/authz-profile`, with one entry
+        `{ version: '0.1', url, signatureAlgorithms, zcapCryptosuites }`, where
+        `url` is the profile's rendered location; a new
+        `AUTHZ_PROFILE_IDENTIFIER` / `AUTHZ_PROFILE_VERSION` pair sits beside
+        `SPEC_IDENTIFIER` in `src/config.default.ts`
+  - [x] The `https://w3id.org/pws` entry no longer carries `signatureAlgorithms`
+        or `zcapCryptosuites`
+  - [x] `test/service-description-api.test.ts` (around lines 92-93) asserts the
+        members on the profile entry and their absence from the core entry
+  - [x] ARCHITECTURE.md's `src/serviceDescription.ts` entry (around line
+        175-179) names both entries, and its authorization prose (the
+        current-key-set rule paragraph around line 302, the client-annex
+        paragraph around line 481 that says WAS defines no venue at the
+        authorization-profile layer) cites the profile spec rather than core:
+        `https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/#current-key-set-rule`,
+        `https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/#service-description-entry`
+  - [x] CHANGELOG entry marks the wire change as breaking for clients that read
+        the two members off the core entry
+
+Filed 2026-09-16 from WASS-44. The move is a plain relocation: the values the
+server advertises today (`EdDSA`; `Ed25519Signature2020` and `eddsa-jcs-2022`)
+do not change, only the entry they sit on. The profile's entry advertises no
+policy types; listing the profile means the server evaluates `PublicCanRead`,
+which it already does.

@@ -133,7 +133,8 @@ export type {
   LinkSetEntry,
   ServiceDescription,
   ServiceDescriptionVersionEntry,
-  PwsVersionEntry
+  PwsVersionEntry,
+  AuthzProfileVersionEntry
 } from '@interop/storage-core'
 
 /** Return shape of `getResource()`. */

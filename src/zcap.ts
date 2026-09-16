@@ -140,10 +140,11 @@ function delegationProofSuites(): [Ed25519Signature2020, DataIntegrityProof] {
 
 /**
  * The names of the delegation-proof signature suites this server verifies, as
- * the service description's `zcapCryptosuites` advertises them. Read off
- * {@link delegationProofSuites}, so adding or dropping a suite there changes
- * the advertisement with it. A Data Integrity suite is named by its
- * `cryptosuite`; a legacy suite that has none, by its proof `type`.
+ * the `zcapCryptosuites` of the service description's authorization profile
+ * entry advertises them. Read off {@link delegationProofSuites}, so adding or
+ * dropping a suite there changes the advertisement with it. A Data Integrity
+ * suite is named by its `cryptosuite`; a legacy suite that has none, by its
+ * proof `type`.
  * @returns {string[]}
  */
 export function delegationProofCryptosuites(): string[] {
@@ -361,8 +362,8 @@ async function webvhVerifier({
 
 /**
  * The signature algorithms an invocation's HTTP signature may use, by their
- * JSON Web Algorithms identifiers, as the service description's
- * `signatureAlgorithms` advertises them. Every verifier
+ * JSON Web Algorithms identifiers, as the `signatureAlgorithms` of the service
+ * description's authorization profile entry advertises them. Every verifier
  * {@link createGetVerifier} builds is an `Ed25519VerificationKey` verifier,
  * whose algorithm JWA names `EdDSA`; a new key type there adds its name here.
  */

@@ -223,6 +223,28 @@ export const SPEC_IDENTIFIER = 'https://w3id.org/pws'
 export const SPEC_VERSION = '0.5'
 
 /**
+ * The zCap authorization profile's persistent identifier, the key of its entry
+ * in the service description's `specs` object. Listing the profile is how a
+ * client learns this server authorizes requests with capability invocations,
+ * and the entry -- not the WAS entry -- carries the signature algorithms and
+ * delegation cryptosuites the server accepts.
+ */
+export const AUTHZ_PROFILE_IDENTIFIER = 'https://w3id.org/pws/authz-profile'
+
+/**
+ * The version of the zCap authorization profile this server implements, as the
+ * service description advertises it (`major.minor`, no patch level).
+ */
+export const AUTHZ_PROFILE_VERSION = '0.1'
+
+/**
+ * The rendered location of the zCap authorization profile at the version above,
+ * the `url` of its service description entry.
+ */
+export const AUTHZ_PROFILE_URL =
+  'https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/'
+
+/**
  * `Cache-Control` `max-age` (seconds) on the service description. The document
  * changes only when the server is redeployed with a different configuration,
  * and its `ETag` lets a client revalidate cheaply once the age runs out.

@@ -88,7 +88,15 @@ describe('Service description API', () => {
                 'backends',
                 'query',
                 'quotas'
-              ],
+              ]
+            }
+          ],
+          'https://w3id.org/pws/authz-profile': [
+            {
+              version: '0.1',
+              url:
+                'https://w3c-ccg.github.io/wallet-attached-storage-spec/' +
+                'authz-profile/',
               signatureAlgorithms: ['EdDSA'],
               zcapCryptosuites: ['Ed25519Signature2020', 'eddsa-jcs-2022']
             }
@@ -101,6 +109,22 @@ describe('Service description API', () => {
           homepage: packageJson.homepage
         }
       })
+    })
+
+    it('carries the signature members on the profile entry only', async () => {
+      const response = await fetch(`${serverUrl}/service`)
+      const { specs } = (await response.json()) as {
+        specs: Record<string, Record<string, unknown>[]>
+      }
+      const core = specs['https://w3id.org/pws']![0]!
+      const profile = specs['https://w3id.org/pws/authz-profile']![0]!
+      expect(profile.signatureAlgorithms).toEqual(['EdDSA'])
+      expect(profile.zcapCryptosuites).toEqual([
+        'Ed25519Signature2020',
+        'eddsa-jcs-2022'
+      ])
+      expect(core).not.toHaveProperty('signatureAlgorithms')
+      expect(core).not.toHaveProperty('zcapCryptosuites')
     })
 
     it('serves a bodyless HEAD with the same validator', async () => {

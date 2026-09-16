@@ -174,10 +174,16 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   Metadata writes through the same per-Collection lock.
 - **`src/serviceDescription.ts`** -- the service description (spec "Service
   Description"): `GET /service`, unauthenticated, serving the JSON document that
-  names the spec version this server speaks (`0.5`, under the
-  `https://w3id.org/pws` identifier), the Spaces Repository URL, the `features`
-  tokens, and the accepted `signatureAlgorithms` and `zcapCryptosuites`. The
-  last two are read off `zcap.ts` (`INVOCATION_SIGNATURE_ALGORITHMS`,
+  lists two entries in its `specs`. The core entry, under the
+  `https://w3id.org/pws` identifier, names the spec version this server speaks
+  (`0.5`), the Spaces Repository URL, and the `features` tokens. The entry under
+  `https://w3id.org/pws/authz-profile` names the zCap authorization profile
+  version (`0.1`) and its rendered location, and carries the accepted
+  `signatureAlgorithms` and `zcapCryptosuites` (profile
+  ["Service Description Entry"](https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/#service-description-entry)).
+  Listing the profile is how a client learns this server authorizes with
+  capability invocations, before its first signed request. The last two members
+  are read off `zcap.ts` (`INVOCATION_SIGNATURE_ALGORITHMS`,
   `delegationProofCryptosuites`), so a change to what verification accepts
   changes the advertisement too. The document is built per `serverUrl` and
   served with `Cache-Control: public` and a content-hash `ETag`. The module also
@@ -299,18 +305,19 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   `@interop/did-method-webvh`), because after promotion the writes to that log
   are authorized by the very document being resolved. The proposed controller
   must resolve _before_ it is stored, or the Space would be deadlocked. Key
-  validity is the **current-key-set rule**: an invocation or delegation verifies
-  iff its verification method is in the currently resolved document, under the
-  right verification relationship. One piece of code carries that on both sides.
-  `webvhVerifier` finds the invocation key by membership in the flat
-  `verificationMethod` array and restates `controller: <did>` on the method it
-  reconstructs. That string sends jsigs' `ControllerProofPurpose` to dereference
-  the controller document through the local webvh resolver driver
-  (`webvhDidResolverDriver` / `dereferenceFragment`) and read
-  `capabilityInvocation` out of it. So a root invocation and a delegation proof
-  are relation-scoped identically, and a delegation-only method cannot
-  root-invoke. Before promotion the Space controller is a `did:key` and takes
-  the `did:key` branch of `createGetVerifier`, where no relation applies.
+  validity is the **current-key-set rule** (profile
+  ["Current-key-set rule"](https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/#current-key-set-rule)):
+  an invocation or delegation verifies iff its verification method is in the
+  currently resolved document, under the right verification relationship. One
+  piece of code carries that on both sides. `webvhVerifier` finds the invocation
+  key by membership in the flat `verificationMethod` array and restates
+  `controller: <did>` on the method it reconstructs. That string sends jsigs'
+  `ControllerProofPurpose` to dereference the controller document through the
+  local webvh resolver driver (`webvhDidResolverDriver` / `dereferenceFragment`)
+  and read `capabilityInvocation` out of it. So a root invocation and a
+  delegation proof are relation-scoped identically, and a delegation-only method
+  cannot root-invoke. Before promotion the Space controller is a `did:key` and
+  takes the `did:key` branch of `createGetVerifier`, where no relation applies.
   Resolved documents are cached, keyed by the log's location (Space plus
   Collection), and a write that could change a log at that location drops the
   entry. Entries exist only for DIDs actually resolved for authorization, so a
@@ -477,9 +484,11 @@ the target's access-control policy like any other failed verification, so a
 world-readable read still serves. The clause is fail-open across servers: a
 server running unmodified verification accepts exactly what this clause refuses,
 so a wallet publishes a ladder VM only on a host it assumes enforces the
-client-annex profile. That assumption is unverified: WAS defines no venue at the
-authorization-profile layer for a server to advertise the clause, and this
-server advertises nothing.
+client-annex profile. That assumption is unverified: the profile's service
+description entry (profile
+["Service Description Entry"](https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/#service-description-entry))
+advertises the algorithms and cryptosuites a server accepts but defines no
+member for advertising the clause, and this server advertises nothing.
 
 **The container rule** (`lib/containerRule.ts`): an unsafe method at a container
 URL is controller-only, with two exceptions. The hazard is that a data grant's

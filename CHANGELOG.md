@@ -2,6 +2,16 @@
 
 ## 0.36.0 - TBD
 
+### Changed
+
+- **Breaking for clients that read `signatureAlgorithms` or `zcapCryptosuites`
+  off the core entry.** The service description now lists the zCap authorization
+  profile as a second entry in `specs`, under
+  `https://w3id.org/pws/authz-profile`, with its version (`0.1`) and rendered
+  location. The two signature members moved from the `https://w3id.org/pws`
+  entry onto the profile entry; the values they carry (`EdDSA`;
+  `Ed25519Signature2020` and `eddsa-jcs-2022`) are unchanged.
+
 ### Removed
 
 - The `storageMode` member of a backend descriptor, dropped from the spec. The

@@ -1,8 +1,10 @@
 /**
  * The service description (spec "Service Description"): the server-wide JSON
  * document naming the specification versions this server speaks, its Spaces
- * Repository URL, the optional sections it implements, and the signature
- * algorithms and cryptosuites it verifies. It is served unauthenticated at
+ * Repository URL, and the optional sections it implements. It lists two
+ * entries: the core specification, and the zCap authorization profile, whose
+ * entry carries the signature algorithms and delegation cryptosuites this
+ * server verifies. It is served unauthenticated at
  * `/service`, and every response the server sends links to it with a
  * `Link: <...>; rel="service"` header, which is how a client finds it from any
  * URL it holds. The document has no storage access and no auth hooks; it
@@ -13,6 +15,9 @@ import { createHash } from 'node:crypto'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 
 import {
+  AUTHZ_PROFILE_IDENTIFIER,
+  AUTHZ_PROFILE_URL,
+  AUTHZ_PROFILE_VERSION,
   PACKAGE_INSTANCE,
   SERVER_VERSION,
   SERVICE_DESCRIPTION_MAX_AGE,
@@ -21,7 +26,11 @@ import {
   SPEC_VERSION
 } from './config.default.js'
 import { serviceDescriptionPath, spacesPath } from './lib/paths.js'
-import type { PwsVersionEntry, ServiceDescription } from './types.js'
+import type {
+  AuthzProfileVersionEntry,
+  PwsVersionEntry,
+  ServiceDescription
+} from './types.js'
 import { notModifiedReply } from './requests/notModified.js'
 import {
   delegationProofCryptosuites,
@@ -79,10 +88,16 @@ export function buildServiceDescription({
         {
           version: SPEC_VERSION,
           spaces: new URL(spacesPath(), serverUrl).toString(),
-          features: SERVICE_FEATURES,
+          features: SERVICE_FEATURES
+        } satisfies PwsVersionEntry
+      ],
+      [AUTHZ_PROFILE_IDENTIFIER]: [
+        {
+          version: AUTHZ_PROFILE_VERSION,
+          url: AUTHZ_PROFILE_URL,
           signatureAlgorithms: INVOCATION_SIGNATURE_ALGORITHMS,
           zcapCryptosuites: delegationProofCryptosuites()
-        } satisfies PwsVersionEntry
+        } satisfies AuthzProfileVersionEntry
       ]
     },
     instance: {
