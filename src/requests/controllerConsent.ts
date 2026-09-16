@@ -38,8 +38,8 @@ interface SubmittedCapability {
  * already failed -- and distinguishes, in order:
  *
  * - chain rooted elsewhere: the chain's root capability targets a URL other
- *   than the accepted root targets, or the base delegation is signed by a DID other than the body's
- *   controller;
+ *   than the accepted root targets, or the base delegation is signed by a DID
+ *   other than the body's controller;
  * - expired delegation: a delegation in the chain carries an `expires` in the
  *   past;
  * - failed proof: everything lines up statically, so a signature (or another

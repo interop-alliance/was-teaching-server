@@ -495,7 +495,6 @@ describe('Collections API', () => {
         id: 'default',
         name: 'Server Filesystem',
         managedBy: 'server',
-        storageMode: ['document', 'blob'],
         persistence: 'durable',
         features: [
           'conditional-writes',

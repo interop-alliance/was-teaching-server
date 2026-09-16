@@ -3,3 +3,6 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - '@interop/*'
   - byoe-context@0.1.0
+overrides:
+  '@interop/storage-core': link:../storage-core
+  '@interop/was-conformance-suite': link:../was-conformance-suite

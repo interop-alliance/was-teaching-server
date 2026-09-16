@@ -5,7 +5,7 @@
  * a Space may declare a more specific role while every consumer keeps matching
  * on the base `Space` type. An auxiliary Space -- one holding server-side
  * bookkeeping rather than user data, e.g.
- * `['Space', 'AuxiliarySpace', 'DelegatedClientsSpace']` -- is excluded from
+ * `['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']` -- is excluded from
  * user-data listings on that basis.
  *
  * `type` is set at creation and immutable afterwards, so a Space cannot change

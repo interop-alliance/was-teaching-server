@@ -6,7 +6,7 @@
  *
  * A Space Description's `type` subtypes `Space`, so every consumer keeps
  * matching on the base `Space` type while a Space declares a more specific role
- * (e.g. `['Space', 'AuxiliarySpace', 'DelegatedClientsSpace']` for a Space
+ * (e.g. `['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']` for a Space
  * holding bookkeeping rather than user data).
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
@@ -21,7 +21,7 @@ import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { requestError, startTestServer, zcapClients } from './helpers.js'
 
 /** The auxiliary Space's full type array, as a wallet would send it. */
-const AUXILIARY_TYPE = ['Space', 'AuxiliarySpace', 'DelegatedClientsSpace']
+const AUXILIARY_TYPE = ['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']
 
 /**
  * Reads the HTTP status off a thrown ezcap/ky error, which carries it flat on

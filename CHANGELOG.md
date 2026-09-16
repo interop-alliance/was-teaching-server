@@ -1,5 +1,14 @@
 # History
 
+## 0.36.0 - TBD
+
+### Removed
+
+- The `storageMode` member of a backend descriptor, dropped from the spec. The
+  default backend no longer advertises it, a registration no longer stores or
+  echoes it, and an unknown `storageMode` member in a registration body is
+  ignored like any other unknown member.
+
 ## 0.35.1 - 2026-09-14
 
 ### Fixed

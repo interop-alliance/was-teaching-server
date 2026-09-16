@@ -30,7 +30,6 @@ describe('Space backend registration (/backends)', () => {
       name: 'My Google Drive',
       managedBy: 'external',
       provider: 'google-drive',
-      storageMode: ['document', 'blob'],
       connection: {
         kind: 'oauth2',
         authorizationCode: 'super-secret-auth-code',
@@ -46,7 +45,6 @@ describe('Space backend registration (/backends)', () => {
     id: 'default',
     name: 'Server Filesystem',
     managedBy: 'server',
-    storageMode: ['document', 'blob'],
     persistence: 'durable',
     features: [
       'conditional-writes',

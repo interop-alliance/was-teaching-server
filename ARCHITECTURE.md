@@ -238,7 +238,7 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   carries the `controller` and a `type` array subtyping `Space`, set at creation
   and immutable afterward; `PUT` there creates the Space when absent or replaces
   it (`PUT` at the bare Space URL answers 405). A Space typed `AuxiliarySpace`
-  (e.g. `['Space', 'AuxiliarySpace', 'DelegatedClientsSpace']`) holds
+  (e.g. `['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']`) holds
   bookkeeping rather than user data and is excluded from List Spaces; a wallet
   reaches its auxiliary Space through the account document's service entry
   instead. Its `url`, and the `Location` of a newly created Space, carry the

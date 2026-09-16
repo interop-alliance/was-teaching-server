@@ -87,7 +87,6 @@ export function serverBackendDescriptor({
     id: DEFAULT_BACKEND_ID,
     name,
     managedBy: 'server',
-    storageMode: ['document', 'blob'],
     persistence: 'durable',
     features: [...SERVER_BACKEND_FEATURES]
   }
@@ -225,9 +224,6 @@ export function sanitizeBackendRecord(
     id: record.id,
     ...(record.name !== undefined && { name: record.name }),
     managedBy: record.managedBy,
-    ...(record.storageMode !== undefined && {
-      storageMode: record.storageMode
-    }),
     ...(record.persistence !== undefined && {
       persistence: record.persistence
     }),
@@ -323,9 +319,6 @@ export function parseBackendRegistration(
     ...(typeof candidate.name === 'string' && { name: candidate.name }),
     managedBy: 'external',
     provider: candidate.provider,
-    ...(Array.isArray(candidate.storageMode) && {
-      storageMode: candidate.storageMode as Array<'document' | 'blob'>
-    }),
     ...(Array.isArray(candidate.features) && {
       features: candidate.features as string[]
     }),
@@ -419,7 +412,7 @@ export function assertNotDefaultBackendId({
 /**
  * Assembles the full `StoredBackendRecord` to persist from a validated
  * `BackendRegistration`: the descriptor fields, `managedBy: 'external'`, default
- * `storageMode` / `features`, and the full (secret-bearing) connection stamped
+ * `features`, and the full (secret-bearing) connection stamped
  * with `status: 'registered'` and the registration timestamp. The record is
  * inert until the live provider adapter (future work) connects it.
  * @param registration {BackendRegistration}
@@ -428,13 +421,12 @@ export function assertNotDefaultBackendId({
 export function buildBackendRecord(
   registration: BackendRegistration
 ): StoredBackendRecord {
-  const { id, name, provider, storageMode, features, connection } = registration
+  const { id, name, provider, features, connection } = registration
   return {
     id,
     ...(name !== undefined && { name }),
     managedBy: 'external',
     provider,
-    storageMode: storageMode ?? ['document', 'blob'],
     features: features ?? [],
     connection: {
       ...connection,
