@@ -180,7 +180,8 @@ which KEK is current. A typical retire-a-KEK sequence:
 # 2. Preview: what would be rewritten?
 KMS_RECORD_KEKS=<newKek>,<oldKek> pnpm reencrypt-kms-records --dry-run
 
-# 3. Rewrite for real (add --data-dir <path> if the data tree is not ./data).
+# 3. Rewrite for real (the tool reads WAS_DATA_DIR; pass --data-dir <path>
+#    if the data tree is somewhere else).
 KMS_RECORD_KEKS=<newKek>,<oldKek> pnpm reencrypt-kms-records
 
 # 4. Verify: a second dry run must report every record "already under the

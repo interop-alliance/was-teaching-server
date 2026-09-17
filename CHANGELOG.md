@@ -1,5 +1,17 @@
 # History
 
+## 0.37.0 - TBD
+
+### Added
+
+- `WAS_DATA_DIR`: the filesystem root the default backend stores Spaces,
+  keystores, and revocations under, resolved against the process working
+  directory. Unset keeps the project `data/` directory. It lets a test suite
+  point each run at a scratch directory instead of accumulating every earlier
+  run's Spaces. Also available as the `dataDir` option on `createApp()` and
+  `defaultBackend()`, and read by the offline KMS re-encryption tool, whose
+  default root therefore cannot drift from the server's.
+
 ## 0.36.0 - 2026-09-16
 
 ### Added

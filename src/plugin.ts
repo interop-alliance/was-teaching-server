@@ -51,11 +51,17 @@ export interface FastifyWasOptions {
    */
   serverUrl?: string
   /**
-   * Persistence backend to use; defaults to a filesystem backend rooted at the
-   * project `data/` directory. Tests inject their own (e.g. a
-   * FileSystemBackend over a temp dir).
+   * Persistence backend to use; defaults to a filesystem backend rooted at
+   * `dataDir` (the project `data/` directory when that is unset). Tests inject
+   * their own (e.g. a FileSystemBackend over a temp dir).
    */
   backend?: StorageBackend
+  /**
+   * Filesystem root the default backend stores under (env `WAS_DATA_DIR`);
+   * applied only to the default backend (an injected `backend` carries its
+   * own root). `undefined` uses the project `data/` directory.
+   */
+  dataDir?: string
   /**
    * Per-Space storage limit in bytes (spec "Quotas"); applied only to the
    * default backend (an injected `backend` carries its own `capacityBytes`).
@@ -151,6 +157,7 @@ async function wasPlugin(
   const {
     serverUrl,
     backend,
+    dataDir,
     storageLimitPerSpace,
     maxUploadBytes,
     maxSpacesPerController,
@@ -184,6 +191,7 @@ async function wasPlugin(
   const storage =
     backend ??
     defaultBackend({
+      dataDir,
       capacityBytes: storageLimitPerSpace,
       maxUploadBytes,
       maxSpacesPerController,

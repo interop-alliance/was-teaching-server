@@ -35,7 +35,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
-import { parseKmsRecordKekRegistry } from '../src/config.default.js'
+import {
+  parseDataDir,
+  parseKmsRecordKekRegistry
+} from '../src/config.default.js'
 import { atomicWriteFile } from '../src/lib/atomicFile.js'
 import {
   currentRecordKek,
@@ -56,7 +59,8 @@ STOP THE SERVER FIRST. Filesystem backend only.
 
 Options:
   --dry-run            report what would be rewritten without writing anything
-  --data-dir <path>    the server data directory (default: <repo>/data)
+  --data-dir <path>    the server data directory (default: WAS_DATA_DIR, else
+                       <repo>/data)
   --help               show this message`
 
 /** Per-record outcome counters for the end-of-run summary. */
@@ -77,9 +81,13 @@ interface RunSummary {
  */
 function parseArgs(argv: string[]): { dryRun: boolean; dataDir: string } {
   let dryRun = false
-  // The same default root the server's filesystem backend uses
-  // (`defaultBackend()` in src/storage.ts): `data/` at the repo root.
-  let dataDir = path.join(import.meta.dirname, '..', 'data')
+  // The same root the server's filesystem backend uses: `WAS_DATA_DIR` when
+  // set, else `data/` at the repo root (`defaultBackend()` in src/storage.ts),
+  // parsed by the same code so the tool cannot disagree about where the
+  // records live.
+  let dataDir =
+    parseDataDir(process.env.WAS_DATA_DIR) ??
+    path.join(import.meta.dirname, '..', 'data')
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]!
     if (arg === '--dry-run') {

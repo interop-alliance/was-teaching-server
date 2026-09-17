@@ -78,13 +78,15 @@ Two things to get right:
   verification compares them as exact strings -- `localhost` vs `127.0.0.1`, or
   a mismatched port, makes every delegated invocation fail (as a masked `404`).
   This is a property of URL-based capabilities, not a bug.
-- **Inject a backend rather than relying on the default.** When no `backend` is
-  given, the plugin falls back to `defaultBackend()`, which roots its `data/`
-  directory relative to the _installed package_ (i.e. inside `node_modules`) --
-  fine for the standalone checkout, almost never what a consumer wants.
-  Construct a `FileSystemBackend` with an explicit `dataDir` (plus
-  `capacityBytes` / `maxUploadBytes` caps), or supply your own `StorageBackend`
-  implementation.
+- **Say where the data lives.** When no `backend` is given, the plugin falls
+  back to `defaultBackend()`, which roots its `data/` directory relative to the
+  _installed package_ (i.e. inside `node_modules`) -- fine for the standalone
+  checkout, almost never what a consumer wants. Pass a `dataDir` to move that
+  root (the standalone server reads `WAS_DATA_DIR` into it; a library consumer
+  reads its own env), or construct a `FileSystemBackend` with an explicit
+  `dataDir` (plus `capacityBytes` / `maxUploadBytes` caps), or supply your own
+  `StorageBackend` implementation. An injected `backend` carries its own root,
+  so `dataDir` is ignored alongside one.
 
 ## Plugin options (`FastifyWasOptions`)
 
@@ -92,6 +94,7 @@ Two things to get right:
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `serverUrl`               | Base URL used to build and match zcap `invocationTarget`s (exact-match, see above). Validated at registration: must be an absolute `http:`/`https:` URL with no path, query, or fragment (sub-path deployment is not supported) |
 | `backend`                 | The `StorageBackend` to use; defaults to `defaultBackend()` (see the caveat above)                                                                                                                                              |
+| `dataDir`                 | Filesystem root the default backend stores under; applied only to the default backend (an injected `backend` carries its own root). `undefined` uses the project `data/` directory                                              |
 | `storageLimitPerSpace`    | Per-Space byte quota, applied only to the default backend (an injected backend carries its own `capacityBytes`)                                                                                                                 |
 | `maxUploadBytes`          | Per-upload byte cap, likewise only for the default backend; also bounds the multipart buffer. Default-on: `undefined` applies the 64 MiB default; `Infinity` disables the cap                                                   |
 | `maxSpacesPerController`  | Max Spaces one controller may create (default-on count quota, default 100), only for the default backend; `Infinity` disables the cap                                                                                           |

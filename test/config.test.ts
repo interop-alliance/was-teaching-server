@@ -7,6 +7,7 @@
 import { it, describe } from 'vitest'
 import assert from 'node:assert'
 import { randomBytes } from 'node:crypto'
+import path from 'node:path'
 import { IdEncoder } from '@digitalcredentials/bnid'
 
 import {
@@ -174,6 +175,7 @@ describe('loadConfigFromEnv', () => {
     assert.equal(config.serverUrl, 'http://localhost:3002')
     assert.equal(config.port, DEFAULT_PORT)
     assert.equal(config.databaseUrl, undefined)
+    assert.equal(config.dataDir, undefined)
     assert.equal(config.storageLimitPerSpace, undefined)
     assert.equal(config.maxUploadBytes, undefined)
     assert.equal(config.enabledBackendProviders, undefined)
@@ -187,6 +189,7 @@ describe('loadConfigFromEnv', () => {
       SERVER_URL: 'https://was.example.com',
       PORT: '8080',
       DATABASE_URL: ' postgres://was:was@localhost:5433/was ',
+      WAS_DATA_DIR: ' ./scratch/was-data ',
       STORAGE_LIMIT_PER_SPACE: '1048576',
       MAX_UPLOAD_BYTES: '65536',
       WAS_ENABLED_BACKENDS: 'gdrive, s3',
@@ -196,11 +199,21 @@ describe('loadConfigFromEnv', () => {
     assert.equal(config.serverUrl, 'https://was.example.com')
     assert.equal(config.port, 8080)
     assert.equal(config.databaseUrl, 'postgres://was:was@localhost:5433/was')
+    // A relative WAS_DATA_DIR resolves against the process working directory.
+    assert.equal(config.dataDir, path.resolve('./scratch/was-data'))
     assert.equal(config.storageLimitPerSpace, 1048576)
     assert.equal(config.maxUploadBytes, 65536)
     assert.deepEqual(config.enabledBackendProviders, ['gdrive', 's3'])
     assert.equal(config.onboardingToken, 'abc123')
     assert.equal(config.discloseVersion, false)
+  })
+
+  it('reads an empty WAS_DATA_DIR as unset', () => {
+    const config = loadConfigFromEnv({
+      SERVER_URL: 'http://localhost:3002',
+      WAS_DATA_DIR: '   '
+    })
+    assert.equal(config.dataDir, undefined)
   })
 
   it('rejects a WAS_DISCLOSE_VERSION other than true or false', () => {

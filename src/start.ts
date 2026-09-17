@@ -21,9 +21,9 @@ export async function startServer(): Promise<void> {
     const config = loadConfigFromEnv()
     // Backend selection: presence of DATABASE_URL selects the Postgres
     // backend; otherwise createApp falls back to the default filesystem
-    // backend (rooted at data/). An injected backend carries its own quota
-    // configuration, so the per-Space/per-upload limits are passed to it
-    // directly rather than through the createApp options.
+    // backend (rooted at WAS_DATA_DIR, else data/). An injected backend
+    // carries its own quota configuration, so the per-Space/per-upload limits
+    // are passed to it directly rather than through the createApp options.
     const backend = config.databaseUrl
       ? new PostgresBackend({
           connectionString: config.databaseUrl,
@@ -37,6 +37,7 @@ export async function startServer(): Promise<void> {
     fastify = createApp({
       serverUrl: config.serverUrl,
       ...(backend && { backend }),
+      ...(config.dataDir !== undefined && { dataDir: config.dataDir }),
       storageLimitPerSpace: config.storageLimitPerSpace,
       maxUploadBytes: config.maxUploadBytes,
       maxSpacesPerController: config.maxSpacesPerController,

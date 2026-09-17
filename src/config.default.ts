@@ -419,6 +419,11 @@ export interface EnvConfig {
   /** Postgres connection string (`DATABASE_URL`); unset selects the filesystem backend. */
   databaseUrl?: string
   /**
+   * Filesystem root for the default backend (`WAS_DATA_DIR`); unset means the
+   * project `data/` directory.
+   */
+  dataDir?: string
+  /**
    * Per-Space storage quota in bytes (`STORAGE_LIMIT_PER_SPACE`). `undefined`
    * means unset -- unlimited, but `start.ts` warns to prompt an explicit
    * choice; `Infinity` means `unlimited` was set explicitly (no warning).
@@ -482,6 +487,7 @@ export function loadConfigFromEnv(
     serverUrl: parseServerUrl(env.SERVER_URL),
     port: parsePort(env.PORT),
     databaseUrl: parseDatabaseUrl(env.DATABASE_URL),
+    dataDir: parseDataDir(env.WAS_DATA_DIR),
     storageLimitPerSpace: parseStorageLimit(env.STORAGE_LIMIT_PER_SPACE),
     maxUploadBytes: parseMaxUploadBytes(env.MAX_UPLOAD_BYTES),
     maxSpacesPerController: parseCountLimit(
@@ -595,6 +601,23 @@ function parseDatabaseUrl(raw: string | undefined): string | undefined {
     return undefined
   }
   return raw.trim()
+}
+
+/**
+ * Parses the `WAS_DATA_DIR` env value: the filesystem root the default backend
+ * stores Spaces, keystores, and revocations under. A relative value resolves
+ * against the process working directory, so the running server never depends on
+ * where its own modules sit on disk. Ignored when `DATABASE_URL` selects the
+ * Postgres backend; an unset or empty value returns `undefined`, which keeps
+ * the project `data/` directory.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {string|undefined}   the resolved absolute path, or `undefined`
+ */
+export function parseDataDir(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw.trim() === '') {
+    return undefined
+  }
+  return path.resolve(raw.trim())
 }
 
 /**

@@ -17,9 +17,13 @@ import { FileSystemBackend } from './backends/filesystem.js'
 import type { StorageBackend } from './types.js'
 
 /**
- * Builds the default filesystem-backed storage, rooted at the project `data/`
- * directory. Used by `createApp()` when no backend is injected (production).
+ * Builds the default filesystem-backed storage, rooted at `dataDir` (the
+ * project `data/` directory when none is given). Used by `createApp()` when no
+ * backend is injected (production).
  * @param options {object}
+ * @param [options.dataDir] {string}   filesystem root for the stored Spaces,
+ *   keystores, and revocations (env `WAS_DATA_DIR`); defaults to the project
+ *   `data/` directory.
  * @param [options.capacityBytes] {number}   per-Space storage limit in bytes
  *   (spec "Quotas"); `undefined` (or `Infinity`) means each Space is unlimited.
  * @param [options.maxUploadBytes] {number}   per-upload size cap in bytes (spec
@@ -37,12 +41,14 @@ import type { StorageBackend } from './types.js'
  * @returns {StorageBackend}
  */
 export function defaultBackend({
+  dataDir,
   capacityBytes,
   maxUploadBytes,
   maxSpacesPerController,
   maxCollectionsPerSpace,
   maxResourcesPerSpace
 }: {
+  dataDir?: string
   capacityBytes?: number
   maxUploadBytes?: number
   maxSpacesPerController?: number
@@ -50,7 +56,7 @@ export function defaultBackend({
   maxResourcesPerSpace?: number
 } = {}): StorageBackend {
   return new FileSystemBackend({
-    dataDir: path.join(import.meta.dirname, '..', 'data'),
+    dataDir: dataDir ?? path.join(import.meta.dirname, '..', 'data'),
     capacityBytes,
     maxUploadBytes,
     maxSpacesPerController,
