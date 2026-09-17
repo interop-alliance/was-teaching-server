@@ -173,10 +173,7 @@ describe('List Collections pagination', () => {
     }
     assert.ok(expectedError, 'expected the garbage cursor to be rejected')
     assert.equal(expectedError.response.status, 400)
-    assert.equal(
-      expectedError.data.type,
-      'https://wallet.storage/spec#invalid-cursor'
-    )
+    assert.equal(expectedError.data.type, 'https://w3id.org/pws#invalid-cursor')
   })
 
   it('an unauthorized caller with a (garbage) cursor still gets 404, never 400', async () => {
@@ -318,10 +315,7 @@ describe('List Spaces pagination', () => {
     }
     assert.ok(expectedError, 'expected the garbage cursor to be rejected')
     assert.equal(expectedError.response.status, 400)
-    assert.equal(
-      expectedError.data.type,
-      'https://wallet.storage/spec#invalid-cursor'
-    )
+    assert.equal(expectedError.data.type, 'https://w3id.org/pws#invalid-cursor')
   })
 
   it('an anonymous caller with a garbage cursor gets the empty 200, never 400', async () => {

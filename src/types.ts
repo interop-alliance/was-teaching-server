@@ -65,7 +65,8 @@ import type {
   BackendConnectionInput,
   BackendUsage,
   ImportStats,
-  PolicyDocument
+  PolicyDocument,
+  ServiceDescriptionVersionEntry
 } from '@interop/storage-core'
 
 // Surface the blinded-index query shapes referenced by the `StorageBackend`
@@ -136,6 +137,19 @@ export type {
   PwsVersionEntry,
   AuthzProfileVersionEntry
 } from '@interop/storage-core'
+
+/**
+ * The Encrypted Collections profile's version entry in a `ServiceDescription`
+ * (profile "The version entry"). Its sibling entries, `PwsVersionEntry` and
+ * `AuthzProfileVersionEntry`, are owned by `@interop/storage-core`; this one
+ * lives here until that package carries it too.
+ *
+ * - `features` -- the profile's optional affordances this server serves, as
+ *   listed by `ENCRYPTED_COLLECTIONS_FEATURES` in `serviceDescription.ts`.
+ */
+export interface EncryptedCollectionsVersionEntry extends ServiceDescriptionVersionEntry {
+  features?: string[]
+}
 
 /** Return shape of `getResource()`. */
 export interface ResourceResult {

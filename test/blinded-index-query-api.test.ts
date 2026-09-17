@@ -19,7 +19,11 @@ import type { FastifyInstance } from 'fastify'
 import type { JsonObject, Space } from '@interop/was-client'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import {
+  assertEncryptedCollectionsFeature,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 const HMAC_ID = 'did:key:zHmacKeyA'
 
@@ -260,9 +264,11 @@ describe('Collection blinded-index query profile', () => {
     assert.equal(thrown.response.status, 404)
   })
 
-  it('advertises blinded-index-query in the default backend features', async () => {
-    const backend = new FileSystemBackend({ dataDir })
-    assert.ok(backend.describe().features.includes('blinded-index-query'))
+  it('advertises blinded-index-query in the Encrypted Collections entry', async () => {
+    await assertEncryptedCollectionsFeature({
+      serverUrl,
+      feature: 'blinded-index-query'
+    })
   })
 
   it('rejects a write claiming a held unique blinded attribute with 409', async () => {

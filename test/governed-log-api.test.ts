@@ -17,6 +17,7 @@ import type { FastifyInstance } from 'fastify'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
+  assertEncryptedCollectionsFeature,
   assertEtagVersion,
   responseOf,
   startTestServer,
@@ -646,16 +647,10 @@ describe('Governing history log API (meta/log)', () => {
     })
   })
 
-  it('[signed] the backend advertises governed-history-logs', async () => {
-    const backends = await alice.was.request({
-      url: `${serverUrl}/space/${spaceId}/backends`,
-      method: 'GET'
+  it('advertises governed-history-logs in the Encrypted Collections entry', async () => {
+    await assertEncryptedCollectionsFeature({
+      serverUrl,
+      feature: 'governed-history-logs'
     })
-    const features =
-      backends.data.items?.[0]?.features ?? backends.data[0]?.features
-    assert.ok(
-      features?.includes('governed-history-logs'),
-      JSON.stringify(backends.data)
-    )
   })
 })

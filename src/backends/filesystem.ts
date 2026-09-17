@@ -415,10 +415,11 @@ export class FileSystemBackend implements StorageBackend {
    * filesystem backend is the single server-configured default: it stores both
    * JSON documents and binary blobs on disk, so its data survives restarts.
    *
-   * Its affordances (chunk addressing here stores each chunk opaquely, like a
-   * binary Resource representation) are the shared server-backend feature set
-   * -- see `SERVER_BACKEND_FEATURES` in `lib/backends.ts`, which also documents
-   * why client-side encryption is deliberately not among them.
+   * The descriptor advertises no affordances. Every guarantee a Collection
+   * needs holds here unconditionally, because the server mediates every write:
+   * it serializes writes under its own per-record lock and mints its own opaque
+   * validator over a filesystem that offers no precondition primitive of its
+   * own (a content hash would serve as well as the version counter used here).
    * @returns {Required<Omit<BackendDescriptor, 'provider' | 'connection'>>}
    */
   describe(): Required<Omit<BackendDescriptor, 'provider' | 'connection'>> {

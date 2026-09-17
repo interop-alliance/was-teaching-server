@@ -797,20 +797,4 @@ describe('Collection equality query profile', () => {
       assert.match(err.data.type, /#id-conflict/)
     })
   })
-
-  describe('backend feature advertisement', () => {
-    it('advertises equality-query in the default backend features', async () => {
-      const backend = new FileSystemBackend({ dataDir })
-      assert.ok(backend.describe().features.includes('equality-query'))
-    })
-
-    it('surfaces equality-query on GET :collectionId/backend', async () => {
-      await createIndexedCollection('feat-col', ['parentId'])
-      const response = await alice.was.request({
-        path: `/space/${spaceId()}/feat-col/backend`,
-        method: 'GET'
-      })
-      assert.ok(response.data.features.includes('equality-query'))
-    })
-  })
 })

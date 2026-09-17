@@ -2,6 +2,18 @@
 
 ## 0.36.0 - TBD
 
+### Added
+
+- The service description's `features` array now carries `changes-query`. The
+  replication change feed varies by whether a server keeps an ordered change log
+  at all rather than by backend, so the spec moved its token here.
+- A third entry in the service description's `specs`, under
+  `https://w3id.org/pws/encrypted-collections`: the Encrypted Collections
+  profile at version `0.1`, with its rendered location and a `features` array
+  carrying `blinded-index-query` and `governed-history-logs`. Listing the entry
+  at all is the claim that this server serves the chunk endpoints; no token
+  names those.
+
 ### Changed
 
 - **Breaking for clients that read `signatureAlgorithms` or `zcapCryptosuites`
@@ -11,9 +23,25 @@
   location. The two signature members moved from the `https://w3id.org/pws`
   entry onto the profile entry; the values they carry (`EdDSA`;
   `Ed25519Signature2020` and `eddsa-jcs-2022`) are unchanged.
+- **Breaking for clients matching problem types or link relations by their full
+  URI.** Every problem `type` and every WAS link relation the server emits now
+  carries the base identifier `https://w3id.org/pws`, replacing
+  `https://wallet.storage/spec`. The fragments are unchanged, so `not-found`
+  becomes `https://w3id.org/pws#not-found` and the `policy` relation becomes
+  `https://w3id.org/pws#policy`.
 
 ### Removed
 
+- **Breaking for clients that read a Backend descriptor's `features` array.**
+  The `features` property is gone from the Backend data model, dropped from the
+  spec. The default backend advertises no tokens, and a registration no longer
+  reads, stores, or echoes the field. Conditional writes and the `epoch` stamp
+  are baseline requirements of every backend a Collection may be created on,
+  since the server -- not the storage engine -- serializes each write and mints
+  its own opaque validator. `equality-query` is dropped outright; it never had a
+  defined token. `blinded-index-query` and `governed-history-logs` belong to the
+  Encrypted Collections profile and are now advertised under its own entry in
+  `specs`.
 - The `storageMode` member of a backend descriptor, dropped from the spec. The
   default backend no longer advertises it, a registration no longer stores or
   echoes it, and an unknown `storageMode` member in a registration body is

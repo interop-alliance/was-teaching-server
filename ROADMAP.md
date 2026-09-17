@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 113
+nextAvailableId: 114
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -45,11 +45,10 @@ Designed in detail in the Google Drive BYOS plan (a Google Drive
 `managedBy: external` "Bring Your Own Storage" backend, plaintext and
 EDV-encrypted, with encryption as a backend **feature**). That plan's staged
 work plan is the authoritative sequencing; stages 1-3 have fully shipped (the
-EDV-over-WAS client profile, registration + the per-Collection resolver, the
-`features` vocabulary, and all four EDV server affordances -- `chunked-streams`
-was the last token, landed 2026-07-19). The spec has since removed the
-`features` vocabulary described in this paragraph; see WAS-111 for the follow-up
-work that removes it here too. Remaining, in order:
+EDV-over-WAS client profile, registration + the per-Collection resolver, and all
+four EDV server affordances). The spec has since removed the `features`
+vocabulary that plan advertised those affordances through, and so has this
+server (WAS-111); the affordances themselves are unchanged. Remaining, in order:
 
 ### WAS-1: Google Cloud console identity verification for interopalliance.org
 
@@ -465,98 +464,6 @@ record carrying secrets. Discovered during code review of the container rule
 (discovered-from: WAS-60). Not changed in that work because it widens the rule
 to operations outside the container URLs the spec discusses; it needs a decision
 on whether a Space-subtree grant should ever manage policy or backends.
-
-### WAS-111: Remove the backend `features` vocabulary and move the surviving tokens to the service description
-
-- status: todo
-- priority: high
-- labels: backends, service-description, spec-alignment, breaking, conformance
-- touches:
-  - wallet-attached-storage-spec: WASS-40. SHIPPED (2026-09-16): the Backend
-    `features` property is removed from spec.md, conditional writes and the
-    `epoch` stamp are baseline server requirements, `changes-query` is a
-    service-description `features` token, and no `equality-query` token exists
-  - encrypted-collections-spec: ECS-9 defines the WAS-EC version-entry
-    identifier this server lists under the service description's `specs`, and
-    owns the `blinded-index-query` / `governed-history-logs` token definitions;
-    blocked on that identifier landing there
-  - was-client: WCL-106 carries the client-side removal of the affordance gate
-    and the `changes-query` check's move to the service description
-- acceptance:
-  - [ ] `serverBackendDescriptor` (`src/lib/backends.ts`) stops returning a
-        `features` array, and `SERVER_BACKEND_FEATURES` is deleted along with
-        its doc comment
-  - [ ] `sanitizeBackendRecord`, `parseBackendRegistration`, and
-        `buildBackendRecord` (`src/lib/backends.ts`) drop the `features` field:
-        a BYOS registration body carrying `features` is no longer read, and a
-        stored `StoredBackendRecord` no longer carries the field
-  - [ ] `changes-query` joins `SERVICE_FEATURES` (`src/serviceDescription.ts`)
-  - [ ] `equality-query` is dropped everywhere: the token comment in
-        `src/lib/backends.ts`, and the two tests that assert it
-        (`test/equality-query-api.test.ts:802-813`)
-  - [ ] `blinded-index-query` and `governed-history-logs` move off the Backend
-        descriptor and onto the `features` array of the WAS-EC version entry
-        this server lists under `specs` in `buildServiceDescription`
-        (`src/serviceDescription.ts`); this box cannot close until ECS-9 names
-        the identifier, so it is expected to wait on that item
-  - [ ] `test/blinded-index-query-api.test.ts:263-265` and
-        `test/governed-log-api.test.ts:654-657` are rewritten against the WAS-EC
-        version entry rather than `backend.describe().features`
-  - [ ] `test/backends-api.test.ts:49`, `test/collection-api.test.ts:499-526`,
-        and `test/spaces-api.test.ts:1013-1060` no longer assert a `features`
-        array on a Backend descriptor
-  - [ ] ARCHITECTURE.md's Backends paragraph (around line 178, the
-        `serviceDescription.ts` entry) and the filesystem/postgres `describe()`
-        doc comments stop pointing at `SERVER_BACKEND_FEATURES`
-        (`src/backends/filesystem.ts:414-420`,
-        `src/backends/postgres.ts:522-524`) and instead state the server-side
-        emulation contract: the server serializes writes itself and mints its
-        own opaque validator over a storage engine offering no precondition
-        primitive of its own, and a content hash is an acceptable strong
-        validator
-  - [ ] Every backend the server offers (filesystem, PostgreSQL, and any
-        registered `external` BYOS backend) honors `If-Match` and
-        `If-None-Match: *` on a Resource write unconditionally, with no token
-        gating that behavior
-  - [ ] was-conformance-suite: a check that every backend listed at
-        `GET /space/:spaceId/backends` honors both preconditions on a Resource
-        write, which needs a fake BYOS provider fixture to cover an `external`
-        backend
-  - [ ] was-conformance-suite: the existing suites that gate a check on a
-        Backend-level token (`conditional-writes`, `changes-query`) re-gate on
-        the service description instead
-
-Context: the spec's Backend `features` array let a client-registered storage
-engine opt out of guarantees the server can always provide, since the server --
-not the storage engine -- serializes every write and mints the validator.
-WASS-40 removed that vocabulary from the spec: conditional writes and the
-`epoch` stamp are now baseline requirements of every backend a Collection may be
-created on, `changes-query` moves to the service description because it varies
-by whether a server keeps an ordered change log at all rather than by backend,
-`equality-query` never had a defined token and is dropped, and
-`blinded-index-query` / `governed-history-logs` move to the WAS-EC version entry
-because they are optional affordances of that companion spec rather than of a
-storage engine.
-
-This server predates that decision: `SERVER_BACKEND_FEATURES` in
-`src/lib/backends.ts` lists all seven tokens including `equality-query`,
-`serverBackendDescriptor` stamps every server-configured backend with the full
-list, and BYOS registration (`parseBackendRegistration`, `buildBackendRecord`)
-accepts and stores a client-supplied `features` array with no vocabulary check
-at all. Six tests across `test/backends-api.test.ts`,
-`test/collection-api.test.ts`, `test/spaces-api.test.ts`,
-`test/equality-query-api.test.ts`, `test/blinded-index-query-api.test.ts`, and
-`test/governed-log-api.test.ts` assert against that array. Removing it is a
-breaking change to the descriptor shape any deployed client reads, accepted
-under the same greenfield stance the spec decision names.
-
-This is spec-alignment work rather than new behavior: every backend this server
-ships (filesystem, PostgreSQL) already serializes writes under its own lock and
-already honors both preconditions unconditionally, so the guarantee itself does
-not change, only its advertisement. The BYOS registration path is the one place
-`features` currently does real work (a client-supplied array persisted
-verbatim), and that path has no live external adapter yet, so dropping the field
-there has no runtime backend to break today.
 
 ### WAS-61: Separate `/policy` control from data writes (exposure test + enforcement)
 

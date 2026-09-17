@@ -87,7 +87,8 @@ describe('Service description API', () => {
                 'export',
                 'backends',
                 'query',
-                'quotas'
+                'quotas',
+                'changes-query'
               ]
             }
           ],
@@ -99,6 +100,13 @@ describe('Service description API', () => {
                 'authz-profile/',
               signatureAlgorithms: ['EdDSA'],
               zcapCryptosuites: ['Ed25519Signature2020', 'eddsa-jcs-2022']
+            }
+          ],
+          'https://w3id.org/pws/encrypted-collections': [
+            {
+              version: '0.1',
+              url: 'https://interop-alliance.github.io/encrypted-collections-spec/',
+              features: ['blinded-index-query', 'governed-history-logs']
             }
           ]
         },

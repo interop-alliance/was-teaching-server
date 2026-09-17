@@ -2322,3 +2322,170 @@ server advertises today (`EdDSA`; `Ed25519Signature2020` and `eddsa-jcs-2022`)
 do not change, only the entry they sit on. The profile's entry advertises no
 policy types; listing the profile means the server evaluates `PublicCanRead`,
 which it already does.
+
+### WAS-111: Remove the backend `features` vocabulary and move the surviving tokens to the service description
+
+- status: done
+- done: 2026-09-16
+- priority: high
+- labels: backends, service-description, spec-alignment, breaking, conformance
+- touches:
+  - wallet-attached-storage-spec: WASS-40. SHIPPED (2026-09-16): the Backend
+    `features` property is removed from spec.md, conditional writes and the
+    `epoch` stamp are baseline server requirements, `changes-query` is a
+    service-description `features` token, and no `equality-query` token exists
+  - encrypted-collections-spec: ECS-9. SHIPPED (2026-09-16): the identifier is
+    `https://w3id.org/pws/encrypted-collections`, the current version is `0.1`,
+    and the entry's `features` array carries `blinded-index-query` and
+    `governed-history-logs`, whose definitions now live in that spec's Service
+    description section. This item is unblocked
+  - was-client: WCL-106. SHIPPED (2026-09-16, was-client 0.67.0): the
+    backend-descriptor feature probe is deleted in full, the degraded paths it
+    paid for are gone (insert is always the atomic `If-None-Match: *` PUT), and
+    `changes-query` is documented as server-wide. Re-adding a
+    `blinded-index-query` gate over the WAS-EC version entry is WCL-107 there, a
+    new mechanism blocked on ECS-9 rather than a survivor of WCL-106
+  - was-conformance-suite: SHIPPED (2026-09-16, 0.21.0, published and consumed
+    here): ungates the conditional-write checks, moves the `changes-query` gate
+    to the service description, gates the three encrypted-collections suites on
+    the WAS-EC entry, and drops the descriptor `features` assertions
+- acceptance:
+  - [x] `serverBackendDescriptor` (`src/lib/backends.ts`) stops returning a
+        `features` array, and `SERVER_BACKEND_FEATURES` is deleted along with
+        its doc comment
+  - [x] `sanitizeBackendRecord`, `parseBackendRegistration`, and
+        `buildBackendRecord` (`src/lib/backends.ts`) drop the `features` field:
+        a BYOS registration body carrying `features` is no longer read, and a
+        stored `StoredBackendRecord` no longer carries the field
+  - [x] `changes-query` joins `SERVICE_FEATURES` (`src/serviceDescription.ts`)
+  - [x] `equality-query` is dropped everywhere: the token comment in
+        `src/lib/backends.ts`, and the two tests that assert it
+        (`test/equality-query-api.test.ts:802-813`)
+  - [x] `buildServiceDescription` (`src/serviceDescription.ts`) lists a third
+        `specs` key, `https://w3id.org/pws/encrypted-collections`, carrying one
+        entry: `version` `0.1`, the spec `url`, and a `features` array of
+        `blinded-index-query` and `governed-history-logs`. The identifier,
+        version, and spec URL join the constants in `config.default.ts` beside
+        `AUTHZ_PROFILE_IDENTIFIER`, and the entry gets its own type beside
+        `AuthzProfileVersionEntry` in `src/types.ts`. Both tokens come off the
+        Backend descriptor in the same edit. Done: the constants are
+        `ENCRYPTED_COLLECTIONS_IDENTIFIER` / `_VERSION` / `_URL`, the token list
+        is `ENCRYPTED_COLLECTIONS_FEATURES`, and the type is
+        `EncryptedCollectionsVersionEntry` (local until storage-core carries it
+        beside its two siblings)
+  - [x] The two advertisement tests return, rewritten against the WAS-EC version
+        entry rather than `backend.describe().features`: one asserting
+        `blinded-index-query` is listed (was
+        `test/blinded-index-query-api.test.ts:263-265`), one asserting
+        `governed-history-logs` is listed (was
+        `test/governed-log-api.test.ts:654-657`).
+        `test/service-description-api.test.ts` covers the entry's shape -- the
+        key, the single entry, `version`, `url`, and both tokens
+  - [x] `test/backends-api.test.ts:49`, `test/collection-api.test.ts:499-526`,
+        and `test/spaces-api.test.ts:1013-1060` no longer assert a `features`
+        array on a Backend descriptor
+  - [x] ARCHITECTURE.md's Backends paragraph (around line 178, the
+        `serviceDescription.ts` entry) and the filesystem/postgres `describe()`
+        doc comments stop pointing at `SERVER_BACKEND_FEATURES`
+        (`src/backends/filesystem.ts:414-420`,
+        `src/backends/postgres.ts:522-524`) and instead state the server-side
+        emulation contract: the server serializes writes itself and mints its
+        own opaque validator over a storage engine offering no precondition
+        primitive of its own, and a content hash is an acceptable strong
+        validator
+  - [x] Every backend the server offers (filesystem, PostgreSQL, and any
+        registered `external` BYOS backend) honors `If-Match` and
+        `If-None-Match: *` on a Resource write unconditionally, with no token
+        gating that behavior
+  - [x] was-conformance-suite: a check that every backend listed at
+        `GET /space/:spaceId/backends` honors both preconditions on a Resource
+        write, which needs a fake BYOS provider fixture to cover an `external`
+        backend. Dropped as not needed: the preconditions are evaluated in the
+        server, atomically with the write it serializes, before any backend is
+        reached. Enumerating backends would re-test one code path once per
+        registered backend and prove nothing about a storage engine. The
+        existing conditional-write checks already cover that path
+  - [x] was-conformance-suite: the existing suites that gate a check on a
+        Backend-level token (`conditional-writes`, `changes-query`) re-gate on
+        the service description instead
+
+Context: the spec's Backend `features` array let a client-registered storage
+engine opt out of guarantees the server can always provide, since the server --
+not the storage engine -- serializes every write and mints the validator.
+WASS-40 removed that vocabulary from the spec: conditional writes and the
+`epoch` stamp are now baseline requirements of every backend a Collection may be
+created on, `changes-query` moves to the service description because it varies
+by whether a server keeps an ordered change log at all rather than by backend,
+`equality-query` never had a defined token and is dropped, and
+`blinded-index-query` / `governed-history-logs` move to the WAS-EC version entry
+because they are optional affordances of that companion spec rather than of a
+storage engine.
+
+This server predates that decision: `SERVER_BACKEND_FEATURES` in
+`src/lib/backends.ts` lists all seven tokens including `equality-query`,
+`serverBackendDescriptor` stamps every server-configured backend with the full
+list, and BYOS registration (`parseBackendRegistration`, `buildBackendRecord`)
+accepts and stores a client-supplied `features` array with no vocabulary check
+at all. Six tests across `test/backends-api.test.ts`,
+`test/collection-api.test.ts`, `test/spaces-api.test.ts`,
+`test/equality-query-api.test.ts`, `test/blinded-index-query-api.test.ts`, and
+`test/governed-log-api.test.ts` assert against that array. Removing it is a
+breaking change to the descriptor shape any deployed client reads, accepted
+under the same greenfield stance the spec decision names.
+
+This is spec-alignment work rather than new behavior: every backend this server
+ships (filesystem, PostgreSQL) already serializes writes under its own lock and
+already honors both preconditions unconditionally, so the guarantee itself does
+not change, only its advertisement. The BYOS registration path is the one place
+`features` currently does real work (a client-supplied array persisted
+verbatim), and that path has no live external adapter yet, so dropping the field
+there has no runtime backend to break today.
+
+Interim state (2026-09-16): the three suites whose token moves to the WAS-EC
+entry -- `chunked-streams`, `blinded-index-query`, `governed-history-logs` --
+gate on a probe of the endpoint they test, reading `501 unsupported-operation`
+as "not served". ECS-9 has since landed, so the probe gives way to the WAS-EC
+entry check. `chunked-streams` has no replacement token: under ECS-9 a listed
+entry is itself the claim that the chunk endpoints are served, so that suite
+gates on the entry's presence rather than on any token.
+
+### WAS-113: A fake BYOS provider adapter, so an `external` backend can be exercised
+
+- status: done
+- done: 2026-09-16
+- priority: medium
+- labels: backends, conformance, testing
+- blocked-by: WAS-111
+- touches:
+  - unaffected: was-conformance-suite (nothing filed there: WAS-111 dropped the
+    per-backend precondition check rather than deferring it here, so no fixture
+    registering a fake provider is needed)
+- acceptance: withdrawn 2026-09-16, closed without being built (see Context).
+  None of the criteria below were met or are still sought:
+  - [ ] An in-memory provider adapter, registered only under a test or
+        development flag, gives a registered `external` backend a live data
+        plane instead of failing closed in `lib/backendRegistry.ts`
+  - [ ] A Collection created on that backend round-trips a Resource write and
+        read through the adapter
+  - [ ] was-conformance-suite: the deferred check -- every backend listed at
+        `GET /space/:spaceId/backends` honors `If-Match` and `If-None-Match: *`
+        on a Resource write -- runs against both the server `default` and the
+        registered `external` backend
+
+Context: discovered-from WAS-111. That item's acceptance asks the conformance
+suite to check every listed backend honors both write preconditions, which needs
+an `external` backend with a data plane to write through. This server registers
+no provider adapters, so a registered `external` backend is selectable but
+inert, and the check has nothing to exercise. The guarantee it would assert --
+the server serializes the write and evaluates the precondition atomically with
+it, whatever the storage engine offers -- is exactly the one that most needs a
+non-server backend to be meaningful, since it is the case the removed `features`
+vocabulary used to let a backend opt out of.
+
+Closed 2026-09-16 without being built, as not needed. The guarantee it would
+have exercised does not depend on the storage engine: the server evaluates
+`If-Match` / `If-None-Match: *` itself, atomically with the write it serializes,
+before any backend is reached. A fake provider adapter plus a per-backend loop
+in the conformance suite would re-run one server code path once per registered
+backend. The conditional-write checks already cover that path, and WAS-111
+closed with this box dropped rather than deferred here.

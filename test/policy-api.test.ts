@@ -204,7 +204,7 @@ describe('Access-control policy API', () => {
     const entry = body.linkset[0]!
     assert.equal(entry.anchor, `/space/${alice.space1.id}/public-credentials/`)
     assert.equal(
-      entry['https://wallet.storage/spec#policy'][0].href,
+      entry['https://w3id.org/pws#policy'][0].href,
       `/space/${alice.space1.id}/public-credentials/policy`
     )
   })
@@ -273,7 +273,7 @@ describe('Access-control policy API', () => {
       assert.equal(thrown.response.status, 409)
       assert.equal(
         thrown.data.type,
-        'https://wallet.storage/spec#reserved-id',
+        'https://w3id.org/pws#reserved-id',
         'expected the spec reserved-id problem type'
       )
     }

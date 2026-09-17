@@ -891,10 +891,7 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
         })
       )
       assert.equal(err.status, 400)
-      assert.equal(
-        err.data.type,
-        'https://wallet.storage/spec#invalid-request-body'
-      )
+      assert.equal(err.data.type, 'https://w3id.org/pws#invalid-request-body')
     })
 
     it('an unsupported operation/key-type combo is a clean 400', async () => {
@@ -914,10 +911,7 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
         })
       )
       assert.equal(err.status, 400)
-      assert.equal(
-        err.data.type,
-        'https://wallet.storage/spec#invalid-request-body'
-      )
+      assert.equal(err.data.type, 'https://w3id.org/pws#invalid-request-body')
     })
 
     it('unexpected envelope properties are rejected (400)', async () => {

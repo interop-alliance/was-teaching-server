@@ -85,7 +85,7 @@ describe('Error registry wire coverage', () => {
       assert.equal(err.response.status, 400)
       assert.equal(
         err.data.type,
-        'https://wallet.storage/spec#unsupported-encryption-scheme'
+        'https://w3id.org/pws#unsupported-encryption-scheme'
       )
       assert.equal(err.data.errors?.[0]?.pointer, '#/encryption/scheme')
       // The stored descriptor is unchanged -- the 409's invariant still holds.
@@ -113,10 +113,7 @@ describe('Error registry wire coverage', () => {
         })
       )
       assert.equal(err.response.status, 409)
-      assert.equal(
-        err.data.type,
-        'https://wallet.storage/spec#encryption-immutable'
-      )
+      assert.equal(err.data.type, 'https://w3id.org/pws#encryption-immutable')
       assert.deepStrictEqual((await readMeta(collectionId)).encryption, {
         scheme: 'edv'
       })
@@ -306,10 +303,7 @@ describe('Error registry wire coverage', () => {
         })
       )
       assert.equal(err.response.status, 400)
-      assert.equal(
-        err.data.type,
-        'https://wallet.storage/spec#invalid-request-body'
-      )
+      assert.equal(err.data.type, 'https://w3id.org/pws#invalid-request-body')
       assert.equal(err.data.title, 'Invalid Collection Metadata body')
     })
 
@@ -325,10 +319,7 @@ describe('Error registry wire coverage', () => {
         })
       )
       assert.equal(err.response.status, 400)
-      assert.equal(
-        err.data.type,
-        'https://wallet.storage/spec#invalid-request-body'
-      )
+      assert.equal(err.data.type, 'https://w3id.org/pws#invalid-request-body')
       assert.equal(err.data.title, 'Invalid Collection Metadata body')
     })
 
@@ -339,10 +330,7 @@ describe('Error registry wire coverage', () => {
         alice.was.request({ path: `/space/${spaceId}/`, method: 'POST' })
       )
       assert.equal(err.response.status, 400)
-      assert.equal(
-        err.data.type,
-        'https://wallet.storage/spec#invalid-request-body'
-      )
+      assert.equal(err.data.type, 'https://w3id.org/pws#invalid-request-body')
       assert.equal(err.data.title, 'Invalid Create Collection body')
     })
   })

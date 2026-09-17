@@ -95,7 +95,7 @@ describe('assertValidId', () => {
       }
       assert.ok(thrown instanceof ReservedIdError)
       assert.equal(thrown.statusCode, 409)
-      assert.equal(thrown.type, 'https://wallet.storage/spec#reserved-id')
+      assert.equal(thrown.type, 'https://w3id.org/pws#reserved-id')
     })
   }
 

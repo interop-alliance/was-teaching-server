@@ -15,6 +15,10 @@ import {
 } from '@interop/did-method-webvh'
 import type { DIDLog, ServiceEndpoint } from '@interop/did-method-webvh'
 
+import {
+  ENCRYPTED_COLLECTIONS_IDENTIFIER,
+  ENCRYPTED_COLLECTIONS_VERSION
+} from '../src/config.default.js'
 import { createApp } from '../src/server.js'
 import type { IRootZcap } from '../src/types.js'
 
@@ -576,4 +580,37 @@ export async function assertSpaceController({
     capability: rootZcap({ target: spaceUrl, controller })
   })
   assert.equal((metadata.data as { controller: string }).controller, controller)
+}
+
+/**
+ * Asserts that the Encrypted Collections profile entry in the server's service
+ * description advertises a given optional affordance. The whole document is
+ * pinned in `test/service-description-api.test.ts`; this reads just the one
+ * token, so a feature's own suite proves its advertisement alongside its
+ * behavior.
+ * @param options {object}
+ * @param options.serverUrl {string}
+ * @param options.feature {string}   the `features` token to expect
+ * @returns {Promise<void>}
+ */
+export async function assertEncryptedCollectionsFeature({
+  serverUrl,
+  feature
+}: {
+  serverUrl: string
+  feature: string
+}): Promise<void> {
+  const response = await fetch(`${serverUrl}/service`)
+  const document = (await response.json()) as {
+    specs: Record<string, Array<{ version: string; features?: string[] }>>
+  }
+  const entries = document.specs[ENCRYPTED_COLLECTIONS_IDENTIFIER] ?? []
+  const entry = entries.find(
+    candidate => candidate.version === ENCRYPTED_COLLECTIONS_VERSION
+  )
+  assert.ok(entry, 'expected an Encrypted Collections version entry')
+  assert.ok(
+    entry.features?.includes(feature),
+    `expected the Encrypted Collections entry to advertise ${feature}`
+  )
 }

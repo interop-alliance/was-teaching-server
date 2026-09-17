@@ -214,10 +214,7 @@ describe('Collection changes query profile', () => {
     }
     assert.ok(thrown, 'expected a missing profile to be rejected')
     assert.equal(thrown.response.status, 400)
-    assert.equal(
-      thrown.data.type,
-      'https://wallet.storage/spec#invalid-request-body'
-    )
+    assert.equal(thrown.data.type, 'https://w3id.org/pws#invalid-request-body')
   })
 
   it('rejects an unknown profile with 501', async () => {

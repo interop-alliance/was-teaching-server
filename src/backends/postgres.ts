@@ -519,11 +519,11 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
-   * Self-description advertised at `GET /space/:spaceId/backends`. Same
-   * affordances as the filesystem backend -- the shared server-backend feature
-   * set (`SERVER_BACKEND_FEATURES` in `lib/backends.ts`), realized here by
-   * row-locked preconditions with ETag validators and opaque per-chunk raw-bytes
-   * storage in the `chunks` table.
+   * Self-description advertised at `GET /space/:spaceId/backends`. Like the
+   * filesystem backend it advertises no affordances: every guarantee a
+   * Collection needs holds unconditionally, realized here by row-locked
+   * preconditions with ETag validators and opaque per-chunk raw-bytes storage
+   * in the `chunks` table.
    * @returns {Required<Omit<BackendDescriptor, 'provider' | 'connection'>>}
    */
   describe(): Required<Omit<BackendDescriptor, 'provider' | 'connection'>> {

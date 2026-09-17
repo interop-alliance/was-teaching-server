@@ -45,16 +45,7 @@ describe('Space backend registration (/backends)', () => {
     id: 'default',
     name: 'Server Filesystem',
     managedBy: 'server',
-    persistence: 'durable',
-    features: [
-      'conditional-writes',
-      'changes-query',
-      'blinded-index-query',
-      'equality-query',
-      'key-epochs',
-      'chunked-streams',
-      'governed-history-logs'
-    ]
+    persistence: 'durable'
   }
 
   beforeAll(async () => {

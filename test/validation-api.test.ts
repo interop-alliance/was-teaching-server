@@ -57,7 +57,7 @@ describe('Request validation API', () => {
       assert.ok(expectedError.data.title, 'expected a problem+json title')
       assert.equal(
         expectedError.data.type,
-        'https://wallet.storage/spec#invalid-id',
+        'https://w3id.org/pws#invalid-id',
         'expected a spec-required problem type'
       )
 
@@ -108,7 +108,7 @@ describe('Request validation API', () => {
       assert.equal(expectedError.response.status, 409)
       assert.equal(
         expectedError.data.type,
-        'https://wallet.storage/spec#reserved-id',
+        'https://w3id.org/pws#reserved-id',
         'expected the spec reserved-id problem type'
       )
     })

@@ -174,9 +174,15 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   Metadata writes through the same per-Collection lock.
 - **`src/serviceDescription.ts`** -- the service description (spec "Service
   Description"): `GET /service`, unauthenticated, serving the JSON document that
-  lists two entries in its `specs`. The core entry, under the
+  lists three entries in its `specs`. The core entry, under the
   `https://w3id.org/pws` identifier, names the spec version this server speaks
-  (`0.5`), the Spaces Repository URL, and the `features` tokens. The entry under
+  (`0.5`), the Spaces Repository URL, and the `features` tokens naming the
+  optional sections of the core spec this server serves, `changes-query` among
+  them. A Backend descriptor advertises no tokens of its own. Conditional writes
+  and the `epoch` stamp are baseline guarantees of every backend a Collection
+  may be created on, since the server -- not the storage engine -- serializes
+  each write and mints its own opaque validator; a content hash would serve as a
+  strong validator as well as the version counter used here. The entry under
   `https://w3id.org/pws/authz-profile` names the zCap authorization profile
   version (`0.1`) and its rendered location, and carries the accepted
   `signatureAlgorithms` and `zcapCryptosuites` (profile
@@ -185,10 +191,17 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   capability invocations, before its first signed request. The last two members
   are read off `zcap.ts` (`INVOCATION_SIGNATURE_ALGORITHMS`,
   `delegationProofCryptosuites`), so a change to what verification accepts
-  changes the advertisement too. The document is built per `serverUrl` and
-  served with `Cache-Control: public` and a content-hash `ETag`. The module also
-  installs the one hook every response passes through: a root-level `onSend`
-  hook (`addServiceLinkHook`, added by the plugin) that appends
+  changes the advertisement too. The third entry, under
+  `https://w3id.org/pws/encrypted-collections`, is the Encrypted Collections
+  profile (version `0.1`). Listing it at all is this server's claim that it
+  serves the chunk endpoints -- no token names those -- and its `features` array
+  names the profile's two optional affordances this server serves,
+  `blinded-index-query` and `governed-history-logs`. Those two moved here off
+  the Backend descriptor: they are affordances of that companion specification,
+  not of a storage engine. The document is built per `serverUrl` and served with
+  `Cache-Control: public` and a content-hash `ETag`. The module also installs
+  the one hook every response passes through: a root-level `onSend` hook
+  (`addServiceLinkHook`, added by the plugin) that appends
   `Link: <{serverUrl}/service>; rel="service"` to every response -- successes,
   errors, 404s for unmatched routes, 308 redirects, 405 refusals, CORS
   preflights, and the teaching-server extras. It appends to a `Link` header a
@@ -202,7 +215,10 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   active backend is injected via `createApp({ backend })` and decorated onto the
   instance as `request.server.storage`.
 - **`src/backends/{filesystem}.ts`** — interchangeable persistence
-  implementation (`implements StorageBackend` from `src/types.ts`).
+  implementation (`implements StorageBackend` from `src/types.ts`). A backend
+  offers no precondition primitive of its own to a client: the server serializes
+  the write and evaluates `If-Match` / `If-None-Match: *` atomically with it, so
+  every backend honors both unconditionally.
 - **`src/errors.ts`** — custom error classes plus `handleError`, the Fastify
   error handler installed by each route group.
 - **`src/exchanges.ts`** — the ephemeral exchanges facet

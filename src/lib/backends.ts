@@ -25,50 +25,15 @@ import { isUrlSafeSegment } from './validateId.js'
 export const DEFAULT_BACKEND_ID = 'default'
 
 /**
- * The affordances every server-configured backend advertises from `describe()`
- * (spec "Backends"). This list is wire contract, so the backends share one
- * constant rather than each maintaining its own copy:
- *
- * - `conditional-writes`: exposes a per-Resource `version` as an HTTP `ETag`
- *   validator and honors `If-Match` / `If-None-Match` write preconditions
- *   atomically (returning `412 precondition-failed` on a mismatch).
- * - `changes-query`: serves the `changes` profile of the reserved `query`
- *   endpoint -- the replication change feed (`changesSince`).
- * - `blinded-index-query`: serves the `blinded-index` profile -- EDV
- *   blinded-attribute queries (`queryByBlindedIndex`).
- * - `equality-query`: serves the `equality` profile -- server-extracted
- *   plaintext attribute equality over a Collection's declared `plaintext.indexes`
- *   (`queryByEquality`), plus the GET `filter[attr]=value` equality filter.
- * - `key-epochs`: multi-recipient encrypted Collections -- per-epoch wrapped
- *   keys on the `encryption` descriptor, a client-declared `epoch` stamp on
- *   Resources, and conditional (`If-Match`) Collection Metadata writes.
- * - `chunked-streams`: chunk addressing (`/{resourceId}/chunks/{n}`) for a
- *   large Resource, each chunk stored opaquely (raw bytes plus content type).
- * - `governed-history-logs`: a Collection's `encryption` descriptor may be
- *   governed by a history log at the `meta/log` sub-resource (guarded create,
- *   compare-and-swap append), with the served member derived from the log's
- *   head entry.
- *
- * (Client-side encryption is deliberately not a backend feature: encrypted
- * documents are opaque client-encrypted JSON a backend already stores
- * faithfully, with no server cooperation.)
- */
-export const SERVER_BACKEND_FEATURES: string[] = [
-  'conditional-writes',
-  'changes-query',
-  'blinded-index-query',
-  'equality-query',
-  'key-epochs',
-  'chunked-streams',
-  'governed-history-logs'
-]
-
-/**
  * Builds the self-description a server-configured backend advertises at
  * `GET /space/:spaceId/backends`. Every such backend is the server's `default`,
- * is server-managed, stores both JSON documents and binary blobs, survives
- * restarts, and offers {@link SERVER_BACKEND_FEATURES} -- only the display
- * `name` distinguishes them.
+ * is server-managed, stores both JSON documents and binary blobs, and survives
+ * restarts -- only the display `name` distinguishes them.
+ *
+ * The descriptor advertises no affordances. The guarantees a Collection needs
+ * -- conditional writes, the `epoch` stamp -- are baseline requirements of
+ * every backend a Collection may be created on, because the server, not the
+ * storage engine, serializes each write and mints its own opaque validator.
  *
  * The wire type only REQUIRES `id`; a server backend always populates every
  * field except the `external`-only `provider` / `connection`, so the return is
@@ -87,8 +52,7 @@ export function serverBackendDescriptor({
     id: DEFAULT_BACKEND_ID,
     name,
     managedBy: 'server',
-    persistence: 'durable',
-    features: [...SERVER_BACKEND_FEATURES]
+    persistence: 'durable'
   }
 }
 
@@ -227,7 +191,6 @@ export function sanitizeBackendRecord(
     ...(record.persistence !== undefined && {
       persistence: record.persistence
     }),
-    ...(record.features !== undefined && { features: record.features }),
     provider: record.provider,
     connection: publicConnection
   }
@@ -319,9 +282,6 @@ export function parseBackendRegistration(
     ...(typeof candidate.name === 'string' && { name: candidate.name }),
     managedBy: 'external',
     provider: candidate.provider,
-    ...(Array.isArray(candidate.features) && {
-      features: candidate.features as string[]
-    }),
     connection: connection as BackendRegistration['connection']
   }
 }
@@ -411,8 +371,8 @@ export function assertNotDefaultBackendId({
 
 /**
  * Assembles the full `StoredBackendRecord` to persist from a validated
- * `BackendRegistration`: the descriptor fields, `managedBy: 'external'`, default
- * `features`, and the full (secret-bearing) connection stamped
+ * `BackendRegistration`: the descriptor fields, `managedBy: 'external'`, and the
+ * full (secret-bearing) connection stamped
  * with `status: 'registered'` and the registration timestamp. The record is
  * inert until the live provider adapter (future work) connects it.
  * @param registration {BackendRegistration}
@@ -421,13 +381,12 @@ export function assertNotDefaultBackendId({
 export function buildBackendRecord(
   registration: BackendRegistration
 ): StoredBackendRecord {
-  const { id, name, provider, features, connection } = registration
+  const { id, name, provider, connection } = registration
   return {
     id,
     ...(name !== undefined && { name }),
     managedBy: 'external',
     provider,
-    features: features ?? [],
     connection: {
       ...connection,
       status: 'registered',

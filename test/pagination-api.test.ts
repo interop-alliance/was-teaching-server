@@ -190,10 +190,7 @@ describe('List Collection pagination', () => {
     }
     assert.ok(expectedError, 'expected the garbage cursor to be rejected')
     assert.equal(expectedError.response.status, 400)
-    assert.equal(
-      expectedError.data.type,
-      'https://wallet.storage/spec#invalid-cursor'
-    )
+    assert.equal(expectedError.data.type, 'https://w3id.org/pws#invalid-cursor')
   })
 
   it('a syntactically valid but wrong-shape cursor yields invalid-cursor (400)', async () => {
@@ -210,10 +207,7 @@ describe('List Collection pagination', () => {
     }
     assert.ok(expectedError, 'expected the wrong-shape cursor to be rejected')
     assert.equal(expectedError.response.status, 400)
-    assert.equal(
-      expectedError.data.type,
-      'https://wallet.storage/spec#invalid-cursor'
-    )
+    assert.equal(expectedError.data.type, 'https://w3id.org/pws#invalid-cursor')
   })
 
   it('keyset stability: deleting the cursor anchor mid-traversal still pages correctly', async () => {

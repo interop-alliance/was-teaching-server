@@ -94,7 +94,7 @@ describe('Spaces', () => {
       const [entry] = (response.data as { linkset: Array<Record<string, any>> })
         .linkset
       assert.deepStrictEqual(
-        entry!['https://wallet.storage/spec#backends-available'],
+        entry!['https://w3id.org/pws#backends-available'],
         [
           {
             href: `/space/${alice.space1.id}/backends`,
@@ -102,7 +102,7 @@ describe('Spaces', () => {
           }
         ]
       )
-      assert.deepStrictEqual(entry!['https://wallet.storage/spec#quotas'], [
+      assert.deepStrictEqual(entry!['https://w3id.org/pws#quotas'], [
         { href: `/space/${alice.space1.id}/quotas`, type: 'application/json' }
       ])
     })
@@ -148,10 +148,7 @@ describe('Spaces', () => {
       }
       assert.ok(expectedError, 'expected the duplicate-id POST to be rejected')
       assert.equal(expectedError.response.status, 409)
-      assert.equal(
-        expectedError.data.type,
-        'https://wallet.storage/spec#id-conflict'
-      )
+      assert.equal(expectedError.data.type, 'https://w3id.org/pws#id-conflict')
       assert.equal(expectedError.data.errors[0].pointer, '#/id')
     })
 
@@ -444,10 +441,7 @@ describe('Spaces', () => {
         })
       )
       assert.equal(thrown.response.status, 412)
-      assert.equal(
-        thrown.data.type,
-        'https://wallet.storage/spec#precondition-failed'
-      )
+      assert.equal(thrown.data.type, 'https://w3id.org/pws#precondition-failed')
       const stored = await alice.was.space('guarded-create').describe()
       assert.equal(stored.name, 'Winner')
     })
@@ -596,7 +590,7 @@ describe('Spaces', () => {
       assert.equal(expectedError.response.status, 400)
       assert.equal(
         expectedError.data.type,
-        'https://wallet.storage/spec#controller-mismatch'
+        'https://w3id.org/pws#controller-mismatch'
       )
       assert.equal(expectedError.data.errors[0].pointer, '#/controller')
 
@@ -658,7 +652,7 @@ describe('Spaces', () => {
       assert.equal(expectedError.response.status, 400)
       assert.equal(
         expectedError.data.type,
-        'https://wallet.storage/spec#controller-mismatch'
+        'https://w3id.org/pws#controller-mismatch'
       )
       // The differentiated cause (spec SHOULD): the chain roots in Alice's
       // DID, not the body's controller (Bob).
@@ -698,7 +692,7 @@ describe('Spaces', () => {
       assert.equal(expectedError.response.status, 400)
       assert.equal(
         expectedError.data.type,
-        'https://wallet.storage/spec#controller-mismatch'
+        'https://w3id.org/pws#controller-mismatch'
       )
       assert.match(
         expectedError.data.errors[0].detail,
@@ -740,7 +734,7 @@ describe('Spaces', () => {
       assert.equal(expectedError.response.status, 400)
       assert.equal(
         expectedError.data.type,
-        'https://wallet.storage/spec#controller-mismatch'
+        'https://w3id.org/pws#controller-mismatch'
       )
       assert.match(
         expectedError.data.errors[0].detail,
@@ -764,7 +758,7 @@ describe('Spaces', () => {
       assert.equal(expectedError.response.status, 400)
       assert.equal(
         expectedError.data.type,
-        'https://wallet.storage/spec#controller-mismatch'
+        'https://w3id.org/pws#controller-mismatch'
       )
       assert.equal(await alice.was.space(spaceId).describe(), null)
     })
@@ -784,7 +778,7 @@ describe('Spaces', () => {
       assert.equal(expectedError.response.status, 400)
       assert.equal(
         expectedError.data.type,
-        'https://wallet.storage/spec#invalid-request-body'
+        'https://w3id.org/pws#invalid-request-body'
       )
       assert.equal(expectedError.data.errors[0].pointer, '#/id')
 
@@ -837,7 +831,7 @@ describe('Spaces', () => {
       assert.equal(expectedError.response.status, 400)
       assert.equal(
         expectedError.data.type,
-        'https://wallet.storage/spec#controller-mismatch'
+        'https://w3id.org/pws#controller-mismatch'
       )
       assert.match(
         expectedError.data.errors[0].detail,
@@ -878,7 +872,7 @@ describe('Spaces', () => {
       assert.equal(expectedError.response.status, 400)
       assert.equal(
         expectedError.data.type,
-        'https://wallet.storage/spec#controller-mismatch'
+        'https://w3id.org/pws#controller-mismatch'
       )
       assert.match(
         expectedError.data.errors[0].detail,
@@ -1009,16 +1003,7 @@ describe('Spaces', () => {
       id: 'default',
       name: 'Server Filesystem',
       managedBy: 'server',
-      persistence: 'durable',
-      features: [
-        'conditional-writes',
-        'changes-query',
-        'blinded-index-query',
-        'equality-query',
-        'key-epochs',
-        'chunked-streams',
-        'governed-history-logs'
-      ]
+      persistence: 'durable'
     }
 
     it('[signed] GET /backends lists the default backend descriptor', async () => {
@@ -1036,36 +1021,6 @@ describe('Spaces', () => {
       assert.equal(response.status, 200)
       assert.match(response.headers.get('content-type')!, /application\/json/)
       assert.deepStrictEqual(response.data, [defaultBackendDescriptor])
-    })
-
-    it('[signed] GET /backends surfaces the conditional-writes features array', async () => {
-      const spaceId = crypto.randomUUID()
-      await alice.was.createSpace({
-        id: spaceId,
-        name: 'Backends Feature Space',
-        controller: alice.did
-      })
-
-      const response = await alice.was.request({
-        url: `${serverUrl}/space/${spaceId}/backends`,
-        method: 'GET'
-      })
-      assert.equal(response.status, 200)
-      // The filesystem backend implements the conditional-writes affordance
-      // (ETag / If-Match optimistic concurrency), the `changes-query`
-      // replication change feed, the `blinded-index-query` EDV query profile,
-      // the `equality-query` plaintext equality profile, and the `key-epochs`
-      // multi-recipient-encryption affordance; it advertises every token.
-      assert.ok(Array.isArray(response.data[0].features))
-      assert.deepStrictEqual(response.data[0].features, [
-        'conditional-writes',
-        'changes-query',
-        'blinded-index-query',
-        'equality-query',
-        'key-epochs',
-        'chunked-streams',
-        'governed-history-logs'
-      ])
     })
 
     it('anonymous GET /backends of a private space 404s (no leak)', async () => {

@@ -245,6 +245,29 @@ export const AUTHZ_PROFILE_URL =
   'https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/'
 
 /**
+ * The Encrypted Collections profile's persistent identifier, the key of its
+ * entry in the service description's `specs` object. Listing the profile claims
+ * this server serves its required surface -- the chunk endpoints -- and the
+ * entry's `features` array names which of its two optional affordances it
+ * serves.
+ */
+export const ENCRYPTED_COLLECTIONS_IDENTIFIER =
+  'https://w3id.org/pws/encrypted-collections'
+
+/**
+ * The version of the Encrypted Collections profile this server implements, as
+ * the service description advertises it (`major.minor`, no patch level).
+ */
+export const ENCRYPTED_COLLECTIONS_VERSION = '0.1'
+
+/**
+ * The rendered location of the Encrypted Collections profile at the version
+ * above, the `url` of its service description entry.
+ */
+export const ENCRYPTED_COLLECTIONS_URL =
+  'https://interop-alliance.github.io/encrypted-collections-spec/'
+
+/**
  * `Cache-Control` `max-age` (seconds) on the service description. The document
  * changes only when the server is redeployed with a different configuration,
  * and its `ETag` lets a client revalidate cheaply once the age runs out.
@@ -262,32 +285,31 @@ export const SERVICE_LINK_RELATION = 'service'
  * Linkset relation URI for the access-control `policy` auxiliary resource
  * (RFC9264 linkset discovery; see src/policy.ts and the linkset handlers).
  */
-export const POLICY_LINK_RELATION = 'https://wallet.storage/spec#policy'
+export const POLICY_LINK_RELATION = `${SPEC_IDENTIFIER}#policy`
 
 /**
  * Linkset relation URI for a Collection's selected `backend` auxiliary resource
  * (RFC9264 linkset discovery; advertised at `/space/{id}/{cid}/backend`).
  */
-export const BACKEND_LINK_RELATION = 'https://wallet.storage/spec#backend'
+export const BACKEND_LINK_RELATION = `${SPEC_IDENTIFIER}#backend`
 
 /**
  * Linkset relation URI for a Collection's `quota` report auxiliary resource
  * (RFC9264 linkset discovery; advertised at `/space/{id}/{cid}/quota`).
  */
-export const QUOTA_LINK_RELATION = 'https://wallet.storage/spec#quota'
+export const QUOTA_LINK_RELATION = `${SPEC_IDENTIFIER}#quota`
 
 /**
  * Linkset relation URI for a Space's `backends-available` auxiliary resource
  * (RFC9264 linkset discovery; advertised at `/space/{id}/backends`).
  */
-export const BACKENDS_AVAILABLE_LINK_RELATION =
-  'https://wallet.storage/spec#backends-available'
+export const BACKENDS_AVAILABLE_LINK_RELATION = `${SPEC_IDENTIFIER}#backends-available`
 
 /**
  * Linkset relation URI for a Space's `quotas` report auxiliary resource
  * (RFC9264 linkset discovery; advertised at `/space/{id}/quotas`).
  */
-export const QUOTAS_LINK_RELATION = 'https://wallet.storage/spec#quotas'
+export const QUOTAS_LINK_RELATION = `${SPEC_IDENTIFIER}#quotas`
 
 /**
  * Fraction of a backend's configured capacity at or above which its quota

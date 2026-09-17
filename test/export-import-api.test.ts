@@ -22,8 +22,8 @@ import YAML from 'yaml'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { startTestServer, zcapClients } from './helpers.js'
 
-const NOT_FOUND_TYPE = 'https://wallet.storage/spec#not-found'
-const INVALID_IMPORT_TYPE = 'https://wallet.storage/spec#invalid-import'
+const NOT_FOUND_TYPE = 'https://w3id.org/pws#not-found'
+const INVALID_IMPORT_TYPE = 'https://w3id.org/pws#invalid-import'
 
 /**
  * Serializes a set of tar entries to a `Uint8Array`, for a signed `x-tar`

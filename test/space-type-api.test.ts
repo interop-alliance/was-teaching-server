@@ -163,10 +163,7 @@ describe('Space Description type', () => {
           })
         )
         assert.equal(statusOf(err), 400)
-        assert.equal(
-          err.data.type,
-          'https://wallet.storage/spec#invalid-request-body'
-        )
+        assert.equal(err.data.type, 'https://w3id.org/pws#invalid-request-body')
         assert.equal(err.data.errors[0].pointer, '#/type')
 
         // Nothing was stored.
@@ -256,10 +253,7 @@ describe('Space Description type', () => {
         })
       )
       assert.equal(statusOf(err), 400)
-      assert.equal(
-        err.data.type,
-        'https://wallet.storage/spec#invalid-request-body'
-      )
+      assert.equal(err.data.type, 'https://w3id.org/pws#invalid-request-body')
       assert.equal(err.data.errors[0].pointer, '#/type')
 
       // Neither the type nor the rest of the description changed.

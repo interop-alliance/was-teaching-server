@@ -1,10 +1,12 @@
 /**
  * The service description (spec "Service Description"): the server-wide JSON
  * document naming the specification versions this server speaks, its Spaces
- * Repository URL, and the optional sections it implements. It lists two
- * entries: the core specification, and the zCap authorization profile, whose
- * entry carries the signature algorithms and delegation cryptosuites this
- * server verifies. It is served unauthenticated at
+ * Repository URL, and the optional sections it implements. It lists three
+ * entries: the core specification; the zCap authorization profile, whose entry
+ * carries the signature algorithms and delegation cryptosuites this server
+ * verifies; and the Encrypted Collections profile, whose entry claims the chunk
+ * endpoints and names the two optional affordances of that profile this server
+ * serves. It is served unauthenticated at
  * `/service`, and every response the server sends links to it with a
  * `Link: <...>; rel="service"` header, which is how a client finds it from any
  * URL it holds. The document has no storage access and no auth hooks; it
@@ -18,6 +20,9 @@ import {
   AUTHZ_PROFILE_IDENTIFIER,
   AUTHZ_PROFILE_URL,
   AUTHZ_PROFILE_VERSION,
+  ENCRYPTED_COLLECTIONS_IDENTIFIER,
+  ENCRYPTED_COLLECTIONS_URL,
+  ENCRYPTED_COLLECTIONS_VERSION,
   PACKAGE_INSTANCE,
   SERVER_VERSION,
   SERVICE_DESCRIPTION_MAX_AGE,
@@ -29,6 +34,7 @@ import { serviceDescriptionPath, spacesPath } from './lib/paths.js'
 import type {
   AuthzProfileVersionEntry,
   PwsVersionEntry,
+  EncryptedCollectionsVersionEntry,
   ServiceDescription
 } from './types.js'
 import { notModifiedReply } from './requests/notModified.js'
@@ -38,11 +44,12 @@ import {
 } from './zcap.js'
 
 /**
- * The optional sections of the specification this server implements, as
+ * The optional sections of the core specification this server implements, as
  * `features` tokens. No configuration switch this server offers disables one
- * of them, so the list is the same for every deployment. Tokens a Backend
- * advertises (`conditional-writes`, `chunked-streams`, `key-epochs`, the query
- * profiles) live on the Backend description and are not repeated here.
+ * of them, so the list is the same for every deployment. Guarantees every
+ * backend provides -- conditional writes, key epochs -- are baseline
+ * requirements rather than tokens, and the affordances of the Encrypted
+ * Collections profile belong to {@link ENCRYPTED_COLLECTIONS_FEATURES}.
  */
 export const SERVICE_FEATURES = [
   'listing',
@@ -54,7 +61,24 @@ export const SERVICE_FEATURES = [
   'export',
   'backends',
   'query',
-  'quotas'
+  'quotas',
+  'changes-query'
+]
+
+/**
+ * The optional affordances of the Encrypted Collections profile this server
+ * serves, as the `features` tokens of that profile's version entry (profile
+ * "Feature tokens"). The chunk endpoints are not among them: listing the entry
+ * at all is the claim that they are served.
+ *
+ * - `blinded-index-query`: the `blinded-index` query profile over a
+ *   Collection's blinded tokens, with the `unique` constraint enforced.
+ * - `governed-history-logs`: the `meta/log` sub-resource, with the Collection's
+ *   served `encryption` member derived from the log's head entry.
+ */
+export const ENCRYPTED_COLLECTIONS_FEATURES = [
+  'blinded-index-query',
+  'governed-history-logs'
 ]
 
 /**
@@ -98,6 +122,13 @@ export function buildServiceDescription({
           signatureAlgorithms: INVOCATION_SIGNATURE_ALGORITHMS,
           zcapCryptosuites: delegationProofCryptosuites()
         } satisfies AuthzProfileVersionEntry
+      ],
+      [ENCRYPTED_COLLECTIONS_IDENTIFIER]: [
+        {
+          version: ENCRYPTED_COLLECTIONS_VERSION,
+          url: ENCRYPTED_COLLECTIONS_URL,
+          features: ENCRYPTED_COLLECTIONS_FEATURES
+        } satisfies EncryptedCollectionsVersionEntry
       ]
     },
     instance: {

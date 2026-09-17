@@ -175,10 +175,7 @@ describe('Collections API', () => {
     }
     assert.ok(expectedError, 'expected the duplicate-id POST to be rejected')
     assert.equal(expectedError.response.status, 409)
-    assert.equal(
-      expectedError.data.type,
-      'https://wallet.storage/spec#id-conflict'
-    )
+    assert.equal(expectedError.data.type, 'https://w3id.org/pws#id-conflict')
     assert.equal(expectedError.data.errors[0].pointer, '#/id')
 
     // The Collection Metadata object is untouched.
@@ -358,10 +355,7 @@ describe('Collections API', () => {
       })
     )
     assert.equal(thrown.response.status, 412)
-    assert.equal(
-      thrown.data.type,
-      'https://wallet.storage/spec#precondition-failed'
-    )
+    assert.equal(thrown.data.type, 'https://w3id.org/pws#precondition-failed')
     const stored = await aliceSpace.collection(collectionId).describe()
     assert.equal(stored!.name, 'Winner')
 
@@ -400,7 +394,7 @@ describe('Collections API', () => {
     assert.equal(expectedError.response.status, 400)
     assert.equal(
       expectedError.data.type,
-      'https://wallet.storage/spec#invalid-request-body'
+      'https://w3id.org/pws#invalid-request-body'
     )
     assert.equal(expectedError.data.errors[0].pointer, '#/id')
 
@@ -450,7 +444,7 @@ describe('Collections API', () => {
       assert.equal(expectedError.response.status, 409)
       assert.equal(
         expectedError.data.type,
-        'https://wallet.storage/spec#unsupported-backend'
+        'https://w3id.org/pws#unsupported-backend'
       )
       assert.equal(expectedError.data.errors[0].pointer, '#/backend')
     })
@@ -477,7 +471,7 @@ describe('Collections API', () => {
       assert.equal(expectedError.response.status, 400)
       assert.equal(
         expectedError.data.type,
-        'https://wallet.storage/spec#invalid-request-body'
+        'https://w3id.org/pws#invalid-request-body'
       )
       assert.equal(expectedError.data.errors[0].pointer, '#/backend')
     })
@@ -495,43 +489,8 @@ describe('Collections API', () => {
         id: 'default',
         name: 'Server Filesystem',
         managedBy: 'server',
-        persistence: 'durable',
-        features: [
-          'conditional-writes',
-          'changes-query',
-          'blinded-index-query',
-          'equality-query',
-          'key-epochs',
-          'chunked-streams',
-          'governed-history-logs'
-        ]
+        persistence: 'durable'
       })
-    })
-
-    it('GET :collectionId/backend surfaces the conditional-writes features array', async () => {
-      const response = await alice.was.request({
-        url: new URL(
-          `/space/${alice.space1.id}/credentials/backend`,
-          serverUrl
-        ).toString(),
-        method: 'GET'
-      })
-      assert.equal(response.status, 200)
-      // The filesystem backend implements the conditional-writes affordance
-      // (ETag / If-Match optimistic concurrency), the `changes-query`
-      // replication change feed, the `blinded-index-query` EDV query profile,
-      // the `equality-query` plaintext equality profile, and the `key-epochs`
-      // multi-recipient-encryption affordance; it advertises every token.
-      assert.ok(Array.isArray(response.data.features))
-      assert.deepStrictEqual(response.data.features, [
-        'conditional-writes',
-        'changes-query',
-        'blinded-index-query',
-        'equality-query',
-        'key-epochs',
-        'chunked-streams',
-        'governed-history-logs'
-      ])
     })
 
     it('GET :collectionId/backend on a missing collection yields 404', async () => {
@@ -568,13 +527,13 @@ describe('Collections API', () => {
       })
       assert.equal(response.status, 200)
       const [entry] = response.data.linkset
-      assert.deepStrictEqual(entry['https://wallet.storage/spec#backend'], [
+      assert.deepStrictEqual(entry['https://w3id.org/pws#backend'], [
         {
           href: `/space/${alice.space1.id}/credentials/backend`,
           type: 'application/json'
         }
       ])
-      assert.deepStrictEqual(entry['https://wallet.storage/spec#quota'], [
+      assert.deepStrictEqual(entry['https://w3id.org/pws#quota'], [
         {
           href: `/space/${alice.space1.id}/credentials/quota`,
           type: 'application/json'

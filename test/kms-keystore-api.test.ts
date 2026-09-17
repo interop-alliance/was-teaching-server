@@ -121,10 +121,7 @@ describe('WebKMS keystore lifecycle (/kms/keystores)', () => {
         createKeystore(bob, { controller: alice.did })
       )
       assert.equal(err.status, 400)
-      assert.equal(
-        err.data.type,
-        'https://wallet.storage/spec#controller-mismatch'
-      )
+      assert.equal(err.data.type, 'https://w3id.org/pws#controller-mismatch')
     })
 
     it('[delegated] a chain not rooted in the body controller is controller-mismatch (400)', async () => {
@@ -145,10 +142,7 @@ describe('WebKMS keystore lifecycle (/kms/keystores)', () => {
         })
       )
       assert.equal(err.status, 400)
-      assert.equal(
-        err.data.type,
-        'https://wallet.storage/spec#controller-mismatch'
-      )
+      assert.equal(err.data.type, 'https://w3id.org/pws#controller-mismatch')
     })
 
     it('create requires sequence 0 (400)', async () => {
