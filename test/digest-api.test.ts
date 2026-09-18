@@ -12,56 +12,19 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
-
-/** Alice's did:key (matches the seed in `helpers.ts`). */
-const ALICE_KEY_ID =
-  'did:key:z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD' +
-  '#z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD'
-
-const FULL_COVERED =
-  '(key-id) (created) (expires) (request-target) host ' +
-  'capability-invocation content-type digest'
-
-/**
- * Builds a syntactically valid Cavage `Authorization: Signature ...` header.
- * The signature value is a placeholder -- these tests reject at the digest gate,
- * which runs before signature verification.
- * @param options {object}
- * @param [options.covered] {string}   the signed-headers list
- * @returns {string}
- */
-function authHeader({ covered = FULL_COVERED }: { covered?: string } = {}) {
-  return (
-    `Signature keyId="${ALICE_KEY_ID}",headers="${covered}",` +
-    'signature="cGxhY2Vob2xkZXI=",created="1758150502",expires="9999999999"'
-  )
-}
-
-/** The root `Capability-Invocation` header for a target URL. */
-function rootInvocation({ target }: { target: string }) {
-  return `zcap id="urn:zcap:root:${encodeURIComponent(target)}",action="PUT"`
-}
-
-/**
- * Computes the spec's `Digest` header value (multibase base64url multihash of
- * the body's SHA-256) for a string body.
- * @param body {string}
- * @returns {string}
- */
-function digestHeaderFor(body: string): string {
-  const hash = createHash('sha256').update(body, 'utf8').digest()
-  // multihash: sha2-256 (0x12), length 32 (0x20), then the digest bytes
-  const multihash = Buffer.concat([Buffer.from([0x12, 0x20]), hash])
-  return `mh=u${multihash.toString('base64url')}`
-}
+import {
+  digestHeaderFor,
+  placeholderAuthHeader,
+  rootInvocation,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('Request Body Integrity (Digest header)', () => {
   let fastify: FastifyInstance, serverUrl: string, dataDir: string, alice: any
@@ -106,7 +69,7 @@ describe('Request Body Integrity (Digest header)', () => {
       method: 'PUT',
       url: `/space/${spaceId}/${collectionId}/r1`,
       headers: {
-        authorization: authHeader({
+        authorization: placeholderAuthHeader({
           covered:
             '(key-id) (created) (expires) (request-target) host ' +
             'capability-invocation content-type'
@@ -129,7 +92,7 @@ describe('Request Body Integrity (Digest header)', () => {
       method: 'PUT',
       url: `/space/${spaceId}/${collectionId}/r2`,
       headers: {
-        authorization: authHeader(),
+        authorization: placeholderAuthHeader(),
         'capability-invocation': rootInvocation({ target }),
         'content-type': 'application/json'
       },
@@ -145,7 +108,7 @@ describe('Request Body Integrity (Digest header)', () => {
       method: 'PUT',
       url: `/space/${spaceId}/${collectionId}/r3`,
       headers: {
-        authorization: authHeader(),
+        authorization: placeholderAuthHeader(),
         'capability-invocation': rootInvocation({ target }),
         'content-type': 'application/json',
         // Digest of a different body than the one actually sent.
@@ -163,7 +126,7 @@ describe('Request Body Integrity (Digest header)', () => {
       method: 'PUT',
       url: `/space/${spaceId}/${collectionId}/r4`,
       headers: {
-        authorization: authHeader(),
+        authorization: placeholderAuthHeader(),
         'capability-invocation': rootInvocation({ target }),
         'content-type': 'application/json',
         digest: 'mh=not-a-valid-multihash'
@@ -184,7 +147,7 @@ describe('Request Body Integrity (Digest header)', () => {
       method: 'PUT',
       url: `/space/${spaceId}/${collectionId}/r5`,
       headers: {
-        authorization: authHeader(),
+        authorization: placeholderAuthHeader(),
         'capability-invocation': rootInvocation({ target }),
         'content-type': 'application/json',
         digest: digestHeaderFor(payload)

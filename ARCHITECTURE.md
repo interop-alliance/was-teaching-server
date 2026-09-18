@@ -69,7 +69,17 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `request.rawBody`; `verifyBodyDigest` (preValidation) requires the `digest`
   header be covered by the signature and recomputes/compares it against the body
   before capability verification (400 `invalid-authorization-header` on
-  failure).
+  failure). `captureRawBody` also bounds what it buffers, by the route's
+  `bodyLimit`, which `src/lib/bodyLimit.ts` derives from the active backend's
+  `maxUploadBytes`: the body is read in the hook (`readBoundedBody`, the one
+  bounded reader `readTextBody` shares), so an over-limit body is refused with
+  `payload-too-large` (413) at the byte that crosses the limit, before any
+  signature is verified and whichever parser the media type reaches, and the
+  refusal closes the connection. A signed multipart body, which
+  `@fastify/multipart` reads off the raw request itself, is tapped rather than
+  piped: the hook hashes it as busboy reads it and leaves the verdict on
+  `request.multipartDigest`, which the multipart write path awaits before it
+  stores anything.
 - **`src/zcap.ts`** — `handleZcapVerify()` performs the capability-invocation
   signature verification against the Space controller's key.
 - **`src/lib/etag.ts`** and **`src/lib/preconditions.ts`** — the `ETag`

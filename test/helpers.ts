@@ -1,5 +1,5 @@
 import assert from 'node:assert'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import type { FastifyInstance } from 'fastify'
 import { ZcapClient } from '@interop/ezcap'
@@ -209,6 +209,67 @@ export function etagGeneration(etag: string): string {
     `expected a quoted "<generation>.<version>" ETag, got ${etag}`
   )
   return match![1]!
+}
+
+/**
+ * Alice's did:key verification method id (matches the seed in `fixtures`).
+ */
+export const ALICE_KEY_ID =
+  'did:key:z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD' +
+  '#z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD'
+
+/**
+ * The full signed-headers list of a bodied write.
+ */
+export const FULL_COVERED =
+  '(key-id) (created) (expires) (request-target) host ' +
+  'capability-invocation content-type digest'
+
+/**
+ * Builds a syntactically valid Cavage `Authorization: Signature ...` header
+ * with a placeholder signature value, for requests a hook refuses before any
+ * signature is verified (the digest gate, the body limit).
+ * @param [options] {object}
+ * @param [options.covered] {string}   the signed-headers list
+ * @returns {string}
+ */
+export function placeholderAuthHeader({
+  covered = FULL_COVERED
+}: { covered?: string } = {}): string {
+  return (
+    `Signature keyId="${ALICE_KEY_ID}",headers="${covered}",` +
+    'signature="cGxhY2Vob2xkZXI=",created="1758150502",expires="9999999999"'
+  )
+}
+
+/**
+ * The root `Capability-Invocation` header for a target URL.
+ * @param options {object}
+ * @param options.target {string}   the invocation target URL
+ * @param [options.action] {string}   the capability action
+ * @returns {string}
+ */
+export function rootInvocation({
+  target,
+  action = 'PUT'
+}: {
+  target: string
+  action?: string
+}): string {
+  return `zcap id="urn:zcap:root:${encodeURIComponent(target)}",action="${action}"`
+}
+
+/**
+ * Computes the spec's `Digest` header value (multibase base64url multihash of
+ * the body's SHA-256) for a string body.
+ * @param body {string}
+ * @returns {string}
+ */
+export function digestHeaderFor(body: string): string {
+  const hash = createHash('sha256').update(body, 'utf8').digest()
+  // multihash: sha2-256 (0x12), length 32 (0x20), then the digest bytes
+  const multihash = Buffer.concat([Buffer.from([0x12, 0x20]), hash])
+  return `mh=u${multihash.toString('base64url')}`
 }
 
 export const fixtures = {

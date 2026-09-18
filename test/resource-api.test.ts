@@ -7,6 +7,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
+import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 
 import { NotFoundError } from '@interop/was-client'
 import type { Space, Collection } from '@interop/was-client'
@@ -1186,6 +1187,80 @@ describe('Resource API', () => {
       assert.equal(response.status, 200)
       assert.match(response.headers.get('content-type')!, /application\/jsonl/)
       assert.equal(await response.text(), body)
+    })
+  })
+
+  describe('Multipart upload (HTML-form convenience path)', () => {
+    it('[signed] a form field alongside the one file part is skipped, not refused', async () => {
+      // The write path reads file parts only; an extra <input> in the form
+      // must not turn the upload into a "missing a file part" refusal.
+      const url = `${serverUrl}/space/${alice.space1.id}/credentials/`
+      const boundary = 'was-test-boundary'
+      const body = new TextEncoder().encode(
+        `--${boundary}\r\n` +
+          'Content-Disposition: form-data; name="note"\r\n\r\n' +
+          'a field the server ignores\r\n' +
+          `--${boundary}\r\n` +
+          'Content-Disposition: form-data; name="file"; filename="a.json"\r\n' +
+          'Content-Type: application/json\r\n\r\n' +
+          '{"id":"from-form","name":"form upload"}\r\n' +
+          `--${boundary}--\r\n`
+      )
+      const headers = await signCapabilityInvocation({
+        url,
+        method: 'POST',
+        headers: {
+          date: new Date().toUTCString(),
+          'content-type': `multipart/form-data; boundary=${boundary}`
+        },
+        body,
+        invocationSigner: alice.signer,
+        capabilityAction: 'POST'
+      })
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: new Blob([body])
+      })
+      const text = await response.text()
+      assert.equal(response.status, 201, text)
+      const created = JSON.parse(text)
+      const stored: any = await aliceCredentials.get(created.id)
+      assert.equal(stored.name, 'form upload')
+    })
+
+    it('[signed] a multipart body that does not match its signed Digest is refused', async () => {
+      // The digest is taken over the multipart body as busboy reads it, so a
+      // body swapped under a valid signature still fails.
+      const url = `${serverUrl}/space/${alice.space1.id}/credentials/`
+      const boundary = 'was-test-boundary'
+      const encode = (name: string) =>
+        new TextEncoder().encode(
+          `--${boundary}\r\n` +
+            'Content-Disposition: form-data; name="file"; filename="a.json"\r\n' +
+            'Content-Type: application/json\r\n\r\n' +
+            `{"name":"${name}"}\r\n` +
+            `--${boundary}--\r\n`
+        )
+      const headers = await signCapabilityInvocation({
+        url,
+        method: 'POST',
+        headers: {
+          date: new Date().toUTCString(),
+          'content-type': `multipart/form-data; boundary=${boundary}`
+        },
+        body: encode('signed'),
+        invocationSigner: alice.signer,
+        capabilityAction: 'POST'
+      })
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: new Blob([encode('swapped')])
+      })
+      assert.equal(response.status, 400)
+      const problem: any = await response.json()
+      assert.match(problem.type, /#invalid-authorization-header$/)
     })
   })
 })

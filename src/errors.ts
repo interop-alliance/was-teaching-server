@@ -1072,13 +1072,20 @@ export class CountQuotaExceededError extends ProblemError {
   }
 }
 
+const PAYLOAD_TOO_LARGE_TITLE =
+  "Upload exceeds the backend's maximum upload size."
+
 /**
- * 413 — an upload exceeds the target backend's per-request `maxUploadBytes`
- * constraint. Distinct from `quota-exceeded` (507): this limit is per-request,
- * not cumulative, so smaller uploads may still succeed.
+ * 413 — an upload exceeds a per-request size limit: the target backend's
+ * `maxUploadBytes` constraint, or the server's buffered-body limit when the
+ * body is one the request layer holds in memory. Distinct from
+ * `quota-exceeded` (507): this limit is per-request, not cumulative, so smaller
+ * uploads may still succeed.
  * @param options {object}
- * @param options.maxUploadBytes {number}   the backend's per-upload limit
- * @param options.backendId {string}   the backend enforcing the limit
+ * @param options.maxUploadBytes {number}   the limit that was exceeded
+ * @param [options.backendId] {string}   the backend enforcing the limit; absent
+ *   when the limit is the server's own buffered-body limit rather than a
+ *   backend's cap
  * @param [options.uploadBytes] {number}   the upload's size, when known up
  *   front (a streamed upload without a Content-Length only reveals the
  *   overflow, not the total)
@@ -1090,17 +1097,18 @@ export class PayloadTooLargeError extends ProblemError {
     uploadBytes
   }: {
     maxUploadBytes: number
-    backendId: string
+    backendId?: string
     uploadBytes?: number
   }) {
-    const detail =
-      uploadBytes === undefined
-        ? `Upload exceeds 'maxUploadBytes' of ${maxUploadBytes} for backend '${backendId}'.`
-        : `Upload size ${uploadBytes} exceeds 'maxUploadBytes' of ${maxUploadBytes} for backend '${backendId}'.`
+    const size =
+      uploadBytes === undefined ? 'Upload' : `Upload size ${uploadBytes}`
     super({
       type: ProblemTypes.PAYLOAD_TOO_LARGE,
-      title: "Upload exceeds the backend's maximum upload size.",
-      detail,
+      title: PAYLOAD_TOO_LARGE_TITLE,
+      detail:
+        backendId === undefined
+          ? `${size} exceeds the buffered request body limit of ${maxUploadBytes} bytes.`
+          : `${size} exceeds 'maxUploadBytes' of ${maxUploadBytes} for backend '${backendId}'.`,
       statusCode: 413
     })
   }
@@ -1379,12 +1387,29 @@ export class DuplicateRevocationError extends ProblemError {
 }
 
 /**
+ * The over-limit errors Fastify and `@fastify/multipart` raise themselves,
+ * mapped to the problem detail each one warrants. They carry a 413 status but
+ * no problem `type`, so `handleError` would otherwise render them as
+ * `internal-error` with an empty `errors` entry.
+ */
+const FRAMEWORK_TOO_LARGE_DETAILS: Record<string, string> = {
+  FST_ERR_CTP_BODY_TOO_LARGE:
+    'Request body exceeds the buffered request body limit.',
+  FST_REQ_FILE_TOO_LARGE: 'The uploaded file exceeds the per-upload limit.',
+  FST_FILES_LIMIT: 'The request carries more file parts than are accepted.',
+  FST_FIELDS_LIMIT: 'The request carries more form fields than are accepted.',
+  FST_PARTS_LIMIT: 'The request carries more parts than are accepted.'
+}
+
+/**
  * Fastify error handler installed by each route group. Serializes the error to
  * an `application/problem+json` response using its `type` / `title` / `detail`
  * (or `problems`), defaulting to a 500 internal error when no statusCode is
  * present. The spec requires `type` and `title`, so both always fall back to a
  * sensible value. A `MethodNotAllowedError` also sets the `Allow` header RFC
- * 9110 requires on a 405.
+ * 9110 requires on a 405. A framework over-limit error (Fastify's or
+ * `@fastify/multipart`'s, which carry no `type`) is answered as the registered
+ * `payload-too-large` problem.
  * @param error {Error & { statusCode?: number, type?: string, title?: string, detail?: string, problems?: Problem[], allow?: string[] }}
  * @param request {import('fastify').FastifyRequest}
  * @param reply {import('fastify').FastifyReply}
@@ -1402,7 +1427,20 @@ export async function handleError(
   request: FastifyRequest,
   reply: FastifyReply
 ): Promise<FastifyReply> {
-  const statusCode = error.statusCode || 500
+  // A framework over-limit error carries no `type`; answer the registered
+  // `payload-too-large` problem in its place.
+  const frameworkDetail =
+    FRAMEWORK_TOO_LARGE_DETAILS[(error as { code?: string }).code ?? '']
+  const problem =
+    frameworkDetail !== undefined && error.type === undefined
+      ? new ProblemError({
+          type: ProblemTypes.PAYLOAD_TOO_LARGE,
+          title: PAYLOAD_TOO_LARGE_TITLE,
+          detail: frameworkDetail,
+          statusCode: 413
+        })
+      : error
+  const statusCode = problem.statusCode || 500
   if (error.allow) {
     reply.header('allow', error.allow.join(', '))
   }
@@ -1417,8 +1455,8 @@ export async function handleError(
     .status(statusCode)
     .type('application/problem+json')
     .send({
-      type: error.type || ProblemTypes.INTERNAL_ERROR,
-      title: error.title || 'Request error',
-      errors: error.problems ?? [{ detail: error.detail }]
+      type: problem.type || ProblemTypes.INTERNAL_ERROR,
+      title: problem.title || 'Request error',
+      errors: problem.problems ?? [{ detail: problem.detail }]
     })
 }

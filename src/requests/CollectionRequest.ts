@@ -729,13 +729,14 @@ export class CollectionRequest {
 
     // zCap checks out, continue
 
-    // Buffered in memory, so bounded: the backend's per-upload cap when it has
-    // one, else Fastify's `bodyLimit` (what a buffering parser would apply).
+    // Buffered in memory, so bounded by the route's `bodyLimit`: the backend's
+    // per-upload cap when it has one (named in the refusal), else the server's
+    // fallback (plugin.ts).
     const body = await readTextBody({
       request,
-      maxBytes:
-        storage.maxUploadBytes ?? request.server.initialConfig.bodyLimit!,
-      backendId: storage.describe().id
+      reply,
+      backendId:
+        storage.maxUploadBytes === undefined ? undefined : storage.describe().id
     })
 
     let written

@@ -3,9 +3,10 @@
  * a request body to its HTTP Signature via the `Digest` header. Two hooks,
  * installed by every route group alongside the auth hooks:
  *
- * - `captureRawBody` (preParsing) tees the exact body bytes onto
- *   `request.rawBody` for JSON/text bodies, so the digest can be recomputed
- *   against what the client actually signed. Re-serializing the parsed body is
+ * - `captureRawBody` (preParsing) reads a JSON/text body in full, bounded by
+ *   the route's `bodyLimit`, and keeps the exact bytes on `request.rawBody`
+ *   while handing the same bytes to Fastify's parser, so the digest can be
+ *   recomputed against what the client actually signed. Re-serializing the parsed body is
  *   not guaranteed byte-identical, so we keep the raw bytes instead. Streamed
  *   bodies (multipart uploads, tar imports, raw blobs) are not buffered; instead
  *   they pass through a hashing transform that verifies the `Digest`
@@ -24,6 +25,7 @@ import { PassThrough, Transform, type Readable } from 'node:stream'
 import { createHash } from 'node:crypto'
 import { isJson } from './lib/isJson.js'
 import { InvalidDigestError } from './errors.js'
+import { readBoundedBody } from './lib/bodyLimit.js'
 
 /**
  * True for the body shapes `verifyBodyDigest` recomputes: JSON
@@ -65,30 +67,107 @@ class DigestVerifyStream extends Transform {
     callback(null, chunk)
   }
   override _flush(callback: (error?: Error | null) => void): void {
-    // A malformed/unsupported header also reports unverified; it surfaces as
-    // the same mismatch error either way (matching this hook's historical
-    // behavior for streamed bodies).
-    const { verified } = verifyDigest({
-      digest: this.#hash.digest(),
-      headerValue: this.#digestHeader
-    })
     callback(
-      verified
-        ? null
-        : new InvalidDigestError({
-            detail: 'The `Digest` header does not match the request body.'
-          })
+      digestMismatch({
+        digest: this.#hash.digest(),
+        header: this.#digestHeader
+      })
     )
   }
 }
 
 /**
- * preParsing hook: for JSON/text bodies, tees the incoming payload into
- * `request.rawBody` while passing the same bytes through to Fastify's content-
- * type parser (so `verifyBodyDigest` can recompute the digest). Other (streamed)
+ * Compares a body's SHA-256 digest with the request's `Digest` header. A
+ * malformed/unsupported header also reports unverified; it surfaces as the
+ * same mismatch error either way (matching this hook's historical behavior
+ * for streamed bodies).
+ * @param options {object}
+ * @param options.digest {Buffer}   the body's SHA-256 digest
+ * @param options.header {string}   the request's `Digest` header value
+ * @returns {InvalidDigestError | null}   the error to fail the request with,
+ *   or `null` when the digest matches
+ */
+function digestMismatch({
+  digest,
+  header
+}: {
+  digest: Buffer
+  header: string
+}): InvalidDigestError | null {
+  const { verified } = verifyDigest({ digest, headerValue: header })
+  return verified
+    ? null
+    : new InvalidDigestError({
+        detail: 'The `Digest` header does not match the request body.'
+      })
+}
+
+/**
+ * Verifies the `Digest` of a stream another reader consumes: hashes every
+ * chunk through a `data` listener and settles the returned promise at
+ * end-of-stream, rejecting with `InvalidDigestError` on a mismatch. For the
+ * multipart body, which `@fastify/multipart` reads off `request.raw` itself
+ * rather than off the stream the preParsing hook returns: piping that stream
+ * through `DigestVerifyStream` would drain it before busboy attached, and the
+ * upload would arrive empty. Attaching a `data` listener would start the flow
+ * just the same, so the stream is paused again right after; the reader that
+ * pipes it resumes it, and both see every byte. The verdict is awaited by the
+ * multipart write path once the parts are consumed, before anything is stored.
+ * @param options {object}
+ * @param options.payload {Readable}   the stream to tap
+ * @param options.digestHeader {string}   the request's `Digest` header value
+ * @returns {Promise<void>}   settles at end-of-stream
+ */
+function verifyDigestOfTappedStream({
+  payload,
+  digestHeader
+}: {
+  payload: Readable
+  digestHeader: string
+}): Promise<void> {
+  const hash = createHash('sha256')
+  const verdict = new Promise<void>((resolve, reject) => {
+    payload.on('data', (chunk: Buffer) => hash.update(chunk))
+    payload.on('end', () => {
+      const mismatch = digestMismatch({
+        digest: hash.digest(),
+        header: digestHeader
+      })
+      if (mismatch === null) {
+        resolve()
+      } else {
+        reject(mismatch)
+      }
+    })
+    payload.on('error', reject)
+  })
+  // A request refused before its body is consumed never awaits the verdict.
+  verdict.catch(() => {})
+  payload.pause()
+  return verdict
+}
+
+/**
+ * preParsing hook: for JSON/text bodies, reads the incoming payload into
+ * `request.rawBody` and hands the same bytes to Fastify's content-type parser
+ * (so `verifyBodyDigest` can recompute the digest). Other (streamed)
  * bodies are not buffered; when the request is signed with a `Digest` they pass
  * through a `DigestVerifyStream` that verifies that digest incrementally, so a
- * swapped binary/large body under a valid signed `Digest` is still rejected.
+ * swapped binary/large body under a valid signed `Digest` is still rejected. A
+ * multipart body is tapped rather than piped (`verifyDigestOfTappedStream`),
+ * since `@fastify/multipart` reads the raw request itself; its verdict is
+ * `request.multipartDigest`, awaited by the multipart write path.
+ *
+ * What is buffered is bounded by the route's `bodyLimit`, in this hook rather
+ * than in Fastify's parser: the parser runs downstream and would see only the
+ * single buffer handed to it at end-of-stream, so the whole body would be
+ * resident by the time its own 413 fired, and a chunked request has no
+ * `Content-Length` to short-circuit on. The body is read here in full
+ * (`readBoundedBody`), so an over-limit body is refused with
+ * `payload-too-large` (413) at the byte that crosses the limit, the rest of it
+ * is never read, and the refusal is raised from this hook -- before any
+ * signature is verified, whichever parser the media type reaches. The bound is
+ * what an unauthenticated caller meets.
  * @param request {import('fastify').FastifyRequest}
  * @param reply {import('fastify').FastifyReply}
  * @param payload {Readable}   the raw request body stream
@@ -96,7 +175,7 @@ class DigestVerifyStream extends Transform {
  */
 export async function captureRawBody(
   request: FastifyRequest,
-  _reply: FastifyReply,
+  reply: FastifyReply,
   payload: Readable
 ): Promise<Readable> {
   if (!isBufferableBody(request.headers['content-type'])) {
@@ -108,27 +187,25 @@ export async function captureRawBody(
     if (!digestHeader) {
       return payload
     }
+    if (request.headers['content-type']?.startsWith('multipart/')) {
+      // Read by `@fastify/multipart` off `request.raw`, not off the stream
+      // returned here, so the digest is taken by a tap on that stream instead.
+      request.multipartDigest = verifyDigestOfTappedStream({
+        payload,
+        digestHeader
+      })
+      return payload
+    }
     const verify = new DigestVerifyStream(digestHeader)
     payload.on('error', err => verify.destroy(err))
     return payload.pipe(verify)
   }
-  // Buffer the body once: the chunks are collected but never mirrored into the
-  // passthrough as they arrive -- the single concatenated buffer is handed to
-  // Fastify's parser at end-of-stream, and is the same buffer `rawBody` keeps.
-  // The chunk list is released at that point, so the steady-state cost is one
-  // copy of the body rather than three.
-  const chunks: Buffer[] = []
+  // Buffer the body once: the single buffer handed to Fastify's parser is the
+  // same one `rawBody` keeps, so the steady-state cost is one copy of the body.
+  const rawBody = await readBoundedBody({ request, reply, payload })
+  request.rawBody = rawBody
   const passthrough = new PassThrough()
-  payload.on('data', chunk => {
-    chunks.push(chunk as Buffer)
-  })
-  payload.on('end', () => {
-    const rawBody = Buffer.concat(chunks)
-    chunks.length = 0
-    request.rawBody = rawBody
-    passthrough.end(rawBody)
-  })
-  payload.on('error', err => passthrough.destroy(err))
+  passthrough.end(rawBody)
   return passthrough
 }
 

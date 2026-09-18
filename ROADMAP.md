@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 114
+nextAvailableId: 148
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -465,6 +465,12 @@ record carrying secrets. Discovered during code review of the container rule
 to operations outside the container URLs the spec discusses; it needs a decision
 on whether a Space-subtree grant should ever manage policy or backends.
 
+Note 2026-09-17: the whole-codebase review confirmed both exposures against a
+live server (a Collection data grant wrote `PublicCanRead` at `.../policy`, 201;
+a Space-subtree grant reached `PUT` and `DELETE` on `/backends/:id`). The same
+prefix hazard reaches the Space revocation endpoint (WAS-129) and Update
+Keystore (WAS-115).
+
 ### WAS-61: Separate `/policy` control from data writes (exposure test + enforcement)
 
 - status: todo
@@ -502,6 +508,11 @@ publicly readable" must appear on a consent screen in those words, and must not
 be implied by a verb list). Without this item every collection write grant
 silently includes the power to flip that collection public. Sequence after
 WAS-59, whose exact-target class this rides on.
+
+Note 2026-09-17: the exposure test's premise is confirmed (a delegated data
+grant on the Collection wrote `PublicCanRead` and an anonymous read of the
+Collection's Resource then answered 200). The other half of policy hygiene, a
+Resource-level policy surviving the Resource's deletion, is WAS-127.
 
 ### WAS-58: Aggregate quota reporting across an account's auxiliary Spaces
 
@@ -669,6 +680,9 @@ flat site; nested directories are out of scope here.
         page must keep working; document the tradeoff)
   - [ ] Tests assert the headers on a public `text/html` GET and that the
         existing JSON API responses are unaffected
+
+Note 2026-09-17: the CORS proxy relays an upstream `text/html` on the same
+origin with none of these headers either; that half is WAS-124.
 
 ### WAS-69: Drop `Ed25519Signature2020` from the delegation-proof verify side
 
@@ -1170,6 +1184,940 @@ by its last character, in exactly the members that need to be canonical. The
 no-slash form is wanted mostly inside `paths.ts` itself, as the prefix the
 sub-resource builders extend; about 9 external call sites use it, and each
 should move to the named base builder or a sub-resource builder.
+
+## Whole-codebase review follow-ups (2026-09-17)
+
+Findings from an adversarial review of every module in `src/*.ts` and
+`src/requests/*.ts`, each read with the `src/lib/` modules it imports, against
+the invariants ARCHITECTURE.md states. Findings marked "verified" were
+reproduced against a live in-process server. Items are ordered by how silent and
+permanent the bad state is. Findings already tracked elsewhere are noted on
+those items (WAS-61, WAS-65, WAS-70, WAS-73, WAS-92, WAS-108) rather than
+re-filed.
+
+### WAS-114: Protect a promoted Space's `did.jsonl` from overwrite, rollback, and delete
+
+- status: todo
+- priority: high
+- labels: security, webvh, authorization, log-continuity
+- discovered-from: whole-codebase review (2026-09-17)
+- touches:
+  - `src/requests/ResourceRequest.ts` (`put`, `delete`),
+    `src/lib/governedLog.ts` (the fast-forward rule to reuse),
+    `src/lib/webvhController.ts` (`resolveVerifiedDocument`, `reviseEntry`)
+  - ARCHITECTURE.md's self-hosted `did:webvh` section
+  - wallet-attached-storage-spec: whether the authz profile should state the
+    rule -- to be assessed
+- acceptance:
+  - [ ] A `PUT` of `did.jsonl` in any Collection is accepted only when the
+        stored bytes are a prefix of the incoming bytes (the same fast-forward
+        rule `governedLog.ts` applies to `meta/log`); a body that shortens or
+        rewrites the log is refused 412
+  - [ ] A `DELETE` of `did.jsonl` is refused while any stored Space or keystore
+        controller names a DID anchored at that location, or unconditionally
+        (decide which; the second is simpler and matches "the log is a Resource
+        like any other" only for reads)
+  - [ ] The resolver records the last-resolved head (entry count or version id)
+        per log location and refuses a log that does not extend it
+  - [ ] Tests: a retired client's subtree grant cannot roll the log back to a
+        version that still lists its key; a subtree grant cannot delete the log;
+        a legitimate append still resolves
+  - [ ] ARCHITECTURE.md states that deleting the Collection holding a
+        controller's log deadlocks the Space with no break-glass
+
+Today `did.jsonl` is an ordinary Resource. `ResourceRequest.put` and `delete`
+carry no container rule and no continuity rule, and their only log-specific step
+is dropping the resolver cache, so the damage takes effect on the next request.
+Two consequences. A `PUT` of unrelated bytes or a `DELETE` leaves the Space's
+stored controller unresolvable, and every invocation, including the controller's
+own, is a 404; the only repair (`PUT /space/S/meta` back to a `did:key`, or
+restoring the log) authorizes against the broken controller.
+`SpaceRequest.putMeta` guards this at promotion time only. And every prefix of a
+valid webvh log is itself a valid log with the same SCID, so
+`resolveVerifiedDocument` accepts a truncated log: a client whose key was
+retired in entry 10, still holding the ordinary generation delegation on the
+Space subtree, PUTs entries 1..9 over 1..10, its key is back under
+`capabilityInvocation`, and it root-invokes `PUT /meta` to take the Space. The
+governed history log has a fast-forward rule precisely so a write grant can add
+history but not erase it; the DID log, which is the Space's authorization root,
+has none.
+
+### WAS-115: Container rule for Update Keystore
+
+- status: todo
+- priority: high
+- labels: security, kms, zcap, authorization
+- discovered-from: whole-codebase review (2026-09-17), verified
+- touches:
+  - `src/requests/KeystoreRequest.ts` (`update`),
+    `src/requests/keystoreContext.ts` (`fetchKeystoreAndVerify`), `src/zcap.ts`
+    (the `controller-only` header short-circuit)
+  - ARCHITECTURE.md's container-rule paragraph
+- acceptance:
+  - [ ] `POST /kms/keystores/:keystoreId` refuses every delegated invocation off
+        the `Capability-Invocation` header, the way `PUT /space/<S>/meta` does;
+        a direct root invocation by the stored controller still succeeds
+  - [ ] Tests: a delegated capability on the keystore URL with
+        `allowedAction: ['write']`, and one with no `allowedAction`, are both
+        refused with the masked 404; key operations under the same grants still
+        work
+
+`fetchKeystoreAndVerify({ allowedAction: 'write' })` passes no `containerRule`,
+so a delegated write grant, or the action-less "full keystore" delegation, POSTs
+a new `controller`. The original controller's invocations become 404s, and
+revocation is impossible since the root capability's controller is now the
+attacker. Every custodial key in the keystore is permanently the attacker's.
+This is the hazard the WAS container rule closes for `PUT /space/<S>/meta`, with
+no `/kms` analogue.
+
+### WAS-116: Resolve a proposed `did:webvh` keystore controller before storing it
+
+- status: todo
+- priority: high
+- labels: kms, webvh, ceremony
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [ ] `KeystoreRequest.update` runs the same pre-store resolvability check
+        `SpaceRequest.putMeta` runs (`resolveWebvhController`, refused with
+        `UnresolvableControllerError`) when the proposed controller is a
+        self-hosted `did:webvh`
+  - [ ] Tests: promotion to a DID whose log is absent is refused and the
+        keystore stays under its `did:key`; promotion to a published log
+        succeeds
+  - [ ] `validateDid.ts`'s comment on `assertValidSpaceController` names the
+        keystore path as covered
+
+`assertValidSpaceController` is syntactic only. A typo in the seven-segment DID
+or a torn promotion ceremony (log not yet published) stores an unresolvable
+controller, after which no request can authorize on the keystore and every key
+record in it is inaccessible. There is no delete route (WAS-70) and no rotation
+path that does not verify against the dead controller. With WAS-115 open, a
+delegate can inflict this on the controller.
+
+### WAS-117: Guarded create on the `PUT /space/:spaceId/meta` create branch
+
+- status: todo
+- priority: high
+- labels: security, consent, consistency
+- discovered-from: whole-codebase review (2026-09-17), verified (28 of 30
+  concurrent create pairs ended with the second writer's controller)
+- acceptance:
+  - [ ] The create branch of `SpaceRequest.putMeta` passes `ifNoneMatch: '*'` to
+        `writeSpace` unconditionally, as `SpacesRepositoryRequest.post` already
+        does, and maps the 412 the same way
+  - [ ] The `type` immutability check runs against the record the write actually
+        observed, not the pre-verification read
+  - [ ] A test drives a `POST /spaces/ {id: X}` and a self-signed
+        `PUT /space/X/meta` concurrently and asserts the stored controller is
+        the winner's, whichever wins
+  - [ ] The comment claiming a concurrent create "surfaces here as 412" holds
+        without a client-supplied header
+
+The branch decision (authorize against the stored controller, or against the
+body's own controller via `verifyBodyControllerConsent`) is made on an unlocked
+read, and the write carries a precondition only when the client sent one. An
+attacker PUTs `controller: attacker` for an id the victim is creating; the
+victim's guarded create lands first; the attacker's unconditional write replaces
+it. The victim got a 201 and now owns nothing. The same path bypasses the `type`
+immutability check.
+
+### WAS-118: Onboarding-token gate covers Space creation by `PUT /meta`
+
+- status: todo
+- priority: high
+- labels: provisioning, security
+- discovered-from: whole-codebase review (2026-09-17), verified
+- touches:
+  - `src/provisioning.ts`, `src/routes.ts` (the `provisioningRoutes` list),
+    `src/requests/SpaceRequest.ts` (create branch), README's provisioning
+    section
+- acceptance:
+  - [ ] With an onboarding token or `authorizeProvisioning` configured, the
+        create branch of `PUT /space/:spaceId/meta` is gated exactly like
+        `POST /spaces/` (either honor `request.provisioningAuthorized` there, or
+        refuse create-by-PUT while a provisioning policy is configured; decide
+        which)
+  - [ ] Tests: with a token configured, a self-signed create-by-PUT without the
+        token is refused; with the token it succeeds
+  - [ ] `authorizeProvisioning` returning anything other than `'grant'`,
+        `'deny'`, or `'verify'` fails closed (500 or deny), not open
+  - [ ] An empty or whitespace `WAS_ONBOARDING_TOKEN` is a startup error or a
+        logged warning, not silently open provisioning
+
+The gate lists `/spaces` and `/spaces/` only. `PUT /space/<new>/meta` creates a
+Space when absent and authorizes the create against the body's own controller,
+so a fresh `did:key` provisions freely with no token, defeating both the token
+and the per-controller cap (one `did:key` per Space costs nothing). README
+promises the gate covers Space creation.
+
+### WAS-119: Digest stream: handle the transform's error and drain it on early rejection
+
+- status: todo
+- priority: high
+- labels: security, availability, digest
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [ ] `captureRawBody` attaches an `error` listener to `DigestVerifyStream`
+        (or destroys the wrapped payload) so a digest mismatch on a body the
+        handler never consumed cannot become an uncaught exception
+  - [ ] A test sends a streamed body with a mismatching `Digest` and well-formed
+        but unverifiable auth headers, and asserts the server answers 404 and
+        stays up
+  - [ ] `start.ts` installs an `uncaughtException` / `unhandledRejection`
+        handler that logs through pino and exits non-zero, so the next such
+        defect is loud in the log rather than a silent restart
+
+When the handler rejects before reading `request.body` (bad signature, masked
+404, 405, a container-rule refusal), the transform's readable side is never
+drained and has no error listener. `_flush` throws on mismatch, `pipe`'s
+dest-error shim re-emits on a listener-less stream, and the process dies. One
+unauthenticated request per crash.
+
+### WAS-120: Digest transform breaks multipart uploads
+
+- status: todo
+- priority: high
+- labels: digest, multipart, correctness
+- discovered-from: whole-codebase review (2026-09-17), verified with a signed
+  client
+- acceptance:
+  - [ ] A signed `multipart/form-data` Resource write with a correct `Digest`
+        succeeds (today every one answers 400 "missing a file part")
+  - [ ] The multipart body is still digest-bound: either the transform is
+        bypassed for multipart and busboy's consumed bytes are hashed, or
+        `@fastify/multipart` is fed the transform's output instead of
+        `request.raw`
+  - [ ] `test/` gains a multipart create and update case (none exists today)
+
+`captureRawBody` pipes `request.raw` into the transform at `preParsing`, which
+puts it into flowing mode. `@fastify/multipart` reads `request.raw` directly
+when the handler calls `request.parts()`, by which time the leading boundary and
+part headers are gone. Since unsigned writes are 401, every multipart write
+carries a `Digest` and hits this.
+
+### WAS-121: Gate Request Body Integrity on body presence, not `Content-Type`
+
+- status: todo
+- priority: high
+- labels: security, digest
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [ ] `verifyBodyDigest` and `captureRawBody` treat a request as bodied when
+        it carries `content-length` or `transfer-encoding`, whatever its
+        `Content-Type`; a bodied request whose signature does not cover `digest`
+        is refused 400
+  - [ ] Tests: `POST /space/S/import` and `PUT .../meta/log` with a body and no
+        `Content-Type`, signed without `digest`, are refused
+  - [ ] Decide whether the catch-all `'*'` parser should keep accepting a body
+        with no `Content-Type` at all
+
+The gate is `if (!contentType) return`. The plugin's `'*'` parser routes a
+bodied request with no `Content-Type` to the handler as a raw stream, so no
+`Digest` is demanded and nothing is hashed. Import Space untars `request.body`
+directly and the governed-log `PUT` reads it as text, so both accept a body the
+signature never covered; a captured signature is replayable with a different
+body inside its `(created)`/`(expires)` window. Resource writes are protected
+only by `resolveResourceInput` refusing a missing `Content-Type`, a handler
+accident rather than a hook guarantee.
+
+### WAS-123: CORS proxy: decide the SSRF check on the numeric address
+
+- status: todo
+- priority: high
+- labels: security, cors-proxy
+- discovered-from: whole-codebase review (2026-09-17), verified against a
+  loopback service
+- acceptance:
+  - [ ] `isBlockedIp` expands an IPv6 literal to 16 bytes and tests the embedded
+        IPv4 of `::ffff:0:0/96`, `::/96`, `64:ff9b::/96` (NAT64) and `2002::/16`
+        (6to4) with `isBlockedIpv4`; the dotted-quad regex stays as the
+        DNS-result path
+  - [ ] Tests: `http://[::ffff:127.0.0.1]/`, `http://[::ffff:7f00:1]/`,
+        `http://[::ffff:169.254.169.254]/` and `http://[64:ff9b::7f00:1]/` are
+        refused 403
+
+`isBlockedIpv6` matches an IPv4-mapped address only in dotted form, but the
+WHATWG parser normalizes `[::ffff:127.0.0.1]` to `[::ffff:7f00:1]`, which no
+prefix in the list matches. `dns.lookup` echoes the literal, the DNS pin is
+built from it, and undici dials loopback. The endpoint is unauthenticated.
+
+### WAS-124: CORS proxy: response hardening and cache-key hygiene
+
+- status: todo
+- priority: medium
+- labels: security, cors-proxy, caching
+- discovered-from: whole-codebase review (2026-09-17), verified
+- touches:
+  - `src/corsProxy.ts`; WAS-65 covers the same headers on served Resources
+- acceptance:
+  - [ ] Every proxy reply carries `X-Content-Type-Options: nosniff`,
+        `Content-Security-Policy: sandbox` (or `default-src 'none'`) and
+        `Content-Disposition: attachment`, or the relayed `content-type` is
+        restricted to a non-active allowlist; `Refresh` is dropped
+  - [ ] The response-cache and single-flight key is the fetched identity
+        (origin + path + search, fragment stripped) with `Accept` normalized or
+        omitted
+  - [ ] Replies vary on whatever request header still participates in the key
+        (`Vary: Accept`), or `cache-control` from upstream is not relayed as
+        `public`
+  - [ ] A test that an upstream `text/html` body is not executable on the proxy
+        origin, and that two fragment variants of one URL share one upstream
+        fetch
+
+An upstream answering `text/html` with script is relayed verbatim on the WAS
+origin, where the welcome page, static assets and any wallet frontend also live.
+`url.href` keeps the fragment, so fragment variants of one URL each get their
+own cache entry, their own in-flight slot and their own upstream fetch, each
+buffering up to 10 MiB.
+
+### WAS-125: Re-check container existence inside the write lock
+
+- status: todo
+- priority: high
+- labels: filesystem-backend, consistency, security
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [ ] `writeResource`, `writeChunk`, `writeCollection`, `writePolicy` and the
+        import path refuse (404) when the Space, and where applicable the
+        Collection, has no Metadata object at the moment of the write, checked
+        under the same gate the write holds; `mkdir -p` never recreates a
+        container directory
+  - [ ] A test issues a write whose prelude passed, then a Delete Space, then
+        lets the write proceed, and asserts no directory is left behind
+  - [ ] `writePolicy` on a Collection with no Metadata object is refused rather
+        than materializing a phantom directory that `listCollections` then
+        reports as a public Collection
+
+The Space gate prevents a write interleaving with a removal, not a write whose
+shared acquisition comes after the removal released the exclusive side. The
+request layer's existence check is a TOCTOU. The result is `spaces/S/C/` holding
+live Resources and no `.space.S.json`: invisible to every route and listing,
+charged to quota forever, and adopted by the next Space created under id `S`,
+whose controller then lists the previous owner's data. Postgres foreign keys
+refuse the same insert, so the two backends diverge.
+
+### WAS-126: Import Space validates what it installs
+
+- status: todo
+- priority: high
+- labels: import, security, consistency
+- discovered-from: whole-codebase review (2026-09-17)
+- touches:
+  - `src/lib/importTar.ts`, `src/backends/filesystem.ts` (`importSpace`,
+    `#persistCollection`), `src/backends/postgres.ts`,
+    `src/lib/metadataWrite.ts`, `src/requests/SpaceRequest.ts` (`import`)
+  - WAS-68 covers the archived Collection `id`; this item covers the rest
+- acceptance:
+  - [ ] Validators (`_generation` / `_version`) from the archive are never
+        stored; the import path mints a fresh generation (and starts the version
+        at 1, or keeps the archived version if a reason to is found)
+  - [ ] Revocation records are installed only after `verifyRevocationChain`
+        passes for each, or the archive's revocations are ignored with a
+        documented reason; today a Space-subtree POST grant installs arbitrary
+        `(delegator, capabilityId)` records and there is no un-revoke
+  - [ ] The effective `encryption` for the encrypted-write check is derived the
+        way `getCollectionOrThrow` derives it (log head first), so a
+        log-governed Collection's Resources are checked on import
+  - [ ] An archive carrying both an `encryption` member and a governing log for
+        one Collection, or `plaintext` plus a log, is refused
+  - [ ] `plaintext.indexes`, each policy document, and the history log bytes
+        pass the same validation the live write paths apply
+        (`assertSupportedPlaintext`, `PolicyRequest.put`'s shape check, JSON
+        parse) before anything is written
+  - [ ] Tests for each refusal on both backends
+
+Each of these lets a tarball put a Collection into a state no live write can
+reach and no live write can repair. A `_version` of 2^53 freezes the Collection
+Metadata `ETag` (every `+1` returns the same number), so conditional reads are
+304 forever and every `If-Match` compare-and-swap succeeds. A re-imported
+hard-deleted Collection resurrects its old generation, so a client's cached
+validator matches different bytes. A `null` index entry makes `normalizeIndexes`
+throw on every Resource write and on the repair `PUT /meta`. A non-JSON log
+makes every Metadata load 500. A falsy policy document falls through the `||`
+chain in `policy.ts` to the broader level.
+
+### WAS-127: A Resource's access-control policy dies with the Resource
+
+- status: todo
+- priority: high
+- labels: policy, security, consistency
+- discovered-from: whole-codebase review (2026-09-17), verified on both backends
+- touches:
+  - `src/backends/filesystem.ts` and `src/backends/postgres.ts`
+    (`deleteResource`), `src/backends/postgresSchema.ts` (no FK from `policies`
+    to `resources`), `src/requests/ResourceRequest.ts` (`delete`),
+    `src/lib/policyCache.ts`
+  - ARCHITECTURE.md's soft-delete sentence, which lists what a delete drops
+- acceptance:
+  - [ ] `deleteResource` removes the Resource-level policy on both backends and
+        the handler invalidates its cache entry
+  - [ ] A test publishes `r1` with `PublicCanRead`, deletes it, re-creates `r1`,
+        and asserts an anonymous GET is refused
+  - [ ] `PolicyRequest.put` at the Resource level refuses when the Resource does
+        not exist (no pre-seeding of a future id), or the pre-seeding behavior
+        is documented as intended
+  - [ ] The Collection listing's `public` flag reflects the effective policy (a
+        Space-level `PublicCanRead` shows every Collection as public), or its
+        doc states it reports the Collection level only
+
+Delete Resource drops content, chunks, and the `/meta` object but never the
+policy, so a `PublicCanRead` written to publish one record silently publishes
+whatever next occupies that id (client-chosen ids such as `keyring` or `index`
+collide routinely). No listing shows a Resource-level policy. Delete Collection
+and Delete Space do clean policies up; the Resource level is the lone gap. The
+container-rule half of policy control is WAS-61 / WAS-108.
+
+### WAS-128: Refuse a governing log on a Collection that declares `plaintext`
+
+- status: todo
+- priority: high
+- labels: governed-history-logs, encryption, consistency
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [ ] The guarded create in `CollectionRequest.putLog`'s `assertTransition`
+        refuses when the stored Metadata object carries `plaintext`, on the same
+        terms as a stored `encryption`
+  - [ ] A test declares `plaintext.indexes`, attempts the log create, and
+        asserts the refusal and that a later `PUT /meta` rename still works
+  - [ ] `test/governed-log-api.test.ts` covers both orders (it covers only "add
+        `plaintext` to a governed Collection" today)
+
+The declaration check reads `collectionMetadata.encryption` only. After the log
+lands, the served object carries both `plaintext` and the derived `encryption`,
+and every later `PUT /meta`, including a bare rename or a `custom` write, is
+refused 400 by the exclusion rule. `plaintext` has no removal path and the log
+is append-only, so the Collection's Metadata object is permanently unwritable;
+the only remedy is Delete Collection. `POST .../query` answers 501 on such a
+Collection while `GET ?filter[...]` still runs the equality machinery.
+
+### WAS-129: Container rule for the Space revocation endpoint
+
+- status: todo
+- priority: medium
+- labels: security, zcap, authorization
+- discovered-from: whole-codebase review (2026-09-17)
+- blocked-by: WAS-108
+- touches:
+  - `src/requests/RevocationRequest.ts`, `src/zcap.ts`
+    (`handleRevocationInvocationVerify` has no `containerRule` option),
+    ARCHITECTURE.md's container-rule paragraph
+- acceptance:
+  - [ ] Decide whether a Space-subtree data grant may submit revocations at
+        `/space/<S>/zcaps/revocations/<id>`; if not, the route carries a
+        container rule (the dual-root rule's delegee arm stays)
+  - [ ] Tests: a transient annex key holding the generation delegation cannot
+        revoke the wallet's management capability; the controller and the
+        delegee still can
+
+The revocation URL sits under the canonical Space URL with
+`allowTargetAttenuation: true`, so the generation delegation (full verb set,
+admitted by the client-annex clause's first shape) reaches it by prefix. A
+per-visit key can revoke the durable client's grant; there is no un-revoke
+endpoint. Same hazard class as WAS-108, applied to authorization state instead
+of data.
+
+### WAS-130: Signal handling, graceful shutdown, and temp-file cleanup
+
+- status: todo
+- priority: high
+- labels: operations, filesystem-backend, availability
+- discovered-from: whole-codebase review (2026-09-17)
+- touches:
+  - `src/start.ts`, `package.json` (`start` pipes through `pino-pretty`, so a
+    supervisor's signal reaches the shell), `src/lib/atomicFile.ts`
+    (`tempPathFor` has one call site and no sweeper), `src/backends/*.ts`
+    (`close`), `src/corsProxy.ts` (`onClose`)
+  - WAS-47 covers `start.ts` test coverage
+- acceptance:
+  - [ ] `start.ts` handles `SIGTERM` and `SIGINT` by calling `fastify.close()`
+        with a drain timeout, so `onClose` hooks (Postgres `pool.end`, undici
+        agents) actually run in production
+  - [ ] Orphan `.tmp-*` files left by a killed in-flight write are swept at
+        backend `init()` or excluded from the `du`-based quota, and the streamed
+        write path removes its temp file on `close`/`aborted`
+  - [ ] Startup failure writes its message before exiting on a piped stderr
+        (`process.exitCode = 1` and let the process drain, rather than
+        `process.exit(1)` after `console.error`)
+  - [ ] `PORT` and `SERVER_URL` are cross-checked at startup: a loopback
+        `SERVER_URL` whose effective port differs from `PORT` is a startup error
+        or warning (the reverse-proxy case with a public host stays allowed)
+  - [ ] The listen host is configurable (`HOST`, defaulting to Fastify's
+        dual-stack `localhost` or documented as `0.0.0.0`), and README's dev
+        invocation binds loopback
+  - [ ] `parsePort` and `parseLimit` accept decimal integers only
+
+Nothing registers a signal handler; Node's default disposition terminates
+immediately. A kill mid-upload leaves `.tmp-<uuid>` in the Collection directory,
+invisible to every listing but charged against `STORAGE_LIMIT_PER_SPACE`
+forever. `console.error` then `process.exit(1)` can drop the carefully worded
+config error on a pipe, so a container that failed on a bad `KMS_RECORD_KEKS`
+exits 1 with empty logs. The `PORT`/`SERVER_URL` mismatch is the one
+misconfiguration that breaks every ZCap match and is the only one not checked.
+
+### WAS-131: Engage the `did:webvh` resolver on every verification path
+
+- status: todo
+- priority: medium
+- labels: webvh, zcap, revocation, authorization
+- discovered-from: whole-codebase review (2026-09-17), verified for List Spaces
+- touches:
+  - `src/zcap.ts` (`verifyRevocationChain`, `handleRevocationInvocationVerify`,
+    `activeWebvhContext`), `src/requests/controllerConsent.ts`,
+    `src/requests/SpacesRepositoryRequest.ts` (`list`),
+    `src/requests/SpaceRequest.ts` (create-branch validator)
+  - ARCHITECTURE.md's revocation and client-annex paragraphs (the annex GC
+    "tolerates a refused revocation" note describes this defect)
+- acceptance:
+  - [ ] Both revocation functions pass the caller's `webvh` context through
+        unconditionally, as `verifyZcap` does; `activeWebvhContext` is removed
+        or its remaining use justified
+  - [ ] `verifyRevocationChain`'s `expectedRootCapability` accepts the same
+        roots `verifyZcap` synthesizes for the Space family (the Space URL and a
+        Resource or Collection URL under it), so a grant that verifies on
+        invocation can be revoked
+  - [ ] `verifyBodyControllerConsent` threads `webvh`, so a delegated
+        provisioning chain with a `did:webvh` link verifies; the `PUT /meta`
+        create branch validates the body controller with `assertValidController`
+        (creation stays `did:key`-only, as ARCHITECTURE states) rather than the
+        update-only validator
+  - [ ] List Spaces goes through `handleZcapVerify` with `webvh` and the chain
+        inspectors, so a promoted Space appears in its own controller's listing
+        and a delegated `GET /spaces/` is revocation-checked; decide whether a
+        `/spaces/` revocation scope is needed, and cap the per-controller
+        verification loop for an unauthorized delegated caller
+  - [ ] Tests: revoke a child grant signed by a `did:webvh` method on a
+        `did:key` Space; a `did:webvh` delegee self-revokes; List Spaces for a
+        promoted controller returns the Space
+
+The revocation path narrows the resolver to the scope's controller, so on a
+`did:key` Space (the unlock-Space shape) a chain with any `did:webvh`-signed
+link verifies on every route but answers 400 at revocation, and a `did:webvh`
+delegee cannot self-revoke under the dual-root rule. Such grants stay live until
+their own `expires`. `verifyZcap`'s own comment names this case as the reason it
+engages the resolver unconditionally. The same missing option makes consent
+verification refuse a `did:webvh` controller the create branch's validator
+admits, and makes a promoted Space vanish from List Spaces (`totalItems: 0`).
+
+### WAS-132: A present but unparseable `If-None-Match` on a write is a 400
+
+- status: todo
+- priority: medium
+- labels: conditional-requests, consistency
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [ ] `parseWritePreconditions` distinguishes header-absent from
+        header-present-but-unrecognized and refuses the latter 400
+        (`invalid-request` or a named type; wire-level, so decide the type
+        first); `*` is recognized as a list member and in quoted form, or those
+        forms are refused explicitly
+  - [ ] `If-None-Match` on `DELETE` (Resource and chunk) is evaluated or
+        refused, not silently dropped
+  - [ ] `If-Match` against an absent chunk answers 412, matching the Resource
+        path
+  - [ ] Tests for `"*"`, `bogus`, the Node-joined duplicate `*, *`, and a list
+        containing `*`, on Space and Collection Metadata and Resource writes
+
+`parseIfNoneMatch` is the read-side parser, where skipping a non-quoted member
+is deliberate. Reused for writes it turns a guarded create into an unconditional
+replace: the loser of a provisioning race rewrites the winner's `controller` or
+`type`, with a 204 to both. Node joins duplicate `If-None-Match` headers with
+`, `, so a client library plus a wrapper that both set `*` produce `*, *`.
+
+### WAS-133: The Resource `/meta` validator covers every member it serves
+
+- status: todo
+- priority: medium
+- labels: conditional-requests, etag, consistency
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [ ] A content write bumps `metaVersion` (or mints a fresh `metaGeneration`)
+        whenever it changes `contentType`, `size`, `updatedAt` or `epoch`, or
+        those members leave the `/meta` representation; decide which
+  - [ ] `getCollectionOrThrow` reads the Collection Metadata object before the
+        log, or both under the `cmeta:` lock, so a served `ETag` never pairs
+        with an older log head
+  - [ ] Tests: a conditional `GET /meta` after a content-type change is 200; a
+        conditional Collection Metadata read racing a log append never returns
+        304 for a body the server would not serve
+
+The `/meta` `ETag` is `metaGeneration.metaVersion`, which a content write
+deliberately leaves alone, while the representation includes content-derived
+members. A cached `/meta` can keep naming a key epoch the Resource no longer
+carries, with every revalidation affirming it. Separately, the parallel
+metadata/log read pairs the post-append validator with the pre-append
+descriptor, so a 304 pins a stale recipient set.
+
+### WAS-134: Compose Update Collection under the lock
+
+- status: todo
+- priority: medium
+- labels: consistency, plaintext-indexes, backend
+- discovered-from: whole-codebase review (2026-09-17), verified (19 of 20
+  trials)
+- acceptance:
+  - [ ] The carry-forward of `plaintext`, `backend` and the other preserved
+        members is computed from the record read under the `cmeta:` lock, not
+        from the pre-verification read (move composition into the
+        `assertTransition` callback, or have it return the object to persist)
+  - [ ] The unique-index declaration scan and the Resource write that reads the
+        declaration serialize on one lock, so a Resource write in flight during
+        a `unique: true` declaration cannot land a duplicate
+  - [ ] A test drives an unconditional rename concurrently with a `plaintext`
+        add and asserts the declaration survives
+
+The under-lock re-check re-runs assertions against the fresh record but the
+object being written was composed against the stale one, and assertions catch
+violations, not lost carry-forwards. A `unique: true` declaration disappears
+with a 204 to both writers, or a `backend` selection silently reverts to the
+default. The comment at the re-check claims the opposite.
+
+### WAS-135: Torn-run ordering in the filesystem backend's delete and update paths
+
+- status: todo
+- priority: medium
+- labels: filesystem-backend, consistency
+- discovered-from: whole-codebase review (2026-09-17)
+- touches:
+  - `src/backends/filesystem.ts` (`deleteResource`, `writeResource`,
+    `writeCollectionLog`, `insertRevocation`, `#collectionIds`); WAS-92 covers
+    the read-side window of the content/validator split
+- acceptance:
+  - [ ] Soft delete removes the chunk directory and writes the tombstone sidecar
+        before removing the content file, so a crash leaves a state a re-issued
+        `DELETE` completes rather than orphan chunks a re-created Resource
+        inherits, or an orphan sidecar the changes feed never reports
+  - [ ] `writeResource` clears any leftover chunk directory on a create
+  - [ ] A content-type change prunes the old representation before the new one
+        is visible, or `#findFile` prefers the sidecar's recorded type, so a
+        torn run cannot serve the pre-write bytes under the post-write validator
+  - [ ] `insertRevocation` takes the Space gate, so a revocation racing Delete
+        Space is not stranded for the next Space at that id; Delete Space plus
+        re-create under the same id and controller does not resurrect unexpired
+        revoked grants (decide: keep the revocation directory, or document the
+        reset)
+  - [ ] `#collectionIds` and the count-quota branch go through
+        `#readDirEntries`, so a listing racing Delete Space is a 404, not a raw
+        `ENOENT` 500
+  - [ ] The `writeCollectionLog` two-commit window (log then Metadata version)
+        is closed or documented
+
+### WAS-136: Backend registry lifecycle: cache, immutability, in-use checks, data-plane delete
+
+- status: todo
+- priority: medium
+- labels: gdrive-byos, backend, consistency
+- discovered-from: whole-codebase review (2026-09-17)
+- touches:
+  - `src/lib/backendRegistry.ts`, `src/lib/backends.ts`,
+    `src/requests/BackendRequest.ts`, `src/requests/collectionInput.ts`,
+    `src/requests/CollectionRequest.ts` (`delete`),
+    `src/requests/SpaceRequest.ts` (`delete`); WAS-108 covers the container rule
+- acceptance:
+  - [ ] The resolved-adapter cache is invalidated by Delete Space and by
+        `POST /backends`, and invalidated before as well as after a record write
+        (or keyed on a record fingerprint), so a memoize racing a
+        re-registration cannot pin a superseded adapter
+  - [ ] `PUT /backends/:id` refuses a `provider` change; `DELETE` refuses while
+        any Collection selects the record, or the response lists the affected
+        Collections
+  - [ ] A Collection's `backend` selection is immutable once set (spec: "set
+        during its creation"); a `PUT /meta` naming a different backend is
+        refused
+  - [ ] `resolveBackendDescriptor` raises `unsupported-backend` on a miss
+        instead of reporting the default backend
+  - [ ] Delete Collection and Delete Space delete the Collection's Resources
+        through its data-plane backend before removing the control-plane record,
+        or record the orphan for a sweep
+  - [ ] Body parsing and the allowlist check in `BackendRequest` run after
+        `fetchSpaceAndVerify`; the duplicate-id check is under the write lock
+
+Latent while the production provider registry is empty, but each is a silent
+divergence between the record on disk and the adapter serving traffic, or data
+stranded on an external account with no server-side pointer to it.
+
+### WAS-137: Bind the KMS record envelope to its record
+
+- status: todo
+- priority: medium
+- labels: kms, security, wire-contract
+- discovered-from: whole-codebase review (2026-09-17), verified with a spliced
+  record
+- touches:
+  - `src/lib/kmsRecordCipher.ts`, `src/requests/KeyRequest.ts` (`runOperation`),
+    `scripts/reencrypt-kms-records.ts`, admin guide
+  - a permanent at-rest format change; the protected-header layout needs
+    sign-off before it is coded
+- acceptance:
+  - [ ] The envelope's protected header (and so the GCM AAD) carries
+        `keystoreId`, `localId`, `key.id`, `type`, `maxCapabilityChainLength`
+        and `kekId`; decrypt compares them to the record it was read from and
+        refuses a mismatch
+  - [ ] `fetchKeyRecord` compares `record.key.id` to the invoked URL
+  - [ ] Decrypt selects the recipient by `kid` / `kekId` rather than
+        `recipients[0]`
+  - [ ] The re-encryption tool migrates existing envelopes
+  - [ ] A test splices key A's `encrypted` object into key B's record and
+        asserts the operation is refused
+
+The AAD is the constant `{"enc":"A256GCM"}`, and `type`, the alias fields and
+`maxCapabilityChainLength` sit beside it as unauthenticated plaintext. An
+attacker with data-directory or backup access and no KEK moves a controller-only
+signing key's envelope into a record it holds a `sign` grant for, strips the
+chain bound, and signs with the victim's key under its own keystore.
+Confidentiality holds; usage control and integrity do not.
+
+### WAS-138: Fail closed on empty or dangling security configuration
+
+- status: todo
+- priority: medium
+- labels: config, security
+- discovered-from: whole-codebase review (2026-09-17)
+- touches:
+  - `src/config.default.ts`, `src/lib/kmsRecordCipher.ts`,
+    `scripts/reencrypt-kms-records.ts`, `src/lib/backends.ts`
+- acceptance:
+  - [ ] A non-empty `KMS_RECORD_KEK` / `KMS_RECORD_KEKS` that parses to zero
+        KEKs is a startup error
+  - [ ] `currentRecordKek` throws when `currentKekId` is non-null but absent
+        from the registry (today indistinguishable from the deliberate
+        decrypt-only posture; the rotation tool would rewrite the whole keystore
+        tree to plaintext with a success banner)
+  - [ ] `WAS_ENABLED_BACKENDS=""` (or an all-empty list) means deny-all, not
+        permissive; `undefined` keeps meaning permissive
+  - [ ] A `dist/build-info.json` that parses but lacks `version` fails the
+        freshness guard rather than disabling it
+
+### WAS-139: Keystore config validation and listing completeness
+
+- status: todo
+- priority: medium
+- labels: kms, wire-contract
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [ ] Create Keystore refuses any `kmsModule` other than `DEFAULT_KMS_MODULE`
+        (today free text, immutable, never consulted, so a keystore can
+        permanently advertise a custody module the server does not implement)
+  - [ ] List Keystores paginates with a cursor like List Keys, or reports
+        `totalItems` and a `next` link when it truncates at
+        `KEYSTORE_LIST_LIMIT`; `listKeystoresByController` no longer parses
+        every keystore config on the server per request
+  - [ ] `fetchKeystoreAndVerify` re-reads the config after verification (or
+        holds the keystore mutex across verify and operate), so a controller
+        rotation is not honored for the outgoing controller's in-flight requests
+  - [ ] `dereferencedChainLength` defaults closed when the verifier returns no
+        chain; `KeyRequest.get` / `list` honor the per-key chain bound, or the
+        bound is documented as operation-only
+  - [ ] `decodeBase64url` in `src/lib/kmsModule.ts` rejects input outside the
+        alphabet rather than signing over silently dropped bytes
+  - [ ] Decide whether Create Keystore takes a client idempotence key (a re-run
+        mints a second keystore today; wire-level, ask first)
+
+### WAS-140: Exchanges facet hardening
+
+- status: todo
+- priority: medium
+- labels: exchanges, security
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [ ] The response half is first-write-wins: a second `POST` with a response
+        body after `state: 'complete'` is refused (409), and the begin step is
+        not replayable after completion
+  - [ ] Every exchange response carries `Cache-Control: no-store`
+  - [ ] The exchange id is redacted from the request log (pino `redact` on
+        `req.url` for this route family, or a custom request serializer)
+  - [ ] A completed exchange is deleted on first read of its response, or the
+        TTL after completion is short
+  - [ ] Begin and respond are discriminated explicitly (a query flag or a typed
+        body), not by `{}` versus non-empty, and `text/plain` is not accepted as
+        a response
+  - [ ] The facet installs `handleError`, so a Fastify-level failure is a
+        problem document
+  - [ ] Decide whether the global live-exchange cap needs a per-IP share or rate
+        limit (one unauthenticated client can hold it full indefinitely)
+
+The exchange URL is the only credential and it is written to the info log on
+every request. Possession lets a third party overwrite the posted response, and
+the desktop learns nothing.
+
+### WAS-141: One masked-denial body, byte for byte
+
+- status: todo
+- priority: high
+- labels: security, errors, spec-conformance
+- discovered-from: whole-codebase review (2026-09-17), verified
+- touches:
+  - `src/errors.ts` (`NotFoundError`, `DenialError`, `KeystoreNotFoundError`,
+    `UnauthorizedError`), `src/requests/spaceContext.ts`,
+    `src/requests/keystoreContext.ts`
+  - conformance-suite: an assertion that the absent-target and under-authorized
+    404 bodies are identical
+- acceptance:
+  - [ ] The absent-Space and the failed-authorization 404 share one `title` and
+        one `detail` string; same for the keystore pair
+  - [ ] A test compares the two bodies for a Space, a Collection, a Resource and
+        a keystore, anonymous and with unverifiable auth headers
+  - [ ] `RevocationRequest`'s body-shape and chain 400s, and
+        `SpacesRepositoryRequest.post`'s `id-conflict` 409, run after signature
+        verification, so a caller without a verifying signature cannot tell an
+        existing Space from an absent one by status
+  - [ ] A `did:webvh` resolution or method-lookup failure inside `getVerifier`
+        surfaces as the masked 404, not a 400
+
+Both 404s share status and `type`, but "Space not found or invalid
+authorization." versus "URL not found or invalid authorization." (and a trailing
+period on one title) tell an unauthenticated caller whether the Space exists.
+Space ids are embedded in every self-hosted `did:webvh`, so polling
+`GET /space/<S>/meta` turns Delete Space into an observable event. The spec's
+access-control section makes indistinguishability a MUST.
+
+### WAS-142: Problem documents on every route, and Fastify's own errors typed
+
+- status: todo
+- priority: medium
+- labels: errors, wire-contract
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [ ] `handleError` is installed at the root (the groups' own registration
+        still wins where present), so the welcome page, `/health`, static, the
+        proxy, the service description and the exchanges facet never leak
+        `err.message` through Fastify's default handler
+  - [ ] A `setNotFoundHandler` answers unmatched routes with a problem document
+        instead of echoing method and path
+  - [ ] Fastify errors carrying a 4xx `statusCode` (`FST_ERR_CTP_*`, multipart
+        limits, malformed JSON) map to a client-error `type` with a `detail`,
+        never `internal-error` with `errors: [{}]`
+  - [ ] An error thrown inside a chain inspector (a corrupt revocation file, a
+        storage fault) is logged at `warn` with the cause and is a 500, not
+        laundered into the masked 404; a plain refusal is logged at `debug` with
+        its reason
+  - [ ] Decide whether 401s carry a `WWW-Authenticate` challenge, and with what
+        value (wire-level)
+
+### WAS-143: Method refusals answer before the auth hook, and every container has them
+
+- status: todo
+- priority: medium
+- labels: routing, spec-conformance
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [ ] An anonymous unsafe method at a reserved endpoint or container URL
+        answers 405 with `Allow`, not 401 (register the refusal routes outside
+        the auth hook, or give them a route-level `onRequest` that
+        short-circuits it)
+  - [ ] `/space/:spaceId/backends/:backendId` and
+        `/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex` are in
+        their group's refusal list, so `GET /space/S/backends/x` is a 405 rather
+        than backtracking to the Resource route's 409 `reserved-id`;
+        `GET /space/S/meta/log` likewise
+  - [ ] The `/spaces/` group ends with `refuseUnimplementedMethods` and the bare
+        `/spaces` redirects for the whole `CONTAINER_REDIRECT_METHODS` set
+  - [ ] The strip-slash 308 on Resource and chunk URLs applies to every method,
+        or to none (today `PUT` only)
+  - [ ] Tests per case
+
+### WAS-144: Ignore a non-`Signature` `Authorization` header on an anonymous read
+
+- status: todo
+- priority: medium
+- labels: authorization, public-read
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [ ] `parseAuthHeaders` parses only when the scheme is `Signature` (or only
+        when `Capability-Invocation` is also present) and otherwise leaves
+        `request.zcap` unset on a safe method, so a `Bearer` injected by a
+        gateway or cached `Basic` credentials do not 400 a read the policy
+        grants
+  - [ ] `ParsedZcap.invocation` is typed optional and the `as ParsedZcap` cast
+        dropped, surfacing the guards the compiler cannot see today
+  - [ ] `authorize()` derives read versus write from the route's `config.safe`,
+        not the HTTP method, so `POST .../query`'s documented policy fallback is
+        reachable (and `requireAuthHeadersOrPublicRead` admits it anonymously),
+        or the handler's doc says capability-only
+  - [ ] Tests for `Bearer` and `Basic` on a `PublicCanRead` Resource, and an
+        anonymous equality query on a public Collection
+
+### WAS-145: Media-type edge cases in `resolveResourceInput`
+
+- status: todo
+- priority: medium
+- labels: correctness, content-types
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [ ] The `+json` parser regex is anchored so `application/ld+jsonl` and
+        `application/ld+json-seq` take the binary path `isJson()` promises,
+        instead of handing a parsed object to `pipeline` (500)
+  - [ ] The multipart branch matches case-insensitively and only
+        `multipart/form-data`; `multipart/mixed` and other multipart types are
+        stored as blobs or refused with a typed 415
+  - [ ] A chunk `PUT` declaring a JSON media type is stored byte-verbatim
+        (chunks are ranges of a stream, not documents)
+  - [ ] The multipart 413 names the limit that was enforced (the server
+        backend's), and `maxUploadBytes!` is not asserted on an optional field
+  - [ ] A multipart create's 201 echoes the stored `content-type`, not the
+        request envelope's
+  - [ ] `test/` covers each case
+
+### WAS-146: Startup and composition hardening in `plugin.ts` and `server.ts`
+
+- status: todo
+- priority: low
+- labels: library-surface, config
+- discovered-from: whole-codebase review (2026-09-17)
+- acceptance:
+  - [ ] `createApp` / `fastifyWas` refuse `serverUrl: undefined` at registration
+        (the documented library example passes `process.env.SERVER_URL`
+        unguarded); `assertValidServerUrl` rejects userinfo
+  - [ ] The plugin sets `logger`, calls `init()` and `close()` only on a backend
+        it built itself, or takes an explicit `ownsBackend` option
+  - [ ] CORS is an option (origin, methods without `PATCH`), or the docs state
+        that a hardened composition inherits `origin: '*'` and the `'*'` parser
+        on its own routes
+  - [ ] `src/requests/collectionContext.ts` builds the log URL with `new URL`,
+        so a trailing-slash `SERVER_URL` does not yield `//space/...` in
+        `encryption.history.resource`; `exchanges.ts` likewise
+
+### WAS-147: Small wire and doc corrections from the review
+
+- status: todo
+- priority: low
+- labels: cleanup, wire-contract, docs
+- discovered-from: whole-codebase review (2026-09-17)
+- acceptance:
+  - [ ] `zcapCryptosuites` in the service description lists cryptosuite names
+        only; `Ed25519Signature2020` is a proof `type` and either moves to a
+        separate member or is dropped (WAS-69)
+  - [ ] `notModifiedReply` sends no `Content-Length: 0` on a 304 for an
+        implicit-HEAD route
+  - [ ] `deriveGovernedEncryption` always stamps `history.resource` with the
+        log's own URL and drops a client-written `history` when the genesis
+        carries no `parameters.method`, or the doc says `history` is not
+        server-guaranteed
+  - [ ] An identical-body governed-log `PUT` (zero new lines, stored bytes
+        unchanged) is a no-op 204, not `invalid-request-body`
+  - [ ] `PUT /space/:spaceId/meta` on an existing Space is the full replacement
+        its contract states (an omitted `name` is removed), or the contract says
+        merge
+  - [ ] The 201 of a token-provisioned Create Space echoes what was persisted
+        (no client-supplied `createdBy`); unknown body members are not stored
+  - [ ] `filter[__proto__]=v` on the equality query answers the documented 400,
+        not an empty 200
+  - [ ] `StorageBackend`'s contract text matches `getResource` (throws),
+        `getChunk` (rejects) and `deleteChunk` (resolves `false`); the
+        `filesystem.ts` comment claiming `ifNoneMatch` takes precedence is
+        corrected; `generator.ts`'s header matches clear-on-omit; `types.ts`'s
+        `declaredBytes` note matches the multipart branch
+  - [ ] ARCHITECTURE.md states the single-instance assumption the 10 s
+        `spaceMetadataCache` and `policyCache` TTLs rest on (a retired
+        controller keeps authority on another instance for one TTL), and that
+        `allowTargetQuery` bounds the accepted root set only (the query-bearing
+        request URL is always an accepted target)
+  - [ ] `putMeta`'s uniqueness scan runs after the Resource-existence check, so
+        a claim on an absent Resource is 404, not 409
+  - [ ] The chunk listing documents `count` as cardinality, or reports the
+        extent alongside it; chunk writes are documented as outside the
+        Resource-count quota
+  - [ ] Auxiliary Spaces count toward `maxSpacesPerController` but are excluded
+        from List Spaces; document or expose them
 
 ## Test coverage gaps (conformance suite + server `test/`)
 

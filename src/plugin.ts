@@ -34,6 +34,7 @@ import {
   CORS_PREFLIGHT_MAX_AGE
 } from './config.default.js'
 import { defaultBackend } from './storage.js'
+import { bufferedBodyLimit } from './lib/bodyLimit.js'
 import { onboardingTokenAuthorizer } from './provisioning.js'
 import type {
   StorageBackend,
@@ -200,6 +201,18 @@ async function wasPlugin(
     })
   storage.logger = fastify.log
   fastify.decorate('storage', storage)
+
+  // The buffered-body limit, derived from the active backend's per-upload cap
+  // and applied as every route's `bodyLimit`. Set per route rather than on the
+  // instance so a downstream composition that registers this plugin on its own
+  // instance gets the same bound. A route that sets its own `bodyLimit` (the
+  // exchanges POST) keeps it.
+  const bodyLimit = bufferedBodyLimit(storage.maxUploadBytes)
+  fastify.addHook('onRoute', routeOptions => {
+    if (routeOptions.bodyLimit === undefined) {
+      routeOptions.bodyLimit = bodyLimit
+    }
+  })
 
   // Backend lifecycle: run the optional startup hook (e.g. Postgres connect +
   // migrations) during registration, before the server starts listening, and

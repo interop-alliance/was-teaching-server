@@ -48,8 +48,8 @@ importers:
         specifier: ^5.0.3
         version: 5.0.3
       '@interop/http-signature-zcap-verify':
-        specifier: ^12.2.2
-        version: 12.2.2
+        specifier: ^12.2.3
+        version: 12.2.3
       '@interop/jsonld-signatures':
         specifier: ^11.8.5
         version: 11.8.5
@@ -69,8 +69,8 @@ importers:
         specifier: ^5.4.0
         version: 5.4.0
       '@interop/zcap':
-        specifier: ^11.3.0
-        version: 11.3.0
+        specifier: ^11.3.1
+        version: 11.3.1
       '@scure/base':
         specifier: ^2.4.0
         version: 2.4.0
@@ -118,17 +118,17 @@ importers:
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.10.0(supports-color@8.1.1))
       '@interop/ezcap':
-        specifier: ^7.4.8
-        version: 7.4.8
+        specifier: ^7.4.9
+        version: 7.4.9
       '@interop/http-signature-zcap-invoke':
         specifier: ^6.2.6
         version: 6.2.6
       '@interop/was-client':
-        specifier: ^0.67.0
-        version: 0.67.0(@interop/jsonld-signatures@11.8.5)
+        specifier: ^0.67.2
+        version: 0.67.2(@interop/jsonld-signatures@11.8.5)
       '@interop/was-conformance-suite':
         specifier: ^0.21.0
-        version: 0.21.0(@interop/jsonld-signatures@11.8.5)(@interop/was-client@0.67.0(@interop/jsonld-signatures@11.8.5))(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1))
+        version: 0.21.0(@interop/jsonld-signatures@11.8.5)(@interop/was-client@0.67.2(@interop/jsonld-signatures@11.8.5))(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1))
       '@interop/webkms-client':
         specifier: ^15.0.1
         version: 15.0.1
@@ -626,6 +626,10 @@ packages:
     resolution: {integrity: sha512-bCGEefdY0oCXSOoq36GiRknxn7Xci3hAGVuUeJasOovSPsmypJ36p6TIbhPX8BLk1jXqSsU3cLZqbs1pRHWgEQ==}
     engines: {node: '>=20.0'}
 
+  '@interop/ezcap@7.4.9':
+    resolution: {integrity: sha512-pp5WiPkKZZLs3R+YE+FicH3BiqRxNyMO5XLqyZyYGuMmp7fk0PuDTfeSzCwOo32TsQijFRqUxGn0JLGh+K6nuA==}
+    engines: {node: '>=20.0'}
+
   '@interop/http-client@1.0.5':
     resolution: {integrity: sha512-t/zL0+mQOjNkzj6usOv6MCOvG/HVOH1GG8Dbp03ympkf4NVOaJavBBJZuE05Xi1Sp4izmjHydDwnJLlzkZpzXQ==}
     engines: {node: '>=22.12'}
@@ -647,8 +651,8 @@ packages:
     resolution: {integrity: sha512-GE4+yi+uvBN+6XDNASOavZfauZGUDF9GupmNtzZc2Lv/Wr2kdeqoIrw4Jkl/iVnuwkt37AccVqKI7K9EOER/tw==}
     engines: {node: '>=20'}
 
-  '@interop/http-signature-zcap-verify@12.2.2':
-    resolution: {integrity: sha512-aoEY2C1MkNGS9Sktsf+Eun1BoFkb0ZNCupBx9v1oKlFWJusmlgojsDNbvZ/0ERjO7qCUGUw/sCceOgta6lNYHA==}
+  '@interop/http-signature-zcap-verify@12.2.3':
+    resolution: {integrity: sha512-dH6ul0OoNEr8CdwJK+I9FaIxew7wggkCDZiqbh4khbiCK4NpTq/Xuw5aT5aXUSOqTBEtOugnYJhXJYSFuOfI8w==}
     engines: {node: '>=24.0'}
 
   '@interop/jsonld-signatures@11.8.5':
@@ -675,10 +679,6 @@ packages:
     resolution: {integrity: sha512-LrH09nIaLjz+Y4inQO6fgA6cSuv1CypX8p/bNRFKC0EpG36Cp2A24abEmV4jL+HW4Vi4cD0Q3yOaH7WViBkJwg==}
     engines: {node: '>=22.0'}
 
-  '@interop/storage-core@0.17.0':
-    resolution: {integrity: sha512-9ulA/uUfPlVTH65BDKlG+x7H8irrWWFLnK4irdDkPSnZ8S1vICsnmV8g04uZ0ehq3raD6V5ol1o7ZxPD5XwJug==}
-    engines: {node: '>=22.0'}
-
   '@interop/storage-core@0.18.0':
     resolution: {integrity: sha512-T4Cjkv4127pw7/wS6UcwrJdAOYgCKE++LFtvntZX4rX8DDfZzMx7GkvAgqhmivFmyYn+po+6cvE8ir6a3yHaxQ==}
     engines: {node: '>=22.0'}
@@ -687,8 +687,8 @@ packages:
     resolution: {integrity: sha512-jlQ6Oq+3vdUQOtz2FEYu3B3KXAw41yYTUKkg2lkkFt3qvuT+Y/Dn3n59TJqUvj0OH9nbkV+YjuHINIDGMjrHng==}
     engines: {node: '>=24.0'}
 
-  '@interop/was-client@0.67.0':
-    resolution: {integrity: sha512-TSg2gw3cbO89ZoURRlF1juZT3/3N+uMqg5wyTO1J9v0BSe3dZGKTjFzPC7WGrywKxKw0wm8o279yKKkpu+Q9vA==}
+  '@interop/was-client@0.67.2':
+    resolution: {integrity: sha512-Rmy2QQbeTFqhzA9kHSzRltwp3SvUhqmiayQk4lqqlIQ5WKM5X7O5fpR2nNxPY3lBscppVz71N6bLN559l73/xw==}
     engines: {node: '>=24.0'}
 
   '@interop/was-conformance-suite@0.21.0':
@@ -708,6 +708,10 @@ packages:
 
   '@interop/zcap@11.3.0':
     resolution: {integrity: sha512-R+9aAvovfBVfhTCtB/GG5B+iO+V5yRTojVLXRIxwwYZrjRFraF8CUNisYyRkJ9fY9xn7owgj5533ictdTOxLlg==}
+    engines: {node: '>=24.0'}
+
+  '@interop/zcap@11.3.1':
+    resolution: {integrity: sha512-Eob4PYvhR0H49fuk9iwyHiPEPesZWDWMu1bfOkM0jTitTdrurAdFCPVT5aWr8kMk+R5YabjUlWhtWxYJbWzgcQ==}
     engines: {node: '>=24.0'}
 
   '@isaacs/ttlcache@1.4.1':
@@ -3360,6 +3364,18 @@ snapshots:
     transitivePeerDependencies:
       - expo-crypto
 
+  '@interop/ezcap@7.4.9':
+    dependencies:
+      '@interop/data-integrity-core': 8.7.1
+      '@interop/data-integrity-proof': 3.4.5
+      '@interop/ecdsa-signature': 2.0.7(@interop/jsonld-signatures@11.8.5)
+      '@interop/http-client': 1.0.5
+      '@interop/http-signature-zcap-invoke': 6.2.6
+      '@interop/jsonld-signatures': 11.8.5
+      '@interop/zcap': 11.3.1
+    transitivePeerDependencies:
+      - expo-crypto
+
   '@interop/http-client@1.0.5':
     dependencies:
       ky: 1.14.3
@@ -3378,11 +3394,11 @@ snapshots:
     transitivePeerDependencies:
       - expo-crypto
 
-  '@interop/http-signature-zcap-verify@12.2.2':
+  '@interop/http-signature-zcap-verify@12.2.3':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
       '@interop/http-signature-header': 5.0.3
-      '@interop/zcap': 11.3.0
+      '@interop/zcap': 11.3.1
       '@scure/base': 2.4.0
       pako: 2.2.0
 
@@ -3447,10 +3463,6 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.7.1
 
-  '@interop/storage-core@0.17.0':
-    dependencies:
-      '@interop/data-integrity-core': 8.7.1
-
   '@interop/storage-core@0.18.0':
     dependencies:
       '@interop/data-integrity-core': 8.7.1
@@ -3460,7 +3472,7 @@ snapshots:
       '@interop/did-method-webvh': 5.9.0
       '@interop/storage-core': 0.13.0
 
-  '@interop/was-client@0.67.0(@interop/jsonld-signatures@11.8.5)':
+  '@interop/was-client@0.67.2(@interop/jsonld-signatures@11.8.5)':
     dependencies:
       '@interop/capability-agent': 0.2.0
       '@interop/data-integrity-core': 8.7.1
@@ -3469,7 +3481,7 @@ snapshots:
       '@interop/ezcap': 7.4.8
       '@interop/http-client': 1.0.5
       '@interop/minimal-cipher': 7.10.2
-      '@interop/storage-core': 0.17.0
+      '@interop/storage-core': 0.18.0
       '@interop/vh-resource-log': 0.5.1
       '@interop/x25519-key-agreement-key': 5.4.0
       '@noble/hashes': 2.4.0
@@ -3480,16 +3492,16 @@ snapshots:
       - expo-crypto
       - react-native-get-random-values
 
-  '@interop/was-conformance-suite@0.21.0(@interop/jsonld-signatures@11.8.5)(@interop/was-client@0.67.0(@interop/jsonld-signatures@11.8.5))(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1))':
+  '@interop/was-conformance-suite@0.21.0(@interop/jsonld-signatures@11.8.5)(@interop/was-client@0.67.2(@interop/jsonld-signatures@11.8.5))(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1))':
     dependencies:
       '@digitalcredentials/bnid': 5.0.0(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1))
       '@interop/data-integrity-core': 8.7.1
       '@interop/ed25519-signature': 7.2.2(@interop/jsonld-signatures@11.8.5)
       '@interop/ed25519-verification-key': 8.2.0
-      '@interop/ezcap': 7.4.8
+      '@interop/ezcap': 7.4.9
       '@interop/http-digest-header': 3.1.0
       '@interop/http-signature-zcap-invoke': 6.2.6
-      '@interop/was-client': 0.67.0(@interop/jsonld-signatures@11.8.5)
+      '@interop/was-client': 0.67.2(@interop/jsonld-signatures@11.8.5)
       '@interop/x25519-key-agreement-key': 5.4.0
       assert: 2.1.0
       uuid: 14.0.2
@@ -3518,6 +3530,12 @@ snapshots:
       '@scure/base': 2.4.0
 
   '@interop/zcap@11.3.0':
+    dependencies:
+      '@digitalbazaar/zcap-context': 2.0.1
+      '@interop/data-integrity-core': 8.7.1
+      '@interop/jsonld-signatures': 11.8.5
+
+  '@interop/zcap@11.3.1':
     dependencies:
       '@digitalbazaar/zcap-context': 2.0.1
       '@interop/data-integrity-core': 8.7.1

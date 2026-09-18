@@ -78,6 +78,10 @@ export async function resolveResourceInput(
         detail: 'multipart request is missing a file part.'
       })
     }
+    // The whole multipart body has been read; the `Digest` verdict over it
+    // (taken by the preParsing hook) settles now, and a mismatch fails the
+    // write before anything is stored.
+    await request.multipartDigest
     return {
       kind: 'binary',
       contentType: file.mimetype,

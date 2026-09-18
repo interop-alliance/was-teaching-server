@@ -1,5 +1,34 @@
 # History
 
+## 0.38.0 - TBD
+
+### Changed
+
+- The buffered-body limit (`application/json`, `+json`, `text/*`) is now derived
+  from the active backend's `maxUploadBytes` instead of Fastify's 1 MiB default,
+  so the same bytes accepted as `application/octet-stream` now also pass as
+  JSON. `MAX_UPLOAD_BYTES=unlimited` keeps buffered bodies bounded at a 64 MiB
+  default, since a buffered body is held in memory. The governed-log
+  `PUT /meta/log` uses the same limit.
+- Fastify's and `@fastify/multipart`'s own over-limit errors are now answered as
+  the registered `payload-too-large` problem (413) instead of `internal-error`
+  with an empty `errors` entry.
+
+### Fixed
+
+- `captureRawBody` now bounds the body it buffers before Fastify's parser sees
+  it: an announced over-limit `Content-Length` is refused before a byte is read,
+  and a chunked body is refused at the byte that crosses the limit, with the
+  rest of the body never read. Previously the whole body was buffered first, so
+  a large chunked request could exhaust memory before the limit fired. The
+  refusal is raised from the hook for every buffered media type, `text/jsonl`
+  included, and closes the connection, since the unread rest may still be
+  arriving.
+- A signed `multipart/form-data` upload no longer fails with "missing a file
+  part": the digest verification stream drained the raw request before
+  `@fastify/multipart` read it. The digest is now taken by a tap on the raw
+  request as busboy reads it, and its verdict is awaited before the write.
+
 ## 0.37.0 - 2026-09-16
 
 ### Added

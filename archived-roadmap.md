@@ -2489,3 +2489,36 @@ before any backend is reached. A fake provider adapter plus a per-backend loop
 in the conformance suite would re-run one server code path once per registered
 backend. The conditional-write checks already cover that path, and WAS-111
 closed with this box dropped rather than deferred here.
+
+### WAS-122: Bound request bodies before authorization, and let `MAX_UPLOAD_BYTES` govern them
+
+- status: done
+- done: 2026-09-17
+- priority: high
+- labels: security, availability, limits
+- discovered-from: whole-codebase review (2026-09-17), verified (one chunked 400
+  MiB request took RSS to 1.37 GB before the 413)
+- acceptance:
+  - [x] `captureRawBody` stops accumulating at the effective body limit and
+        refuses the request there; Fastify's `bodyLimit` never sees a byte it
+        has already buffered past the limit
+  - [x] The buffered-parser limit (`application/json`, `+json`, `text/*`) is
+        derived from `maxUploadBytes` rather than Fastify's 1 MiB default, or
+        the two limits are documented as distinct with a config knob for the
+        JSON one; the governed-log `PUT` no longer pins to 1 MiB under
+        `MAX_UPLOAD_BYTES=unlimited`
+  - [x] Multipart `limits` gain `fields` and `fieldSize` (the write path uses no
+        fields)
+  - [x] A body-too-large refusal is the registered `payload-too-large` problem,
+        not `internal-error` with an empty `errors` entry
+  - [x] Tests: a chunked over-limit JSON body is refused with bounded memory; a
+        2 MiB JSON Resource write under the default `maxUploadBytes` succeeds
+
+`captureRawBody` hands Fastify one buffer at `end`, so `bodyLimit` (enforced by
+the content-type parser, downstream of `preParsing`) applies only after the
+whole body is resident; a chunked request has no `content-length` shortcut. The
+hook runs before any signature is verified. Separately, `createApp` never sets
+`bodyLimit`, so JSON and text writes are capped at 1 MiB while the same bytes as
+`application/octet-stream` (the unbuffered `'*'` parser) succeed up to 64 MiB,
+and the quota report advertises the larger figure. The repo's upload-cap tests
+pin `MAX_UPLOAD_BYTES` below 1 MiB, so they cannot see this.

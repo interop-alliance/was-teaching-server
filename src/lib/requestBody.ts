@@ -5,9 +5,10 @@
  * validation; these cover only the envelope shape every strict body shares.
  */
 import type { Readable } from 'node:stream'
-import type { FastifyRequest } from 'fastify'
-import { InvalidRequestBodyError, PayloadTooLargeError } from '../errors.js'
+import type { FastifyReply, FastifyRequest } from 'fastify'
+import { InvalidRequestBodyError } from '../errors.js'
 import { isPlainObject } from './isPlainObject.js'
+import { readBoundedBody } from './bodyLimit.js'
 
 /**
  * Resolves a request body as UTF-8 text whatever parser it reached the
@@ -17,36 +18,28 @@ import { isPlainObject } from './isPlainObject.js'
  * body is text by definition (a JSON Lines log), not a representation stored
  * under its own media type.
  *
- * The body is buffered in memory, so it is bounded: the stream is rejected
- * with `PayloadTooLargeError` (413) as soon as it exceeds `maxBytes`, and an
- * already-buffered body is checked against the same cap. Fastify's own
- * `bodyLimit` covers only the parsers that buffer, not the raw pass-through
- * stream, so the cap is applied here.
+ * The body is buffered in memory, so it is bounded by the route's `bodyLimit`.
+ * An already-buffered body was read under that limit by the digest hook
+ * (`captureRawBody`), which also feeds the built-in text parser; the raw
+ * pass-through stream is the one path no hook or parser bounds, so it is read
+ * under the same limit here by `readBoundedBody` (413 at the crossing byte,
+ * the rest unread).
  * @param options {object}
  * @param options.request {FastifyRequest}
- * @param options.maxBytes {number}   the cap in bytes
- * @param options.backendId {string}   the backend named in the 413 detail
+ * @param options.reply {FastifyReply}
+ * @param [options.backendId] {string}   the backend named in the 413 detail,
+ *   when the limit is that backend's `maxUploadBytes`
  * @returns {Promise<string>}
  */
 export async function readTextBody({
   request,
-  maxBytes,
+  reply,
   backendId
 }: {
   request: FastifyRequest
-  maxBytes: number
-  backendId: string
+  reply: FastifyReply
+  backendId?: string
 }): Promise<string> {
-  const tooLarge = (uploadBytes?: number) =>
-    new PayloadTooLargeError({
-      maxUploadBytes: maxBytes,
-      backendId,
-      uploadBytes
-    })
-  const declared = Number(request.headers['content-length'])
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    throw tooLarge(declared)
-  }
   const buffered =
     request.rawBody ??
     (typeof request.body === 'string'
@@ -55,21 +48,15 @@ export async function readTextBody({
         ? request.body
         : undefined)
   if (buffered !== undefined) {
-    if (buffered.byteLength > maxBytes) {
-      throw tooLarge(buffered.byteLength)
-    }
     return buffered.toString('utf8')
   }
-  const chunks: Buffer[] = []
-  let received = 0
-  for await (const chunk of request.body as Readable) {
-    received += (chunk as Buffer).byteLength
-    if (received > maxBytes) {
-      throw tooLarge()
-    }
-    chunks.push(chunk as Buffer)
-  }
-  return Buffer.concat(chunks).toString('utf8')
+  const body = await readBoundedBody({
+    request,
+    reply,
+    payload: request.body as Readable,
+    backendId
+  })
+  return body.toString('utf8')
 }
 
 /**

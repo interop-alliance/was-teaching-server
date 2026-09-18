@@ -1392,5 +1392,12 @@ declare module 'fastify' {
      * (multipart / tar) bodies, which are left unbuffered.
      */
     rawBody?: Buffer
+    /**
+     * For a signed multipart body: the `Digest` verdict over the whole body,
+     * settled at end-of-stream (rejects with `InvalidDigestError` on a
+     * mismatch). Set by `captureRawBody`, awaited by the multipart write path
+     * after the parts are consumed and before anything is stored.
+     */
+    multipartDigest?: Promise<void>
   }
 }
