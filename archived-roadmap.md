@@ -2522,3 +2522,40 @@ hook runs before any signature is verified. Separately, `createApp` never sets
 `application/octet-stream` (the unbuffered `'*'` parser) succeed up to 64 MiB,
 and the quota report advertises the larger figure. The repo's upload-cap tests
 pin `MAX_UPLOAD_BYTES` below 1 MiB, so they cannot see this.
+
+### WAS-141: One masked-denial body, byte for byte
+
+- status: done
+- done: 2026-09-18
+- priority: high
+- labels: security, errors, spec-conformance
+- discovered-from: whole-codebase review (2026-09-17), verified
+- touches:
+  - `src/errors.ts` (`NotFoundError`, `DenialError`, `KeystoreNotFoundError`,
+    `UnauthorizedError`), `src/requests/spaceContext.ts`,
+    `src/requests/keystoreContext.ts` (shipped: byte-identical bodies, no change
+    needed in `spaceContext.ts` / `keystoreContext.ts` beyond what the error
+    classes already carry)
+  - conformance-suite: an assertion that the absent-target and under-authorized
+    404 bodies are identical (PWSCS-13 filed in that repo's roadmap; the
+    published `space.create-post-conflict-preserves-original` case also needs
+    re-signing as the body controller, since Create Space's `id-conflict` check
+    now runs after consent verification)
+- acceptance:
+  - [x] The absent-Space and the failed-authorization 404 share one `title` and
+        one `detail` string; same for the keystore pair
+  - [x] A test compares the two bodies for a Space, a Collection, a Resource and
+        a keystore, anonymous and with unverifiable auth headers
+  - [x] `RevocationRequest`'s body-shape and chain 400s, and
+        `SpacesRepositoryRequest.post`'s `id-conflict` 409, run after signature
+        verification, so a caller without a verifying signature cannot tell an
+        existing Space from an absent one by status
+  - [x] A `did:webvh` resolution or method-lookup failure inside `getVerifier`
+        surfaces as the masked 404, not a 400
+
+Both 404s share status and `type`, but "Space not found or invalid
+authorization." versus "URL not found or invalid authorization." (and a trailing
+period on one title) tell an unauthenticated caller whether the Space exists.
+Space ids are embedded in every self-hosted `did:webvh`, so polling
+`GET /space/<S>/meta` turns Delete Space into an observable event. The spec's
+access-control section makes indistinguishability a MUST.

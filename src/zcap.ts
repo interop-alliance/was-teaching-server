@@ -51,6 +51,7 @@ import {
   CapabilityExpiredError,
   CapabilityRevokedError,
   InvalidRevocationError,
+  ProblemError,
   UnauthorizedError
 } from './errors.js'
 import {
@@ -383,24 +384,72 @@ export const INVOCATION_SIGNATURE_ALGORITHMS = ['EdDSA']
  */
 function createGetVerifier({ webvh }: { webvh?: WebvhResolverContext } = {}) {
   return async function getVerifier({ keyId }: { keyId: string }) {
-    if (webvh && keyId.startsWith('did:webvh:')) {
-      return await webvhVerifier({ webvh, keyId })
-    }
-    const verificationMethod = await didKeyDriver.get({ url: keyId })
-    const key = await Ed25519VerificationKey.from(
-      verificationMethod as IPublicKey
-    )
-    const verifier = key.verifier()
-    return {
-      verifier,
-      verificationMethod: verificationMethod as IVerificationMethod
+    try {
+      if (webvh && keyId.startsWith('did:webvh:')) {
+        return await webvhVerifier({ webvh, keyId })
+      }
+      const verificationMethod = await didKeyDriver.get({ url: keyId })
+      const key = await Ed25519VerificationKey.from(
+        verificationMethod as IPublicKey
+      )
+      const verifier = key.verifier()
+      return {
+        verifier,
+        verificationMethod: verificationMethod as IVerificationMethod
+      }
+    } catch (err) {
+      // A server-side fault met while resolving (a storage error under the
+      // did:webvh log read) is not the client's doing and keeps its 5xx.
+      if (err instanceof ProblemError && err.statusCode >= 500) {
+        throw err
+      }
+      throw keyResolutionError({ keyId, cause: err as Error })
     }
   }
+}
+
+/**
+ * The `name` carried by an error raised while resolving an invocation's
+ * signing key: a `did:webvh` whose history log does not resolve, a key the
+ * resolved document does not list, or a `did:key` keyId that does not decode.
+ * `verifyCapabilityInvocation` calls the key hook outside its own result
+ * envelope, so such a failure reaches the server as a thrown error rather than
+ * a `{ verified: false }` result; {@link verifiedOrThrow} reads this name to
+ * answer the masked 404 rather than a 400. The keyId is entirely the client's
+ * to choose, so an unresolvable one is a failed authorization, and answering
+ * it differently would let a prober tell a key the server can resolve from one
+ * it cannot.
+ */
+const KEY_RESOLUTION_ERROR_NAME = 'KeyResolutionError'
+
+/**
+ * Wraps a key-resolution failure in an error {@link verifiedOrThrow}
+ * recognizes by `name`. The underlying failure stays on `cause` for the debug
+ * log; it never reaches the wire.
+ * @param options {object}
+ * @param options.keyId {string}   the keyId that could not be resolved
+ * @param options.cause {Error}   the resolver's error
+ * @returns {Error}
+ */
+function keyResolutionError({
+  keyId,
+  cause
+}: {
+  keyId: string
+  cause: Error
+}): Error {
+  const err = new Error(
+    `Could not resolve the invocation signing key "${keyId}".`,
+    { cause }
+  )
+  err.name = KEY_RESOLUTION_ERROR_NAME
+  return err
 }
 
 /** Minimal logger surface used during verification (console / request.log). */
 interface ZcapLogger {
   error: (...args: any[]) => void
+  debug: (...args: any[]) => void
 }
 
 /**
@@ -686,11 +735,15 @@ function denialError({
 }
 
 /**
- * Runs a capability-invocation verification and maps its two failure modes to
- * the server's errors: a thrown verification error is logged and rethrown as
- * `AuthVerificationError` (400), and a result that did not verify becomes the
- * 404 denial `denialError` picks (`capability-revoked`, `capability-expired`,
- * or the masked `UnauthorizedError`). Shared by `handleZcapVerify` and
+ * Runs a capability-invocation verification and maps its failure modes to the
+ * server's errors: a thrown verification error is logged and rethrown as
+ * `AuthVerificationError` (400) -- unless it came from resolving the signing
+ * key (see {@link KEY_RESOLUTION_ERROR_NAME}), which is the masked
+ * `UnauthorizedError` (404) instead, or is a 5xx `ProblemError` from a
+ * storage fault, which is rethrown as is -- and a result that did not verify becomes
+ * the 404 denial `denialError` picks (`capability-revoked`,
+ * `capability-expired`, or the masked `UnauthorizedError`). Shared by
+ * `handleZcapVerify` and
  * `handleRevocationInvocationVerify`, which differ only in what they verify
  * and in the log message.
  * @param options {object}
@@ -720,6 +773,20 @@ async function verifiedOrThrow({
   try {
     zcapVerifyResult = await verify()
   } catch (err) {
+    // A key the request named but the server cannot resolve is a failed
+    // authorization, not a malformed request: answer it exactly as a
+    // signature that did not verify, so the keyId reveals nothing. It is a
+    // client-caused condition, so it is logged at debug rather than error.
+    if ((err as Error)?.name === KEY_RESOLUTION_ERROR_NAME) {
+      logger.debug({ err }, failureMessage)
+      throw new UnauthorizedError({ requestName })
+    }
+    // A server-side fault (a storage error under a did:webvh log read) is
+    // neither a client error nor a denial: it keeps its 5xx, which
+    // `handleError` logs with its cause.
+    if (err instanceof ProblemError && err.statusCode >= 500) {
+      throw err
+    }
     logger.error({ err }, failureMessage)
     throw new AuthVerificationError({ requestName, cause: err as Error })
   }

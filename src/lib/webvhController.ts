@@ -52,6 +52,7 @@ import {
   WEBVH_DOCUMENT_CACHE_TTL,
   WEBVH_DOCUMENT_REVERIFY_AGE
 } from '../config.default.js'
+import { ProblemError, StorageError } from '../errors.js'
 import { backendScoped, deleteByPrefix } from './backendCache.js'
 import { parseSelfHostedWebvh, WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
 import type { StorageBackend } from '../types.js'
@@ -434,6 +435,15 @@ async function resolveVerifiedDocument({
       collectionId
     }))
   } catch (err) {
+    // Only an absent log is a resolution failure. A backend fault (I/O, a
+    // dropped database) must surface as a 5xx, not be masked as an
+    // unresolvable controller.
+    if (!(err instanceof ProblemError)) {
+      throw new StorageError({ cause: err as Error })
+    }
+    if (err.statusCode !== 404) {
+      throw err
+    }
     throw new Error(
       `No did:webvh history log is published at ` +
         `"${spaceId}/${collectionId}/${WEBVH_LOG_RESOURCE_ID}".`,

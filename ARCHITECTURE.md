@@ -601,6 +601,17 @@ unchanged. A denial with a named cause still falls through to the target's
 access-control policy, and the error surfaces only when the policy does not
 grant either.
 
+The plain `not-found` body is byte-identical whether the target is absent or the
+caller is under-authorized: same `title`, naming no entity noun, and the same
+`detail`, `URL not found or invalid authorization.`. A signing key the server
+cannot resolve -- an unresolvable self-hosted `did:webvh`, a keyId absent from
+the resolved document, an undecodable `did:key` -- is answered the same way,
+since the keyId is the client's own choice and resolving it is part of
+authorization, not request parsing. Revocation submission's body-shape and
+chain-verification checks, and Create Space's `id-conflict` existence check, now
+run only after the invocation verifies, so their 400s cannot be used to probe
+whether a scope or a Space id exists.
+
 **Signing:** requests are signed with Cavage HTTP Signatures Draft 12 (not yet
 RFC 9421). The `Authorization` header signs
 `(key-id) (created) (expires) (request-target) host capability-invocation`, plus

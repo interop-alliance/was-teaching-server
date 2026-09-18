@@ -28,6 +28,28 @@
   part": the digest verification stream drained the raw request before
   `@fastify/multipart` read it. The digest is now taken by a tap on the raw
   request as busboy reads it, and its verdict is awaited before the write.
+- The absent-target 404 family (Space, Collection, Resource, Policy, Keystore,
+  Key not found) and the masked authorization-denial 404 now serialize one
+  byte-identical body: `title` `Invalid <request> request` with no trailing
+  period, `detail` `URL not found or invalid authorization.`. Previously the
+  detail named the entity ("Space not found or invalid authorization.") and the
+  denial title carried a trailing period, so an unauthenticated caller could
+  tell whether a Space exists -- observable against Delete Space, since Space
+  ids are embedded in every self-hosted `did:webvh`.
+- Revocation submission (`POST .../zcaps/revocations/:id` and its `/kms`
+  sibling): the body-shape and chain-verification 400s now run only after the
+  invocation verifies, so an unauthorized caller gets the masked 404 whether or
+  not the revocation scope exists.
+- Create Space with an existing `id`: the `id-conflict` 409 existence check now
+  runs after body-controller consent verification, so a non-consenting signature
+  gets the same controller-mismatch 400 it gets at a fresh id.
+- A signing key the server cannot resolve (an unresolvable `did:webvh`, a keyId
+  absent from the resolved document, an undecodable `did:key`) is now the masked
+  404 instead of the 400 `invalid-authorization-header`.
+- The published conformance suite's
+  `space.create-post-conflict-preserves-original` case signs as a non-consenting
+  controller and expects 409; it now gets the 400 controller-mismatch instead. A
+  suite update is pending.
 
 ## 0.37.0 - 2026-09-16
 

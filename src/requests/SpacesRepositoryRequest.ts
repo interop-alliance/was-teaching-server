@@ -249,16 +249,6 @@ export class SpacesRepositoryRequest {
     // Reject a path-traversal / non-URL-safe client-supplied space id.
     if (body.id !== undefined) {
       assertValidId(body.id, { kind: 'space', requestName: 'Create Space' })
-      // POST must never replace an existing Space: the signature below is
-      // verified against the *body's* controller, so without this check any
-      // caller could overwrite a Space (controller included) by POSTing its
-      // id. Spec: `id-conflict` (409); create-or-replace by id is PUT's job.
-      // This unlocked read answers the common case before the (costlier)
-      // consent verification, so a conflicting id gets 409 whoever signed;
-      // the guarded write below is what closes the race between two creates.
-      if (await storage.getSpaceMetadata({ spaceId: body.id })) {
-        throw new IdConflictError({ kind: 'Space' })
-      }
     }
 
     const spaceId = body.id || uuidv4()
@@ -279,6 +269,21 @@ export class SpacesRepositoryRequest {
         MismatchError: SpaceControllerMismatchError,
         requestName: 'Create Space'
       })
+    }
+
+    // POST must never replace an existing Space: the write below is verified
+    // against the *body's* controller, so without this check any caller could
+    // overwrite a Space (controller included) by POSTing its id. Spec:
+    // `id-conflict` (409); create-or-replace by id is PUT's job. This unlocked
+    // read answers the common case; the guarded write below is what closes the
+    // race between two creates. It runs only once the body controller has
+    // consented, because a 409 here against an id that exists -- where a fresh
+    // id would have failed the consent check -- would tell a caller with no
+    // verifying signature which Spaces exist.
+    if (body.id !== undefined) {
+      if (await storage.getSpaceMetadata({ spaceId: body.id })) {
+        throw new IdConflictError({ kind: 'Space' })
+      }
     }
 
     // zCap checks out, continue. A token-provisioned create carries no

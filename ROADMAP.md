@@ -1939,37 +1939,6 @@ The exchange URL is the only credential and it is written to the info log on
 every request. Possession lets a third party overwrite the posted response, and
 the desktop learns nothing.
 
-### WAS-141: One masked-denial body, byte for byte
-
-- status: todo
-- priority: high
-- labels: security, errors, spec-conformance
-- discovered-from: whole-codebase review (2026-09-17), verified
-- touches:
-  - `src/errors.ts` (`NotFoundError`, `DenialError`, `KeystoreNotFoundError`,
-    `UnauthorizedError`), `src/requests/spaceContext.ts`,
-    `src/requests/keystoreContext.ts`
-  - conformance-suite: an assertion that the absent-target and under-authorized
-    404 bodies are identical
-- acceptance:
-  - [ ] The absent-Space and the failed-authorization 404 share one `title` and
-        one `detail` string; same for the keystore pair
-  - [ ] A test compares the two bodies for a Space, a Collection, a Resource and
-        a keystore, anonymous and with unverifiable auth headers
-  - [ ] `RevocationRequest`'s body-shape and chain 400s, and
-        `SpacesRepositoryRequest.post`'s `id-conflict` 409, run after signature
-        verification, so a caller without a verifying signature cannot tell an
-        existing Space from an absent one by status
-  - [ ] A `did:webvh` resolution or method-lookup failure inside `getVerifier`
-        surfaces as the masked 404, not a 400
-
-Both 404s share status and `type`, but "Space not found or invalid
-authorization." versus "URL not found or invalid authorization." (and a trailing
-period on one title) tell an unauthenticated caller whether the Space exists.
-Space ids are embedded in every self-hosted `did:webvh`, so polling
-`GET /space/<S>/meta` turns Delete Space into an observable event. The spec's
-access-control section makes indistinguishability a MUST.
-
 ### WAS-142: Problem documents on every route, and Fastify's own errors typed
 
 - status: todo

@@ -30,13 +30,22 @@ const baseArgs = {
     'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK' as const
 }
 
-/** A logger stub that records whether `error()` was called. */
+/**
+ * A logger stub that records whether `error()` was called. `debug()` is
+ * recorded separately: a key-resolution failure is a client-caused condition
+ * and logs there rather than at `error`.
+ */
 function recordingLogger() {
   const calls: unknown[][] = []
+  const debugCalls: unknown[][] = []
   return {
     calls,
+    debugCalls,
     error: (...args: unknown[]) => {
       calls.push(args)
+    },
+    debug: (...args: unknown[]) => {
+      debugCalls.push(args)
     }
   }
 }

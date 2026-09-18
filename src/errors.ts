@@ -63,26 +63,44 @@ export class ProblemError extends Error {
 }
 
 /**
+ * The one `detail` every masked 404 carries -- the absent-target family below
+ * and the authorization-denial family further down alike. It names no entity,
+ * so the body of "there is nothing here" and the body of "you may not see what
+ * is here" are the same bytes.
+ */
+const MASKED_NOT_FOUND_DETAIL = 'URL not found or invalid authorization.'
+
+/**
+ * The `title` shared by both masked-404 families. An absent target and a
+ * failed authorization reach it with the same `requestName` (one handler names
+ * the request for both paths), and a throw site that names no request gets the
+ * same request-less title on either path, so the two bodies stay identical
+ * whether or not a name was threaded through.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ * @returns {string}
+ */
+function maskedTitle({ requestName }: { requestName?: string }): string {
+  return requestName ? `Invalid ${requestName} request` : 'Invalid request'
+}
+
+/**
  * 404 -- shared base for the `*NotFoundError` family: an entity does not exist,
  * or the caller is not authorized (the WAS existence-masking convention). The
- * exported subclasses differ only in the entity noun, which fills the default
- * title and the detail.
+ * exported subclasses are thin `instanceof` markers; they carry no entity noun
+ * on the wire, because naming one ("Space not found...") would tell an
+ * unauthorized caller which layer of the URL exists. The body is byte-identical
+ * to `UnauthorizedError`'s: same `type`, same `title`, same `detail`, which is
+ * what the spec's indistinguishability requirement asks for.
  * @param options {object}
- * @param options.entity {string}   the entity noun (e.g. `Space`)
  * @param [options.requestName] {string}   request name used in the error title
  */
 class NotFoundError extends ProblemError {
-  constructor({
-    entity,
-    requestName
-  }: {
-    entity: string
-    requestName?: string
-  }) {
+  constructor({ requestName }: { requestName?: string }) {
     super({
       type: ProblemTypes.NOT_FOUND,
-      title: `Invalid ${requestName || entity} request`,
-      detail: `${entity} not found or invalid authorization.`,
+      title: maskedTitle({ requestName }),
+      detail: MASKED_NOT_FOUND_DETAIL,
       statusCode: 404
     })
   }
@@ -120,7 +138,7 @@ class InvalidIdError extends ProblemError {
  */
 export class SpaceNotFoundError extends NotFoundError {
   constructor({ requestName }: { requestName?: string } = {}) {
-    super({ entity: 'Space', requestName })
+    super({ requestName })
   }
 }
 
@@ -542,7 +560,7 @@ export class MethodNotAllowedError extends ProblemError {
  */
 export class CollectionNotFoundError extends NotFoundError {
   constructor({ requestName }: { requestName?: string } = {}) {
-    super({ entity: 'Collection', requestName })
+    super({ requestName })
   }
 }
 
@@ -553,7 +571,7 @@ export class CollectionNotFoundError extends NotFoundError {
  */
 export class ResourceNotFoundError extends NotFoundError {
   constructor({ requestName }: { requestName?: string } = {}) {
-    super({ entity: 'Resource', requestName })
+    super({ requestName })
   }
 }
 
@@ -565,7 +583,7 @@ export class ResourceNotFoundError extends NotFoundError {
  */
 export class PolicyNotFoundError extends NotFoundError {
   constructor({ requestName }: { requestName?: string } = {}) {
-    super({ entity: 'Policy', requestName })
+    super({ requestName })
   }
 }
 
@@ -589,9 +607,12 @@ export class InvalidPolicyError extends ProblemError {
 
 /**
  * 404 -- shared base for the authorization-denial family. Every denial keeps
- * the same masked status, so an under-authorized caller cannot tell an absent
- * target from one it may not see; the subclasses differ only in the problem
- * `type` and the detail.
+ * the same masked status and the same `title` as the `*NotFoundError` family,
+ * so an under-authorized caller cannot tell an absent target from one it may
+ * not see; the subclasses differ only in the problem `type` and the detail.
+ * `UnauthorizedError`, the masked default, shares the detail too, so its body
+ * is byte-identical to an absent target's -- the two named causes below are
+ * raised only for the holder of the capability being refused.
  * @param options {object}
  * @param options.type {ProblemType}   the problem type naming the cause
  * @param options.detail {string}   the problem detail
@@ -612,7 +633,7 @@ class DenialError extends ProblemError {
   }) {
     super({
       type,
-      title: `Invalid ${requestName} request.`,
+      title: maskedTitle({ requestName }),
       detail,
       statusCode: 404,
       cause
@@ -622,7 +643,9 @@ class DenialError extends ProblemError {
 
 /**
  * 404 -- capability invocation did not verify (reported as not-found so as not
- * to leak resource existence).
+ * to leak resource existence). Its body is byte for byte the one an absent
+ * target answers with (`NotFoundError` above): same `type`, `title` and
+ * `detail`.
  * @param options {object}
  * @param [options.requestName] {string}   request name used in the error title
  */
@@ -630,7 +653,7 @@ export class UnauthorizedError extends DenialError {
   constructor({ requestName }: { requestName?: string }) {
     super({
       type: ProblemTypes.NOT_FOUND,
-      detail: 'URL not found or invalid authorization.',
+      detail: MASKED_NOT_FOUND_DETAIL,
       requestName
     })
   }
@@ -1206,7 +1229,7 @@ export class InvalidImportError extends ProblemError {
  */
 export class KeystoreNotFoundError extends NotFoundError {
   constructor({ requestName }: { requestName?: string } = {}) {
-    super({ entity: 'Keystore', requestName })
+    super({ requestName })
   }
 }
 
@@ -1266,7 +1289,7 @@ export class KeystoreStateConflictError extends ProblemError {
  */
 export class KeyNotFoundError extends NotFoundError {
   constructor({ requestName }: { requestName?: string } = {}) {
-    super({ entity: 'Key', requestName })
+    super({ requestName })
   }
 }
 

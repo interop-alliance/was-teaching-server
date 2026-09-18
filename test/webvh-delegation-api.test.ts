@@ -245,10 +245,10 @@ describe('did:webvh delegation and chain depth', () => {
           capability: delegated
         })
       )
-      // The keyId does not resolve at all, so verification *errors* -- the 400
-      // `invalid-authorization-header`, not the 404 an unauthorized-but-
-      // verified invocation is masked as.
-      assert.equal(err.status, 400)
+      // The keyId does not resolve at all, which is a failed authorization:
+      // the same masked 404 an unauthorized-but-verified invocation gets, so
+      // the keyId reveals nothing about what the server can resolve.
+      assert.equal(err.status, 404)
     })
   })
 

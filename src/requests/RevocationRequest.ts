@@ -39,6 +39,7 @@ import {
   CapabilityAlreadyRevokedError,
   InvalidRevocationError
 } from '../errors.js'
+import type { WebvhResolverContext } from '../lib/webvhController.js'
 import type { IDID, RevocationRecord, RevocationScope } from '../types.js'
 import { fetchKeystore } from './keystoreContext.js'
 import { fetchSpace } from './spaceContext.js'
@@ -47,22 +48,106 @@ import { fetchSpace } from './spaceContext.js'
 const ONE_DAY = 24 * 60 * 60 * 1000
 
 /**
- * The scope-agnostic revocation submission: validate the body capability,
- * verify its delegation chain (it must root in `rootTarget`), which yields
- * the chain's controllers for the dual-root invocation check, then -- only
- * once the invocation is authorized -- reject a chain containing an
- * already-revoked link (resubmissions included) with the 400
- * `CapabilityAlreadyRevokedError`, and store the record. The store check
- * runs strictly AFTER the 404-masking authorization so an unauthorized
- * caller cannot probe whether a capability is revoked (a 400-vs-404 oracle
- * otherwise); that ordering is also what lets the store hit carry a problem
- * type of its own -- every earlier 400 (malformed body, root capability, id
- * mismatch, a chain that does not verify) stays `InvalidRevocationError`, so
- * a chain that fails to verify is never reported as revoked, and the distinct
- * type discloses nothing an unauthorized prober could not already learn. The
- * record expires one day after the
- * capability itself does (from then on the capability is rejected on expiry
- * alone; the margin covers clock-skew grace periods).
+ * Checks the submitted body is a revocable delegated capability naming the
+ * revocation URL's id, and verifies its own delegation chain (it must root in
+ * `rootTarget`). Rejects with `InvalidRevocationError` (400) on any of those,
+ * and returns the capability together with what the chain verification yields:
+ * its `delegator`, the `chainControllers` the dual-root invocation check reads,
+ * and the `capabilities` the store is later checked against.
+ *
+ * Split out of {@link submitRevocation} so its failure can be captured and
+ * re-raised after the invocation verifies, rather than answering an
+ * unauthorized caller a 400 that an absent scope would have answered 404.
+ *
+ * @param options {object}
+ * @param options.body {unknown}   the parsed request body
+ * @param options.revocationId {string}   the URL's revocation id
+ * @param options.rootTarget {string}   the scope's full URL, the required root
+ *   of the submitted capability's chain
+ * @param options.rootController {IDID}   the scope's controller
+ * @param options.webvh {WebvhResolverContext}   resolver context for a
+ *   `did:webvh` controller in the chain
+ * @param [options.maxChainLength] {number}   max chain length, root included
+ * @param [options.maxDelegationTtl] {number}   max delegated-zcap TTL (ms)
+ * @returns {Promise<object>}   `{ capabilityBody, delegator, chainControllers,
+ *   capabilities }`
+ */
+async function validateSubmittedCapability({
+  body,
+  revocationId,
+  rootTarget,
+  rootController,
+  webvh,
+  maxChainLength,
+  maxDelegationTtl
+}: {
+  body: unknown
+  revocationId: string
+  rootTarget: string
+  rootController: IDID
+  webvh: WebvhResolverContext
+  maxChainLength?: number
+  maxDelegationTtl?: number
+}) {
+  if (
+    typeof body !== 'object' ||
+    body === null ||
+    Array.isArray(body) ||
+    typeof (body as Record<string, unknown>).id !== 'string'
+  ) {
+    throw new InvalidRevocationError({
+      detail: 'The revocation body must be a capability with a string "id".'
+    })
+  }
+  const capabilityBody = body as Record<string, unknown> & { id: string }
+  if (capabilityBody.id.startsWith('urn:zcap:root:')) {
+    throw new InvalidRevocationError({
+      detail: 'A root capability cannot be revoked.'
+    })
+  }
+  // The submitted capability must be the one the URL names (the client
+  // frames the id with `encodeURIComponent` into the final path segment).
+  if (capabilityBody.id !== revocationId) {
+    throw new InvalidRevocationError({
+      detail: 'The capability "id" does not match the revocation URL.'
+    })
+  }
+
+  const verified = await verifyRevocationChain({
+    capability: capabilityBody,
+    rootTarget,
+    rootController,
+    webvh,
+    maxChainLength,
+    maxDelegationTtl
+  })
+  return { capabilityBody, ...verified }
+}
+
+/**
+ * The scope-agnostic revocation submission: validate the body capability and
+ * verify its delegation chain (it must root in `rootTarget`), which yields the
+ * chain's controllers for the dual-root invocation check, then -- only once the
+ * invocation is authorized -- surface any 400 that validation found, reject a
+ * chain containing an already-revoked link (resubmissions included) with the
+ * 400 `CapabilityAlreadyRevokedError`, and store the record.
+ *
+ * NOTHING a client can observe is decided before the invocation verifies. The
+ * body-shape and chain failures are captured rather than thrown, because a
+ * caller without a verifying signature would otherwise read a 400 here against
+ * an existing Space or keystore and the masked 404 against an absent one --
+ * the same existence oracle the 404 masking exists to close. A capture also
+ * loses the `chainControllers` the dual-root rule needs, so verification then
+ * runs with an empty set: only the scope's own root can authorize such a
+ * submission, which is exactly right, since the alternate root is controlled by
+ * the chain that failed to verify. The store check runs after authorization for
+ * the same reason (an unauthorized caller must not probe whether a capability
+ * is revoked), and that ordering is what lets the store hit carry a problem
+ * type of its own -- every other 400 (malformed body, root capability, id
+ * mismatch, a chain that does not verify) stays `InvalidRevocationError`, so a
+ * chain that fails to verify is never reported as revoked. The record expires
+ * one day after the capability itself does (from then on the capability is
+ * rejected on expiry alone; the margin covers clock-skew grace periods).
  *
  * @param options {object}
  * @param options.request {FastifyRequest}   supplies url, method, headers,
@@ -107,43 +192,32 @@ async function submitRevocation({
   const { url, method, headers, body } = request
   const { serverUrl, storage } = request.server
 
-  if (
-    typeof body !== 'object' ||
-    body === null ||
-    Array.isArray(body) ||
-    typeof (body as Record<string, unknown>).id !== 'string'
-  ) {
-    throw new InvalidRevocationError({
-      detail: 'The revocation body must be a capability with a string "id".'
-    })
-  }
-  const capabilityBody = body as Record<string, unknown> & { id: string }
-  if (capabilityBody.id.startsWith('urn:zcap:root:')) {
-    throw new InvalidRevocationError({
-      detail: 'A root capability cannot be revoked.'
-    })
-  }
-  // The submitted capability must be the one the URL names (the client
-  // frames the id with `encodeURIComponent` into the final path segment).
-  if (capabilityBody.id !== revocationId) {
-    throw new InvalidRevocationError({
-      detail: 'The capability "id" does not match the revocation URL.'
-    })
-  }
-
-  // Verify the to-be-revoked capability's own delegation chain (400 when
-  // invalid); its controllers feed the dual-root invocation check below.
-  // Structural only -- the revocation store is not consulted until after
-  // authorization (see below).
-  const { delegator, chainControllers, capabilities } =
-    await verifyRevocationChain({
-      capability: capabilityBody,
+  // Validate the body capability and verify its own delegation chain, holding
+  // any failure back until the invocation has verified: a 400 raised here
+  // would answer differently for an existing scope than for an absent one,
+  // whose masked 404 was already thrown by the caller's `fetch*` (see the
+  // note above). Structural only -- the revocation store is not consulted
+  // until after authorization either. Only the 400 is held back; a
+  // server-side fault met while verifying the chain surfaces as its 5xx.
+  let validated:
+    Awaited<ReturnType<typeof validateSubmittedCapability>> | undefined
+  let validationError: InvalidRevocationError | undefined
+  try {
+    validated = await validateSubmittedCapability({
+      body,
+      revocationId,
       rootTarget,
       rootController,
       webvh: { storage, serverUrl },
       maxChainLength,
       maxDelegationTtl
     })
+  } catch (err) {
+    if (!(err instanceof InvalidRevocationError)) {
+      throw err
+    }
+    validationError = err
+  }
 
   await handleRevocationInvocationVerify({
     url,
@@ -153,7 +227,10 @@ async function submitRevocation({
     rootTarget,
     rootController,
     webvh: { storage, serverUrl },
-    chainControllers,
+    // With no verified chain there are no chain controllers, so the
+    // revocation URL's synthesized root is controlled by nobody and only the
+    // scope's own root can authorize the submission.
+    chainControllers: validated?.chainControllers ?? [],
     expectedAction,
     // The *invoking* chain is checked against the store as on every other
     // route -- a revoked capability cannot authorize a revocation -- and
@@ -168,8 +245,17 @@ async function submitRevocation({
     logger: request.log
   })
 
-  // The caller is authorized; NOW consult the store for the to-be-revoked
-  // chain. A chain containing an already-revoked link (resubmissions
+  // The caller is authorized, so a 400 no longer discloses anything an
+  // unauthorized prober could not already learn: surface whatever the body
+  // and chain validation found.
+  if (validationError !== undefined) {
+    throw validationError
+  }
+  // `validated` is set whenever no error was captured.
+  const { capabilityBody, delegator, capabilities } = validated!
+
+  // NOW consult the store for the to-be-revoked chain. A chain containing an
+  // already-revoked link (resubmissions
   // included) is the 400 `capability-already-revoked`; the 409 duplicate
   // stays reserved for a write race at the store. Running this after the
   // masked authorization keeps revocation state undisclosed to unauthorized

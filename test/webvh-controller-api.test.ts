@@ -547,9 +547,9 @@ describe('did:webvh Space controller', () => {
       // The cache was invalidated by that very write, so the forgery takes
       // effect immediately -- as a *failure* to resolve, never as trust. The
       // controller document no longer resolves at all, so the keyId lookup
-      // errors out: that is the 400 `invalid-authorization-header` every
-      // verification error yields, not the 404 an unauthorized-but-verified
-      // invocation is masked as.
+      // fails: a key the request named but the server cannot resolve is a
+      // failed authorization, answered as the same masked 404 an
+      // unauthorized-but-verified invocation gets.
       const err = await requestError(
         client({ signer: space.clientKeyPair.signer() }).request({
           url: new URL(
@@ -564,7 +564,7 @@ describe('did:webvh Space controller', () => {
           })
         })
       )
-      assert.equal(err.status, 400)
+      assert.equal(err.status, 404)
     })
   })
 
@@ -725,14 +725,15 @@ describe('did:webvh Space controller', () => {
         { hello: 'world' }
       )
 
-      // ...and the rotated-out one no longer does.
+      // ...and the rotated-out one no longer does: its keyId is absent from
+      // the current document, so it does not resolve, which is the masked 404.
       const err = await requestError(
         space.was.request({
           path: `/space/${space.spaceId}/credentials/doc-1`,
           method: 'GET'
         })
       )
-      assert.equal(err.status, 400)
+      assert.equal(err.status, 404)
     })
   })
 
@@ -791,19 +792,18 @@ describe('did:webvh Space controller', () => {
           json: { id: 'after-log-deletion' }
         })
       )
-      assert.equal(err.status, 400)
+      assert.equal(err.status, 404)
 
       // Reads are refused on the same terms: with no resolvable controller
-      // document there is no key to verify against, which surfaces as the 400
-      // every verification error yields (not the 404 an unauthorized-but-
-      // verified invocation is masked as).
+      // document there is no key to verify against, which is a failed
+      // authorization and so the same masked 404.
       const readErr = await requestError(
         logSpace.was.request({
           path: `/space/${controlledSpaceId}/`,
           method: 'GET'
         })
       )
-      assert.equal(readErr.status, 400)
+      assert.equal(readErr.status, 404)
     })
   })
 
