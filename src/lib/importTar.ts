@@ -14,7 +14,7 @@ import {
   JSON_FILE_SUFFIX,
   META_FILE_PREFIX,
   COLLECTION_LOG_FILE_PREFIX
-} from './resourceFileName.js'
+} from '@interop/space-archive'
 import { assertEncryptedWriteConforms } from './encryption.js'
 import { assertGoverningLogAppend } from './governedLog.js'
 import { isPlainObject } from './isPlainObject.js'

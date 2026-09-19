@@ -463,9 +463,20 @@ export function kmsRevocationsPath({
  * revocation submission target (POST), the WAS-route sibling of
  * `kmsRevocationsPath` and the same ezcap-express `/zcaps/revocations/`
  * convention. `revocationId` is the *to-be-revoked capability's id*,
- * URL-encoded into the single path segment the route expects. The `zcaps`
- * segment sits four levels under `/space`, deeper than any Collection or
- * Resource route, so it shadows neither and needs no reserved-id entry.
+ * URL-encoded into the single path segment the route expects.
+ *
+ * `zcaps` needs no reserved-id entry. Depth is not the reason: this route is
+ * four segments under `/space`, the same as
+ * `/space/:spaceId/:collectionId/:resourceId/meta`, and one shallower than the
+ * chunk routes. The method is. Only `POST` is registered here, and WAS defines
+ * no `POST` at that depth. find-my-way falls back to the parametric branch for
+ * a method the static branch does not serve, so `GET`, `PUT` and `DELETE` at
+ * this shape resolve to the Collection and Resource routes. A Collection
+ * genuinely named `zcaps` therefore still lists, adds, reads and writes
+ * normally. One overlap remains: `POST /space/:spaceId/zcaps/revocations/:x`
+ * answers as a revocation, not as the 405 `refuseUnimplementedMethods`
+ * synthesizes for Resource metadata. `test/space-revocation-api.test.ts` pins
+ * all of this.
  * @param options {object}
  * @param options.spaceId {string}
  * @param options.revocationId {string}   the to-be-revoked capability's id

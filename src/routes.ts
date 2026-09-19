@@ -456,8 +456,10 @@ export async function initSpaceRoutes(
   app.get('/space/:spaceId/quotas', SpaceRequest.quotas)
 
   // Revoke a zcap delegated from this Space (`:revocationId` = the URL-encoded
-  // id of the capability being revoked, which is also the request body). Four
-  // segments deep, so it shadows no Collection or Resource route.
+  // id of the capability being revoked, which is also the request body).
+  // `POST`-only, and WAS registers no other `POST` at this depth, which is what
+  // keeps a Collection named `zcaps` reachable through the parametric routes --
+  // see `spaceRevocationsPath` for the full argument.
   app.post(
     '/space/:spaceId/zcaps/revocations/:revocationId',
     RevocationRequest.postSpace

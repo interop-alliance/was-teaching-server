@@ -9,7 +9,7 @@ import { mkdir, rm, stat as fsStat } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { Transform, type Readable } from 'node:stream'
+import { Readable, Transform } from 'node:stream'
 import fs from 'node:fs'
 import jsonfs from 'fs-json-store'
 import pino from 'pino'
@@ -54,8 +54,10 @@ import {
   resourcePolicyFileName,
   SPACE_POLICY_FILE_NAME,
   metaSidecarFileName,
-  collectionLogFileName
-} from '../lib/resourceFileName.js'
+  collectionLogFileName,
+  packSpaceArchive
+} from '@interop/space-archive'
+import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
 import type { MetaSidecar } from '../lib/metaSidecar.js'
 import {
   sanitizeBackendRecord,
@@ -67,8 +69,6 @@ import {
   collectionResourcesList,
   suppressesItemNames
 } from '../lib/collectionListing.js'
-import { packSpaceArchive } from '../lib/exportTar.js'
-import type { ArchiveEntry, ArchiveFile } from '../lib/exportTar.js'
 import { revocationFileName } from '../lib/revocations.js'
 import { policyGrants } from '../policy.js'
 import { KeyedMutex, KeyedReadWriteLock } from '../lib/keyedMutex.js'
@@ -1498,7 +1498,14 @@ export class FileSystemBackend implements StorageBackend {
       }
     }
 
-    return packSpaceArchive({ spaceId, entries: archiveEntries, revocations })
+    // `packSpaceArchive` resolves a tar-stream `Pack`, a streamx readable;
+    // `exportSpace` hands its callers a Node `Readable`.
+    const pack = await packSpaceArchive({
+      spaceId,
+      entries: archiveEntries,
+      revocations
+    })
+    return Readable.from(pack)
   }
 
   /**

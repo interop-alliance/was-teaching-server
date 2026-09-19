@@ -10,7 +10,7 @@ import { Readable } from 'node:stream'
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { fileNameFor } from '../src/lib/resourceFileName.js'
+import { fileNameFor } from '@interop/space-archive'
 import { formatEtag } from '../src/lib/etag.js'
 import { PreconditionFailedError } from '../src/errors.js'
 

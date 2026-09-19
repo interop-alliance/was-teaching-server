@@ -2559,3 +2559,66 @@ period on one title) tell an unauthenticated caller whether the Space exists.
 Space ids are embedded in every self-hosted `did:webvh`, so polling
 `GET /space/<S>/meta` turns Delete Space into an observable event. The spec's
 access-control section makes indistinguishability a MUST.
+
+### WAS-148: The `zcaps` segment comments argue from depth, which is wrong
+
+- status: done
+- done: 2026-09-18
+- priority: low
+- labels: cleanup, docs, routing
+- discovered-from: was-client WCL-94 (2026-09-18)
+- acceptance:
+  - [x] `spaceRevocationsPath`'s header in `src/lib/paths.ts` no longer claims
+        the `zcaps` segment is deeper than any Collection or Resource route
+  - [x] The same claim above the `app.post` registration in `src/routes.ts` is
+        corrected with it
+  - [x] Both comments state the reasons the segment cannot be shadowed that
+        routing actually rests on
+
+Comment-only. `/space/:spaceId/zcaps/revocations/:revocationId` sits four
+segments under `/space`, and both comments conclude from that depth that it
+"shadows neither and needs no reserved-id entry". The depth is not greater than
+a Collection or Resource route: `/space/:spaceId/:collectionId/:resourceId/meta`
+is also four, and `/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex`
+is five. The conclusion holds, but not for the stated reason, so the comment
+teaches a rule that does not generalize -- the same faulty argument would
+license a new two-segment reserved prefix that really would collide.
+
+Three things do keep a Collection named `zcaps` from reaching the route.
+Fastify's radix router prefers a static segment over a parametric one at the
+same position, so `zcaps` wins over `:collectionId`. The final segment is a zcap
+id, an absolute URI, so it never equals one of the reserved sub-resource
+segments (`meta`, `policy`, `chunks`) a Resource route reads in that position.
+And the two are method-disjoint: revocation is `POST`-only, while the Resource
+sub-resource routes at that depth answer `GET` / `PUT` / `DELETE`. Confirm the
+router-precedence half against find-my-way before writing it down.
+
+The client repeated the same argument in `was-client`'s own
+`src/internal/paths.ts` and has corrected it (WCL-94, 2026-09-18); this is the
+server half.
+
+Resolution: both comments rewritten. `spaceRevocationsPath`'s header in
+`src/lib/paths.ts` carries the argument; the `app.post` comment in
+`src/routes.ts` states the method point and refers to it. The reasoning in the
+Context above was itself half wrong, and the rewrite does not repeat it. A probe
+of the live route table with `fastify.findRoute` shows that
+static-beats-parametric precedence is method-scoped: find-my-way falls back to
+the parametric branch when the static branch serves no handler for the method,
+so `GET`, `PUT` and `DELETE` at `/space/s/zcaps/revocations/meta` all reach the
+Resource routes with `collectionId: 'zcaps'`, and `POST /space/s/zcaps/` still
+adds a Resource. The absolute-URI point was wrong too: the final segment is a
+free parameter, so `POST /space/s/zcaps/revocations/meta` binds
+`revocationId: 'meta'` and reaches this route. Method-disjointness is the whole
+of it. WAS registers no other `POST` four segments under `/space` -- the only
+handler there is the 405 `refuseUnimplementedMethods` synthesizes for Resource
+metadata, which this route takes over for the `zcaps`/`revocations` id pair
+alone. That single overlap is now stated in the comment rather than papered
+over.
+
+Scope note: the item said comment-only, but a comment asserting a routing
+invariant with nothing pinning it is how the wrong one survived, so
+`test/space-revocation-api.test.ts` gained a describe block, "the zcaps segment
+shadows no Collection route", holding four `findRoute` assertions that cover
+each claim. Suite green (1418 passed, 5 skipped, up from 1414), lint and
+typecheck clean. Filed from was-client WCL-94, whose own copy of the argument
+was corrected there.

@@ -474,8 +474,10 @@ export type BackendProviderRegistry = Map<string, BackendProvider>
  *   Where the content-type lives is an adapter detail (filename segment /
  *   map-value field / future SQL column).
  *
- * Note: `exportSpace` resolves a tar-stream `Pack` at runtime, typed here as the
- * `Readable` it extends (tar-stream ships no types).
+ * Note: `exportSpace` resolves a Node `Readable`. The archive codec
+ * (`@interop/space-archive`) is isomorphic and resolves a streamx-based
+ * tar-stream `Pack`; each backend wraps it with `Readable.from` before
+ * returning it.
  */
 /**
  * The out-of-band `ETag` validator parts a stored Space or Collection Metadata

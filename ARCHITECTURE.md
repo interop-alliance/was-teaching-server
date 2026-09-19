@@ -228,7 +228,15 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   implementation (`implements StorageBackend` from `src/types.ts`). A backend
   offers no precondition primitive of its own to a client: the server serializes
   the write and evaluates `If-Match` / `If-None-Match: *` atomically with it, so
-  every backend honors both unconditionally.
+  every backend honors both unconditionally. Each backend's `exportSpace` builds
+  the archive's entry tree out of its own storage and hands it to
+  `packSpaceArchive`; the per-Space archive codec itself -- the file-name
+  dialect, the `manifest.yml` document and the packer -- lives in
+  `@interop/space-archive`, shared with the wallets that read a backup, and
+  `src/lib/importTar.ts` reads the same dialect back. The codec is isomorphic
+  and resolves a streamx-based tar-stream `Pack`, which the backend wraps with
+  `Readable.from`. `test/space-archive-fixture.test.ts` pins this server's entry
+  trees against the archive fixture that package checks in.
 - **`src/errors.ts`** — custom error classes plus `handleError`, the Fastify
   error handler installed by each route group.
 - **`src/exchanges.ts`** — the ephemeral exchanges facet

@@ -19,7 +19,7 @@ import {
 } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
-import { parseChunkIndexSegment } from '../lib/resourceFileName.js'
+import { parseChunkIndexSegment } from '@interop/space-archive'
 import { chunkPath, chunksContainerPath } from '../lib/paths.js'
 import {
   type EtagValidator,

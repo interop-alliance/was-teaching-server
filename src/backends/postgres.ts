@@ -59,8 +59,10 @@ import {
   resourcePolicyFileName,
   SPACE_POLICY_FILE_NAME,
   metaSidecarFileName,
-  collectionLogFileName
-} from '../lib/resourceFileName.js'
+  collectionLogFileName,
+  packSpaceArchive
+} from '@interop/space-archive'
+import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
 import type { MetaSidecar } from '../lib/metaSidecar.js'
 import {
   sanitizeBackendRecord,
@@ -74,8 +76,6 @@ import {
 } from '../lib/collectionListing.js'
 import { decodeCursor } from '../lib/cursor.js'
 import { policyGrants } from '../policy.js'
-import { packSpaceArchive } from '../lib/exportTar.js'
-import type { ArchiveEntry, ArchiveFile } from '../lib/exportTar.js'
 import { revocationFileName } from '../lib/revocations.js'
 import { isJson } from '../lib/isJson.js'
 import {
@@ -3819,7 +3819,7 @@ export class PostgresBackend implements StorageBackend {
       row => row.collection_id === '' && row.resource_id === ''
     )?.policy
 
-    // The shared archive entry shapes (`lib/exportTar.ts`): a file entry carries
+    // The shared archive entry shapes (`@interop/space-archive`): a file entry carries
     // its bytes inline (the small JSON dot-files) or a lazy `read()` resolved at
     // pack time (a resource representation, and a chunk of a chunked Resource --
     // the `chunked-streams` feature), and a chunk directory is a nested
@@ -4008,7 +4008,14 @@ export class PostgresBackend implements StorageBackend {
       }))
       .sort((a, b) => a.name.localeCompare(b.name))
 
-    return packSpaceArchive({ spaceId, entries: topLevel, revocations })
+    // `packSpaceArchive` resolves a tar-stream `Pack`, a streamx readable;
+    // `exportSpace` hands its callers a Node `Readable`.
+    const pack = await packSpaceArchive({
+      spaceId,
+      entries: topLevel,
+      revocations
+    })
+    return Readable.from(pack)
   }
 
   /**

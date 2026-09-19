@@ -685,4 +685,72 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       assert.equal(err.status, 404)
     })
   })
+
+  /**
+   * The `zcaps` segment is not in the Reserved Path Segment Registry, and the
+   * comment on `spaceRevocationsPath` explains why it needs no entry. These
+   * pin that explanation against the live route table, since the comment it
+   * replaced argued from depth and was wrong.
+   */
+  describe('the `zcaps` segment shadows no Collection route', () => {
+    /**
+     * The route parameters find-my-way binds for one method and path, or
+     * `null` when nothing is registered. A `collectionId` means the parametric
+     * Collection or Resource branch won; a `revocationId` means this route did.
+     */
+    function routeParams(method: string, url: string) {
+      return fastify.findRoute({ method: method as never, url })?.params ?? null
+    }
+
+    it('takes POST at its own shape, whatever the final segment', () => {
+      const encoded = encodeURIComponent('urn:uuid:1e2f3a4b')
+      assert.deepEqual(
+        routeParams('POST', `/space/s/zcaps/revocations/${encoded}`),
+        {
+          spaceId: 's',
+          revocationId: 'urn:uuid:1e2f3a4b'
+        }
+      )
+      // The final segment is a free parameter, so a percent-encoded absolute
+      // URI is not what keeps the routes apart.
+      assert.deepEqual(routeParams('POST', '/space/s/zcaps/revocations/meta'), {
+        spaceId: 's',
+        revocationId: 'meta'
+      })
+    })
+
+    it('leaves every other method at that shape to the parametric routes', () => {
+      for (const method of ['GET', 'PUT', 'DELETE']) {
+        assert.deepEqual(
+          routeParams(method, '/space/s/zcaps/revocations/meta'),
+          { spaceId: 's', collectionId: 'zcaps', resourceId: 'revocations' },
+          `${method} should reach the Resource metadata route`
+        )
+      }
+    })
+
+    it('leaves a Collection genuinely named `zcaps` fully usable', () => {
+      assert.deepEqual(routeParams('POST', '/space/s/zcaps/'), {
+        spaceId: 's',
+        collectionId: 'zcaps'
+      })
+      assert.deepEqual(routeParams('GET', '/space/s/zcaps/revocations'), {
+        spaceId: 's',
+        collectionId: 'zcaps',
+        resourceId: 'revocations'
+      })
+    })
+
+    it('registers no other POST at Resource sub-resource depth', () => {
+      // The claim the comment rests on: nothing real is shadowed, because WAS
+      // has no POST there. The only POST handler at that depth is the 405
+      // `refuseUnimplementedMethods` synthesizes, which this route takes over
+      // for the `zcaps`/`revocations` id pair alone.
+      assert.deepEqual(routeParams('POST', '/space/s/notes/revocations/meta'), {
+        spaceId: 's',
+        collectionId: 'notes',
+        resourceId: 'revocations'
+      })
+    })
+  })
 })

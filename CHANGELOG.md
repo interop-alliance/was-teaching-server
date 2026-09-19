@@ -4,6 +4,17 @@
 
 ### Changed
 
+- The per-Space export archive codec now comes from `@interop/space-archive`
+  instead of `@interop/wallet-backup`. This drops wallet-core and the rest of
+  wallet-backup's dependency set from the server's dependency tree.
+- The per-Space export archive codec now comes from `@interop/wallet-backup`
+  rather than this server's own copy: the file-name dialect, the `manifest.yml`
+  document, the packer, and the six manifest URL constants moved there and the
+  local `src/lib/resourceFileName.ts`, `src/lib/exportManifest.ts` and
+  `src/lib/exportTar.ts` are deleted. Both backends pack through the package's
+  writer, so the server and a wallet reading a backup speak one codec. The
+  archive bytes are unchanged, pinned by a new counterpart test against the
+  fixture archive the package checks in.
 - The buffered-body limit (`application/json`, `+json`, `text/*`) is now derived
   from the active backend's `maxUploadBytes` instead of Fastify's 1 MiB default,
   so the same bytes accepted as `application/octet-stream` now also pass as
@@ -13,6 +24,15 @@
 - Fastify's and `@fastify/multipart`'s own over-limit errors are now answered as
   the registered `payload-too-large` problem (413) instead of `internal-error`
   with an empty `errors` entry.
+- Corrected the `zcaps` segment comments in `src/lib/paths.ts` and
+  `src/routes.ts`. Both argued that the revocation route shadows nothing because
+  it is deeper than any Collection or Resource route; it is the same depth as
+  `/space/:spaceId/:collectionId/:resourceId/meta` and one shallower than the
+  chunk routes. What keeps them apart is the method: the route is `POST`-only
+  and WAS registers no other `POST` at that depth, so find-my-way resolves the
+  other methods to the parametric routes and a Collection named `zcaps` stays
+  usable. `test/space-revocation-api.test.ts` now pins the routing. Comments and
+  tests only; no behavior change.
 
 ### Fixed
 
