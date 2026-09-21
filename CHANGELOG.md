@@ -2,6 +2,18 @@
 
 ## 0.38.0 - TBD
 
+### Added
+
+- An opt-in blog directory at `/directory/blogs`, turned on with
+  `WAS_BLOG_DIRECTORY=true` (off by default, answering 404). It lists public
+  blog documents hosted on this server, so a blog app can offer a Discover page.
+  `GET` is an unauthenticated, paginated listing of blog URLs. `POST` and
+  `DELETE` with `{ "blogUrl": ... }` add and remove one, and are accepted only
+  when signed by the `signingKey` the blog document publishes, read the way an
+  anonymous visitor would read it. Entries persist in `blog-directory.json`
+  under the data directory. The directory sits beside the WAS protocol, not in
+  the `fastifyWas` plugin.
+
 ### Changed
 
 - The per-Space export archive codec now comes from `@interop/space-archive`

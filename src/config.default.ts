@@ -470,6 +470,11 @@ export interface EnvConfig {
    * `/health`, the welcome page, and the service description; unset = `true`.
    */
   discloseVersion: boolean
+  /**
+   * Whether the opt-in blog directory (`/directory/blogs`) is served
+   * (`WAS_BLOG_DIRECTORY`); unset = `false`.
+   */
+  blogDirectory: boolean
 }
 
 /**
@@ -509,7 +514,8 @@ export function loadConfigFromEnv(
       currentKek: env.KMS_RECORD_CURRENT_KEK
     }),
     onboardingToken: parseOnboardingToken(env.WAS_ONBOARDING_TOKEN),
-    discloseVersion: parseDiscloseVersion(env.WAS_DISCLOSE_VERSION)
+    discloseVersion: parseDiscloseVersion(env.WAS_DISCLOSE_VERSION),
+    blogDirectory: parseBlogDirectory(env.WAS_BLOG_DIRECTORY)
   }
 }
 
@@ -949,6 +955,26 @@ export function parseDiscloseVersion(raw: string | undefined): boolean {
   throw new Error(
     `WAS_DISCLOSE_VERSION must be "true" or "false"; got "${raw}".`
   )
+}
+
+/**
+ * Parses the `WAS_BLOG_DIRECTORY` env value: whether the opt-in blog directory
+ * (`/directory/blogs`, see `src/blogDirectory.ts`) is served. Accepts `true`
+ * or `false` (case-insensitive, trimmed). An unset or empty value returns
+ * `false`: the directory is an extra beside the WAS protocol, so a server
+ * offers it only when its operator asks. A malformed value throws.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {boolean}
+ */
+export function parseBlogDirectory(raw: string | undefined): boolean {
+  const value = raw?.trim().toLowerCase() ?? ''
+  if (value === '' || value === 'false') {
+    return false
+  }
+  if (value === 'true') {
+    return true
+  }
+  throw new Error(`WAS_BLOG_DIRECTORY must be "true" or "false"; got "${raw}".`)
 }
 
 export const SPEC_URL =

@@ -17,6 +17,12 @@ import { FileSystemBackend } from './backends/filesystem.js'
 import type { StorageBackend } from './types.js'
 
 /**
+ * The project `data/` directory: where the default backend stores when no
+ * `dataDir` (env `WAS_DATA_DIR`) is given.
+ */
+export const DEFAULT_DATA_DIR = path.join(import.meta.dirname, '..', 'data')
+
+/**
  * Builds the default filesystem-backed storage, rooted at `dataDir` (the
  * project `data/` directory when none is given). Used by `createApp()` when no
  * backend is injected (production).
@@ -56,7 +62,7 @@ export function defaultBackend({
   maxResourcesPerSpace?: number
 } = {}): StorageBackend {
   return new FileSystemBackend({
-    dataDir: dataDir ?? path.join(import.meta.dirname, '..', 'data'),
+    dataDir: dataDir ?? DEFAULT_DATA_DIR,
     capacityBytes,
     maxUploadBytes,
     maxSpacesPerController,

@@ -3,7 +3,7 @@
  * Fastify instance, registers the `fastifyWas` plugin (the whole WAS protocol
  * surface -- see plugin.ts), and adds the teaching-server extras around it:
  * static assets, the Handlebars-rendered welcome page, the `/health` probe,
- * and the CORS proxy.
+ * the CORS proxy, and (when enabled) the blog directory.
  */
 import Fastify, {
   type FastifyInstance,
@@ -16,6 +16,10 @@ import path from 'node:path'
 
 import { fastifyWas, type FastifyWasOptions } from './plugin.js'
 import { initCorsProxyRoutes as initApiCorsProxyRoutes } from './corsProxy.js'
+import {
+  initBlogDirectoryRoutes,
+  type BlogDirectoryOptions
+} from './blogDirectory.js'
 import { BUILD_INFO, SPEC_URL, SERVER_VERSION } from './config.default.js'
 
 // TODO: https://github.com/fastify/fastify-helmet
@@ -25,20 +29,25 @@ import { BUILD_INFO, SPEC_URL, SERVER_VERSION } from './config.default.js'
  * (which carries the storage/config decorations and all WAS + WebKMS routes;
  * options are passed through -- see {@link FastifyWasOptions}), then the
  * teaching-server extras (static files, welcome page, health probe, CORS
- * proxy).
+ * proxy, blog directory).
  * @param options {object}   `fastifyWas` plugin options
  *   ({@link FastifyWasOptions}), plus:
  * @param [options.logger] {boolean|object}   Fastify's `logger` option:
  *   `false` for silent, or a pino options object or instance. Defaults to
  *   `true` (pino at its default level). The active backend's diagnostics are
  *   routed through whatever logger results, so `false` silences those too.
+ * @param [options.blogDirectory] {object}   serve the opt-in blog directory
+ *   (`/directory/blogs`), persisting its entries in `blogDirectory.file`;
+ *   omitted, the directory is not served (its URL answers 404)
  * @returns {import('fastify').FastifyInstance}
  */
 export function createApp({
   logger = true,
+  blogDirectory,
   ...options
 }: FastifyWasOptions & {
   logger?: FastifyServerOptions['logger']
+  blogDirectory?: BlogDirectoryOptions
 } = {}): FastifyInstance {
   const fastify = Fastify({ logger })
   // One switch withholds the version from all three places that publish it:
@@ -95,6 +104,10 @@ export function createApp({
   })
 
   fastify.register(initApiCorsProxyRoutes)
+
+  if (blogDirectory) {
+    fastify.register(initBlogDirectoryRoutes, blogDirectory)
+  }
 
   return fastify
 }

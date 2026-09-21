@@ -4,9 +4,11 @@
  * config surface via loadConfigFromEnv() (fail-fast on a missing SERVER_URL or
  * any malformed value), builds the app via createApp() and starts listening.
  */
+import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { createApp } from './server.js'
 import { PostgresBackend } from './backends/postgres.js'
+import { DEFAULT_DATA_DIR } from './storage.js'
 import { assertFreshBuild, loadConfigFromEnv } from './config.default.js'
 
 /**
@@ -46,7 +48,18 @@ export async function startServer(): Promise<void> {
       enabledBackendProviders: config.enabledBackendProviders,
       kmsRecordKek: config.kmsRecordKek,
       onboardingToken: config.onboardingToken,
-      discloseVersion: config.discloseVersion
+      discloseVersion: config.discloseVersion,
+      // The blog directory keeps its one file under the data directory, beside
+      // (not inside) the filesystem backend's own trees -- on the Postgres
+      // backend too, since it needs no backend support.
+      ...(config.blogDirectory && {
+        blogDirectory: {
+          file: path.join(
+            config.dataDir ?? DEFAULT_DATA_DIR,
+            'blog-directory.json'
+          )
+        }
+      })
     })
     // Warn (once, at startup, where the Fastify logger now exists) about limits
     // left implicitly unbounded. These warnings live only here so library and
