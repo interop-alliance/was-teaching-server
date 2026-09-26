@@ -32,9 +32,11 @@ import {
 import {
   assertValidSpaceType,
   defaultSpaceType,
-  isSameTypeSet
+  spaceTypeChangeProblem
 } from '../lib/spaceType.js'
 import { listRegisteredBackends } from '../lib/backends.js'
+import { projectSpaceMetadata } from '../lib/spaceProjection.js'
+import { buildServiceDescription } from '../serviceDescription.js'
 import {
   metadataEtagOf,
   formatEtag,
@@ -63,12 +65,7 @@ import {
   UnresolvableControllerError,
   SpaceNotFoundError
 } from '../errors.js'
-import type {
-  IDID,
-  SpaceMetadata,
-  CollectionsList,
-  SpaceQuotaReport
-} from '../types.js'
+import type { IDID, CollectionsList, SpaceQuotaReport } from '../types.js'
 
 export class SpaceRequest {
   /**
@@ -144,22 +141,22 @@ export class SpaceRequest {
       return notModified
     }
 
-    // authorized, continue. Advertise the Space's self `url` (the canonical
-    // trailing-slash container form) and linkset (policy discovery); both
-    // relative, consistent with the other URL fields the API returns. `type`
-    // is served lexically sorted (spec SHOULD).
-    const url = spacePath({ spaceId, trailingSlash: true })
-    const linkset = linksetPath({ spaceId })
+    // authorized, continue. The served object is the shared projection: the
+    // Space's self `url` (the canonical trailing-slash container form), its
+    // linkset (policy discovery) and its backends-available listing, stamped
+    // by `projectSpaceMetadata` so every path that materializes the object
+    // agrees.
     const getReply = reply.status(200)
     if (metaEtag !== undefined) {
       getReply.header('etag', metaEtag)
     }
-    return getReply.send({
-      ...storedMetadata,
-      type: [...storedMetadata.type].sort(),
-      url,
-      linkset
-    } satisfies SpaceMetadata)
+    return getReply.send(
+      await projectSpaceMetadata({
+        storage: request.server.storage,
+        spaceId,
+        spaceMetadata: storedMetadata
+      })
+    )
   }
 
   /**
@@ -344,17 +341,17 @@ export class SpaceRequest {
     // A Space Metadata object's `type` is set at creation and immutable after it,
     // so a Space cannot change role under a consumer that already classified
     // it. An absent (or set-equal) `type` preserves the stored value.
-    if (
-      existingSpaceMetadata &&
-      requestedType &&
-      !isSameTypeSet({
-        left: requestedType,
-        right: existingSpaceMetadata.type
-      })
-    ) {
+    const typeProblem =
+      existingSpaceMetadata && requestedType
+        ? spaceTypeChangeProblem({
+            requested: requestedType,
+            stored: existingSpaceMetadata.type
+          })
+        : undefined
+    if (typeProblem !== undefined) {
       throw new InvalidRequestBodyError({
         requestName: 'Update Space',
-        detail: 'The Space Metadata "type" is immutable once the Space exists.',
+        detail: typeProblem,
         pointer: '#/type'
       })
     }
@@ -405,12 +402,18 @@ export class SpaceRequest {
       return reply.status(204).send()
     }
     // Created: `Location` names the Space (its canonical container URL), not
-    // the Metadata object that was written (spec "Update Space").
+    // the Metadata object that was written (spec "Update Space"). A Space
+    // that did not exist before this write has no registered backends, so
+    // the echo stamps the server's own descriptor without a read.
     reply.header('Location', spaceUrl)
-    return reply.status(201).send({
-      ...spaceMetadata,
-      url: spacePath({ spaceId, trailingSlash: true })
-    })
+    return reply.status(201).send(
+      await projectSpaceMetadata({
+        storage,
+        spaceId,
+        spaceMetadata,
+        backends: [storage.describe()]
+      })
+    )
   }
 
   /**
@@ -621,7 +624,16 @@ export class SpaceRequest {
     })
 
     // zCap checks out, continue
-    const tarFile = await storage.exportSpace({ spaceId })
+    // The archive carries this server's Service Description verbatim, so an
+    // importer can read which specification versions and feature set the
+    // contents were written under. An app composed without a `serverUrl` has
+    // no absolute URL to build one from, and exports without it.
+    const { serverUrl, discloseVersion } = request.server
+    const service =
+      serverUrl === undefined
+        ? undefined
+        : buildServiceDescription({ serverUrl, discloseVersion })
+    const tarFile = await storage.exportSpace({ spaceId, service })
 
     return reply.status(200).type('application/x-tar').send(tarFile)
   }
@@ -648,8 +660,13 @@ export class SpaceRequest {
     assertValidIds({ spaceId }, { requestName })
 
     // Verify (capability-only): importing into a Space requires a valid
-    // capability invocation; no access-control-policy fallback.
-    await fetchSpaceAndVerify({
+    // capability invocation; no access-control-policy fallback. Whether the
+    // verified invocation was of the Space's root capability (which only the
+    // Space's controller can sign) rather than a delegated chain decides one
+    // thing: whether the archived Space Metadata object's user-writable
+    // members are restored or skipped. It is read off the verification result
+    // itself, not off the header's serialization.
+    const { rootInvocation } = await fetchSpaceAndVerify({
       request,
       spaceId,
       targetPath: importPath({ spaceId }),
@@ -659,7 +676,10 @@ export class SpaceRequest {
     try {
       const summary = await storage.importSpace({
         spaceId,
-        tarStream: request.body
+        tarStream: request.body,
+        // A delegated chain reaches the import route by attenuation, and
+        // rewriting the Space's own description is the controller's.
+        restoreSpaceMetadata: rootInvocation
       })
       return reply.status(200).send(summary)
     } catch (err) {
@@ -683,6 +703,9 @@ export class SpaceRequest {
       // (Space, Collection, or Resource); drop every policy cached under this
       // Space rather than tracking which levels it touched.
       invalidateSpacePolicies({ storage, spaceId })
+      // A root-invoked import restores the Space Metadata object's `type` and
+      // `name`, so the cached object is stale too.
+      invalidateSpaceMetadata({ storage, spaceId })
     }
   }
 

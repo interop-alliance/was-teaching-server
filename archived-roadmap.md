@@ -2622,3 +2622,149 @@ shadows no Collection route", holding four `findRoute` assertions that cover
 each claim. Suite green (1418 passed, 5 skipped, up from 1414), lint and
 typecheck clean. Filed from was-client WCL-94, whose own copy of the argument
 was corrected there.
+
+---
+
+### WAS-149: The delegated-clients clause admits POST
+
+- status: done (2026-09-20)
+- priority: medium
+- labels: zcap, client-annex, export
+- discovered-from: freewallet FW-530
+
+The wallet backup export invokes `POST /space/{id}/export` on the client-annex
+Space through the unlock record's `delegatedClients` delegation, which the
+inspector clause's second bridge branch admitted only with `allowedAction`
+within {GET, PUT}. The branch now admits {GET, PUT, POST}.
+
+POST adds no authority a PUT holder lacked. Under a Space container it reaches
+export, import, and Create Resource on each Collection container; a holder with
+PUT already creates Resources by id, and Update Space Metadata is
+controller-only whatever the actions carry. The wallet-side half is wallet-core
+WC-249, which widens `DELEGATED_CLIENTS_DELEGATION_ACTIONS` at mint. Records
+sealed before that carry the old pair, which this branch still admits.
+
+`src/lib/clientAnnexClause.ts` (header comment plus the branch's `actionsWithin`
+set), `ARCHITECTURE.md`, and `test/client-annex-clause-api.test.ts`, which
+gained a cell admitting `['GET', 'PUT', 'POST']` and kept a refusal cell over a
+set carrying DELETE.
+
+---
+
+### WAS-150: The Space export carries this server's Service Description
+
+- status: done (2026-09-20)
+- priority: medium
+- labels: export, archive-layout, service-description
+- discovered-from: freewallet FW-530
+
+An account's Spaces may in future live on different servers. A per-Space archive
+said nothing about the server that wrote it, so an importer could not read which
+specification versions and feature set the contents were written under, or
+refuse them, before writing anything. Every export now carries this server's
+Service Description verbatim as the archive's `service.json` entry, beside
+`manifest.yml`.
+
+The Export Space handler builds the description with `buildServiceDescription`,
+the same builder the `/service` route uses, and passes it to `exportSpace`; both
+backends hand it to `packSpaceArchive`, which writes the entry. An app composed
+without a `serverUrl` has no absolute URL to build a description from and
+exports without the entry, as does a backend called directly outside a request.
+`discloseVersion` is decorated onto the Fastify instance so the handler reads
+the same switch the route does.
+
+It is informational on import: `src/lib/importTar.ts` walks `space/` prefixed
+entries and ignores it, which a new `buildImportPlan` cell pins.
+
+`src/requests/SpaceRequest.ts`, `src/backends/filesystem.ts`,
+`src/backends/postgres.ts`, `src/types.ts` (the `StorageBackend.exportSpace`
+signature and the `discloseVersion` instance decoration), `src/plugin.ts`,
+`src/lib/importTar.ts` (layout comment), `ARCHITECTURE.md`, plus cells in
+`test/export-import-api.test.ts` and `test/importTar.test.ts`. The writer half
+is `@interop/space-archive` SAR-3 (its optional `service` option and
+`SpaceArchive.service`). The archive fixture is unchanged: an export run without
+a description writes no entry, so `test/space-archive-fixture.test.ts` still
+compares byte-identical.
+
+---
+
+### WAS-151: A fifth clause predicate for POST and PUT over a management zcap
+
+- status: done (2026-09-20)
+- priority: medium
+- labels: zcap, client-annex, export
+- discovered-from: freewallet FW-530
+
+A transient wallet session holds, for each sibling unlock Space, the management
+capability that Space's `did:key` controller delegated to the account did:webvh,
+now carrying `['GET','PUT','DELETE','POST']`. The ladder VM may delegate from it
+but not invoke it, so the session mints a single-verb child to its own bare
+did:key: `POST` to invoke `POST /space/{id}/export` for the backup export.
+Predicates 3 and 4 admit only DELETE-only and GET-only children, so such a child
+was refused.
+
+Predicate 5 admits it. The child's `invocationTarget` is the canonical
+trailing-slash Space URL and equals the parent's unchanged; its `allowedAction`
+is exactly `['POST']`, so a two-verb set never qualifies and neither does any
+other verb. The parent must be a delegated capability rather than the Space's
+synthesized root, its sole `controller` the delegator account, and the
+controller DID of its own delegation proof the Space's stored controller (one
+memoized Space Metadata read). So the parent is the management capability that
+Space's controller granted the account, and the predicate widens who signs the
+last link rather than what the account may do.
+
+`ladderInvocationRefusal` needed no relaxing: `spaceOperationOf` classifies only
+a `PUT` on a Space Metadata URL and a `DELETE` on a canonical Space URL, and
+neither a `POST` at `/space/{id}/export` nor a `PUT` under the Space container
+is either. The export route carries the default container rule and runs end to
+end under the new shape.
+
+A `PUT` branch for the restore's create-by-id was drafted beside it and
+withdrawn before landing (`decisions/0002`, the second 2026-09-20 amendment): a
+`PUT` child of the Space URL reaches every resource beneath the Space by prefix
+attenuation, so a transient session on one credential could overwrite a
+sibling's keyring record with no logged record of it. Create Space by Id is not
+reachable on a `did:webvh` chain anyway -- `verifyBodyControllerConsent` threads
+no `webvh` resolver context (WAS-131) -- and freewallet FW-531 re-adds a bounded
+create-only shape when the restore's sibling stage lands.
+
+`src/lib/clientAnnexClause.ts` (header comment, the predicate, the parent now
+passed as a full chain capability with a `parentIsRoot` flag, the refusal
+message), `ARCHITECTURE.md`, `decisions/0002` (a 2026-09-20 amendment), and
+seven cells in `test/client-annex-clause-api.test.ts`. The wallet-side halves
+are wallet-core's `SpaceCapabilityVerb` widening and freewallet FW-530.
+
+### WAS-152: Space Metadata carries `backends`; import restores its user-writable members
+
+- status: done (2026-09-20)
+- priority: medium
+- labels: spaces, backends, export-import
+- discovered-from: freewallet FW-530
+- touches:
+  - storage-core: `SpaceMetadata.backends` and `ImportStats.spaceMetadata`
+    (SC-8; needs a publish before this server can be published)
+  - wallet-attached-storage-spec: the Space Metadata Data Model's `backends`
+    member, the user-writable / server-derived split, and the import bullet's
+    restore rule (landed 2026-09-20)
+  - space-archive: the checked-in fixture archive's Space Metadata entry carries
+    `backends`, so the counterpart test still pins byte-identical exports
+- acceptance:
+  - [x] Every Space Metadata read carries `backends`, through one projection
+        (`src/lib/spaceProjection.ts`) shared by Read Space, both create echoes,
+        and the export archive entry
+  - [x] A `backends` in a write body is dropped (`stampSpaceMetadata`)
+  - [x] Import parses the archive's Space Metadata entry down to `type` and
+        `name`, applies them only under a root invocation, and reports
+        `spaceMetadata: 'restored' | 'skipped' | 'absent'`
+  - [x] Both backends' import walks are identical on this path
+  - [x] Tests in `test/export-import-api.test.ts`
+  - [x] CHANGELOG entry, ARCHITECTURE.md
+
+Two signed-off data-model changes. The backend description moves onto the Space
+Metadata object so a client learns a Space's backends from the object it already
+reads, and an archived Space Metadata object stops being inert: its
+user-writable members are restored, but only for an invoker holding the Space's
+root capability, since rewriting the Space's own description is the
+controller's. The handler decides root from the verified invocation's
+`Capability-Invocation` header (`isRootInvocation`), the same reading the
+`controller-only` container rule makes.

@@ -21,6 +21,7 @@ import {
   CountQuotaExceededError,
   PayloadTooLargeError,
   InvalidCursorError,
+  InvalidImportError,
   KeystoreStateConflictError,
   KeyIdConflictError,
   DuplicateRevocationError
@@ -3877,6 +3878,34 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           undefined
         )
       })
+
+      it('a registration and a removal each advance the Space Metadata version, generation kept', async () => {
+        // The served Space Metadata object lists the registrations under
+        // `backends`, so its strong validator must move with them; the body
+        // is untouched, so the generation stays.
+        const { backend } = harness
+        const before = (await backend.getSpaceMetadata({ spaceId }))!
+        const registered = { ...record, id: 'gdrive-2' }
+        await backend.writeBackend({
+          spaceId,
+          backendId: registered.id,
+          record: registered
+        })
+        const afterWrite = (await backend.getSpaceMetadata({ spaceId }))!
+        assert.equal(afterWrite.metaVersion, before.metaVersion! + 1)
+        assert.equal(afterWrite.metaGeneration, before.metaGeneration)
+        assert.equal(afterWrite.name, before.name)
+
+        await backend.deleteBackend({ spaceId, backendId: registered.id })
+        const afterDelete = (await backend.getSpaceMetadata({ spaceId }))!
+        assert.equal(afterDelete.metaVersion, before.metaVersion! + 2)
+        assert.equal(afterDelete.metaGeneration, before.metaGeneration)
+
+        // Removing an absent record changes the listing not at all.
+        await backend.deleteBackend({ spaceId, backendId: registered.id })
+        const unchanged = (await backend.getSpaceMetadata({ spaceId }))!
+        assert.equal(unchanged.metaVersion, afterDelete.metaVersion)
+      })
     })
 
     describe('WebKMS keystores, keys, revocations', () => {
@@ -4869,6 +4898,90 @@ export function describeStorageBackendContract(options: ContractOptions): void {
     })
 
     describe('export / import round-trip', () => {
+      it('restores the archived Space Metadata name under a root invocation, by an ordinary Metadata write', async () => {
+        const source = await makeBackend()
+        const target = await makeBackend()
+        try {
+          const spaceId = 'space-exp-meta'
+          await provisionSpace(source.backend, spaceId)
+          const archive = async () =>
+            await source.backend.exportSpace({ spaceId })
+
+          // The destination carries its own name; the restore replaces it
+          // through the same write `writeSpace` makes: one version bump,
+          // generation kept, `controller` untouched.
+          await provisionSpace(target.backend, spaceId)
+          await target.backend.writeSpace({
+            spaceId,
+            spaceMetadata: {
+              id: spaceId,
+              type: ['Space'],
+              name: 'Destination',
+              controller: CONTROLLER
+            }
+          })
+          const before = (await target.backend.getSpaceMetadata({ spaceId }))!
+          const restored = await target.backend.importSpace({
+            spaceId,
+            tarStream: await archive(),
+            restoreSpaceMetadata: true
+          })
+          assert.equal(restored.spaceMetadata, 'restored')
+          const after = (await target.backend.getSpaceMetadata({ spaceId }))!
+          assert.equal(after.name, `Space ${spaceId}`)
+          assert.equal(after.controller, CONTROLLER)
+          assert.equal(after.metaVersion, before.metaVersion! + 1)
+          assert.equal(after.metaGeneration, before.metaGeneration)
+
+          // Not under a root invocation (the default, a backend driven outside
+          // a request): the entry is reported and left alone.
+          await target.backend.writeSpace({
+            spaceId,
+            spaceMetadata: { ...after, name: 'Destination' }
+          })
+          const skipped = await target.backend.importSpace({
+            spaceId,
+            tarStream: await archive()
+          })
+          assert.equal(skipped.spaceMetadata, 'skipped')
+          assert.equal(
+            (await target.backend.getSpaceMetadata({ spaceId }))!.name,
+            'Destination'
+          )
+
+          // `type` is immutable once a Space exists, so an archive of a Space
+          // of another kind is refused, and the destination keeps its name.
+          const otherKind = 'space-exp-meta-kind'
+          await source.backend.writeSpace({
+            spaceId: otherKind,
+            spaceMetadata: {
+              id: otherKind,
+              type: ['AuxiliarySpace', 'Space'],
+              name: 'Auxiliary',
+              controller: CONTROLLER
+            }
+          })
+          await provisionSpace(target.backend, otherKind)
+          await expect(
+            target.backend.importSpace({
+              spaceId: otherKind,
+              tarStream: await source.backend.exportSpace({
+                spaceId: otherKind
+              }),
+              restoreSpaceMetadata: true
+            })
+          ).rejects.toBeInstanceOf(InvalidImportError)
+          const kept = (await target.backend.getSpaceMetadata({
+            spaceId: otherKind
+          }))!
+          assert.equal(kept.name, `Space ${otherKind}`)
+          assert.deepEqual(kept.type, ['Space'])
+        } finally {
+          await source.cleanup()
+          await target.cleanup()
+        }
+      })
+
       it('round-trips a Space (metadata, resources, policies, tombstones) within the backend', async () => {
         const source = await makeBackend()
         const target = await makeBackend()

@@ -82,3 +82,61 @@ Reopen this decision when one or more of the following holds:
 2. A new ceremony needs a third action set or a changed target rule;
    extend as a new enumerated shape rather than loosening the
    target-exactness or the two-verb bound.
+
+## Amendment (2026-09-20): a POST shape over a management capability
+
+Revisit criterion 2 fired. A transient session's backup export invokes
+`POST /space/<S>/export` on a sibling unlock Space, under the same
+`manageCapability` the Space's `did:key` controller delegated to the
+account, whose `allowedAction` is now
+`['GET', 'PUT', 'DELETE', 'POST']`. The ladder VM may delegate from it
+but not invoke it, so the session mints a single-verb child to its own
+bare did:key, and no shape admitted such a child.
+
+The clause gains a fifth enumerated shape rather than loosening the
+fourth. A ladder-signed delegation is admitted when its
+`invocationTarget` is the canonical trailing-slash Space URL, equal to
+the parent's unchanged, and its `allowedAction` is exactly `['POST']`.
+Unlike the DELETE branch, the parent must be a delegated capability
+rather than the Space's synthesized root: its sole `controller` is the
+delegator account, and the controller DID of its own delegation proof
+is the Space's stored controller, so the parent is the management
+capability that Space's controller granted the account.
+Target-exactness and the two-verb bound are untouched.
+
+The locked property holds on the same two bounds the DELETE branch
+rests on. The parent already carries POST on exactly that Space URL, so
+the shape widens who signs the last link rather than what the account
+may do, and the child's target is its parent's unchanged. The Space
+controller's grant of that management capability is the record, and the
+wallet's own unlock record is what carries it.
+
+The invocation is not touched by the invocation-time bounds:
+`spaceOperationOf` classifies only a `PUT` on a Space Metadata URL and
+a `DELETE` on a canonical Space URL, and a `POST` at
+`/space/<S>/export` is neither, so `ladderInvocationRefusal` needed no
+relaxing.
+
+## Amendment (2026-09-20): the PUT half is withdrawn
+
+A `PUT` branch was drafted beside the `POST` one, for a restore
+creating a sibling unlock Space by id, and was withdrawn before it
+landed. The shape ships as `POST` alone.
+
+A `PUT` child of the canonical Space URL is not narrow. The zcap
+library's target attenuation is a `/`-boundary prefix rule, so such a
+child reaches every resource beneath the Space, including the keyring
+record of a sibling unlock Space. A transient session holding one
+credential could overwrite another credential's record with it, and
+nothing in the account log or the annex log would carry a trace: the
+write is an ordinary Resource `PUT`, so it fails loudness rather than
+widening who signs a link.
+
+`POST` carries no such reach. It admits `POST /space/<S>/export` and
+the Resource-creation endpoints beneath the Space, none of which
+rewrites a record standing there.
+
+The restore's sibling stage (freewallet FW-531) re-adds a bounded
+create-only shape instead, once WAS-131 threads the `webvh` resolver
+context through `verifyBodyControllerConsent` and Create Space by Id is
+reachable on a `did:webvh` chain at all.

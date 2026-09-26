@@ -66,6 +66,7 @@ import type {
   BackendUsage,
   ImportStats,
   PolicyDocument,
+  ServiceDescription,
   ServiceDescriptionVersionEntry
 } from '@interop/storage-core'
 
@@ -669,17 +670,39 @@ export interface StorageBackend {
    * tombstones), policies, metadata sidecars, and the Space's zcap revocation
    * records (so a revoked capability stays revoked across an export/import
    * round-trip). Backend registration records (secret material) do NOT
-   * travel.
+   * travel. `service` is this server's Service Description, written into the
+   * archive verbatim as its `service.json` entry so an importer can read which
+   * specification versions and feature set the contents were written under; an
+   * export run with none (a backend called directly, outside a request) writes
+   * no such entry.
    */
-  exportSpace(options: { spaceId: string }): Promise<Readable>
+  exportSpace(options: {
+    spaceId: string
+    service?: ServiceDescription
+  }): Promise<Readable>
   /**
    * Merges a Space-export archive into an existing Space, skip-not-overwrite
    * per item; the archive's revocation records are restored under this
    * Space's scope on the same terms (already-stored records are skipped).
+   *
+   * The archived Space Metadata object's user-writable members are applied
+   * only when `restoreSpaceMetadata` asks for it -- the Import Space handler
+   * asks under an invocation of the Space's root capability and not under a
+   * delegated chain; the backend holds no authorization decision of its own
+   * -- and only over a Space that already has a stored Metadata object:
+   * `name` is restored, and `type`, immutable once a Space exists, is checked
+   * against the destination's (a different set of types refuses the import
+   * with `InvalidImportError` before anything is written). Server-derived
+   * members and `controller` are never restored. The outcome is the
+   * `spaceMetadata` member of the stats: `'restored'`, `'skipped'` when the
+   * archive carried an entry that was not applied (the option unset, or a
+   * Space with no stored object yet), or `'absent'` when it carried none that
+   * parses as a JSON object.
    */
   importSpace(options: {
     spaceId: string
     tarStream: Readable
+    restoreSpaceMetadata?: boolean
   }): Promise<ImportStats>
 
   /**
@@ -1368,6 +1391,14 @@ declare module 'fastify' {
      * `authorizeProvisioning` option or the built-in onboarding-token check.
      */
     authorizeProvisioning?: AuthorizeProvisioning
+    /**
+     * Whether the service description's `instance` member carries the server
+     * version (plugin option `discloseVersion`, config
+     * `WAS_DISCLOSE_VERSION`). Read wherever a handler builds the description
+     * outside the `/service` route -- today the Export Space handler, which
+     * puts it in the archive. Set by `fastify.decorate` in plugin.ts.
+     */
+    discloseVersion: boolean
   }
   interface FastifyRequest {
     /**

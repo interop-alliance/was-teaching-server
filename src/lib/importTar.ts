@@ -11,6 +11,7 @@ import {
   parseResourcePolicyFileName,
   COLLECTION_POLICY_FILE_NAME,
   SPACE_POLICY_FILE_NAME,
+  spaceMetadataFileName,
   JSON_FILE_SUFFIX,
   META_FILE_PREFIX,
   COLLECTION_LOG_FILE_PREFIX
@@ -18,11 +19,13 @@ import {
 import { assertEncryptedWriteConforms } from './encryption.js'
 import { assertGoverningLogAppend } from './governedLog.js'
 import { isPlainObject } from './isPlainObject.js'
+import { spaceTypeChangeProblem, spaceTypeProblem } from './spaceType.js'
 import { InvalidImportError, ProblemError } from '../errors.js'
 import type {
   CollectionMetadata,
   PolicyDocument,
-  RevocationRecord
+  RevocationRecord,
+  SpaceMetadata
 } from '../types.js'
 
 /**
@@ -292,8 +295,29 @@ export interface ImportPlanCollection {
   chunkFiles: ImportPlanChunkFile[]
 }
 
+/**
+ * The archived Space Metadata object's user-writable members (spec "Space
+ * Metadata Data Model"): the only two an import reads. `name` is the one an
+ * import restores. `type` is immutable once a Space exists, so it is carried
+ * as a compatibility check against the destination's: a mismatch refuses the
+ * import (`restoredSpaceMetadata`). The server-derived members (`createdBy`,
+ * `url`, `linkset`, `backends`) and `controller` are left to the destination
+ * server, so they are not carried here at all.
+ */
+export interface ImportedSpaceMetadata {
+  type?: string[]
+  name?: string
+}
+
 /** The merge plan produced by {@link buildImportPlan}. */
 export interface ImportPlan {
+  /**
+   * The archived Space Metadata object's user-writable members, when the
+   * archive carries a `.space.<sourceSpaceId>.json` entry that parses as a
+   * JSON object; undefined when it does not (an import then reports
+   * `spaceMetadata: 'absent'`).
+   */
+  spaceMetadata?: ImportedSpaceMetadata
   /** Space-level access-control policy, if the archive carries one. */
   spacePolicy?: PolicyDocument
   collections: ImportPlanCollection[]
@@ -388,10 +412,14 @@ export function validateManifest(entries: Map<string, TarEntry>): void {
  *
  * Expected archive layout (UBC v0.1, produced by exportSpace):
  * - manifest.yml
+ * - service.json (the exporting server's Service Description; informational,
+ *   and ignored by this walk)
  * - revocations/<digest>.json (Space-scoped zcap revocations; optional)
  * - space/
  * - space/<sourceSpaceId>/
- * - space/<sourceSpaceId>/.space.<sourceSpaceId>.json (space metadata; ignored on import)
+ * - space/<sourceSpaceId>/.space.<sourceSpaceId>.json (the Space Metadata
+ *   object; only its user-writable `type` and `name` are carried on the plan,
+ *   and they are restored only under a root invocation)
  * - space/<sourceSpaceId>/.space.policy.json (space-level policy)
  * - space/<sourceSpaceId>/<collectionId>/
  * - space/<sourceSpaceId>/<collectionId>/.collection.<collectionId>.json
@@ -427,6 +455,13 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
   }
 
   const prefix = `space/${sourceSpaceId}/`
+
+  // The archived Space Metadata object (`.space.<sourceSpaceId>.json` at the
+  // space root). Only its user-writable members travel; whether they are
+  // applied is the importing backend's decision, on the invocation's authority.
+  const spaceMetadata = importedSpaceMetadata({
+    entry: entries.get(`${prefix}${spaceMetadataFileName(sourceSpaceId)}`)
+  })
 
   // Space-level policy (`.space.policy.json` at the space root).
   const spacePolicyEntry = entries.get(`${prefix}${SPACE_POLICY_FILE_NAME}`)
@@ -598,7 +633,96 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     }
   })
 
-  return { spacePolicy, collections, revocations: revocationRecords(entries) }
+  return {
+    ...(spaceMetadata !== undefined && { spaceMetadata }),
+    spacePolicy,
+    collections,
+    revocations: revocationRecords(entries)
+  }
+}
+
+/**
+ * Parses the archive's Space Metadata entry down to the two user-writable
+ * members an import reads. A malformed member is dropped rather than carried,
+ * so a malformed archive cannot write a shape the Space Metadata routes
+ * reject: a `type` that breaks the rule Update Space enforces
+ * (`spaceTypeProblem`) and a `name` that is not a string are ignored. An
+ * entry that does not parse as a JSON object is not a Space Metadata object,
+ * and is treated as if the archive carried none: the rest of the archive
+ * still imports, as it did before the entry was read at all.
+ *
+ * @param options {object}
+ * @param [options.entry] {TarEntry}   the `.space.<sourceSpaceId>.json` entry
+ * @returns {ImportedSpaceMetadata | undefined}   undefined when the archive
+ *   carries no such entry, or one that is not a JSON object
+ */
+function importedSpaceMetadata({
+  entry
+}: {
+  entry?: TarEntry
+}): ImportedSpaceMetadata | undefined {
+  if (!entry?.body) {
+    return undefined
+  }
+  let archived: unknown
+  try {
+    archived = JSON.parse(entry.body.toString('utf8'))
+  } catch {
+    return undefined
+  }
+  if (!isPlainObject(archived)) {
+    return undefined
+  }
+  const { type, name } = archived
+  const restorable: ImportedSpaceMetadata = {}
+  if (spaceTypeProblem(type) === undefined) {
+    restorable.type = type as string[]
+  }
+  if (typeof name === 'string') {
+    restorable.name = name
+  }
+  return restorable
+}
+
+/**
+ * The Space Metadata object an import writes back: the destination's stored
+ * object with the archive's `name` applied over it. Everything else is the
+ * destination's -- `controller`, `createdBy`, and the members the server
+ * derives per read -- so a restore cannot move a Space's ownership or its
+ * server-derived description. `type` is immutable once a Space exists, the
+ * rule Update Space enforces (`spaceTypeChangeProblem`, the same check), so an
+ * archived `type` is checked rather than applied: one naming a different set
+ * of types than the destination's refuses the import (`InvalidImportError`,
+ * 400) before anything is written, since the archive describes a Space of
+ * another kind. Shared by both backends, so their restores cannot drift.
+ *
+ * @param options {object}
+ * @param options.prior {SpaceMetadata}   the destination's stored object
+ * @param options.archived {ImportedSpaceMetadata}   the archive's members
+ * @returns {SpaceMetadata}
+ */
+export function restoredSpaceMetadata({
+  prior,
+  archived
+}: {
+  prior: SpaceMetadata
+  archived: ImportedSpaceMetadata
+}): SpaceMetadata {
+  const typeProblem =
+    archived.type === undefined
+      ? undefined
+      : spaceTypeChangeProblem({ requested: archived.type, stored: prior.type })
+  if (typeProblem !== undefined) {
+    throw new InvalidImportError({
+      message:
+        'The archived Space Metadata "type" does not match the destination' +
+        ` Space's. ${typeProblem}`
+    })
+  }
+  return {
+    ...prior,
+    ...(archived.name !== undefined && { name: archived.name })
+  }
 }
 
 /**

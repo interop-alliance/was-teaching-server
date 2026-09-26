@@ -23,6 +23,7 @@ import {
   sanitizeBackendRecord
 } from '../lib/backends.js'
 import { invalidateResolvedBackend } from '../lib/backendRegistry.js'
+import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
 import { backendsPath, registeredBackendPath } from '../lib/paths.js'
 import { InvalidRequestBodyError, IdConflictError } from '../errors.js'
 
@@ -80,6 +81,9 @@ export class BackendRequest {
 
     const record = buildBackendRecord(registration)
     await storage.writeBackend({ spaceId, backendId: record.id, record })
+    // The Space Metadata object lists the registration under `backends` and
+    // its validator advanced with it, so the cached object is stale.
+    invalidateSpaceMetadata({ storage, spaceId })
 
     const createdUrl = new URL(
       registeredBackendPath({ spaceId, backendId: record.id }),
@@ -146,12 +150,14 @@ export class BackendRequest {
     const record = buildBackendRecord(registration)
     await storage.writeBackend({ spaceId, backendId, record })
     // Bust any memoized adapter so the next resolve rebuilds it from the new
-    // connection material.
+    // connection material, and the cached Space Metadata object, whose
+    // `backends` listing and validator changed with the write.
     invalidateResolvedBackend({
       providers: request.server.backendProviders,
       spaceId,
       backendId
     })
+    invalidateSpaceMetadata({ storage, spaceId })
 
     if (existing) {
       return reply.status(204).send()
@@ -196,12 +202,15 @@ export class BackendRequest {
     })
 
     await storage.deleteBackend({ spaceId, backendId })
-    // Bust any memoized adapter for the now-removed record.
+    // Bust any memoized adapter for the now-removed record, and the cached
+    // Space Metadata object, whose `backends` listing and validator changed
+    // with the removal.
     invalidateResolvedBackend({
       providers: request.server.backendProviders,
       spaceId,
       backendId
     })
+    invalidateSpaceMetadata({ storage, spaceId })
     return reply.status(204).send()
   }
 }

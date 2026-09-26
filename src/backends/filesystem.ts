@@ -5,7 +5,7 @@
  * implementing the StorageBackend contract documented in types.ts.
  */
 import path from 'node:path'
-import { mkdir, rm, stat as fsStat } from 'node:fs/promises'
+import { mkdir, rm, stat as fsStat, unlink } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -38,7 +38,8 @@ import {
   extractTarEntries,
   buildImportPlan,
   assertImportBodiesFit,
-  metaSidecarFileId
+  metaSidecarFileId,
+  restoredSpaceMetadata
 } from '../lib/importTar.js'
 import { collectionPath, spacePath } from '../lib/paths.js'
 import {
@@ -63,6 +64,7 @@ import {
   sanitizeBackendRecord,
   serverBackendDescriptor
 } from '../lib/backends.js'
+import { archivedSpaceMetadata } from '../lib/spaceProjection.js'
 import { backendUsageFieldsFor } from '../lib/backendUsage.js'
 import {
   collectionListingItem,
@@ -157,7 +159,8 @@ import type {
   RevocationRecord,
   RevocationScope,
   CapabilitySummary,
-  IDID
+  IDID,
+  ServiceDescription
 } from '../types.js'
 
 const { Store: MetadataJsonStore } = jsonfs
@@ -1399,9 +1402,17 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * @param options {object}
    * @param options.spaceId {string}
+   * @param [options.service] {ServiceDescription}   this server's Service
+   *   Description, written into the archive as its `service.json` entry
    * @returns {Promise<Readable>} tar-stream pack
    */
-  async exportSpace({ spaceId }: { spaceId: string }): Promise<Readable> {
+  async exportSpace({
+    spaceId,
+    service
+  }: {
+    spaceId: string
+    service?: ServiceDescription
+  }): Promise<Readable> {
     const spaceMetadata = await this.getSpaceMetadata({ spaceId })
     if (!spaceMetadata) {
       throw new SpaceNotFoundError({ requestName: 'Export Space' })
@@ -1467,6 +1478,17 @@ export class FileSystemBackend implements StorageBackend {
       }
 
       if (entry.isFile()) {
+        // The Space Metadata entry is built from the record read above, with
+        // the server-derived `backends` listing stamped on (the shared
+        // `archivedSpaceMetadata`), rather than re-read off the disk.
+        if (entry.name === spaceMetadataFileName(spaceId)) {
+          archiveEntries.push({
+            name: entry.name,
+            read: () =>
+              archivedSpaceMetadata({ storage: this, spaceId, spaceMetadata })
+          })
+          continue
+        }
         archiveEntries.push({
           name: entry.name,
           read: () => fs.promises.readFile(entryPath)
@@ -1503,7 +1525,10 @@ export class FileSystemBackend implements StorageBackend {
     const pack = await packSpaceArchive({
       spaceId,
       entries: archiveEntries,
-      revocations
+      revocations,
+      // Written verbatim as the archive's `service.json`; absent when the
+      // caller had no description to declare.
+      service
     })
     return Readable.from(pack)
   }
@@ -1514,17 +1539,27 @@ export class FileSystemBackend implements StorageBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.tarStream {Readable}
+   * @param [options.restoreSpaceMetadata] {boolean}   whether to apply the
+   *   archived Space Metadata object's user-writable members over the
+   *   destination's
    * @returns {Promise<ImportStats>}
    */
   async importSpace({
     spaceId,
-    tarStream
+    tarStream,
+    restoreSpaceMetadata = false
   }: {
     spaceId: string
     tarStream: Readable
+    restoreSpaceMetadata?: boolean
   }): Promise<ImportStats> {
     const entries = await extractTarEntries(tarStream)
-    const { spacePolicy, collections, revocations } = buildImportPlan(entries)
+    const {
+      spaceMetadata: archivedSpaceMetadata,
+      spacePolicy,
+      collections,
+      revocations
+    } = buildImportPlan(entries)
 
     // Shared pre-flight over every staged body (`assertImportBodiesFit`): the
     // per-upload 413 cap and the fail-closed encryption check, run before
@@ -1572,13 +1607,40 @@ export class FileSystemBackend implements StorageBackend {
       spaceId,
       write: async () => {
         try {
+          // An archived Space Metadata entry is 'skipped' until it is
+          // restored below; an archive carrying none is 'absent'.
           const stats: ImportStats = {
             collectionsCreated: 0,
             collectionsSkipped: 0,
             resourcesCreated: 0,
             resourcesSkipped: 0,
             policiesCreated: 0,
-            policiesSkipped: 0
+            policiesSkipped: 0,
+            spaceMetadata: archivedSpaceMetadata ? 'skipped' : 'absent'
+          }
+
+          // The archived Space Metadata object's user-writable members,
+          // applied over the destination's stored object by the same write
+          // Update Space Metadata makes (`name` restored, `type` checked
+          // against the destination's), so the object's monotonic version
+          // bumps as an ordinary metadata write does. Only when the caller
+          // asked for it (the handler decides that on the invocation's
+          // authority). Everything else -- `controller`, `createdBy`, and
+          // the members the server derives per read -- stays the
+          // destination's. A Space with no stored object yet (a backend
+          // driven outside a request) has nothing to apply them over.
+          if (archivedSpaceMetadata && restoreSpaceMetadata) {
+            const prior = await this.getSpaceMetadata({ spaceId })
+            if (prior) {
+              await this.writeSpace({
+                spaceId,
+                spaceMetadata: restoredSpaceMetadata({
+                  prior: stripMetadataValidator(prior),
+                  archived: archivedSpaceMetadata
+                })
+              })
+              stats.spaceMetadata = 'restored'
+            }
           }
 
           // Space-level policy: restore it when the destination has none (the import
@@ -4690,8 +4752,49 @@ export class FileSystemBackend implements StorageBackend {
           filePath: this.#backendFile({ spaceId, backendId }),
           data: JSON.stringify(record)
         })
+        // The served Space Metadata object lists this record under
+        // `backends`, so its validator advances with the registration.
+        await this.#bumpSpaceMetaVersion({ spaceId })
       }
     })
+  }
+
+  /**
+   * Advances the Space Metadata object's version without changing its stored
+   * body, for a write that changes the served object through a derived member
+   * -- `backends`, read off the registration records -- rather than through
+   * the body itself. The generation is kept, so a client's cached `ETag` for
+   * the object stops matching, as it must for a strong validator. Serialized
+   * with the Metadata writes through the same per-Space lock, so the bump
+   * cannot be lost under a concurrent `writeSpace`. A Space with no Metadata
+   * object yet has no validator to advance.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @returns {Promise<void>}
+   */
+  async #bumpSpaceMetaVersion({ spaceId }: { spaceId: string }): Promise<void> {
+    await this.#writeMutex.run(
+      this.#spaceMetaLockKey({ spaceId }),
+      async () => {
+        const prior = await this.getSpaceMetadata({ spaceId })
+        if (!prior) {
+          return
+        }
+        await atomicWriteFile({
+          filePath: path.join(
+            this.#spaceDir(spaceId),
+            spaceMetadataFileName(spaceId)
+          ),
+          data: JSON.stringify(
+            embedMetadataValidator({
+              body: stripMetadataValidator(prior),
+              generation: resolveGeneration(prior.metaGeneration),
+              version: (prior.metaVersion ?? 0) + 1
+            })
+          )
+        })
+      }
+    )
   }
 
   /**
@@ -4745,7 +4848,10 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Removes a registered backend record. Idempotent (no error if absent).
+   * Removes a registered backend record. Idempotent (no error if absent). A
+   * removal that found the record advances the Space Metadata object's
+   * version, since its `backends` listing changed; one that found nothing
+   * leaves the object as it was.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.backendId {string}
@@ -4758,7 +4864,22 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     backendId: string
   }): Promise<void> {
-    await rm(this.#backendFile({ spaceId, backendId }), { force: true })
+    // Under the Space gate: the version bump rewrites the Space Metadata
+    // file, which a concurrent Delete Space must not remove from under it.
+    return this.#underSpaceWrite({
+      spaceId,
+      write: async () => {
+        try {
+          await unlink(this.#backendFile({ spaceId, backendId }))
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+            return
+          }
+          throw err
+        }
+        await this.#bumpSpaceMetaVersion({ spaceId })
+      }
+    })
   }
 
   /**

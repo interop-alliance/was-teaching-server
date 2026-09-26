@@ -45,7 +45,8 @@ import { applyMigrations } from './postgresSchema.js'
 import {
   extractTarEntries,
   buildImportPlan,
-  assertImportBodiesFit
+  assertImportBodiesFit,
+  restoredSpaceMetadata
 } from '../lib/importTar.js'
 import type { ImportPlanCollection } from '../lib/importTar.js'
 import { collectionPath, spacePath } from '../lib/paths.js'
@@ -68,6 +69,7 @@ import {
   sanitizeBackendRecord,
   serverBackendDescriptor
 } from '../lib/backends.js'
+import { archivedSpaceMetadata } from '../lib/spaceProjection.js'
 import { backendUsageFieldsFor } from '../lib/backendUsage.js'
 import {
   collectionListingItem,
@@ -162,7 +164,8 @@ import type {
   RevocationRecord,
   RevocationScope,
   CapabilitySummary,
-  IDID
+  IDID,
+  ServiceDescription
 } from '../types.js'
 
 /** Pool sizing and per-connection statement timeout (operational defaults). */
@@ -187,6 +190,19 @@ const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
  * and the import transaction reuse one statement.
  */
 type Queryable = pg.Pool | pg.PoolClient
+
+/**
+ * The options of a Space Metadata write (`StorageBackend.writeSpace`), shared
+ * with the in-transaction `#writeSpaceRow` so the two entry points cannot
+ * drift.
+ */
+type SpaceMetadataWrite = {
+  spaceId: string
+  spaceMetadata: SpaceMetadata
+  createdBy?: IDID
+  ifMatch?: string
+  ifNoneMatch?: HeldValidators
+}
 
 /**
  * One `resources` row, as read back from pg. `size_bytes` arrives as a string
@@ -940,119 +956,133 @@ export class PostgresBackend implements StorageBackend {
    * @returns {Promise<EtagValidator>}   the Space's new validator (its
    *   `generation` and bumped `version`, the `ETag`)
    */
-  async writeSpace({
+  async writeSpace(options: SpaceMetadataWrite): Promise<EtagValidator> {
+    return this.#withTransaction(client =>
+      this.#writeSpaceRow({ client, ...options })
+    )
+  }
+
+  /**
+   * The Space Metadata write inside a caller's transaction: `writeSpace`'s
+   * whole body, so a transaction that already holds the Space (an import
+   * restoring the archived object) makes the same write -- the same
+   * precondition check, `createdBy` resolution, shared normalization and
+   * version bump -- rather than an inline copy that could drift from it.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}   the caller's transaction
+   * @param options.spaceId {string}
+   * @param options.spaceMetadata {SpaceMetadata}
+   * @param [options.createdBy] {string}
+   * @param [options.ifMatch] {string}
+   * @param [options.ifNoneMatch] {HeldValidators}
+   * @param [options.prior] {StoredSpaceMetadata}   the current row as the
+   *   caller already read it under `SPACE_META_LOCK_SQL`, so the write does
+   *   not read it again; read here otherwise
+   * @returns {Promise<EtagValidator>}   the Space's new validator
+   */
+  async #writeSpaceRow({
+    client,
     spaceId,
     spaceMetadata,
     createdBy,
     ifMatch,
-    ifNoneMatch
-  }: {
-    spaceId: string
-    spaceMetadata: SpaceMetadata
-    createdBy?: IDID
-    ifMatch?: string
-    ifNoneMatch?: HeldValidators
+    ifNoneMatch,
+    prior: priorRead
+  }: SpaceMetadataWrite & {
+    client: pg.PoolClient
+    prior?: StoredSpaceMetadata
   }): Promise<EtagValidator> {
     const { controller } = spaceMetadata
-    return this.#withTransaction(async client => {
-      // Serialize concurrent Metadata writes (and Delete Space) for the same
-      // Space id on an advisory lock: a `FOR UPDATE` on the row locks nothing
-      // while the row does not exist yet, and two racing guarded creates must
-      // not both observe "absent". The advisory lock is the whole
-      // serialization; the row itself is read plainly below, so a Metadata
-      // write does not block, and is not blocked by, the Collection and
-      // Resource writes that lock the same row as the Space's usage counter.
-      // Holding the lock across the quota COUNT below also serializes creates
-      // for the same controller.
-      await client.query(SPACE_META_LOCK_SQL, [spaceId])
-      if (this.maxSpacesPerController !== undefined) {
-        await client.query(
-          `SELECT pg_advisory_xact_lock(hashtext('controller-count:' || $1))`,
-          [controller]
-        )
-      }
-      // Read the current row (if any) and its validator, so the precondition,
-      // the create detection, `createdBy` resolution, and the monotonic
-      // version bump are all atomic with the write. A missing row and a
-      // placeholder (NULL-metadata) row are both "no Space yet": version 0
-      // and no generation, so the first real write mints a generation at
-      // version 1 (a placeholder's `meta_version` column holds the schema
-      // DEFAULT and must not count).
-      const { rows } = await client.query<{
-        metadata: SpaceMetadata | null
-        meta_generation: string | null
-        meta_version: number
-      }>(
-        `SELECT metadata, meta_generation, meta_version
-           FROM spaces WHERE space_id = $1`,
-        [spaceId]
-      )
-      const prior = storedMetadataFromRow(rows[0])
-
-      assertSpaceWritePrecondition({
-        spaceId,
-        exists: prior !== undefined,
-        currentEtag: metadataEtagOf(prior),
-        ifMatch,
-        ifNoneMatch
-      })
-
-      // Count quota (create path only), enforced as a HARD limit under the
-      // controller-scoped advisory lock taken above: COUNT this controller's
-      // Spaces and reject at the limit.
-      if (this.maxSpacesPerController !== undefined && prior === undefined) {
-        const { rows: countRows } = await client.query<{ count: number }>(
-          'SELECT COUNT(*)::int AS count FROM spaces WHERE controller = $1',
-          [controller]
-        )
-        if (countRows[0]!.count >= this.maxSpacesPerController) {
-          throw new CountQuotaExceededError({
-            scope: 'Spaces per controller',
-            limit: this.maxSpacesPerController
-          })
-        }
-      }
-
-      // `createdBy` and the validator-bearing members the wire input may carry
-      // are resolved by the shared rules (lib/metadataWrite.ts), the same the
-      // filesystem backend applies, so a client-supplied `createdBy`,
-      // `_generation` or `_version` never lands in the jsonb body.
-      // The object keeps its generation for the Space's whole life; a Space
-      // deleted and re-created under the same id mints a new one, so the two
-      // lives' validators can never coincide.
-      const validator = {
-        generation: resolveGeneration(prior?.metaGeneration),
-        version: (prior?.metaVersion ?? 0) + 1
-      }
-      const { body } = normalizeMetadataWrite({
-        metadata: spaceMetadata,
-        validator
-      })
-      // The upsert maintains the denormalized `controller` column on both
-      // insert and update -- the controller can change on update, and the
-      // Spaces count quota reads this column (spec "Quotas"). The validator
-      // lives in its own columns and stays out of the jsonb body.
+    // Serialize concurrent Metadata writes (and Delete Space) for the same
+    // Space id on an advisory lock: a `FOR UPDATE` on the row locks nothing
+    // while the row does not exist yet, and two racing guarded creates must
+    // not both observe "absent". The advisory lock is the whole
+    // serialization; the row itself is read plainly below, so a Metadata
+    // write does not block, and is not blocked by, the Collection and
+    // Resource writes that lock the same row as the Space's usage counter.
+    // Holding the lock across the quota COUNT below also serializes creates
+    // for the same controller. Reentrant: a caller that took it already
+    // (an import, ahead of its row lock) holds it once more.
+    await client.query(SPACE_META_LOCK_SQL, [spaceId])
+    if (this.maxSpacesPerController !== undefined) {
       await client.query(
-        `INSERT INTO spaces (space_id, metadata, controller,
-                             meta_generation, meta_version)
-         VALUES ($1, $2::jsonb, $3, $4, $5)
-         ON CONFLICT (space_id) DO UPDATE SET
-           metadata = EXCLUDED.metadata,
-           controller = EXCLUDED.controller,
-           meta_generation = EXCLUDED.meta_generation,
-           meta_version = EXCLUDED.meta_version`,
-        [
-          spaceId,
-          JSON.stringify(
-            stampSpaceMetadata({ spaceMetadata: body, prior, createdBy })
-          ),
-          controller,
-          validator.generation,
-          validator.version
-        ]
+        `SELECT pg_advisory_xact_lock(hashtext('controller-count:' || $1))`,
+        [controller]
       )
-      return validator
+    }
+    // Read the current row (if any) and its validator, so the precondition,
+    // the create detection, `createdBy` resolution, and the monotonic
+    // version bump are all atomic with the write. A missing row and a
+    // placeholder (NULL-metadata) row are both "no Space yet": version 0
+    // and no generation, so the first real write mints a generation at
+    // version 1 (a placeholder's `meta_version` column holds the schema
+    // DEFAULT and must not count).
+    const prior =
+      priorRead ?? (await this.#readSpaceRow({ queryable: client, spaceId }))
+
+    assertSpaceWritePrecondition({
+      spaceId,
+      exists: prior !== undefined,
+      currentEtag: metadataEtagOf(prior),
+      ifMatch,
+      ifNoneMatch
     })
+
+    // Count quota (create path only), enforced as a HARD limit under the
+    // controller-scoped advisory lock taken above: COUNT this controller's
+    // Spaces and reject at the limit.
+    if (this.maxSpacesPerController !== undefined && prior === undefined) {
+      const { rows: countRows } = await client.query<{ count: number }>(
+        'SELECT COUNT(*)::int AS count FROM spaces WHERE controller = $1',
+        [controller]
+      )
+      if (countRows[0]!.count >= this.maxSpacesPerController) {
+        throw new CountQuotaExceededError({
+          scope: 'Spaces per controller',
+          limit: this.maxSpacesPerController
+        })
+      }
+    }
+
+    // `createdBy` and the validator-bearing members the wire input may carry
+    // are resolved by the shared rules (lib/metadataWrite.ts), the same the
+    // filesystem backend applies, so a client-supplied `createdBy`,
+    // `_generation` or `_version` never lands in the jsonb body.
+    // The object keeps its generation for the Space's whole life; a Space
+    // deleted and re-created under the same id mints a new one, so the two
+    // lives' validators can never coincide.
+    const validator = {
+      generation: resolveGeneration(prior?.metaGeneration),
+      version: (prior?.metaVersion ?? 0) + 1
+    }
+    const { body } = normalizeMetadataWrite({
+      metadata: spaceMetadata,
+      validator
+    })
+    // The upsert maintains the denormalized `controller` column on both
+    // insert and update -- the controller can change on update, and the
+    // Spaces count quota reads this column (spec "Quotas"). The validator
+    // lives in its own columns and stays out of the jsonb body.
+    await client.query(
+      `INSERT INTO spaces (space_id, metadata, controller,
+                           meta_generation, meta_version)
+       VALUES ($1, $2::jsonb, $3, $4, $5)
+       ON CONFLICT (space_id) DO UPDATE SET
+         metadata = EXCLUDED.metadata,
+         controller = EXCLUDED.controller,
+         meta_generation = EXCLUDED.meta_generation,
+         meta_version = EXCLUDED.meta_version`,
+      [
+        spaceId,
+        JSON.stringify(
+          stampSpaceMetadata({ spaceMetadata: body, prior, createdBy })
+        ),
+        controller,
+        validator.generation,
+        validator.version
+      ]
+    )
+    return validator
   }
 
   /**
@@ -1067,7 +1097,28 @@ export class PostgresBackend implements StorageBackend {
   }: {
     spaceId: string
   }): Promise<StoredSpaceMetadata | undefined> {
-    const { rows } = await this.#reader().query<{
+    return this.#readSpaceRow({ queryable: this.#reader(), spaceId })
+  }
+
+  /**
+   * The Space's stored Metadata object with its validator, or `undefined` for
+   * no Space yet (a missing row or a NULL-metadata placeholder row alike).
+   * The one read behind `getSpaceMetadata`, the Metadata write, and the
+   * import's restore, so the three agree on what "no Space yet" is.
+   * @param options {object}
+   * @param options.queryable {Queryable}   the pool, or the caller's
+   *   transaction client
+   * @param options.spaceId {string}
+   * @returns {Promise<StoredSpaceMetadata | undefined>}
+   */
+  async #readSpaceRow({
+    queryable,
+    spaceId
+  }: {
+    queryable: Queryable
+    spaceId: string
+  }): Promise<StoredSpaceMetadata | undefined> {
+    const { rows } = await queryable.query<{
       metadata: SpaceMetadata | null
       meta_generation: string | null
       meta_version: number
@@ -3308,6 +3359,9 @@ export class PostgresBackend implements StorageBackend {
     record: StoredBackendRecord
   }): Promise<void> {
     await this.#withTransaction(async client => {
+      // The Space Metadata advisory lock ahead of the row lock, as the lock
+      // order requires: the version bump below is a Space Metadata write.
+      await client.query(SPACE_META_LOCK_SQL, [spaceId])
       await this.#ensureSpaceRow({ client, spaceId })
       await client.query(
         `INSERT INTO backend_records (space_id, backend_id, record)
@@ -3316,7 +3370,37 @@ export class PostgresBackend implements StorageBackend {
          DO UPDATE SET record = EXCLUDED.record`,
         [spaceId, backendId, JSON.stringify(record)]
       )
+      await this.#bumpSpaceMetaVersion({ client, spaceId })
     })
+  }
+
+  /**
+   * Advances the Space Metadata object's version without changing its stored
+   * body, for a write that changes the served object through a derived member
+   * -- `backends`, read off the registration records -- rather than through
+   * the body itself. The generation is kept, so a client's cached `ETag` for
+   * the object stops matching, as it must for a strong validator. The caller
+   * holds `SPACE_META_LOCK_SQL`, so the bump cannot land between a concurrent
+   * `writeSpace`'s plain read and its upsert and be overwritten. A Space with
+   * no Metadata object yet (a NULL-metadata placeholder row) has no validator
+   * to advance.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}   the caller's transaction
+   * @param options.spaceId {string}
+   * @returns {Promise<void>}
+   */
+  async #bumpSpaceMetaVersion({
+    client,
+    spaceId
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+  }): Promise<void> {
+    await client.query(
+      `UPDATE spaces SET meta_version = meta_version + 1
+        WHERE space_id = $1 AND metadata IS NOT NULL`,
+      [spaceId]
+    )
   }
 
   /**
@@ -3367,6 +3451,9 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
+   * Removes a registered backend record. A removal that found the record
+   * advances the Space Metadata object's version, since its `backends`
+   * listing changed; one that found nothing leaves the object as it was.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.backendId {string}
@@ -3379,10 +3466,16 @@ export class PostgresBackend implements StorageBackend {
     spaceId: string
     backendId: string
   }): Promise<void> {
-    await this.#reader().query(
-      `DELETE FROM backend_records WHERE space_id = $1 AND backend_id = $2`,
-      [spaceId, backendId]
-    )
+    await this.#withTransaction(async client => {
+      await client.query(SPACE_META_LOCK_SQL, [spaceId])
+      const { rowCount } = await client.query(
+        `DELETE FROM backend_records WHERE space_id = $1 AND backend_id = $2`,
+        [spaceId, backendId]
+      )
+      if (rowCount) {
+        await this.#bumpSpaceMetaVersion({ client, spaceId })
+      }
+    })
   }
 
   // WebKMS keystores (the `/kms` facet)
@@ -3732,9 +3825,17 @@ export class PostgresBackend implements StorageBackend {
    * material), exactly as on the filesystem.
    * @param options {object}
    * @param options.spaceId {string}
+   * @param [options.service] {ServiceDescription}   this server's Service
+   *   Description, written into the archive as its `service.json` entry
    * @returns {Promise<Readable>}   tar-stream pack
    */
-  async exportSpace({ spaceId }: { spaceId: string }): Promise<Readable> {
+  async exportSpace({
+    spaceId,
+    service
+  }: {
+    spaceId: string
+    service?: ServiceDescription
+  }): Promise<Readable> {
     const spaceMetadata = await this.getSpaceMetadata({ spaceId })
     if (!spaceMetadata) {
       throw new SpaceNotFoundError({ requestName: 'Export Space' })
@@ -3827,22 +3928,18 @@ export class PostgresBackend implements StorageBackend {
     // sort key within its dir; a chunk directory sorts by its `.chunks.<encId>`
     // dir name.
     // Space-level dot-files are always small JSON, carried inline.
-    // The Space Metadata file follows the same `_generation` / `_version`
-    // embedding as the Collection Metadata file below (the filesystem
-    // backend's on-disk convention), so archives stay interchangeable between
-    // the two backends.
+    // The Space Metadata entry is the shared `archivedSpaceMetadata`: the
+    // filesystem backend's on-disk `_generation` / `_version` embedding, so
+    // archives stay interchangeable between the two backends, with the
+    // server-derived `backends` listing stamped on.
     const spaceFiles: ArchiveFile[] = [
       {
         name: spaceMetadataFileName(spaceId),
-        bytes: Buffer.from(
-          JSON.stringify(
-            embedMetadataValidator({
-              body: stripMetadataValidator(spaceMetadata),
-              generation: spaceMetadata.metaGeneration,
-              version: spaceMetadata.metaVersion
-            })
-          )
-        )
+        bytes: await archivedSpaceMetadata({
+          storage: this,
+          spaceId,
+          spaceMetadata
+        })
       }
     ]
     if (spacePolicy) {
@@ -4013,7 +4110,10 @@ export class PostgresBackend implements StorageBackend {
     const pack = await packSpaceArchive({
       spaceId,
       entries: topLevel,
-      revocations
+      revocations,
+      // Written verbatim as the archive's `service.json`; absent when the
+      // caller had no description to declare.
+      service
     })
     return Readable.from(pack)
   }
@@ -4089,17 +4189,27 @@ export class PostgresBackend implements StorageBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.tarStream {Readable}
+   * @param [options.restoreSpaceMetadata] {boolean}   whether to apply the
+   *   archived Space Metadata object's user-writable members over the
+   *   destination's
    * @returns {Promise<ImportStats>}
    */
   async importSpace({
     spaceId,
-    tarStream
+    tarStream,
+    restoreSpaceMetadata = false
   }: {
     spaceId: string
     tarStream: Readable
+    restoreSpaceMetadata?: boolean
   }): Promise<ImportStats> {
     const entries = await extractTarEntries(tarStream)
-    const { spacePolicy, collections, revocations } = buildImportPlan(entries)
+    const {
+      spaceMetadata: archivedSpaceMetadata,
+      spacePolicy,
+      collections,
+      revocations
+    } = buildImportPlan(entries)
     // Chunk entries (the `chunked-streams` feature): the plan carries each
     // chunk file (representation + optional version sidecar) with its decoded
     // fields; the `chunks` table stores a chunk as one row, so merge the two
@@ -4113,6 +4223,13 @@ export class PostgresBackend implements StorageBackend {
     } = this
 
     return this.#withTransaction(async client => {
+      // The Space Metadata advisory lock first, ahead of the row lock as the
+      // lock order requires (`#lockSpaceRow`): the restore below is a Space
+      // Metadata write, and a concurrent `writeSpace` holds this lock while
+      // it waits on the row this import is about to take. Without it the two
+      // could deadlock, or the restore could land between that write's read
+      // and its upsert and be overwritten at the same version.
+      await client.query(SPACE_META_LOCK_SQL, [spaceId])
       await this.#ensureSpaceRow({ client, spaceId })
       // Serialize with concurrent writers on this Space for the duration of
       // the import: the usage counter row is the natural lock, and it is the
@@ -4191,13 +4308,41 @@ export class PostgresBackend implements StorageBackend {
         throw new QuotaExceededError({ spaceId, capacityBytes })
       }
 
+      // An archived Space Metadata entry is 'skipped' until it is restored
+      // below; an archive carrying none is 'absent'.
       const stats: ImportStats = {
         collectionsCreated: 0,
         collectionsSkipped: 0,
         resourcesCreated: 0,
         resourcesSkipped: 0,
         policiesCreated: 0,
-        policiesSkipped: 0
+        policiesSkipped: 0,
+        spaceMetadata: archivedSpaceMetadata ? 'skipped' : 'absent'
+      }
+
+      // The archived Space Metadata object's user-writable members, applied
+      // over the destination's stored object by the same write Update Space
+      // Metadata makes (`name` restored, `type` checked against the
+      // destination's), inside this transaction -- the filesystem backend's
+      // restore goes through `writeSpace` the same way. Only when the caller
+      // asked for it (the handler decides that on the invocation's authority).
+      // `controller`, `createdBy`, and the members the server derives per read
+      // stay the destination's. A Space with no stored object yet (a backend
+      // driven outside a request) has nothing to apply them over.
+      if (archivedSpaceMetadata && restoreSpaceMetadata) {
+        const prior = await this.#readSpaceRow({ queryable: client, spaceId })
+        if (prior) {
+          await this.#writeSpaceRow({
+            client,
+            spaceId,
+            spaceMetadata: restoredSpaceMetadata({
+              prior: stripMetadataValidator(prior),
+              archived: archivedSpaceMetadata
+            }),
+            prior
+          })
+          stats.spaceMetadata = 'restored'
+        }
       }
 
       // Space-level policy: restore it when the destination has none.

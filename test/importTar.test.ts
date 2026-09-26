@@ -151,6 +151,64 @@ describe('buildImportPlan', () => {
     ])
   }
 
+  it("carries the archived Space Metadata object's type and name", () => {
+    const entries = validSpaceEntries()
+    entries.set(
+      'space/S1/.space.S1.json',
+      fileEntry(
+        JSON.stringify({
+          id: 'S1',
+          type: ['AuxiliarySpace', 'Space'],
+          name: 'Archived',
+          controller: 'did:key:z6MkArchived',
+          createdBy: 'did:key:z6MkArchived',
+          url: '/space/S1/',
+          backends: [{ id: 'default' }]
+        })
+      )
+    )
+    // Only the two user-writable members travel; `controller` and the
+    // server-derived members are the destination's.
+    assert.deepStrictEqual(buildImportPlan(entries).spaceMetadata, {
+      type: ['AuxiliarySpace', 'Space'],
+      name: 'Archived'
+    })
+    // An entry carrying neither member is present but has nothing to apply.
+    assert.deepStrictEqual(
+      buildImportPlan(validSpaceEntries()).spaceMetadata,
+      {}
+    )
+  })
+
+  it('drops a malformed type or name, and reads a non-object entry as absent', () => {
+    const planFor = (body: string) => {
+      const entries = validSpaceEntries()
+      entries.set('space/S1/.space.S1.json', fileEntry(body))
+      return buildImportPlan(entries)
+    }
+    // A `type` that Update Space would refuse is dropped, not carried.
+    assert.deepStrictEqual(
+      planFor(JSON.stringify({ type: ['Foo'], name: 'N' })).spaceMetadata,
+      { name: 'N' }
+    )
+    assert.deepStrictEqual(
+      planFor(JSON.stringify({ type: ['DelegatedClientsSpace', 'Space'] }))
+        .spaceMetadata,
+      {}
+    )
+    assert.deepStrictEqual(
+      planFor(JSON.stringify({ type: [], name: 42 })).spaceMetadata,
+      {}
+    )
+    // Not a JSON object at all: as if the archive carried no entry, so the
+    // rest of the archive still imports.
+    for (const body of ['{not json', '', 'null', '[]', '"text"']) {
+      const plan = planFor(body)
+      assert.equal(plan.spaceMetadata, undefined, `expected absent for ${body}`)
+      assert.equal(plan.collections.length, 2)
+    }
+  })
+
   it('builds a plan with sorted collections, policies, and resources', () => {
     const plan = buildImportPlan(validSpaceEntries())
 
@@ -185,6 +243,26 @@ describe('buildImportPlan', () => {
     // colB has only its metadata file (no policy, no resources).
     assert.equal(colB!.resources.length, 0)
     assert.equal(colB!.collectionPolicy, undefined)
+  })
+
+  it("ignores the archive's service.json rather than refusing it", () => {
+    // The exporting server's Service Description travels beside the manifest.
+    // It is informational on import: the walk reads it as neither Space data
+    // nor an unknown entry to refuse.
+    const entries = validSpaceEntries()
+    const withService = new Map<string, TarEntry>([
+      ['manifest.yml', entries.get('manifest.yml')!],
+      [
+        'service.json',
+        fileEntry(JSON.stringify({ url: 'https://was.example/service' }))
+      ],
+      ...entries
+    ])
+    const plan = buildImportPlan(withService)
+    assert.deepStrictEqual(
+      plan.collections.map(collection => collection.collectionId),
+      ['colA', 'colB']
+    )
   })
 
   it('synthesizes a default Collection Metadata object when none is in the archive', () => {

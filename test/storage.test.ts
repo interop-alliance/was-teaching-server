@@ -138,7 +138,7 @@ describe('Storage API', () => {
         assert.equal(manifest['ubc-version'], '0.1')
         assert.equal(
           manifest.contents.space.url,
-          'https://digitalcredentials.github.io/wallet-attached-storage-spec/#spaces'
+          'https://w3c-ccg.github.io/wallet-attached-storage-spec/#spaces'
         )
       } finally {
         await rm(tempDir, { recursive: true, force: true })

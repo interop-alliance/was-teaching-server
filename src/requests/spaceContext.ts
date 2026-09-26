@@ -15,7 +15,7 @@
  *   policy resource.
  */
 import type { FastifyRequest } from 'fastify'
-import { handleZcapVerify } from '../zcap.js'
+import { handleZcapVerify, verifiedRootInvocation } from '../zcap.js'
 import type { ContainerRule } from '../lib/containerRule.js'
 import { authorize } from '../authorize.js'
 import { spacePath } from '../lib/paths.js'
@@ -243,7 +243,9 @@ export async function fetchSpaceAndAuthorize({
  *   (`lib/containerRule.ts`). It is keyed on the Space's canonical
  *   trailing-slash URL, which this prelude already passes as
  *   `attenuatedRootTarget`.
- * @returns {Promise<VerifiedSpaceContext>}
+ * @returns {Promise<VerifiedSpaceContext & { rootInvocation: boolean }>}   the
+ *   context, plus whether the verified invocation was of the Space's root
+ *   capability itself rather than a delegated chain (`verifiedRootInvocation`)
  */
 export async function fetchSpaceAndVerify({
   request,
@@ -257,7 +259,7 @@ export async function fetchSpaceAndVerify({
   targetPath: string
   requestName: string
   containerRule?: ContainerRule
-}): Promise<VerifiedSpaceContext> {
+}): Promise<VerifiedSpaceContext & { rootInvocation: boolean }> {
   const context = await fetchSpaceContext({
     request,
     spaceId,
@@ -266,7 +268,7 @@ export async function fetchSpaceAndVerify({
   })
   const { url, method, headers } = request
   const { serverUrl, storage } = request.server
-  await handleZcapVerify({
+  const result = await handleZcapVerify({
     url,
     allowedTarget: context.allowedTarget,
     allowedAction: method,
@@ -281,5 +283,5 @@ export async function fetchSpaceAndVerify({
     revocation: { storage, scope: { spaceId } },
     containerRule
   })
-  return context
+  return { ...context, rootInvocation: verifiedRootInvocation({ result }) }
 }

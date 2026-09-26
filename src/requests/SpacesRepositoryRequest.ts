@@ -7,6 +7,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
 import { isRootInvocation, verifyZcap } from '../zcap.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
+import { projectSpaceMetadata } from '../lib/spaceProjection.js'
 import { type EtagValidator, formatEtag } from '../lib/etag.js'
 import {
   assertBodyController,
@@ -326,11 +327,19 @@ export class SpacesRepositoryRequest {
     // Echo what was persisted, `createdBy` included and the container `url`
     // stamped, so the create response and a subsequent Read Space agree. An id
     // already in use was rejected as a 409 by the guarded write, so it created
-    // the Space and its creator is this invoker.
-    return reply.status(201).send({
-      ...spaceMetadata,
-      ...(createdBy && { createdBy }),
-      url: spacePath({ spaceId, trailingSlash: true })
-    })
+    // the Space and its creator is this invoker; a Space that did not exist
+    // has no registered backends, so the echo stamps the server's own
+    // descriptor without a read.
+    return reply.status(201).send(
+      await projectSpaceMetadata({
+        storage,
+        spaceId,
+        spaceMetadata: {
+          ...spaceMetadata,
+          ...(createdBy && { createdBy })
+        },
+        backends: [storage.describe()]
+      })
+    )
   }
 }

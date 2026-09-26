@@ -473,6 +473,28 @@ export function isRootInvocation({
 }
 
 /**
+ * Whether a verified invocation was of the synthesized root capability
+ * itself. The verifier's dereferenced chain runs root to tail, the tail being
+ * the invoked capability, so a root invocation's chain is that one link and a
+ * delegated invocation's has at least one delegated link above it. A handler
+ * whose behavior turns on root authority (Import Space's restore of the Space
+ * Metadata object) reads it here, off what was verified, rather than off the
+ * header's serialization.
+ *
+ * @param options {object}
+ * @param options.result {VerifyCapabilityInvocationResult}   a successful
+ *   verification result
+ * @returns {boolean}
+ */
+export function verifiedRootInvocation({
+  result
+}: {
+  result: VerifyCapabilityInvocationResult
+}): boolean {
+  return result.dereferencedChain?.length === 1
+}
+
+/**
  * Verifies the capability-invocation signature on a request against the Space
  * controller's key. Throws `AuthVerificationError` (400) if verification itself
  * errors. If the capability does not verify, throws the 404 `denialError`

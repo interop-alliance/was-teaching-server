@@ -9,7 +9,7 @@
  * ladder-anchored account document. It is recognized purely by relation
  * asymmetry -- a `capabilityDelegation` member absent from
  * `capabilityInvocation` -- so no marker vocabulary is consulted. A delegation
- * whose proof VM resolves to a ladder VM is admitted iff one of four
+ * whose proof VM resolves to a ladder VM is admitted iff one of five
  * predicates holds:
  *
  * 1. Annex-DID controller inside the account Space's items subtree. Three
@@ -29,8 +29,10 @@
  *    -- with `allowedAction` within {PUT}; or equals the canonical
  *    trailing-slash URL of a Space whose Metadata object declares it
  *    delegated-clients bookkeeping (typed `AuxiliarySpace` +
- *    `DelegatedClientsSpace`), with `allowedAction` within {GET, PUT} (one
- *    memoized Space Metadata read).
+ *    `DelegatedClientsSpace`), with `allowedAction` within {GET, PUT, POST}
+ *    (one memoized Space Metadata read). The POST reaches the Space's export
+ *    and import endpoints and Create Resource on each Collection container
+ *    beneath it; it adds no authority a PUT holder lacked.
  * 3. Target-exact single-verb Space delete or Space Metadata read, split by
  *    verb. DELETE branch: the delegation's `invocationTarget` is the canonical
  *    trailing-slash Space URL, it equals the parent capability's
@@ -63,6 +65,23 @@
  *    here, so a GET-only grant of it is admitted by this predicate; the
  *    {PUT} bound of predicate 2's first branch says what the bridge shape
  *    may write, not that the log is excluded from reads.
+ * 5. Target-exact single-verb `POST` over a delegated management capability.
+ *    The delegation's `invocationTarget` is the canonical trailing-slash
+ *    Space URL and equals the parent capability's `invocationTarget`
+ *    unchanged, and its `allowedAction` is exactly `['POST']` -- a two-verb
+ *    set never qualifies, and neither does any other verb. The
+ *    parent is a delegated capability, never the Space's synthesized root;
+ *    its sole `controller` is the delegator account itself, the DID whose
+ *    document publishes the ladder VM; and the controller DID of the
+ *    parent's own delegation-proof verification method is that Space's
+ *    stored controller (one memoized Space Metadata read), so the parent's
+ *    chain roots at the Space's root and the parent is the management
+ *    capability the Space's controller delegated to the account. This is the
+ *    shape a transient wallet session mints from the management zcap of a
+ *    sibling unlock Space: `POST` to invoke Export Space on it. The
+ *    predicate widens who signs the last
+ *    link of a grant the account already holds; it reaches no Space the
+ *    account held no management capability on.
  *
  * Under the v0.4 layout predicate 3 targeted the bare (no-slash) Space URL.
  * That gave DELETE no different reach from today's: the zcap library's target
@@ -152,6 +171,13 @@
  * carries DELETE on exactly that Space URL, so the predicate widens who signs
  * the last link rather than what the account may do. And the child's target is
  * its parent's unchanged, so the ladder VM cannot aim it anywhere new.
+ *
+ * The fifth shape rests on the same two bounds, and on a third. Its parent
+ * must be a delegated management capability the Space's own controller
+ * granted this account, so the predicate again widens who signs the last link
+ * and not what the account may do: the account could already POST there under
+ * the parent. The Space's controller granting that capability is
+ * the record, and it is the wallet's own unlock record that carries it.
  *
  * The disjuncts carry different grades of record. Disjunct 2 is exact: all the
  * delegation can do is write a log, and the write is the record. Disjunct 1 is
@@ -641,7 +667,7 @@ function isWithinSpaceItemsSubtree({
 }
 
 /**
- * Judges one ladder-signed delegation against the four admission predicates.
+ * Judges one ladder-signed delegation against the five admission predicates.
  * @param options {object}
  * @param options.capability {object}   the dereferenced delegation
  * @param options.doc {DIDDoc}   the resolved account document (the delegator)
@@ -652,6 +678,11 @@ function isWithinSpaceItemsSubtree({
  * @param options.parent {object}   the chain link this delegation hangs from,
  *   a delegated capability or the synthesized root
  * @param [options.parent.invocationTarget] {string}
+ * @param [options.parentMeta] {object}   that link's `capabilityChainMeta`
+ *   entry, so a read of its signer takes the verified method over the one its
+ *   proof declares
+ * @param options.parentIsRoot {boolean}   whether that link is the chain's
+ *   synthesized root rather than a delegated capability
  * @param options.storage {StorageBackend}   for the Space Metadata read
  * @param options.serverUrl {string}   this server's base URL
  * @returns {Promise<boolean>}   true when admitted
@@ -661,13 +692,17 @@ async function ladderDelegationAdmitted({
   doc,
   logLocation,
   parent,
+  parentMeta,
+  parentIsRoot,
   storage,
   serverUrl
 }: {
   capability: ChainCapability
   doc: DIDDoc
   logLocation: { spaceId: string; collectionId: string }
-  parent: { invocationTarget?: string }
+  parent: ChainCapability & { proof?: unknown }
+  parentMeta?: { verifyResult?: unknown }
+  parentIsRoot: boolean
 } & WebvhResolverContext): Promise<boolean> {
   const target = capability.invocationTarget
   if (typeof target !== 'string') {
@@ -731,7 +766,7 @@ async function ladderDelegationAdmitted({
   const spaceId = spaceUrlTargetId({ target, serverUrl })
   if (
     spaceId !== undefined &&
-    actionsWithin({ capability, allowed: ['GET', 'PUT'] })
+    actionsWithin({ capability, allowed: ['GET', 'PUT', 'POST'] })
   ) {
     const spaceMetadata = await getCachedSpaceMetadata({ storage, spaceId })
     if (isDelegatedClientsSpace(spaceMetadata)) {
@@ -752,6 +787,49 @@ async function ladderDelegationAdmitted({
     actionsExactly({ capability, action: 'DELETE' })
   ) {
     return true
+  }
+
+  // Predicate 5: a target-exact single-verb `POST` over a delegated
+  // management capability. The target is the canonical trailing-slash Space
+  // URL and is the parent's own target unchanged, so the ladder VM aims the
+  // grant nowhere new; the action is exactly `POST`, so a two-verb set never
+  // qualifies and neither does any other verb. The parent is a DELEGATED capability, not
+  // the Space's synthesized root: the shape widens who signs the last link of
+  // a management grant an account already holds, rather than handing the
+  // ladder VM a Space its own root would have given it. Two bounds say the
+  // parent is that management grant. Its `controller` is the delegator
+  // account itself, the DID whose document the ladder VM belongs to; and the
+  // party that delegated it is the Space's own controller, read off the Space
+  // Metadata object (the same memoized read predicate 2 branch two makes) and
+  // compared against the controller DID of the parent's delegation-proof
+  // verification method -- the one the verifier verified against, read off
+  // the parent's chain meta as the inspector reads every link's, so a parent
+  // carrying several proofs is judged by the proof that verified. So the
+  // parent's chain roots at this Space's root. This is the shape a transient
+  // session mints to invoke Export Space on a sibling unlock Space.
+  if (
+    spaceId !== undefined &&
+    !parentIsRoot &&
+    parent.invocationTarget === target &&
+    actionsExactly({ capability, action: 'POST' })
+  ) {
+    const parentControllers = capabilityControllers(parent)
+    const parentSigner = delegationVerificationMethod({
+      capability: parent,
+      meta: parentMeta
+    })
+    const [parentSignerDid] = (parentSigner ?? '').split('#')
+    if (
+      parentControllers.length === 1 &&
+      parentControllers[0] === doc.id &&
+      parentSignerDid !== undefined &&
+      parentSignerDid !== ''
+    ) {
+      const spaceMetadata = await getCachedSpaceMetadata({ storage, spaceId })
+      if (spaceMetadata?.controller === parentSignerDid) {
+        return true
+      }
+    }
   }
 
   // Predicate 3, GET branch: a target-exact GET of one Space Metadata object.
@@ -944,7 +1022,11 @@ export function clientAnnexChainInspector({
         capability: capability as ChainCapability,
         doc,
         logLocation,
-        parent: capabilityChain[index - 1] as { invocationTarget?: string },
+        parent: capabilityChain[index - 1] as ChainCapability & {
+          proof?: unknown
+        },
+        parentMeta: capabilityChainMeta[index - 1],
+        parentIsRoot: index - 1 === 0,
         storage,
         serverUrl
       })
@@ -959,7 +1041,10 @@ export function clientAnnexChainInspector({
               'items subtree (its Metadata URL excluded), nor carries a ' +
               'bridge-shaped invocation target, nor is a DELETE-only grant ' +
               "of the parent capability's own Space URL, nor a GET-only " +
-              "grant of that Space's Metadata URL or of one Resource in it."
+              "grant of that Space's Metadata URL or of one Resource in it, " +
+              'nor a POST-only grant of that Space URL under a ' +
+              "management capability the Space's controller delegated to the " +
+              'account.'
           )
         }
       }

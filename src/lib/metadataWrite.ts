@@ -64,11 +64,13 @@ export function normalizeMetadataWrite<
 }
 
 /**
- * Resolves the server-managed `createdBy` of a Space Metadata object about to
- * be written by `writeSpace`, against the prior stored object read under the
+ * Resolves the server-managed members of a Space Metadata object about to be
+ * written by `writeSpace`, against the prior stored object read under the
  * backend's per-Space lock. The client-supplied object is wire input and may
- * carry its own `createdBy`; it is discarded, since the server alone is
- * authoritative for it.
+ * carry its own `createdBy`, or any of the members the server derives per
+ * read (`url`, `linkset`, `backends`; `lib/spaceProjection.ts`); all are
+ * discarded, since the server alone is authoritative for them, and the
+ * derived ones are never stored at all.
  *
  * `createdBy` names the Space's creator, not its last writer: taken from this
  * write's invoker only when this write CREATES the Space, and preserved
@@ -91,7 +93,13 @@ export function stampSpaceMetadata({
   prior?: StoredSpaceMetadata
   createdBy?: IDID
 }): SpaceMetadata {
-  const { createdBy: _suppliedCreatedBy, ...rest } = spaceMetadata
+  const {
+    createdBy: _suppliedCreatedBy,
+    url: _suppliedUrl,
+    linkset: _suppliedLinkset,
+    backends: _suppliedBackends,
+    ...rest
+  } = spaceMetadata
   const creator = prior ? prior.createdBy : createdBy
   return {
     ...rest,

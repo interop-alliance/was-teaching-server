@@ -21,6 +21,19 @@ import {
   zcapClients
 } from './helpers.js'
 
+/**
+ * The server-derived `backends` member every Space Metadata read carries: this
+ * suite's server runs the single filesystem backend, registered as `default`.
+ */
+const SERVED_BACKENDS = [
+  {
+    id: 'default',
+    name: 'Server Filesystem',
+    managedBy: 'server',
+    persistence: 'durable'
+  }
+]
+
 describe('Spaces', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
@@ -81,7 +94,8 @@ describe('Spaces', () => {
         controller: alice.did,
         createdBy: alice.did,
         url: `/space/${alice.space1.id}/`,
-        linkset: `/space/${alice.space1.id}/linkset`
+        linkset: `/space/${alice.space1.id}/linkset`,
+        backends: SERVED_BACKENDS
       })
     })
 
@@ -264,7 +278,8 @@ describe('Spaces', () => {
         controller: alice.did,
         createdBy: alice.did,
         url: `/space/${alice.space1.id}/`,
-        linkset: `/space/${alice.space1.id}/linkset`
+        linkset: `/space/${alice.space1.id}/linkset`,
+        backends: SERVED_BACKENDS
       })
     })
 
@@ -293,7 +308,8 @@ describe('Spaces', () => {
         controller: alice.did,
         createdBy: alice.did,
         url: `/space/${alice.space1.id}/`,
-        linkset: `/space/${alice.space1.id}/linkset`
+        linkset: `/space/${alice.space1.id}/linkset`,
+        backends: SERVED_BACKENDS
       })
     })
 

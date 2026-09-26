@@ -2,7 +2,75 @@
 
 ## 0.38.0 - TBD
 
+### Added
+
+- The Space Metadata object carries `backends`, the server-derived listing of
+  the backends the Space serves -- the same array `GET /space/:spaceId/backends`
+  returns -- so a reader learns it without a second request. It is read-only: a
+  `backends` supplied in a Create Space or Update Space Metadata body is
+  dropped, as `createdBy` is. `src/lib/spaceProjection.ts` holds the projection
+  from the stored record to the served object, used by Read Space and both
+  create echoes, and the one to the export archive's `.space.<id>.json` entry,
+  which stamps `backends` alone. Requires `@interop/storage-core` 0.19.0.
+
+- Import Space restores the archived Space Metadata object's `name` under an
+  invocation of the Space's root capability, decided off the verified invocation
+  rather than the header's serialization; under a delegated chain it skips the
+  entry. The archived `type` is checked, not applied: a Space's `type` is
+  immutable once it exists, so an archive naming a different set of types than
+  the destination's is refused as `invalid-import` (400) before anything is
+  written, and a `type` Update Space would refuse is ignored. An entry that does
+  not parse as a JSON object is treated as absent, so the rest of the archive
+  still imports. `controller` and the server-derived members are never restored.
+  The outcome is reported as the new `ImportStats` member `spaceMetadata`:
+  `'restored'`, `'skipped'` (a delegated chain, or a Space with no stored object
+  to apply the entry over), or `'absent'` when the archive carried no Space
+  Metadata entry. The restore makes the same write Update Space Metadata does,
+  on both backends, so the object's monotonic version bumps with it and the
+  write is serialized with concurrent Space Metadata writes.
+
+- Registering or deregistering a backend advances the Space Metadata object's
+  `ETag` version (generation kept), since the object's `backends` member
+  changed: a conditional read holding the prior validator gets the new object
+  rather than a 304. A deregistration that found no record leaves the validator
+  as it was.
+
+- Every Space export carries this server's Service Description verbatim as the
+  archive's `service.json` entry, beside `manifest.yml`, so an importer can read
+  which specification versions and feature set the contents were written under
+  before it writes anything. The Export Space handler builds it with the same
+  `buildServiceDescription` the `/service` route uses; an app composed without a
+  `serverUrl` exports without the entry. `StorageBackend.exportSpace` takes it
+  as an optional `service` option, and imports ignore the entry. Requires
+  `@interop/space-archive` 0.2.0.
+
 ### Changed
+
+- Space exports name the corrected WAS spec URLs in their `manifest.yml`: the
+  spec's rendered host `https://w3c-ccg.github.io/wallet-attached-storage-spec/`
+  and, for the Collection Metadata and policy entries, the anchors
+  `#collection-metadata-data-model` and `#access-control-policies`. The values
+  come from `@interop/space-archive`; this server holds no copy of them.
+
+- The client-annex inspector clause admits a fifth delegation shape: a
+  target-exact single-verb `POST` child of a management capability a Space's own
+  controller delegated to the account did:webvh. The child's `invocationTarget`
+  is the canonical trailing-slash Space URL, equal to the parent's unchanged,
+  and its `allowedAction` is exactly `['POST']`; the parent must be a delegated
+  capability whose sole `controller` is the delegator account and whose own
+  delegation proof was signed by the Space's stored controller. This is what
+  lets a transient wallet session invoke Export Space on a sibling unlock Space.
+  The invocation is not classified by the clause's invocation-time bounds, so
+  those are unchanged. A `PUT` branch for the restore's create-by-id was drafted
+  and withdrawn: such a child reaches every resource beneath the Space by prefix
+  attenuation.
+
+- The client-annex inspector clause's delegated-clients branch admits
+  `allowedAction` within {GET, PUT, POST}, widened from {GET, PUT}. POST reaches
+  the annex Space's export and import endpoints and Create Resource on each
+  Collection container beneath it, which is what the wallet backup export
+  invokes; it adds no authority a PUT holder lacked, since PUT already creates
+  Resources by id and Update Space Metadata stays controller-only.
 
 - The per-Space export archive codec now comes from `@interop/space-archive`
   instead of `@interop/wallet-backup`. This drops wallet-core and the rest of

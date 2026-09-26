@@ -229,12 +229,17 @@ if (!connectionString) {
           for (const [name, doc] of fsArchive.parsed) {
             // The Space Metadata file is ignored on import (the target
             // Space was written independently), so its `_generation` /
-            // `_version` validator is that Space's own and cannot match.
+            // `_version` validator is that Space's own and cannot match; and
+            // its `backends` listing names the exporting server's own
+            // backend, which differs between the two.
             const withoutSpaceValidator = (document: unknown) =>
               name.endsWith(`/.space.${spaceId}.json`)
                 ? Object.fromEntries(
                     Object.entries(document as object).filter(
-                      ([key]) => key !== '_generation' && key !== '_version'
+                      ([key]) =>
+                        key !== '_generation' &&
+                        key !== '_version' &&
+                        key !== 'backends'
                     )
                   )
                 : document

@@ -1,9 +1,9 @@
 /**
  * The counterpart test for the per-Space archive codec, which now lives in
  * `@interop/space-archive` and is shared by this server and any wallet reading
- * a backup. The package checks in a fixture archive
- * (`test/fixtures/space-archive/space-archive.tar`) packed by its own writer
- * from a small fixed entry tree; this suite stages that same tree in a
+ * a backup. The package publishes a fixture archive
+ * (`@interop/space-archive/fixtures/space-archive.tar`) packed by its own
+ * writer from a small fixed entry tree; this suite stages that same tree in a
  * `FileSystemBackend`'s on-disk layout, runs the server's real `exportSpace`
  * path over it, and asserts the bytes are identical. So the two parties to the
  * dialect -- the package's writer and this server's entry-tree construction
@@ -41,18 +41,16 @@ const COLLECTION_ID = 'notes'
 const RESOURCE_ID = 'note.1'
 
 /**
- * The checked-in fixture archive's bytes. The package publishes only `dist`,
- * so the fixture is reached by resolving the package entry point through the
- * `link:` dependency and walking up out of `dist/`.
+ * The fixture archive's bytes. The package publishes the fixture as a subpath
+ * export, so this reads the bytes of the version this server depends on rather
+ * than a checkout it would have to find on disk.
  * @returns {Buffer}
  */
 function readFixtureArchive(): Buffer {
-  const packageDir = path.resolve(
-    path.dirname(fileURLToPath(import.meta.resolve('@interop/space-archive'))),
-    '..'
-  )
   return fs.readFileSync(
-    path.join(packageDir, 'test/fixtures/space-archive/space-archive.tar')
+    fileURLToPath(
+      import.meta.resolve('@interop/space-archive/fixtures/space-archive.tar')
+    )
   )
 }
 

@@ -187,6 +187,7 @@ async function wasPlugin(
   }
 
   fastify.decorate('serverUrl', serverUrl as string)
+  fastify.decorate('discloseVersion', discloseVersion)
   // Route the backend's diagnostics through the Fastify pino logger (the backend
   // defaults to a silent logger until wired here).
   const storage =

@@ -54,34 +54,50 @@ export function assertValidSpaceType(
   if (type === undefined) {
     return undefined
   }
+  const problem = spaceTypeProblem(type)
+  if (problem !== undefined) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail: problem,
+      pointer: '#/type'
+    })
+  }
+  return type as string[]
+}
+
+/**
+ * The rule behind {@link assertValidSpaceType}, as a description of what is
+ * wrong with a `type` value rather than a thrown error, for a caller that
+ * drops an invalid value instead of refusing the request (the import of an
+ * archived Space Metadata object).
+ *
+ * @param type {unknown}   a `type` value
+ * @returns {string | undefined}   why the value is not a valid Space Metadata
+ *   `type`, or undefined when it is
+ */
+export function spaceTypeProblem(type: unknown): string | undefined {
   const valid =
     Array.isArray(type) &&
     type.length > 0 &&
     type.every(entry => typeof entry === 'string' && entry.length > 0) &&
     type.includes(BASE_SPACE_TYPE)
   if (!valid) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail:
-        'The Space Metadata "type" property must be a non-empty array of' +
-        ` type names that includes "${BASE_SPACE_TYPE}".`,
-      pointer: '#/type'
-    })
+    return (
+      'The Space Metadata "type" property must be a non-empty array of' +
+      ` type names that includes "${BASE_SPACE_TYPE}".`
+    )
   }
   const typeArray = type as string[]
   if (
     typeArray.includes(DELEGATED_CLIENTS_SPACE_TYPE) &&
     !typeArray.includes(AUXILIARY_SPACE_TYPE)
   ) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail:
-        `A Space Metadata "type" naming "${DELEGATED_CLIENTS_SPACE_TYPE}"` +
-        ` must also name "${AUXILIARY_SPACE_TYPE}".`,
-      pointer: '#/type'
-    })
+    return (
+      `A Space Metadata "type" naming "${DELEGATED_CLIENTS_SPACE_TYPE}"` +
+      ` must also name "${AUXILIARY_SPACE_TYPE}".`
+    )
   }
-  return typeArray
+  return undefined
 }
 
 /**
@@ -93,9 +109,36 @@ export function defaultSpaceType(): string[] {
 }
 
 /**
+ * The immutability rule behind Update Space and the import of an archived
+ * Space Metadata object, as a description of what is wrong with a requested
+ * `type` rather than a thrown error, since the two callers refuse with
+ * different error classes: a Space's `type` is set at creation and cannot
+ * change once the Space exists, so a requested value must name the same set of
+ * types the stored object does (`isSameTypeSet`).
+ *
+ * @param options {object}
+ * @param options.requested {unknown}   the `type` a write asks for
+ * @param options.stored {unknown}   the existing Space's `type`
+ * @returns {string | undefined}   why the requested value is refused, or
+ *   undefined when it names the stored set
+ */
+export function spaceTypeChangeProblem({
+  requested,
+  stored
+}: {
+  requested: unknown
+  stored: unknown
+}): string | undefined {
+  if (isSameTypeSet({ left: requested, right: stored })) {
+    return undefined
+  }
+  return 'The Space Metadata "type" is immutable once the Space exists.'
+}
+
+/**
  * Whether two Space Metadata `type` values name the same set of types,
- * ignoring order and repetition. The immutability comparison behind Update
- * Space.
+ * ignoring order and repetition. The comparison behind
+ * {@link spaceTypeChangeProblem}.
  * @param options {object}
  * @param options.left {unknown}   one type value (an array, or anything else)
  * @param options.right {unknown}   the other type value

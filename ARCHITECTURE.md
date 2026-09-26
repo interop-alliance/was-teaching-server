@@ -92,10 +92,15 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   description and its `/meta` annotation object into one `CollectionMetadata`
   record, so `metaVersion` advances on a configuration write (`backend`,
   `encryption`, `generator`) and an annotation write (`custom`, `epoch`) alike.
-  The terms "Space Description" and "Collection Description" are retired;
-  storage exposes one validator pair per container, `metaGeneration` /
-  `metaVersion`, through `writeSpace` / `getSpaceMetadata` and `writeCollection`
-  / `getCollectionMetadata` -- there is no separate `writeCollectionMetadata` /
+  The Space Metadata object's `metaVersion` also advances when a backend is
+  registered or deregistered on the Space: its served `backends` member changed
+  while its stored body did not, and a strong validator must move with the
+  representation (both backends bump the version only, the generation kept,
+  under the same per-Space lock as a Metadata write). The terms "Space
+  Description" and "Collection Description" are retired; storage exposes one
+  validator pair per container, `metaGeneration` / `metaVersion`, through
+  `writeSpace` / `getSpaceMetadata` and `writeCollection` /
+  `getCollectionMetadata` -- there is no separate `writeCollectionMetadata` /
   `getCollectionMetadata` pair. The generation is a random base58 marker minted
   when the record's counter starts and kept for the record's life. A Resource's
   content counter continues through a tombstone and its re-create, so its
@@ -235,8 +240,31 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `@interop/space-archive`, shared with the wallets that read a backup, and
   `src/lib/importTar.ts` reads the same dialect back. The codec is isomorphic
   and resolves a streamx-based tar-stream `Pack`, which the backend wraps with
-  `Readable.from`. `test/space-archive-fixture.test.ts` pins this server's entry
-  trees against the archive fixture that package checks in.
+  `Readable.from`. The Export Space handler passes this server's Service
+  Description to `exportSpace`, which the codec writes into the archive verbatim
+  as its `service.json` entry beside `manifest.yml`, so an importer can read
+  which specification versions and feature set the contents were written under
+  before it writes anything. It is informational, and `importTar.ts` ignores it.
+  The archive's `.space.<id>.json` entry is the stored Space Metadata object in
+  the filesystem backend's on-disk layout, with the server-derived `backends`
+  listing stamped on (`archivedSpaceMetadata` in `lib/spaceProjection.ts`, the
+  same module the served object is projected in). On the way back in, an import
+  reads that object's user-writable members only under an invocation of the
+  Space's root capability (decided off the verified result,
+  `verifiedRootInvocation` in `zcap.ts`: a dereferenced chain of one link is the
+  synthesized root alone), skips them under a delegated chain, and never
+  restores a server-derived member or `controller`. `name` is restored, by the
+  same write Update Space Metadata makes. `type` is immutable once a Space
+  exists, so it is checked rather than applied: an archive naming a different
+  set of types than the destination's is refused as `invalid-import` (400)
+  before anything is written, and one whose `type` breaks the shape rule Update
+  Space enforces is treated as carrying none. An entry that does not parse as a
+  JSON object is treated as absent, so the rest of the archive still imports.
+  The outcome is the `spaceMetadata` member of the returned `ImportStats`:
+  `'restored'`, `'skipped'` (a delegated chain, or a Space with no stored object
+  to apply the entry over), or `'absent'` when the archive carried no such
+  entry. `test/space-archive-fixture.test.ts` pins this server's entry trees
+  against the archive fixture that package checks in.
 - **`src/errors.ts`** — custom error classes plus `handleError`, the Fastify
   error handler installed by each route group.
 - **`src/exchanges.ts`** — the ephemeral exchanges facet
@@ -282,7 +310,18 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   bookkeeping rather than user data and is excluded from List Spaces; a wallet
   reaches its auxiliary Space through the account document's service entry
   instead. Its `url`, and the `Location` of a newly created Space, carry the
-  trailing slash.
+  trailing slash. The object splits in two: its user-writable members are `type`
+  and `name`, and its server-derived members are `createdBy`, `url`, `linkset`
+  and `backends` (the same listing `GET /space/:spaceId/backends` serves,
+  carried here so a reader learns it without a second request). A server-derived
+  member supplied in a write body is ignored. `src/lib/spaceProjection.ts` holds
+  the two projections from the stored record: the served object, which Read
+  Space and the two create echoes go through, and the export archive's
+  `.space.<id>.json` entry, which keeps the on-disk layout and stamps only
+  `backends`; both derive `backends` there, so no path drifts on it. The create
+  echoes hand it the listing instead of having it read one: a Space that did not
+  exist before the write has no registrations, since registering one needs the
+  Space Metadata object to authorize against.
 - **Collection** — a named grouping of Resources within a Space, canonically
   addressed with a trailing slash (`/space/:spaceId/:collectionId/`): `GET`
   lists its Resources, `POST` adds one, `DELETE` removes the Collection. Its
@@ -401,7 +440,7 @@ method may delegate. A ladder VM is the stable, credential-derived method a
 wallet publishes on a ladder-anchored account document, recognized by relation
 asymmetry: a `capabilityDelegation` member of the resolved self-hosted
 `did:webvh` document that is absent from `capabilityInvocation`. A delegation
-signed by one is admitted only in one of four shapes.
+signed by one is admitted only in one of five shapes.
 
 The first shape is bounded by grantee, target, and action together. Its sole
 `controller` equals the client-annex DID named by the account document's
@@ -427,7 +466,9 @@ DID, which carries its log's Space and Collection) with `allowedAction` within
 {PUT}. Or it is the trailing-slash URL of a Space whose Metadata object declares
 it delegated-clients bookkeeping (typed `AuxiliarySpace` +
 `DelegatedClientsSpace`, the only combination Create Space accepts for the
-latter) with `allowedAction` within {GET, PUT}.
+latter) with `allowedAction` within {GET, PUT, POST}. The POST reaches that
+Space's export and import endpoints and Create Resource on each Collection
+container beneath it, and adds no authority a PUT holder lacked.
 
 The third shape is a target-exact single-verb grant on the Space itself, split
 by verb. Its DELETE branch: `invocationTarget` is the canonical trailing-slash
@@ -453,6 +494,32 @@ account at bind time. The server recognizes no unlock Space: the shape holds for
 any Space, since the parent already bounds which Space the read can target. By
 attenuation the grant also reaches the reads under that Resource URL (its
 `/meta`, `/policy`, and chunks), all reads.
+
+The fifth shape is a target-exact single-verb `POST` over a delegated management
+capability. Its `invocationTarget` is the canonical trailing-slash Space URL,
+equal to the parent capability's own target unchanged, and its `allowedAction`
+is exactly {POST}; a two-verb set does not qualify, and neither does any other
+verb. The parent must be a delegated capability rather than the Space's
+synthesized root, its sole `controller` must be the delegator account itself,
+and the controller DID of the parent's own delegation proof must be the Space's
+stored controller (one memoized Space Metadata read), so the parent is the
+management capability that Space's controller delegated to the account. This is
+the shape a transient wallet session mints from the management zcap of a sibling
+unlock Space to invoke Export Space on it (the backup export). Like the third
+shape's DELETE branch, it widens who signs the last link of a grant the account
+already holds rather than what the account may do, and it reaches no Space the
+account holds no management capability on. The invocation is not classified by
+the invocation-time bounds below: those read `PUT` on a Space Metadata URL and
+`DELETE` on a canonical Space URL, and a `POST` at `/space/<S>/export` is
+neither.
+
+A `PUT` branch was drafted beside it, for a restore creating a sibling Space by
+id, and withdrawn before it landed: a `PUT` child of the Space URL reaches every
+resource beneath the Space by prefix attenuation, so a transient session on one
+credential could overwrite a sibling credential's keyring record with no logged
+record of it. A bounded create-only shape comes back with the restore's sibling
+stage (freewallet FW-531), once WAS-131 makes Create Space by Id reachable on a
+`did:webvh` chain at all.
 
 Under v0.4 the Space Description sat outside the container: a `/space/<S>/`
 subtree grant could not reach `PUT /space/<S>` (the controller rewrite) or

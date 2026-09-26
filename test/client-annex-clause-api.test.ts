@@ -13,7 +13,10 @@
  * Space URL equal to its parent capability's own, granted exactly `DELETE`, or
  * the Space Metadata URL under a parent on that URL or on the Space, granted
  * exactly `GET`, or one Resource URL under a parent on that URL or on its
- * Space, granted exactly `GET`. On top of the delegation shapes, a chain
+ * Space, granted exactly `GET`, or the canonical Space URL equal to its
+ * parent's own under a management capability the Space's controller delegated
+ * to the account, granted exactly `POST`. On top of the
+ * delegation shapes, a chain
  * carrying any ladder-signed link is refused at invocation time against Update
  * Space Metadata (`PUT .../meta`) and against Delete Space
  * (`DELETE /space/{s}/`) unless the invoked capability is that DELETE-only
@@ -997,13 +1000,33 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
       )
     })
 
-    it('refuses actions outside {GET, PUT} on the same Space (404)', async () => {
+    it('admits the {GET, PUT, POST} set on the same Space', async () => {
+      // POST is what the backup export invokes on the annex Space; it joins
+      // GET and PUT at mint rather than riding a delegation of its own.
       const delegated = await delegate({
         signer: account.ladderKeyPair.signer(),
         capability: auxSpaceRoot,
         invocationTarget: auxSpaceUrl,
         controller: bob.did,
-        allowedActions: ['GET', 'PUT', 'DELETE']
+        allowedActions: ['GET', 'PUT', 'POST']
+      })
+      const read = await client({ signer: bob.signer }).request({
+        url: `${auxSpaceUrl}clients/rec-1`,
+        method: 'GET',
+        action: 'GET',
+        capability: delegated
+      })
+      assert.equal(read.status, 200)
+      assert.deepStrictEqual(read.data, { clientId: 'client-1' })
+    })
+
+    it('refuses actions outside {GET, PUT, POST} on the same Space (404)', async () => {
+      const delegated = await delegate({
+        signer: account.ladderKeyPair.signer(),
+        capability: auxSpaceRoot,
+        invocationTarget: auxSpaceUrl,
+        controller: bob.did,
+        allowedActions: ['GET', 'PUT', 'POST', 'DELETE']
       })
       const err = await requestError(
         client({ signer: bob.signer }).request({
@@ -1637,6 +1660,241 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
           url: unlock.resourceUrl,
           method: 'GET',
           action: 'GET',
+          capability: child
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+  })
+
+  describe('predicate (v): a target-exact POST over a management zcap', () => {
+    /**
+     * The management zcap a sibling unlock Space's `did:key` controller
+     * delegates to the account DID at bind time: the whole Space, all four
+     * verbs, the parent every predicate (v) child hangs from.
+     *
+     * @param options {object}
+     * @param options.unlock {{ url: string, root: string }}   the Space
+     * @param [options.controller] {string}   the grantee, the account DID by
+     *   default
+     * @returns {Promise<any>}
+     */
+    async function manageCapability({
+      unlock,
+      controller = account.did
+    }: {
+      unlock: { url: string; root: string }
+      controller?: string
+    }): Promise<any> {
+      return await client({ signer: alice.signer }).delegate({
+        capability: unlock.root,
+        invocationTarget: unlock.url,
+        controller,
+        allowedActions: ['GET', 'PUT', 'DELETE', 'POST'],
+        expires: anHourFromNow()
+      })
+    }
+
+    it('admits a POST-only child, and Export Space runs under it (200)', async () => {
+      // The three-link chain a transient session holds for a backup export:
+      // the unlock Space's root, the management zcap its `did:key` controller
+      // delegated to the account DID, and the ladder-signed child that keeps
+      // the same canonical Space target and narrows the actions to `POST`.
+      const unlock = await makeSpace({ withResource: true })
+      const manage = await manageCapability({ unlock })
+      const { child, ladder } = await ladderChild({
+        capability: manage,
+        invocationTarget: unlock.url,
+        allowedActions: ['POST'],
+        expires: new Date(manage.expires)
+      })
+      const response = await client({ signer: ladder.signer }).request({
+        url: `${unlock.url}export`,
+        method: 'POST',
+        action: 'POST',
+        capability: child
+      })
+      assert.equal(response.status, 200)
+      assert.equal(response.headers.get('content-type'), 'application/x-tar')
+    })
+
+    it('refuses a PUT-only child (404)', async () => {
+      // A `PUT` branch was drafted for the restore's create-by-id and
+      // withdrawn before it landed: a `PUT` child of the Space URL reaches
+      // every resource beneath the Space by prefix attenuation, so a
+      // transient session on one credential could overwrite a sibling
+      // credential's keyring record with no logged record of it. The write
+      // this cell attempts is exactly that reach.
+      const unlock = await makeSpace({ withResource: true })
+      const manage = await manageCapability({ unlock })
+      const { child, ladder } = await ladderChild({
+        capability: manage,
+        invocationTarget: unlock.url,
+        allowedActions: ['PUT'],
+        expires: new Date(manage.expires)
+      })
+      const err = await requestError(
+        client({ signer: ladder.signer }).request({
+          url: `${unlock.url}keyring/record-2`,
+          method: 'PUT',
+          action: 'PUT',
+          capability: child,
+          json: { keyring: 'restored' }
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('refuses a two-verb {POST, PUT} child (404)', async () => {
+      const unlock = await makeSpace()
+      const manage = await manageCapability({ unlock })
+      const { child, ladder } = await ladderChild({
+        capability: manage,
+        invocationTarget: unlock.url,
+        allowedActions: ['POST', 'PUT'],
+        expires: new Date(manage.expires)
+      })
+      const err = await requestError(
+        client({ signer: ladder.signer }).request({
+          url: `${unlock.url}export`,
+          method: 'POST',
+          action: 'POST',
+          capability: child
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('refuses a child aimed below the Space URL (404)', async () => {
+      // The target is the export endpoint itself rather than the canonical
+      // Space URL, so it is not the parent's target unchanged. The library's
+      // attenuation admits the chain; the clause is what refuses it.
+      const unlock = await makeSpace()
+      const manage = await manageCapability({ unlock })
+      const { child, ladder } = await ladderChild({
+        capability: manage,
+        invocationTarget: `${unlock.url}export`,
+        allowedActions: ['POST'],
+        expires: new Date(manage.expires)
+      })
+      const err = await requestError(
+        client({ signer: ladder.signer }).request({
+          url: `${unlock.url}export`,
+          method: 'POST',
+          action: 'POST',
+          capability: child
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('refuses a child aimed at the Space Metadata URL (404)', async () => {
+      // `PUT` on a Metadata URL is the controller rewrite. The predicate takes
+      // the container URL alone, and the invocation-time bound and the
+      // `controller-only` container rule refuse this one over again.
+      const unlock = await makeSpace()
+      const manage = await manageCapability({ unlock })
+      const { child, ladder } = await ladderChild({
+        capability: manage,
+        invocationTarget: unlock.metaUrl,
+        allowedActions: ['PUT'],
+        expires: new Date(manage.expires)
+      })
+      const err = await requestError(
+        client({ signer: ladder.signer }).request({
+          url: unlock.metaUrl,
+          method: 'PUT',
+          action: 'PUT',
+          capability: child,
+          json: {
+            id: unlock.spaceId,
+            name: 'Unlock Space',
+            controller: alice.did
+          }
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it("refuses a child whose parent is the Space's synthesized root (404)", async () => {
+      // Predicate (iii)'s DELETE branch takes a root parent; this one does
+      // not. A root parent means no management capability was ever granted,
+      // so there is nothing for the last link to widen the signer of.
+      const space = await makeSpace({ controller: account.did })
+      const { child, ladder } = await ladderChild({
+        capability: space.root,
+        invocationTarget: space.url,
+        allowedActions: ['POST']
+      })
+      const err = await requestError(
+        client({ signer: ladder.signer }).request({
+          url: `${space.url}export`,
+          method: 'POST',
+          action: 'POST',
+          capability: child
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it('refuses a parent granted to a DID other than the account (404)', async () => {
+      // The parent's sole `controller` must be the account whose document
+      // publishes the ladder VM, since the predicate rests on the account
+      // already holding this management capability. The verifier's own
+      // delegator check reaches the same verdict here -- a ladder VM of one
+      // account cannot delegate a capability controlled by another party --
+      // and the clause states it as a shape requirement all the same.
+      const unlock = await makeSpace()
+      const manage = await manageCapability({ unlock, controller: bob.did })
+      const { child, ladder } = await ladderChild({
+        capability: manage,
+        invocationTarget: unlock.url,
+        allowedActions: ['POST'],
+        expires: new Date(manage.expires)
+      })
+      const err = await requestError(
+        client({ signer: ladder.signer }).request({
+          url: `${unlock.url}export`,
+          method: 'POST',
+          action: 'POST',
+          capability: child
+        })
+      )
+      assert.equal(err.status, 404)
+    })
+
+    it("refuses a parent the Space's controller did not delegate (404)", async () => {
+      // A four-link chain: the Space's controller grants Bob the whole Space,
+      // Bob passes it to the account, and the ladder VM narrows to `POST`.
+      // The parent's controller is the account, but the party that delegated
+      // it is Bob rather than the Space's stored controller, so the parent is
+      // not the management capability the predicate names.
+      const unlock = await makeSpace()
+      const toBob = await client({ signer: alice.signer }).delegate({
+        capability: unlock.root,
+        invocationTarget: unlock.url,
+        controller: bob.did,
+        allowedActions: ['GET', 'PUT', 'DELETE', 'POST'],
+        expires: anHourFromNow()
+      })
+      const relayed = await client({ signer: bob.signer }).delegate({
+        capability: toBob,
+        invocationTarget: unlock.url,
+        controller: account.did,
+        allowedActions: ['GET', 'PUT', 'DELETE', 'POST'],
+        expires: new Date(toBob.expires)
+      })
+      const { child, ladder } = await ladderChild({
+        capability: relayed,
+        invocationTarget: unlock.url,
+        allowedActions: ['POST'],
+        expires: new Date(relayed.expires)
+      })
+      const err = await requestError(
+        client({ signer: ladder.signer }).request({
+          url: `${unlock.url}export`,
+          method: 'POST',
+          action: 'POST',
           capability: child
         })
       )

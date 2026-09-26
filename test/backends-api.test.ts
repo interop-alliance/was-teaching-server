@@ -12,7 +12,12 @@ import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import {
+  etagGeneration,
+  responseOf,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('Space backend registration (/backends)', () => {
   let fastify: FastifyInstance,
@@ -293,6 +298,77 @@ describe('Space backend registration (/backends)', () => {
       method: 'GET'
     })
     assert.deepStrictEqual(listing.data, [defaultBackendDescriptor])
+  })
+
+  it('a registration and a deregistration each advance the Space Metadata ETag', async () => {
+    // The served Space Metadata object lists the Space's backends, so a
+    // change to the listing is a change to the representation and its strong
+    // validator must change with it: a conditional read holding the prior
+    // validator gets the new object, not a 304.
+    const spaceId = await freshSpace('ETag Space')
+    const metaUrl = new URL(`/space/${spaceId}/meta`, serverUrl).toString()
+    const before = await alice.was.request({ url: metaUrl, method: 'GET' })
+    const etagBefore = before.headers.get('etag')!
+    assert.deepStrictEqual(before.data.backends, [defaultBackendDescriptor])
+
+    await alice.was.request({
+      url: backendsUrl(spaceId),
+      method: 'POST',
+      json: sampleRegistration()
+    })
+    const registered = await responseOf(
+      alice.was.request({
+        url: metaUrl,
+        method: 'GET',
+        headers: { 'if-none-match': etagBefore }
+      })
+    )
+    assert.equal(registered.status, 200)
+    const etagRegistered = registered.headers.get('etag')!
+    assert.notEqual(etagRegistered, etagBefore)
+    // A 200 comes back as the client's parsed result, body on `data`.
+    const registeredBody = (registered as any).data
+    assert.equal(registeredBody.backends.length, 2)
+    assert.equal(registeredBody.backends[1].id, 'gdrive-1')
+    // The generation is kept: only the version advanced.
+    assert.equal(
+      etagGeneration(etagRegistered),
+      etagGeneration(etagBefore),
+      'expected the same generation'
+    )
+
+    await alice.was.request({
+      url: backendsUrl(spaceId, 'gdrive-1'),
+      method: 'DELETE'
+    })
+    const deregistered = await responseOf(
+      alice.was.request({
+        url: metaUrl,
+        method: 'GET',
+        headers: { 'if-none-match': etagRegistered }
+      })
+    )
+    assert.equal(deregistered.status, 200)
+    const etagDeregistered = deregistered.headers.get('etag')!
+    assert.notEqual(etagDeregistered, etagRegistered)
+    assert.deepStrictEqual((deregistered as any).data.backends, [
+      defaultBackendDescriptor
+    ])
+
+    // Deregistering an absent record changes nothing, so the validator holds
+    // and the conditional read is a 304.
+    await alice.was.request({
+      url: backendsUrl(spaceId, 'gdrive-1'),
+      method: 'DELETE'
+    })
+    const unchanged = await responseOf(
+      alice.was.request({
+        url: metaUrl,
+        method: 'GET',
+        headers: { 'if-none-match': etagDeregistered }
+      })
+    )
+    assert.equal(unchanged.status, 304)
   })
 
   it('registration records do not travel in a Space export', async () => {

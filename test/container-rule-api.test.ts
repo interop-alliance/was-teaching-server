@@ -958,7 +958,8 @@ describe('container rule (unsafe methods at a container URL)', () => {
     })
 
     it('refuses an annex-VM DELETE-only child of the delegated-clients sibling delegation against the annex Space (404)', async () => {
-      // The sibling delegation a wallet mints carries `['GET', 'PUT']`, so a
+      // The sibling delegation a wallet mints carries `['GET', 'PUT', 'POST']`,
+      // so a
       // DELETE-only child of it already fails attenuation. It is widened to
       // the full verb set here so the refusal turns on the signer alone: the
       // auxiliary annex Space is the account's, and a per-visit key never
