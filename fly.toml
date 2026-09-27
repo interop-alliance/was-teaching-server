@@ -1,0 +1,40 @@
+# Example Fly.io configuration. The server sits behind a wallet app that
+# serves its routes on the wallet's own origin and reaches this app over
+# Flycast, so this app has no public IP. The app name and SERVER_URL below are
+# placeholders: the deploy workflow replaces them with the FLY_APP and
+# SERVER_URL variables of its GitHub environment. See docs/deployment-fly.io.md.
+
+app = "was-teaching-server"
+primary_region = "iad"
+
+[env]
+  # The public origin the browser sees (the wallet app's domain).
+  SERVER_URL = "https://wallet.example.com"
+  PORT = "3002"
+  WAS_DATA_DIR = "/data"
+
+# Filesystem backend storage. Remove this section and WAS_DATA_DIR when
+# DATABASE_URL (a secret) selects the Postgres backend.
+[mounts]
+  source = "was_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 3002
+  # Reached only over Flycast, as plain HTTP inside the private network. The
+  # wallet app's edge terminates TLS.
+  force_https = false
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

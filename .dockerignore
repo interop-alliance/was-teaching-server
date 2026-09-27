@@ -1,0 +1,13 @@
+.git
+.github
+.idea
+.vscode
+.claude
+_spec
+node_modules
+dist
+coverage
+data
+.env
+.env.*
+*.log
