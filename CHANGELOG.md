@@ -7,8 +7,8 @@
 - A production `Dockerfile`, an example Fly.io `fly.toml`, and a deploy workflow
   that runs when a GitHub release is published. The workflow takes the app name
   and `SERVER_URL` from its GitHub environment's variables.
-  `docs/deployment-fly.io.md` covers choosing same origin or cross origin, the
-  setup, and the rules a reverse proxy in front of the server must follow.
+  `docs/deployment-fly.io.md` covers choosing an origin layout, the setup, and
+  the rules a reverse proxy in front of the server must follow.
 
 ## 0.38.0 - 2026-09-27
 
