@@ -189,7 +189,7 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   Metadata writes through the same per-Collection lock.
 - **`src/serviceDescription.ts`** -- the service description (spec "Service
   Description"): `GET /service`, unauthenticated, serving the JSON document that
-  lists three entries in its `specs`. The core entry, under the
+  lists four entries in its `specs`. The core entry, under the
   `https://w3id.org/pws` identifier, names the spec version this server speaks
   (`0.5`), the Spaces Repository URL, and the `features` tokens naming the
   optional sections of the core spec this server serves, `changes-query` among
@@ -213,10 +213,15 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   names the profile's two optional affordances this server serves,
   `blinded-index-query` and `governed-history-logs`. Those two moved here off
   the Backend descriptor: they are affordances of that companion specification,
-  not of a storage engine. The document is built per `serverUrl` and served with
-  `Cache-Control: public` and a content-hash `ETag`. The module also installs
-  the one hook every response passes through: a root-level `onSend` hook
-  (`addServiceLinkHook`, added by the plugin) that appends
+  not of a storage engine. The fourth entry, under
+  `https://w3id.org/pws/client-annex`, is the client annex profile (version
+  `0.1`). Listing it is this server's claim that it enforces the client-annex
+  delegation clause described below. It carries `version` alone: it is a
+  conformance claim, and a client treats an entry with any member beyond
+  `version` and `url` as absent. The document is built per `serverUrl` and
+  served with `Cache-Control: public` and a content-hash `ETag`. The module also
+  installs the one hook every response passes through: a root-level `onSend`
+  hook (`addServiceLinkHook`, added by the plugin) that appends
   `Link: <{serverUrl}/service>; rel="service"` to every response -- successes,
   errors, 404s for unmatched routes, 308 redirects, 405 refusals, CORS
   preflights, and the teaching-server extras. It appends to a `Link` header a
@@ -584,12 +589,11 @@ Both inspectors bind the capability decision only. A refusal falls through to
 the target's access-control policy like any other failed verification, so a
 world-readable read still serves. The clause is fail-open across servers: a
 server running unmodified verification accepts exactly what this clause refuses,
-so a wallet publishes a ladder VM only on a host it assumes enforces the
-client-annex profile. That assumption is unverified: the profile's service
-description entry (profile
-["Service Description Entry"](https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/#service-description-entry))
-advertises the algorithms and cryptosuites a server accepts but defines no
-member for advertising the clause, and this server advertises nothing.
+so a wallet publishes a ladder VM only on a host that claims the client-annex
+profile. This server makes that claim with its service description's
+`https://w3id.org/pws/client-annex` entry at version `0.1`, which names the
+clause as enforced here, with its five admission predicates. A change to what
+the clause admits is a new version of that entry.
 
 **The container rule** (`lib/containerRule.ts`): an unsafe method at a container
 URL is controller-only, with two exceptions. The hazard is that a data grant's

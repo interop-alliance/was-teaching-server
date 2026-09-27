@@ -4,6 +4,13 @@
 
 ### Added
 
+- The service description lists a fourth entry, under
+  `https://w3id.org/pws/client-annex` at version `0.1`, claiming that this
+  server enforces the client-annex delegation clause. A wallet checks it before
+  publishing a ladder verification method, since the clause fails open on a
+  server that does not implement it. The entry carries `version` alone, and a
+  client treats one with any member beyond `version` and `url` as absent.
+
 - The Space Metadata object carries `backends`, the server-derived listing of
   the backends the Space serves -- the same array `GET /space/:spaceId/backends`
   returns -- so a reader learns it without a second request. It is read-only: a

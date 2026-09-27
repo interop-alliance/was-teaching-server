@@ -2768,3 +2768,30 @@ root capability, since rewriting the Space's own description is the
 controller's. The handler decides root from the verified invocation's
 `Capability-Invocation` header (`isRootInvocation`), the same reading the
 `controller-only` container rule makes.
+
+### WAS-153: The service description lists the client annex profile
+
+- status: done (2026-09-27)
+- priority: medium
+- labels: discovery, client-annex
+- discovered-from: freewallet FW-180
+- touches:
+  - freewallet / wallet-core / dcw: the signup gate that refuses to publish a
+    ladder verification method on a host whose service description lists no
+    client-annex entry (freewallet FW-180, open)
+  - app-connect-spec: the client annex profile text the entry's `url` will
+    name (freewallet FW-205, open), and decision 0003's record of the clause's
+    five predicates (freewallet FW-562, open)
+- acceptance:
+  - [x] `buildServiceDescription` lists `https://w3id.org/pws/client-annex`
+        with one entry, `{ version: '0.1' }`, and no other member
+  - [x] Tests in `test/service-description-api.test.ts`: the whole-document
+        assertion and a cell pinning the entry to `version` alone
+  - [x] `ARCHITECTURE.md`'s service description entry and the fail-open
+        paragraph under the client-annex clause state the claim
+
+The wire details were signed off 2026-09-26/27 under freewallet FW-180: the
+identifier (provisional with the rest of the `pws` namespace), an entry of
+exactly `version` and an optional `url` that a client treats as absent when it
+carries any other member, and `0.1` meaning the clause as this server enforces
+it today. The `url` is added when the profile text is published.

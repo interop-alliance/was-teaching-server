@@ -268,6 +268,26 @@ export const ENCRYPTED_COLLECTIONS_URL =
   'https://interop-alliance.github.io/encrypted-collections-spec/'
 
 /**
+ * The client annex profile's persistent identifier, the key of its entry in the
+ * service description's `specs` object. Listing the profile claims this server
+ * enforces the client-annex delegation clause (`lib/clientAnnexClause.ts`) on
+ * every verification, which is the positive signal a wallet needs before it
+ * publishes a ladder verification method on this server: the clause fails open
+ * on a server that does not implement it. Provisional until the `pws`
+ * namespace is registered.
+ */
+export const CLIENT_ANNEX_IDENTIFIER = 'https://w3id.org/pws/client-annex'
+
+/**
+ * The version of the client annex profile this server implements, as the
+ * service description advertises it (`major.minor`, no patch level). `0.1`
+ * claims the clause as this server enforces it, with its five admission
+ * predicates; a change to what the clause admits is a new version. The entry
+ * carries no `url` until the profile text is published.
+ */
+export const CLIENT_ANNEX_VERSION = '0.1'
+
+/**
  * `Cache-Control` `max-age` (seconds) on the service description. The document
  * changes only when the server is redeployed with a different configuration,
  * and its `ETag` lets a client revalidate cheaply once the age runs out.

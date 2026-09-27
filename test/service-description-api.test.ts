@@ -108,7 +108,8 @@ describe('Service description API', () => {
               url: 'https://interop-alliance.github.io/encrypted-collections-spec/',
               features: ['blinded-index-query', 'governed-history-logs']
             }
-          ]
+          ],
+          'https://w3id.org/pws/client-annex': [{ version: '0.1' }]
         },
         instance: {
           name: packageJson.name,
@@ -133,6 +134,20 @@ describe('Service description API', () => {
       ])
       expect(core).not.toHaveProperty('signatureAlgorithms')
       expect(core).not.toHaveProperty('zcapCryptosuites')
+    })
+
+    it('lists the client annex entry with version alone', async () => {
+      // A client treats a client-annex entry carrying any member beyond
+      // `version` and `url` as absent, so an extra member would withdraw the
+      // claim a wallet gates its ladder verification method on.
+      const response = await fetch(`${serverUrl}/service`)
+      const { specs } = (await response.json()) as {
+        specs: Record<string, Record<string, unknown>[]>
+      }
+      const entries = specs['https://w3id.org/pws/client-annex']!
+      expect(entries).toHaveLength(1)
+      expect(Object.keys(entries[0]!)).toEqual(['version'])
+      expect(entries[0]!.version).toBe('0.1')
     })
 
     it('serves a bodyless HEAD with the same validator', async () => {
