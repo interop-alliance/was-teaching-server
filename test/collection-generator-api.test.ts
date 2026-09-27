@@ -1,7 +1,7 @@
 /**
  * Collection app-attribution API tests (Vitest): the server's accept /
  * validate / persist / echo handling of the OPTIONAL `generator` object
- * (`{ id, origin?, url? }`) of a Collection Metadata object (spec "Collection
+ * (`{ id, origin?, url?, name? }`) of a Collection Metadata object (spec "Collection
  * Data Model"). It is an assertion by the Space controller -- writable at
  * create AND on update (so a wallet can backfill an existing Collection),
  * stored verbatim, never verified by the server and never an authorization
@@ -29,7 +29,8 @@ describe('Collection generator attribution API', () => {
   const generator = {
     id: 'did:key:zAppKeyExample',
     origin: 'https://app.example.com',
-    url: 'https://app.example.com/notes'
+    url: 'https://app.example.com/notes',
+    name: 'Notes'
   }
   const other = { id: 'did:key:zOtherApp' }
 
@@ -258,9 +259,19 @@ describe('Collection generator attribution API', () => {
         pointer: '#/generator/url'
       },
       {
-        name: 'an unknown member',
-        generator: { ...generator, name: 'Notes' },
+        name: 'an empty name',
+        generator: { ...generator, name: '' },
         pointer: '#/generator/name'
+      },
+      {
+        name: 'a non-string name',
+        generator: { ...generator, name: 42 },
+        pointer: '#/generator/name'
+      },
+      {
+        name: 'an unknown member',
+        generator: { ...generator, label: 'Notes' },
+        pointer: '#/generator/label'
       }
     ]
 

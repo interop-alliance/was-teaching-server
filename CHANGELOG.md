@@ -11,6 +11,17 @@
   `docs/deployment-fly.io.md` covers choosing an origin layout, the setup, and
   the rules a reverse proxy in front of the server must follow.
 
+### Changed
+
+- **BREAKING**: a Collection Metadata object's `generator` is now an object
+  `{ id, origin?, url?, name? }`, replacing the DID string and the flat
+  `generatorOrigin` member. `id` is required and DID-shaped. `origin` is a Web
+  origin. `url` needs `origin`, must be an http(s) URL on that origin, and
+  carries no query or fragment. `name` is a non-empty display label. Unknown
+  members are rejected (`invalid-request-body`, pointer to the member).
+- An update omitting `generator` now keeps the stored value. A supplied one
+  replaces it whole.
+
 ### Security
 
 - Every response on a WAS or `/kms` route (including 304s, redirects and error

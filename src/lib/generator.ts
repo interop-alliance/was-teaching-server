@@ -5,7 +5,8 @@
  * its DID (`id`, REQUIRED), the Web origin that DID was bound to at
  * provisioning time (`origin`) -- e.g. the browser-attested requesting origin
  * of an App Connect exchange, preserved so attribution survives without the
- * app-key credential at hand -- and the application's canonical URL (`url`).
+ * app-key credential at hand -- the application's canonical URL (`url`), and
+ * its human-readable display label (`name`).
  *
  * Every member is an ASSERTION BY THE SPACE CONTROLLER, not a server
  * observation: the server validates only the shape, stores the object
@@ -24,23 +25,25 @@ import { InvalidRequestBodyError } from '../errors.js'
 /**
  * The members a `generator` object may carry. Any other member is rejected.
  */
-const GENERATOR_MEMBERS: readonly string[] = ['id', 'origin', 'url']
+const GENERATOR_MEMBERS: readonly string[] = ['id', 'origin', 'url', 'name']
 
 /**
  * Validates the OPTIONAL client-supplied Collection `generator` object and
  * returns the value to persist, or `undefined` when absent (no attribution
  * asserted). A present value MUST be a plain object carrying only `id`,
- * `origin` and `url`:
+ * `origin`, `url` and `name`:
  *
  * - `id` is REQUIRED and MUST be a DID string (a `did:` prefix).
  * - `origin`, when present, MUST be the ASCII serialization of a Web origin.
  * - `url`, when present, MUST come with `origin`, MUST be an absolute `http:`
  *   or `https:` URL whose origin equals `origin`, and MUST carry no query and
  *   no fragment (not even an empty `?` or `#`).
+ * - `name`, when present, MUST be a non-empty string.
  *
  * A failure is `invalid-request-body` (400) with a pointer to the offending
  * member (`#/generator`, `#/generator/id`, `#/generator/origin`,
- * `#/generator/url`, or the unknown member's own pointer). The checks are
+ * `#/generator/url`, `#/generator/name`, or the unknown member's own
+ * pointer). The checks are
  * deliberately shallow: the server does not resolve the DID, does not verify
  * that the application controls it or that the origin served it, and never
  * treats any member as an authorization input.
@@ -65,7 +68,7 @@ export function assertValidGenerator({
     throw new InvalidRequestBodyError({
       requestName,
       detail:
-        'Collection "generator" must be an object with an "id" member (and optionally "origin" and "url").',
+        'Collection "generator" must be an object with an "id" member (and optionally "origin", "url" and "name").',
       pointer: '#/generator'
     })
   }
@@ -75,11 +78,11 @@ export function assertValidGenerator({
   if (unknownMember !== undefined) {
     throw new InvalidRequestBodyError({
       requestName,
-      detail: `Collection "generator" carries an unknown member "${unknownMember}"; only "id", "origin" and "url" are allowed.`,
+      detail: `Collection "generator" carries an unknown member "${unknownMember}"; only "id", "origin", "url" and "name" are allowed.`,
       pointer: `#/generator/${escapePointerToken(unknownMember)}`
     })
   }
-  const { id, origin, url } = generator
+  const { id, origin, url, name } = generator
   if (!isDidString(id)) {
     throw new InvalidRequestBodyError({
       requestName,
@@ -102,10 +105,18 @@ export function assertValidGenerator({
   if (url !== undefined) {
     assertValidGeneratorUrl({ url, origin, requestName })
   }
+  if (name !== undefined && (typeof name !== 'string' || name === '')) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail: 'Collection "generator.name" must be a non-empty string.',
+      pointer: '#/generator/name'
+    })
+  }
   return {
     id,
     ...(origin !== undefined && { origin }),
-    ...(url !== undefined && { url: url as string })
+    ...(url !== undefined && { url: url as string }),
+    ...(name !== undefined && { name })
   }
 }
 
