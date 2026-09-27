@@ -130,8 +130,8 @@ importers:
         specifier: ^0.71.0
         version: 0.71.0(@interop/jsonld-signatures@11.8.6)
       '@interop/was-conformance-suite':
-        specifier: ^0.22.1
-        version: 0.22.1(@interop/jsonld-signatures@11.8.6)(@interop/was-client@0.71.0(@interop/jsonld-signatures@11.8.6))(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1))
+        specifier: ^0.23.0
+        version: 0.23.0(@interop/jsonld-signatures@11.8.6)(@interop/was-client@0.71.0(@interop/jsonld-signatures@11.8.6))(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1))
       '@interop/webkms-client':
         specifier: ^15.0.2
         version: 15.0.2
@@ -706,8 +706,8 @@ packages:
     resolution: {integrity: sha512-iUEkf1uEIvyJD4oIuOlJy07n4WW7fxybruIroENaWA2DVd7N0t88gK8SeTsMyieOmdpwimIAqnzn6aP491OwYQ==}
     engines: {node: '>=24.0'}
 
-  '@interop/was-conformance-suite@0.22.1':
-    resolution: {integrity: sha512-CTNpfRXZzr0fuk7bigWhP8Z4kwdZe4x8qNfhaldrKzxZBkUnAvavhf9a3Ap0xnwC5b7bvY4mi9q/kak1U6jYrQ==}
+  '@interop/was-conformance-suite@0.23.0':
+    resolution: {integrity: sha512-T3YURYmntY8XPHqDmvD2w1pI6UoJd7rdZWOaPqvQF9O0oUTagHMVpoVLy5sFgAxTBcIehs4UvwVO0Ux7zZVsKg==}
     engines: {node: '>=24.0'}
     hasBin: true
     peerDependencies:
@@ -3526,7 +3526,7 @@ snapshots:
       - expo-crypto
       - react-native-get-random-values
 
-  '@interop/was-conformance-suite@0.22.1(@interop/jsonld-signatures@11.8.6)(@interop/was-client@0.71.0(@interop/jsonld-signatures@11.8.6))(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1))':
+  '@interop/was-conformance-suite@0.23.0(@interop/jsonld-signatures@11.8.6)(@interop/was-client@0.71.0(@interop/jsonld-signatures@11.8.6))(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1))':
     dependencies:
       '@digitalcredentials/bnid': 5.0.0(react-native@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1))
       '@interop/data-integrity-core': 8.8.0
