@@ -4,19 +4,26 @@ This repo ships a production `Dockerfile`, an example Fly.io configuration, and
 a deploy workflow for it. The image is generic. Every setting comes from the
 environment at run time.
 
-## Same origin or cross origin
+## Choosing an origin layout
 
-Decide this first, because it sets `SERVER_URL`, which is permanent.
-Space URLs, ZCap invocation targets, and the did:webvh DIDs this server hosts
-all derive from it. Switching later strands every existing account.
+Decide this before the first deploy. The layout sets `SERVER_URL`, and
+`SERVER_URL` is permanent. Space URLs, ZCap invocation targets, and the
+did:webvh DIDs this server hosts all derive from it. Changing it later strands
+every existing account.
 
-### Cross origin
+The layout is two separate choices. The first is where a wallet's signed API
+calls go, which decides how many CORS preflights the wallet waits on. The second
+is where pages hosted in the server's Collections run when a browser opens them,
+which decides whose browser storage those pages can reach. The examples below
+use a wallet at `wallet.example` and a second registrable domain,
+`wallet-content.example`.
 
-The server gets an origin of its own, such as `https://storage.example.com`, and
-wallets call it through CORS. The server allows any origin
-(`Access-Control-Allow-Origin: *`), so any number of wallets and apps can share
-it on equal terms. Its welcome page at `/` stays reachable, and it deploys on
-its own schedule.
+### Where the wallet's API calls go
+
+Cross origin means the server has an origin of its own and wallets call it
+through CORS. The server allows any origin (`Access-Control-Allow-Origin: *`),
+so several wallets and apps can share it on equal terms. Its welcome page at `/`
+stays reachable, and it deploys on its own schedule.
 
 The cost is preflights. A signed WAS request carries `Authorization`,
 `Capability-Invocation` and `Digest` headers, and a browser sends a CORS
@@ -26,39 +33,183 @@ lifetime (Chrome at two hours). A wallet signup touches many distinct URLs, so
 most of its requests still wait one extra round trip. The farther the browser is
 from the server, the more that costs.
 
-### Same origin
+Same origin means the wallet app proxies the server's routes from its own
+origin, and `SERVER_URL` is the wallet's origin. The wallet's requests then need
+no preflight, and the server can run with no public address. Freewallet's image
+works this way, with the route list in its `deploy/nginx.conf.template`. The
+server's routes all sit at the root (`/spaces`, `/space/*`, `/kms/*`, and so
+on), so the wallet's client-side routes must stay clear of them. The usual
+overlap is `/`. The wallet takes it, and the server's welcome page is not
+reachable. Only one wallet gets the benefit. Other wallets and apps still reach
+the server cross origin, at the wallet's domain.
 
-A wallet app proxies the server's routes from its own origin, and `SERVER_URL`
-is the wallet's origin. The wallet's requests then need no preflight. The server
-can also run with no public address, as the Fly.io example below does.
-Freewallet's image works this way, with the route list in its
-`deploy/nginx.conf.template`.
+### Where hosted pages run
 
-This setup has costs of its own:
+The server serves a Resource with the content type it was written with, so an
+HTML Resource opened in a browser is a working page, scripts included. Browsers
+isolate `localStorage`, IndexedDB, the Cache API and service workers by origin,
+which is the scheme, host and port. The path plays no part. Every page served
+from one origin shares one set of storage, with every other page there and with
+anything else running on that origin. A script on one page can open another in
+an iframe and read its storage. Cookies are coarser still. Their `Path`
+attribute is no security boundary, and a page can set a cookie for its parent
+domain, which every other subdomain then receives.
 
-- The routes must not collide. The server's routes all sit at the root
-  (`/spaces`, `/space/*`, `/kms/*`, and so on), so the wallet's client-side
-  routes must stay clear of them. The usual overlap is `/`. The wallet takes it,
-  and the server's welcome page is not reachable.
-- The server's identity is tied to the wallet's domain. Moving the wallet to a
-  new domain means a new `SERVER_URL`, and so a new server identity.
-- Only one wallet gets the benefit. Other wallets and apps still reach the
-  server cross origin, at the wallet's domain.
-- Stored content runs on the wallet's origin. The server serves a Resource with
-  the content type it was written with. A Resource stored as `text/html` and
-  opened in a browser is a page on the wallet's origin, and its scripts can read
-  the wallet's local storage, key material included. Anyone who can write a
-  Resource in any Collection can plant one. The server sets no headers against
-  this, so the proxy has to add them on the server's routes, for example
-  `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff`.
+That leaves three places a hosted page can run:
 
-### Choosing
+- The wallet's origin. The page's scripts can read the wallet's storage, key
+  material included, and anyone who can write a Resource can plant such a page.
+- One shared content origin, such as `wallet-content.example`. Pages can't reach
+  the wallet's storage. Every hosted page can read every other hosted page's
+  storage, across Spaces and users.
+- One origin per Space, as a subdomain of the content domain, such as
+  `<label>.wallet-content.example`. Each Space's pages get storage of their own.
 
-Same origin suits a server run for one wallet, where signup latency matters
-most. Cross origin suits a server shared by several wallets or apps, or one
-whose domain should outlive any one wallet. The Fly.io example below is same
-origin. The proxy rules below apply either way, to whatever sits in front of the
-server.
+A browser navigation can't carry the HTTP Signature headers, so a page a browser
+opens is always a public read. A public read does not check an invocation
+target. That is what lets the server answer it under a hostname other than
+`SERVER_URL`.
+
+No browser mechanism splits one origin by path. A shared origin can only imitate
+per-Space storage with a trusted wrapper page. The wrapper runs each hosted page
+in an `<iframe sandbox="allow-scripts">`, which has no storage at all, and
+stores data on the page's behalf over `postMessage`. Hosted pages then have to
+be written for that wrapper, and IndexedDB, service workers and cookies are out
+of reach.
+
+### The options
+
+1. Separate domains, one shared content origin. The wallet at `wallet.example`
+   calls the server at `wallet-content.example`, and hosted pages run there too.
+   Hosted pages can't reach the wallet's storage but can reach each other's.
+   Signup waits on a preflight per distinct URL.
+2. Separate domains, per-Space subdomains. As option 1, with each Space's pages
+   on its own subdomain of `wallet-content.example`. Hosted pages are isolated
+   from each other as well. Signup still waits on the preflights.
+3. Same origin, sandboxed pages. The wallet proxies the server, and hosted pages
+   are served from the wallet's origin with a sandbox header (see "The
+   recommended layout" below). The header makes each page run in an opaque
+   origin, so it can't reach the wallet's storage. Signup needs no preflights.
+   Hosted pages keep their scripts but get no browser storage at all. Without
+   the header, this option exposes the wallet's storage to every hosted page.
+4. Same origin, per-Space subdomains. The wallet proxies the server at
+   `wallet.example`, so its API calls need no preflight. A navigation to a
+   Resource there (a request with `Sec-Fetch-Mode: navigate`) is redirected to
+   the Space's subdomain of `wallet-content.example`, with the path kept. The
+   page runs there with storage of its own. The wallet origin keeps the sandbox
+   header from option 3 on Resource responses, so a navigation that misses the
+   redirect still can't reach the wallet's storage. This is the only option that
+   fixes both the preflights and the isolation while leaving hosted pages their
+   storage.
+
+The per-Space subdomains in options 2 and 4 must sit under a registrable domain
+other than the wallet's. A subdomain of `wallet.example` is same-site with the
+wallet, so its pages could set cookies the wallet receives.
+
+This server does not serve per-Space subdomains or redirect navigations, so
+options 2 and 4 are not available.
+
+### The recommended layout
+
+Option 3 suits a deployment whose hosted pages are static sites: documents,
+galleries, demos, pages that read public data. It needs one domain and no DNS
+beyond the wallet's own. Every Resource and chunk response carries:
+
+```
+Content-Security-Policy: sandbox allow-scripts allow-forms allow-modals allow-downloads allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation
+```
+
+The header has no effect on the wallet's own `fetch()` calls. It leaves out
+`allow-same-origin`, since combined with `allow-scripts` that token lets a page
+lift its own sandbox. It also leaves content sniffing on, so a Resource stored
+with no type or a generic one still renders. A sniffed page arrives with the
+same header and runs sandboxed too.
+
+A sandboxed page keeps scripts, the DOM, WebCrypto, `fetch()` to any CORS API
+(WAS included, with `Origin: null`), forms, dialogs, downloads and popups. A
+popup it opens runs outside the sandbox, so a wallet popup can still read its
+own keys, while a hosted page opened that way gets the header again. The page
+loses `localStorage`, `sessionStorage`, IndexedDB, the Cache API, cookies,
+service workers, WebAuthn, and permission prompts such as camera and
+geolocation. Reading `localStorage` throws, and some libraries touch it at
+startup, so a page built for full browser storage may fail to load rather than
+just forget its state.
+
+The layout can grow into option 4 later. A content domain added behind a
+navigation redirect gives hosted pages storage of their own, and path-form links
+shared in the meantime keep working.
+
+The server does not send this header yet. Until it does, the proxy in front of
+it has to add it on Resource and chunk responses.
+
+### What per-Space subdomains cost
+
+- DNS and certificates cost little. One wildcard DNS record and one wildcard
+  certificate cover every Space, so nothing is provisioned when a Space is
+  created. A wildcard certificate names no labels in Certificate Transparency
+  logs. The first visit to a Space's pages costs one DNS lookup, and browsers
+  can often reuse an open HTTP/2 connection for the new hostname. Signup and
+  login never touch these hostnames.
+- The hostname reveals the Space. A URL path travels inside TLS, but a hostname
+  does not. The label appears in DNS queries and in the TLS SNI, so resolvers
+  and network observers can tell which Space's pages someone opens. A hashed
+  label hides the Space id but is still linkable across visits.
+- The label needs an encoding. Space ids can't be DNS labels as they are. They
+  allow uppercase letters and `._~`, hostnames are case-insensitive, and a label
+  is at most 63 characters. Whatever encoding is chosen becomes a permanent URL
+  convention.
+- The label must match the Space. A request to one Space's subdomain for another
+  Space's path has to be refused. Otherwise that page runs with the first
+  Space's origin and reads its storage.
+- The content domain belongs on the Public Suffix List. Without an entry, a page
+  on one subdomain can set a cookie for the whole content domain, and every
+  other Space's pages receive it. Browsers also treat all the subdomains as one
+  site. That site is the unit for SameSite rules, storage partitioning, Chrome's
+  site isolation into separate processes, and Firefox's storage quota groups. An
+  entry makes each subdomain its own site. Storage isolation between Spaces does
+  not wait on it, since that already follows from the separate origins.
+
+### The Public Suffix List
+
+The list (<https://github.com/publicsuffix/list>) names the suffixes under which
+independent parties hold names, such as `com` and `co.uk` in its ICANN section
+and `github.io` in its private section. Browsers embed a copy to decide where
+one site ends and the next begins. To add the content domain:
+
+1. Open a pull request adding `wallet-content.example` to the private section,
+   with a comment naming the operator and a contact address. Explain the reason
+   in the pull request. Untrusted content from many users on per-user subdomains
+   is what the private section is for. The maintainers refuse entries whose only
+   aim is to get past certificate rate limits.
+2. Publish a DNS TXT record at `_psl.wallet-content.example` whose value is the
+   pull request's URL, and keep it in place for as long as the entry exists.
+3. Keep the domain's registration renewed well ahead. The guidelines ask for
+   more than two years remaining at submission.
+
+Volunteers review the requests, which can take weeks. Browsers then pick up the
+change in their next releases, since each embeds a snapshot at build time.
+Removal is possible, but copies in shipped software linger for years, so treat
+an entry as permanent. Once listed, the bare content domain is a public suffix
+itself. It can no longer set cookies for its subdomains, and it should serve
+nothing but perhaps a redirect.
+
+Get the wildcard certificate working before the entry lands, and confirm the
+certificate authority keeps renewing it afterwards. The CA/Browser Forum rules
+restrict wildcard certificates directly under a public suffix, and a certificate
+that renews every 90 days has to survive that check each time.
+
+### Rules for every layout
+
+- `/api/cors` relays a third-party URL's response with that URL's content type.
+  On whatever origin the route is served, a link to it can run anyone's HTML
+  there. Serve it with `Content-Security-Policy: default-src 'none'; sandbox`
+  and `X-Content-Type-Options: nosniff`. The server does not set these yet, so
+  the proxy in front of it should add them on `/api/cors`.
+- A wallet must not render fetched content as a `blob:` URL document or in an
+  unsandboxed `srcdoc` or `about:blank` iframe. Each of those runs with the
+  wallet's origin. A `data:` URL document gets an opaque origin instead.
+- A wallet's own CSP should allow scripts by nonce or hash. `script-src 'self'`
+  would admit any JavaScript Resource the same origin serves.
 
 ## Files
 
@@ -150,9 +301,11 @@ docker run --rm -p 3002:3002 \
 ## Example: Fly.io
 
 `fly.toml` and the deploy workflow run the server as a private Fly app behind a
-wallet app on the same origin. The wallet app proxies the server's routes over
-Flycast, a private address inside the Fly organization's network, so the server
-app has no public IP. Each repo deploys its own app.
+wallet app on the same origin. That is option 3 under "Choosing an origin
+layout" above. Until the server sends the sandbox header itself, the wallet's
+proxy has to add it. The wallet app proxies the server's routes over Flycast, a
+private address inside the Fly organization's network, so the server app has no
+public IP. Each repo deploys its own app.
 
 The values in `fly.toml` are placeholders: the app name `was-teaching-server`
 and `SERVER_URL=https://wallet.example.com`. The workflow replaces them at
