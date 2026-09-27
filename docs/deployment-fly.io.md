@@ -321,9 +321,11 @@ app name and the wallet's domain:
 fly apps create <app>
 fly volumes create was_data --app <app> --region iad --size 1
 fly secrets set --app <app> WAS_ONBOARDING_TOKEN=...   # optional
-fly deploy --app <app> --env SERVER_URL=https://<domain> --no-public-ips
+fly deploy --app <app> --env SERVER_URL=https://<domain> --no-public-ips --ha=false
 fly ips allocate-v6 --private --app <app>
 ```
+
+`--ha=false` keeps the app to one Machine.
 
 Create the volume in the region `primary_region` names in `fly.toml`. A volume
 cannot move regions later. `fly ips list --app <app>` should show only the
@@ -331,8 +333,16 @@ private (Flycast) address. Release any public address with `fly ips release`.
 The wallet app then reaches the server at `<app>.flycast:80`.
 
 A Fly volume belongs to one machine, which matches the filesystem backend's
-one-process rule. Fly snapshots volumes daily. List the snapshots with
-`fly volumes snapshots list <volume-id>`.
+one-process rule. Do not scale the app past one Machine. Each added Machine gets
+a volume of its own, volumes do not sync, and requests would land on diverging
+copies of the data.
+
+A volume lives on one physical host and is not replicated. If that host fails,
+the volume can be lost. Fly snapshots volumes daily and keeps the snapshots for
+five days by default. List them with `fly volumes snapshots list <volume-id>`.
+A snapshot restores into a new volume. Those snapshots are the only copy of the
+data, so take backups of your own (Export Space, or a copy of `/data`) or use
+Postgres for anything that must not be lost.
 
 To switch to Postgres, create a cluster in the same region (Fly Managed Postgres
 works) and run `fly secrets set --app <app> DATABASE_URL=postgres://...`. Then
