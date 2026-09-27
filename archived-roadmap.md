@@ -3017,3 +3017,93 @@ Note 2026-09-27: only the filesystem backend needed the change. The Postgres
 import takes the Space Metadata advisory lock before it reads the row, so its
 read and write were already atomic. The filesystem restore gives up after three
 attempts with 503 and `Retry-After: 1`, as Update Space does.
+
+### WAS-114: Protect a promoted Space's `did.jsonl` from overwrite, rollback, and delete
+
+- status: done
+- done: 2026-09-27
+- priority: high
+- labels: security, webvh, authorization, log-continuity
+- discovered-from: whole-codebase review (2026-09-17)
+- touches:
+  - `src/requests/ResourceRequest.ts` (`put`, `delete`),
+    `src/lib/governedLog.ts` (the fast-forward rule to reuse),
+    `src/lib/webvhController.ts` (`resolveVerifiedDocument`, `reviseEntry`)
+  - ARCHITECTURE.md's self-hosted `did:webvh` section
+  - unaffected: wallet-attached-storage-spec (the rule is wallet-specific, so
+    the authz profile does not state it; the reasoning is recorded in
+    portable-wallet-profile-spec's Security considerations, "A history log only
+    grows at its host")
+- acceptance:
+  - [x] A `PUT` of `did.jsonl` in any Collection is accepted only when the
+        stored bytes are a prefix of the incoming bytes (the same fast-forward
+        rule `governedLog.ts` applies to `meta/log`); a body that shortens or
+        rewrites the log is refused 412
+  - [x] A `DELETE` of `did.jsonl` is refused while any stored Space or keystore
+        controller names a DID anchored at that location, or unconditionally
+        (decide which; the second is simpler and matches "the log is a Resource
+        like any other" only for reads) -- decided: unconditionally, in every
+        Collection, as 405 `about:blank` with `Allow: GET, HEAD, PUT`
+  - [x] The resolver records the last-resolved head (entry count or version id)
+        per log location and refuses a log that does not extend it
+  - [x] Tests: a retired client's subtree grant cannot roll the log back to a
+        version that still lists its key; a subtree grant cannot delete the log;
+        a legitimate append still resolves
+  - [x] ARCHITECTURE.md states that deleting the Collection holding a
+        controller's log deadlocks the Space with no break-glass
+
+Today `did.jsonl` is an ordinary Resource. `ResourceRequest.put` and `delete`
+carry no container rule and no continuity rule, and their only log-specific step
+is dropping the resolver cache, so the damage takes effect on the next request.
+Two consequences. A `PUT` of unrelated bytes or a `DELETE` leaves the Space's
+stored controller unresolvable, and every invocation, including the controller's
+own, is a 404; the only repair (`PUT /space/S/meta` back to a `did:key`, or
+restoring the log) authorizes against the broken controller.
+`SpaceRequest.putMeta` guards this at promotion time only. And every prefix of a
+valid webvh log is itself a valid log with the same SCID, so
+`resolveVerifiedDocument` accepts a truncated log: a client whose key was
+retired in entry 10, still holding the ordinary generation delegation on the
+Space subtree, PUTs entries 1..9 over 1..10, its key is back under
+`capabilityInvocation`, and it root-invokes `PUT /meta` to take the Space. The
+governed history log has a fast-forward rule precisely so a write grant can add
+history but not erase it; the DID log, which is the Space's authorization root,
+has none.
+
+Outcome: the resolver's head record (entry count plus head `versionId`, per DID,
+in memory) survives cache invalidation and imports, and is dropped only when the
+log's Collection or Space is deleted. A restore re-creates the Space and imports
+an older log by design, so a record that outlived the Space would refuse it. An
+append whose new entries fail verification still passes the prefix rule and
+leaves the controller unresolvable; see WAS-157.
+
+### WAS-157: Refuse a `did.jsonl` append that does not verify
+
+- status: done
+- done: 2026-09-27
+- priority: medium
+- labels: security, webvh, log-continuity
+- discovered-from: WAS-114
+- touches:
+  - `src/lib/webvhLogWrite.ts`, `src/lib/webvhController.ts` (shipped:
+    `verifyWebvhLog`, shared by resolution and the write rule)
+  - ARCHITECTURE.md's self-hosted `did:webvh` section (shipped)
+  - portable-wallet-profile-spec: the "A history log only grows at its host"
+    consideration names this gap (shipped: the section now states the
+    verify-on-append rule)
+- acceptance:
+  - [x] A `PUT` of `did.jsonl` that extends a stored log is refused 400
+        `invalid-request-body` unless the new body verifies as a `did:webvh` log
+        for the DID the stored log resolves to
+  - [x] A create (no stored log) is unaffected
+  - [x] Tests: an append of a tampered entry is refused and the controller still
+        resolves; a legitimate append still succeeds
+
+The fast-forward rule keeps the stored bytes, but an append of junk or of an
+entry whose proof fails still leaves the controller unresolvable, and every
+invocation on the Spaces it controls fails. Verifying on write costs one full
+log verification per `did.jsonl` write.
+
+The DID is read off the stored log's head entry (`state.id`), and the whole new
+body is verified against it; the stored log is not re-verified, since the body
+carries it verbatim. A stored `did.jsonl` that names no DID cannot be appended
+to. A deactivating append verifies and is accepted.

@@ -20,6 +20,7 @@
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import http from 'node:http'
+import { Readable } from 'node:stream'
 import { once } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -29,6 +30,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { DEFAULT_MAX_UPLOAD_BYTES } from '../src/config.default.js'
 import { bufferedBodyLimit } from '../src/lib/bodyLimit.js'
+import { guardWebvhLogWrite } from '../src/lib/webvhLogWrite.js'
 import { handleError } from '../src/errors.js'
 import {
   digestHeaderFor,
@@ -242,6 +244,73 @@ describe('Buffered body limit', () => {
     assert.match(problem.type, /payload-too-large/)
     // The limit named is the backend's cap, which derived the route limit.
     assert.match(problem.errors[0].detail, new RegExp(`${MAX_UPLOAD_BYTES}`))
+  })
+})
+
+describe('Buffered body limit (did.jsonl append)', () => {
+  let fastify: FastifyInstance, serverUrl: string, dataDir: string
+  let alice: any
+  const spaceId = `body-limit-log-${crypto.randomUUID()}`
+  const collectionId = 'identity'
+
+  beforeAll(async () => {
+    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
+    ;({ fastify, serverUrl } = await startTestServer({
+      backend: new FileSystemBackend({ dataDir })
+    }))
+    ;({ alice } = await zcapClients({ serverUrl }))
+    const space = await alice.was.createSpace({
+      id: spaceId,
+      name: 'Log Body Limit Space',
+      controller: alice.did
+    })
+    await space.createCollection({ id: collectionId, name: 'Identity' })
+    await fastify.storage.writeResource({
+      spaceId,
+      collectionId,
+      resourceId: 'did.jsonl',
+      input: {
+        kind: 'binary',
+        contentType: 'text/jsonl',
+        stream: Readable.from(Buffer.from('{"state":{}}\n'))
+      }
+    })
+  })
+
+  afterAll(async () => {
+    await fastify.close()
+    await rm(dataDir, { recursive: true, force: true })
+  })
+
+  it('reads a streamed append under the route limit, not unbounded', async () => {
+    // A raw `application/octet-stream` body passes no buffering hook or
+    // parser, so the fast-forward check is where it is first read whole.
+    let closed = false
+    const error: any = await guardWebvhLogWrite({
+      request: {
+        routeOptions: { bodyLimit: 1024 },
+        headers: {}
+      } as unknown as FastifyRequest,
+      reply: {
+        header(name: string, value: string) {
+          closed = name === 'connection' && value === 'close'
+          return this
+        }
+      } as unknown as FastifyReply,
+      dataBackend: fastify.storage,
+      spaceId,
+      collectionId,
+      input: {
+        kind: 'binary',
+        contentType: 'application/octet-stream',
+        stream: Readable.from(
+          Array.from({ length: 64 }, () => Buffer.alloc(1024, 'x'))
+        )
+      },
+      requestName: 'Put Resource'
+    }).catch(err => err)
+    assert.equal(error?.statusCode, 413)
+    assert.ok(closed)
   })
 })
 

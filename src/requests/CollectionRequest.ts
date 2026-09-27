@@ -44,7 +44,7 @@ import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
 import { parsePageParams } from '../lib/pagination.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
-import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
+import { forgetDeletedWebvhLocation } from '../lib/webvhController.js'
 import { invalidateCollectionPolicies } from '../lib/policyCache.js'
 import {
   collectionPath,
@@ -1137,7 +1137,9 @@ export class CollectionRequest {
       // controller resolves from it; bust every document cached from that
       // Collection. Done in `finally` because a recursive delete is not
       // atomic: a failure partway through has already removed some entries.
-      invalidateResolvedWebvhDid({ storage, spaceId, collectionId })
+      // A log re-created in the Collection afterwards starts a history of its
+      // own, so its recorded heads go too.
+      forgetDeletedWebvhLocation({ storage, spaceId, collectionId })
       // ...and every policy cached at the Collection level or under any of
       // its Resources.
       invalidateCollectionPolicies({ storage, spaceId, collectionId })

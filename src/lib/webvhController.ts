@@ -35,6 +35,19 @@
  * Resource is gone, the entry predates version tracking, or the entry has
  * reached the hard re-verify age. See {@link resolveWebvhController}.
  *
+ * The resolver also keeps, per DID, the head of the last log it verified (the
+ * entry count and the head's `versionId`), and refuses a log that does not
+ * extend it. Every prefix of a valid log is itself a valid log with the same
+ * SCID, so verification alone would accept a truncated log and restore a key
+ * a later entry retired. The HTTP write path already refuses such a write (a
+ * `did.jsonl` PUT must fast-forward the stored bytes, and a `did.jsonl` DELETE
+ * is refused outright); the record is what catches a rollback that reaches
+ * storage by any other route. It survives a cache invalidation, and is
+ * forgotten only when the log's Collection or Space is deleted
+ * ({@link forgetDeletedWebvhLocation}), since a location re-created afterwards starts
+ * a history of its own -- a restore re-creates the Space and imports an older
+ * log by design. The record is in memory, so a restart forgets it too.
+ *
  * NOTE: the log is read through the control-plane `storage` (the default data
  * plane). Pointing a log Collection at a non-default data-plane backend is out
  * of scope; such a log would not be found here.
@@ -46,7 +59,7 @@ import {
   readLogFromString,
   resolveDID
 } from '@interop/did-method-webvh'
-import type { DIDDoc } from '@interop/did-method-webvh'
+import type { DIDDoc, DIDLog } from '@interop/did-method-webvh'
 import {
   WEBVH_DOCUMENT_CACHE_MAX,
   WEBVH_DOCUMENT_CACHE_TTL,
@@ -148,6 +161,31 @@ const documentCaches = backendScoped(() => {
 })
 
 /**
+ * A recorded log head: the number of entries in the log and the head entry's
+ * `versionId`.
+ */
+type LogHead = { count: number; versionId: string }
+
+/**
+ * The head of the last log verified for each DID, per storage backend, keyed
+ * like the document cache (see {@link cacheKey}). `count` is the number of
+ * log entries and `versionId` the head entry's `versionId`, which commits to
+ * every entry before it through the hash chain. Unbounded, but it only ever
+ * holds DIDs that were resolved for authorization.
+ *
+ * `forgets` counts the calls to {@link forgetDeletedWebvhLocation}. A resolve reads
+ * it before reading the log and records a head only if it has not moved
+ * since, so a resolve still verifying when a Collection or Space is deleted
+ * cannot record a head for the deleted location after it was forgotten. The
+ * count is per backend rather than per location, so a delete anywhere also
+ * skips the record of a resolve elsewhere; the next resolve records it.
+ */
+const logHeads = backendScoped(() => ({
+  heads: new Map<string, LogHead>(),
+  forgets: 0
+}))
+
+/**
  * Cache key: the log's location (Space plus Collection) followed by the DID.
  * The location prefix is what makes invalidation by log location possible; the
  * DID is part of the key because the same log resolves differently for a
@@ -237,6 +275,41 @@ export function invalidateResolvedWebvhDid({
     },
     prefix
   )
+}
+
+/**
+ * Forgets a location whose Collection or Space was deleted: drops its cached
+ * documents ({@link invalidateResolvedWebvhDid}) and its recorded log heads,
+ * so a log re-created there (a restore that re-creates the Space and imports
+ * it) is not refused for failing to extend a history that no longer exists.
+ * Called only on a container delete: a Resource write or an import keeps the
+ * heads, which is what makes them a rollback check.
+ *
+ * @param options {object}
+ * @param options.storage {StorageBackend}   the request's storage backend
+ * @param options.spaceId {string}
+ * @param [options.collectionId] {string}   the deleted Collection; when
+ *   absent, every head recorded in the Space is forgotten
+ * @returns {void}
+ */
+export function forgetDeletedWebvhLocation({
+  storage,
+  spaceId,
+  collectionId
+}: {
+  storage: StorageBackend
+  spaceId: string
+  collectionId?: string
+}): void {
+  invalidateResolvedWebvhDid({ storage, spaceId, collectionId })
+  const record = logHeads.peek(storage)
+  if (!record) {
+    return
+  }
+  record.forgets++
+  const prefix =
+    collectionId !== undefined ? `${spaceId}|${collectionId}|` : `${spaceId}|`
+  deleteByPrefix(record.heads, prefix)
 }
 
 /**
@@ -411,11 +484,8 @@ async function resolveVerifiedEntry({
  * verified document together with the log Resource's `version` as of the read
  * that was verified.
  *
- * The log is handed to `resolveDID` through its `resolveControlledDid` hook,
- * so the library applies its own SCID and requested-DID pinning to a log
- * this server read from storage and never fetches anything over the network.
- * `resolveDID` reports failures in the result envelope rather than throwing;
- * they are rethrown here so callers see one error channel.
+ * The verification itself is {@link verifyWebvhLog}; a deactivated DID is
+ * refused here, since it can no longer authorize anything.
  *
  * @param options {WebvhFetchContext}
  * @returns {Promise<{ doc: DIDDoc, version: number | undefined }>}
@@ -426,6 +496,10 @@ async function resolveVerifiedDocument({
   spaceId,
   collectionId
 }: WebvhFetchContext): Promise<{ doc: DIDDoc; version: number | undefined }> {
+  const record = logHeads.for(storage)
+  // Taken before the read, so a forget that lands while this resolve is
+  // reading or verifying keeps it from recording a head below.
+  const forgets = record.forgets
   let logText: string
   let version: number | undefined
   try {
@@ -451,9 +525,65 @@ async function resolveVerifiedDocument({
     )
   }
 
+  let log: DIDLog
+  try {
+    log = readLogFromString(logText)
+  } catch (err) {
+    throw new Error(`The history log for "${did}" is not valid JSON Lines.`, {
+      cause: err
+    })
+  }
+  const { heads } = record
+  const key = cacheKey({ spaceId, collectionId, did })
+  if (!extendsHead({ log, head: heads.get(key) })) {
+    throw new Error(
+      `The history log for "${did}" does not extend the last version ` +
+        'this server verified.'
+    )
+  }
+
+  const { doc, deactivated } = await verifyWebvhLog({ did, log })
+  if (deactivated) {
+    throw new Error(`The DID "${did}" has been deactivated.`)
+  }
+  // A concurrent resolve may have recorded a longer head meanwhile; only move
+  // the record forward.
+  if (
+    record.forgets === forgets &&
+    log.length >= (heads.get(key)?.count ?? 0)
+  ) {
+    heads.set(key, { count: log.length, versionId: log.at(-1)!.versionId })
+  }
+  return { doc, version }
+}
+
+/**
+ * Verifies a parsed history log as the log of `did`, without reading storage:
+ * the library's SCID and requested-DID pinning, hash chain, prerotation, and
+ * update-key signatures. Shared by resolution and by the `did.jsonl` write
+ * rule, which verifies an append before it is stored.
+ *
+ * The log is handed to `resolveDID` through its `resolveControlledDid` hook,
+ * so nothing is fetched over the network. `resolveDID` reports failures in
+ * the result envelope rather than throwing; they are rethrown here so callers
+ * see one error channel. A deactivated DID still verifies; the caller decides
+ * what that means.
+ *
+ * @param options {object}
+ * @param options.did {string}   the DID the log must resolve to
+ * @param options.log {DIDLog}
+ * @returns {Promise<{ doc: DIDDoc, deactivated: boolean }>}
+ */
+export async function verifyWebvhLog({
+  did,
+  log
+}: {
+  did: string
+  log: DIDLog
+}): Promise<{ doc: DIDDoc; deactivated: boolean }> {
   const resolved = await resolveDID(did, {
     verifier: defaultWebvhLogVerifier,
-    resolveControlledDid: async () => readLogFromString(logText)
+    resolveControlledDid: async () => log
   })
   const { error, message } = resolved.didResolutionMetadata
   if (error) {
@@ -465,20 +595,35 @@ async function resolveVerifiedDocument({
   // This package's DIDDoc is structurally looser than the resolution
   // envelope's IDIDDocument; the library casts at the same boundary.
   const doc = resolved.didDocument as DIDDoc | null
-  const deactivated = resolved.didDocumentMetadata.deactivated === true
-
   if (!doc) {
     throw new Error(`The history log for "${did}" resolved to no document.`)
-  }
-  if (deactivated) {
-    throw new Error(`The DID "${did}" has been deactivated.`)
   }
   if (doc.id !== did) {
     throw new Error(
       `The history log resolved to "${doc.id}", not the requested "${did}".`
     )
   }
-  return { doc, version }
+  return {
+    doc,
+    deactivated: resolved.didDocumentMetadata.deactivated === true
+  }
+}
+
+/**
+ * Whether a log extends a recorded head: it holds at least `head.count`
+ * entries, and the entry at that position carries the recorded `versionId`.
+ * A log with no recorded head extends nothing and passes.
+ *
+ * @param options {object}
+ * @param options.log {DIDLog}
+ * @param [options.head] {LogHead}
+ * @returns {boolean}
+ */
+function extendsHead({ log, head }: { log: DIDLog; head?: LogHead }): boolean {
+  if (!head) {
+    return true
+  }
+  return log[head.count - 1]?.versionId === head.versionId
 }
 
 /** JSON-LD context for `Multikey` verification methods. */

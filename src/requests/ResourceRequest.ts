@@ -26,7 +26,13 @@ import {
 } from '../lib/etag.js'
 import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
 import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
-import { ResourceNotFoundError, rethrowOrWrapStorageError } from '../errors.js'
+import { guardWebvhLogWrite } from '../lib/webvhLogWrite.js'
+import { WEBVH_LOG_RESOURCE_ID } from '../lib/validateDid.js'
+import {
+  MethodNotAllowedError,
+  ResourceNotFoundError,
+  rethrowOrWrapStorageError
+} from '../errors.js'
 import { notModifiedBeforeStream, notModifiedReply } from './notModified.js'
 
 export class ResourceRequest {
@@ -95,7 +101,26 @@ export class ResourceRequest {
       collectionId,
       collectionMetadata
     })
-    const input = await resolveResourceInput(request, dataBackend)
+    const resolvedInput = await resolveResourceInput(request, dataBackend)
+    // A `did.jsonl` in any Collection may be the history log a self-hosted
+    // did:webvh controller resolves from, so its write must fast-forward the
+    // stored log (412 otherwise), under preconditions pinned to the log read.
+    const { input, ...preconditions } =
+      resourceId === WEBVH_LOG_RESOURCE_ID
+        ? await guardWebvhLogWrite({
+            request,
+            reply,
+            dataBackend,
+            spaceId,
+            collectionId,
+            input: resolvedInput,
+            ...parseWritePreconditions(request.headers),
+            requestName
+          })
+        : {
+            input: resolvedInput,
+            ...parseWritePreconditions(request.headers)
+          }
     // A content write into an encrypted Collection MAY declare the key epoch it
     // encrypted under via the `Key-Epoch` header (the `key-epochs` feature);
     // the server stores it opaquely and clears it when absent (the new
@@ -123,7 +148,7 @@ export class ResourceRequest {
         createdBy: invokerDid(request),
         epoch,
         ...(uniqueIndexes.length > 0 && { uniqueIndexes }),
-        ...parseWritePreconditions(request.headers)
+        ...preconditions
       })
     } catch (err) {
       rethrowOrWrapStorageError({ err, requestName })
@@ -541,11 +566,23 @@ export class ResourceRequest {
     const {
       params: { spaceId, collectionId, resourceId }
     } = request
-    const { storage } = request.server
     const requestName = 'Delete Resource'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
     assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
+
+    // A `did.jsonl` in any Collection may be the history log a self-hosted
+    // did:webvh controller resolves from, and removing it would leave that
+    // controller unresolvable, the controller's own invocations included. It
+    // goes away only with its Collection or Space. The refusal reads no
+    // storage, so it answers the same whether or not the log exists.
+    if (resourceId === WEBVH_LOG_RESOURCE_ID) {
+      throw new MethodNotAllowedError({
+        allow: ['GET', 'HEAD', 'PUT'],
+        targetName: 'did:webvh history log',
+        hint: 'A history log is removed only with its Collection or Space.'
+      })
+    }
 
     // Verify (capability-only): deleting a Resource requires a valid capability
     // invocation; no access-control-policy fallback.
@@ -579,11 +616,6 @@ export class ResourceRequest {
     } catch (err) {
       rethrowOrWrapStorageError({ err, requestName })
     }
-    // Removing a `did.jsonl` history log, from ANY Collection, makes a
-    // self-hosted did:webvh controller unresolvable; drop any document still
-    // cached from it.
-    invalidateResolvedWebvhDid({ storage, spaceId, collectionId, resourceId })
-
     return reply.status(204).send()
   }
 }

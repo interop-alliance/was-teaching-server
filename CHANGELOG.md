@@ -24,6 +24,18 @@
 
 ### Security
 
+- A `did.jsonl` Resource, in any Collection, is append-only. A `PUT` must keep
+  the stored bytes as a prefix of the body (412 otherwise), and a `DELETE`
+  answers 405 with `Allow: GET, HEAD, PUT`. The log is removed only with its
+  Collection or Space. The `did:webvh` resolver also refuses a log that does not
+  extend the last one it verified for that DID, until the log's Collection or
+  Space is deleted.
+- An append to a stored `did.jsonl` must verify as the `did:webvh` history log
+  of the DID the stored log names, or it is refused as `invalid-request-body`
+  (400). A junk or tampered entry no longer leaves that DID's Spaces with no
+  resolvable controller. A streamed append body is read under the buffered-body
+  limit (413 past it).
+
 - Every response on a WAS or `/kms` route (including 304s, redirects and error
   responses) carries
   `Content-Security-Policy: sandbox allow-scripts allow-forms allow-modals allow-downloads allow-popups allow-top-navigation-by-user-activation`,
@@ -70,8 +82,8 @@
   with `Retry-After: 1`.
 
 - A Space import restoring the Space Metadata object no longer reverts an Update
-  Space that lands during it, such as a controller change. The restore now
-  reads the object and writes over it under the same lock. This affected the
+  Space that lands during it, such as a controller change. The restore now reads
+  the object and writes over it under the same lock. This affected the
   filesystem backend only.
 
 - The CORS proxy's cache key also normalizes `Accept` media-type parameters.

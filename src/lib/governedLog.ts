@@ -84,6 +84,32 @@ export function parseGoverningLog({
 }
 
 /**
+ * The fast-forward rule an append-only log write passes: the stored bytes are
+ * a prefix of the new body, compared byte for byte. A body equal to the stored
+ * log passes too. Shared by the governing history log and the `did.jsonl`
+ * history log of a self-hosted `did:webvh`.
+ * @param options {object}
+ * @param options.prior {string | Uint8Array}   the stored log
+ * @param options.body {string | Uint8Array}   the new log body
+ * @returns {boolean}
+ */
+export function isFastForward({
+  prior,
+  body
+}: {
+  prior: string | Uint8Array
+  body: string | Uint8Array
+}): boolean {
+  // `Buffer.from` copies a byte array, so only a string is converted.
+  const priorBytes = typeof prior === 'string' ? Buffer.from(prior) : prior
+  const bodyBytes = typeof body === 'string' ? Buffer.from(body) : body
+  return (
+    bodyBytes.length >= priorBytes.length &&
+    Buffer.compare(bodyBytes.subarray(0, priorBytes.length), priorBytes) === 0
+  )
+}
+
+/**
  * The number of entry lines in a log body under the line contract (a
  * trailing newline closes the last line rather than opening an empty one).
  * @param body {string}
@@ -135,7 +161,7 @@ export function assertGoverningLogAppend({
   if (prior === undefined) {
     return
   }
-  if (!body.startsWith(prior)) {
+  if (!isFastForward({ prior, body })) {
     throw new PreconditionFailedError({
       requestName,
       detail:

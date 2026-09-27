@@ -22,6 +22,7 @@
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import { randomUUID } from 'node:crypto'
+import { Readable } from 'node:stream'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -39,6 +40,7 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { spaceRevocationsPath } from '../src/lib/paths.js'
+import { invalidateResolvedWebvhDid } from '../src/lib/webvhController.js'
 import {
   client,
   delegate,
@@ -534,18 +536,32 @@ describe('did:webvh Space controller', () => {
         { hello: 'world' }
       )
 
-      // Replace the stored log with one whose last entry has been altered.
-      const forged = structuredClone(space.log) as DIDLog
-      forged[forged.length - 1]!.state.alsoKnownAs = ['did:example:pwned']
-      const published = await publishLog({
-        signerClient: space.was,
+      // Append a copy of the last entry with its state altered; the entry's
+      // proof and version id no longer verify. The write rule refuses such an
+      // append over HTTP, so the forgery reaches storage by another route.
+      const tampered = structuredClone(space.log.at(-1)!)
+      tampered.state.alsoKnownAs = ['did:example:pwned']
+      const forged = [...space.log, tampered] as DIDLog
+      const bytes = Buffer.from(logToJsonlString(forged))
+      await fastify.storage.writeResource({
         spaceId: space.spaceId,
-        jsonl: logToJsonlString(forged)
+        collectionId: space.logCollectionId,
+        resourceId: 'did.jsonl',
+        input: {
+          kind: 'binary',
+          contentType: 'text/jsonl',
+          stream: Readable.from(bytes),
+          declaredBytes: bytes.length
+        }
       })
-      assert.equal(published.status, 204)
+      invalidateResolvedWebvhDid({
+        storage: fastify.storage,
+        spaceId: space.spaceId,
+        collectionId: space.logCollectionId
+      })
 
-      // The cache was invalidated by that very write, so the forgery takes
-      // effect immediately -- as a *failure* to resolve, never as trust. The
+      // With the cache invalidated, the forgery takes effect immediately --
+      // as a *failure* to resolve, never as trust. The
       // controller document no longer resolves at all, so the keyId lookup
       // fails: a key the request named but the server cannot resolve is a
       // failed authorization, answered as the same masked 404 an
@@ -774,11 +790,21 @@ describe('did:webvh Space controller', () => {
       assert.equal(response.status, 201)
     })
 
-    it('deleting the log in the hosting Space stops those invocations', async () => {
-      // The hosting Space is still controlled by Alice's did:key, so she may
-      // remove the log -- which is the controlled Space's only key material.
+    it('deleting the log Collection in the hosting Space stops those invocations', async () => {
+      // A DELETE of the log itself is refused, whoever asks...
+      const refused = await requestError(
+        alice.was.request({
+          path: `/space/${logSpace.spaceId}/clientAnnex-1/did.jsonl`,
+          method: 'DELETE'
+        })
+      )
+      assert.equal(refused.status, 405)
+
+      // ...but the hosting Space is still controlled by Alice's did:key, so she
+      // may remove the Collection holding the log -- which is the controlled
+      // Space's only key material.
       const deleted = await alice.was.request({
-        path: `/space/${logSpace.spaceId}/clientAnnex-1/did.jsonl`,
+        path: `/space/${logSpace.spaceId}/clientAnnex-1/`,
         method: 'DELETE'
       })
       assert.equal(deleted.status, 204)
@@ -804,6 +830,193 @@ describe('did:webvh Space controller', () => {
         })
       )
       assert.equal(readErr.status, 404)
+    })
+  })
+
+  describe('history log continuity', () => {
+    // A subtree grant can write `did.jsonl` like any other Resource, so the
+    // log carries its own write rule: a PUT fast-forwards the stored bytes and
+    // a DELETE is refused. Without it, a grant holder could put back a prefix
+    // of the log that still lists a retired key, since every prefix of a valid
+    // log is a valid log with the same SCID.
+    let space: WebvhSpace
+    let currentKeyPair: any
+    let retiredLog: DIDLog
+    let currentLog: DIDLog
+    let subtreeGrant: any
+    let spaceUrl: string
+    let logUrl: string
+
+    beforeAll(async () => {
+      space = await provisionSpace()
+      spaceUrl = new URL(`/space/${space.spaceId}/`, serverUrl).toString()
+      logUrl = `${spaceUrl}id/did.jsonl`
+      const promoted = await promote({
+        signerClient: alice.was,
+        spaceId: space.spaceId,
+        controller: space.did
+      })
+      assert.equal(promoted.status, 204)
+
+      // Retire the first client key: the second entry lists only its
+      // replacement.
+      currentKeyPair = await Ed25519VerificationKey.generate()
+      const updated = await updateDID({
+        log: space.log,
+        signer: space.logSigner,
+        vmIdFragment: 'multibase',
+        verificationMethods: [
+          {
+            type: 'Multikey',
+            publicKeyMultibase: currentKeyPair.publicKeyMultibase!,
+            purpose: [
+              'authentication',
+              'assertionMethod',
+              'capabilityInvocation',
+              'capabilityDelegation'
+            ]
+          }
+        ]
+      })
+      retiredLog = space.log
+      currentLog = updated.log
+      const rotated = await publishLog({
+        signerClient: space.was,
+        spaceId: space.spaceId,
+        jsonl: logToJsonlString(currentLog)
+      })
+      assert.equal(rotated.status, 204)
+      currentKeyPair.id = `${space.did}#${currentKeyPair.publicKeyMultibase}`
+      currentKeyPair.controller = space.did
+
+      // Bob holds the ordinary generation delegation on the Space subtree.
+      subtreeGrant = await delegate({
+        signer: currentKeyPair.signer(),
+        capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
+        invocationTarget: spaceUrl,
+        controller: bob.did,
+        allowedActions: ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
+      })
+    })
+
+    /**
+     * PUTs `did.jsonl` under Bob's subtree grant.
+     * @param jsonl {string}
+     * @returns {Promise<any>}
+     */
+    async function putUnderGrant(jsonl: string) {
+      return client({ signer: bob.signer }).request({
+        url: logUrl,
+        method: 'PUT',
+        action: 'PUT',
+        capability: subtreeGrant,
+        headers: { 'content-type': 'text/jsonl' },
+        body: new Blob([jsonl], { type: 'text/jsonl' })
+      })
+    }
+
+    /**
+     * Builds a valid append to the current log: one entry adding a service.
+     * @returns {Promise<any>}
+     */
+    async function appendServiceEntry() {
+      return updateDID({
+        log: currentLog,
+        signer: space.logSigner,
+        services: [
+          {
+            id: '#files',
+            type: 'LinkedDomains',
+            serviceEndpoint: 'https://example.com/'
+          }
+        ]
+      })
+    }
+
+    /**
+     * Asserts the current client key still reads through the controller.
+     * @returns {Promise<void>}
+     */
+    async function assertCurrentKeyReads() {
+      const currentClient = wasClient({
+        signer: currentKeyPair.signer(),
+        serverUrl
+      })
+      assert.deepStrictEqual(
+        await currentClient
+          .space(space.spaceId)
+          .collection('credentials')
+          .get('doc-1'),
+        { hello: 'world' }
+      )
+    }
+
+    it('refuses a rollback to a prefix that lists the retired key (412)', async () => {
+      const err = await requestError(
+        putUnderGrant(logToJsonlString(retiredLog))
+      )
+      assert.equal(err.status, 412)
+
+      // The retired key still cannot root-invoke.
+      const denied = await requestError(
+        space.was.request({
+          path: `/space/${space.spaceId}/credentials/doc-1`,
+          method: 'GET'
+        })
+      )
+      assert.equal(denied.status, 404)
+    })
+
+    it('refuses a body that rewrites the log (412)', async () => {
+      const err = await requestError(putUnderGrant('not a history log'))
+      assert.equal(err.status, 412)
+    })
+
+    it('refuses an append of a tampered entry (400), and the controller still resolves', async () => {
+      const appended = await appendServiceEntry()
+      // Rewrite the new entry's state after it was signed, so its proof fails.
+      const tampered = structuredClone(appended.log)
+      tampered.at(-1)!.state.service = [
+        {
+          id: `${space.did}#files`,
+          type: 'LinkedDomains',
+          serviceEndpoint: 'https://attacker.example/'
+        }
+      ]
+      const err = await requestError(putUnderGrant(logToJsonlString(tampered)))
+      assert.equal(err.status, 400)
+      assert.match(err.data.type, /invalid-request-body$/)
+
+      await assertCurrentKeyReads()
+    })
+
+    it('refuses an append of a junk line (400)', async () => {
+      const err = await requestError(
+        putUnderGrant(`${logToJsonlString(currentLog)}\n{"state":{}}`)
+      )
+      assert.equal(err.status, 400)
+      assert.match(err.data.type, /invalid-request-body$/)
+    })
+
+    it('refuses a DELETE of the log under the subtree grant (405)', async () => {
+      const err = await requestError(
+        client({ signer: bob.signer }).request({
+          url: logUrl,
+          method: 'DELETE',
+          action: 'DELETE',
+          capability: subtreeGrant
+        })
+      )
+      assert.equal(err.status, 405)
+      assert.equal(err.response.headers.get('allow'), 'GET, HEAD, PUT')
+    })
+
+    it('accepts an append, and the appended log resolves', async () => {
+      const appended = await appendServiceEntry()
+      const response = await putUnderGrant(logToJsonlString(appended.log))
+      assert.equal(response.status, 204)
+
+      await assertCurrentKeyReads()
     })
   })
 

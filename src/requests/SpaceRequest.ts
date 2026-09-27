@@ -27,6 +27,7 @@ import {
   isSelfHostedWebvhController
 } from '../lib/validateDid.js'
 import {
+  forgetDeletedWebvhLocation,
   invalidateResolvedWebvhDid,
   resolveWebvhController
 } from '../lib/webvhController.js'
@@ -506,7 +507,9 @@ export class SpaceRequest {
       invalidateSpaceMetadata({ storage, spaceId })
       // Every Collection in the Space went with it, so any controller document
       // resolved out of a history log there is stale too.
-      invalidateResolvedWebvhDid({ storage, spaceId })
+      // A log re-created in the Space afterwards starts a history of its own,
+      // so its recorded heads go too.
+      forgetDeletedWebvhLocation({ storage, spaceId })
       // ...and so is every policy cached at the Space level or under any of
       // its Collections/Resources.
       invalidateSpacePolicies({ storage, spaceId })

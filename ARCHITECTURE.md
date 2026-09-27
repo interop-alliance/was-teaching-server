@@ -434,7 +434,24 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   it proves only that something wrote it there. A DID is self-certified by its
   own SCID and log, and acquires authority only by being referenced -- as a
   Space's stored controller, or by a capability delegated to it -- never by
-  where its log happens to live.
+  where its log happens to live. The log only grows at this server
+  (`src/lib/webvhLogWrite.ts`). A `did.jsonl` in any Collection is written only
+  by a fast-forward `PUT`: the stored bytes must be a prefix of the body, else
+  412, and the write is pinned to the `ETag` of the log it checked. A `DELETE`
+  of one is refused with 405 (`Allow: GET, HEAD, PUT`), before authorization.
+  Every prefix of a valid log is a valid log with the same SCID, so without the
+  rule a subtree grant could restore a key a later entry retired, or leave the
+  controller unresolvable. The resolver also records the head it last verified
+  per DID (entry count and head `versionId`) and refuses a log that does not
+  extend it. The record is in memory, survives cache invalidation, and is
+  dropped only when the log's Collection or Space is deleted, so a restore that
+  re-creates the Space can land an older log. So a log goes away only with its
+  Collection or Space. Deleting the Collection that holds a controller's log
+  leaves every Space that DID controls with no resolvable controller, and there
+  is no break-glass. An append must also verify: the whole body is verified as
+  the history log of the DID the stored log's head names, and a junk or tampered
+  entry is refused as `invalid-request-body` (400) before it is stored. A stored
+  `did.jsonl` that names no DID cannot be appended to. A create is not verified.
 
 **Trailing slashes:** a trailing slash marks a container -- a Space or a
 Collection -- in its canonical form: `GET` lists its members, `POST` adds one,

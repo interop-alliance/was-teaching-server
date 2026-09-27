@@ -40,7 +40,8 @@ import path from 'node:path'
 import {
   createDID,
   logToJsonlString,
-  signerFromExternalKey
+  signerFromExternalKey,
+  updateDID
 } from '@interop/did-method-webvh'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
@@ -50,6 +51,7 @@ import {
   WEBVH_DOCUMENT_REVERIFY_AGE
 } from '../src/config.default.js'
 import {
+  forgetDeletedWebvhLocation,
   invalidateResolvedWebvhDid,
   resolveWebvhController
 } from '../src/lib/webvhController.js'
@@ -524,5 +526,120 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
     )
 
     await restoreValidLog()
+  })
+})
+
+describe('did:webvh log head continuity', () => {
+  // Every prefix of a valid log is itself a valid log with the same SCID, so
+  // verification alone would accept a truncated log. The resolver records the
+  // head it last verified and refuses a log that does not extend it.
+  const collectionId = 'id'
+  let dataDir: string, storage: FileSystemBackend, spaceId: string
+  let did: string, firstJsonl: string, secondJsonl: string
+
+  beforeAll(async () => {
+    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
+    storage = new FileSystemBackend({ dataDir })
+    spaceId = randomUUID()
+    await storage.writeSpace({
+      spaceId,
+      spaceMetadata: {
+        id: spaceId,
+        type: ['Space'],
+        controller: 'did:key:z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD'
+      }
+    })
+    await storage.writeCollection({
+      spaceId,
+      collectionId,
+      collectionMetadata: {
+        id: collectionId,
+        type: ['Collection'],
+        name: collectionId
+      }
+    })
+    const updateKeyPair = await Ed25519VerificationKey.generate()
+    const updateKeySigner = updateKeyPair.didKeySigner()
+    const logSigner = signerFromExternalKey({
+      publicKeyMultibase: updateKeyPair.publicKeyMultibase!,
+      sign: async ({ data }: { data: Uint8Array }) =>
+        await updateKeySigner.sign({ data })
+    })
+    const [firstKey, secondKey] = await Promise.all([
+      Ed25519VerificationKey.generate(),
+      Ed25519VerificationKey.generate()
+    ])
+    const created = await createDID({
+      address: `${serverUrl}/space/${spaceId}/${collectionId}`,
+      signer: logSigner,
+      updateKeys: [updateKeyPair.publicKeyMultibase!],
+      vmIdFragment: 'multibase',
+      verificationMethods: [
+        {
+          type: 'Multikey',
+          publicKeyMultibase: firstKey.publicKeyMultibase!,
+          purpose: ['authentication', 'capabilityInvocation']
+        }
+      ]
+    })
+    const updated = await updateDID({
+      log: created.log,
+      signer: logSigner,
+      vmIdFragment: 'multibase',
+      verificationMethods: [
+        {
+          type: 'Multikey',
+          publicKeyMultibase: secondKey.publicKeyMultibase!,
+          purpose: ['authentication', 'capabilityInvocation']
+        }
+      ]
+    })
+    did = created.did
+    firstJsonl = logToJsonlString(created.log)
+    secondJsonl = logToJsonlString(updated.log)
+  })
+  afterAll(async () => {
+    await rm(dataDir, { recursive: true, force: true })
+  })
+
+  /**
+   * Writes a log straight to storage and drops the cached document, so the
+   * next resolve reads and verifies it.
+   * @param jsonl {string}
+   * @returns {Promise<void>}
+   */
+  async function store(jsonl: string): Promise<void> {
+    await writeText({
+      storage,
+      spaceId,
+      collectionId,
+      resourceId: 'did.jsonl',
+      text: jsonl
+    })
+    invalidateResolvedWebvhDid({ storage, spaceId, collectionId })
+  }
+
+  it('refuses a truncated log after a longer one verified', async () => {
+    await store(secondJsonl)
+    await resolveWebvhController({ storage, serverUrl, did })
+
+    await store(firstJsonl)
+    await assert.rejects(
+      resolveWebvhController({ storage, serverUrl, did }),
+      /does not extend/
+    )
+
+    await store(secondJsonl)
+    await resolveWebvhController({ storage, serverUrl, did })
+  })
+
+  it('a deleted location forgets the head, so a restored log resolves', async () => {
+    await store(secondJsonl)
+    await resolveWebvhController({ storage, serverUrl, did })
+
+    await store(firstJsonl)
+    forgetDeletedWebvhLocation({ storage, spaceId, collectionId })
+    const doc = await resolveWebvhController({ storage, serverUrl, did })
+    assert.equal(doc.id, did)
   })
 })
