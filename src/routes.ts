@@ -28,6 +28,7 @@ import { SpaceRequest } from './requests/SpaceRequest.js'
 import { handleError, MethodNotAllowedError } from './errors.js'
 import { ResourceRequest } from './requests/ResourceRequest.js'
 import { ChunkRequest } from './requests/ChunkRequest.js'
+import { sandboxHostedPage } from './lib/hostedPageSandbox.js'
 import { CollectionRequest } from './requests/CollectionRequest.js'
 import { PolicyRequest, type PolicyParams } from './requests/PolicyRequest.js'
 import { BackendRequest } from './requests/BackendRequest.js'
@@ -49,7 +50,8 @@ import {
  * Installs the `handleError` error handler and the hook chain every route group
  * shares, in the one order they all rely on: the optional provisioning gate,
  * the auth-header requirement, `parseAuthHeaders`, `captureRawBody`,
- * `verifyBodyDigest`, then the POST `Cache-Control: no-store` marking.
+ * `verifyBodyDigest`, then the POST `Cache-Control: no-store` marking and the
+ * hosted-page sandbox policy.
  * @param app {import('fastify').FastifyInstance}
  * @param options {object}
  * @param [options.provisioningRoutes] {string[]}   route URLs (exactly as
@@ -103,6 +105,9 @@ function installGroupHooks(
   // "Caching"). Only POST is non-idempotent here; reads carry an `ETag` for
   // validation instead, and the spec defers further `Cache-Control` semantics.
   app.addHook('onSend', markPostNoStore)
+  // Stamp the hosted-page sandbox policy on every response in the group, so a
+  // route serving stored bytes cannot be added without it.
+  app.addHook('onSend', sandboxHostedPage)
 }
 
 /**

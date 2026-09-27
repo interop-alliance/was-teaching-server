@@ -10,6 +10,20 @@
   `docs/deployment-fly.io.md` covers choosing an origin layout, the setup, and
   the rules a reverse proxy in front of the server must follow.
 
+### Security
+
+- Every response on a WAS or `/kms` route (including 304s, redirects and error
+  responses) carries
+  `Content-Security-Policy: sandbox allow-scripts allow-forms allow-modals allow-downloads allow-popups allow-top-navigation-by-user-activation`,
+  whatever the stored content type, except `application/pdf`, which Chromium
+  refuses to render sandboxed. A hosted HTML page runs with an opaque origin, so
+  it cannot read the storage of the origin serving it. The policy omits
+  `allow-same-origin` and is always on. It also omits
+  `allow-popups-to-escape-sandbox`, so a popup the page opens is sandboxed too.
+  These responses send no `X-Content-Type-Options: nosniff`. The header has no
+  effect on JSON responses read with `fetch()`. The welcome page, `/common/`,
+  `/service` and the CORS proxy do not carry it.
+
 ## 0.38.0 - 2026-09-27
 
 ### Added

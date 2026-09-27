@@ -21,6 +21,7 @@ import {
 } from '../errors.js'
 import { isValidEdvDocument } from './edvEnvelope.js'
 import { isPlainObject } from './isPlainObject.js'
+import { bareMediaType } from './mediaType.js'
 
 /**
  * The encryption schemes this server recognizes and can enforce on write (spec
@@ -673,7 +674,7 @@ export function assertEncryptedWriteConforms({
   const { scheme, profile } = resolved
   // Gate 1: the stored representation's media type. Compare the bare media type
   // (parameters like `; charset=utf-8` stripped), case-insensitively.
-  const mediaType = (contentType ?? '').split(';')[0]!.trim().toLowerCase()
+  const mediaType = bareMediaType({ contentType })
   if (mediaType !== profile.mediaType) {
     throw new EncryptionSchemeMismatchError({
       detail: `A write into a Collection encrypted with the '${scheme}' scheme must use Content-Type '${profile.mediaType}'.`

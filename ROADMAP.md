@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 154
+nextAvailableId: 155
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -665,6 +665,12 @@ Relative links inside the page already resolve to sibling single-segment
 resource ids in the same collection (no path nesting), which is enough for a
 flat site; nested directories are out of scope here.
 
+The default document is a hosted page, so its response must carry the
+hosted-page sandbox header. Every route group installs the `sandboxHostedPage`
+`onSend` hook (`src/lib/hostedPageSandbox.ts`), so a route registered in a group
+gets it with no extra step. Have the tests assert the header on the served
+document.
+
 ### WAS-65: Response hardening on public resource serving (helmet, CSP, nosniff)
 
 - status: todo
@@ -673,16 +679,26 @@ flat site; nested directories are out of scope here.
 - acceptance:
   - [ ] `fastify-helmet` (the `TODO` in `src/server.ts`) or an equivalent header
         set on resource responses: `X-Content-Type-Options: nosniff` at minimum
+        (superseded as written, see WAS-154: sniffing stays on for Resources)
   - [ ] A decided `Content-Security-Policy` for world-readable resources: a
         public HTML resource is same-origin script on the WAS host and CORS is
         `*`, so the policy must bound what such a page can do against the host
         while still letting a plain page with inline styles render (the demo
-        page must keep working; document the tradeoff)
+        page must keep working; document the tradeoff) (superseded, see WAS-154)
   - [ ] Tests assert the headers on a public `text/html` GET and that the
-        existing JSON API responses are unaffected
+        existing JSON API responses are unaffected (superseded, see WAS-154)
+  - [ ] Decide which of helmet's remaining headers (`Referrer-Policy`,
+        `Strict-Transport-Security`, `Cross-Origin-Resource-Policy`, and so on)
+        this server sets itself, leaving `X-Content-Type-Options` off Resource
+        and chunk responses
 
 Note 2026-09-17: the CORS proxy relays an upstream `text/html` on the same
 origin with none of these headers either; that half is WAS-124.
+
+Superseding note 2026-09-27. The Content-Security-Policy and `nosniff` decisions
+moved to WAS-154. Hosted HTML pages keep their scripts and content sniffing, and
+a `sandbox` header without `allow-same-origin` isolates them instead. What
+remains here is the rest of the helmet header set.
 
 ### WAS-69: Drop `Ed25519Signature2020` from the delegation-proof verify side
 
@@ -1444,7 +1460,7 @@ built from it, and undici dials loopback. The endpoint is unauthenticated.
 ### WAS-124: CORS proxy: response hardening and cache-key hygiene
 
 - status: todo
-- priority: medium
+- priority: high
 - labels: security, cors-proxy, caching
 - discovered-from: whole-codebase review (2026-09-17), verified
 - touches:
@@ -1469,6 +1485,16 @@ origin, where the welcome page, static assets and any wallet frontend also live.
 `url.href` keeps the fragment, so fragment variants of one URL each get their
 own cache entry, their own in-flight slot and their own upstream fetch, each
 buffering up to 10 MiB.
+
+Note 2026-09-27: in the same-origin layout `docs/deployment-fly.io.md` now
+recommends, `/api/cors` is served on the wallet's origin. A link to it can then
+run any third party's HTML as the wallet, with no write grant needed. The
+decided header set there is
+`Content-Security-Policy: default-src 'none'; sandbox` plus
+`X-Content-Type-Options: nosniff`. Until this lands, the wallet's proxy should
+add them. Freewallet's does (the `/api/cors` entries of the `$was_csp` and
+`$was_nosniff` maps in `deploy/nginx.conf.template`); once this ships, drop
+those entries there.
 
 ### WAS-125: Re-check container existence inside the write lock
 

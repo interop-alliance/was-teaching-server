@@ -113,34 +113,37 @@ options 2 and 4 are not available.
 
 Option 3 suits a deployment whose hosted pages are static sites: documents,
 galleries, demos, pages that read public data. It needs one domain and no DNS
-beyond the wallet's own. Every Resource and chunk response carries:
+beyond the wallet's own. Every response on the server's WAS routes, except a
+PDF, carries:
 
 ```
-Content-Security-Policy: sandbox allow-scripts allow-forms allow-modals allow-downloads allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation
+Content-Security-Policy: sandbox allow-scripts allow-forms allow-modals allow-downloads allow-popups allow-top-navigation-by-user-activation
 ```
 
 The header has no effect on the wallet's own `fetch()` calls. It leaves out
 `allow-same-origin`, since combined with `allow-scripts` that token lets a page
 lift its own sandbox. It also leaves content sniffing on, so a Resource stored
 with no type or a generic one still renders. A sniffed page arrives with the
-same header and runs sandboxed too.
+same header and runs sandboxed too. A Resource stored as `application/pdf` goes
+out without the header. Chromium will not render a PDF in a sandboxed document,
+and a browser's PDF viewer cannot reach the origin's storage anyway.
 
 A sandboxed page keeps scripts, the DOM, WebCrypto, `fetch()` to any CORS API
 (WAS included, with `Origin: null`), forms, dialogs, downloads and popups. A
-popup it opens runs outside the sandbox, so a wallet popup can still read its
-own keys, while a hosted page opened that way gets the header again. The page
-loses `localStorage`, `sessionStorage`, IndexedDB, the Cache API, cookies,
-service workers, WebAuthn, and permission prompts such as camera and
-geolocation. Reading `localStorage` throws, and some libraries touch it at
-startup, so a page built for full browser storage may fail to load rather than
-just forget its state.
+popup it opens inherits the sandbox, so a wallet page opened that way also runs
+with an opaque origin and cannot read the wallet's keys. The page loses
+`localStorage`, `sessionStorage`, IndexedDB, the Cache API, cookies, service
+workers, WebAuthn, and permission prompts such as camera and geolocation.
+Reading `localStorage` throws, and some libraries touch it at startup, so a page
+built for full browser storage may fail to load rather than just forget its
+state.
 
 The layout can grow into option 4 later. A content domain added behind a
 navigation redirect gives hosted pages storage of their own, and path-form links
 shared in the meantime keep working.
 
-The server does not send this header yet. Until it does, the proxy in front of
-it has to add it on Resource and chunk responses.
+The server sends this header itself, so a proxy in front of it has nothing to
+add. It must pass the header through unchanged.
 
 ### What per-Space subdomains cost
 
@@ -302,10 +305,10 @@ docker run --rm -p 3002:3002 \
 
 `fly.toml` and the deploy workflow run the server as a private Fly app behind a
 wallet app on the same origin. That is option 3 under "Choosing an origin
-layout" above. Until the server sends the sandbox header itself, the wallet's
-proxy has to add it. The wallet app proxies the server's routes over Flycast, a
-private address inside the Fly organization's network, so the server app has no
-public IP. Each repo deploys its own app.
+layout" above. The server sends the sandbox header itself, and the wallet's
+proxy passes it through. The wallet app proxies the server's routes over
+Flycast, a private address inside the Fly organization's network, so the server
+app has no public IP. Each repo deploys its own app.
 
 The values in `fly.toml` are placeholders: the app name `was-teaching-server`
 and `SERVER_URL=https://wallet.example.com`. The workflow replaces them at
@@ -339,8 +342,8 @@ copies of the data.
 
 A volume lives on one physical host and is not replicated. If that host fails,
 the volume can be lost. Fly snapshots volumes daily and keeps the snapshots for
-five days by default. List them with `fly volumes snapshots list <volume-id>`.
-A snapshot restores into a new volume. Those snapshots are the only copy of the
+five days by default. List them with `fly volumes snapshots list <volume-id>`. A
+snapshot restores into a new volume. Those snapshots are the only copy of the
 data, so take backups of your own (Export Space, or a copy of `/data`) or use
 Postgres for anything that must not be lost.
 

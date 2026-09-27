@@ -82,6 +82,24 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   stores anything.
 - **`src/zcap.ts`** — `handleZcapVerify()` performs the capability-invocation
   signature verification against the Space controller's key.
+- **`src/lib/hostedPageSandbox.ts`** -- the hosted-page sandbox. An `onSend`
+  hook that every route group installs (`installGroupHooks`) stamps
+  `Content-Security-Policy: sandbox ...` on every response in the WAS and `/kms`
+  groups, 304s, redirects and errors included. It skips a response whose
+  `content-type` is `application/pdf`: Chromium refuses to render a PDF in a
+  sandboxed document, and a browser's PDF viewer cannot reach the serving
+  origin's storage anyway. A stored HTML page then runs with an opaque origin
+  and cannot read the storage of the origin serving it, which matters when a
+  wallet serves this server on its own origin. The hook is group-wide so that a
+  new route serving stored bytes, such as a default document, cannot be added
+  without it. A sandbox has no effect on a response read with `fetch()`, so the
+  JSON responses carry it harmlessly. The welcome page, `/common/`, `/service`
+  and the CORS proxy sit outside the groups and do not carry it. The policy
+  leaves out `allow-same-origin`, which combined with `allow-scripts` would let
+  a page lift its own sandbox, and `allow-popups-to-escape-sandbox`, so a popup
+  a page opens is sandboxed too. It is always on, with no setting. These
+  responses send no `X-Content-Type-Options: nosniff`, so a Resource stored with
+  a generic type is still sniffed, and runs sandboxed too.
 - **`src/lib/etag.ts`** and **`src/lib/preconditions.ts`** — the `ETag`
   validators (spec "Caching" and "Conditional Requests"). A Resource, a chunk, a
   Resource's `/meta` object, and each container's Metadata object (the Space

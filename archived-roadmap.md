@@ -2779,12 +2779,12 @@ controller's. The handler decides root from the verified invocation's
   - freewallet / wallet-core / dcw: the signup gate that refuses to publish a
     ladder verification method on a host whose service description lists no
     client-annex entry (freewallet FW-180, open)
-  - app-connect-spec: the client annex profile text the entry's `url` will
-    name (freewallet FW-205, open), and decision 0003's record of the clause's
-    five predicates (freewallet FW-562, open)
+  - app-connect-spec: the client annex profile text the entry's `url` will name
+    (freewallet FW-205, open), and decision 0003's record of the clause's five
+    predicates (freewallet FW-562, open)
 - acceptance:
-  - [x] `buildServiceDescription` lists `https://w3id.org/pws/client-annex`
-        with one entry, `{ version: '0.1' }`, and no other member
+  - [x] `buildServiceDescription` lists `https://w3id.org/pws/client-annex` with
+        one entry, `{ version: '0.1' }`, and no other member
   - [x] Tests in `test/service-description-api.test.ts`: the whole-document
         assertion and a cell pinning the entry to `version` alone
   - [x] `ARCHITECTURE.md`'s service description entry and the fail-open
@@ -2795,3 +2795,69 @@ identifier (provisional with the rest of the `pws` namespace), an entry of
 exactly `version` and an optional `url` that a client treats as absent when it
 carries any other member, and `0.1` meaning the clause as this server enforces
 it today. The `url` is added when the profile text is published.
+
+### WAS-154: Sandbox hosted pages served from Resources and chunks
+
+- status: done
+- done: 2026-09-27
+- priority: high
+- labels: security, serving
+- touches:
+  - freewallet (`deploy/nginx.conf.template`, ARCHITECTURE.md) -- until this
+    lands, its proxy must add the header on the server's Resource and chunk
+    routes, since it serves them on the wallet's origin; afterwards it must pass
+    the header through unchanged. Its proxy adds the header now (the `/space/`
+    entry of the `$was_csp` map, 2026-09-27). Once this ships, drop that entry
+    and the "server does not send these headers yet" note in freewallet's
+    `docs/deployment-fly.io.md`, or both proxy and server send the header. Done
+    2026-09-27: the `/space/` entry is dropped and the docs say the proxy passes
+    the server's header through. The wallet must not render fetched content as a
+    `blob:` URL document or in an unsandboxed `srcdoc` or `about:blank` iframe,
+    and its own CSP should allow scripts by nonce or hash rather than
+    `script-src 'self'`
+  - wallet-attached-storage-spec -- whether Security Considerations says
+    anything about hosted HTML on a wallet's origin is a spec decision
+  - unaffected: was-conformance-suite (deployment hardening, not a protocol
+    requirement, unless the spec text above adds one)
+- acceptance:
+  - [x] Every response on a WAS or `/kms` route carries
+        `Content-Security-Policy: sandbox allow-scripts allow-forms allow-modals allow-downloads allow-popups allow-top-navigation-by-user-activation`,
+        whatever the stored content type, except `application/pdf` (Chromium
+        refuses to render a sandboxed PDF)
+  - [x] The header never includes `allow-same-origin`
+  - [x] Those responses carry no `X-Content-Type-Options: nosniff`, so a
+        Resource stored with no type or a generic one is still sniffed
+  - [x] The welcome page, `/common/`, `/service` and the CORS proxy are
+        unchanged (JSON API responses were first left unchanged too; the hook
+        moved group-wide on 2026-09-27 so a new route cannot miss it)
+  - [x] Tests assert the header on a `text/html` Resource GET (signed, and
+        anonymous under a public-read policy), a chunk GET, a HEAD, a Resource
+        and a chunk 304 and 404, a JSON API response, a redirect and a 405, and
+        its absence on a PDF and on the welcome page
+  - [x] `docs/deployment-fly.io.md` drops its "the server does not send this
+        header yet" caveats
+
+Decided 2026-09-27, in choosing an origin layout for freewallet
+(`docs/deployment-fly.io.md`, "Choosing an origin layout"). Freewallet moves its
+server from `freewallet.cloud` onto `freewallet.me`, served through the wallet's
+proxy, to remove the CORS preflights that dominated signup latency. A hosted
+HTML Resource on that origin would otherwise run as the wallet, and its scripts
+could read the wallet's `localStorage` and IndexedDB, key material included.
+Anyone who can write a Resource could plant one.
+
+The sandbox gives each hosted page an opaque origin. Pages keep scripts, the
+DOM, WebCrypto and CORS `fetch()`, and lose all browser storage, cookies,
+service workers and WebAuthn. That fits the current use, static pages. Hosted
+apps with persistent state come later, and need either a content domain with
+per-Space subdomains behind a navigation redirect, or storage the wallet grants
+over `postMessage`. A grant flow has an identity problem to solve first. A
+sandboxed page's messages arrive with origin `null`, so a wallet popup cannot
+tell which page is asking.
+
+The header is always on rather than a setting. The server cannot tell whether it
+is deployed behind a wallet, and sandboxing a page on the server's own origin
+costs only that page's storage. A setting to turn it off can come with a
+content-domain layout, if one lands.
+
+The default document for public Collections (WAS-64) is a Resource response and
+must carry the header too. The CORS proxy's own headers stay WAS-124.
