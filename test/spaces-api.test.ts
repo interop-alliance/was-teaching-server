@@ -560,6 +560,89 @@ describe('Spaces', () => {
       )
       assert.equal(conditional.status, 200)
     })
+
+    // Settles a request to its HTTP status, success or refusal alike.
+    const statusOf = async (pending: Promise<any>): Promise<number> =>
+      (await responseOf(pending)).status
+
+    it("a self-signed create-via-PUT racing a POST /spaces/ cannot replace the winner's controller", async () => {
+      // Alice POSTs and Bob PUTs the same id; whichever lands first owns it.
+      // A losing PUT is re-authorized as an update of Alice's Space (404).
+      const rounds = await Promise.all(
+        Array.from({ length: 20 }, async () => {
+          const spaceId = crypto.randomUUID()
+          const [posted, put] = await Promise.all([
+            statusOf(
+              alice.was.request({
+                url: new URL('/spaces/', serverUrl).toString(),
+                method: 'POST',
+                json: { id: spaceId, controller: alice.did }
+              })
+            ),
+            statusOf(
+              bob.was.request({
+                url: metaUrl(spaceId),
+                method: 'PUT',
+                json: { id: spaceId, controller: bob.did }
+              })
+            )
+          ])
+          return { spaceId, posted, put }
+        })
+      )
+      for (const { spaceId, posted, put } of rounds) {
+        if (posted === 201) {
+          assert.equal(put, 404, `${spaceId}: Bob's PUT should be refused`)
+          const stored = await alice.was.space(spaceId).describe()
+          assert.equal(stored!.controller, alice.did)
+        } else {
+          assert.equal(posted, 409, `${spaceId}: Alice's POST should conflict`)
+          assert.equal(put, 201)
+          const stored = await bob.was.space(spaceId).describe()
+          assert.equal(stored!.controller, bob.did)
+        }
+      }
+    })
+
+    it('[root] two concurrent unconditional create-via-PUTs by one controller yield one 201 and one 204', async () => {
+      const spaceId = crypto.randomUUID()
+      const statuses = await Promise.all(
+        ['First', 'Second'].map(name =>
+          statusOf(
+            alice.was.request({
+              url: metaUrl(spaceId),
+              method: 'PUT',
+              json: spaceMetadata(spaceId, name)
+            })
+          )
+        )
+      )
+      // The losing create is re-run as an update of the
+      // winner's Space, so it still succeeds (last writer wins).
+      assert.deepEqual(statuses.slice().sort(), [201, 204])
+    })
+
+    it("[root] a concurrent create-via-PUT naming a different type cannot change the winner's type", async () => {
+      const spaceId = crypto.randomUUID()
+      const types = [['Space'], ['ExampleSpace', 'Space']]
+      const statuses = await Promise.all(
+        types.map(type =>
+          statusOf(
+            alice.was.request({
+              url: metaUrl(spaceId),
+              method: 'PUT',
+              json: { ...spaceMetadata(spaceId, 'Typed'), type }
+            })
+          )
+        )
+      )
+      // Whichever create lands first sets the type; the other is replayed as
+      // an update and refused by the immutability check.
+      assert.deepEqual(statuses.slice().sort(), [201, 400])
+      const winner = types[statuses.indexOf(201)]
+      const stored = await alice.was.space(spaceId).describe()
+      assert.deepEqual(stored!.type, winner)
+    })
   })
 
   describe('Create Space chain of authorization', () => {

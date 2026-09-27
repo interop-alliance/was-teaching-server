@@ -25,12 +25,47 @@
   effect on JSON responses read with `fetch()`. The welcome page, `/common/`,
   `/service` and the CORS proxy do not carry it.
 
+- Every CORS proxy reply, errors included, carries
+  `Content-Security-Policy: default-src 'none'; sandbox`,
+  `X-Content-Type-Options: nosniff` and `Content-Disposition: attachment`, in
+  place of the upstream's own. An upstream HTML page opened through the proxy no
+  longer runs on the server's origin. The upstream `Refresh` header is no longer
+  relayed.
+
+- The CORS proxy strips the fragment from the target URL, so fragment variants
+  of one URL share one cache entry and one upstream fetch. The cache key uses
+  the `Accept` header normalized, and replies carry `Vary: Accept`. A target URL
+  carrying credentials is refused with 400.
+
 - The CORS proxy refuses an IPv6 literal that embeds a blocked IPv4 address, in
   hex form as well as dotted form: IPv4-mapped (`::ffff:0:0/96`),
   IPv4-compatible (`::/96`), NAT64 (`64:ff9b::/96`) and 6to4 (`2002::/16`).
   Before, `http://[::ffff:127.0.0.1]/`, which the URL parser rewrites to
   `[::ffff:7f00:1]`, reached loopback. It also refuses IPv6 multicast
   (`ff00::/8`) and the local-use NAT64 prefix (`64:ff9b:1::/48`).
+
+- `PUT /space/:spaceId/meta` writes only against the Space it was authorized
+  against. Before, a create authorized by the body's own `controller` could land
+  after a concurrent create of the same id and replace the winner's `controller`
+  and `type`. An update could likewise land on a Space deleted or re-created in
+  between, or one whose controller had just changed. The request is now re-read
+  and re-authorized when that Space changes before the write. A create that lost
+  to a concurrent create is then an update: another caller gets the 404
+  `not-found`, and the Space's controller gets a 204, or a 400 if its `type`
+  differs. A delegated capability gets the 404 there too, since updates are
+  controller-only. An update whose Space was deleted becomes a create (201). A
+  412 comes only from the client's own `If-Match` or `If-None-Match`, evaluated
+  as sent. If the Space keeps changing across three attempts, the answer is 503
+  with `Retry-After: 1`.
+
+- A Space import restoring the Space Metadata object no longer reverts an Update
+  Space that lands during it, such as a controller change. The restore now
+  reads the object and writes over it under the same lock. This affected the
+  filesystem backend only.
+
+- The CORS proxy's cache key also normalizes `Accept` media-type parameters.
+  Media ranges and parameter names are lower-cased, and whitespace around `;`
+  and `=` is dropped.
 
 ## 0.38.0 - 2026-09-27
 

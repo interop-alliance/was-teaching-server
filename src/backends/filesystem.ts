@@ -1026,13 +1026,15 @@ export class FileSystemBackend implements StorageBackend {
     spaceMetadata,
     createdBy,
     ifMatch,
-    ifNoneMatch
+    ifNoneMatch,
+    assertTransition
   }: {
     spaceId: string
     spaceMetadata: SpaceMetadata
     createdBy?: IDID
     ifMatch?: string
     ifNoneMatch?: HeldValidators
+    assertTransition?: (prior?: StoredSpaceMetadata) => void | Promise<void>
   }): Promise<EtagValidator> {
     // Serialize the read-check-write under a per-Space-metadata lock so the
     // precondition check and the monotonic version bump are atomic with the
@@ -1043,79 +1045,121 @@ export class FileSystemBackend implements StorageBackend {
     return this.#underSpaceWrite({
       spaceId,
       write: () =>
-        this.#writeMutex.run(this.#spaceMetaLockKey({ spaceId }), async () => {
-          // Prior Space Metadata object, read once and reused below: for the
-          // precondition, the create-path quota check (a brand-new Space has none
-          // yet), and to resolve `createdBy`.
-          const prior = await this.getSpaceMetadata({ spaceId })
-
-          assertSpaceWritePrecondition({
+        this.#writeMutex.run(this.#spaceMetaLockKey({ spaceId }), async () =>
+          this.#writeSpaceLocked({
             spaceId,
-            exists: prior !== undefined,
-            currentEtag: metadataEtagOf(prior),
+            spaceMetadata,
+            createdBy,
             ifMatch,
-            ifNoneMatch
+            ifNoneMatch,
+            assertTransition,
+            // Prior Space Metadata object, read once under the lock.
+            prior: await this.getSpaceMetadata({ spaceId })
           })
-
-          // Count quota (create path only): a brand-new Space (no metadata file
-          // yet) must not push its controller past `maxSpacesPerController`.
-          // Overwriting an existing Space's metadata never trips it. Space
-          // creation is rare, so the O(all Spaces) enumeration is acceptable; soft
-          // under concurrency across controllers, like the byte quota.
-          if (this.maxSpacesPerController !== undefined && !prior) {
-            const { controller } = spaceMetadata
-            const spaces = await this.listSpaces()
-            const owned = spaces.filter(
-              space => space.controller === controller
-            ).length
-            if (owned >= this.maxSpacesPerController) {
-              throw new CountQuotaExceededError({
-                scope: 'Spaces per controller',
-                limit: this.maxSpacesPerController
-              })
-            }
-          }
-
-          // `createdBy` and the validator-bearing members the wire input may
-          // carry are resolved by the shared rules (lib/metadataWrite.ts), so
-          // the stored body never holds a client-supplied `createdBy`,
-          // `_generation` or `_version` on either backend.
-          // The object keeps its generation for the Space's whole life; a Space
-          // deleted and re-created under the same id mints a new one, so the two
-          // lives' validators can never coincide.
-          const validator = {
-            generation: resolveGeneration(prior?.metaGeneration),
-            version: (prior?.metaVersion ?? 0) + 1
-          }
-          const { body } = normalizeMetadataWrite({
-            metadata: spaceMetadata,
-            validator
-          })
-          const stamped = stampSpaceMetadata({
-            spaceMetadata: body,
-            prior,
-            createdBy
-          })
-
-          const spaceDir = await this.#ensureSpaceDir({ spaceId })
-          const filename = spaceMetadataFileName(spaceId)
-          // Durable full replacement: `MetadataJsonStore.read` parses plain JSON,
-          // so an atomically-written JSON string round-trips through the same read
-          // path. The validator is stored under the reserved `_generation` /
-          // `_version` members that `getSpaceMetadata` strips and re-surfaces
-          // out of band, the same layout as a Collection Metadata file.
-          await atomicWriteFile({
-            filePath: path.join(spaceDir, filename),
-            data: JSON.stringify(
-              embedMetadataValidator({
-                body: stamped,
-                ...validator
-              })
-            )
-          })
-          return validator
-        })
+        )
     })
+  }
+
+  /**
+   * `writeSpace`'s body, for a caller that already holds the Space gate and
+   * the per-Space-metadata lock and has read the prior object under it (an
+   * import restoring the archived object composes its write from that read).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.spaceMetadata {SpaceMetadata}
+   * @param [options.createdBy] {string}
+   * @param [options.ifMatch] {string}
+   * @param [options.ifNoneMatch] {HeldValidators}
+   * @param [options.assertTransition] {Function}
+   * @param [options.prior] {StoredSpaceMetadata}   the current object, read
+   *   under the lock; reused for the precondition, the create-path quota
+   *   check (a brand-new Space has none yet), and to resolve `createdBy`
+   * @returns {Promise<EtagValidator>}
+   */
+  async #writeSpaceLocked({
+    spaceId,
+    spaceMetadata,
+    createdBy,
+    ifMatch,
+    ifNoneMatch,
+    assertTransition,
+    prior
+  }: {
+    spaceId: string
+    spaceMetadata: SpaceMetadata
+    createdBy?: IDID
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+    assertTransition?: (prior?: StoredSpaceMetadata) => void | Promise<void>
+    prior?: StoredSpaceMetadata
+  }): Promise<EtagValidator> {
+    assertSpaceWritePrecondition({
+      spaceId,
+      exists: prior !== undefined,
+      currentEtag: metadataEtagOf(prior),
+      ifMatch,
+      ifNoneMatch
+    })
+
+    await assertTransition?.(prior)
+
+    // Count quota (create path only): a brand-new Space (no metadata file
+    // yet) must not push its controller past `maxSpacesPerController`.
+    // Overwriting an existing Space's metadata never trips it. Space
+    // creation is rare, so the O(all Spaces) enumeration is acceptable; soft
+    // under concurrency across controllers, like the byte quota.
+    if (this.maxSpacesPerController !== undefined && !prior) {
+      const { controller } = spaceMetadata
+      const spaces = await this.listSpaces()
+      const owned = spaces.filter(
+        space => space.controller === controller
+      ).length
+      if (owned >= this.maxSpacesPerController) {
+        throw new CountQuotaExceededError({
+          scope: 'Spaces per controller',
+          limit: this.maxSpacesPerController
+        })
+      }
+    }
+
+    // `createdBy` and the validator-bearing members the wire input may
+    // carry are resolved by the shared rules (lib/metadataWrite.ts), so
+    // the stored body never holds a client-supplied `createdBy`,
+    // `_generation` or `_version` on either backend.
+    // The object keeps its generation for the Space's whole life; a Space
+    // deleted and re-created under the same id mints a new one, so the two
+    // lives' validators can never coincide.
+    const validator = {
+      generation: resolveGeneration(prior?.metaGeneration),
+      version: (prior?.metaVersion ?? 0) + 1
+    }
+    const { body } = normalizeMetadataWrite({
+      metadata: spaceMetadata,
+      validator
+    })
+    const stamped = stampSpaceMetadata({
+      spaceMetadata: body,
+      prior,
+      createdBy
+    })
+
+    const spaceDir = await this.#ensureSpaceDir({ spaceId })
+    const filename = spaceMetadataFileName(spaceId)
+    // Durable full replacement: `MetadataJsonStore.read` parses plain JSON,
+    // so an atomically-written JSON string round-trips through the same read
+    // path. The validator is stored under the reserved `_generation` /
+    // `_version` members that `getSpaceMetadata` strips and re-surfaces
+    // out of band, the same layout as a Collection Metadata file.
+    await atomicWriteFile({
+      filePath: path.join(spaceDir, filename),
+      data: JSON.stringify(
+        embedMetadataValidator({
+          body: stamped,
+          ...validator
+        })
+      )
+    })
+    return validator
   }
 
   /**
@@ -1629,18 +1673,27 @@ export class FileSystemBackend implements StorageBackend {
           // the members the server derives per read -- stays the
           // destination's. A Space with no stored object yet (a backend
           // driven outside a request) has nothing to apply them over.
+          // Read, composed and written under the per-Space-metadata lock, so
+          // a concurrent Metadata write lands wholly before or after it.
           if (archivedSpaceMetadata && restoreSpaceMetadata) {
-            const prior = await this.getSpaceMetadata({ spaceId })
-            if (prior) {
-              await this.writeSpace({
-                spaceId,
-                spaceMetadata: restoredSpaceMetadata({
-                  prior: stripMetadataValidator(prior),
-                  archived: archivedSpaceMetadata
+            await this.#writeMutex.run(
+              this.#spaceMetaLockKey({ spaceId }),
+              async () => {
+                const prior = await this.getSpaceMetadata({ spaceId })
+                if (!prior) {
+                  return
+                }
+                await this.#writeSpaceLocked({
+                  spaceId,
+                  spaceMetadata: restoredSpaceMetadata({
+                    prior: stripMetadataValidator(prior),
+                    archived: archivedSpaceMetadata
+                  }),
+                  prior
                 })
-              })
-              stats.spaceMetadata = 'restored'
-            }
+                stats.spaceMetadata = 'restored'
+              }
+            )
           }
 
           // Space-level policy: restore it when the destination has none (the import

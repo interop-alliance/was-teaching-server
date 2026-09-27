@@ -894,6 +894,167 @@ describe('CORS proxy relayed headers and cache directives', () => {
   })
 })
 
+describe('CORS proxy response hardening', () => {
+  beforeEach(() => {
+    lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }])
+  })
+  afterEach(() => {
+    fetchMock.mockReset()
+    lookupMock.mockReset()
+  })
+
+  function expectInert(headers: Record<string, unknown>) {
+    expect(headers['content-security-policy']).toBe(
+      "default-src 'none'; sandbox"
+    )
+    expect(headers['x-content-type-options']).toBe('nosniff')
+    expect(headers['content-disposition']).toBe('attachment')
+  }
+
+  it('relays an upstream text/html body so it cannot run on the proxy origin', async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response('<script>alert(document.domain)</script>', {
+          status: 200,
+          headers: {
+            'content-type': 'text/html',
+            'cache-control': 'max-age=600',
+            'content-security-policy': "script-src 'unsafe-inline'",
+            'x-content-type-options': 'sniff-away',
+            'content-disposition': 'inline',
+            refresh: '0; url=https://evil.example/'
+          }
+        })
+    )
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' + encodeURIComponent('https://evil.example/page.html')
+    const first = await app.inject({ method: 'GET', url })
+    const second = await app.inject({ method: 'GET', url })
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    for (const response of [first, second]) {
+      expect(response.statusCode).toBe(200)
+      expectInert(response.headers)
+      expect(response.headers.refresh).toBeUndefined()
+      expect(response.headers.vary).toBe('Accept')
+    }
+  })
+
+  it('carries the hardening headers on an error reply too', async () => {
+    const app = createApp()
+    const response = await app.inject({ method: 'GET', url: '/api/cors' })
+
+    expect(response.statusCode).toBe(400)
+    expectInert(response.headers)
+  })
+
+  it('keeps an upstream Vary and adds Accept to it', async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response('{}', {
+          status: 200,
+          headers: { vary: 'Accept-Language' }
+        })
+    )
+
+    const app = createApp()
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/cors?url=' + encodeURIComponent('https://registry.example/v')
+    })
+
+    expect(response.headers.vary).toBe('Accept-Language, Accept')
+  })
+
+  it('shares one upstream fetch between fragment variants of one URL', async () => {
+    fetchMock.mockImplementation(
+      async () => new Response('{"ok":true}', { status: 200 })
+    )
+
+    const app = createApp()
+    for (const target of [
+      'https://registry.example/doc#one',
+      'https://registry.example/doc#two',
+      'https://registry.example/doc'
+    ]) {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/cors?url=' + encodeURIComponent(target)
+      })
+      expect(response.statusCode).toBe(200)
+    }
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://registry.example/doc')
+  })
+
+  it('keys the cache on the normalized Accept header', async () => {
+    fetchMock.mockImplementation(
+      async () => new Response('{"ok":true}', { status: 200 })
+    )
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' + encodeURIComponent('https://registry.example/accept')
+    await app.inject({
+      method: 'GET',
+      url,
+      headers: { accept: 'application/ld+json,application/json' }
+    })
+    await app.inject({
+      method: 'GET',
+      url,
+      headers: { accept: ' application/ld+json ,  application/json, ' }
+    })
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      headers: { accept: 'application/ld+json, application/json' }
+    })
+  })
+
+  it('keys the cache on Accept with parameter spacing and case normalized', async () => {
+    fetchMock.mockImplementation(
+      async () => new Response('{"ok":true}', { status: 200 })
+    )
+
+    const app = createApp()
+    const url =
+      '/api/cors?url=' +
+      encodeURIComponent('https://registry.example/accept-params')
+    for (const accept of [
+      'application/json;q=0.9, */*;q=0.1',
+      'Application/JSON; q=0.9, */*; Q = 0.1',
+      'application/json ;q=0.9,*/*;q=0.1'
+    ]) {
+      await app.inject({ method: 'GET', url, headers: { accept } })
+    }
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      headers: { accept: 'application/json;q=0.9, */*;q=0.1' }
+    })
+  })
+
+  it('refuses a target URL carrying credentials', async () => {
+    const app = createApp()
+    const response = await app.inject({
+      method: 'GET',
+      url:
+        '/api/cors?url=' +
+        encodeURIComponent('https://user:secret@registry.example/')
+    })
+
+    expect(response.statusCode).toBe(400)
+    expect(response.json()).toEqual({
+      error: 'URLs with credentials may not be proxied.'
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
 describe('CORS proxy Agent lifecycle', () => {
   beforeEach(() => {
     lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }])

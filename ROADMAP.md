@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 155
+nextAvailableId: 157
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -1310,33 +1310,6 @@ record in it is inaccessible. There is no delete route (WAS-70) and no rotation
 path that does not verify against the dead controller. With WAS-115 open, a
 delegate can inflict this on the controller.
 
-### WAS-117: Guarded create on the `PUT /space/:spaceId/meta` create branch
-
-- status: todo
-- priority: high
-- labels: security, consent, consistency
-- discovered-from: whole-codebase review (2026-09-17), verified (28 of 30
-  concurrent create pairs ended with the second writer's controller)
-- acceptance:
-  - [ ] The create branch of `SpaceRequest.putMeta` passes `ifNoneMatch: '*'` to
-        `writeSpace` unconditionally, as `SpacesRepositoryRequest.post` already
-        does, and maps the 412 the same way
-  - [ ] The `type` immutability check runs against the record the write actually
-        observed, not the pre-verification read
-  - [ ] A test drives a `POST /spaces/ {id: X}` and a self-signed
-        `PUT /space/X/meta` concurrently and asserts the stored controller is
-        the winner's, whichever wins
-  - [ ] The comment claiming a concurrent create "surfaces here as 412" holds
-        without a client-supplied header
-
-The branch decision (authorize against the stored controller, or against the
-body's own controller via `verifyBodyControllerConsent`) is made on an unlocked
-read, and the write carries a precondition only when the client sent one. An
-attacker PUTs `controller: attacker` for an id the victim is creating; the
-victim's guarded create lands first; the attacker's unconditional write replaces
-it. The victim got a 201 and now owns nothing. The same path bypasses the `type`
-immutability check.
-
 ### WAS-118: Onboarding-token gate covers Space creation by `PUT /meta`
 
 - status: todo
@@ -1435,45 +1408,6 @@ signature never covered; a captured signature is replayable with a different
 body inside its `(created)`/`(expires)` window. Resource writes are protected
 only by `resolveResourceInput` refusing a missing `Content-Type`, a handler
 accident rather than a hook guarantee.
-
-### WAS-124: CORS proxy: response hardening and cache-key hygiene
-
-- status: todo
-- priority: high
-- labels: security, cors-proxy, caching
-- discovered-from: whole-codebase review (2026-09-17), verified
-- touches:
-  - `src/corsProxy.ts`; WAS-65 covers the same headers on served Resources
-- acceptance:
-  - [ ] Every proxy reply carries `X-Content-Type-Options: nosniff`,
-        `Content-Security-Policy: sandbox` (or `default-src 'none'`) and
-        `Content-Disposition: attachment`, or the relayed `content-type` is
-        restricted to a non-active allowlist; `Refresh` is dropped
-  - [ ] The response-cache and single-flight key is the fetched identity
-        (origin + path + search, fragment stripped) with `Accept` normalized or
-        omitted
-  - [ ] Replies vary on whatever request header still participates in the key
-        (`Vary: Accept`), or `cache-control` from upstream is not relayed as
-        `public`
-  - [ ] A test that an upstream `text/html` body is not executable on the proxy
-        origin, and that two fragment variants of one URL share one upstream
-        fetch
-
-An upstream answering `text/html` with script is relayed verbatim on the WAS
-origin, where the welcome page, static assets and any wallet frontend also live.
-`url.href` keeps the fragment, so fragment variants of one URL each get their
-own cache entry, their own in-flight slot and their own upstream fetch, each
-buffering up to 10 MiB.
-
-Note 2026-09-27: in the same-origin layout `docs/deployment-fly.io.md` now
-recommends, `/api/cors` is served on the wallet's origin. A link to it can then
-run any third party's HTML as the wallet, with no write grant needed. The
-decided header set there is
-`Content-Security-Policy: default-src 'none'; sandbox` plus
-`X-Content-Type-Options: nosniff`. Until this lands, the wallet's proxy should
-add them. Freewallet's does (the `/api/cors` entries of the `$was_csp` and
-`$was_nosniff` maps in `deploy/nginx.conf.template`); once this ships, drop
-those entries there.
 
 ### WAS-125: Re-check container existence inside the write lock
 

@@ -98,6 +98,13 @@ export const SPACE_METADATA_CACHE_TTL = 10_000 // milliseconds
 export const SPACE_METADATA_CACHE_MAX = 1_000
 
 /**
+ * How many times Update Space, which authorizes against an unlocked read,
+ * re-reads and retries when the Space Metadata object changes before the
+ * write takes its lock, before giving up with a 503.
+ */
+export const SPACE_METADATA_WRITE_ATTEMPTS = 3
+
+/**
  * Resolved `did:webvh` controller-document cache (see
  * src/lib/webvhController.ts). Verifying a history log is the most expensive
  * step on a promoted Space's hot path, so the verified document is memoized per

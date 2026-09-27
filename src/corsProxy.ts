@@ -53,6 +53,10 @@ const PROXY_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
  * sets on this reply, and relaying the upstream's would overwrite it (an
  * upstream `access-control-allow-origin` naming some other origin would shut
  * the browser out of the very response the proxy exists to open up).
+ * `refresh` would navigate a browser that opens the reply directly. The
+ * upstream's `content-security-policy`, `content-security-policy-report-only`,
+ * `x-content-type-options` and `content-disposition` are its own answers for
+ * its own origin; the proxy replaces them with {@link PROXY_REPLY_HEADERS}.
  */
 const UNRELAYED_HEADERS = new Set([
   'connection',
@@ -63,8 +67,28 @@ const UNRELAYED_HEADERS = new Set([
   'set-cookie',
   'link',
   'date',
-  'age'
+  'age',
+  'refresh',
+  'content-security-policy',
+  'content-security-policy-report-only',
+  'x-content-type-options',
+  'content-disposition'
 ])
+
+/**
+ * Headers every proxy reply carries, errors included. The proxy is served on
+ * the WAS origin, which may also be a wallet's origin, so an upstream
+ * `text/html` body must not run there when a browser opens the proxy URL
+ * directly. The sandbox gives such a page an opaque origin, `default-src
+ * 'none'` loads nothing, `nosniff` stops a generic type from being sniffed as
+ * active content, and `attachment` makes a navigation download the body
+ * instead of rendering it. None of them affects a reply read with `fetch()`.
+ */
+const PROXY_REPLY_HEADERS: [string, string][] = [
+  ['content-security-policy', "default-src 'none'; sandbox"],
+  ['x-content-type-options', 'nosniff'],
+  ['content-disposition', 'attachment']
+]
 
 /**
  * Whether an upstream response header is dropped rather than relayed: one of
@@ -263,7 +287,10 @@ function isBlockedIp(ip: string): boolean {
  * Parses a proxy target string and validates its scheme only (`http`/`https`).
  * Split out of {@link checkProxyTarget} because the response cache needs to
  * compute its lookup key from the client-supplied URL before paying for the
- * DNS check, and a cache hit needs no DNS check at all.
+ * DNS check, and a cache hit needs no DNS check at all. The fragment is
+ * stripped, since it is never sent upstream, and a URL carrying credentials is
+ * refused, since `fetch` cannot send one. The returned URL's `href` is then
+ * exactly the fetched identity (origin, path and search).
  * @param target {string}
  * @returns {{url: URL} | {status: number, error: string}}
  */
@@ -282,6 +309,13 @@ function parseProxyUrl(
       error: 'Only http and https URLs may be proxied.'
     }
   }
+  if (parsed.username || parsed.password) {
+    return {
+      status: 400,
+      error: 'URLs with credentials may not be proxied.'
+    }
+  }
+  parsed.hash = ''
   return { url: parsed }
 }
 
@@ -381,6 +415,70 @@ export function createPinnedLookup(
     const first = entries[0]!
     callback(null, first.address, first.family)
   } as unknown as LookupFunction
+}
+
+/**
+ * Normalizes a client's `Accept` header for the response-cache key and the
+ * upstream request, so variants that mean the same thing share one entry. Each
+ * comma-separated member is split at `;`, and each part is trimmed. The media
+ * range and each parameter name are lower-cased, since RFC 9110 makes them
+ * case-insensitive, and parameter values are kept as sent. Empty members and
+ * parts are dropped. Members keep their order and are rejoined with `, `.
+ * Returns `undefined` when nothing is left.
+ * @param accept {string | string[] | undefined}
+ * @returns {string | undefined}
+ */
+function normalizeAccept(
+  accept: string | string[] | undefined
+): string | undefined {
+  if (typeof accept !== 'string') {
+    return undefined
+  }
+  const members = accept
+    .split(',')
+    .map(member => {
+      const [range = '', ...params] = member
+        .split(';')
+        .map(part => part.trim())
+        .filter(part => part !== '')
+      return [range.toLowerCase(), ...params.map(normalizeParameter)].join(';')
+    })
+    .filter(member => member !== '')
+  return members.length > 0 ? members.join(', ') : undefined
+}
+
+/**
+ * One `name=value` media-type parameter with its name lower-cased and the
+ * whitespace around `=` removed. The value is kept as sent.
+ * @param parameter {string}
+ * @returns {string}
+ */
+function normalizeParameter(parameter: string): string {
+  const separator = parameter.indexOf('=')
+  if (separator === -1) {
+    return parameter.toLowerCase()
+  }
+  const name = parameter.slice(0, separator).trim().toLowerCase()
+  const value = parameter.slice(separator + 1).trim()
+  return `${name}=${value}`
+}
+
+/**
+ * Adds `Accept` to a reply's `Vary` header, keeping the members an upstream
+ * already listed. The response cache is keyed on the normalized `Accept`, so a
+ * downstream cache must key on it too. A `Vary: *` is left alone.
+ * @param vary {string | undefined}
+ * @returns {string}
+ */
+function varyWithAccept(vary: string | undefined): string {
+  const members = (vary ?? '')
+    .split(',')
+    .map(member => member.trim())
+    .filter(member => member !== '')
+  if (members.some(member => member === '*' || /^accept$/i.test(member))) {
+    return members.join(', ')
+  }
+  return [...members, 'Accept'].join(', ')
 }
 
 /**
@@ -615,7 +713,7 @@ function storeCachedResponse({
  * Never throws: a network failure becomes a 502 outcome.
  * @param options {object}
  * @param options.url {URL}   the client-supplied target, already scheme-checked
- * @param [options.acceptHeader] {string}   the client's `Accept`, forwarded as-is
+ * @param [options.acceptHeader] {string}   the client's normalized `Accept`
  * @param options.hostCheckCache {LRUCache<string, {address: string, family: number}[]>}
  * @param options.agentCache {LRUCache<string, PinnedAgent>}
  * @param options.log {FastifyBaseLogger}
@@ -769,13 +867,15 @@ async function fetchProxied({
  * so the DNS-rebinding guarantee that closes the TOCTOU is unchanged. The
  * relayed response body is capped at `PROXY_MAX_RESPONSE_BYTES`, both from a
  * declared `content-length` and while streaming. Hop-by-hop, encoding, cookie,
- * and timing headers are not relayed (see `UNRELAYED_HEADERS`).
+ * and timing headers are not relayed (see `UNRELAYED_HEADERS`). Every reply
+ * carries `PROXY_REPLY_HEADERS` in place of the upstream's own, so an upstream
+ * HTML page cannot run on this origin, and a `Vary` that names `Accept`.
  *
  * Four bounded, in-memory caches back this. A hostname `checkProxyTarget` has
  * already validated is reused for `CORS_PROXY_HOST_CHECK_CACHE_TTL` before a
  * fresh DNS lookup is made (the blocked-address check itself always re-runs
  * on a hit, as a cheap backstop). A 2xx GET response is cached by target URL
- * plus the forwarded `Accept` header, for a TTL taken from the upstream
+ * (fragment stripped) plus the normalized `Accept` header, for a TTL taken from the upstream
  * `Cache-Control` (`s-maxage`, else `max-age`, bounded by
  * `CORS_PROXY_RESPONSE_CACHE_MAX_TTL`) or `CORS_PROXY_RESPONSE_CACHE_TTL` when
  * absent -- a non-2xx response, one whose `Cache-Control` refuses caching
@@ -849,6 +949,18 @@ export async function initCorsProxyRoutes(
     await Promise.allSettled(entries.map(entry => entry.agent.destroy()))
   })
 
+  app.addHook('onSend', async (_request, reply, payload) => {
+    for (const [name, value] of PROXY_REPLY_HEADERS) {
+      reply.header(name, value)
+    }
+    const vary = reply.getHeader('vary')
+    reply.header(
+      'vary',
+      varyWithAccept(Array.isArray(vary) ? vary.join(', ') : vary?.toString())
+    )
+    return payload
+  })
+
   app.get<{ Querystring: { url?: string } }>(
     '/api/cors',
     async (request, reply) => {
@@ -866,10 +978,7 @@ export async function initCorsProxyRoutes(
       }
       const { url } = parsedTarget
 
-      const acceptHeader =
-        typeof request.headers.accept === 'string'
-          ? request.headers.accept
-          : undefined
+      const acceptHeader = normalizeAccept(request.headers.accept)
       const cacheKey = `${url.href}\n${acceptHeader ?? ''}`
 
       const hit = responseCache.get(cacheKey)

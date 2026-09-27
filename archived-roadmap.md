@@ -2883,3 +2883,137 @@ must carry the header too. The CORS proxy's own headers stay WAS-124.
 WHATWG parser normalizes `[::ffff:127.0.0.1]` to `[::ffff:7f00:1]`, which no
 prefix in the list matches. `dns.lookup` echoes the literal, the DNS pin is
 built from it, and undici dials loopback. The endpoint is unauthenticated.
+
+### WAS-124: CORS proxy: response hardening and cache-key hygiene
+
+- status: done
+- done: 2026-09-27
+- priority: high
+- labels: security, cors-proxy, caching
+- discovered-from: whole-codebase review (2026-09-17), verified
+- touches:
+  - `src/corsProxy.ts`; WAS-65 covers the same headers on served Resources
+  - freewallet: drop the `/api/cors` entries of the `$was_csp` and
+    `$was_nosniff` maps in `deploy/nginx.conf.template`, filed as FW-570
+- acceptance:
+  - [x] Every proxy reply carries `X-Content-Type-Options: nosniff`,
+        `Content-Security-Policy: sandbox` (or `default-src 'none'`) and
+        `Content-Disposition: attachment`, or the relayed `content-type` is
+        restricted to a non-active allowlist; `Refresh` is dropped
+  - [x] The response-cache and single-flight key is the fetched identity
+        (origin + path + search, fragment stripped) with `Accept` normalized or
+        omitted
+  - [x] Replies vary on whatever request header still participates in the key
+        (`Vary: Accept`), or `cache-control` from upstream is not relayed as
+        `public`
+  - [x] A test that an upstream `text/html` body is not executable on the proxy
+        origin, and that two fragment variants of one URL share one upstream
+        fetch
+
+An upstream answering `text/html` with script is relayed verbatim on the WAS
+origin, where the welcome page, static assets and any wallet frontend also live.
+`url.href` keeps the fragment, so fragment variants of one URL each get their
+own cache entry, their own in-flight slot and their own upstream fetch, each
+buffering up to 10 MiB.
+
+Note 2026-09-27: in the same-origin layout `docs/deployment-fly.io.md` now
+recommends, `/api/cors` is served on the wallet's origin. A link to it can then
+run any third party's HTML as the wallet, with no write grant needed. The
+decided header set there is
+`Content-Security-Policy: default-src 'none'; sandbox` plus
+`X-Content-Type-Options: nosniff`. Until this lands, the wallet's proxy should
+add them. Freewallet's does (the `/api/cors` entries of the `$was_csp` and
+`$was_nosniff` maps in `deploy/nginx.conf.template`); once this ships, drop
+those entries there.
+
+### WAS-117: Guarded create on the `PUT /space/:spaceId/meta` create branch
+
+- status: done
+- done: 2026-09-27
+- priority: high
+- labels: security, consent, consistency
+- discovered-from: whole-codebase review (2026-09-17), verified (28 of 30
+  concurrent create pairs ended with the second writer's controller)
+- acceptance:
+  - [x] The create branch of `SpaceRequest.putMeta` passes `ifNoneMatch: '*'` to
+        `writeSpace` unconditionally, as `SpacesRepositoryRequest.post` already
+        does; a header-less loser is re-run once as an update, authorized
+        against the winner's stored controller (amended 2026-09-27, see note)
+  - [x] The `type` immutability check runs against the record the write actually
+        observed, not the pre-verification read
+  - [x] A test drives a `POST /spaces/ {id: X}` and a self-signed
+        `PUT /space/X/meta` concurrently and asserts the stored controller is
+        the winner's, whichever wins
+  - [x] The comment claiming a concurrent create "surfaces here as 412" holds
+        without a client-supplied header
+
+The branch decision (authorize against the stored controller, or against the
+body's own controller via `verifyBodyControllerConsent`) is made on an unlocked
+read, and the write carries a precondition only when the client sent one. An
+attacker PUTs `controller: attacker` for an id the victim is creating; the
+victim's guarded create lands first; the attacker's unconditional write replaces
+it. The victim got a 201 and now owns nothing. The same path bypasses the `type`
+immutability check.
+
+Note 2026-09-27: the criterion first read "maps the 412 the same way", which
+would have answered the loser with `id-conflict` (409) as Create Space does. The
+spec rules both 409 and a header-less 412 out for this operation. A `412` arises
+only from an explicit precondition header, `id-conflict` is for a `POST` create,
+and an unconditional `PUT` stays last-writer-wins. Serialized after the winner,
+the loser's `PUT` is an update, which the spec requires be verified against the
+stored controller. So it is re-run as one: another caller gets the masked 404,
+and the same controller gets a 204, or a 400 if its `type` differs. The `type`
+check moved into a new `writeSpace` `assertTransition` hook in both backends.
+
+### WAS-155: Pin the `PUT /space/:spaceId/meta` update branch to the Space it authorized against
+
+- status: done
+- done: 2026-09-27
+- priority: low
+- labels: security, consistency
+- acceptance:
+  - [x] The update branch of `SpaceRequest.putMeta` refuses to write when the
+        object `writeSpace` re-reads under its lock is absent or carries a
+        different `metaGeneration` than the pre-read it authorized against, and
+        re-runs the request once on the branch the fresh read selects
+  - [x] A test deletes and re-creates a Space under another controller between
+        the pre-read and the write, and asserts the new controller's Space is
+        untouched
+
+discovered-from: WAS-117. The update branch authorizes against the stored
+controller of an unlocked pre-read, and without a client `If-Match` its write is
+unconditional. If the Space is deleted and re-created under the same id by
+another controller in that window, the former controller's update replaces the
+new Space's Metadata object, `controller` included. The window needs the former
+controller's own delete to land inside its own in-flight `PUT`, so the risk is
+low. The `assertTransition` hook `writeSpace` gained in WAS-117 can carry the
+generation check.
+
+Note 2026-09-27: the check compares the full validator, generation and version,
+rather than the generation alone, so a concurrent controller change is caught
+too. The create branch is pinned the same way (the Space must still be absent),
+which replaced the forced `If-None-Match: *`. The client's own preconditions now
+reach the backend as sent. The re-run is bounded at three attempts rather than
+one, and then answers 503 with `Retry-After: 1`.
+
+### WAS-156: Pin the import's Space Metadata restore to the object it read
+
+- status: done
+- done: 2026-09-27
+- priority: low
+- labels: consistency, import
+- acceptance:
+  - [x] Both backends' import restore of the Space Metadata object writes only
+        when the object under the write lock still carries the validator of the
+        one it composed from, and otherwise re-reads and re-composes
+  - [x] A test lands a controller change between the import's read and its
+        write, and asserts the controller change survives
+
+discovered-from: WAS-155. The restore composes its write from an unlocked
+`getSpaceMetadata` read and writes it with no precondition. An Update Space
+landing in between, a controller promotion included, is silently reverted.
+
+Note 2026-09-27: only the filesystem backend needed the change. The Postgres
+import takes the Space Metadata advisory lock before it reads the row, so its
+read and write were already atomic. The filesystem restore gives up after three
+attempts with 503 and `Retry-After: 1`, as Update Space does.

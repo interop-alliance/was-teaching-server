@@ -336,7 +336,7 @@ export class CollectionRequest {
    * Request handler for "Read Collection Metadata": the Collection Metadata
    * object, the "about it" document of the Collection container (spec
    * "Collection Metadata Data Model") -- its configuration members (`name`,
-   * `backend`, `encryption` / `plaintext`, `generator`, `generatorOrigin`)
+   * `backend`, `encryption` / `plaintext`, `generator`)
    * beside the server-managed `createdBy`, `createdAt` and `updatedAt`, the
    * opaque `epoch` stamp and the user-writable `custom` object (omitted when
    * empty). There is no `contentType` / `size`: a Collection is a container,

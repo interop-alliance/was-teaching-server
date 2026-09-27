@@ -94,12 +94,14 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   new route serving stored bytes, such as a default document, cannot be added
   without it. A sandbox has no effect on a response read with `fetch()`, so the
   JSON responses carry it harmlessly. The welcome page, `/common/`, `/service`
-  and the CORS proxy sit outside the groups and do not carry it. The policy
-  leaves out `allow-same-origin`, which combined with `allow-scripts` would let
-  a page lift its own sandbox, and `allow-popups-to-escape-sandbox`, so a popup
-  a page opens is sandboxed too. It is always on, with no setting. These
-  responses send no `X-Content-Type-Options: nosniff`, so a Resource stored with
-  a generic type is still sniffed, and runs sandboxed too.
+  and the CORS proxy sit outside the groups and do not carry it. The CORS proxy
+  sends its own stricter set instead (`default-src 'none'; sandbox`, `nosniff`,
+  `Content-Disposition: attachment`). The policy leaves out `allow-same-origin`,
+  which combined with `allow-scripts` would let a page lift its own sandbox, and
+  `allow-popups-to-escape-sandbox`, so a popup a page opens is sandboxed too. It
+  is always on, with no setting. These responses send no
+  `X-Content-Type-Options: nosniff`, so a Resource stored with a generic type is
+  still sniffed, and runs sandboxed too.
 - **`src/lib/etag.ts`** and **`src/lib/preconditions.ts`** — the `ETag`
   validators (spec "Caching" and "Conditional Requests"). A Resource, a chunk, a
   Resource's `/meta` object, and each container's Metadata object (the Space
@@ -139,32 +141,40 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   guarded create is what resolves two clients provisioning the same Space or
   Collection at once (the loser's replace-semantics `PUT` would otherwise
   rewrite the winner's `type` array or `backend`), and it refuses whenever the
-  container already has a Metadata object, `ETag` or not. The validator is
-  embedded in the stored record as reserved `_generation` / `_version` members
-  -- the filesystem backend keeps one file per container (`.space.<id>.json`,
-  `.collection.<id>.json`) holding the wire body and the validator together --
-  and as `meta_generation` / `meta_version` columns on the Postgres `spaces` and
-  `collections` rows, kept out of the wire body; it is emitted on Read Space /
-  Read Collection and on the Create/Update responses. A Space Metadata write is
-  serialized per Space (the `spacemeta:` lock in the filesystem backend, an
-  advisory lock plus row lock in Postgres) and a Collection Metadata write per
-  Collection (the `cmeta:` lock), so the check and the version bump are atomic.
-  Reads are conditional the other way round: a GET/HEAD carrying `If-None-Match`
-  is parsed by `parseIfNoneMatch` into the set of validators the client holds
-  (RFC 9110 weak comparison, list and `*` forms), and a handler answers 304 Not
-  Modified with the `ETag` and no body when that set covers the current one
-  (`isNotModified`, sent by the shared `requests/notModified.ts` helper). The
-  decision sits in each read handler, after authorization, so an
-  under-authorized conditional read still gets the 404 mask. A Resource or chunk
-  GET consults the stored metadata first when the header is present and opens
-  the byte stream only on a miss. A representation with no validator (a legacy
-  Resource, or metadata never written) is matched only by `*`, which RFC 9110
-  makes true for any current representation; its 304 then carries no `ETag`, as
-  its 200 would not. Responses to non-idempotent POSTs are marked
-  `Cache-Control: no-store` by an `onSend` hook in `routes.ts`; a slash-variant
-  redirect and a POST route registered with `config.safe` (Query and Export,
-  reads that use POST to carry a body) stay cacheable. The spec defers further
-  `Cache-Control` semantics.
+  container already has a Metadata object, `ETag` or not. Update Space
+  (`PUT /space/:spaceId/meta`) chooses its authorization from an unlocked read,
+  so its write passes `writeSpace` an `assertTransition` hook that pins it to
+  that read: the Space must still be absent on a create, and carry the same
+  validator on an update. On a mismatch the handler re-reads and re-authorizes
+  on the branch the fresh read selects. A create that lost a race is then
+  authorized as an update against the winner's controller. After three attempts
+  it answers 503 with `Retry-After`. The client's own preconditions go to the
+  backend as sent, so a 412 answers only a header the client sent. The validator
+  is embedded in the stored record as reserved `_generation` / `_version`
+  members -- the filesystem backend keeps one file per container
+  (`.space.<id>.json`, `.collection.<id>.json`) holding the wire body and the
+  validator together -- and as `meta_generation` / `meta_version` columns on the
+  Postgres `spaces` and `collections` rows, kept out of the wire body; it is
+  emitted on Read Space / Read Collection and on the Create/Update responses. A
+  Space Metadata write is serialized per Space (the `spacemeta:` lock in the
+  filesystem backend, an advisory lock plus row lock in Postgres) and a
+  Collection Metadata write per Collection (the `cmeta:` lock), so the check and
+  the version bump are atomic. Reads are conditional the other way round: a
+  GET/HEAD carrying `If-None-Match` is parsed by `parseIfNoneMatch` into the set
+  of validators the client holds (RFC 9110 weak comparison, list and `*` forms),
+  and a handler answers 304 Not Modified with the `ETag` and no body when that
+  set covers the current one (`isNotModified`, sent by the shared
+  `requests/notModified.ts` helper). The decision sits in each read handler,
+  after authorization, so an under-authorized conditional read still gets the
+  404 mask. A Resource or chunk GET consults the stored metadata first when the
+  header is present and opens the byte stream only on a miss. A representation
+  with no validator (a legacy Resource, or metadata never written) is matched
+  only by `*`, which RFC 9110 makes true for any current representation; its 304
+  then carries no `ETag`, as its 200 would not. Responses to non-idempotent
+  POSTs are marked `Cache-Control: no-store` by an `onSend` hook in `routes.ts`;
+  a slash-variant redirect and a POST route registered with `config.safe` (Query
+  and Export, reads that use POST to carry a body) stay cacheable. The spec
+  defers further `Cache-Control` semantics.
 - **`src/lib/governedLog.ts`** -- the `governed-history-logs` feature: a
   Collection's governing history log, served at its own sub-resource
   (`GET`/`PUT /space/:spaceId/:collectionId/meta/log`,

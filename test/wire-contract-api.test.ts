@@ -161,7 +161,9 @@ describe('Wire-contract smoke (status codes)', () => {
       json: {
         id: freshCollectionId,
         name: 'By Id',
-        generator: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
+        generator: {
+          id: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK'
+        },
         custom: { name: 'Shown', tags: { starred: 'yes' } }
       },
       headers: { 'if-none-match': '*' }
@@ -174,8 +176,9 @@ describe('Wire-contract smoke (status codes)', () => {
     const firstEtag = created.headers.get('etag')
     assert.ok(firstEtag)
 
-    // Full replacement: omitting `generator` and `custom` clears them; the
-    // read-only members sent back from a GET are ignored, not rejected.
+    // Full replacement: omitting `custom` clears it, while an omitted
+    // `generator` keeps the stored one; the read-only members sent back from a
+    // GET are ignored, not rejected.
     const read = await alice.was.request({ path: metaPath, method: 'GET' })
     const updated = await alice.was.request({
       path: metaPath,
@@ -187,7 +190,9 @@ describe('Wire-contract smoke (status codes)', () => {
     assert.notEqual(updated.headers.get('etag'), firstEtag)
     const after = await alice.was.request({ path: metaPath, method: 'GET' })
     assert.equal(after.data.name, 'Renamed')
-    assert.equal(after.data.generator, undefined)
+    assert.deepEqual(after.data.generator, {
+      id: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK'
+    })
     assert.equal(after.data.custom, undefined)
     assert.equal(after.headers.get('etag'), updated.headers.get('etag'))
 

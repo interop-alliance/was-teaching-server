@@ -627,6 +627,13 @@ export interface StorageBackend {
     createdBy?: IDID
     ifMatch?: string
     ifNoneMatch?: HeldValidators
+    /**
+     * Invoked atomically with the write (inside the backend's per-Space lock
+     * or advisory-locked transaction) against the freshly re-read current
+     * object (`undefined` on a create); throwing aborts the write. Lets a
+     * write authorized against an unlocked read pin itself to that read.
+     */
+    assertTransition?: (prior?: StoredSpaceMetadata) => void | Promise<void>
   }): Promise<EtagValidator>
   /**
    * Reads a Space Metadata object. Resolves falsy when the Space does not

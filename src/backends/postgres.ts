@@ -202,6 +202,7 @@ type SpaceMetadataWrite = {
   createdBy?: IDID
   ifMatch?: string
   ifNoneMatch?: HeldValidators
+  assertTransition?: (prior?: StoredSpaceMetadata) => void | Promise<void>
 }
 
 /**
@@ -975,6 +976,8 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.createdBy] {string}
    * @param [options.ifMatch] {string}
    * @param [options.ifNoneMatch] {HeldValidators}
+   * @param [options.assertTransition] {Function}   run against the current
+   *   row before the write; throwing aborts it
    * @param [options.prior] {StoredSpaceMetadata}   the current row as the
    *   caller already read it under `SPACE_META_LOCK_SQL`, so the write does
    *   not read it again; read here otherwise
@@ -987,6 +990,7 @@ export class PostgresBackend implements StorageBackend {
     createdBy,
     ifMatch,
     ifNoneMatch,
+    assertTransition,
     prior: priorRead
   }: SpaceMetadataWrite & {
     client: pg.PoolClient
@@ -1027,6 +1031,8 @@ export class PostgresBackend implements StorageBackend {
       ifMatch,
       ifNoneMatch
     })
+
+    await assertTransition?.(prior)
 
     // Count quota (create path only), enforced as a HARD limit under the
     // controller-scoped advisory lock taken above: COUNT this controller's

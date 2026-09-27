@@ -7,6 +7,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { Readable } from 'node:stream'
 import { v4 as uuidv4 } from 'uuid'
 import { handleZcapVerify } from '../zcap.js'
+import { SPACE_METADATA_WRITE_ATTEMPTS } from '../config.default.js'
 import { buildLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
@@ -63,9 +64,27 @@ import {
   PreconditionFailedError,
   SpaceControllerMismatchError,
   UnresolvableControllerError,
-  SpaceNotFoundError
+  SpaceNotFoundError,
+  ServiceUnavailableError,
+  StaleSpaceMetadataError
 } from '../errors.js'
-import type { IDID, CollectionsList, SpaceQuotaReport } from '../types.js'
+import type { EtagValidator, HeldValidators } from '../lib/etag.js'
+import type {
+  IDID,
+  CollectionsList,
+  SpaceMetadata,
+  SpaceQuotaReport,
+  StoredSpaceMetadata
+} from '../types.js'
+
+/**
+ * The Update Space request (`PUT /space/:spaceId/meta`), shared by its handler
+ * and the authorize-and-write step it may run twice.
+ */
+type PutSpaceMetaRequest = FastifyRequest<{
+  Params: { spaceId: string }
+  Body: { id?: string; name?: string; type?: unknown; controller: IDID }
+}>
 
 export class SpaceRequest {
   /**
@@ -215,17 +234,11 @@ export class SpaceRequest {
    * @returns {Promise<FastifyReply>}
    */
   static async putMeta(
-    request: FastifyRequest<{
-      Params: { spaceId: string }
-      Body: { id?: string; name?: string; type?: unknown; controller: IDID }
-    }>,
+    request: PutSpaceMetaRequest,
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const {
       params: { spaceId },
-      url,
-      method,
-      headers,
       body
     } = request
     const { serverUrl, storage } = request.server
@@ -260,145 +273,54 @@ export class SpaceRequest {
       requestName: 'Update Space'
     })
 
-    // Check to see if space already exists (if yes, this will be an Update)
-    const existingSpaceMetadata = await storage.getSpaceMetadata({
-      spaceId
-    })
-
-    // Perform zCap signature verification (throws appropriate errors). The
-    // capability target is the `meta` URL; the Space's root capability (its
-    // canonical container URL) is accepted as the root of a delegated chain
-    // attenuating down to it, as on every space-family route.
     const metaUrl = new URL(spaceMetaPath({ spaceId }), serverUrl).toString()
     const spaceUrl = new URL(
       spacePath({ spaceId, trailingSlash: true }),
       serverUrl
     ).toString()
+    const { ifMatch, ifNoneMatch } = parseWritePreconditions(request.headers)
 
-    // Important. For existing Spaces, the request must carry authorization
-    // matching the *stored* controller (the body's controller is just the
-    // proposed new value). On create there is no stored controller yet, so --
-    // as with Create Space via POST -- the invocation must be authorized by
-    // the *body's* controller: signed directly by it, or via a delegation
-    // chain rooted in it (see `verifyBodyControllerConsent`).
-    if (existingSpaceMetadata) {
-      await handleZcapVerify({
-        url,
-        allowedTarget: metaUrl,
-        allowedAction: 'PUT',
-        method,
-        headers,
-        serverUrl,
-        spaceController: existingSpaceMetadata.controller,
-        webvh: { storage, serverUrl },
-        logger: request.log,
-        attenuatedRootTarget: spaceUrl,
-        revocation: { storage, scope: { spaceId } },
-        // The container rule: Update Space Metadata on an existing Space is
-        // controller-only. A delegated capability is refused whatever its
-        // `allowedAction`, because a Space-subtree data grant would otherwise
-        // reach the controller rewrite by ordinary attenuation.
-        containerRule: 'controller-only'
-      })
-    } else {
-      await verifyBodyControllerConsent({
-        request,
-        controller: body.controller,
-        allowedTarget: metaUrl,
-        allowedAction: 'PUT',
-        // The Space container URL's root capability is accepted as the base of
-        // a delegated chain here too, as on the update branch above: a
-        // delegated-provisioning grant is minted on the container, and without
-        // this it could update an existing Space's Metadata object but not
-        // create one by `PUT`.
-        attenuatedRootTarget: spaceUrl,
-        MismatchError: SpaceControllerMismatchError
-      })
+    // Check to see if space already exists (if yes, this will be an Update).
+    // A Space that changes before the write is re-read and re-authorized.
+    let outcome: {
+      written: EtagValidator
+      spaceMetadata: SpaceMetadata
+      created: boolean
     }
-
-    // A proposed `did:webvh` controller must resolve -- and fully verify --
-    // against its history log in this server's storage BEFORE it is stored.
-    // After the promotion, both this request and writes to the Collection
-    // holding that log are authorized by the very controller being named, so
-    // storing an unresolvable DID (a typo, a not-yet-published log) would
-    // deadlock the Space with no break-glass.
-    if (isSelfHostedWebvhController(body.controller, { serverUrl })) {
+    for (let attempt = 1; ; attempt++) {
+      const existingSpaceMetadata = await storage.getSpaceMetadata({ spaceId })
       try {
-        await resolveWebvhController({
-          storage,
-          serverUrl,
-          did: body.controller
+        outcome = await authorizeAndWriteSpaceMetadata({
+          request,
+          existingSpaceMetadata,
+          requestedType,
+          metaUrl,
+          spaceUrl,
+          ifMatch,
+          ifNoneMatch
         })
+        break
       } catch (err) {
-        throw new UnresolvableControllerError({
-          did: body.controller,
-          requestName: 'Update Space',
-          cause: err as Error
-        })
+        if (!(err instanceof StaleSpaceMetadataError)) {
+          throw err
+        }
+        if (attempt >= SPACE_METADATA_WRITE_ATTEMPTS) {
+          throw new ServiceUnavailableError({
+            detail:
+              'The Space Metadata object kept changing under concurrent writes; retry the request.',
+            retryAfter: 1
+          })
+        }
       }
     }
-
-    // A Space Metadata object's `type` is set at creation and immutable after it,
-    // so a Space cannot change role under a consumer that already classified
-    // it. An absent (or set-equal) `type` preserves the stored value.
-    const typeProblem =
-      existingSpaceMetadata && requestedType
-        ? spaceTypeChangeProblem({
-            requested: requestedType,
-            stored: existingSpaceMetadata.type
-          })
-        : undefined
-    if (typeProblem !== undefined) {
-      throw new InvalidRequestBodyError({
-        requestName: 'Update Space',
-        detail: typeProblem,
-        pointer: '#/type'
-      })
-    }
-
-    // Compose the Space Metadata object, new or updated. `name` is optional,
-    // so only include it when the request supplies one.
-    const spaceMetadata = existingSpaceMetadata
-      ? // Existing: update only the allowed fields. The stored object's
-        // out-of-band validator is not part of the body handed to storage.
-        {
-          ...stripMetadataValidator(existingSpaceMetadata),
-          id: spaceId,
-          controller: body.controller,
-          ...(body.name !== undefined && { name: body.name })
-        }
-      : // New Space
-        {
-          id: spaceId,
-          type: requestedType ?? defaultSpaceType(),
-          controller: body.controller,
-          ...(body.name !== undefined && { name: body.name })
-        }
-
-    // zCap checks out, continue. `If-None-Match: *` makes the PUT a guarded
-    // create (two clients racing to provision the same Space cannot both
-    // succeed, so the loser's replace-semantics PUT cannot overwrite the
-    // winner's `type`) and `If-Match` a compare-and-swap on the description's
-    // monotonic version. Both opt-in: an unconditional PUT still upserts as
-    // before. Evaluated atomically with the write inside the backend, against
-    // the object it re-reads under its lock -- the `existingSpaceMetadata`
-    // read above chose the authorization path, and a Space created in between
-    // by a concurrent writer surfaces here as 412 `precondition-failed`.
-    const { ifMatch, ifNoneMatch } = parseWritePreconditions(request.headers)
-    const written = await storage.writeSpace({
-      spaceId,
-      spaceMetadata,
-      createdBy: invokerDid(request),
-      ...(ifMatch !== undefined && { ifMatch }),
-      ...(ifNoneMatch !== undefined && { ifNoneMatch })
-    })
+    const { written, spaceMetadata, created } = outcome
     // Bust any cached (now-stale) object so the next read sees this write.
     invalidateSpaceMetadata({ storage, spaceId })
 
     // Surface the new `ETag` so a client can chain a conditional update
     // (read-modify-CAS on the Space Metadata object).
     reply.header('etag', formatEtag(written))
-    if (existingSpaceMetadata) {
+    if (!created) {
       return reply.status(204).send()
     }
     // Created: `Location` names the Space (its canonical container URL), not
@@ -889,5 +811,189 @@ export class SpaceRequest {
         respondedAt: new Date().toISOString(),
         backends: [usage]
       } satisfies SpaceQuotaReport)
+  }
+}
+
+/**
+ * One attempt at Update Space's authorize-and-write, on the branch the
+ * pre-read `existingSpaceMetadata` selects. An existing Space is authorized
+ * against its stored controller; an absent one against the body's own
+ * controller (`verifyBodyControllerConsent`). The write is pinned to the
+ * pre-read: if the object re-read under the backend's lock is not the one
+ * authorized against, it throws `StaleSpaceMetadataError` and writes nothing,
+ * so a concurrent writer's Space is never replaced under an authorization
+ * checked against another.
+ * @param options {object}
+ * @param options.request {PutSpaceMetaRequest}
+ * @param [options.existingSpaceMetadata] {StoredSpaceMetadata}   the Space as
+ *   read before authorization, `undefined` when absent
+ * @param [options.requestedType] {string[]}   the body's shape-checked `type`
+ * @param options.metaUrl {string}   the Space Metadata URL, the capability target
+ * @param options.spaceUrl {string}   the Space's canonical container URL
+ * @param [options.ifMatch] {string}   the client's `If-Match`
+ * @param [options.ifNoneMatch] {HeldValidators}   the client's `If-None-Match`
+ * @returns {Promise<{ written: EtagValidator, spaceMetadata: SpaceMetadata, created: boolean }>}
+ *   the new validator, the object handed to storage, and whether the write
+ *   created the Space
+ */
+async function authorizeAndWriteSpaceMetadata({
+  request,
+  existingSpaceMetadata,
+  requestedType,
+  metaUrl,
+  spaceUrl,
+  ifMatch,
+  ifNoneMatch
+}: {
+  request: PutSpaceMetaRequest
+  existingSpaceMetadata?: StoredSpaceMetadata
+  requestedType?: string[]
+  metaUrl: string
+  spaceUrl: string
+  ifMatch?: string
+  ifNoneMatch?: HeldValidators
+}): Promise<{
+  written: EtagValidator
+  spaceMetadata: SpaceMetadata
+  created: boolean
+}> {
+  const {
+    params: { spaceId },
+    url,
+    method,
+    headers,
+    body
+  } = request
+  const { serverUrl, storage } = request.server
+
+  // Perform zCap signature verification (throws appropriate errors). The
+  // capability target is the `meta` URL; the Space's root capability (its
+  // canonical container URL) is accepted as the root of a delegated chain
+  // attenuating down to it, as on every space-family route.
+  //
+  // Important. For existing Spaces, the request must carry authorization
+  // matching the *stored* controller (the body's controller is just the
+  // proposed new value). On create there is no stored controller yet, so --
+  // as with Create Space via POST -- the invocation must be authorized by
+  // the *body's* controller: signed directly by it, or via a delegation
+  // chain rooted in it (see `verifyBodyControllerConsent`).
+  if (existingSpaceMetadata) {
+    await handleZcapVerify({
+      url,
+      allowedTarget: metaUrl,
+      allowedAction: 'PUT',
+      method,
+      headers,
+      serverUrl,
+      spaceController: existingSpaceMetadata.controller,
+      webvh: { storage, serverUrl },
+      logger: request.log,
+      attenuatedRootTarget: spaceUrl,
+      revocation: { storage, scope: { spaceId } },
+      // The container rule: Update Space Metadata on an existing Space is
+      // controller-only. A delegated capability is refused whatever its
+      // `allowedAction`, because a Space-subtree data grant would otherwise
+      // reach the controller rewrite by ordinary attenuation.
+      containerRule: 'controller-only'
+    })
+  } else {
+    await verifyBodyControllerConsent({
+      request,
+      controller: body.controller,
+      allowedTarget: metaUrl,
+      allowedAction: 'PUT',
+      // The Space container URL's root capability is accepted as the base of
+      // a delegated chain here too, as on the update branch above: a
+      // delegated-provisioning grant is minted on the container, and without
+      // this it could update an existing Space's Metadata object but not
+      // create one by `PUT`.
+      attenuatedRootTarget: spaceUrl,
+      MismatchError: SpaceControllerMismatchError
+    })
+  }
+
+  // A proposed `did:webvh` controller must resolve -- and fully verify --
+  // against its history log in this server's storage BEFORE it is stored.
+  // After the promotion, both this request and writes to the Collection
+  // holding that log are authorized by the very controller being named, so
+  // storing an unresolvable DID (a typo, a not-yet-published log) would
+  // deadlock the Space with no break-glass.
+  if (isSelfHostedWebvhController(body.controller, { serverUrl })) {
+    try {
+      await resolveWebvhController({
+        storage,
+        serverUrl,
+        did: body.controller
+      })
+    } catch (err) {
+      throw new UnresolvableControllerError({
+        did: body.controller,
+        requestName: 'Update Space',
+        cause: err as Error
+      })
+    }
+  }
+
+  // Compose the Space Metadata object, new or updated. `name` is optional,
+  // so only include it when the request supplies one.
+  const spaceMetadata = existingSpaceMetadata
+    ? // Existing: update only the allowed fields. The stored object's
+      // out-of-band validator is not part of the body handed to storage.
+      {
+        ...stripMetadataValidator(existingSpaceMetadata),
+        id: spaceId,
+        controller: body.controller,
+        ...(body.name !== undefined && { name: body.name })
+      }
+    : // New Space
+      {
+        id: spaceId,
+        type: requestedType ?? defaultSpaceType(),
+        controller: body.controller,
+        ...(body.name !== undefined && { name: body.name })
+      }
+
+  // A Space Metadata object's `type` is set at creation and immutable after
+  // it, so a Space cannot change role under a consumer that already
+  // classified it. An absent (or set-equal) `type` preserves the stored
+  // value.
+  const typeProblem =
+    existingSpaceMetadata && requestedType
+      ? spaceTypeChangeProblem({
+          requested: requestedType,
+          stored: existingSpaceMetadata.type
+        })
+      : undefined
+  if (typeProblem !== undefined) {
+    throw new InvalidRequestBodyError({
+      requestName: 'Update Space',
+      detail: typeProblem,
+      pointer: '#/type'
+    })
+  }
+
+  // zCap checks out, continue. The client's own preconditions are evaluated
+  // as sent, atomically with the write.
+  const written = await storage.writeSpace({
+    spaceId,
+    spaceMetadata,
+    createdBy: invokerDid(request),
+    ...(ifMatch !== undefined && { ifMatch }),
+    ...(ifNoneMatch !== undefined && { ifNoneMatch }),
+    // The authorization above holds only for the Space the pre-read saw:
+    // absent on a create, or this exact validator on an update.
+    assertTransition: prior => {
+      if (
+        (prior === undefined) !== (existingSpaceMetadata === undefined) ||
+        metadataEtagOf(prior) !== metadataEtagOf(existingSpaceMetadata)
+      ) {
+        throw new StaleSpaceMetadataError()
+      }
+    }
+  })
+  return {
+    written,
+    spaceMetadata,
+    created: existingSpaceMetadata === undefined
   }
 }

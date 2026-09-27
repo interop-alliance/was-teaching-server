@@ -24,10 +24,7 @@ import {
   assertPlaintextNotEncrypted,
   assertSupportedPlaintext
 } from '../lib/equalityIndex.js'
-import {
-  assertValidGenerator,
-  assertValidGeneratorOrigin
-} from '../lib/generator.js'
+import { assertValidGenerator } from '../lib/generator.js'
 import { resolveMetadataCustom } from '../lib/customMetadata.js'
 import { parseMetaEpoch } from '../lib/keyEpoch.js'
 import {
@@ -47,7 +44,6 @@ export interface ParsedCollectionMetadataBody {
   encryption?: CollectionMetadata['encryption']
   plaintext?: CollectionMetadata['plaintext']
   generator?: CollectionMetadata['generator']
-  generatorOrigin?: string
   epoch?: string
 }
 
@@ -99,15 +95,11 @@ export function parseCollectionMetadataBody({
     plaintext: record.plaintext,
     requestName
   })
-  // Validate the optional app-attribution members (shape only). Both are the
-  // controller's assertions: stored verbatim, echoed on reads, never an
+  // Validate the optional app-attribution object (shape only). It is the
+  // controller's assertion: stored verbatim, echoed on reads, never an
   // authorization input and never defaulted by the server.
   const generator = assertValidGenerator({
     generator: record.generator,
-    requestName
-  })
-  const generatorOrigin = assertValidGeneratorOrigin({
-    generatorOrigin: record.generatorOrigin,
     requestName
   })
   // The key-epoch stamp of the `custom` envelope (the `key-epochs` feature);
@@ -119,7 +111,6 @@ export function parseCollectionMetadataBody({
     ...(encryption !== undefined && { encryption }),
     ...(plaintext !== undefined && { plaintext }),
     ...(generator !== undefined && { generator }),
-    ...(generatorOrigin !== undefined && { generatorOrigin }),
     ...(epoch !== undefined && { epoch })
   }
 }
@@ -181,11 +172,11 @@ export function assertCollectionMetadataTransition({
  *   (`encryption-history-log-governed`, 409). Otherwise the descriptor is
  *   set-once: an omitted member on an encrypted Collection is an attempt to
  *   clear it, `encryption-immutable` (409), as is any narrowing change.
- * - `plaintext` is the spec's one carve-out from clearing: an omitted member
- *   leaves the stored one untouched. The result may not carry both
- *   `plaintext` and `encryption` (400).
- * - `name`, `generator`, `generatorOrigin` and `epoch` are taken from the body
- *   alone: omitted means cleared. A create with no `name` gets the Collection
+ * - `plaintext` and `generator` are the spec's carve-outs from clearing: an
+ *   omitted member leaves the stored one untouched, and a supplied one
+ *   replaces it whole. The result may not carry both `plaintext` and
+ *   `encryption` (400).
+ * - `name` and `epoch` are taken from the body alone: omitted means cleared. A create with no `name` gets the Collection
  *   id as its name.
  * - `custom`, when present, is the plaintext `{ name, tags }` object or, on an
  *   encrypted Collection, a conforming envelope (422 otherwise). An omitted
@@ -248,6 +239,7 @@ export async function composeCollectionMetadata({
     requestName
   })
   const plaintext = parsed.plaintext ?? existing?.plaintext
+  const generator = parsed.generator ?? existing?.generator
   const encryption = parsed.encryption ?? governedEncryption
 
   // An omitted `custom` is the cleared state, on an encrypted Collection as
@@ -279,10 +271,7 @@ export async function composeCollectionMetadata({
     backend,
     ...(parsed.encryption !== undefined && { encryption: parsed.encryption }),
     ...(plaintext !== undefined && { plaintext }),
-    ...(parsed.generator !== undefined && { generator: parsed.generator }),
-    ...(parsed.generatorOrigin !== undefined && {
-      generatorOrigin: parsed.generatorOrigin
-    }),
+    ...(generator !== undefined && { generator }),
     ...(parsed.epoch !== undefined && { epoch: parsed.epoch }),
     ...(custom !== undefined && {
       custom: custom as CollectionMetadata['custom']

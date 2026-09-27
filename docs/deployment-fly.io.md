@@ -204,10 +204,11 @@ that renews every 90 days has to survive that check each time.
 ### Rules for every layout
 
 - `/api/cors` relays a third-party URL's response with that URL's content type.
-  On whatever origin the route is served, a link to it can run anyone's HTML
-  there. Serve it with `Content-Security-Policy: default-src 'none'; sandbox`
-  and `X-Content-Type-Options: nosniff`. The server does not set these yet, so
-  the proxy in front of it should add them on `/api/cors`.
+  The server sends every reply there with
+  `Content-Security-Policy: default-src 'none'; sandbox`,
+  `X-Content-Type-Options: nosniff` and `Content-Disposition: attachment`, so a
+  link to it cannot run anyone's HTML on the origin serving it. A proxy in front
+  of the server must not strip or replace these headers on `/api/cors`.
 - A wallet must not render fetched content as a `blob:` URL document or in an
   unsandboxed `srcdoc` or `about:blank` iframe. Each of those runs with the
   wallet's origin. A `data:` URL document gets an opaque origin instead.

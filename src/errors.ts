@@ -463,6 +463,43 @@ export class PreconditionFailedError extends ProblemError {
 }
 
 /**
+ * 503 -- a write could not settle against a stable view of its target, because
+ * concurrent writers kept replacing it between the read that chose how to
+ * authorize the write and the write itself. The spec assigns this refusal no
+ * error `type`, so the problem `type` is RFC 9457's `about:blank` and the
+ * `title` is the status phrase. `handleError` emits the RFC 9110 `Retry-After`
+ * header from `retryAfter`, in seconds.
+ * @param options {object}
+ * @param options.detail {string}   what could not be written
+ * @param options.retryAfter {number}   seconds until a retry may succeed
+ */
+export class ServiceUnavailableError extends ProblemError {
+  retryAfter: number
+  constructor({ detail, retryAfter }: { detail: string; retryAfter: number }) {
+    super({
+      type: 'about:blank',
+      title: 'Service Unavailable',
+      detail,
+      statusCode: 503
+    })
+    this.retryAfter = retryAfter
+  }
+}
+
+/**
+ * Internal signal, never sent: the Space Metadata object a write re-read under
+ * its lock is not the one the write was composed from (a Space created,
+ * deleted, or rewritten in between). The Update Space handler catches it,
+ * re-reads, and re-runs authorization. One that escapes answers 500.
+ */
+export class StaleSpaceMetadataError extends Error {
+  constructor() {
+    super('The Space Metadata object changed before the write.')
+    this.name = 'StaleSpaceMetadataError'
+  }
+}
+
+/**
  * 400 — a pagination `cursor` query parameter is malformed or can no longer be
  * honored (not valid base64url, not JSON, or missing its keyset position; spec
  * `invalid-cursor`). Like `precondition-failed`, it is only ever observable by a
@@ -1430,10 +1467,11 @@ const FRAMEWORK_TOO_LARGE_DETAILS: Record<string, string> = {
  * (or `problems`), defaulting to a 500 internal error when no statusCode is
  * present. The spec requires `type` and `title`, so both always fall back to a
  * sensible value. A `MethodNotAllowedError` also sets the `Allow` header RFC
- * 9110 requires on a 405. A framework over-limit error (Fastify's or
+ * 9110 requires on a 405, and a `ServiceUnavailableError` the `Retry-After`
+ * header. A framework over-limit error (Fastify's or
  * `@fastify/multipart`'s, which carry no `type`) is answered as the registered
  * `payload-too-large` problem.
- * @param error {Error & { statusCode?: number, type?: string, title?: string, detail?: string, problems?: Problem[], allow?: string[] }}
+ * @param error {Error & { statusCode?: number, type?: string, title?: string, detail?: string, problems?: Problem[], allow?: string[], retryAfter?: number }}
  * @param request {import('fastify').FastifyRequest}
  * @param reply {import('fastify').FastifyReply}
  * @returns {Promise<FastifyReply>}
@@ -1446,6 +1484,7 @@ export async function handleError(
     detail?: string
     problems?: Problem[]
     allow?: string[]
+    retryAfter?: number
   },
   request: FastifyRequest,
   reply: FastifyReply
@@ -1466,6 +1505,9 @@ export async function handleError(
   const statusCode = problem.statusCode || 500
   if (error.allow) {
     reply.header('allow', error.allow.join(', '))
+  }
+  if (error.retryAfter !== undefined) {
+    reply.header('retry-after', String(error.retryAfter))
   }
   // Log server-side faults (5xx, e.g. a StorageError and its underlying
   // `cause`) here through the request logger -- rather than in the error
