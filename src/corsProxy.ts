@@ -156,27 +156,89 @@ function isBlockedIpv4(ip: string): boolean {
 }
 
 /**
- * True for an IPv6 address in a loopback, unspecified, unique-local (`fc00::/7`),
- * or link-local (`fe80::/10`) range, or an IPv4-mapped/embedded address whose
- * IPv4 form is blocked. A syntactically invalid address is treated as blocked.
+ * Expands an IPv6 address that has already passed `net.isIP` into its 16
+ * bytes. Handles `::` compression, a trailing dotted-quad IPv4 part, and a
+ * `%zone` suffix (dropped).
  * @param ip {string}
+ * @returns {number[]}
+ */
+function expandIpv6(ip: string): number[] {
+  let text = ip.toLowerCase().replace(/%.*$/, '')
+  const dotted = text.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/)
+  if (dotted) {
+    const [a, b, c, d] = dotted[2]!.split('.').map(Number) as [
+      number,
+      number,
+      number,
+      number
+    ]
+    text =
+      dotted[1]! +
+      ((a << 8) | b).toString(16) +
+      ':' +
+      ((c << 8) | d).toString(16)
+  }
+  const [headText, tailText] = text.split('::') as [string, string | undefined]
+  const head = headText ? headText.split(':') : []
+  const tail = tailText ? tailText.split(':') : []
+  const gap: string[] =
+    tailText === undefined
+      ? []
+      : new Array(8 - head.length - tail.length).fill('0')
+  return [...head, ...gap, ...tail].flatMap(group => {
+    const value = parseInt(group, 16)
+    return [value >> 8, value & 0xff]
+  })
+}
+
+/**
+ * True for an IPv6 address in a loopback, unspecified, unique-local (`fc00::/7`),
+ * link-local (`fe80::/10`), multicast (`ff00::/8`), or local-use NAT64
+ * (`64:ff9b:1::/48`, refused whole because where it carries the IPv4 address
+ * depends on the operator's prefix length) range, or one that embeds an IPv4 address whose
+ * IPv4 form is blocked: IPv4-mapped (`::ffff:0:0/96`), IPv4-compatible
+ * (`::/96`, which also covers `::` and `::1`), NAT64 (`64:ff9b::/96`), and 6to4
+ * (`2002::/16`). The address is compared as bytes, so a hex-form embedded
+ * address (`::ffff:7f00:1`, which the WHATWG URL parser produces from
+ * `::ffff:127.0.0.1`) is caught like the dotted form.
+ * @param ip {string}   an address that passed `net.isIP` as family 6
  * @returns {boolean}
  */
 function isBlockedIpv6(ip: string): boolean {
-  const lower = ip.toLowerCase()
-  const mapped = lower.match(/(?:^|:)(\d+\.\d+\.\d+\.\d+)$/)
-  if (mapped) {
-    return isBlockedIpv4(mapped[1]!)
+  const bytes = expandIpv6(ip)
+  const zeroThrough = (end: number) =>
+    bytes.slice(0, end).every(byte => byte === 0)
+  const embeddedIpv4 = (offset: number) =>
+    isBlockedIpv4(bytes.slice(offset, offset + 4).join('.'))
+
+  if (zeroThrough(10) && bytes[10] === 0xff && bytes[11] === 0xff) {
+    return embeddedIpv4(12) // ::ffff:0:0/96 IPv4-mapped
+  }
+  if (zeroThrough(12)) {
+    return embeddedIpv4(12) // ::/96 IPv4-compatible, incl. :: and ::1
+  }
+  if (
+    bytes[0] === 0x00 &&
+    bytes[1] === 0x64 &&
+    bytes[2] === 0xff &&
+    bytes[3] === 0x9b &&
+    bytes.slice(4, 12).every(byte => byte === 0)
+  ) {
+    return embeddedIpv4(12) // 64:ff9b::/96 NAT64
+  }
+  if (bytes[0] === 0x20 && bytes[1] === 0x02) {
+    return embeddedIpv4(2) // 2002::/16 6to4
   }
   return (
-    lower === '::' ||
-    lower === '::1' ||
-    lower.startsWith('fe8') || // fe80::/10 link-local
-    lower.startsWith('fe9') ||
-    lower.startsWith('fea') ||
-    lower.startsWith('feb') ||
-    lower.startsWith('fc') || // fc00::/7 unique-local
-    lower.startsWith('fd')
+    (bytes[0] === 0x00 &&
+      bytes[1] === 0x64 &&
+      bytes[2] === 0xff &&
+      bytes[3] === 0x9b &&
+      bytes[4] === 0x00 &&
+      bytes[5] === 0x01) || // 64:ff9b:1::/48 local-use NAT64
+    (bytes[0] === 0xfe && (bytes[1]! & 0xc0) === 0x80) || // fe80::/10 link-local
+    (bytes[0]! & 0xfe) === 0xfc || // fc00::/7 unique-local
+    bytes[0] === 0xff // ff00::/8 multicast
   )
 }
 

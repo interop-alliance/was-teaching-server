@@ -25,6 +25,13 @@
   effect on JSON responses read with `fetch()`. The welcome page, `/common/`,
   `/service` and the CORS proxy do not carry it.
 
+- The CORS proxy refuses an IPv6 literal that embeds a blocked IPv4 address, in
+  hex form as well as dotted form: IPv4-mapped (`::ffff:0:0/96`),
+  IPv4-compatible (`::/96`), NAT64 (`64:ff9b::/96`) and 6to4 (`2002::/16`).
+  Before, `http://[::ffff:127.0.0.1]/`, which the URL parser rewrites to
+  `[::ffff:7f00:1]`, reached loopback. It also refuses IPv6 multicast
+  (`ff00::/8`) and the local-use NAT64 prefix (`64:ff9b:1::/48`).
+
 ## 0.38.0 - 2026-09-27
 
 ### Added

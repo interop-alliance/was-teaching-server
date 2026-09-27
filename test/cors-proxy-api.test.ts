@@ -77,6 +77,57 @@ describe('CORS proxy API', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  // `dns.lookup` echoes an IP literal back, so the mock does the same with the
+  // hostname the URL parser produced (brackets stripped, already normalized).
+  function echoLiteral() {
+    lookupMock.mockImplementation(async (hostname: string) => [
+      { address: hostname, family: 6 }
+    ])
+  }
+
+  it.each([
+    'http://[::ffff:127.0.0.1]/',
+    'http://[::ffff:7f00:1]/',
+    'http://[::ffff:169.254.169.254]/',
+    'http://[::127.0.0.1]/',
+    'http://[64:ff9b::7f00:1]/',
+    'http://[2002:a9fe:a9fe::]/',
+    'http://[0:0:0:0:0:0:0:1]/',
+    'http://[fe80::1]/',
+    'http://[fd00::1]/',
+    'http://[ff02::1]/',
+    'http://[64:ff9b:1::7f00:1]/',
+    'http://[64:ff9b:1:7f00:1::]/'
+  ])('refuses the IPv6 literal %s (SSRF)', async target => {
+    echoLiteral()
+
+    const app = createApp()
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/cors?url=' + encodeURIComponent(target)
+    })
+
+    expect(response.statusCode).toBe(403)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it.each(['http://[2606:4700::1111]/', 'http://[::ffff:5db8:d822]/'])(
+    'allows the public IPv6 literal %s',
+    async target => {
+      echoLiteral()
+      fetchMock.mockResolvedValueOnce(new Response('ok', { status: 200 }))
+
+      const app = createApp()
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/cors?url=' + encodeURIComponent(target)
+      })
+
+      expect(response.statusCode).toBe(200)
+      expect(fetchMock).toHaveBeenCalledOnce()
+    }
+  )
+
   it('refuses a redirect that lands on a private / loopback address (SSRF)', async () => {
     // First lookup (the public start host) is allowed; the redirect target
     // resolves to the cloud-metadata address and must be blocked.

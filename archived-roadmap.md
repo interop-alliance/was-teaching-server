@@ -2861,3 +2861,25 @@ content-domain layout, if one lands.
 
 The default document for public Collections (WAS-64) is a Resource response and
 must carry the header too. The CORS proxy's own headers stay WAS-124.
+
+### WAS-123: CORS proxy: decide the SSRF check on the numeric address
+
+- status: done
+- done: 2026-09-27
+- priority: high
+- labels: security, cors-proxy
+- discovered-from: whole-codebase review (2026-09-17), verified against a
+  loopback service
+- acceptance:
+  - [x] `isBlockedIp` expands an IPv6 literal to 16 bytes and tests the embedded
+        IPv4 of `::ffff:0:0/96`, `::/96`, `64:ff9b::/96` (NAT64) and `2002::/16`
+        (6to4) with `isBlockedIpv4`; the dotted-quad regex stays as the
+        DNS-result path
+  - [x] Tests: `http://[::ffff:127.0.0.1]/`, `http://[::ffff:7f00:1]/`,
+        `http://[::ffff:169.254.169.254]/` and `http://[64:ff9b::7f00:1]/` are
+        refused 403
+
+`isBlockedIpv6` matches an IPv4-mapped address only in dotted form, but the
+WHATWG parser normalizes `[::ffff:127.0.0.1]` to `[::ffff:7f00:1]`, which no
+prefix in the list matches. `dns.lookup` echoes the literal, the DNS pin is
+built from it, and undici dials loopback. The endpoint is unauthenticated.
