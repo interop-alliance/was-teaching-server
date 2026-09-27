@@ -216,12 +216,13 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   not of a storage engine. The fourth entry, under
   `https://w3id.org/pws/client-annex`, is the client annex profile (version
   `0.1`). Listing it is this server's claim that it enforces the client-annex
-  delegation clause described below. It carries `version` alone: it is a
-  conformance claim, and a client treats an entry with any member beyond
-  `version` and `url` as absent. The document is built per `serverUrl` and
-  served with `Cache-Control: public` and a content-hash `ETag`. The module also
-  installs the one hook every response passes through: a root-level `onSend`
-  hook (`addServiceLinkHook`, added by the plugin) that appends
+  delegation clause described below. It carries `version` alone, since it is a
+  conformance claim with nothing further to advertise. A client ignores a member
+  it does not know, and treats an entry whose `version` it does not speak, or
+  whose `url` is not a string, as absent. The document is built per `serverUrl`
+  and served with `Cache-Control: public` and a content-hash `ETag`. The module
+  also installs the one hook every response passes through: a root-level
+  `onSend` hook (`addServiceLinkHook`, added by the plugin) that appends
   `Link: <{serverUrl}/service>; rel="service"` to every response -- successes,
   errors, 404s for unmatched routes, 308 redirects, 405 refusals, CORS
   preflights, and the teaching-server extras. It appends to a `Link` header a
@@ -589,8 +590,10 @@ Both inspectors bind the capability decision only. A refusal falls through to
 the target's access-control policy like any other failed verification, so a
 world-readable read still serves. The clause is fail-open across servers: a
 server running unmodified verification accepts exactly what this clause refuses,
-so a wallet publishes a ladder VM only on a host that claims the client-annex
-profile. This server makes that claim with its service description's
+so a wallet signs up an account only on a host that claims the client-annex
+profile. The wallet checks once, at signup, and does not re-check. A host that
+drops the claim later leaves that account's ladder VMs standing. This server
+makes that claim with its service description's
 `https://w3id.org/pws/client-annex` entry at version `0.1`, which names the
 clause as enforced here, with its five admission predicates. A change to what
 the clause admits is a new version of that entry.

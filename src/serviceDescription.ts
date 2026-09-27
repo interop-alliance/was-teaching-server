@@ -134,8 +134,8 @@ export function buildServiceDescription({
           features: ENCRYPTED_COLLECTIONS_FEATURES
         } satisfies EncryptedCollectionsVersionEntry
       ],
-      // A conformance claim: a client treats an entry carrying any member
-      // beyond `version` and `url` as absent, so none is added here.
+      // A conformance claim with nothing further to advertise, so the entry
+      // carries `version` alone.
       [CLIENT_ANNEX_IDENTIFIER]: [
         {
           version: CLIENT_ANNEX_VERSION

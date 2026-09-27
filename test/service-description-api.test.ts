@@ -137,9 +137,9 @@ describe('Service description API', () => {
     })
 
     it('lists the client annex entry with version alone', async () => {
-      // A client treats a client-annex entry carrying any member beyond
-      // `version` and `url` as absent, so an extra member would withdraw the
-      // claim a wallet gates its ladder verification method on.
+      // The entry is a conformance claim a wallet checks at signup. It has
+      // nothing to advertise beyond its version, so it carries no other
+      // member.
       const response = await fetch(`${serverUrl}/service`)
       const { specs } = (await response.json()) as {
         specs: Record<string, Record<string, unknown>[]>

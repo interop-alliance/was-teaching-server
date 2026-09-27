@@ -271,9 +271,9 @@ export const ENCRYPTED_COLLECTIONS_URL =
  * The client annex profile's persistent identifier, the key of its entry in the
  * service description's `specs` object. Listing the profile claims this server
  * enforces the client-annex delegation clause (`lib/clientAnnexClause.ts`) on
- * every verification, which is the positive signal a wallet needs before it
- * publishes a ladder verification method on this server: the clause fails open
- * on a server that does not implement it. Provisional until the `pws`
+ * every verification, which is the positive signal a wallet checks before it
+ * signs up an account on this server: the clause fails open on a server that
+ * does not implement it. Provisional until the `pws`
  * namespace is registered.
  */
 export const CLIENT_ANNEX_IDENTIFIER = 'https://w3id.org/pws/client-annex'
