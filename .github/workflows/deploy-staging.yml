@@ -1,0 +1,57 @@
+name: Deploy (staging)
+
+# Deploys the server to its staging app on Fly.io (fly.toml). Runs after the
+# CI workflow passes on a push to main, or by hand from the Actions tab. The
+# `staging` environment holds the deploy token (secret FLY_API_TOKEN) and the
+# deployment's own values (variables FLY_APP and SERVER_URL), which replace
+# the placeholders in fly.toml. Production deploys from deploy.yml, when a
+# release is published. See docs/deployment-fly.io.md.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: fly-deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # A workflow_run event also fires for failed runs and for pull request
+    # runs, so deploy only a passing push to main.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+    env:
+      FLY_APP: ${{ vars.FLY_APP }}
+      SERVER_URL: ${{ vars.SERVER_URL }}
+    steps:
+      - name: Check deployment variables
+        run: |
+          if [ -z "$FLY_APP" ] || [ -z "$SERVER_URL" ]; then
+            echo "::error::Set the FLY_APP and SERVER_URL variables on the staging environment."
+            exit 1
+          fi
+
+      # Deploy the commit CI tested, not whatever main points at by now.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # Builds the Dockerfile on Fly's remote builder and rolls the machine.
+      - name: Deploy
+        run: >-
+          flyctl deploy --remote-only --app "$FLY_APP" --env
+          "SERVER_URL=$SERVER_URL"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

@@ -216,12 +216,13 @@ that renews every 90 days has to survive that check each time.
 
 ## Files
 
-| File                           | Purpose                                                                          |
-| ------------------------------ | -------------------------------------------------------------------------------- |
-| `Dockerfile`                   | Two-stage build: compiles `dist/`, then installs production dependencies only.   |
-| `.dockerignore`                | Keeps `data/`, `node_modules/`, `.git` and local files out of the build context. |
-| `fly.toml`                     | Example Fly.io app with placeholder values. See "Example: Fly.io" below.         |
-| `.github/workflows/deploy.yml` | Deploys to Fly.io when a GitHub release is published, or by hand.                |
+| File                                   | Purpose                                                                          |
+| -------------------------------------- | -------------------------------------------------------------------------------- |
+| `Dockerfile`                           | Two-stage build: compiles `dist/`, then installs production dependencies only.   |
+| `.dockerignore`                        | Keeps `data/`, `node_modules/`, `.git` and local files out of the build context. |
+| `fly.toml`                             | Example Fly.io app with placeholder values. See "Example: Fly.io" below.         |
+| `.github/workflows/deploy.yml`         | Deploys to Fly.io when a GitHub release is published, or by hand.                |
+| `.github/workflows/deploy-staging.yml` | Deploys to the staging app after CI passes on `main`, or by hand.                |
 
 ## What a reverse proxy in front of the server must do
 
@@ -354,8 +355,19 @@ remove the `[mounts]` section and `WAS_DATA_DIR` from `fly.toml` and deploy.
 
 ### Deploying from CI
 
-`.github/workflows/deploy.yml` deploys when a GitHub release is published, and
-from the Actions tab (`workflow_dispatch`). To set it up:
+Two workflows deploy the same image to two Fly apps:
+
+- `.github/workflows/deploy-staging.yml` deploys to a staging app each time the
+  CI workflow passes on a push to `main`. It deploys the commit CI tested.
+- `.github/workflows/deploy.yml` deploys to the production app when a GitHub
+  release is published.
+
+A change reaches production in three steps. Merge it to `main`, check it on
+staging, then publish a release whose tag points at the commit staging runs.
+Both workflows can also run by hand from the Actions tab (`workflow_dispatch`).
+
+Each workflow reads its values from a GitHub environment of its own, so the two
+apps never share a token. To set up production:
 
 1. Create a deploy token scoped to the one app:
    `fly tokens create deploy --app <app>`.
@@ -367,8 +379,18 @@ from the Actions tab (`workflow_dispatch`). To set it up:
 4. Limit the environment's deployment branches and tags to `main` and `v*`. A
    release event runs on its tag, so a `main`-only rule would block it.
 
-The workflow never runs on pull requests, so a pull request from a fork cannot
-read the token or the variables.
+Staging is a second app with a volume of its own, set up as under "First-time
+setup" above. Its `SERVER_URL` is the staging wallet's domain, and the staging
+wallet app proxies to the staging server's Flycast name. Then:
+
+1. Create a deploy token scoped to the staging app.
+2. Create an environment named `staging`, with the token as its `FLY_API_TOKEN`
+   secret and the staging app's `FLY_APP` and `SERVER_URL` as its variables.
+3. Limit the environment's deployment branches to `main`.
+
+Neither workflow runs on pull requests, so a pull request from a fork cannot
+read the tokens or the variables. The staging workflow runs after every CI run,
+but deploys only when the run passed and was triggered by a push.
 
 A deploy from a workstation needs the same two values, passed as in the
 first-time setup above. A plain `fly deploy` would deploy the placeholders.
