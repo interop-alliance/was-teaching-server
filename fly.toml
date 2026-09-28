@@ -4,7 +4,6 @@
 # placeholders: the deploy workflow replaces them with the FLY_APP and
 # SERVER_URL variables of its GitHub environment. See docs/deployment-fly.io.md.
 
-app = "was-teaching-server"
 primary_region = "iad"
 
 [env]
