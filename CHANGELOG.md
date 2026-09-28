@@ -43,6 +43,17 @@
   unreadable entry is logged and skipped rather than failing startup.
 - A startup failure's message is no longer lost when stderr is a pipe. The
   process closes what it opened and exits with code 1 once the output drains.
+- Revocation resolves a self-hosted `did:webvh` signing key on a `did:key` Space
+  too. A child grant signed by a `did:webvh` method can now be revoked, and a
+  `did:webvh` delegee can revoke its own grant. Both used to answer 400 and 404.
+- A grant rooted in a Collection's or a Resource's own root capability can now
+  be revoked. It verified on invocation but was refused at revocation (400).
+- A delegated Create Space chain with a `did:webvh` link now verifies.
+- The create branch of `PUT /space/:spaceId/meta` refuses a `did:webvh`
+  controller as `invalid-request-body` (400), as Create Space does.
+- List Spaces lists a Space promoted to a self-hosted `did:webvh` for that
+  controller. It runs the same verification as every other route, the
+  client-annex clause included, and verifies at most one controller per request.
 
 ### Security
 

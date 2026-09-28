@@ -495,6 +495,23 @@ controller). For a bare root invocation that _is_ the capability; for a
 delegated invocation it's the terminal `parentCapability` at the base of the
 chain, which the verifier walks down to.
 
+**The `did:webvh` resolver on every path:** each verification engages the local
+`did:webvh` resolver, whatever the scope's own controller is. That covers route
+invocations, both halves of a revocation submission (the submitted chain and the
+submission's own invocation), create consent, and List Spaces. A delegated link
+may be signed by a self-hosted `did:webvh` method on a `did:key` Space, the
+unlock-Space shape, so narrowing the resolver to the scope's controller would
+leave such a grant live on every route yet unrevocable. The resolver widens
+resolution only: it refuses any DID this server does not host, and the chain
+still roots in the scope's root capability. A submitted chain may root in the
+scope's root capability or in the root of any URL under it, the same roots an
+invocation accepts, so a grant delegated from a Collection's or a Resource's own
+root is revocable too. List Spaces verifies against one candidate controller at
+most: the signer of a root invocation, or the signer of a delegated chain's base
+delegation, read off the header before any signature work. A listing grant roots
+in the `/spaces/` root capability, which no revocation route accepts, so it
+carries no revocation scope and its `expires` bounds it.
+
 **Chain inspection:** after signature verification, the dereferenced chain
 passes through two composed inspectors. The revocation inspector
 (`lib/revocations.ts`) fails a chain containing any capability with a stored
@@ -582,8 +599,9 @@ id, and withdrawn before it landed: a `PUT` child of the Space URL reaches every
 resource beneath the Space by prefix attenuation, so a transient session on one
 credential could overwrite a sibling credential's keyring record with no logged
 record of it. A bounded create-only shape comes back with the restore's sibling
-stage (freewallet FW-531), once WAS-131 makes Create Space by Id reachable on a
-`did:webvh` chain at all.
+stage (freewallet FW-531). Create Space by Id now verifies a chain with a
+`did:webvh` link, but the invocation-time bound below still refuses one that
+carries a ladder-signed link.
 
 Under v0.4 the Space Description sat outside the container: a `/space/<S>/`
 subtree grant could not reach `PUT /space/<S>` (the controller rewrite) or
@@ -640,9 +658,9 @@ The document is the one the delegation-proof verification just resolved, so the
 check costs no further read. Reading nothing but the signer's document keeps the
 bound total. It holds for a retired annex generation the account document's
 `DelegatedClients` entry no longer names but whose grant is still live, since
-the annex garbage collector re-points that entry first and tolerates a refused
-revocation. It also holds for an annex a `did:key` controller delegated to
-directly, where no delegator document exists to walk.
+the annex garbage collector re-points that entry before it revokes that
+generation's grant. It also holds for an annex a `did:key` controller delegated
+to directly, where no delegator document exists to walk.
 
 Both inspectors bind the capability decision only. A refusal falls through to
 the target's access-control policy like any other failed verification, so a

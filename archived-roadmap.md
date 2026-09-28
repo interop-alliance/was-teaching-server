@@ -3338,3 +3338,65 @@ and a test now pins it. A loopback `SERVER_URL` on another port warns rather
 than failing, so a local reverse proxy stays possible. `HOST` defaults to
 `0.0.0.0`, as the Dockerfile and `fly.toml` need. `pnpm start` no longer pipes;
 `pnpm start:pretty` does.
+
+### WAS-131: Engage the `did:webvh` resolver on every verification path
+
+- status: done
+- done: 2026-09-27
+- priority: medium
+- labels: webvh, zcap, revocation, authorization
+- discovered-from: whole-codebase review (2026-09-17), verified for List Spaces
+- touches:
+  - `src/zcap.ts` (`verifyRevocationChain`, `handleRevocationInvocationVerify`,
+    `activeWebvhContext`), `src/requests/controllerConsent.ts`,
+    `src/requests/SpacesRepositoryRequest.ts` (`list`),
+    `src/requests/SpaceRequest.ts` (create-branch validator)
+  - ARCHITECTURE.md's revocation and client-annex paragraphs (the annex GC
+    "tolerates a refused revocation" note describes this defect): updated, and a
+    new "`did:webvh` resolver on every path" paragraph under ZCap Structure
+  - unaffected: other repos (no wire change; grants that already verified on
+    invocation become revocable, and freewallet's annex GC revocation stops
+    being refused)
+- acceptance:
+  - [x] Both revocation functions pass the caller's `webvh` context through
+        unconditionally, as `verifyZcap` does; `activeWebvhContext` is removed
+        or its remaining use justified
+  - [x] `verifyRevocationChain`'s `expectedRootCapability` accepts the same
+        roots `verifyZcap` synthesizes for the Space family (the Space URL and a
+        Resource or Collection URL under it), so a grant that verifies on
+        invocation can be revoked
+  - [x] `verifyBodyControllerConsent` threads `webvh`, so a delegated
+        provisioning chain with a `did:webvh` link verifies; the `PUT /meta`
+        create branch validates the body controller with `assertValidController`
+        (creation stays `did:key`-only, as ARCHITECTURE states) rather than the
+        update-only validator
+  - [x] List Spaces goes through `handleZcapVerify` with `webvh` and the chain
+        inspectors, so a promoted Space appears in its own controller's listing
+        and a delegated `GET /spaces/` is revocation-checked; decide whether a
+        `/spaces/` revocation scope is needed, and cap the per-controller
+        verification loop for an unauthorized delegated caller
+  - [x] Tests: revoke a child grant signed by a `did:webvh` method on a
+        `did:key` Space; a `did:webvh` delegee self-revokes; List Spaces for a
+        promoted controller returns the Space
+
+The revocation path narrows the resolver to the scope's controller, so on a
+`did:key` Space (the unlock-Space shape) a chain with any `did:webvh`-signed
+link verifies on every route but answers 400 at revocation, and a `did:webvh`
+delegee cannot self-revoke under the dual-root rule. Such grants stay live until
+their own `expires`. `verifyZcap`'s own comment names this case as the reason it
+engages the resolver unconditionally. The same missing option makes consent
+verification refuse a `did:webvh` controller the create branch's validator
+admits, and makes a promoted Space vanish from List Spaces (`totalItems: 0`).
+
+Shipped: `activeWebvhContext` is removed, and both revocation functions pass the
+caller's context through. `verifyRevocationChain` accepts the scope's root plus
+the submitted chain's own root when it targets a URL under the scope
+(`expectedRevocationRoots`), so a Collection- or Resource-rooted grant is
+revocable. Consent threads `webvh`, which also engages the client-annex clause
+there. The `PUT /meta` create branch runs `assertValidController`. List Spaces
+goes through `handleZcapVerify` with `'no-revocation-scope'` (decided: a
+`/spaces/`-rooted chain has no route to revoke it at, and a listing grant
+exposes only ids and names, so its `expires` bounds it). The loop is capped by
+construction: candidates are pre-filtered to the one controller that can verify,
+the root signer or the base delegation's signer (`baseDelegationSigner`, shared
+with the consent triage). Tests in `test/webvh-verification-paths-api.test.ts`.

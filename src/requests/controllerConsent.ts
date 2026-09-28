@@ -11,7 +11,11 @@
 import type { FastifyRequest } from 'fastify'
 import { parseSignatureHeader } from '@interop/http-signature-header'
 import { decodeEmbeddedCapability } from '@interop/http-signature-zcap-verify'
-import { handleZcapVerify, isRootInvocation } from '../zcap.js'
+import {
+  baseDelegationSigner,
+  handleZcapVerify,
+  isRootInvocation
+} from '../zcap.js'
 import { InvalidRequestBodyError, type ProblemError } from '../errors.js'
 import type { IDID } from '../types.js'
 
@@ -113,12 +117,7 @@ function triageDelegatedConsentFailure({
   // Chain rooted elsewhere (b): the base delegation (the one hanging directly
   // off the root capability) is signed by a DID other than the body's
   // controller -- only the root's controller can validly make that delegation.
-  const baseDelegation =
-    delegations.find(delegation => delegation.parentCapability === rootId) ??
-    delegations[0]
-  const [baseSigner] = (baseDelegation?.proof?.verificationMethod ?? '').split(
-    '#'
-  )
+  const baseSigner = baseDelegationSigner({ invocation })
   if (baseSigner && baseSigner !== controller) {
     return (
       `the delegation chain is rooted in "${baseSigner}",` +
@@ -202,7 +201,7 @@ export async function verifyBodyControllerConsent({
   maxDelegationTtl?: number
 }): Promise<void> {
   const { url, method, headers } = request
-  const { serverUrl } = request.server
+  const { serverUrl, storage } = request.server
   // The strict `requireAuthHeaders` hook guarantees auth headers were present
   // and `parseAuthHeaders` set `request.zcap` before any calling handler.
   const { keyId, invocation } = request.zcap!
@@ -221,6 +220,11 @@ export async function verifyBodyControllerConsent({
       headers,
       serverUrl,
       spaceController: controller,
+      // The resolver is engaged here as on every other verification path: a
+      // delegated provisioning chain may carry a link signed by a
+      // self-hosted `did:webvh` method, even though the body's controller
+      // (the chain's root) is a `did:key`.
+      webvh: { storage, serverUrl },
       requestName,
       logger: request.log,
       ...(attenuatedRootTarget !== undefined && { attenuatedRootTarget }),

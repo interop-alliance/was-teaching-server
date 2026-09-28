@@ -5,7 +5,11 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
-import { isRootInvocation, verifyZcap } from '../zcap.js'
+import {
+  baseDelegationSigner,
+  handleZcapVerify,
+  isRootInvocation
+} from '../zcap.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
 import { projectSpaceMetadata } from '../lib/spaceProjection.js'
 import { type EtagValidator, formatEtag } from '../lib/etag.js'
@@ -32,7 +36,8 @@ import {
 import {
   SpaceControllerMismatchError,
   IdConflictError,
-  PreconditionFailedError
+  PreconditionFailedError,
+  ProblemError
 } from '../errors.js'
 import type { IDID, SpaceSummary, SpaceListing } from '../types.js'
 
@@ -48,10 +53,16 @@ export class SpacesRepositoryRequest {
    * Authorization is per Space controller: the root capability for `/spaces/`
    * is synthesized with the candidate Space's controller (see `verifyZcap`), so
    * one verification decides visibility for every Space sharing that
-   * controller. A bare-root invocation can only verify where the signer *is*
-   * the controller, so those candidates are filtered before any signature
-   * work; a delegated invocation reveals the Spaces of whichever controller
-   * roots its capability chain.
+   * controller. Only one controller can verify: a bare-root invocation only
+   * where the signer *is* the controller, a delegated one only where the
+   * controller signed the chain's base delegation. The candidates are
+   * filtered to that controller before any signature work, so a request costs
+   * at most one verification however many controllers the server hosts. The
+   * verification is the one every route runs, with the `did:webvh` resolver
+   * and the client-annex clause, so a Space promoted to a self-hosted
+   * `did:webvh` is listed for its controller. No revocation scope applies: a
+   * delegated chain here roots in the `/spaces/` root capability, which no
+   * revocation route accepts, so a listing grant is bounded by its `expires`.
    *
    * Spaces typed `AuxiliarySpace` are omitted: they hold bookkeeping rather
    * than user data, and a wallet finds them through the account document's
@@ -124,11 +135,16 @@ export class SpacesRepositoryRequest {
       startIndex = found === -1 ? spaces.length : found
     }
 
-    // Visibility is identical across Spaces sharing a controller (the
-    // verification depends only on the controller), so verify once per distinct
-    // controller. A failed verification just excludes that controller's Spaces
-    // -- never an error response.
-    const verifiedByController = new Map<IDID, boolean>()
+    // The one controller whose Spaces this invocation can reveal (see above).
+    // `undefined` when a delegated invocation's chain cannot be read, which
+    // could not verify for any controller either.
+    const eligibleController = rootInvocation
+      ? zcapSigningDid
+      : baseDelegationSigner({ invocation })
+    // Verified lazily, on the first Space the eligible controller holds, and
+    // at most once. A failed verification just excludes that controller's
+    // Spaces -- never an error response.
+    let authorized: boolean | undefined
 
     // Fill the page: collect authorized items in id order from the seek point.
     // Once the page is full, keep scanning only until ONE more authorized item
@@ -144,35 +160,43 @@ export class SpacesRepositoryRequest {
       if (isAuxiliarySpace(space)) {
         continue
       }
-      const { controller } = space
-      if (rootInvocation && controller !== zcapSigningDid) {
-        continue // a bare-root invocation cannot verify for another controller
+      if (space.controller !== eligibleController) {
+        continue
       }
-      let authorized = verifiedByController.get(controller)
       if (authorized === undefined) {
         try {
-          const result = await verifyZcap({
+          await handleZcapVerify({
             url,
             allowedTarget,
             allowedAction: 'GET',
             method,
             headers,
             serverUrl,
-            spaceController: controller,
+            spaceController: space.controller,
+            webvh: { storage, serverUrl },
+            requestName: 'List Spaces',
+            logger: request.log,
             // The `?limit`/`cursor` query selects a page of an already-
             // authorized target; it must still verify against the bare
             // `/spaces/` root capability (see `verifyZcap`).
-            allowTargetQuery: true
+            allowTargetQuery: true,
+            // A chain rooted in the `/spaces/` root capability has no scope a
+            // revocation could be stored under (see above).
+            revocation: 'no-revocation-scope'
           })
-          authorized = result.verified === true
+          authorized = true
         } catch (err) {
+          // A server-side fault (a storage error under a did:webvh log read)
+          // is not a denial and keeps its 5xx.
+          if (err instanceof ProblemError && err.statusCode >= 500) {
+            throw err
+          }
           request.log.debug(
             { err },
-            'List Spaces: invocation did not verify for a candidate controller'
+            'List Spaces: invocation did not verify for the candidate controller'
           )
           authorized = false
         }
-        verifiedByController.set(controller, authorized)
       }
       if (!authorized) {
         continue

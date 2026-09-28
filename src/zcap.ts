@@ -15,8 +15,9 @@
  * `lib/webvhController.ts`, which verifies the DID's history log out of local
  * storage. The log's location comes from the DID string itself, so it may live
  * in a Collection of a Space other than the one being invoked on. That branch
- * is engaged per verification (never module-global), and only when the
- * controller the chain roots in is such a DID.
+ * is engaged per verification (never module-global), on every verification
+ * the request layer supplies a resolver context to, since a delegated link may
+ * be signed by a `did:webvh` method on a `did:key`-controlled Space.
  */
 import type { IncomingHttpHeaders } from 'node:http'
 import {
@@ -64,7 +65,6 @@ import {
   clientAnnexChainInspector,
   composeChainInspectors
 } from './lib/clientAnnexClause.js'
-import { isSelfHostedWebvhController } from './lib/validateDid.js'
 import {
   resolveWebvhController,
   webvhDidResolverDriver,
@@ -156,42 +156,18 @@ export function delegationProofCryptosuites(): string[] {
 }
 
 /**
+ * The prefix of every root capability id.
+ */
+const ROOT_PREFIX = 'urn:zcap:root:'
+
+/**
  * The root capability id convention: `urn:zcap:root:` + the url-encoded
  * invocation target (shared by WAS and webkms).
  * @param target {string}   the root invocation target (full URL)
  * @returns {string}
  */
 function rootCapabilityId(target: string): string {
-  return `urn:zcap:root:${encodeURIComponent(target)}`
-}
-
-/**
- * Narrows a resolver context to the requests that actually need it: the
- * `did:webvh` branch is engaged only when the controller the chain roots in is
- * a self-hosted `did:webvh`, so a `did:key`-controlled Space pays nothing for
- * it. Returns `undefined` otherwise.
- *
- * @param options {object}
- * @param [options.webvh] {WebvhResolverContext}   the request layer's storage +
- *   serverUrl, when supplied
- * @param options.controller {IDID}   the controller the chain roots in
- * @returns {WebvhResolverContext | undefined}
- */
-function activeWebvhContext({
-  webvh,
-  controller
-}: {
-  webvh?: WebvhResolverContext
-  controller: IDID
-}): WebvhResolverContext | undefined {
-  if (!webvh) {
-    return undefined
-  }
-  return isSelfHostedWebvhController(controller, {
-    serverUrl: webvh.serverUrl
-  })
-    ? webvh
-    : undefined
+  return `${ROOT_PREFIX}${encodeURIComponent(target)}`
 }
 
 /**
@@ -470,6 +446,64 @@ export function isRootInvocation({
   invocation: string
 }): boolean {
   return !invocation.includes('capability=')
+}
+
+/**
+ * The subset of an embedded delegated capability (and of the embedded entries
+ * of its `proof.capabilityChain`) that {@link baseDelegationSigner} reads.
+ */
+interface EmbeddedDelegation {
+  parentCapability?: string
+  proof?: {
+    verificationMethod?: string
+    capabilityChain?: Array<string | EmbeddedDelegation>
+  }
+}
+
+/**
+ * The DID that signed a delegated invocation's base delegation -- the one
+ * hanging directly off the root capability -- read off the
+ * `Capability-Invocation` header WITHOUT verifying anything. Only the root
+ * capability's controller can validly make that delegation, so a caller that
+ * must pick among candidate root controllers (List Spaces) can narrow them to
+ * this one before any signature work; the verification that follows still
+ * decides. Returns `undefined` when the header embeds no readable capability.
+ *
+ * @param options {object}
+ * @param options.invocation {string}   the raw `Capability-Invocation` header
+ *   (the delegated form)
+ * @returns {string | undefined}
+ */
+export function baseDelegationSigner({
+  invocation
+}: {
+  invocation: string
+}): string | undefined {
+  let capability: EmbeddedDelegation
+  try {
+    const encoded = parseSignatureHeader(invocation).params.capability
+    if (typeof encoded !== 'string') {
+      return undefined
+    }
+    capability = decodeEmbeddedCapability({ encoded }) as EmbeddedDelegation
+  } catch {
+    return undefined
+  }
+  // The chain in delegation order: the `capabilityChain` entries (root id
+  // first, intermediate delegations embedded whole) plus the invoked
+  // capability itself, which is not listed in its own chain.
+  const chain = [...(capability.proof?.capabilityChain ?? []), capability]
+  const delegations = chain.filter(
+    (entry): entry is EmbeddedDelegation =>
+      typeof entry === 'object' && entry !== null
+  )
+  const rootId =
+    typeof chain[0] === 'string' ? chain[0] : capability.parentCapability
+  const base =
+    delegations.find(delegation => delegation.parentCapability === rootId) ??
+    delegations[0]
+  const [signer] = (base?.proof?.verificationMethod ?? '').split('#')
+  return signer || undefined
 }
 
 /**
@@ -1005,6 +1039,72 @@ export async function verifyZcap({
 }
 
 /**
+ * The root capabilities a submitted chain may root in: the scope's own, plus
+ * the chain's own root when that root targets a URL under the scope. The
+ * second covers a grant delegated from a Collection's or a Resource's root
+ * capability, which `verifyZcap` accepts on invocation (as `allowedTarget`'s
+ * own root), so every grant that verifies on invocation can also be revoked.
+ * The chain's root is read off the unverified body, which is safe: it only
+ * names which root the verification then requires, and the loader's
+ * `controllerFor` still refuses any target outside the scope.
+ *
+ * @param options {object}
+ * @param options.capability {Record<string, unknown>}   the submitted
+ *   capability
+ * @param options.rootTarget {string}   the scope's full URL
+ * @returns {string[]}   the accepted root capability ids
+ */
+function expectedRevocationRoots({
+  capability,
+  rootTarget
+}: {
+  capability: Record<string, unknown>
+  rootTarget: string
+}): string[] {
+  const scopeRoot = rootCapabilityId(rootTarget)
+  const proofs = [capability.proof ?? []].flat() as Array<{
+    capabilityChain?: unknown[]
+  }>
+  const chainRoot = proofs.find(proof => Array.isArray(proof?.capabilityChain))
+    ?.capabilityChain?.[0]
+  if (typeof chainRoot !== 'string' || !chainRoot.startsWith(ROOT_PREFIX)) {
+    return [scopeRoot]
+  }
+  let target: string
+  try {
+    target = decodeURIComponent(chainRoot.slice(ROOT_PREFIX.length))
+  } catch {
+    return [scopeRoot]
+  }
+  if (!isUnderScope({ target, rootTarget })) {
+    return [scopeRoot]
+  }
+  return [...new Set([scopeRoot, rootCapabilityId(target)])]
+}
+
+/**
+ * Whether a root capability's invocation target is the scope's own URL or a
+ * path under it. `rootTarget` is a container URL (the Space's carries its
+ * trailing slash; the keystore's does not), so the subtree prefix is formed on
+ * a slash boundary either way.
+ *
+ * @param options {object}
+ * @param options.target {string}   the decoded root invocation target
+ * @param options.rootTarget {string}   the scope's full URL
+ * @returns {boolean}
+ */
+function isUnderScope({
+  target,
+  rootTarget
+}: {
+  target: string
+  rootTarget: string
+}): boolean {
+  const subtree = rootTarget.endsWith('/') ? rootTarget : `${rootTarget}/`
+  return target === rootTarget || target.startsWith(subtree)
+}
+
+/**
  * Verifies the delegation chain of a capability submitted for revocation
  * (`CapabilityDelegation` proof purpose over the embedded chain), throwing
  * `InvalidRevocationError` (400) when it does not verify. The chain must root
@@ -1028,7 +1128,9 @@ export async function verifyZcap({
  * @param options.rootController {IDID}   the scope's controller (controller of
  *   the synthesized root capability)
  * @param [options.webvh] {WebvhResolverContext}   storage + serverUrl for the
- *   local `did:webvh` resolver; engaged only when `rootController` is one
+ *   local `did:webvh` resolver; engaged whenever supplied, as in `verifyZcap`,
+ *   so a chain link signed by a `did:webvh` method verifies on a
+ *   `did:key`-controlled scope too
  * @param [options.maxChainLength] {number}   max chain length, root included
  * @param [options.maxDelegationTtl] {number}   max delegated-zcap TTL (ms)
  * @returns {Promise<{ delegator: string, chainControllers: string[],
@@ -1061,11 +1163,7 @@ export async function verifyRevocationChain({
   let capabilities: CapabilitySummary[] = []
   const documentLoader = rootCapabilityLoader({
     controllerFor: target => {
-      // `rootTarget` is a container URL (the Space's carries its trailing
-      // slash; the keystore's does not), so the subtree prefix is formed on a
-      // slash boundary either way.
-      const subtree = rootTarget.endsWith('/') ? rootTarget : `${rootTarget}/`
-      if (target !== rootTarget && !target.startsWith(subtree)) {
+      if (!isUnderScope({ target, rootTarget })) {
         throw new Error(
           `The root capability from the revocation's delegation chain must` +
             ` have an invocation target that starts with "${rootTarget}".`
@@ -1073,7 +1171,7 @@ export async function verifyRevocationChain({
       }
       return rootController
     },
-    webvh: activeWebvhContext({ webvh, controller: rootController })
+    webvh
   })
   const suite = delegationProofSuites()
   const result = (await jsigs.verify(capability, {
@@ -1081,7 +1179,10 @@ export async function verifyRevocationChain({
     suite,
     purpose: new CapabilityDelegation({
       suite,
-      expectedRootCapability: rootCapabilityId(rootTarget),
+      expectedRootCapability: expectedRevocationRoots({
+        capability,
+        rootTarget
+      }),
       // Attenuation is always tolerated when judging revocability: a zcap
       // delegated with attenuation rules an invocation endpoint would refuse
       // can still be revoked (ezcap-express `_verifyDelegation`).
@@ -1146,7 +1247,8 @@ export async function verifyRevocationChain({
  *   the Space)
  * @param options.rootController {IDID}   the scope's controller
  * @param [options.webvh] {WebvhResolverContext}   storage + serverUrl for the
- *   local `did:webvh` resolver; engaged only when `rootController` is one
+ *   local `did:webvh` resolver; engaged whenever supplied, as in `verifyZcap`,
+ *   so a `did:webvh` delegee can self-revoke under the dual-root rule
  * @param options.chainControllers {string[]}   every controller in the
  *   to-be-revoked capability's (already verified) chain
  * @param options.expectedAction {string}   the action the invocation must
@@ -1192,7 +1294,6 @@ export async function handleRevocationInvocationVerify({
   logger?: ZcapLogger
 }): Promise<void> {
   const fullRequestUrl = new URL(url, serverUrl).toString()
-  const activeWebvh = activeWebvhContext({ webvh, controller: rootController })
   const documentLoader = rootCapabilityLoader({
     controllerFor: target => {
       if (target === rootTarget) {
@@ -1205,7 +1306,7 @@ export async function handleRevocationInvocationVerify({
         `Unexpected root capability target "${target}" on a revocation.`
       )
     },
-    webvh: activeWebvh
+    webvh
   })
 
   await verifiedOrThrow({
@@ -1227,7 +1328,7 @@ export async function handleRevocationInvocationVerify({
         expectedTarget: [rootTarget, fullRequestUrl] as unknown as string,
         allowTargetAttenuation: true,
         documentLoader,
-        getVerifier: createGetVerifier({ webvh: activeWebvh }),
+        getVerifier: createGetVerifier({ webvh }),
         inspectCapabilityChain,
         maxChainLength,
         maxDelegationTtl,

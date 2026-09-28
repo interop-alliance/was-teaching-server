@@ -23,6 +23,7 @@ import {
   parseCollectionMetadataBody
 } from './collectionInput.js'
 import {
+  assertValidController,
   assertValidSpaceController,
   isSelfHostedWebvhController
 } from '../lib/validateDid.js'
@@ -261,8 +262,9 @@ export class SpaceRequest {
     assertBodyController({ body, requestName: 'Update Space' })
     // Reject a controller shape this server cannot authorize against before it
     // is stored. Update Space is the one call site that also accepts a
-    // self-hosted `did:webvh` (the "promotion by ordering" flow); create and
-    // the keystore routes stay `did:key`-only.
+    // self-hosted `did:webvh` (the "promotion by ordering" flow), and only on
+    // its update branch; its create branch, Create Space, and the keystore
+    // routes stay `did:key`-only.
     assertValidSpaceController(body.controller, {
       serverUrl,
       requestName: 'Update Space'
@@ -900,6 +902,10 @@ async function authorizeAndWriteSpaceMetadata({
       containerRule: 'controller-only'
     })
   } else {
+    // Creation stays `did:key`-only, as on Create Space: the `did:webvh`
+    // shape the pre-check above admits is a controller a Space may be
+    // updated to, not one it may be created with.
+    assertValidController(body.controller, { requestName: 'Update Space' })
     await verifyBodyControllerConsent({
       request,
       controller: body.controller,
