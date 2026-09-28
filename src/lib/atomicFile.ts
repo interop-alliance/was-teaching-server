@@ -7,7 +7,7 @@
  * path -- an atomic metadata operation -- and finally the containing directory
  * is fsync'd so the new directory entry itself is on stable storage.
  *
- * Pure and backend-agnostic (no backend imports). Temp files use a `.tmp-`
+ * Backend-agnostic (no backend imports). Temp files use a `.tmp-`
  * dot-prefix that no directory enumeration in the tree parses or filters on
  * (those match `r.`, `.r.`, `.meta.`, `.space.`, `.collection.`,
  * `.backend.`, or a `.json` suffix), so a temp file transiently present during
@@ -16,8 +16,14 @@
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
+import type { FastifyBaseLogger } from 'fastify'
 
-const { open, rename, unlink, link } = fs.promises
+const { open, rename, unlink, link, opendir, stat } = fs.promises
+
+/**
+ * The file-name prefix every staging temp file carries.
+ */
+const TEMP_FILE_PREFIX = '.tmp-'
 
 /**
  * The temp path a write for `filePath` stages into: a `.tmp-<uuid>` dot-file in
@@ -27,7 +33,102 @@ const { open, rename, unlink, link } = fs.promises
  * @returns {string}
  */
 export function tempPathFor(filePath: string): string {
-  return path.join(path.dirname(filePath), `.tmp-${randomUUID()}`)
+  return path.join(path.dirname(filePath), `${TEMP_FILE_PREFIX}${randomUUID()}`)
+}
+
+/**
+ * How long a staging temp file must have gone unmodified before
+ * `sweepTempFiles` treats it as an orphan. A live write refreshes its temp
+ * file's mtime as bytes arrive, so an hour of silence means no process is
+ * writing it.
+ */
+export const TEMP_FILE_ORPHAN_AGE_MS = 60 * 60 * 1000
+
+/**
+ * Removes the stale staging temp files under `root`, at any depth. A write in
+ * flight when the process is killed leaves its temp file behind. No listing
+ * shows it, but it stays on disk and counts against the Space's `du`-based
+ * quota. A temp file modified within the last `olderThanMs` is kept, since
+ * another process sharing the directory (the old instance of a rolling
+ * restart, or a dev server beside a test run) may still be writing it.
+ *
+ * Cleanup is best-effort. A directory that cannot be read, or a file that
+ * cannot be removed, is logged and skipped rather than failing the sweep. The
+ * tree is walked one directory at a time, so it is never listed whole in
+ * memory. An absent `root` sweeps nothing.
+ * @param options {object}
+ * @param options.root {string}   the directory tree to sweep
+ * @param options.logger {FastifyBaseLogger}   where skipped entries are logged
+ * @param [options.olderThanMs] {number}   minimum age since last modification
+ * @returns {Promise<number>}   how many temp files were removed
+ */
+export async function sweepTempFiles({
+  root,
+  logger,
+  olderThanMs = TEMP_FILE_ORPHAN_AGE_MS
+}: {
+  root: string
+  logger: FastifyBaseLogger
+  olderThanMs?: number
+}): Promise<number> {
+  const cutoff = Date.now() - olderThanMs
+  let removed = 0
+  const pending = [root]
+  while (pending.length > 0) {
+    const dir = pending.pop() as string
+    try {
+      for await (const entry of await opendir(dir)) {
+        const entryPath = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          pending.push(entryPath)
+        } else if (entry.isFile() && entry.name.startsWith(TEMP_FILE_PREFIX)) {
+          removed += await removeIfStale({
+            filePath: entryPath,
+            cutoff,
+            logger
+          })
+        }
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn({ err, dir }, 'Temp file sweep skipped a directory')
+      }
+    }
+  }
+  return removed
+}
+
+/**
+ * Removes one temp file if it was last modified before `cutoff`. A file that
+ * vanished meanwhile (its write committed) counts as not removed; any other
+ * failure is logged and skipped.
+ * @param options {object}
+ * @param options.filePath {string}
+ * @param options.cutoff {number}   epoch ms; newer files are kept
+ * @param options.logger {FastifyBaseLogger}
+ * @returns {Promise<number>}   1 if the file was removed, else 0
+ */
+async function removeIfStale({
+  filePath,
+  cutoff,
+  logger
+}: {
+  filePath: string
+  cutoff: number
+  logger: FastifyBaseLogger
+}): Promise<number> {
+  try {
+    if ((await stat(filePath)).mtimeMs >= cutoff) {
+      return 0
+    }
+    await unlink(filePath)
+    return 1
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.warn({ err, filePath }, 'Temp file sweep could not remove a file')
+    }
+    return 0
+  }
 }
 
 /**

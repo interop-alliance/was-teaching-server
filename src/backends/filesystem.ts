@@ -95,7 +95,8 @@ import {
   atomicWriteFile,
   atomicCreateFile,
   tempPathFor,
-  commitTempFile
+  commitTempFile,
+  sweepTempFiles
 } from '../lib/atomicFile.js'
 import {
   clampPageSize,
@@ -491,6 +492,31 @@ export class FileSystemBackend implements StorageBackend {
       maxResourcesPerSpace,
       DEFAULT_MAX_RESOURCES_PER_SPACE
     )
+  }
+
+  /**
+   * Startup hook: removes the staging temp files a killed process left behind
+   * under the Space, keystore, and revocation trees. Only temp files untouched
+   * for an hour are removed, since another process sharing the data directory
+   * may still be writing a fresher one. A failure to read or remove an entry is
+   * logged and does not stop startup.
+   * @returns {Promise<void>}
+   */
+  async init(): Promise<void> {
+    let removed = 0
+    for (const root of [
+      this.spacesDir,
+      this.keystoresDir,
+      this.spaceRevocationsDir
+    ]) {
+      removed += await sweepTempFiles({ root, logger: this.logger })
+    }
+    if (removed > 0) {
+      this.logger.warn(
+        { removed },
+        'Removed temp files left by writes interrupted by a previous shutdown'
+      )
+    }
   }
 
   /**

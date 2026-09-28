@@ -11,10 +11,14 @@ import path from 'node:path'
 import { IdEncoder } from '@digitalcredentials/bnid'
 
 import {
+  DEFAULT_HOST,
   DEFAULT_PORT,
   assertFreshBuild,
   assertValidServerUrl,
   loadConfigFromEnv,
+  loopbackPortMismatch,
+  parseCountLimit,
+  parseHost,
   parseMaxUploadBytes,
   parsePort,
   parseServerUrl,
@@ -109,6 +113,72 @@ describe('parsePort', () => {
       assert.throws(() => parsePort(raw), /PORT must be an integer/)
     }
   })
+
+  it('accepts decimal digits only (no hex, binary, octal, or exponent forms)', () => {
+    for (const raw of ['0x10', '0b1', '0o17', '1e3', '+80', '80 80']) {
+      assert.throws(() => parsePort(raw), /PORT must be an integer/)
+    }
+    assert.equal(parsePort(' 8080 '), 8080)
+  })
+})
+
+describe('parseHost', () => {
+  it('defaults to DEFAULT_HOST when unset or empty', () => {
+    assert.equal(parseHost(undefined), DEFAULT_HOST)
+    assert.equal(parseHost('  '), DEFAULT_HOST)
+  })
+
+  it('passes a set value through, trimmed', () => {
+    assert.equal(parseHost(' localhost '), 'localhost')
+    assert.equal(
+      loadConfigFromEnv({ SERVER_URL: 'http://localhost:3002', HOST: '::1' })
+        .host,
+      '::1'
+    )
+  })
+})
+
+describe('loopbackPortMismatch', () => {
+  it('reports a loopback SERVER_URL whose port differs from PORT', () => {
+    assert.equal(
+      loopbackPortMismatch({ serverUrl: 'http://localhost:3002', port: 3003 }),
+      3002
+    )
+    assert.equal(
+      loopbackPortMismatch({ serverUrl: 'http://127.0.0.1:8080', port: 3002 }),
+      8080
+    )
+    assert.equal(
+      loopbackPortMismatch({ serverUrl: 'http://[::1]:8080', port: 3002 }),
+      8080
+    )
+  })
+
+  it('reads a missing SERVER_URL port as the protocol default', () => {
+    assert.equal(
+      loopbackPortMismatch({ serverUrl: 'http://localhost', port: 3002 }),
+      80
+    )
+    assert.equal(
+      loopbackPortMismatch({ serverUrl: 'https://localhost', port: 443 }),
+      undefined
+    )
+  })
+
+  it('accepts a matching port, and never checks a non-loopback host', () => {
+    assert.equal(
+      loopbackPortMismatch({ serverUrl: 'http://localhost:3002', port: 3002 }),
+      undefined
+    )
+    // A public host sits behind a reverse proxy on a port of its own.
+    assert.equal(
+      loopbackPortMismatch({
+        serverUrl: 'https://was.example.com',
+        port: 3002
+      }),
+      undefined
+    )
+  })
 })
 
 describe('parseStorageLimit', () => {
@@ -129,7 +199,7 @@ describe('parseStorageLimit', () => {
   })
 
   it('rejects malformed values (mentioning unlimited)', () => {
-    for (const raw of ['lots', '-1', '3.14']) {
+    for (const raw of ['lots', '-1', '3.14', '0x10', '1e3', '1_000']) {
       assert.throws(
         () => parseStorageLimit(raw),
         /STORAGE_LIMIT_PER_SPACE must be.*unlimited/s
@@ -160,6 +230,18 @@ describe('parseMaxUploadBytes', () => {
       assert.throws(
         () => parseMaxUploadBytes(raw),
         /MAX_UPLOAD_BYTES must be.*unlimited/s
+      )
+    }
+  })
+})
+
+describe('parseCountLimit', () => {
+  it('accepts decimal digits only', () => {
+    assert.equal(parseCountLimit(' 100 ', 'MAX_SPACES_PER_CONTROLLER'), 100)
+    for (const raw of ['0x64', '1e2', '9007199254740993']) {
+      assert.throws(
+        () => parseCountLimit(raw, 'MAX_SPACES_PER_CONTROLLER'),
+        /MAX_SPACES_PER_CONTROLLER must be a non-negative integer/
       )
     }
   })

@@ -400,6 +400,13 @@ export const KMS_MAX_DELEGATION_TTL = 90 * 24 * 60 * 60 * 1000
 export const DEFAULT_PORT = 3002
 
 /**
+ * The host the server listens on when `HOST` is unset: every IPv4 interface,
+ * which a container deployment needs. Set `HOST=localhost` to bind loopback
+ * only.
+ */
+export const DEFAULT_HOST = '0.0.0.0'
+
+/**
  * The default per-upload byte cap applied by BOTH backends when
  * `MAX_UPLOAD_BYTES` is unset (a default-on limit, 64 MiB). Every blob write
  * buffers through process memory on at least one path (the Postgres single
@@ -443,6 +450,8 @@ export interface EnvConfig {
   serverUrl: string
   /** TCP port to listen on (`PORT`); defaults to {@link DEFAULT_PORT}. */
   port: number
+  /** Host to listen on (`HOST`); defaults to {@link DEFAULT_HOST}. */
+  host: string
   /** Postgres connection string (`DATABASE_URL`); unset selects the filesystem backend. */
   databaseUrl?: string
   /**
@@ -513,6 +522,7 @@ export function loadConfigFromEnv(
   return {
     serverUrl: parseServerUrl(env.SERVER_URL),
     port: parsePort(env.PORT),
+    host: parseHost(env.HOST),
     databaseUrl: parseDatabaseUrl(env.DATABASE_URL),
     dataDir: parseDataDir(env.WAS_DATA_DIR),
     storageLimitPerSpace: parseStorageLimit(env.STORAGE_LIMIT_PER_SPACE),
@@ -596,6 +606,24 @@ export function parseServerUrl(raw: string | undefined): string {
 }
 
 /**
+ * Parses a decimal integer env value: ASCII digits only, surrounding
+ * whitespace allowed. `Number()` alone would also accept hex (`0x10`), binary,
+ * octal and exponent forms (`1e3`), which no operator means when setting a
+ * port or a byte count.
+ * @param raw {string}   the raw env value
+ * @returns {number|undefined}   the integer, or `undefined` if `raw` is not a
+ *   run of decimal digits or exceeds `Number.MAX_SAFE_INTEGER`
+ */
+function parseDecimalInteger(raw: string): number | undefined {
+  const trimmed = raw.trim()
+  if (!/^[0-9]+$/.test(trimmed)) {
+    return undefined
+  }
+  const value = Number(trimmed)
+  return Number.isSafeInteger(value) ? value : undefined
+}
+
+/**
  * Parses the `PORT` env value into the TCP port to listen on. An unset or
  * empty value returns {@link DEFAULT_PORT}.
  * @param raw {string|undefined}   the raw env value
@@ -605,13 +633,60 @@ export function parsePort(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') {
     return DEFAULT_PORT
   }
-  const value = Number(raw)
-  if (!Number.isInteger(value) || value < 1 || value > 65535) {
+  const value = parseDecimalInteger(raw)
+  if (value === undefined || value < 1 || value > 65535) {
     throw new Error(
       `PORT must be an integer between 1 and 65535; got "${raw}".`
     )
   }
   return value
+}
+
+/**
+ * Parses the `HOST` env value: the address the server listens on, handed to
+ * Fastify's `listen()` as is. An unset or empty value returns
+ * {@link DEFAULT_HOST}.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {string}   the trimmed host
+ */
+export function parseHost(raw: string | undefined): string {
+  if (raw === undefined || raw.trim() === '') {
+    return DEFAULT_HOST
+  }
+  return raw.trim()
+}
+
+/**
+ * Checks a loopback `SERVER_URL` against the port the server listens on. ZCap
+ * `invocationTarget` URLs embed the host and port of `SERVER_URL`, so a client
+ * that reaches a loopback server on its listening port signs for a URL that
+ * matches no capability when the two ports differ. A non-loopback `SERVER_URL`
+ * is not checked, since a reverse proxy in front of the server legitimately
+ * serves a different port.
+ * @param options {object}
+ * @param options.serverUrl {string}   the validated `SERVER_URL`
+ * @param options.port {number}   the port the server listens on
+ * @returns {number|undefined}   the `SERVER_URL`'s effective port when it is a
+ *   loopback URL whose port differs from `port`, else `undefined`
+ */
+export function loopbackPortMismatch({
+  serverUrl,
+  port
+}: {
+  serverUrl: string
+  port: number
+}): number | undefined {
+  const url = new URL(serverUrl)
+  const loopback =
+    url.hostname === 'localhost' ||
+    url.hostname === '[::1]' ||
+    /^127\.[0-9]+\.[0-9]+\.[0-9]+$/.test(url.hostname)
+  if (!loopback) {
+    return undefined
+  }
+  const defaultPort = url.protocol === 'https:' ? 443 : 80
+  const effectivePort = url.port === '' ? defaultPort : Number(url.port)
+  return effectivePort === port ? undefined : effectivePort
 }
 
 /**
@@ -805,8 +880,8 @@ function parseLimit(
   if (raw.trim().toLowerCase() === 'unlimited') {
     return Infinity
   }
-  const value = Number(raw)
-  if (!Number.isInteger(value) || value < 0) {
+  const value = parseDecimalInteger(raw)
+  if (value === undefined) {
     throw new Error(
       `${name} must be ${quantity}, or "unlimited"; got "${raw}".`
     )

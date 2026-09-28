@@ -19,7 +19,8 @@
   ],
   "scripts": {
     "dev": "tsx watch src/start.js",
-    "start": "node dist/start.js | pino-pretty",
+    "start": "node dist/start.js",
+    "start:pretty": "node dist/start.js | pino-pretty",
     "build": "pnpm run clear && tsc && pnpm run copy-assets && pnpm run write-build-info",
     "clear": "rimraf dist/*",
     "copy-assets": "node -e \"require('node:fs').cpSync('src/views','dist/views',{recursive:true})\"",

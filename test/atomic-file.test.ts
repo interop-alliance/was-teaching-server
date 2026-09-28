@@ -4,7 +4,9 @@
  * staging file is left behind after either a successful write or a simulated
  * failure; `atomicCreateFile` enforces create-only semantics (rejecting with
  * EEXIST and leaving the existing file intact); and the streaming
- * `commitTempFile` publishes a staged temp file onto its final path. These
+ * `commitTempFile` publishes a staged temp file onto its final path; and
+ * `sweepTempFiles` removes stale staging files at any depth, keeps fresh
+ * ones, and skips a directory it cannot read. These
  * exercise the helpers directly over a throwaway temp dir -- they verify the
  * on-disk outcome, not crash-time durability (which fsync cannot be unit-tested
  * for).
@@ -12,14 +14,26 @@
 import { it, describe, beforeEach, afterEach } from 'vitest'
 import assert from 'node:assert'
 import path from 'node:path'
-import { mkdtemp, rm, readFile, writeFile, readdir } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  rm,
+  readFile,
+  writeFile,
+  readdir,
+  utimes,
+  chmod
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import pino from 'pino'
 
 import {
   atomicWriteFile,
   atomicCreateFile,
   tempPathFor,
-  commitTempFile
+  commitTempFile,
+  sweepTempFiles,
+  TEMP_FILE_ORPHAN_AGE_MS
 } from '../src/lib/atomicFile.js'
 
 let dir: string
@@ -122,5 +136,62 @@ describe('commitTempFile', () => {
     assert.equal(await readFile(filePath, 'utf8'), 'streamed-body')
     // The temp file is consumed by the rename, leaving nothing behind.
     assert.deepEqual(await tempLeftovers(), [])
+  })
+})
+
+describe('sweepTempFiles', () => {
+  const logger = pino({ level: 'silent' })
+  // An mtime older than the orphan age, so the sweep treats the file as stale.
+  const stale = new Date(Date.now() - TEMP_FILE_ORPHAN_AGE_MS - 60_000)
+
+  it('removes stale staging files at any depth and keeps every other file', async () => {
+    const nested = path.join(dir, 'space', 'collection')
+    await mkdir(nested, { recursive: true })
+    const kept = path.join(nested, 'r.json')
+    await writeFile(kept, '{}')
+    await utimes(kept, stale, stale)
+    for (const orphan of [
+      tempPathFor(kept),
+      tempPathFor(path.join(dir, 'top.json'))
+    ]) {
+      await writeFile(orphan, 'orphan')
+      await utimes(orphan, stale, stale)
+    }
+    assert.equal(await sweepTempFiles({ root: dir, logger }), 2)
+    assert.deepEqual(await readdir(nested), ['r.json'])
+    assert.deepEqual(await tempLeftovers(), [])
+  })
+
+  it('keeps a staging file modified more recently than the orphan age', async () => {
+    const live = tempPathFor(path.join(dir, 'live.json'))
+    await writeFile(live, 'in flight')
+    assert.equal(await sweepTempFiles({ root: dir, logger }), 0)
+    assert.deepEqual(await readdir(dir), [path.basename(live)])
+  })
+
+  it('skips an unreadable directory and still sweeps the rest', async ({
+    skip
+  }) => {
+    if (process.getuid?.() === 0) {
+      skip('root reads a directory whatever its mode')
+    }
+    const locked = path.join(dir, 'locked')
+    await mkdir(locked)
+    const orphan = tempPathFor(path.join(dir, 'top.json'))
+    await writeFile(orphan, 'orphan')
+    await utimes(orphan, stale, stale)
+    await chmod(locked, 0o000)
+    try {
+      assert.equal(await sweepTempFiles({ root: dir, logger }), 1)
+    } finally {
+      await chmod(locked, 0o700)
+    }
+  })
+
+  it('sweeps nothing under an absent root', async () => {
+    assert.equal(
+      await sweepTempFiles({ root: path.join(dir, 'missing'), logger }),
+      0
+    )
   })
 })

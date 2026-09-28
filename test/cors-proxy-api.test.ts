@@ -1114,6 +1114,8 @@ describe('CORS proxy Agent lifecycle', () => {
         )
 
       const app = createApp()
+      // Finish startup first, so the one tick below only has to reach fetch.
+      await app.ready()
       const slow = app.inject({
         method: 'GET',
         url:

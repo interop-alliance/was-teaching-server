@@ -3286,3 +3286,55 @@ filesystem checks the Metadata files under the Space gate
 refusals are pinned in the shared contract suite. A consequence: a
 `FileSystemBackend` used as a provider adapter must hold the Space and
 Collection itself (`provisionProviderContainers` in the test helpers).
+
+### WAS-130: Signal handling, graceful shutdown, and temp-file cleanup
+
+- status: done
+- done: 2026-09-27
+- priority: high
+- labels: operations, filesystem-backend, availability
+- discovered-from: whole-codebase review (2026-09-17)
+- touches:
+  - `src/start.ts`, `package.json` (`start` pipes through `pino-pretty`, so a
+    supervisor's signal reaches the shell), `src/lib/atomicFile.ts`
+    (`tempPathFor` has one call site and no sweeper), `src/backends/*.ts`
+    (`close`), `src/corsProxy.ts` (`onClose`)
+  - WAS-47 covers `start.ts` test coverage (`test/start.test.ts` now spawns the
+    entry point for the signal, startup-failure, and port-warning paths; the
+    rest of WAS-47 stays open)
+  - unaffected: other repos (process lifecycle and env parsing only; no wire or
+    `@interop/*` API change)
+- acceptance:
+  - [x] `start.ts` handles `SIGTERM` and `SIGINT` by calling `fastify.close()`
+        with a drain timeout, so `onClose` hooks (Postgres `pool.end`, undici
+        agents) actually run in production
+  - [x] Orphan `.tmp-*` files left by a killed in-flight write are swept at
+        backend `init()` or excluded from the `du`-based quota, and the streamed
+        write path removes its temp file on `close`/`aborted`
+  - [x] Startup failure writes its message before exiting on a piped stderr
+        (`process.exitCode = 1` and let the process drain, rather than
+        `process.exit(1)` after `console.error`)
+  - [x] `PORT` and `SERVER_URL` are cross-checked at startup: a loopback
+        `SERVER_URL` whose effective port differs from `PORT` is a startup error
+        or warning (the reverse-proxy case with a public host stays allowed)
+  - [x] The listen host is configurable (`HOST`, defaulting to Fastify's
+        dual-stack `localhost` or documented as `0.0.0.0`), and README's dev
+        invocation binds loopback
+  - [x] `parsePort` and `parseLimit` accept decimal integers only
+
+Nothing registers a signal handler; Node's default disposition terminates
+immediately. A kill mid-upload leaves `.tmp-<uuid>` in the Collection directory,
+invisible to every listing but charged against `STORAGE_LIMIT_PER_SPACE`
+forever. `console.error` then `process.exit(1)` can drop the carefully worded
+config error on a pipe, so a container that failed on a bad `KMS_RECORD_KEKS`
+exits 1 with empty logs. The `PORT`/`SERVER_URL` mismatch is the one
+misconfiguration that breaks every ZCap match and is the only one not checked.
+
+Shipped: `start.ts` closes the app on either signal (10 s drain, a second signal
+or the deadline exits 1). `FileSystemBackend.init()` sweeps `.tmp-*` files under
+the Space, keystore, and revocation trees (`sweepTempFiles` in `atomicFile.ts`);
+the streamed write path already removed its temp file on a client disconnect,
+and a test now pins it. A loopback `SERVER_URL` on another port warns rather
+than failing, so a local reverse proxy stays possible. `HOST` defaults to
+`0.0.0.0`, as the Dockerfile and `fly.toml` need. `pnpm start` no longer pipes;
+`pnpm start:pretty` does.

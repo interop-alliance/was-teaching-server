@@ -16,8 +16,9 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
              decorate)    auth hooks)    verify + storage)
 ```
 
-- **`src/start.ts`** — entry point. Reads `SERVER_URL` / `PORT` from env, calls
-  `createApp()` and `listen()`.
+- **`src/start.ts`** — entry point. Reads `SERVER_URL` / `PORT` / `HOST` from
+  env, calls `createApp()` and `listen()`, and closes the app on `SIGTERM` /
+  `SIGINT` so its `onClose` hooks run.
 - **`src/server.ts`** — `createApp({ serverUrl })` builds the Fastify instance,
   registers plugins (cors, static, view, multipart), decorates the instance with
   `serverUrl`, and registers the four route groups.

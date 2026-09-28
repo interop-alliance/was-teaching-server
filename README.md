@@ -182,21 +182,30 @@ is compiled with `tsc` to `dist/`.
 ### Running in Development
 
 `tsx` runs the TypeScript sources directly and watches for changes (views are
-served from `src/views`, so no asset copy is needed):
+served from `src/views`, so no asset copy is needed). `HOST=localhost` keeps a
+development server off the network:
 
 ```
-SERVER_URL='http://localhost:3002' PORT=3002 pnpm dev
+SERVER_URL='http://localhost:3002' PORT=3002 HOST=localhost pnpm dev
 ```
 
 ### Building and Starting the Server
 
 `pnpm build` compiles `src/` to `dist/` and copies `src/views` > `dist/views`,
-then `pnpm start` runs the compiled output:
+then `pnpm start` runs the compiled output as plain JSON logs
+(`pnpm start:pretty` pipes them through `pino-pretty` for reading in a
+terminal):
 
 ```
 pnpm build
 SERVER_URL='http://localhost:3002' PORT=3002 pnpm start
 ```
+
+`SIGTERM` or `SIGINT` shuts the server down gracefully. It stops accepting
+connections, waits up to 10 seconds for in-flight requests, and closes the
+storage backend. A supervisor should signal the `node` process itself: under
+`pnpm start:pretty` the signal reaches the shell running the pipe, which does
+not forward it.
 
 ### Using as a Library
 
@@ -215,7 +224,8 @@ rather than surfacing later as broken ZCap matching.
 | Variable                    | Default                     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | --------------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SERVER_URL`                | (none)                      | **Required.** This server's base URL; used to build and match ZCap `invocationTarget` URLs (host and port must match the client's exactly). Must be an absolute `http:`/`https:` URL with no path, query, or fragment -- deploying under a sub-path is not supported.                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `PORT`                      | `3002`                      | TCP port to listen on (an integer between 1 and 65535).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `PORT`                      | `3002`                      | TCP port to listen on (a decimal integer between 1 and 65535). When `SERVER_URL` is a loopback URL (`localhost`, `127.x.x.x`, `[::1]`) on a different port, startup logs a warning, since clients reaching the listening port will match no capability.                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `HOST`                      | `0.0.0.0`                   | Address to listen on. The default binds every IPv4 interface, as a container deployment needs; `HOST=localhost` binds loopback only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `DATABASE_URL`              | (unset = filesystem)        | Selects the **PostgreSQL storage backend**: a `postgres://` connection string (e.g. `postgres://was:was@localhost:5433/was`). When set, all WAS + WebKMS data is stored in Postgres (schema migrations are applied automatically at startup); unset, the server uses the default filesystem backend rooted at `data/`. See [Storage Backends](#storage-backends).                                                                                                                                                                                                                                                                                                      |
 | `WAS_DATA_DIR`              | (unset = `data/`)           | Filesystem root the default backend stores Spaces, keystores, and revocations under. A relative value resolves against the process working directory. Ignored when `DATABASE_URL` selects the Postgres backend. Point it at a scratch directory to run a test suite against a fresh server each time, rather than accumulating every earlier run's Spaces under the project `data/`.                                                                                                                                                                                                                                                                                   |
 | `STORAGE_LIMIT_PER_SPACE`   | (unset = unlimited, warned) | Per-Space storage quota in **bytes** (spec "Quotas"). When set, writes that would push a Space over this limit are rejected with `quota-exceeded` (507). Unset means each Space is unlimited, and startup logs a warning; set `unlimited` to acknowledge the choice explicitly and silence it.                                                                                                                                                                                                                                                                                                                                                                         |

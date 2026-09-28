@@ -10,6 +10,14 @@
   `SERVER_URL` from its GitHub environment's variables.
   `docs/deployment-fly.io.md` covers choosing an origin layout, the setup, and
   the rules a reverse proxy in front of the server must follow.
+- `SIGTERM` and `SIGINT` shut the server down gracefully: it stops accepting
+  connections, waits up to 10 seconds for in-flight requests, and runs its close
+  hooks (the Postgres pool drain among them). A second signal, or a close still
+  pending at the deadline, exits with code 1. A handle left open after a
+  successful close no longer keeps the process alive past the deadline.
+- A `HOST` env variable sets the listen address (default `0.0.0.0`).
+- Startup warns when `SERVER_URL` is a loopback URL on a port other than `PORT`,
+  since no capability would then match a request sent to the listening port.
 
 ### Changed
 
@@ -21,6 +29,20 @@
   members are rejected (`invalid-request-body`, pointer to the member).
 - An update omitting `generator` now keeps the stored value. A supplied one
   replaces it whole.
+- `pnpm start` writes plain JSON logs. `pnpm start:pretty` keeps the
+  `pino-pretty` pipe, which does not forward a signal to the server.
+- `PORT` and the byte and count limit variables accept decimal digits only. Hex,
+  binary, octal and exponent forms (`0x10`, `1e3`) are refused at startup.
+
+### Fixed
+
+- The filesystem backend removes, at startup, the staging temp files a killed
+  process left behind. They were invisible to listings but counted against the
+  Space's storage quota for good. Only files untouched for an hour are removed,
+  so a process sharing the data directory keeps its in-flight writes. An
+  unreadable entry is logged and skipped rather than failing startup.
+- A startup failure's message is no longer lost when stderr is a pipe. The
+  process closes what it opened and exits with code 1 once the output drains.
 
 ### Security
 

@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 158
+nextAvailableId: 159
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -1240,6 +1240,39 @@ so a fresh `did:key` provisions freely with no token, defeating both the token
 and the per-controller cap (one `did:key` per Space costs nothing). README
 promises the gate covers Space creation.
 
+### WAS-158: Re-check the Space inside the lock on a revocation insert
+
+- status: todo
+- priority: medium
+- labels: filesystem-backend, postgres-backend, consistency, revocation
+- discovered-from: WAS-125
+- acceptance:
+  - [ ] The filesystem `insertRevocation` checks a Space scope's Metadata object
+        under the Space gate's shared side (`#underSpaceWrite` with
+        `container`), so a Delete Space cannot land between the check and the
+        write, and `mkdir -p` never recreates the Space's revocation directory
+        after the delete removed it
+  - [ ] An insert under a Space with no Metadata object is refused with a 404 on
+        both backends, not a `StorageError` (500). This includes the Postgres
+        foreign-key violation (SQLSTATE `23503`) raised when the Space row was
+        deleted first
+  - [ ] A contract test issues a revocation insert racing a Delete Space and
+        asserts that either the insert is refused or the delete removed it. In
+        both orders, a Space re-created under the same id has no revocations
+
+`insertRevocation` reads the Space Metadata object before any lock, then creates
+the record under `spaceRevocationsDir/<S>/`, a sibling tree outside the Space
+dir. A Delete Space landing between the two removes that tree, and the insert's
+`mkdir -p` recreates it. The record then outlives its Space and applies to the
+next Space created under id `S`. Capability ids are normally random, so a stale
+record rarely matches a new grant, but the stored state is wrong, and the new
+Space's export carries the old record. On Postgres the `space_revocations`
+foreign key refuses the same insert, but as a 500. The absent-scope refusal is a
+`StorageError` on both backends today. The HTTP route masks unknown scopes
+before the insert, so only the race reaches it. The keystore scope has the same
+check-then-write shape. It is outside this item unless keystores gain a delete
+path.
+
 ### WAS-126: Import Space validates what it installs
 
 - status: todo
@@ -1359,44 +1392,6 @@ admitted by the client-annex clause's first shape) reaches it by prefix. A
 per-visit key can revoke the durable client's grant; there is no un-revoke
 endpoint. Same hazard class as WAS-108, applied to authorization state instead
 of data.
-
-### WAS-130: Signal handling, graceful shutdown, and temp-file cleanup
-
-- status: todo
-- priority: high
-- labels: operations, filesystem-backend, availability
-- discovered-from: whole-codebase review (2026-09-17)
-- touches:
-  - `src/start.ts`, `package.json` (`start` pipes through `pino-pretty`, so a
-    supervisor's signal reaches the shell), `src/lib/atomicFile.ts`
-    (`tempPathFor` has one call site and no sweeper), `src/backends/*.ts`
-    (`close`), `src/corsProxy.ts` (`onClose`)
-  - WAS-47 covers `start.ts` test coverage
-- acceptance:
-  - [ ] `start.ts` handles `SIGTERM` and `SIGINT` by calling `fastify.close()`
-        with a drain timeout, so `onClose` hooks (Postgres `pool.end`, undici
-        agents) actually run in production
-  - [ ] Orphan `.tmp-*` files left by a killed in-flight write are swept at
-        backend `init()` or excluded from the `du`-based quota, and the streamed
-        write path removes its temp file on `close`/`aborted`
-  - [ ] Startup failure writes its message before exiting on a piped stderr
-        (`process.exitCode = 1` and let the process drain, rather than
-        `process.exit(1)` after `console.error`)
-  - [ ] `PORT` and `SERVER_URL` are cross-checked at startup: a loopback
-        `SERVER_URL` whose effective port differs from `PORT` is a startup error
-        or warning (the reverse-proxy case with a public host stays allowed)
-  - [ ] The listen host is configurable (`HOST`, defaulting to Fastify's
-        dual-stack `localhost` or documented as `0.0.0.0`), and README's dev
-        invocation binds loopback
-  - [ ] `parsePort` and `parseLimit` accept decimal integers only
-
-Nothing registers a signal handler; Node's default disposition terminates
-immediately. A kill mid-upload leaves `.tmp-<uuid>` in the Collection directory,
-invisible to every listing but charged against `STORAGE_LIMIT_PER_SPACE`
-forever. `console.error` then `process.exit(1)` can drop the carefully worded
-config error on a pipe, so a container that failed on a bad `KMS_RECORD_KEKS`
-exits 1 with empty logs. The `PORT`/`SERVER_URL` mismatch is the one
-misconfiguration that breaks every ZCap match and is the only one not checked.
 
 ### WAS-131: Engage the `did:webvh` resolver on every verification path
 
