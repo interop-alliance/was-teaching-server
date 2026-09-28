@@ -18,8 +18,10 @@ import { generateId } from '@digitalcredentials/bnid'
 import { handleZcapVerify } from '../zcap.js'
 import {
   assertValidController,
-  assertValidSpaceController
+  assertValidSpaceController,
+  isSelfHostedWebvhController
 } from '../lib/validateDid.js'
+import { resolveWebvhController } from '../lib/webvhController.js'
 import { kmsKeystoresPath } from '../lib/paths.js'
 import { fetchKeystoreAndVerify } from './keystoreContext.js'
 import { verifyBodyControllerConsent } from './controllerConsent.js'
@@ -35,7 +37,8 @@ import {
 } from '../config.default.js'
 import {
   InvalidRequestBodyError,
-  KeystoreControllerMismatchError
+  KeystoreControllerMismatchError,
+  UnresolvableControllerError
 } from '../errors.js'
 import type { IDID, KeystoreConfig } from '../types.js'
 
@@ -327,6 +330,27 @@ export class KeystoreRequest {
         detail: 'Configuration "id" does not match request URL.',
         pointer: '#/id'
       })
+    }
+
+    // A proposed `did:webvh` controller must resolve and fully verify against
+    // its history log in this server's storage before it is stored, as on
+    // Update Space. Every later request on the keystore verifies against the
+    // stored controller, so an unresolvable one (a typo, a log not yet
+    // published) would lock every key in it away with no way back.
+    if (isSelfHostedWebvhController(body.controller, { serverUrl })) {
+      try {
+        await resolveWebvhController({
+          storage,
+          serverUrl,
+          did: body.controller
+        })
+      } catch (err) {
+        throw new UnresolvableControllerError({
+          did: body.controller,
+          requestName,
+          cause: err as Error
+        })
+      }
     }
 
     const config: KeystoreConfig = {

@@ -3135,3 +3135,27 @@ revocation is impossible since the root capability's controller is now the
 attacker. Every custodial key in the keystore is permanently the attacker's.
 This is the hazard the WAS container rule closes for `PUT /space/<S>/meta`, with
 no `/kms` analogue.
+
+### WAS-116: Resolve a proposed `did:webvh` keystore controller before storing it
+
+- status: done (2026-09-27)
+- priority: high
+- labels: kms, webvh, ceremony
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [x] `KeystoreRequest.update` runs the same pre-store resolvability check
+        `SpaceRequest.putMeta` runs (`resolveWebvhController`, refused with
+        `UnresolvableControllerError`) when the proposed controller is a
+        self-hosted `did:webvh`
+  - [x] Tests: promotion to a DID whose log is absent is refused and the
+        keystore stays under its `did:key`; promotion to a published log
+        succeeds
+  - [x] `validateDid.ts`'s comment on `assertValidSpaceController` names the
+        keystore path as covered
+
+`assertValidSpaceController` is syntactic only. A typo in the seven-segment DID
+or a torn promotion ceremony (log not yet published) stores an unresolvable
+controller, after which no request can authorize on the keystore and every key
+record in it is inaccessible. There is no delete route (WAS-70) and no rotation
+path that does not verify against the dead controller. With WAS-115 open, a
+delegate can inflict this on the controller.

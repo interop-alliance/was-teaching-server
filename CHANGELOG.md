@@ -40,6 +40,10 @@
   carries `write` or no `allowedAction`, is refused with the masked 404, so it
   can no longer rewrite the keystore's `controller`. Key operations under such a
   grant are unchanged.
+- Update Keystore resolves and verifies a proposed self-hosted `did:webvh`
+  controller from its history log before storing it, as Update Space does. A DID
+  whose log is absent or does not verify is refused as `invalid-request-body`
+  (400, pointer `#/controller`), and the keystore keeps its current controller.
 
 - Every response on a WAS or `/kms` route (including 304s, redirects and error
   responses) carries

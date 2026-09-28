@@ -1211,30 +1211,6 @@ permanent the bad state is. Findings already tracked elsewhere are noted on
 those items (WAS-61, WAS-65, WAS-70, WAS-73, WAS-92, WAS-108) rather than
 re-filed.
 
-### WAS-116: Resolve a proposed `did:webvh` keystore controller before storing it
-
-- status: todo
-- priority: high
-- labels: kms, webvh, ceremony
-- discovered-from: whole-codebase review (2026-09-17), verified
-- acceptance:
-  - [ ] `KeystoreRequest.update` runs the same pre-store resolvability check
-        `SpaceRequest.putMeta` runs (`resolveWebvhController`, refused with
-        `UnresolvableControllerError`) when the proposed controller is a
-        self-hosted `did:webvh`
-  - [ ] Tests: promotion to a DID whose log is absent is refused and the
-        keystore stays under its `did:key`; promotion to a published log
-        succeeds
-  - [ ] `validateDid.ts`'s comment on `assertValidSpaceController` names the
-        keystore path as covered
-
-`assertValidSpaceController` is syntactic only. A typo in the seven-segment DID
-or a torn promotion ceremony (log not yet published) stores an unresolvable
-controller, after which no request can authorize on the keystore and every key
-record in it is inaccessible. There is no delete route (WAS-70) and no rotation
-path that does not verify against the dead controller. With WAS-115 open, a
-delegate can inflict this on the controller.
-
 ### WAS-118: Onboarding-token gate covers Space creation by `PUT /meta`
 
 - status: todo

@@ -16,7 +16,8 @@
  * unsupported controller is rejected on the way in, rather than being stored
  * and only failing later at capability-verification time. Whether a
  * syntactically self-hosted `did:webvh` actually *resolves* is a separate,
- * storage-reading check (`lib/webvhController.ts`).
+ * storage-reading check (`lib/webvhController.ts`), which Update Space and
+ * Update Keystore both run before storing a `did:webvh` controller.
  */
 import { InvalidControllerError } from '../errors.js'
 import { isUrlSafeSegment } from './validateId.js'
@@ -163,6 +164,10 @@ export function assertValidController(
  * `did:webvh` anchored on this server. The sibling of
  * {@link assertValidController}, kept separate so the create paths stay
  * `did:key`-only by construction rather than by a flag.
+ *
+ * The check is syntactic only. The two update paths, Update Space and Update
+ * Keystore, each follow it with the resolvability check in
+ * `lib/webvhController.ts` before storing a `did:webvh` controller.
  *
  * @param controller {unknown}   the `controller` value from the request body
  * @param options {object}

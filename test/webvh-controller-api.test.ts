@@ -1042,6 +1042,33 @@ describe('did:webvh Space controller', () => {
       keystoreId = config.id!
     })
 
+    it('a did:webvh with no published log is refused (400) and the keystore stays under its did:key', async () => {
+      // Mint a DID anchored in the Space but never publish its log.
+      const minted = await mintWebvhDid({
+        spaceId: space.spaceId,
+        collectionId: 'unpublished'
+      })
+      const kmsClient = new KmsClient({ keystoreId })
+      const err = await requestError(
+        kmsClient.updateKeystore({
+          config: {
+            id: keystoreId,
+            sequence: 1,
+            controller: minted.did,
+            kmsModule: 'local-v1'
+          },
+          invocationSigner: alice.signer
+        })
+      )
+      assert.equal(err.cause?.status ?? err.status, 400)
+
+      const config = (await kmsClient.getKeystore({
+        invocationSigner: alice.signer
+      })) as any
+      assert.equal(config.controller, alice.did)
+      assert.equal(config.sequence, 0)
+    })
+
     it('the stored did:key controller updates the config to the did:webvh', async () => {
       const kmsClient = new KmsClient({ keystoreId })
       const { config } = (await kmsClient.updateKeystore({
