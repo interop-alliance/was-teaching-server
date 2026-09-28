@@ -3247,3 +3247,42 @@ spec already names for a Resource write without one. So the Import Space and
 governed-log tests are refused with that type rather than
 `invalid-authorization-header`. The conformance case for a Resource write with
 no `Content-Type` still gets `missing-content-type`.
+
+### WAS-125: Re-check container existence inside the write lock
+
+- status: done
+- done: 2026-09-27
+- priority: high
+- labels: filesystem-backend, consistency, security
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [x] `writeResource`, `writeChunk`, `writeCollection`, `writePolicy` and the
+        import path refuse (404) when the Space, and where applicable the
+        Collection, has no Metadata object at the moment of the write, checked
+        under the same gate the write holds; `mkdir -p` never recreates a
+        container directory
+  - [x] A test issues a write whose prelude passed, then a Delete Space, then
+        lets the write proceed, and asserts no directory is left behind
+  - [x] `writePolicy` on a Collection with no Metadata object is refused rather
+        than materializing a phantom directory that `listCollections` then
+        reports as a public Collection
+
+The Space gate prevents a write interleaving with a removal, not a write whose
+shared acquisition comes after the removal released the exclusive side. The
+request layer's existence check is a TOCTOU. The result is `spaces/S/C/` holding
+live Resources and no `.space.S.json`: invisible to every route and listing,
+charged to quota forever, and adopted by the next Space created under id `S`,
+whose controller then lists the previous owner's data. Postgres foreign keys
+refuse the same insert, so the two backends diverge.
+
+Resolution: the premise about Postgres did not hold. Its `writeResource`,
+`writeCollection`, `writePolicy`, `writeBackend` and import provisioned
+NULL-metadata placeholder rows (`#ensureSpaceRow` / `#ensureCollectionRow`), so
+a write after a Delete Space recreated a placeholder Space row the next Create
+Space adopted, the same as the filesystem. Both backends now refuse: the
+filesystem checks the Metadata files under the Space gate
+(`#assertContainersExist`), Postgres under the `spaces` row lock
+(`#lockLiveContainers`), and the placeholder-creating helpers are gone. The
+refusals are pinned in the shared contract suite. A consequence: a
+`FileSystemBackend` used as a provider adapter must hold the Space and
+Collection itself (`provisionProviderContainers` in the test helpers).

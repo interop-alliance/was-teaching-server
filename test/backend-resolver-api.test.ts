@@ -18,7 +18,11 @@ import type { FastifyInstance } from 'fastify'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import type { BackendProviderRegistry } from '../src/types.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import {
+  provisionProviderContainers,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('Per-Collection backend resolver (selectable registered backends)', () => {
   let fastify: FastifyInstance,
@@ -91,6 +95,13 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
     })
     assert.equal(createCol.status, 201)
     assert.deepStrictEqual(createCol.data.backend, { id: 'mem-1' })
+
+    await provisionProviderContainers({
+      backend: providerBackend,
+      spaceId,
+      collectionId,
+      controller: alice.did
+    })
 
     // PUT a Resource into it.
     const resourceId = 'r1'

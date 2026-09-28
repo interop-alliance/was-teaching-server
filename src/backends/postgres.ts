@@ -33,6 +33,7 @@ import {
   StorageError,
   ResourceNotFoundError,
   SpaceNotFoundError,
+  CollectionNotFoundError,
   QuotaExceededError,
   CountQuotaExceededError,
   PayloadTooLargeError,
@@ -548,63 +549,54 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
-   * Ensures the `spaces` row for `spaceId` exists (a placeholder with NULL
-   * metadata when the Space's Metadata object was never written -- the
-   * analogue of the filesystem creating a Space directory on a sub-Space
-   * write), and leaves the row locked for the rest of the transaction.
-   *
-   * Provisioning and locking are one statement on purpose. `ON CONFLICT DO
-   * NOTHING` takes no lock on the row it found, so a concurrent `deleteSpace`
-   * could commit between this statement and a following `#lockSpaceRow`,
-   * whose `FOR UPDATE` would then match no row and lock nothing; the caller's
-   * next `INSERT` into a cascade-dependent table would raise a foreign-key
-   * violation, which is no `ProblemError` and so renders a 500. `DO UPDATE`
-   * locks the conflicting row instead, so the write and the deletion order
-   * deterministically. The no-op update costs nothing extra: every content
-   * write updates this row again through `#applyUsageDelta`.
+   * Takes the Space's row lock (the first lock of the backend-wide order, see
+   * `#lockSpaceRow`) and refuses the write unless the Space has a Metadata
+   * object (`SpaceNotFoundError`, 404), and so does the Collection when a
+   * `collectionId` is given (`CollectionNotFoundError`, 404). It never creates
+   * a row. The request layer's own existence check ran before this
+   * transaction, so a Delete Space or Delete Collection may have committed in
+   * between. Creating a placeholder row here would then leave data under a
+   * Space no route can reach, which the next Space created under the same id
+   * would adopt. Holding the Space row until commit keeps either delete from
+   * landing after the check.
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.requestName] {string}   names the refused operation in
+   *   the 404
    * @returns {Promise<void>}
    */
-  async #ensureSpaceRow({
-    client,
-    spaceId
-  }: {
-    client: pg.PoolClient
-    spaceId: string
-  }): Promise<void> {
-    await client.query(
-      `INSERT INTO spaces (space_id) VALUES ($1)
-       ON CONFLICT (space_id) DO UPDATE SET space_id = spaces.space_id`,
-      [spaceId]
-    )
-  }
-
-  /**
-   * Ensures the `collections` row (and its parent `spaces` row) exists, a
-   * NULL-metadata placeholder like `#ensureSpaceRow`'s.
-   * @param options {object}
-   * @param options.client {pg.PoolClient}
-   * @param options.spaceId {string}
-   * @param options.collectionId {string}
-   * @returns {Promise<void>}
-   */
-  async #ensureCollectionRow({
+  async #lockLiveContainers({
     client,
     spaceId,
-    collectionId
+    collectionId,
+    requestName
   }: {
     client: pg.PoolClient
     spaceId: string
-    collectionId: string
+    collectionId?: string
+    requestName?: string
   }): Promise<void> {
-    await this.#ensureSpaceRow({ client, spaceId })
-    await client.query(
-      `INSERT INTO collections (space_id, collection_id) VALUES ($1, $2)
-       ON CONFLICT (space_id, collection_id) DO NOTHING`,
+    const { rows: spaceRows } = await client.query<{ live: boolean }>(
+      `SELECT metadata IS NOT NULL AS live FROM spaces
+        WHERE space_id = $1 FOR UPDATE`,
+      [spaceId]
+    )
+    if (!spaceRows[0]?.live) {
+      throw new SpaceNotFoundError({ requestName })
+    }
+    if (collectionId === undefined) {
+      return
+    }
+    const { rows: collectionRows } = await client.query<{ live: boolean }>(
+      `SELECT metadata IS NOT NULL AS live FROM collections
+        WHERE space_id = $1 AND collection_id = $2`,
       [spaceId, collectionId]
     )
+    if (!collectionRows[0]?.live) {
+      throw new CollectionNotFoundError({ requestName })
+    }
   }
 
   /**
@@ -629,12 +621,10 @@ export class PostgresBackend implements StorageBackend {
    * Space Metadata paths take no other), and `#lockSameKeyCreate` /
    * `#lockCollectionUniqueness` are taken AFTER it.
    *
-   * A path that provisions the Space takes this same lock through
-   * `#ensureSpaceRow`, which creates-or-locks in one statement; calling this
-   * afterwards is then a no-op on a row the transaction already holds, kept
-   * where the call site's own reason for the lock is worth stating. This
-   * variant never creates the row, so a delete path that finds it gone locks
-   * nothing and its own statements report the absence.
+   * A write into an existing Space takes this same lock through
+   * `#lockLiveContainers`, which also refuses a Space or Collection with no
+   * Metadata object. This variant checks nothing, so a delete path that finds
+   * the row gone locks nothing and its own statements report the absence.
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
@@ -1214,15 +1204,15 @@ export class PostgresBackend implements StorageBackend {
     ) => void | Promise<void>
   }): Promise<EtagValidator> {
     return this.#withTransaction(async client => {
-      await this.#ensureSpaceRow({ client, spaceId })
       // Serialize all Collection writes within the Space on its space row: the
       // collection-row `FOR UPDATE` below locks nothing when the row does not
       // exist yet, so without this two concurrent creates of *different* new
       // ids could each pass the create-path quota COUNT (overshooting
       // `maxCollectionsPerSpace`), and two creates of the *same* id could each
       // compute the same first version. It is also the first lock of the
-      // backend-wide order (`#lockSpaceRow`).
-      await this.#lockSpaceRow({ client, spaceId })
+      // backend-wide order (`#lockSpaceRow`), and refuses a Space that has no
+      // Metadata object.
+      await this.#lockLiveContainers({ client, spaceId })
       // Lock the Collection row (if any) and read its current Metadata object
       // and validator, so the `If-Match` compare-and-swap, the transition
       // checks, the create detection, the server-managed member resolution,
@@ -1580,9 +1570,9 @@ export class PostgresBackend implements StorageBackend {
    * "Pagination"), with the same keyset (ascending `collection_id`, byte order
    * via the column's `COLLATE "C"`), cursor codec, clamps, and `next`
    * construction as `listCollectionItems`. `totalItems` is the full Collection
-   * count (a `COUNT`). A row without a Metadata object (created by a
-   * sub-Collection write) falls back to the id for its `name`, like a
-   * directory without a Metadata file on the filesystem. Each summary's `url`
+   * count (a `COUNT`). A row without a Metadata object falls back to the id
+   * for its `name`, like a directory without a Metadata file on the
+   * filesystem; no write path creates one any more. Each summary's `url`
    * is the canonical container form, with the trailing slash, as is the
    * listing's own. Each summary's `public` flag is the
    * Collection's `PublicCanRead` policy state, resolved for the page in a
@@ -1823,10 +1813,15 @@ export class PostgresBackend implements StorageBackend {
     const content = await this.#bufferInputCapped(input)
 
     return this.#withTransaction(async client => {
-      await this.#ensureCollectionRow({ client, spaceId, collectionId })
       // First lock of the backend-wide order (`#lockSpaceRow`), before the
-      // advisory and row locks below.
-      await this.#lockSpaceRow({ client, spaceId })
+      // advisory and row locks below. Refuses a Space or Collection that has
+      // no Metadata object.
+      await this.#lockLiveContainers({
+        client,
+        spaceId,
+        collectionId,
+        requestName: 'Write Resource'
+      })
 
       // Two unique-attribute invariants can force a JSON content write to
       // serialize before it upserts its row: the EDV blinded one (`unique: true`
@@ -2527,8 +2522,14 @@ export class PostgresBackend implements StorageBackend {
     const bytes = await this.#bufferInputCapped(input)
 
     return this.#withTransaction(async client => {
-      // First lock of the backend-wide order (`#lockSpaceRow`).
-      await this.#lockSpaceRow({ client, spaceId })
+      // First lock of the backend-wide order (`#lockSpaceRow`), refusing a
+      // Space or Collection that has no Metadata object.
+      await this.#lockLiveContainers({
+        client,
+        spaceId,
+        collectionId,
+        requestName: 'Write Chunk'
+      })
       // Parent Resource must exist (and not be a tombstone). `FOR SHARE`
       // conflicts with the `FOR UPDATE` a concurrent `deleteResource` takes, so
       // the two serialize on the parent row -- the parent cannot be deleted
@@ -3263,13 +3264,9 @@ export class PostgresBackend implements StorageBackend {
     policy: PolicyDocument
   }): Promise<void> {
     await this.#withTransaction(async client => {
-      // Ensure the containing rows exist (Space, and the Collection when the
-      // policy is below Space level), like the filesystem's dir provisioning.
-      if (collectionId !== undefined) {
-        await this.#ensureCollectionRow({ client, spaceId, collectionId })
-      } else {
-        await this.#ensureSpaceRow({ client, spaceId })
-      }
+      // The containing Space, and the Collection when the policy is below
+      // Space level, must have a Metadata object: a policy never creates one.
+      await this.#lockLiveContainers({ client, spaceId, collectionId })
       await this.#upsertPolicy({
         queryable: client,
         spaceId,
@@ -3368,7 +3365,7 @@ export class PostgresBackend implements StorageBackend {
       // The Space Metadata advisory lock ahead of the row lock, as the lock
       // order requires: the version bump below is a Space Metadata write.
       await client.query(SPACE_META_LOCK_SQL, [spaceId])
-      await this.#ensureSpaceRow({ client, spaceId })
+      await this.#lockLiveContainers({ client, spaceId })
       await client.query(
         `INSERT INTO backend_records (space_id, backend_id, record)
          VALUES ($1, $2, $3::jsonb)
@@ -4236,7 +4233,12 @@ export class PostgresBackend implements StorageBackend {
       // could deadlock, or the restore could land between that write's read
       // and its upsert and be overwritten at the same version.
       await client.query(SPACE_META_LOCK_SQL, [spaceId])
-      await this.#ensureSpaceRow({ client, spaceId })
+      // The destination Space must still have its Metadata object.
+      await this.#lockLiveContainers({
+        client,
+        spaceId,
+        requestName: 'Import Space'
+      })
       // Serialize with concurrent writers on this Space for the duration of
       // the import: the usage counter row is the natural lock, and it is the
       // first lock of the backend-wide order (`#lockSpaceRow`), so an import

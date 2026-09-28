@@ -1240,32 +1240,6 @@ so a fresh `did:key` provisions freely with no token, defeating both the token
 and the per-controller cap (one `did:key` per Space costs nothing). README
 promises the gate covers Space creation.
 
-### WAS-125: Re-check container existence inside the write lock
-
-- status: todo
-- priority: high
-- labels: filesystem-backend, consistency, security
-- discovered-from: whole-codebase review (2026-09-17), verified
-- acceptance:
-  - [ ] `writeResource`, `writeChunk`, `writeCollection`, `writePolicy` and the
-        import path refuse (404) when the Space, and where applicable the
-        Collection, has no Metadata object at the moment of the write, checked
-        under the same gate the write holds; `mkdir -p` never recreates a
-        container directory
-  - [ ] A test issues a write whose prelude passed, then a Delete Space, then
-        lets the write proceed, and asserts no directory is left behind
-  - [ ] `writePolicy` on a Collection with no Metadata object is refused rather
-        than materializing a phantom directory that `listCollections` then
-        reports as a public Collection
-
-The Space gate prevents a write interleaving with a removal, not a write whose
-shared acquisition comes after the removal released the exclusive side. The
-request layer's existence check is a TOCTOU. The result is `spaces/S/C/` holding
-live Resources and no `.space.S.json`: invisible to every route and listing,
-charged to quota forever, and adopted by the next Space created under id `S`,
-whose controller then lists the previous owner's data. Postgres foreign keys
-refuse the same insert, so the two backends diverge.
-
 ### WAS-126: Import Space validates what it installs
 
 - status: todo

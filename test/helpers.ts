@@ -20,7 +20,7 @@ import {
   ENCRYPTED_COLLECTIONS_VERSION
 } from '../src/config.default.js'
 import { createApp } from '../src/server.js'
-import type { IRootZcap } from '../src/types.js'
+import type { IDID, IRootZcap, StorageBackend } from '../src/types.js'
 
 /**
  * Boots a test server on an OS-assigned ephemeral port and returns the
@@ -675,4 +675,42 @@ export async function assertEncryptedCollectionsFeature({
     entry.features?.includes(feature),
     `expected the Encrypted Collections entry to advertise ${feature}`
   )
+}
+
+/**
+ * Gives a test provider's adapter backend the Space and Collection that a
+ * routed write lands in. The control plane keeps the real Metadata objects in
+ * the server's default backend, but a backend refuses any write into a
+ * container that has no Metadata object of its own.
+ * @param options {object}
+ * @param options.backend {StorageBackend}   the provider's adapter
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.controller {string}
+ * @returns {Promise<void>}
+ */
+export async function provisionProviderContainers({
+  backend,
+  spaceId,
+  collectionId,
+  controller
+}: {
+  backend: StorageBackend
+  spaceId: string
+  collectionId: string
+  controller: string
+}): Promise<void> {
+  await backend.writeSpace({
+    spaceId,
+    spaceMetadata: {
+      id: spaceId,
+      type: ['Space'],
+      controller: controller as IDID
+    }
+  })
+  await backend.writeCollection({
+    spaceId,
+    collectionId,
+    collectionMetadata: { id: collectionId, type: ['Collection'] }
+  })
 }

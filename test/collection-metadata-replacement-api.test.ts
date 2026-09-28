@@ -23,7 +23,11 @@ import type { FastifyInstance } from 'fastify'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import type { BackendProviderRegistry } from '../src/types.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import {
+  provisionProviderContainers,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('Collection Metadata full replacement', () => {
   let fastify: FastifyInstance,
@@ -96,6 +100,12 @@ describe('Collection Metadata full replacement', () => {
       assert.equal(created.status, 201)
       assert.deepStrictEqual(created.data.backend, { id: 'mem-1' })
 
+      await provisionProviderContainers({
+        backend: providerBackend,
+        spaceId,
+        collectionId: 'photos',
+        controller: alice.did
+      })
       await alice.was.request({
         path: `/space/${spaceId}/photos/r1`,
         method: 'PUT',

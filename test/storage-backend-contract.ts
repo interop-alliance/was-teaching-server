@@ -121,6 +121,13 @@ function abortedBinaryInput(declaredBytes: number): ResourceInput {
   }
 }
 
+/**
+ * Matches the 404 a write into a container with no Metadata object throws.
+ */
+function isNotFound(err: unknown): boolean {
+  return err instanceof ProblemError && err.statusCode === 404
+}
+
 const CONTROLLER = 'did:key:z6MkContractSuiteController' as IDID
 const CREATOR_ONE = 'did:key:z6MkContractSuiteCreatorOne' as IDID
 const CREATOR_TWO = 'did:key:z6MkContractSuiteCreatorTwo' as IDID
@@ -2380,16 +2387,18 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(after?.metaVersion, before?.metaVersion)
       })
 
-      it('a first metadata write on a placeholder (policy-created) row returns version 1', async () => {
+      it('a first metadata write after a refused policy write returns version 1', async () => {
         const { backend } = harness
-        // A policy write with no Collection Metadata creates a placeholder row
-        // (metadata NULL). The first real metadata write must start at 1,
-        // identically on both backends (the Postgres off-by-one fix).
-        await backend.writePolicy({
-          spaceId,
-          collectionId: 'ph',
-          policy: { rules: [] } as never
-        })
+        // A policy write with no Collection Metadata object is refused and
+        // leaves nothing behind, so the first real metadata write starts at 1.
+        await assert.rejects(
+          backend.writePolicy({
+            spaceId,
+            collectionId: 'ph',
+            policy: { rules: [] } as never
+          }),
+          isNotFound
+        )
         const { version } = await backend.writeCollection({
           spaceId,
           collectionId: 'ph',
@@ -3781,6 +3790,216 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         } finally {
           await harness.cleanup()
         }
+      })
+    })
+
+    describe('writes into a container with no Metadata object', () => {
+      let harness: BackendHarness
+      const policy = { type: 'PublicCanRead' } as unknown as Parameters<
+        StorageBackend['writePolicy']
+      >[0]['policy']
+      const json: ResourceInput = {
+        kind: 'json',
+        contentType: 'application/json',
+        data: { hello: 'world' }
+      }
+      beforeAll(async () => {
+        harness = await makeBackend()
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      /**
+       * Provisions a Space with one Collection holding one Resource, then
+       * deletes the Space: the request layer's existence check has passed by
+       * the time each write below reaches the backend.
+       */
+      async function deletedSpace(spaceId: string): Promise<void> {
+        const { backend } = harness
+        await provisionSpace(backend, spaceId)
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'r',
+          input: json
+        })
+        assert.ok(await backend.getSpaceMetadata({ spaceId }))
+        await backend.deleteSpace({ spaceId })
+      }
+
+      /**
+       * Re-creates the Space under the same id and asserts it adopted nothing
+       * from the previous life.
+       */
+      async function assertNothingAdopted(spaceId: string): Promise<void> {
+        const { backend } = harness
+        await backend.writeSpace({
+          spaceId,
+          spaceMetadata: {
+            id: spaceId,
+            type: ['Space'],
+            controller: CONTROLLER
+          }
+        })
+        const listing = await backend.listCollections({ spaceId })
+        assert.deepEqual(listing.items, [])
+        assert.equal(await backend.getPolicy({ spaceId }), undefined)
+        assert.equal(
+          await backend.getPolicy({ spaceId, collectionId: 'col' }),
+          undefined
+        )
+        assert.deepEqual(await backend.listBackends({ spaceId }), [])
+      }
+
+      it('refuses every write into a deleted Space, and the next Space under its id adopts nothing', async () => {
+        const { backend } = harness
+        const spaceId = 'space-gone'
+        await deletedSpace(spaceId)
+
+        await assert.rejects(
+          backend.writeResource({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'r2',
+            input: json
+          }),
+          isNotFound
+        )
+        await assert.rejects(
+          backend.writeChunk({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'r',
+            chunkIndex: 0,
+            input: binaryInput(Buffer.from('chunk'))
+          }),
+          isNotFound
+        )
+        await assert.rejects(
+          backend.writeCollection({
+            spaceId,
+            collectionId: 'col',
+            collectionMetadata: { id: 'col', type: ['Collection'] }
+          }),
+          isNotFound
+        )
+        await assert.rejects(
+          backend.writePolicy({ spaceId, policy }),
+          isNotFound
+        )
+        await assert.rejects(
+          backend.writePolicy({ spaceId, collectionId: 'col', policy }),
+          isNotFound
+        )
+        await assert.rejects(
+          backend.writeBackend({
+            spaceId,
+            backendId: 'ext-1',
+            record: {
+              id: 'ext-1',
+              provider: 'test-provider',
+              managedBy: 'external',
+              connection: { kind: 'inmem' }
+            } as StoredBackendRecord
+          }),
+          isNotFound
+        )
+        const pack = tar.pack()
+        pack.entry(
+          { name: 'manifest.yml' },
+          'ubc-version: "0.1"\ncontents:\n  space: https://example/spec#spaces\n'
+        )
+        pack.entry({ name: `space/${spaceId}/col/`, type: 'directory' })
+        pack.finalize()
+        await assert.rejects(
+          backend.importSpace({ spaceId, tarStream: Readable.from(pack) }),
+          isNotFound
+        )
+
+        assert.equal(await backend.getSpaceMetadata({ spaceId }), undefined)
+        assert.equal(
+          (await backend.listSpaces()).some(space => space.id === spaceId),
+          false
+        )
+        await assertNothingAdopted(spaceId)
+      })
+
+      it('a write racing the Space delete that removes its container leaves nothing behind', async () => {
+        const { backend } = harness
+        const spaceId = 'space-queued'
+        await provisionSpace(backend, spaceId)
+        // The request layer's existence check has passed; the delete and the
+        // write then race. Either the write lands first and the delete removes
+        // it, or it lands second and is refused. Neither order may leave data
+        // for the next Space under this id.
+        const deletion = backend.deleteSpace({ spaceId })
+        const write = backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'late',
+          input: json
+        })
+        await deletion
+        const [outcome] = await Promise.allSettled([write])
+        if (outcome!.status === 'rejected') {
+          assert.ok(isNotFound(outcome!.reason), String(outcome!.reason))
+        }
+        await assertNothingAdopted(spaceId)
+      })
+
+      it('refuses Resource, chunk and policy writes into a deleted Collection', async () => {
+        const { backend } = harness
+        const spaceId = 'space-col-gone'
+        await provisionSpace(backend, spaceId)
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'r',
+          input: json
+        })
+        await backend.deleteCollection({ spaceId, collectionId: 'col' })
+
+        await assert.rejects(
+          backend.writeResource({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'r2',
+            input: json
+          }),
+          isNotFound
+        )
+        await assert.rejects(
+          backend.writeChunk({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'r',
+            chunkIndex: 0,
+            input: binaryInput(Buffer.from('chunk'))
+          }),
+          isNotFound
+        )
+        await assert.rejects(
+          backend.writePolicy({ spaceId, collectionId: 'col', policy }),
+          isNotFound
+        )
+        const listing = await backend.listCollections({ spaceId })
+        assert.deepEqual(listing.items, [])
+      })
+
+      it('refuses a policy on a Collection that was never created, and lists no Collection for it', async () => {
+        const { backend } = harness
+        const spaceId = 'space-no-col'
+        await provisionSpace(backend, spaceId)
+        await assert.rejects(
+          backend.writePolicy({ spaceId, collectionId: 'phantom', policy }),
+          isNotFound
+        )
+        const listing = await backend.listCollections({ spaceId })
+        assert.deepEqual(
+          listing.items.map(collection => collection.id),
+          ['col']
+        )
       })
     })
 

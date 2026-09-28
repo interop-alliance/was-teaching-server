@@ -534,6 +534,15 @@ export interface StoredCollectionLog {
   version: number
 }
 
+/**
+ * The persistence contract every backend implements. No write creates a
+ * container implicitly. `writeSpace` is the only write that creates a Space,
+ * and `writeCollection` (or an import) the only one that creates a Collection.
+ * Every other write into a Space refuses with a 404 when the Space, and where
+ * the write names one the Collection, has no Metadata object at the moment of
+ * the write. The check is atomic with the write against a concurrent Delete
+ * Space or Delete Collection.
+ */
 export interface StorageBackend {
   /**
    * Optional logger the backend writes diagnostics through (Fastify's pino

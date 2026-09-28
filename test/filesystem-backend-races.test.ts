@@ -134,6 +134,99 @@ describe('FileSystemBackend races', () => {
     }
   })
 
+  /**
+   * The Space directory's entries, `[]` when it is absent.
+   */
+  const spaceDirEntries = async (): Promise<string[]> => {
+    try {
+      return await readdir(path.join(dataDir, 'spaces', spaceId))
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return []
+      }
+      throw err
+    }
+  }
+
+  it('a write whose prelude passed before a Space delete recreates no directory', async () => {
+    // Regression: the Space gate orders a write against a removal, but a write
+    // whose shared acquisition came after the removal released the exclusive
+    // side went ahead on the request layer's earlier existence check. Its
+    // `mkdir -p` recreated `spaces/<S>/<C>/` with live Resources and no
+    // `.space.<S>.json`, which the next Space created under the same id
+    // adopted.
+    //
+    // The prelude: the request layer finds the Space and the Collection.
+    assert.ok(await backend.getSpaceMetadata({ spaceId }))
+    assert.ok(await backend.getCollectionMetadata({ spaceId, collectionId }))
+    // Then Delete Space claims the gate, and the write queues behind it.
+    const deletion = backend.deleteSpace({ spaceId })
+    const writes = [
+      backend.writeResource({
+        spaceId,
+        collectionId,
+        resourceId: 'late-json',
+        input: {
+          kind: 'json',
+          contentType: 'application/json',
+          data: { late: true }
+        }
+      }),
+      backend.writeResource({
+        spaceId,
+        collectionId,
+        resourceId: 'late-blob',
+        input: {
+          kind: 'binary',
+          contentType: 'application/octet-stream',
+          stream: Readable.from(Buffer.from('late'))
+        }
+      }),
+      backend.writePolicy({
+        spaceId,
+        collectionId,
+        policy: { type: 'PublicCanRead' }
+      }),
+      backend.writeCollection({
+        spaceId,
+        collectionId: 'other',
+        collectionMetadata: { id: 'other', type: ['Collection'] }
+      })
+    ]
+    await deletion
+    const outcomes = await Promise.allSettled(writes)
+    for (const outcome of outcomes) {
+      assert.equal(outcome.status, 'rejected')
+      assert.equal(
+        (outcome as PromiseRejectedResult).reason.statusCode,
+        404,
+        String((outcome as PromiseRejectedResult).reason)
+      )
+    }
+    assert.deepEqual(await spaceDirEntries(), [])
+  })
+
+  it('a policy on a Collection with no Metadata object makes no phantom directory', async () => {
+    await assert.rejects(
+      backend.writePolicy({
+        spaceId,
+        collectionId: 'phantom',
+        policy: { type: 'PublicCanRead' }
+      }),
+      (err: { statusCode?: number }) => err.statusCode === 404
+    )
+    assert.equal(
+      (await spaceDirEntries()).includes('phantom'),
+      false,
+      'the refused policy write created the Collection directory'
+    )
+    const listing = await backend.listCollections({ spaceId })
+    assert.deepEqual(
+      listing.items.map(collection => collection.id),
+      [collectionId]
+    )
+  })
+
   it('an import takes each Resource lock, so it cannot interleave with a write', async () => {
     // Regression: `importSpace` did check-then-write per Resource with no
     // per-Resource lock, while every other write path holds one across its

@@ -54,6 +54,14 @@
   controller from its history log before storing it, as Update Space does. A DID
   whose log is absent or does not verify is refused as `invalid-request-body`
   (400, pointer `#/controller`), and the keystore keeps its current controller.
+- A write into a Space or Collection re-checks, atomically with the write, that
+  the container still has its Metadata object, and answers 404 otherwise. This
+  covers Resource, chunk, Collection Metadata, policy and backend-registration
+  writes and Import Space, on both backends. A write that raced a Delete Space
+  used to recreate the Space's storage with no Metadata object. The data was
+  unreachable, still counted against the quota, and was adopted by the next
+  Space created under the same id. A policy write no longer creates a Collection
+  that has no Metadata object.
 
 - Every response on a WAS or `/kms` route (including 304s, redirects and error
   responses) carries

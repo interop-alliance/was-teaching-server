@@ -18,6 +18,7 @@ import {
   StorageError,
   ResourceNotFoundError,
   SpaceNotFoundError,
+  CollectionNotFoundError,
   QuotaExceededError,
   CountQuotaExceededError,
   PayloadTooLargeError,
@@ -206,6 +207,25 @@ async function openFileStream(
   })
 }
 
+/**
+ * Whether a file exists. `ENOENT` (and `ENOTDIR`, a missing parent) resolve
+ * `false`; any other error is rethrown.
+ * @param filePath {string}
+ * @returns {Promise<boolean>}
+ */
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fsStat(filePath)
+    return true
+  } catch (err) {
+    const { code } = err as NodeJS.ErrnoException
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return false
+    }
+    throw err
+  }
+}
+
 export class FileSystemBackend implements StorageBackend {
   spacesDir: string
   /**
@@ -306,19 +326,79 @@ export class FileSystemBackend implements StorageBackend {
    * Space gate (see `#spaceGate`), so a concurrent container removal cannot
    * land in the middle of it. Shared, so writes to a Space still run
    * concurrently with one another.
+   *
+   * The gate alone orders a write against a removal. It does not stop a write
+   * whose shared acquisition comes after the removal released the exclusive
+   * side: the request layer's existence check ran before either, so the write
+   * would recreate the removed directory. Passing `container` closes that
+   * window. Once the gate is held, the Space must have a Metadata object
+   * (`SpaceNotFoundError`, 404), and so must the Collection when
+   * `container.collectionId` is given (`CollectionNotFoundError`, 404). No
+   * removal can land between that check and the write. Only Update Space,
+   * which creates the Space, omits it.
    * @param options {object}
    * @param options.spaceId {string}
+   * @param [options.container] {object}   the containers that must exist
+   * @param [options.container.collectionId] {string}
+   * @param [options.container.requestName] {string}   names the refused
+   *   operation in the 404
    * @param options.write {() => Promise<T>}   the write to run under the gate
    * @returns {Promise<T>}
    */
   async #underSpaceWrite<T>({
     spaceId,
+    container,
     write
   }: {
     spaceId: string
+    container?: { collectionId?: string; requestName?: string }
     write: () => Promise<T>
   }): Promise<T> {
-    return this.#spaceGate.read(spaceId, write)
+    return this.#spaceGate.read(spaceId, async () => {
+      if (container) {
+        await this.#assertContainersExist({ spaceId, ...container })
+      }
+      return write()
+    })
+  }
+
+  /**
+   * Refuses a write into a container that has no Metadata object: the Space's
+   * `.space.<id>.json`, and the Collection's `.collection.<id>.json` when a
+   * `collectionId` is given. Called under the Space gate (see
+   * `#underSpaceWrite`), so the answer holds until the write finishes.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.requestName] {string}
+   * @returns {Promise<void>}
+   */
+  async #assertContainersExist({
+    spaceId,
+    collectionId,
+    requestName
+  }: {
+    spaceId: string
+    collectionId?: string
+    requestName?: string
+  }): Promise<void> {
+    const spaceFile = path.join(
+      this.#spaceDir(spaceId),
+      spaceMetadataFileName(spaceId)
+    )
+    if (!(await fileExists(spaceFile))) {
+      throw new SpaceNotFoundError({ requestName })
+    }
+    if (collectionId === undefined) {
+      return
+    }
+    const collectionFile = path.join(
+      this.#collectionDir({ spaceId, collectionId }),
+      collectionMetadataFileName(collectionId)
+    )
+    if (!(await fileExists(collectionFile))) {
+      throw new CollectionNotFoundError({ requestName })
+    }
   }
 
   /**
@@ -1646,9 +1726,11 @@ export class FileSystemBackend implements StorageBackend {
     // The whole apply loop runs on the Space gate's shared side, so a container
     // removal cannot land between the import's `mkdir` and its file writes. The
     // helpers it calls (`writePolicy`) take the shared side again; the gate
-    // admits readers re-entrantly, so that nests safely.
+    // admits readers re-entrantly, so that nests safely. The destination Space
+    // must still exist once the gate is held.
     return this.#underSpaceWrite({
       spaceId,
+      container: { requestName: 'Import Space' },
       write: async () => {
         try {
           // An archived Space Metadata entry is 'skipped' until it is
@@ -2058,9 +2140,10 @@ export class FileSystemBackend implements StorageBackend {
     // distinct lock namespace from the per-Resource / unique-scan locks: a
     // metadata write and a Resource write touch different files. The Space
     // gate wraps it, as on every path-creating write: this one creates the
-    // Collection dir.
+    // Collection dir, so the Space must still exist once the gate is held.
     return this.#underSpaceWrite({
       spaceId,
+      container: {},
       write: () =>
         this.#writeMutex.run(
           this.#collectionMetaLockKey({ spaceId, collectionId }),
@@ -2609,8 +2692,10 @@ export class FileSystemBackend implements StorageBackend {
       resourceId
     })
     // Every branch below runs inside the Space gate's shared side (see
-    // `#spaceGate`): this path creates the Collection dir on its way past, so a
-    // container removal must not land in the middle of it.
+    // `#spaceGate`), and only once the gate has seen the Space and the
+    // Collection still exist, so a container removal can neither land in the
+    // middle of the write nor precede it unnoticed.
+    const container = { collectionId, requestName: 'Write Resource' }
     const write = () =>
       this.#writeMutex.run(lockKey, () =>
         this.#writeResourceLocked({
@@ -2648,6 +2733,7 @@ export class FileSystemBackend implements StorageBackend {
     if (blindedUnique || equalityUnique) {
       return this.#underSpaceWrite({
         spaceId,
+        container,
         write: () =>
           this.#writeMutex.run(
             this.#collectionLockKey({ spaceId, collectionId }),
@@ -2689,7 +2775,7 @@ export class FileSystemBackend implements StorageBackend {
           )
       })
     }
-    return this.#underSpaceWrite({ spaceId, write })
+    return this.#underSpaceWrite({ spaceId, container, write })
   }
 
   /**
@@ -2877,11 +2963,10 @@ export class FileSystemBackend implements StorageBackend {
       // exist" -- which would 500 a legitimate top-level primitive Resource. The
       // read path (`getResource`) streams the bytes back verbatim, so any
       // top-level JSON value -- object, array, or bare primitive -- round-trips.
-      // Ensure the Collection dir exists first (fs-json-store used to create it
-      // on the fly; a data-plane backend may not have seen this Collection yet).
+      // The Collection dir exists: `writeResource` checked its Metadata object
+      // under the Space gate, and no removal can land before this write ends.
       this.logger.info('Creating JSON resource')
       try {
-        await mkdir(path.dirname(filePath), { recursive: true })
         // Durable, atomic replacement (write-temp + fsync + rename + dir fsync):
         // the final path never observes a torn write, even across a crash.
         await atomicWriteFile({ filePath, data: serialized })
@@ -3562,6 +3647,7 @@ export class FileSystemBackend implements StorageBackend {
     if (uniqueIndexes !== undefined && uniqueIndexes.length > 0) {
       return this.#underSpaceWrite({
         spaceId,
+        container: { collectionId },
         write: () =>
           this.#writeMutex.run(
             this.#collectionLockKey({ spaceId, collectionId }),
@@ -3589,6 +3675,7 @@ export class FileSystemBackend implements StorageBackend {
     }
     return this.#underSpaceWrite({
       spaceId,
+      container: { collectionId },
       write: () =>
         this.#writeMutex.run(
           this.#resourceLockKey({ spaceId, collectionId, resourceId }),
@@ -3793,9 +3880,11 @@ export class FileSystemBackend implements StorageBackend {
     // Serialize on the parent Resource's lock key -- the same key
     // `deleteResource` takes -- so the parent-exists check, the write, and the
     // cascade delete cannot interleave (no orphan chunk). Under the Space gate,
-    // as every path-creating write is: this one creates the chunk dir.
+    // as every path-creating write is: this one creates the chunk dir, so the
+    // Space and Collection must still exist once the gate is held.
     return this.#underSpaceWrite({
       spaceId,
+      container: { collectionId, requestName: 'Write Chunk' },
       write: () =>
         this.#writeMutex.run(
           this.#resourceLockKey({ spaceId, collectionId, resourceId }),
@@ -4714,15 +4803,13 @@ export class FileSystemBackend implements StorageBackend {
     resourceId?: string
     policy: PolicyDocument
   }): Promise<void> {
-    // Creates the Space or Collection dir, so it runs under the Space gate.
+    // Under the Space gate, and only into a Space (and Collection) that still
+    // has its Metadata object, so a policy never materializes a container
+    // directory the listings would then report.
     return this.#underSpaceWrite({
       spaceId,
+      container: { collectionId },
       write: async () => {
-        if (collectionId !== undefined) {
-          await this.#ensureCollectionDir({ spaceId, collectionId })
-        } else {
-          await this.#ensureSpaceDir({ spaceId })
-        }
         await atomicWriteFile({
           filePath: this.#policyFile({ spaceId, collectionId, resourceId }),
           data: JSON.stringify(policy)
@@ -4796,11 +4883,12 @@ export class FileSystemBackend implements StorageBackend {
     backendId: string
     record: StoredBackendRecord
   }): Promise<void> {
-    // Creates the Space dir, so it runs under the Space gate.
+    // Under the Space gate, and only into a Space that still has its Metadata
+    // object, so a registration never recreates a removed Space dir.
     return this.#underSpaceWrite({
       spaceId,
+      container: {},
       write: async () => {
-        await this.#ensureSpaceDir({ spaceId })
         await atomicWriteFile({
           filePath: this.#backendFile({ spaceId, backendId }),
           data: JSON.stringify(record)

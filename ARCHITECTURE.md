@@ -272,28 +272,35 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   implementation (`implements StorageBackend` from `src/types.ts`). A backend
   offers no precondition primitive of its own to a client: the server serializes
   the write and evaluates `If-Match` / `If-None-Match: *` atomically with it, so
-  every backend honors both unconditionally. Each backend's `exportSpace` builds
-  the archive's entry tree out of its own storage and hands it to
-  `packSpaceArchive`; the per-Space archive codec itself -- the file-name
-  dialect, the `manifest.yml` document and the packer -- lives in
-  `@interop/space-archive`, shared with the wallets that read a backup, and
-  `src/lib/importTar.ts` reads the same dialect back. The codec is isomorphic
-  and resolves a streamx-based tar-stream `Pack`, which the backend wraps with
-  `Readable.from`. The Export Space handler passes this server's Service
-  Description to `exportSpace`, which the codec writes into the archive verbatim
-  as its `service.json` entry beside `manifest.yml`, so an importer can read
-  which specification versions and feature set the contents were written under
-  before it writes anything. It is informational, and `importTar.ts` ignores it.
-  The archive's `.space.<id>.json` entry is the stored Space Metadata object in
-  the filesystem backend's on-disk layout, with the server-derived `backends`
-  listing stamped on (`archivedSpaceMetadata` in `lib/spaceProjection.ts`, the
-  same module the served object is projected in). On the way back in, an import
-  reads that object's user-writable members only under an invocation of the
-  Space's root capability (decided off the verified result,
-  `verifiedRootInvocation` in `zcap.ts`: a dereferenced chain of one link is the
-  synthesized root alone), skips them under a delegated chain, and never
-  restores a server-derived member or `controller`. `name` is restored, by the
-  same write Update Space Metadata makes. `type` is immutable once a Space
+  every backend honors both unconditionally. No write creates a container
+  implicitly: only a Space Metadata write creates a Space, and only a Collection
+  Metadata write or an import creates a Collection. Every other write re-checks
+  that its Space, and its Collection where it names one, has a Metadata object,
+  under the lock it holds against Delete Space and Delete Collection (the
+  filesystem backend's Space gate, the Postgres `spaces` row). It is refused
+  with a 404 otherwise. The request layer's own existence check runs before that
+  lock, so a write racing a delete would otherwise recreate the removed
+  container. Each backend's `exportSpace` builds the archive's entry tree out of
+  its own storage and hands it to `packSpaceArchive`; the per-Space archive
+  codec itself -- the file-name dialect, the `manifest.yml` document and the
+  packer -- lives in `@interop/space-archive`, shared with the wallets that read
+  a backup, and `src/lib/importTar.ts` reads the same dialect back. The codec is
+  isomorphic and resolves a streamx-based tar-stream `Pack`, which the backend
+  wraps with `Readable.from`. The Export Space handler passes this server's
+  Service Description to `exportSpace`, which the codec writes into the archive
+  verbatim as its `service.json` entry beside `manifest.yml`, so an importer can
+  read which specification versions and feature set the contents were written
+  under before it writes anything. It is informational, and `importTar.ts`
+  ignores it. The archive's `.space.<id>.json` entry is the stored Space
+  Metadata object in the filesystem backend's on-disk layout, with the
+  server-derived `backends` listing stamped on (`archivedSpaceMetadata` in
+  `lib/spaceProjection.ts`, the same module the served object is projected in).
+  On the way back in, an import reads that object's user-writable members only
+  under an invocation of the Space's root capability (decided off the verified
+  result, `verifiedRootInvocation` in `zcap.ts`: a dereferenced chain of one
+  link is the synthesized root alone), skips them under a delegated chain, and
+  never restores a server-derived member or `controller`. `name` is restored, by
+  the same write Update Space Metadata makes. `type` is immutable once a Space
   exists, so it is checked rather than applied: an archive naming a different
   set of types than the destination's is refused as `invalid-import` (400)
   before anything is written, and one whose `type` breaks the shape rule Update
