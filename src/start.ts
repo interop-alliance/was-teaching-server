@@ -10,6 +10,25 @@ import { PostgresBackend } from './backends/postgres.js'
 import { assertFreshBuild, loadConfigFromEnv } from './config.default.js'
 
 /**
+ * Makes an uncaught exception or unhandled rejection loud: logs it through the
+ * Fastify logger at `fatal` and exits with code 1. Either one means a defect
+ * left the process in an unknown state, so it is not kept running, and the
+ * log line is what tells a restart apart from a clean one.
+ * @param fastify {import('fastify').FastifyInstance}
+ * @returns {void}
+ */
+function installProcessFaultHandlers(fastify: FastifyInstance): void {
+  process.on('uncaughtException', err => {
+    fastify.log.fatal({ err }, 'Uncaught exception; exiting')
+    process.exit(1)
+  })
+  process.on('unhandledRejection', reason => {
+    fastify.log.fatal({ err: reason }, 'Unhandled promise rejection; exiting')
+    process.exit(1)
+  })
+}
+
+/**
  * Loads the validated env config, builds the app via createApp(), and starts
  * listening. Exits the process with code 1 on startup failure.
  * @returns {Promise<void>}
@@ -65,6 +84,7 @@ export async function startServer(): Promise<void> {
           'upload may consume unbounded memory on buffered write paths.'
       )
     }
+    installProcessFaultHandlers(fastify)
     await fastify.listen({ port: config.port, host: '0.0.0.0' })
   } catch (err) {
     console.error('Server startup failed:', err)

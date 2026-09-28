@@ -3159,3 +3159,27 @@ controller, after which no request can authorize on the keystore and every key
 record in it is inaccessible. There is no delete route (WAS-70) and no rotation
 path that does not verify against the dead controller. With WAS-115 open, a
 delegate can inflict this on the controller.
+
+### WAS-119: Digest stream: handle the transform's error and drain it on early rejection
+
+- status: done
+- done: 2026-09-27
+- priority: high
+- labels: security, availability, digest
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [x] `captureRawBody` attaches an `error` listener to `DigestVerifyStream`
+        (or destroys the wrapped payload) so a digest mismatch on a body the
+        handler never consumed cannot become an uncaught exception
+  - [x] A test sends a streamed body with a mismatching `Digest` and well-formed
+        but unverifiable auth headers, and asserts the server answers 404 and
+        stays up
+  - [x] `start.ts` installs an `uncaughtException` / `unhandledRejection`
+        handler that logs through pino and exits non-zero, so the next such
+        defect is loud in the log rather than a silent restart
+
+When the handler rejects before reading `request.body` (bad signature, masked
+404, 405, a container-rule refusal), the transform's readable side is never
+drained and has no error listener. `_flush` throws on mismatch, `pipe`'s
+dest-error shim re-emits on a listener-less stream, and the process dies. One
+unauthenticated request per crash.

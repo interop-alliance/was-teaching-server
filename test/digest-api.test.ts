@@ -137,6 +137,30 @@ describe('Request Body Integrity (Digest header)', () => {
     assert.match(response.json().errors[0].detail, /malformed/)
   })
 
+  it('a streamed body with a mismatching Digest refused before it is read answers 404 and the server stays up', async () => {
+    // A raw (non-buffered) body passes through the digest-verifying transform.
+    // The placeholder signature fails verification, so the handler refuses
+    // before it reads the body, and the transform's mismatch error at
+    // end-of-stream has no consumer to receive it.
+    const target = `${serverUrl}/space/${spaceId}/${collectionId}/blob`
+    const response = await fastify.inject({
+      method: 'PUT',
+      url: `/space/${spaceId}/${collectionId}/blob`,
+      headers: {
+        authorization: placeholderAuthHeader(),
+        'capability-invocation': rootInvocation({ target }),
+        'content-type': 'application/octet-stream',
+        digest: digestHeaderFor('not the body')
+      },
+      payload: Buffer.from('the actual body')
+    })
+    assert.equal(response.statusCode, 404)
+    // Let the transform flush, then check the server still answers.
+    await new Promise(resolve => setImmediate(resolve))
+    const health = await fetch(`${serverUrl}/health`)
+    assert.equal(health.status, 200)
+  })
+
   it('a correct Digest passes the gate (reaches signature verification)', async () => {
     // Correct covered headers + a matching Digest: the digest hook accepts it,
     // so the request proceeds and is instead rejected by the (placeholder)

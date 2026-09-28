@@ -198,6 +198,11 @@ export async function captureRawBody(
     }
     const verify = new DigestVerifyStream(digestHeader)
     payload.on('error', err => verify.destroy(err))
+    // A request refused before its body is consumed (a failed signature, a
+    // masked 404, a 405) leaves the transform with no reader, and a mismatch
+    // raised at end-of-stream would then be an uncaught exception. A consumer
+    // that reads the body still receives the error through its own listener.
+    verify.on('error', () => {})
     return payload.pipe(verify)
   }
   // Buffer the body once: the single buffer handed to Fastify's parser is the

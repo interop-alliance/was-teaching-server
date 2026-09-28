@@ -40,6 +40,11 @@
   carries `write` or no `allowedAction`, is refused with the masked 404, so it
   can no longer rewrite the keystore's `controller`. Key operations under such a
   grant are unchanged.
+- A streamed body with a mismatching `Digest` no longer crashes the server when
+  the request is refused before the body is read. One unauthenticated request
+  could previously kill the process.
+- The server now logs an uncaught exception or unhandled rejection at `fatal`
+  and exits with code 1.
 - Update Keystore resolves and verifies a proposed self-hosted `did:webvh`
   controller from its history log before storing it, as Update Space does. A DID
   whose log is absent or does not verify is refused as `invalid-request-body`
