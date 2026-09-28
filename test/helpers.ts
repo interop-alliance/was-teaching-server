@@ -445,7 +445,8 @@ export function anHourFromNow(): Date {
  * @param options.capability {any}   the parent capability, or its root id
  * @param options.invocationTarget {string}
  * @param options.controller {string}
- * @param options.allowedActions {string[]}
+ * @param [options.allowedActions] {string[]}   omitted, the grant inherits
+ *   the parent's (none, under a root parent)
  * @param [options.expires] {Date}   an expiry within the parent's, for a
  *   sub-delegation; defaults to an hour from now
  * @returns {Promise<any>}
@@ -462,7 +463,7 @@ export async function delegate({
   capability: any
   invocationTarget: string
   controller: string
-  allowedActions: string[]
+  allowedActions?: string[]
   expires?: Date
 }): Promise<any> {
   return client({ signer }).delegate({

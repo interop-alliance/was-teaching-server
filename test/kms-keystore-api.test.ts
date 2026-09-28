@@ -13,9 +13,16 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { KmsClient } from '@interop/webkms-client'
+import { ProblemTypes } from '@interop/storage-core'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { client, startTestServer, zcapClients } from './helpers.js'
+import {
+  client,
+  delegate,
+  rootZcap,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('WebKMS keystore lifecycle (/kms/keystores)', () => {
   let fastify: FastifyInstance,
@@ -347,6 +354,85 @@ describe('WebKMS keystore lifecycle (/kms/keystores)', () => {
         })
       )
       assert.equal(err.status, 404)
+    })
+
+    // Update Keystore carries the `controller-only` container rule: a
+    // delegated keystore grant must not rewrite `controller`, which would hand
+    // its holder every key and leave the old controller unable to revoke.
+    for (const [label, allowedActions] of [
+      ["allowedAction: ['write']", ['write']],
+      ['no allowedAction (a full-keystore grant)', undefined]
+    ] as const) {
+      it(`a delegated update with ${label} is masked (404)`, async () => {
+        const created = await createKeystore(alice)
+        const zcap = await delegate({
+          signer: alice.signer,
+          capability: rootZcap({ target: created.id!, controller: alice.did }),
+          invocationTarget: created.id!,
+          controller: aliceDelegatedApp.did,
+          allowedActions: allowedActions && [...allowedActions]
+        })
+        const err = await requestError(
+          client({ signer: aliceDelegatedApp.signer }).request({
+            url: created.id!,
+            method: 'POST',
+            action: 'write',
+            capability: zcap,
+            json: { ...created, controller: aliceDelegatedApp.did, sequence: 1 }
+          })
+        )
+        assert.equal(err.status, 404)
+        assert.equal(err.data.type, ProblemTypes.NOT_FOUND)
+
+        // The stored config is untouched, and the controller still updates it
+        // with a direct root invocation.
+        const kmsClient = new KmsClient({ keystoreId: created.id })
+        const config = await kmsClient.getKeystore({
+          invocationSigner: alice.signer
+        })
+        assert.equal(config.controller, alice.did)
+        assert.equal(config.sequence, 0)
+        const result = await kmsClient.updateKeystore({
+          config: { ...created, sequence: 1 },
+          invocationSigner: alice.signer
+        })
+        assert.deepEqual(result.config, { ...created, sequence: 1 })
+      })
+    }
+
+    it('key operations still work under a full-keystore grant', async () => {
+      const created = await createKeystore(alice)
+      const zcap = await delegate({
+        signer: alice.signer,
+        capability: rootZcap({ target: created.id!, controller: alice.did }),
+        invocationTarget: created.id!,
+        controller: aliceDelegatedApp.did
+      })
+      assert.equal(zcap.allowedAction, undefined)
+      const app = client({ signer: aliceDelegatedApp.signer })
+      const generated = await app.request({
+        url: `${created.id}/keys`,
+        method: 'POST',
+        action: 'generateKey',
+        capability: zcap,
+        json: {
+          type: 'GenerateKeyOperation',
+          invocationTarget: { type: 'Ed25519VerificationKey2020' }
+        }
+      })
+      const { keyId } = generated.data as any
+      const signed = await app.request({
+        url: keyId,
+        method: 'POST',
+        action: 'sign',
+        capability: zcap,
+        json: {
+          type: 'SignOperation',
+          invocationTarget: keyId,
+          verifyData: Buffer.from('data').toString('base64url')
+        }
+      })
+      assert.equal(signed.status, 200)
     })
   })
 

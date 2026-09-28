@@ -35,6 +35,11 @@
   (400). A junk or tampered entry no longer leaves that DID's Spaces with no
   resolvable controller. A streamed append body is read under the buffered-body
   limit (413 past it).
+- Update Keystore (`POST /kms/keystores/:keystoreId`) accepts only a direct root
+  invocation by the stored controller. A delegated keystore grant, whether it
+  carries `write` or no `allowedAction`, is refused with the masked 404, so it
+  can no longer rewrite the keystore's `controller`. Key operations under such a
+  grant are unchanged.
 
 - Every response on a WAS or `/kms` route (including 304s, redirects and error
   responses) carries

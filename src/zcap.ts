@@ -538,8 +538,10 @@ export function verifiedRootInvocation({
  *   like `/kms/keystores`).
  * @param [options.containerRule] {ContainerRule}   the container rule this
  *   operation carries, when it is an unsafe method at a container URL
- *   (`lib/containerRule.ts`). The rule is keyed on the Space's canonical
- *   trailing-slash URL, which `attenuatedRootTarget` must then carry.
+ *   (`lib/containerRule.ts`). The `exact-delete` and `space-subtree-put`
+ *   rules are keyed on the Space's canonical trailing-slash URL, which
+ *   `attenuatedRootTarget` must then carry; `controller-only` reads no
+ *   target.
  * @param [options.maxChainLength] {number}   max delegation chain length,
  *   root included (see `verifyZcap`)
  * @param [options.maxDelegationTtl] {number}   max delegated-zcap TTL in
@@ -600,7 +602,14 @@ export async function handleZcapVerify({
   ) {
     throw new UnauthorizedError({ requestName })
   }
-  if (containerRule && !attenuatedRootTarget) {
+  // The other two rules compare the tail's target against the Space URL; the
+  // `controller-only` rule reads no target, so it also serves a container
+  // outside the WAS route family (a `/kms` keystore).
+  if (
+    containerRule &&
+    containerRule !== 'controller-only' &&
+    !attenuatedRootTarget
+  ) {
     throw new Error(
       'A container rule needs attenuatedRootTarget, the Space URL'
     )
@@ -616,7 +625,7 @@ export async function handleZcapVerify({
   // library's hook sees only the chain: its invocation-time bound needs the
   // target and action.
   const inspectors = [
-    ...(containerRule && attenuatedRootTarget
+    ...(containerRule
       ? [
           containerRuleInspector({
             rule: containerRule,

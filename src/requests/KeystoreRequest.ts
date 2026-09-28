@@ -283,7 +283,8 @@ export class KeystoreRequest {
    * POST /kms/keystores/:keystoreId
    * Update Keystore config. Verified against the *stored* config's controller
    * (`write`) -- so a controller change is authorized by the current
-   * controller and takes effect immediately. The body's `id` must match the
+   * controller and takes effect immediately. Only a direct root invocation
+   * passes (the `controller-only` container rule). The body's `id` must match the
    * keystore URL (400); the storage layer applies the update atomically iff
    * `sequence` is exactly previous+1 and `kmsModule` is unchanged (409
    * `KeystoreStateConflictError` otherwise; an omitted `kmsModule` defaults to
@@ -312,7 +313,11 @@ export class KeystoreRequest {
       request,
       keystoreId,
       allowedAction: 'write',
-      requestName
+      requestName,
+      // A delegated grant must not rewrite `controller`: that would hand the
+      // keystore's keys to its holder and leave the old controller no way to
+      // revoke it.
+      containerRule: 'controller-only'
     })
     // The stored `id` is the keystore's full URL; the submitted config must
     // name the same keystore it is posted to.

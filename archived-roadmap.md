@@ -3107,3 +3107,31 @@ The DID is read off the stored log's head entry (`state.id`), and the whole new
 body is verified against it; the stored log is not re-verified, since the body
 carries it verbatim. A stored `did.jsonl` that names no DID cannot be appended
 to. A deactivating append verifies and is accepted.
+
+### WAS-115: Container rule for Update Keystore
+
+- status: done (2026-09-27)
+- priority: high
+- labels: security, kms, zcap, authorization
+- discovered-from: whole-codebase review (2026-09-17), verified
+- touches:
+  - `src/requests/KeystoreRequest.ts` (`update`),
+    `src/requests/keystoreContext.ts` (`fetchKeystoreAndVerify`), `src/zcap.ts`
+    (the `controller-only` header short-circuit): shipped
+  - ARCHITECTURE.md's container-rule paragraph: shipped
+- acceptance:
+  - [x] `POST /kms/keystores/:keystoreId` refuses every delegated invocation off
+        the `Capability-Invocation` header, the way `PUT /space/<S>/meta` does;
+        a direct root invocation by the stored controller still succeeds
+  - [x] Tests: a delegated capability on the keystore URL with
+        `allowedAction: ['write']`, and one with no `allowedAction`, are both
+        refused with the masked 404; key operations under the same grants still
+        work
+
+`fetchKeystoreAndVerify({ allowedAction: 'write' })` passes no `containerRule`,
+so a delegated write grant, or the action-less "full keystore" delegation, POSTs
+a new `controller`. The original controller's invocations become 404s, and
+revocation is impossible since the root capability's controller is now the
+attacker. Every custodial key in the keystore is permanently the attacker's.
+This is the hazard the WAS container rule closes for `PUT /space/<S>/meta`, with
+no `/kms` analogue.

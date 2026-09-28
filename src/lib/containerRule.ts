@@ -16,12 +16,15 @@
  * delegator uses. It is not the whole answer for Delete Space: the
  * client-annex clause adds two signer-keyed bounds on top of it (below).
  *
- * Three rules, spread over four protected operations:
+ * Three rules, spread over five protected operations:
  *
  * - `controller-only` -- only a direct root-capability invocation passes. A
  *   delegated capability is refused whatever its `allowedAction`. Used by
- *   `PUT /space/<S>/meta` on an existing Space and by
- *   `DELETE /space/<S>/<C>/`. It turns on nothing but whether the
+ *   `PUT /space/<S>/meta` on an existing Space, by `DELETE /space/<S>/<C>/`,
+ *   and by Update Keystore (`POST /kms/keystores/<K>`), whose `controller`
+ *   rewrite is the keystore analogue of the Space Metadata one: a keystore
+ *   `write` grant, or an action-less one, would otherwise hand its holder
+ *   every key in the keystore. It turns on nothing but whether the
  *   `Capability-Invocation` header embeds a delegated capability, so
  *   `handleZcapVerify` decides it from that header before any verification
  *   work; the inspector refuses the same chains as a backstop. The other two
@@ -62,7 +65,7 @@
  * ladder-signed or transient-annex-signed chain that this rule would admit.
  *
  * A refusal binds the capability decision only, like every other chain
- * inspection failure. All four protected handlers are capability-only, so a
+ * inspection failure. All five protected handlers are capability-only, so a
  * refusal surfaces as the ordinary masked `not-found` denial.
  */
 import type { InspectCapabilityChain } from '@interop/zcap'
@@ -86,7 +89,9 @@ export type ContainerRule =
  *
  * @param options {object}
  * @param options.rule {ContainerRule}   the rule the invoked operation carries
- * @param options.spaceUrl {string}   the Space's canonical trailing-slash URL
+ * @param [options.spaceUrl] {string}   the Space's canonical trailing-slash
+ *   URL; `controller-only` reads none, and without one the other two rules
+ *   match no tail and refuse every delegated chain
  * @returns {InspectCapabilityChain}
  */
 export function containerRuleInspector({
@@ -94,7 +99,7 @@ export function containerRuleInspector({
   spaceUrl
 }: {
   rule: ContainerRule
-  spaceUrl: string
+  spaceUrl?: string
 }): InspectCapabilityChain {
   return async ({ capabilityChain }) => {
     if (capabilityChain.length <= 1) {

@@ -1211,34 +1211,6 @@ permanent the bad state is. Findings already tracked elsewhere are noted on
 those items (WAS-61, WAS-65, WAS-70, WAS-73, WAS-92, WAS-108) rather than
 re-filed.
 
-### WAS-115: Container rule for Update Keystore
-
-- status: todo
-- priority: high
-- labels: security, kms, zcap, authorization
-- discovered-from: whole-codebase review (2026-09-17), verified
-- touches:
-  - `src/requests/KeystoreRequest.ts` (`update`),
-    `src/requests/keystoreContext.ts` (`fetchKeystoreAndVerify`), `src/zcap.ts`
-    (the `controller-only` header short-circuit)
-  - ARCHITECTURE.md's container-rule paragraph
-- acceptance:
-  - [ ] `POST /kms/keystores/:keystoreId` refuses every delegated invocation off
-        the `Capability-Invocation` header, the way `PUT /space/<S>/meta` does;
-        a direct root invocation by the stored controller still succeeds
-  - [ ] Tests: a delegated capability on the keystore URL with
-        `allowedAction: ['write']`, and one with no `allowedAction`, are both
-        refused with the masked 404; key operations under the same grants still
-        work
-
-`fetchKeystoreAndVerify({ allowedAction: 'write' })` passes no `containerRule`,
-so a delegated write grant, or the action-less "full keystore" delegation, POSTs
-a new `controller`. The original controller's invocations become 404s, and
-revocation is impossible since the root capability's controller is now the
-attacker. Every custodial key in the keystore is permanently the attacker's.
-This is the hazard the WAS container rule closes for `PUT /space/<S>/meta`, with
-no `/kms` analogue.
-
 ### WAS-116: Resolve a proposed `did:webvh` keystore controller before storing it
 
 - status: todo

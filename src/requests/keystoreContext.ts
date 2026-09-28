@@ -74,6 +74,9 @@ export async function fetchKeystore({
  *   the request URL that are absent from the capability target (the List Keys
  *   route's `?limit` / `?cursor` pagination parameters select a page within an
  *   already-authorized target; the same treatment as List Keystores)
+ * @param [options.containerRule] {'controller-only'}   refuse every delegated
+ *   invocation (`lib/containerRule.ts`); carried by Update Keystore, whose
+ *   `controller` rewrite a keystore grant must not reach
  * @returns {Promise<{ config: KeystoreConfig, dereferencedChainLength: number }>}
  *   the stored config and the verified invocation's chain length, root
  *   included (a root invocation is 1) -- the input to the per-key
@@ -85,7 +88,8 @@ export async function fetchKeystoreAndVerify({
   allowedAction,
   requestName,
   allowTargetAttenuation = false,
-  allowTargetQuery = false
+  allowTargetQuery = false,
+  containerRule
 }: {
   request: FastifyRequest
   keystoreId: string
@@ -93,6 +97,7 @@ export async function fetchKeystoreAndVerify({
   requestName: string
   allowTargetAttenuation?: boolean
   allowTargetQuery?: boolean
+  containerRule?: 'controller-only'
 }): Promise<{ config: KeystoreConfig; dereferencedChainLength: number }> {
   const { serverUrl, storage } = request.server
   const config = await fetchKeystore({ request, keystoreId, requestName })
@@ -118,7 +123,8 @@ export async function fetchKeystoreAndVerify({
     webvh: { storage, serverUrl },
     revocation: { storage, scope: { keystoreId } },
     maxChainLength: KMS_MAX_CHAIN_LENGTH,
-    maxDelegationTtl: KMS_MAX_DELEGATION_TTL
+    maxDelegationTtl: KMS_MAX_DELEGATION_TTL,
+    containerRule
   })
   return {
     config,
