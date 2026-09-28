@@ -14,8 +14,10 @@
  *   to the signature. A multipart body is hashed by a tap on the raw request
  *   as `@fastify/multipart` reads it, and its verdict is awaited before the
  *   write.
- * - `verifyBodyDigest` (preValidation) enforces, for any request carrying a
- *   `Content-Type`: that the signature covers the `digest` header (MUST), that a
+ * - `verifyBodyDigest` (preValidation) runs on any request carrying a body
+ *   (`requestHasBody`), whatever its `Content-Type`. It refuses a body with no
+ *   `Content-Type` as `missing-content-type` (400). For a signed request it
+ *   then enforces that the signature covers the `digest` header (MUST), that a
  *   `Digest` header is present, and -- when the raw body was captured --
  *   independently recomputes the body digest and compares it (SHOULD). A
  *   missing, malformed, uncovered, or non-matching digest is rejected with
@@ -26,7 +28,7 @@ import { verifyDigest, verifyHeaderValue } from '@interop/http-digest-header'
 import { PassThrough, Transform, type Readable } from 'node:stream'
 import { createHash } from 'node:crypto'
 import { isJson } from './lib/isJson.js'
-import { InvalidDigestError } from './errors.js'
+import { InvalidDigestError, MissingContentTypeError } from './errors.js'
 import { readBoundedBody } from './lib/bodyLimit.js'
 
 /**
@@ -217,9 +219,33 @@ export async function captureRawBody(
 }
 
 /**
+ * True when a request carries a body: a `Content-Type`, a `Transfer-Encoding`,
+ * or a non-zero `Content-Length`. The framing headers count on their own
+ * because the catch-all parser hands a bodied request with no `Content-Type`
+ * to its handler as a raw stream, and Import Space and the governed-log `PUT`
+ * read that stream. A `Content-Length` of `0` is bodyless, as Fastify treats
+ * it.
+ * @param request {import('fastify').FastifyRequest}
+ * @returns {boolean}
+ */
+function requestHasBody(request: FastifyRequest): boolean {
+  const {
+    'content-type': contentType,
+    'content-length': contentLength,
+    'transfer-encoding': transferEncoding
+  } = request.headers
+  return (
+    Boolean(contentType) ||
+    transferEncoding !== undefined ||
+    (contentLength !== undefined && contentLength !== '0')
+  )
+}
+
+/**
  * preValidation hook: enforces the `Digest` header binding for any request that
- * carries a `Content-Type`. Bodyless requests (no `Content-Type`) and anonymous
- * reads (no parsed `request.zcap`) are passed through.
+ * carries a body (`requestHasBody`). A body with no `Content-Type` is refused
+ * with `missing-content-type` (400) first, signed or not. Bodyless requests and
+ * anonymous reads (no parsed `request.zcap`) are passed through.
  * @param request {import('fastify').FastifyRequest}
  * @param reply {import('fastify').FastifyReply}
  * @returns {Promise<void>}
@@ -228,14 +254,18 @@ export async function verifyBodyDigest(
   request: FastifyRequest,
   _reply: FastifyReply
 ): Promise<void> {
-  const contentType = request.headers['content-type']
-  // Bodyless requests carry no Content-Type and no Digest -- nothing to bind.
-  if (!contentType) {
+  // Bodyless requests carry no Digest -- nothing to bind.
+  if (!requestHasBody(request)) {
     return
+  }
+  // A body with no declared media type reaches no handler: the catch-all
+  // parser would hand it over as a raw stream, whatever the route expects.
+  if (!request.headers['content-type']) {
+    throw new MissingContentTypeError()
   }
   // No parsed auth headers: writes require auth (the auth hooks 401 first), so a
   // bodied request reaching here without `zcap` is a safe method that happens to
-  // carry a Content-Type; leave it to the handler's policy decision.
+  // carry a body; leave it to the handler's policy decision.
   const { zcap } = request
   if (!zcap) {
     return

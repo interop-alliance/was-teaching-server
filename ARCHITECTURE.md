@@ -69,10 +69,15 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `request.rawBody`; `verifyBodyDigest` (preValidation) requires the `digest`
   header be covered by the signature and recomputes/compares it against the body
   before capability verification (400 `invalid-authorization-header` on
-  failure). `captureRawBody` also bounds what it buffers, by the route's
-  `bodyLimit`, which `src/lib/bodyLimit.ts` derives from the active backend's
-  `maxUploadBytes`: the body is read in the hook (`readBoundedBody`, the one
-  bounded reader `readTextBody` shares), so an over-limit body is refused with
+  failure). It runs on any request that carries a body (a `Content-Type`, a
+  `Transfer-Encoding`, or a non-zero `Content-Length`), and refuses a body with
+  no `Content-Type` as `missing-content-type` (400) first. Without that, the
+  catch-all parser would hand such a body to Import Space or the governed-log
+  `PUT` as a raw stream the signature never covered. `captureRawBody` also
+  bounds what it buffers, by the route's `bodyLimit`, which
+  `src/lib/bodyLimit.ts` derives from the active backend's `maxUploadBytes`: the
+  body is read in the hook (`readBoundedBody`, the one bounded reader
+  `readTextBody` shares), so an over-limit body is refused with
   `payload-too-large` (413) at the byte that crosses the limit, before any
   signature is verified and whichever parser the media type reaches, and the
   refusal closes the connection. A signed multipart body, which

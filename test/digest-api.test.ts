@@ -137,6 +137,57 @@ describe('Request Body Integrity (Digest header)', () => {
     assert.match(response.json().errors[0].detail, /malformed/)
   })
 
+  it.each([
+    { method: 'POST' as const, route: 'import', label: 'Import Space' },
+    { method: 'PUT' as const, route: 'log', label: 'a governed-log PUT' }
+  ])(
+    'rejects $label with a body and no Content-Type, signed without `digest` (400)',
+    async ({ method, route }) => {
+      const url =
+        route === 'import'
+          ? `/space/${spaceId}/import`
+          : `/space/${spaceId}/${collectionId}/meta/log`
+      const response = await fastify.inject({
+        method,
+        url,
+        headers: {
+          authorization: placeholderAuthHeader({
+            covered:
+              '(key-id) (created) (expires) (request-target) host ' +
+              'capability-invocation'
+          }),
+          'capability-invocation': rootInvocation({
+            target: `${serverUrl}/space/${spaceId}/`
+          })
+        },
+        payload: Buffer.from('{"state":{}}\n')
+      })
+      // Refused at the hook, before the handler reads the raw stream.
+      assert.equal(response.statusCode, 400)
+      assert.match(response.json().type, /missing-content-type/)
+    }
+  )
+
+  it('a signed bodyless request with no Content-Type needs no Digest', async () => {
+    // Content-Length 0 is bodyless: the request passes the digest gate and is
+    // refused by the (placeholder) signature verification instead.
+    const target = `${serverUrl}/space/${spaceId}/${collectionId}/r6`
+    const response = await fastify.inject({
+      method: 'DELETE',
+      url: `/space/${spaceId}/${collectionId}/r6`,
+      headers: {
+        authorization: placeholderAuthHeader({
+          covered:
+            '(key-id) (created) (expires) (request-target) host ' +
+            'capability-invocation'
+        }),
+        'capability-invocation': rootInvocation({ target }),
+        'content-length': '0'
+      }
+    })
+    assert.doesNotMatch(response.json().errors[0].detail, /Digest|digest/)
+  })
+
   it('a streamed body with a mismatching Digest refused before it is read answers 404 and the server stays up', async () => {
     // A raw (non-buffered) body passes through the digest-verifying transform.
     // The placeholder signature fails verification, so the handler refuses

@@ -1240,31 +1240,6 @@ so a fresh `did:key` provisions freely with no token, defeating both the token
 and the per-controller cap (one `did:key` per Space costs nothing). README
 promises the gate covers Space creation.
 
-### WAS-121: Gate Request Body Integrity on body presence, not `Content-Type`
-
-- status: todo
-- priority: high
-- labels: security, digest
-- discovered-from: whole-codebase review (2026-09-17), verified
-- acceptance:
-  - [ ] `verifyBodyDigest` and `captureRawBody` treat a request as bodied when
-        it carries `content-length` or `transfer-encoding`, whatever its
-        `Content-Type`; a bodied request whose signature does not cover `digest`
-        is refused 400
-  - [ ] Tests: `POST /space/S/import` and `PUT .../meta/log` with a body and no
-        `Content-Type`, signed without `digest`, are refused
-  - [ ] Decide whether the catch-all `'*'` parser should keep accepting a body
-        with no `Content-Type` at all
-
-The gate is `if (!contentType) return`. The plugin's `'*'` parser routes a
-bodied request with no `Content-Type` to the handler as a raw stream, so no
-`Digest` is demanded and nothing is hashed. Import Space untars `request.body`
-directly and the governed-log `PUT` reads it as text, so both accept a body the
-signature never covered; a captured signature is replayable with a different
-body inside its `(created)`/`(expires)` window. Resource writes are protected
-only by `resolveResourceInput` refusing a missing `Content-Type`, a handler
-accident rather than a hook guarantee.
-
 ### WAS-125: Re-check container existence inside the write lock
 
 - status: todo

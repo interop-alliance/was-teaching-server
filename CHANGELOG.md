@@ -43,6 +43,11 @@
 - A streamed body with a mismatching `Digest` no longer crashes the server when
   the request is refused before the body is read. One unauthenticated request
   could previously kill the process.
+- The digest checks now apply to any request that carries a body, not only one
+  with a `Content-Type`. A bodied request with no `Content-Type` is refused as
+  `missing-content-type` (400) before it reaches a handler. Before, Import Space
+  and a governed-log `PUT` accepted such a body without a signed `Digest`, so a
+  captured signature could be replayed with a different body.
 - The server now logs an uncaught exception or unhandled rejection at `fatal`
   and exits with code 1.
 - Update Keystore resolves and verifies a proposed self-hosted `did:webvh`

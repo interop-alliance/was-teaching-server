@@ -3211,3 +3211,39 @@ than piped (`verifyDigestOfTappedStream`), and the multipart write path awaits
 `request.multipartDigest` before storing. `test/resource-api.test.ts` covers a
 multipart create, a multipart `PUT` update, and a swapped body under a valid
 signature.
+
+### WAS-121: Gate Request Body Integrity on body presence, not `Content-Type`
+
+- status: done (2026-09-27)
+- priority: high
+- labels: security, digest
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [x] `verifyBodyDigest` and `captureRawBody` treat a request as bodied when
+        it carries `content-length` or `transfer-encoding`, whatever its
+        `Content-Type`; a bodied request whose signature does not cover `digest`
+        is refused 400
+  - [x] Tests: `POST /space/S/import` and `PUT .../meta/log` with a body and no
+        `Content-Type`, signed without `digest`, are refused
+  - [x] Decide whether the catch-all `'*'` parser should keep accepting a body
+        with no `Content-Type` at all
+
+The gate is `if (!contentType) return`. The plugin's `'*'` parser routes a
+bodied request with no `Content-Type` to the handler as a raw stream, so no
+`Digest` is demanded and nothing is hashed. Import Space untars `request.body`
+directly and the governed-log `PUT` reads it as text, so both accept a body the
+signature never covered; a captured signature is replayable with a different
+body inside its `(created)`/`(expires)` window. Resource writes are protected
+only by `resolveResourceInput` refusing a missing `Content-Type`, a handler
+accident rather than a hook guarantee.
+
+Resolution: `verifyBodyDigest` treats a request as bodied when it carries a
+`Content-Type`, a `Transfer-Encoding`, or a non-zero `Content-Length`.
+`captureRawBody` needed no change, since it already hashes a streamed body
+whenever a `Digest` is sent. On the third point, the catch-all parser keeps
+matching every media type, but a bodied request with no `Content-Type` never
+reaches it: the hook refuses it as `missing-content-type` (400), the error the
+spec already names for a Resource write without one. So the Import Space and
+governed-log tests are refused with that type rather than
+`invalid-authorization-header`. The conformance case for a Resource write with
+no `Content-Type` still gets `missing-content-type`.
