@@ -3183,3 +3183,31 @@ When the handler rejects before reading `request.body` (bad signature, masked
 drained and has no error listener. `_flush` throws on mismatch, `pipe`'s
 dest-error shim re-emits on a listener-less stream, and the process dies. One
 unauthenticated request per crash.
+
+### WAS-120: Digest transform breaks multipart uploads
+
+- status: done (2026-09-27)
+- priority: high
+- labels: digest, multipart, correctness
+- discovered-from: whole-codebase review (2026-09-17), verified with a signed
+  client
+- acceptance:
+  - [x] A signed `multipart/form-data` Resource write with a correct `Digest`
+        succeeds (today every one answers 400 "missing a file part")
+  - [x] The multipart body is still digest-bound: either the transform is
+        bypassed for multipart and busboy's consumed bytes are hashed, or
+        `@fastify/multipart` is fed the transform's output instead of
+        `request.raw`
+  - [x] `test/` gains a multipart create and update case (none exists today)
+
+`captureRawBody` pipes `request.raw` into the transform at `preParsing`, which
+puts it into flowing mode. `@fastify/multipart` reads `request.raw` directly
+when the handler calls `request.parts()`, by which time the leading boundary and
+part headers are gone. Since unsigned writes are 401, every multipart write
+carries a `Digest` and hits this.
+
+Shipped with the body-limit change: a signed multipart body is tapped rather
+than piped (`verifyDigestOfTappedStream`), and the multipart write path awaits
+`request.multipartDigest` before storing. `test/resource-api.test.ts` covers a
+multipart create, a multipart `PUT` update, and a swapped body under a valid
+signature.

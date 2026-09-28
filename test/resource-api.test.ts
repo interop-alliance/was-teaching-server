@@ -1229,6 +1229,38 @@ describe('Resource API', () => {
       assert.equal(stored.name, 'form upload')
     })
 
+    it('[signed] a multipart PUT replaces an existing Resource', async () => {
+      await aliceCredentials.put('multipart-put', { name: 'before' })
+      const url = `${serverUrl}/space/${alice.space1.id}/credentials/multipart-put`
+      const boundary = 'was-test-boundary'
+      const body = new TextEncoder().encode(
+        `--${boundary}\r\n` +
+          'Content-Disposition: form-data; name="file"; filename="a.json"\r\n' +
+          'Content-Type: application/json\r\n\r\n' +
+          '{"name":"after"}\r\n' +
+          `--${boundary}--\r\n`
+      )
+      const headers = await signCapabilityInvocation({
+        url,
+        method: 'PUT',
+        headers: {
+          date: new Date().toUTCString(),
+          'content-type': `multipart/form-data; boundary=${boundary}`
+        },
+        body,
+        invocationSigner: alice.signer,
+        capabilityAction: 'PUT'
+      })
+      const response = await fetch(url, {
+        method: 'PUT',
+        headers,
+        body: new Blob([body])
+      })
+      assert.ok(response.ok, await response.text())
+      const stored: any = await aliceCredentials.get('multipart-put')
+      assert.equal(stored.name, 'after')
+    })
+
     it('[signed] a multipart body that does not match its signed Digest is refused', async () => {
       // The digest is taken over the multipart body as busboy reads it, so a
       // body swapped under a valid signature still fails.

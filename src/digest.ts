@@ -8,10 +8,12 @@
  *   while handing the same bytes to Fastify's parser, so the digest can be
  *   recomputed against what the client actually signed. Re-serializing the parsed body is
  *   not guaranteed byte-identical, so we keep the raw bytes instead. Streamed
- *   bodies (multipart uploads, tar imports, raw blobs) are not buffered; instead
- *   they pass through a hashing transform that verifies the `Digest`
- *   incrementally at end-of-stream, so large/binary uploads keep streaming yet
- *   are still bound to the signature.
+ *   bodies (tar imports, raw blobs) are not buffered; instead they pass through
+ *   a hashing transform that verifies the `Digest` incrementally at
+ *   end-of-stream, so large/binary uploads keep streaming yet are still bound
+ *   to the signature. A multipart body is hashed by a tap on the raw request
+ *   as `@fastify/multipart` reads it, and its verdict is awaited before the
+ *   write.
  * - `verifyBodyDigest` (preValidation) enforces, for any request carrying a
  *   `Content-Type`: that the signature covers the `digest` header (MUST), that a
  *   `Digest` header is present, and -- when the raw body was captured --
@@ -259,8 +261,8 @@ export async function verifyBodyDigest(
 
   // SHOULD: independently recompute and compare, when the raw body was captured.
   // Streamed bodies (multipart, tar import, raw blobs) are not buffered here;
-  // `captureRawBody` has already wrapped them in a `DigestVerifyStream` that
-  // verifies the digest incrementally as the body is consumed.
+  // `captureRawBody` has already wrapped them in a `DigestVerifyStream`, or
+  // tapped a multipart body, to verify the digest as the body is consumed.
   if (request.rawBody === undefined) {
     return
   }

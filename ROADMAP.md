@@ -1240,28 +1240,6 @@ so a fresh `did:key` provisions freely with no token, defeating both the token
 and the per-controller cap (one `did:key` per Space costs nothing). README
 promises the gate covers Space creation.
 
-### WAS-120: Digest transform breaks multipart uploads
-
-- status: todo
-- priority: high
-- labels: digest, multipart, correctness
-- discovered-from: whole-codebase review (2026-09-17), verified with a signed
-  client
-- acceptance:
-  - [ ] A signed `multipart/form-data` Resource write with a correct `Digest`
-        succeeds (today every one answers 400 "missing a file part")
-  - [ ] The multipart body is still digest-bound: either the transform is
-        bypassed for multipart and busboy's consumed bytes are hashed, or
-        `@fastify/multipart` is fed the transform's output instead of
-        `request.raw`
-  - [ ] `test/` gains a multipart create and update case (none exists today)
-
-`captureRawBody` pipes `request.raw` into the transform at `preParsing`, which
-puts it into flowing mode. `@fastify/multipart` reads `request.raw` directly
-when the handler calls `request.parts()`, by which time the leading boundary and
-part headers are gone. Since unsigned writes are 401, every multipart write
-carries a `Digest` and hits this.
-
 ### WAS-121: Gate Request Body Integrity on body presence, not `Content-Type`
 
 - status: todo
