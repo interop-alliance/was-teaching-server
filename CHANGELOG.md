@@ -1,5 +1,13 @@
 # History
 
+## 0.40.0 - TBD
+
+### Changed
+
+- The JSON content-type check comes from `@interop/storage-core` (0.21.0) as
+  `isJsonContentType`, the rule was-client shares. The local `isJson` helper is
+  removed.
+
 ## 0.39.0 - 2026-09-28
 
 ### Added

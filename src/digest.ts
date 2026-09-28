@@ -27,7 +27,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify'
 import { verifyDigest, verifyHeaderValue } from '@interop/http-digest-header'
 import { PassThrough, Transform, type Readable } from 'node:stream'
 import { createHash } from 'node:crypto'
-import { isJson } from './lib/isJson.js'
+import { isJsonContentType } from '@interop/storage-core'
 import { InvalidDigestError, MissingContentTypeError } from './errors.js'
 import { readBoundedBody } from './lib/bodyLimit.js'
 
@@ -41,7 +41,7 @@ import { readBoundedBody } from './lib/bodyLimit.js'
  */
 function isBufferableBody(contentType: string | undefined): boolean {
   return (
-    isJson({ contentType }) ||
+    isJsonContentType(contentType) ||
     (typeof contentType === 'string' && contentType.startsWith('text/'))
   )
 }

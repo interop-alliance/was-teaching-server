@@ -1708,7 +1708,7 @@ the desktop learns nothing.
 - discovered-from: whole-codebase review (2026-09-17), verified
 - acceptance:
   - [ ] The `+json` parser regex is anchored so `application/ld+jsonl` and
-        `application/ld+json-seq` take the binary path `isJson()` promises,
+        `application/ld+json-seq` take the binary path `isJsonContentType()` promises,
         instead of handing a parsed object to `pipeline` (500)
   - [ ] The multipart branch matches case-insensitively and only
         `multipart/form-data`; `multipart/mixed` and other multipart types are

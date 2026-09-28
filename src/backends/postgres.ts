@@ -42,6 +42,7 @@ import {
   KeyIdConflictError,
   DuplicateRevocationError
 } from '../errors.js'
+import { isJsonContentType } from '@interop/storage-core'
 import { applyMigrations } from './postgresSchema.js'
 import {
   extractTarEntries,
@@ -80,7 +81,6 @@ import {
 import { decodeCursor } from '../lib/cursor.js'
 import { policyGrants } from '../policy.js'
 import { revocationFileName } from '../lib/revocations.js'
-import { isJson } from '../lib/isJson.js'
 import {
   normalizeMetadataWrite,
   stampCollectionMetadata,
@@ -1991,7 +1991,7 @@ export class PostgresBackend implements StorageBackend {
         resourceId,
         input.contentType,
         content,
-        isJson({ contentType: input.contentType }),
+        isJsonContentType(input.contentType),
         content.length,
         validator.generation,
         validator.version,
@@ -4740,7 +4740,7 @@ export class PostgresBackend implements StorageBackend {
         resourceId,
         contentType,
         body,
-        isJson({ contentType }),
+        isJsonContentType(contentType),
         body?.length ?? 0,
         resolveGeneration(sidecar?.generation),
         sidecar?.version ?? 1,

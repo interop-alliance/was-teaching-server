@@ -300,8 +300,8 @@ async function wasPlugin(
   // would otherwise be rejected with a 415. The regex deliberately requires a
   // non-`+` suffix before `+json`, so it never shadows the built-in parser for
   // plain `application/json`. Registered on the root instance so every route
-  // group inherits it; `isJson()` already treats `+json` as JSON downstream
-  // (digest capture, resource-input resolution).
+  // group inherits it; `isJsonContentType()` already treats `+json` as JSON
+  // downstream (digest capture, resource-input resolution).
   fastify.addContentTypeParser(
     /^application\/[^+]+\+json/,
     { parseAs: 'string' },

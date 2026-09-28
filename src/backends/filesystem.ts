@@ -42,6 +42,7 @@ import {
   metaSidecarFileId,
   restoredSpaceMetadata
 } from '../lib/importTar.js'
+import { isJsonContentType } from '@interop/storage-core'
 import { collectionPath, spacePath } from '../lib/paths.js'
 import {
   encodeFilenameSegment,
@@ -75,7 +76,6 @@ import {
 import { revocationFileName } from '../lib/revocations.js'
 import { policyGrants } from '../policy.js'
 import { KeyedMutex, KeyedReadWriteLock } from '../lib/keyedMutex.js'
-import { isJson } from '../lib/isJson.js'
 import {
   normalizeMetadataWrite,
   stampCollectionMetadata,
@@ -4347,7 +4347,7 @@ export class FileSystemBackend implements StorageBackend {
         }
     const liveDescriptors = [...liveFileById].map(
       async ([resourceId, live]): Promise<Descriptor | undefined> => {
-        if (!isJson({ contentType: live.contentType })) {
+        if (!isJsonContentType(live.contentType)) {
           return undefined
         }
         const sidecar = await this.readMetaSidecar({
@@ -4410,7 +4410,7 @@ export class FileSystemBackend implements StorageBackend {
         })
         if (
           sidecar?.deleted !== true ||
-          !isJson({ contentType: sidecar.contentType })
+          !isJsonContentType(sidecar.contentType)
         ) {
           return undefined
         }
@@ -4686,14 +4686,14 @@ export class FileSystemBackend implements StorageBackend {
         .filter(
           ({ resourceId, contentType }) =>
             resourceId !== excludeResourceId &&
-            (!jsonOnly || isJson({ contentType }))
+            (!jsonOnly || isJsonContentType(contentType))
         )
         .map(async ({ resourceId, fileName, contentType }) => {
           // Parse the content only for a JSON representation; a blob contributes
           // no content-sourced attributes (its `custom` still makes it
           // queryable). Unparsable JSON is treated as no content.
           let content: unknown
-          if (isJson({ contentType })) {
+          if (isJsonContentType(contentType)) {
             try {
               content = JSON.parse(
                 await fs.promises.readFile(
@@ -4738,7 +4738,7 @@ export class FileSystemBackend implements StorageBackend {
       return undefined
     }
     const { contentType } = parseResourceFileName(path.basename(filePath))
-    if (!isJson({ contentType })) {
+    if (!isJsonContentType(contentType)) {
       return undefined
     }
     try {

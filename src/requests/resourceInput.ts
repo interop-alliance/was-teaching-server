@@ -6,12 +6,12 @@
  */
 import type { FastifyRequest } from 'fastify'
 import { Readable } from 'node:stream'
-import { isJson } from '../lib/isJson.js'
 import {
   MissingContentTypeError,
   InvalidRequestBodyError,
   PayloadTooLargeError
 } from '../errors.js'
+import { isJsonContentType } from '@interop/storage-core'
 import type { ResourceInput, StorageBackend } from '../types.js'
 
 /**
@@ -32,7 +32,7 @@ export async function resolveResourceInput(
     throw new MissingContentTypeError({ requestName: 'Write Resource' })
   }
 
-  if (isJson({ contentType })) {
+  if (isJsonContentType(contentType)) {
     return { kind: 'json', contentType, data: request.body }
   }
   if (contentType.startsWith('multipart')) {
