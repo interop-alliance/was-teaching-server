@@ -290,6 +290,19 @@ describe('loadConfigFromEnv', () => {
     assert.equal(config.discloseVersion, false)
   })
 
+  it('refuses an empty or whitespace WAS_ONBOARDING_TOKEN', () => {
+    for (const token of ['', '   ']) {
+      assert.throws(
+        () =>
+          loadConfigFromEnv({
+            SERVER_URL: 'http://localhost:3002',
+            WAS_ONBOARDING_TOKEN: token
+          }),
+        /WAS_ONBOARDING_TOKEN is set but empty/
+      )
+    }
+  })
+
   it('reads an empty WAS_DATA_DIR as unset', () => {
     const config = loadConfigFromEnv({
       SERVER_URL: 'http://localhost:3002',

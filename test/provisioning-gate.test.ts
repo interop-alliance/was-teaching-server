@@ -1,10 +1,11 @@
 /**
  * Provisioning gate tests (Vitest): the `authorizeProvisioning` plugin option
  * and the built-in onboarding-token check (`onboardingToken` /
- * `WAS_ONBOARDING_TOKEN`) over the two open provisioning endpoints
- * (`POST /spaces/`, `POST /kms/keystores`). Covers the onboarding-token happy
- * and error paths, custom `grant`/`deny`/`verify` decisions, the registration
- * -time mutual-exclusion guard, and the default (neither configured) zcap path
+ * `WAS_ONBOARDING_TOKEN`) over the open provisioning endpoints
+ * (`POST /spaces/`, Create Space by Id at `PUT /space/:spaceId/meta`,
+ * `POST /kms/keystores`). Covers the onboarding-token happy and error paths,
+ * custom `grant`/`deny`/`verify` decisions and a fail-closed unknown decision,
+ * the registration-time guards, and the default (neither configured) zcap path
  * as a regression guard.
  */
 import { it, describe, afterEach } from 'vitest'
@@ -69,6 +70,33 @@ describe('Provisioning gate', () => {
   /** A minimal Create Space body naming Alice as controller. */
   function createSpaceBody(id: string) {
     return { id, name: 'Provisioned Space', controller: alice.did }
+  }
+
+  /**
+   * PUTs a Space Metadata body with a Bearer token and no zcap invocation.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.token {string}
+   * @param options.body {object}
+   * @returns {Promise<Response>}
+   */
+  async function putMetaWithBearer({
+    spaceId,
+    token,
+    body
+  }: {
+    spaceId: string
+    token: string
+    body: object
+  }): Promise<Response> {
+    return fetch(new URL(`/space/${spaceId}/meta`, serverUrl), {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    })
   }
 
   describe('onboardingToken configured', () => {
@@ -184,6 +212,94 @@ describe('Provisioning gate', () => {
       assert.equal(response.headers.get('location'), '/spaces/')
     })
 
+    it('Create Space by Id with a correct Bearer token creates the space (201)', async () => {
+      const { backend } = await boot({ onboardingToken: TOKEN })
+      const spaceId = `token-put-${crypto.randomUUID()}`
+      const response = await putMetaWithBearer({
+        spaceId,
+        token: TOKEN,
+        body: createSpaceBody(spaceId)
+      })
+      assert.equal(response.status, 201)
+      assert.equal(
+        response.headers.get('location'),
+        `${serverUrl}/space/${spaceId}/`
+      )
+      const stored = await backend.getSpaceMetadata({ spaceId })
+      assert.equal(stored?.controller, alice.did)
+      // A token-provisioned create carries no invocation to record.
+      assert.equal(stored?.createdBy, undefined)
+    })
+
+    it('Create Space by Id with a zcap-signed invocation but no token returns 401', async () => {
+      const { backend } = await boot({ onboardingToken: TOKEN })
+      const spaceId = `signed-put-${crypto.randomUUID()}`
+      let thrown: any
+      try {
+        await alice.was.request({
+          path: `/space/${spaceId}/meta`,
+          method: 'PUT',
+          json: createSpaceBody(spaceId)
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown, 'expected a signed create-by-PUT with no token to fail')
+      assert.equal(thrown.response.status, 401)
+      assert.equal(await backend.getSpaceMetadata({ spaceId }), undefined)
+    })
+
+    it('Create Space by Id with a wrong Bearer token returns 403', async () => {
+      const { backend } = await boot({ onboardingToken: TOKEN })
+      const spaceId = `wrong-put-${crypto.randomUUID()}`
+      const response = await putMetaWithBearer({
+        spaceId,
+        token: 'not-the-token',
+        body: createSpaceBody(spaceId)
+      })
+      assert.equal(response.status, 403)
+      assert.equal(await backend.getSpaceMetadata({ spaceId }), undefined)
+    })
+
+    it('an update of an existing Space by PUT is not gated (204)', async () => {
+      await boot({ onboardingToken: TOKEN })
+      const spaceId = `token-update-${crypto.randomUUID()}`
+      const created = await fetch(new URL('/spaces/', serverUrl), {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(createSpaceBody(spaceId))
+      })
+      assert.equal(created.status, 201)
+      const updated = await alice.was.request({
+        path: `/space/${spaceId}/meta`,
+        method: 'PUT',
+        json: { ...createSpaceBody(spaceId), name: 'Renamed' }
+      })
+      assert.equal(updated.status, 204)
+    })
+
+    it('a Bearer token cannot update an existing Space by PUT', async () => {
+      const { backend } = await boot({ onboardingToken: TOKEN })
+      const spaceId = `token-no-update-${crypto.randomUUID()}`
+      await backend.writeSpace({
+        spaceId,
+        spaceMetadata: { id: spaceId, type: ['Space'], controller: alice.did }
+      })
+      const response = await putMetaWithBearer({
+        spaceId,
+        token: TOKEN,
+        body: { ...createSpaceBody(spaceId), name: 'Hijack' }
+      })
+      // An existing Space is not gated, so the Bearer header reaches the
+      // capability-invocation path and fails there.
+      assert.equal(response.status, 401)
+      const stored = await backend.getSpaceMetadata({ spaceId })
+      assert.equal(stored?.name, undefined)
+    })
+
     it('non-provisioning routes are unaffected: anonymous GET /spaces/ is 200', async () => {
       await boot({ onboardingToken: TOKEN })
       const response = await fetch(new URL('/spaces/', serverUrl))
@@ -221,6 +337,116 @@ describe('Provisioning gate', () => {
       assert.equal(stored?.controller, alice.did)
     })
 
+    it("a 'deny' decision returns 403 on Create Space by Id", async () => {
+      const { backend } = await boot({
+        authorizeProvisioning: async () => 'deny' as const
+      })
+      const spaceId = `denied-put-${crypto.randomUUID()}`
+      let thrown: any
+      try {
+        await alice.was.request({
+          path: `/space/${spaceId}/meta`,
+          method: 'PUT',
+          json: createSpaceBody(spaceId)
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown, 'expected a denied create-by-PUT to fail')
+      assert.equal(thrown.response.status, 403)
+      assert.equal(await backend.getSpaceMetadata({ spaceId }), undefined)
+    })
+
+    it('an unknown decision fails closed (403)', async () => {
+      const { backend } = await boot({
+        authorizeProvisioning: (async () =>
+          'allow') as unknown as AuthorizeProvisioning
+      })
+      const spaceId = `unknown-${crypto.randomUUID()}`
+      const response = await fetch(new URL('/spaces/', serverUrl), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(createSpaceBody(spaceId))
+      })
+      assert.equal(response.status, 403)
+      assert.equal(await backend.getSpaceMetadata({ spaceId }), undefined)
+    })
+
+    it("a 'grant' for a Space created before the handler runs is refused (404)", async () => {
+      const spaceId = `raced-${crypto.randomUUID()}`
+      // The callback stands in for a concurrent create landing between the
+      // gate's existence check and the handler's read.
+      const { backend } = await boot({
+        authorizeProvisioning: async ({ request }) => {
+          await request.server.storage.writeSpace({
+            spaceId,
+            spaceMetadata: {
+              id: spaceId,
+              type: ['Space'],
+              controller: alice.did,
+              name: 'Winner'
+            }
+          })
+          return 'grant' as const
+        }
+      })
+      const response = await fetch(
+        new URL(`/space/${spaceId}/meta`, serverUrl),
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...createSpaceBody(spaceId), name: 'Loser' })
+        }
+      )
+      assert.equal(response.status, 404)
+      const stored = await backend.getSpaceMetadata({ spaceId })
+      assert.equal(stored?.name, 'Winner')
+    })
+
+    it('a Space deleted after the gate took the PUT for an update still reaches the policy (403)', async () => {
+      let policyCalls = 0
+      const { backend } = await boot({
+        authorizeProvisioning: async () => {
+          policyCalls++
+          return 'deny' as const
+        }
+      })
+      const spaceId = `deleted-${crypto.randomUUID()}`
+      await backend.writeSpace({
+        spaceId,
+        spaceMetadata: { id: spaceId, type: ['Space'], controller: alice.did }
+      })
+      // The first read of this Space is the gate's existence check. Deleting
+      // the Space right after it stands in for a concurrent Delete Space
+      // landing before the handler's read.
+      const getSpaceMetadata = backend.getSpaceMetadata.bind(backend)
+      let reads = 0
+      backend.getSpaceMetadata = async options => {
+        const found = await getSpaceMetadata(options)
+        if (options.spaceId === spaceId && reads++ === 0) {
+          await backend.deleteSpace({ spaceId })
+        }
+        return found
+      }
+      let thrown: any
+      try {
+        await alice.was.request({
+          path: `/space/${spaceId}/meta`,
+          method: 'PUT',
+          json: createSpaceBody(spaceId)
+        })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(
+        thrown,
+        'expected the create to be put to the policy and denied'
+      )
+      assert.equal(thrown.response.status, 403)
+      assert.equal(policyCalls, 1)
+      assert.equal(await getSpaceMetadata({ spaceId }), undefined)
+    })
+
     it("a 'verify' decision leaves the normal zcap create-space path working (201)", async () => {
       await boot({ authorizeProvisioning: async () => 'verify' as const })
       const space = await alice.was.createSpace(
@@ -248,6 +474,34 @@ describe('Provisioning gate', () => {
       await fastify.close()
       await rm(dataDir, { recursive: true, force: true })
     }
+  })
+
+  it('rejects on ready() when onboardingToken is empty', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'was-provisioning-'))
+    const fastify = createApp({
+      serverUrl: 'http://localhost',
+      backend: new FileSystemBackend({ dataDir }),
+      onboardingToken: '  '
+    })
+    try {
+      await assert.rejects(async () => {
+        await fastify.ready()
+      }, /onboardingToken must not be empty/)
+    } finally {
+      await fastify.close()
+      await rm(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  it('default (neither option): a self-signed create by PUT still returns 201', async () => {
+    await boot()
+    const spaceId = `default-put-${crypto.randomUUID()}`
+    const response = await alice.was.request({
+      path: `/space/${spaceId}/meta`,
+      method: 'PUT',
+      json: createSpaceBody(spaceId)
+    })
+    assert.equal(response.status, 201)
   })
 
   it('default (neither option): a zcap-signed create space still returns 201', async () => {

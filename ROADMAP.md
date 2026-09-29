@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 160
+nextAvailableId: 162
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -348,6 +348,36 @@ _Boot and migration behavior._
   admin guide notes that keeping the old domain serving (or redirecting) the log
   helps live resolution of the old DID string but is not required for archive
   verification.
+
+_Open question: seed vs. minted key, and store wipes (raised 2026-09-29)._ The
+decisions above assume the key is minted on first boot. The alternative is to
+derive it from a seed held in an env var (a Fly secret, as the KEK already is).
+Decide between them before implementing.
+
+- **For the seed.** The key survives a store wipe, which staging and prod still
+  do on some deploys. Every machine of an app gets the same identity. The secret
+  store doubles as the key backup. The first-boot rules above get simpler: the
+  key is never absent, so "identity absent + store non-empty" turns into a check
+  that a stored log names the seed's key.
+- **Against the seed.** It puts the key on the env-var surface, which the
+  first-boot rules above deliberately kept dangerous paths off. A single seed
+  yields a single key, so rotation needs either a new secret per rotation or a
+  per-epoch derivation from the seed. That derivation is a new convention that
+  needs sign-off. A leaked seed exposes every key derived from it.
+- **The DID log is state either way.** It could live in ordinary Space storage,
+  as a self-hosted `did.jsonl` in an auxiliary Space that the existing
+  `did:webvh` resolver already reads. That reuses code but puts the log inside
+  whatever a wipe removes. The next boot then mints a new DID. The SCID changes
+  even with the same key, since the genesis entry carries a timestamp. Archives
+  exported before the wipe still verify against their embedded snapshot, but
+  nothing links the two identities. Wherever the log lives, exclude it from
+  wipes, from admin deletion, and from List Spaces.
+- **Interim while wipes continue.** A `did:key` derived from the seed avoids the
+  log entirely, at the cost of key history. Moving to `did:webvh` once wipes
+  stop is acceptable while archives are disposable.
+- **Not the admin identity.** The DID that authorizes operator actions (an admin
+  API, invite minting) is a separate identity held by the operator. Reusing this
+  key for that would put the server's signing key in the admin tool.
 
 _Spec status (resolved 2026-07-22)._ The spec defines `createdBy` on the Space,
 Collection, and Resource Metadata data models (OPTIONAL, server-managed,
@@ -1211,35 +1241,6 @@ permanent the bad state is. Findings already tracked elsewhere are noted on
 those items (WAS-61, WAS-65, WAS-70, WAS-73, WAS-92, WAS-108) rather than
 re-filed.
 
-### WAS-118: Onboarding-token gate covers Space creation by `PUT /meta`
-
-- status: todo
-- priority: high
-- labels: provisioning, security
-- discovered-from: whole-codebase review (2026-09-17), verified
-- touches:
-  - `src/provisioning.ts`, `src/routes.ts` (the `provisioningRoutes` list),
-    `src/requests/SpaceRequest.ts` (create branch), README's provisioning
-    section
-- acceptance:
-  - [ ] With an onboarding token or `authorizeProvisioning` configured, the
-        create branch of `PUT /space/:spaceId/meta` is gated exactly like
-        `POST /spaces/` (either honor `request.provisioningAuthorized` there, or
-        refuse create-by-PUT while a provisioning policy is configured; decide
-        which)
-  - [ ] Tests: with a token configured, a self-signed create-by-PUT without the
-        token is refused; with the token it succeeds
-  - [ ] `authorizeProvisioning` returning anything other than `'grant'`,
-        `'deny'`, or `'verify'` fails closed (500 or deny), not open
-  - [ ] An empty or whitespace `WAS_ONBOARDING_TOKEN` is a startup error or a
-        logged warning, not silently open provisioning
-
-The gate lists `/spaces` and `/spaces/` only. `PUT /space/<new>/meta` creates a
-Space when absent and authorizes the create against the body's own controller,
-so a fresh `did:key` provisions freely with no token, defeating both the token
-and the per-controller cap (one `did:key` per Space costs nothing). README
-promises the gate covers Space creation.
-
 ### WAS-158: Re-check the Space inside the lock on a revocation insert
 
 - status: todo
@@ -1782,6 +1783,71 @@ the desktop learns nothing.
         Resource-count quota
   - [ ] Auxiliary Spaces count toward `maxSpacesPerController` but are excluded
         from List Spaces; document or expose them
+
+## Storage versioning (2026-09-29)
+
+Each backend versions its own storage layout, independently of the archive
+format. The archive's `ubc-version` versions the interchange format that data
+crosses backends in. Its value says nothing about a given backend's layout, and
+backend internals change without the archive changing. The store version is an
+implementation concern: the spec does not name it, it is not stored in any
+Space, it is not exported, and it is not served on `/service`. It sits at the
+store root, beside the other server-private state that lives outside every
+Space.
+
+### WAS-160: Filesystem backend store version and migration runner
+
+- status: todo
+- priority: medium
+- labels: backends, migrations, operations
+- acceptance:
+  - [ ] The data root holds `store.json`, a JSON object whose `version` member
+        is an integer naming the storage layout. It is a sibling of `spaces/`,
+        `keystores/` and `space-revocations/`, so it cannot collide with a Space
+        or Collection id
+  - [ ] An ordered, append-only list of migration functions in the backend,
+        version `n` being entry `n - 1`, mirroring `MIGRATIONS` in
+        `postgresSchema.ts`
+  - [ ] At startup the backend applies pending migrations in order, holding a
+        lock that keeps two processes on the same data dir from both running
+        them, and rewrites `store.json` (temp file plus rename) after each step
+  - [ ] Each migration step is idempotent, so a run interrupted before its stamp
+        write is safely repeated on the next boot
+  - [ ] An empty data dir is stamped with the current version and needs no
+        migration
+  - [ ] Startup refuses, with an error naming both versions, when `store.json`
+        names a version higher than the code knows, or when it is absent over a
+        non-empty data dir
+  - [ ] The applied version is logged at startup
+  - [ ] The migrations run inside the server process at boot, not from a Fly
+        `release_command`: Fly runs that command in a temporary machine that
+        does not mount the app's volume
+  - [ ] Tests: fresh dir stamped; pending step applied once; interrupted step
+        re-run; newer-than-code refused; unstamped non-empty dir refused
+
+The refusal on an unstamped non-empty data dir means the existing staging and
+prod filesystem volumes cannot boot the release that ships this. Under the
+greenfield stance they are wiped on that deploy rather than given a fallback
+that treats an unstamped store as version 0.
+
+### WAS-161: Postgres backend refuses a database newer than the code
+
+- status: todo
+- priority: medium
+- labels: backends, migrations, operations
+- acceptance:
+  - [ ] `applyMigrations` in `src/backends/postgresSchema.ts` refuses, inside
+        the same transaction and advisory lock, when `schema_migrations` holds a
+        version greater than `MIGRATIONS.length`; the error names both versions
+  - [ ] The applied version is logged at startup
+  - [ ] Test: a database carrying a version past the code's list refuses to
+        start
+
+The migration runner already exists (append-only `MIGRATIONS`, the
+`schema_migrations` table, an advisory lock, one transaction). It applies what
+is missing but does not notice migrations it does not know about, which is what
+an older build sees after a rollback. It would then run against a schema it was
+not written for.
 
 ## Test coverage gaps (conformance suite + server `test/`)
 

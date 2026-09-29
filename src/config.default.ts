@@ -499,7 +499,10 @@ export interface EnvConfig {
    * `KMS_RECORD_KEKS` / `KMS_RECORD_CURRENT_KEK`); unset = plaintext.
    */
   kmsRecordKek?: KmsRecordKekRegistry
-  /** Shared-secret provisioning gate (`WAS_ONBOARDING_TOKEN`); unset = open provisioning. */
+  /**
+   * Shared-secret provisioning gate (`WAS_ONBOARDING_TOKEN`); unset = open
+   * provisioning, set but empty = startup error.
+   */
   onboardingToken?: string
   /**
    * Whether the server version is published (`WAS_DISCLOSE_VERSION`) by
@@ -1014,18 +1017,26 @@ function parseEnabledBackends(raw: string | undefined): string[] | undefined {
 
 /**
  * Parses the `WAS_ONBOARDING_TOKEN` env value into the shared-secret onboarding
- * token gating the two open provisioning endpoints (`POST /spaces/`,
- * `POST /kms/keystores`). An unset or empty/whitespace-only value returns
- * `undefined`, meaning the feature is off -- provisioning is authorized by
- * proving control of the body's controller DID (the teaching default). When
- * set, those two endpoints instead require an `Authorization: Bearer <token>`
- * header matching this value, which then substitutes for zcap verification.
+ * token gating the open provisioning endpoints (`POST /spaces/`, Create Space
+ * by Id at `PUT /space/:spaceId/meta`, `POST /kms/keystores`). An unset value
+ * returns `undefined`, meaning the feature is off -- provisioning is
+ * authorized by proving control of the body's controller DID (the teaching
+ * default). When set, those endpoints instead require an
+ * `Authorization: Bearer <token>` header matching this value, which then
+ * substitutes for zcap verification. A set but empty or whitespace-only value
+ * throws: it most likely names a token that failed to reach the environment,
+ * and reading it as unset would silently open provisioning.
  * @param raw {string|undefined}   the raw env value
  * @returns {string|undefined}   the trimmed token, or `undefined` when unset
  */
 function parseOnboardingToken(raw: string | undefined): string | undefined {
-  if (raw === undefined || raw.trim() === '') {
+  if (raw === undefined) {
     return undefined
+  }
+  if (raw.trim() === '') {
+    throw new Error(
+      'WAS_ONBOARDING_TOKEN is set but empty; unset it to leave provisioning open.'
+    )
   }
   return raw.trim()
 }

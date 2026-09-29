@@ -17,6 +17,7 @@ import {
   verifyBodyControllerConsent
 } from './controllerConsent.js'
 import { invokerDid } from '../auth-header-hooks.js'
+import { consultProvisioningPolicy } from '../provisioning.js'
 import { assertValidIds, assertValidId } from '../lib/validateId.js'
 import {
   composeCollectionMetadata,
@@ -883,6 +884,13 @@ async function authorizeAndWriteSpaceMetadata({
   // the *body's* controller: signed directly by it, or via a delegation
   // chain rooted in it (see `verifyBodyControllerConsent`).
   if (existingSpaceMetadata) {
+    if (request.provisioningAuthorized) {
+      // The provisioning gate saw no Space and vouched for a create, but one
+      // appeared before this read. The request carries no capability
+      // invocation to authorize an update with, so it is refused like any
+      // other unauthorized write to an existing Space.
+      throw new SpaceNotFoundError({ requestName: 'Update Space' })
+    }
     await handleZcapVerify({
       url,
       allowedTarget: metaUrl,
@@ -906,19 +914,28 @@ async function authorizeAndWriteSpaceMetadata({
     // shape the pre-check above admits is a controller a Space may be
     // updated to, not one it may be created with.
     assertValidController(body.controller, { requestName: 'Update Space' })
-    await verifyBodyControllerConsent({
-      request,
-      controller: body.controller,
-      allowedTarget: metaUrl,
-      allowedAction: 'PUT',
-      // The Space container URL's root capability is accepted as the base of
-      // a delegated chain here too, as on the update branch above: a
-      // delegated-provisioning grant is minted on the container, and without
-      // this it could update an existing Space's Metadata object but not
-      // create one by `PUT`.
-      attenuatedRootTarget: spaceUrl,
-      MismatchError: SpaceControllerMismatchError
-    })
+    // The gate decided from its own earlier read of the Space. If it saw one
+    // that has since been deleted, it let this request through as an update
+    // without consulting the provisioning policy, so consult it now (a no-op
+    // when the gate already did).
+    await consultProvisioningPolicy(request)
+    // Skipped when the provisioning policy already vouched for the create
+    // (e.g. a valid onboarding token), as on Create Space via POST.
+    if (!request.provisioningAuthorized) {
+      await verifyBodyControllerConsent({
+        request,
+        controller: body.controller,
+        allowedTarget: metaUrl,
+        allowedAction: 'PUT',
+        // The Space container URL's root capability is accepted as the base
+        // of a delegated chain here too, as on the update branch above: a
+        // delegated-provisioning grant is minted on the container, and
+        // without this it could update an existing Space's Metadata object
+        // but not create one by `PUT`.
+        attenuatedRootTarget: spaceUrl,
+        MismatchError: SpaceControllerMismatchError
+      })
+    }
   }
 
   // A proposed `did:webvh` controller must resolve -- and fully verify --

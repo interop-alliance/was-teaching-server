@@ -14,6 +14,16 @@
 
 ### Changed
 
+- The provisioning gate (`WAS_ONBOARDING_TOKEN` / `authorizeProvisioning`) now
+  covers Create Space by Id: a `PUT /space/:spaceId/meta` that creates a Space
+  needs the token (or the policy's `grant`), as `POST /spaces/` does. An update
+  of an existing Space is not gated. Before, a self-signed `PUT` created a Space
+  with no token.
+- An `authorizeProvisioning` decision other than `grant`, `deny`, or `verify` is
+  refused as `deny`.
+- A set but empty or whitespace-only `WAS_ONBOARDING_TOKEN` is a startup error,
+  and an empty `onboardingToken` plugin option fails registration. Unset still
+  means open provisioning.
 - The JSON content-type check comes from `@interop/storage-core` (0.21.0) as
   `isJsonContentType`, the rule was-client shares. The local `isJson` helper is
   removed.

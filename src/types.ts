@@ -1376,7 +1376,9 @@ export interface StorageBackend {
 
 /**
  * Decision returned by an {@link AuthorizeProvisioning} callback for a
- * provisioning request (`POST /spaces/` or `POST /kms/keystores`):
+ * provisioning request (`POST /spaces/`, Create Space by Id at
+ * `PUT /space/:spaceId/meta`, or `POST /kms/keystores`). Any other value is
+ * refused as `deny`:
  * - `verify` -- proceed with normal zcap capability-invocation verification;
  * - `grant` -- the callback itself authorized the request (e.g. a valid
  *   onboarding token); skip zcap verification for this request;
@@ -1385,8 +1387,11 @@ export interface StorageBackend {
 export type ProvisioningDecision = 'verify' | 'grant' | 'deny'
 
 /**
- * Provisioning gate callback: decides whether a request to one of the two open
- * provisioning endpoints (`POST /spaces/`, `POST /kms/keystores`) may proceed.
+ * Provisioning gate callback: decides whether a request to one of the open
+ * provisioning endpoints (`POST /spaces/`, Create Space by Id at
+ * `PUT /space/:spaceId/meta`, `POST /kms/keystores`) may proceed. A `PUT` to
+ * the Metadata object of a Space that already exists is an update, and does
+ * not reach the callback.
  * May instead throw a `ProblemError` subclass to return a custom status/body.
  * @param options {object}
  * @param options.request {import('fastify').FastifyRequest}   the provisioning request
@@ -1434,11 +1439,12 @@ declare module 'fastify' {
      */
     kmsRecordKek?: KmsRecordKekRegistry
     /**
-     * The optional provisioning gate for the two open provisioning endpoints
-     * (`POST /spaces/`, `POST /kms/keystores`). `undefined` means allow (the
-     * teaching default -- anyone may provision by proving control of the body's
-     * controller DID). Set by `fastify.decorate` in plugin.ts, either from the
-     * `authorizeProvisioning` option or the built-in onboarding-token check.
+     * The optional provisioning gate for the open provisioning endpoints
+     * (`POST /spaces/`, Create Space by Id, `POST /kms/keystores`).
+     * `undefined` means allow (the teaching default -- anyone may provision by
+     * proving control of the body's controller DID). Set by
+     * `fastify.decorate` in plugin.ts, either from the `authorizeProvisioning`
+     * option or the built-in onboarding-token check.
      */
     authorizeProvisioning?: AuthorizeProvisioning
     /**
@@ -1461,6 +1467,12 @@ declare module 'fastify' {
      * HTTP Signature).
      */
     provisioningAuthorized?: boolean
+    /**
+     * Set by `consultProvisioningPolicy` once it has put this request to the
+     * configured provisioning policy, so the policy is consulted at most once
+     * per request.
+     */
+    provisioningPolicyConsulted?: boolean
     /**
      * Set by the `parseAuthHeaders` hook when auth headers are present. Absent
      * for anonymous reads (the `requireAuthHeaders` hook lets safe methods

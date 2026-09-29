@@ -43,7 +43,9 @@ import {
 import { captureRawBody, verifyBodyDigest } from './digest.js'
 import {
   provisioningGateFor,
-  unlessProvisioningAuthorized
+  spaceIsAbsent,
+  unlessProvisioningAuthorized,
+  type ProvisioningRoute
 } from './provisioning.js'
 
 /**
@@ -54,9 +56,9 @@ import {
  * hosted-page sandbox policy.
  * @param app {import('fastify').FastifyInstance}
  * @param options {object}
- * @param [options.provisioningRoutes] {string[]}   route URLs (exactly as
- *   registered in this group) whose POSTs go through the provisioning gate;
- *   omit for groups with no provisioning endpoint
+ * @param [options.provisioningRoutes] {ProvisioningRoute[]}   routes (URLs
+ *   exactly as registered in this group) that go through the provisioning
+ *   gate; omit for groups with no provisioning endpoint
  * @param [options.strictAuth] {boolean}   require auth headers on every method
  *   (`requireAuthHeaders`) rather than letting safe reads through
  *   (`requireAuthHeadersOrPublicRead`, the default)
@@ -67,14 +69,14 @@ function installGroupHooks(
   {
     provisioningRoutes,
     strictAuth = false
-  }: { provisioningRoutes?: string[]; strictAuth?: boolean } = {}
+  }: { provisioningRoutes?: ProvisioningRoute[]; strictAuth?: boolean } = {}
 ): void {
   app.setErrorHandler(handleError)
 
   if (provisioningRoutes) {
-    // Gate provisioning (Create Space / Create Keystore): the configured policy
-    // may grant/deny, or (the default) allow -- in which case the normal zcap
-    // path below runs.
+    // Gate provisioning (Create Space, by POST or by PUT of its Metadata
+    // object, and Create Keystore): the configured policy may grant/deny, or
+    // (the default) allow -- in which case the normal zcap path below runs.
     app.addHook('onRequest', provisioningGateFor(provisioningRoutes))
   }
   // The auth and digest hooks are skipped for a request the gate granted (it
@@ -361,7 +363,12 @@ export async function initSpacesRepositoryRoutes(
   // `/spaces` (no trailing slash) is gated too, so a token-authorized request
   // reaches the canonical-slash 308 redirect below instead of failing the
   // auth-header check first.
-  installGroupHooks(app, { provisioningRoutes: ['/spaces', '/spaces/'] })
+  installGroupHooks(app, {
+    provisioningRoutes: [
+      { method: 'POST', url: '/spaces' },
+      { method: 'POST', url: '/spaces/' }
+    ]
+  })
 
   // Add a Space to a SpacesRepository (Create Space)
   app.post('/spaces', redirectAddSlash)
@@ -386,7 +393,14 @@ export async function initSpaceRoutes(
   app: FastifyInstance,
   _options: FastifyPluginOptions
 ): Promise<void> {
-  installGroupHooks(app)
+  // Create Space by Id (`PUT` of the Metadata object of a Space that does not
+  // exist yet) provisions a Space as `POST /spaces/` does, so it goes through
+  // the same gate. An update of an existing Space is not gated.
+  installGroupHooks(app, {
+    provisioningRoutes: [
+      { method: 'PUT', url: '/space/:spaceId/meta', provisions: spaceIsAbsent }
+    ]
+  })
 
   // The Space container: canonically `/space/:spaceId/`; the bare form
   // redirects there for every WAS method (a 308 replays the method and body).
@@ -761,7 +775,7 @@ export async function initKmsRoutes(
   _options: FastifyPluginOptions
 ): Promise<void> {
   installGroupHooks(app, {
-    provisioningRoutes: ['/kms/keystores'],
+    provisioningRoutes: [{ method: 'POST', url: '/kms/keystores' }],
     strictAuth: true
   })
 

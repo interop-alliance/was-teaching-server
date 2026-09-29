@@ -3453,3 +3453,49 @@ block in the shared `storage-backend-contract.ts` suite (run against both
 backends) and a new `writer-attribution (Writer-Id header + /meta writerId)`
 block in `test/encryption-descriptor-api.test.ts` (the header/body HTTP surface,
 alongside the existing `Key-Epoch` block it mirrors).
+
+### WAS-118: Onboarding-token gate covers Space creation by `PUT /meta`
+
+- status: done (2026-09-29)
+- priority: high
+- labels: provisioning, security
+- discovered-from: whole-codebase review (2026-09-17), verified
+- touches:
+  - `src/provisioning.ts`, `src/routes.ts` (the `provisioningRoutes` list),
+    `src/requests/SpaceRequest.ts` (create branch), README's provisioning
+    section: shipped
+  - was-conformance-suite: PWSCS-15 filed. Four cases create a Space by a
+    self-signed `PUT`, so the suite fails against this server run with
+    `WAS_ONBOARDING_TOKEN` set (CI's conformance job) until it ships
+  - unaffected: wallet-attached-storage-spec (onboarding requirements are
+    provider-specific and out of scope there)
+- acceptance:
+  - [x] With an onboarding token or `authorizeProvisioning` configured, the
+        create branch of `PUT /space/:spaceId/meta` is gated exactly like
+        `POST /spaces/` (either honor `request.provisioningAuthorized` there, or
+        refuse create-by-PUT while a provisioning policy is configured; decide
+        which)
+  - [x] Tests: with a token configured, a self-signed create-by-PUT without the
+        token is refused; with the token it succeeds
+  - [x] `authorizeProvisioning` returning anything other than `'grant'`,
+        `'deny'`, or `'verify'` fails closed (500 or deny), not open
+  - [x] An empty or whitespace `WAS_ONBOARDING_TOKEN` is a startup error or a
+        logged warning, not silently open provisioning
+
+The gate lists `/spaces` and `/spaces/` only. `PUT /space/<new>/meta` creates a
+Space when absent and authorizes the create against the body's own controller,
+so a fresh `did:key` provisions freely with no token, defeating both the token
+and the per-controller cap (one `did:key` per Space costs nothing). README
+promises the gate covers Space creation.
+
+Resolution: the gate honors the policy on `PUT /space/:spaceId/meta` whenever
+the Space is absent, so a valid Bearer token creates by `PUT` as it does by
+`POST`. A gated route now carries an optional `provisions` predicate; this one
+checks for the Space's Metadata object, so an update is never gated. If a Space
+appears between the gate's check and the handler's read, a granted request is
+refused with the masked 404, since it carries no invocation to authorize an
+update. An unknown decision is refused as `deny` and logged. A set but empty
+`WAS_ONBOARDING_TOKEN` fails startup, and an empty `onboardingToken` option
+fails plugin registration. Unset stays open provisioning. Under a gate, a
+create-by-`PUT` refusal tells the caller the id is free, which open provisioning
+(a 201) and `POST /spaces/` with an `id` (a 409) already do.

@@ -236,24 +236,28 @@ rather than surfacing later as broken ZCap matching.
 | `KMS_RECORD_KEK`            | (unset = disabled)          | At-rest encryption key for WebKMS key records: a single AES-256 key-encryption key (KEK) in base58btc Multikey form (`secretKeyMultibase`, header `0xa2 0x01`) -- the single-KEK alias. When set, the secret fields of newly generated `/kms` key records are envelope-encrypted under it before they reach storage; existing plaintext records stay readable. Unset means key records are stored **plaintext** (the teaching default). Mutually exclusive with `KMS_RECORD_KEKS`.                                                                                                                                                                                     |
 | `KMS_RECORD_KEKS`           | (unset = disabled)          | A comma-separated list of AES-256 KEKs (same Multikey form as `KMS_RECORD_KEK`), for registering more than one KEK so a rotation can add a new KEK while keeping the old one available to decrypt records already written under it. Each KEK is registered by an id derived from its material; surrounding whitespace is trimmed and empty entries ignored; a duplicate entry is a startup error. The **first entry is the current KEK** (the one that wraps new records) by default -- so a rotation is "prepend the new KEK, keep the old behind it". Use `KMS_RECORD_KEK` for the single-KEK case; setting both is a startup error.                                 |
 | `KMS_RECORD_CURRENT_KEK`    | (unset = first entry)       | Optionally overrides which registered KEK wraps **new** records: a `urn:kek:sha256:<hex>` id, a multibase KEK value (its id is derived), or the literal `none` (case-insensitive). It must name a KEK registered via `KMS_RECORD_KEK`/`KMS_RECORD_KEKS`. `none` is the **decrypt-only** posture -- existing encrypted records still read, but new key records are written **plaintext** (the wind-down path). Setting it with no KEK configured is a startup error.                                                                                                                                                                                                    |
-| `WAS_ONBOARDING_TOKEN`      | (unset = disabled)          | Shared-secret onboarding token gating the two open provisioning endpoints (`POST /spaces/` and `POST /kms/keystores`). When set, those two endpoints require an `Authorization: Bearer <token>` header, which then substitutes for ZCap verification on that request; every other operation still uses the normal capability-invocation path. Unset means provisioning is open -- anyone may create a Space or keystore by proving control of the `controller` DID in the request body (the teaching default). See [Provisioning gate](#provisioning-gate).                                                                                                            |
+| `WAS_ONBOARDING_TOKEN`      | (unset = disabled)          | Shared-secret onboarding token gating provisioning: `POST /spaces/`, a `PUT /space/:spaceId/meta` that creates a Space, and `POST /kms/keystores`. When set, those require an `Authorization: Bearer <token>` header, which then substitutes for ZCap verification on that request; every other operation still uses the normal capability-invocation path. Unset means provisioning is open -- anyone may create a Space or keystore by proving control of the `controller` DID in the request body (the teaching default). A set but empty value is a startup error. See [Provisioning gate](#provisioning-gate).                                                    |
 | `WAS_DISCLOSE_VERSION`      | `true`                      | Whether the exact server version is published. `false` removes it from `/health` (together with the build commit and time), from the welcome page, and from the service description's `instance` member, for a hardened deployment. Accepts `true` or `false`.                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 ### Provisioning gate
 
-By default, anyone may create a Space (`POST /spaces/`) or a WebKMS keystore
-(`POST /kms/keystores`) by proving control of the `controller` DID named in the
-request body -- the open, teaching-server behavior. A deployment can gate those
-two endpoints in one of two mutually-exclusive ways:
+By default, anyone may create a Space or a WebKMS keystore by proving control of
+the `controller` DID named in the request body -- the open, teaching-server
+behavior. A Space is created by `POST /spaces/`, or by a `PUT` of the Metadata
+object of a Space that does not exist yet (`PUT /space/:spaceId/meta`); a
+keystore by `POST /kms/keystores`. A deployment can gate all three in one of two
+mutually-exclusive ways. A `PUT` that updates an existing Space is not gated.
 
 - **Onboarding token** -- set `WAS_ONBOARDING_TOKEN` (or pass `onboardingToken`
   to the `fastifyWas` plugin / `createApp`). Provisioning then requires an
   `Authorization: Bearer <token>` header matching the configured secret; a valid
-  token substitutes for ZCap verification on that request.
+  token substitutes for ZCap verification on that request. Leave it unset for
+  open provisioning. A set but empty value is refused at startup.
 - **Custom policy** -- pass an `authorizeProvisioning` callback to the plugin.
   It receives `{ request }` and returns `'verify'` (run the normal ZCap path),
   `'grant'` (authorize the request itself, skipping ZCap verification), or
-  `'deny'` (403); it may also throw a `ProblemError` for a custom response.
+  `'deny'` (403); it may also throw a `ProblemError` for a custom response. Any
+  other return value is refused as `'deny'`.
 
 Both configure the same seam; setting both at once is rejected at startup.
 

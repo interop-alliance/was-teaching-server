@@ -121,7 +121,8 @@ export interface FastifyWasOptions {
    */
   kmsRecordKek?: KmsRecordKekRegistry
   /**
-   * Custom provisioning gate for `POST /spaces/` and `POST /kms/keystores`;
+   * Custom provisioning gate for `POST /spaces/`, Create Space by Id
+   * (`PUT /space/:spaceId/meta` on an absent Space), and `POST /kms/keystores`;
    * receives `{ request }` and returns `'verify'` (normal zcap path), `'grant'`
    * (authorized by the callback -- skip zcap verification), or `'deny'` (403).
    * `undefined` means allow (the teaching default). Mutually exclusive with
@@ -129,11 +130,12 @@ export interface FastifyWasOptions {
    */
   authorizeProvisioning?: AuthorizeProvisioning
   /**
-   * Shared-secret gate for `POST /spaces/` and `POST /kms/keystores` (config
-   * `WAS_ONBOARDING_TOKEN`); when set, those two endpoints require an
-   * `Authorization: Bearer <token>` header, which then substitutes for zcap
-   * verification on that request. `undefined` means disabled (the teaching
-   * default). Mutually exclusive with `authorizeProvisioning`.
+   * Shared-secret gate for `POST /spaces/`, Create Space by Id, and
+   * `POST /kms/keystores` (config `WAS_ONBOARDING_TOKEN`); when set, those
+   * endpoints require an `Authorization: Bearer <token>` header, which then
+   * substitutes for zcap verification on that request. `undefined` means
+   * disabled (the teaching default); an empty string is refused at
+   * registration. Mutually exclusive with `authorizeProvisioning`.
    */
   onboardingToken?: string
   /**
@@ -179,6 +181,11 @@ async function wasPlugin(
     assertValidServerUrl(serverUrl)
   }
 
+  // An empty token would read as no gate at all, so it is refused rather than
+  // silently leaving provisioning open.
+  if (onboardingToken !== undefined && onboardingToken.trim() === '') {
+    throw new Error('onboardingToken must not be empty.')
+  }
   // The two provisioning gates are alternative ways to configure the same seam.
   if (authorizeProvisioning && onboardingToken) {
     throw new Error(
@@ -239,10 +246,11 @@ async function wasPlugin(
   // `undefined` = disabled (records written plaintext). Read at the KMS
   // orchestration seam (KeyRequest), never inside a backend.
   fastify.decorate('kmsRecordKek', kmsRecordKek)
-  // The provisioning gate for `POST /spaces/` and `POST /kms/keystores`: a
-  // custom callback, or the stock onboarding-token check when a token is set,
-  // or `undefined` = allow (the teaching default). Read by the `provisioningGate`
-  // onRequest hook installed by those two route groups.
+  // The provisioning gate for `POST /spaces/`, Create Space by Id, and
+  // `POST /kms/keystores`: a custom callback, or the stock onboarding-token
+  // check when a token is set, or `undefined` = allow (the teaching default).
+  // Read by the `provisioningGate` onRequest hook installed by the route
+  // groups carrying those endpoints.
   fastify.decorate(
     'authorizeProvisioning',
     authorizeProvisioning ??
