@@ -82,6 +82,16 @@ export interface MetaSidecar {
   // epoch is unknown), while a metadata write PRESERVES it unless the `/meta`
   // body supplies a new value. The server never computes or verifies it.
   epoch?: string
+  // The client-declared writer-attribution label naming the writing agent
+  // that produced the current revision (spec "Writer attribution"). Stored
+  // opaquely, from the `Writer-Id` header on a content write or a delete, or
+  // the top-level `writerId` member on an Update Resource Metadata request.
+  // Declare-or-clear at every level (unlike `epoch`, which a metadata write
+  // preserves on omission): a write that declares none clears the stored
+  // label. On a tombstone this is the label the DELETE itself declared, not
+  // the Resource's prior label. The server never verifies it, computes it,
+  // or uses it in any authorization decision.
+  writerId?: string
   deleted?: boolean
   contentType?: string
 }

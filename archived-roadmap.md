@@ -3400,3 +3400,56 @@ exposes only ids and names, so its `expires` bounds it). The loop is capped by
 construction: candidates are pre-filtered to the one controller that can verify,
 the root signer or the base delegation's signer (`baseDelegationSigner`, shared
 with the consent triage). Tests in `test/webvh-verification-paths-api.test.ts`.
+
+### WAS-159: Implement the `writerId` writer-attribution surface
+
+- status: done
+- done: 2026-09-28
+- priority: medium
+- labels: data-model, wire-contract, replication, changes-feed
+- touches:
+  - storage-core: `ResourceMetadata`, `ResourceSummary`, and `ChangeDocument`
+    already carry `writerId` (landed there ahead of this item, unpublished as
+    0.22.0; this repo consumes it via a `link:` dependency until published)
+  - unaffected: wallet-attached-storage-spec (the `#writer-attribution` section,
+    the Resource Metadata `writerId` property, the `Writer-Id` header, and the
+    changes-feed/tombstone text were already specified; this item is the
+    reference-server implementation of existing spec text, not a spec change)
+  - unaffected: wallet-core (the consuming client-side change is tracked in that
+    repo's own roadmap, out of scope here)
+- acceptance:
+  - [x] `Writer-Id` request header accepted on every content write (`POST`
+        Create Resource, `PUT` Update-or-Create-by-Id) and on `DELETE`
+  - [x] Top-level `writerId` member accepted on Update Resource Metadata
+        (`PUT .../meta`), alongside `custom` and `epoch`
+  - [x] Declare-or-clear at every level: a write declaring a value stores it, a
+        write declaring none clears any stored value -- including the
+        metadata-write level, which is the opposite of `epoch`'s
+        preserve-on-omission
+  - [x] A present but empty or non-string value (an empty header, a non-string
+        or empty-string body member) is `invalid-request-body` (400); the value
+        is otherwise never verified, computed, or defaulted, and never reaches
+        any authorization decision
+  - [x] Echoed on `/meta` reads, List Collection item summaries, `changes` feed
+        documents, and tombstones; a tombstone carries the label its own
+        `DELETE` declared, not the Resource's prior label
+  - [x] Implemented in both backends (filesystem sidecar, Postgres `writer_id`
+        column added directly to the `resources` table -- no migration, this
+        server carries no production data), including the export/import round
+        trip
+  - [x] `Writer-Id` needs no CORS `allowedHeaders` addition: the server sets
+        none, so `@fastify/cors` already reflects any requested header
+
+Implements the WAS spec's `#writer-attribution` section end to end, following
+the `Key-Epoch` / `epoch` stamp's existing plumbing (`src/lib/keyEpoch.ts`,
+`src/lib/metadataWrite.ts`, `src/lib/metaSidecar.ts`, both backends) as the
+template, in a new sibling `src/lib/writerAttribution.ts` (`WRITER_ID_HEADER`,
+`parseWriterIdHeader`, `parseMetaWriterId`). The one place its semantics diverge
+from `epoch` is metadata-write omission: `epoch` describes the content write and
+survives an omitted metadata-write member, while `writerId` describes "whichever
+write produced this revision" and is cleared by an omitted member at every
+level, DELETE included. Tests: a new `writer-attribution stamping (writerId)`
+block in the shared `storage-backend-contract.ts` suite (run against both
+backends) and a new `writer-attribution (Writer-Id header + /meta writerId)`
+block in `test/encryption-descriptor-api.test.ts` (the header/body HTTP surface,
+alongside the existing `Key-Epoch` block it mirrors).

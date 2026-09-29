@@ -227,11 +227,12 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `https://w3id.org/pws` identifier, names the spec version this server speaks
   (`0.5`), the Spaces Repository URL, and the `features` tokens naming the
   optional sections of the core spec this server serves, `changes-query` among
-  them. A Backend descriptor advertises no tokens of its own. Conditional writes
-  and the `epoch` stamp are baseline guarantees of every backend a Collection
-  may be created on, since the server -- not the storage engine -- serializes
-  each write and mints its own opaque validator; a content hash would serve as a
-  strong validator as well as the version counter used here. The entry under
+  them. A Backend descriptor advertises no tokens of its own. Conditional
+  writes, the `epoch` stamp, and the `writerId` writer-attribution label are
+  baseline guarantees of every backend a Collection may be created on, since the
+  server -- not the storage engine -- serializes each write and mints its own
+  opaque validator; a content hash would serve as a strong validator as well as
+  the version counter used here. The entry under
   `https://w3id.org/pws/authz-profile` names the zCap authorization profile
   version (`0.1`) and its rendered location, and carries the accepted
   `signatureAlgorithms` and `zcapCryptosuites` (profile

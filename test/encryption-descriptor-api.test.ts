@@ -788,6 +788,151 @@ describe('Encryption descriptor API', () => {
     })
   })
 
+  describe('writer-attribution (Writer-Id header + /meta writerId)', () => {
+    const collectionId = 'writer-id-stamp'
+    const resUrl = (rid: string) => `/space/${spaceId}/${collectionId}/${rid}`
+    const metaOf = async (rid: string) =>
+      (
+        await alice.was.request({
+          path: `/space/${spaceId}/${collectionId}/${rid}/meta`,
+          method: 'GET'
+        })
+      ).data
+
+    it('stamps the declared label and round-trips it through /meta, listing, and the changes feed', async () => {
+      await alice.was.request({
+        path: `/space/${spaceId}/`,
+        method: 'POST',
+        json: { id: collectionId, name: 'Writer-Id Stamp' }
+      })
+      const put = await alice.was.request({
+        path: resUrl('r1'),
+        method: 'PUT',
+        json: { id: 'r1', hello: 'world' },
+        headers: { 'writer-id': 'writer-1' }
+      })
+      assert.equal(put.status, 204)
+
+      assert.equal((await metaOf('r1')).writerId, 'writer-1')
+
+      const listing = await alice.was.request({
+        path: `/space/${spaceId}/${collectionId}/`,
+        method: 'GET'
+      })
+      const item = listing.data.items.find((entry: any) => entry.id === 'r1')
+      assert.equal(item.writerId, 'writer-1')
+
+      const changes = await alice.was.request({
+        path: `/space/${spaceId}/${collectionId}/query`,
+        method: 'POST',
+        json: { profile: 'changes' }
+      })
+      const doc = changes.data.documents.find((entry: any) => entry.id === 'r1')
+      assert.equal(doc.writerId, 'writer-1')
+    })
+
+    it('a content rewrite WITHOUT the header clears the stamp', async () => {
+      await alice.was.request({
+        path: resUrl('r1'),
+        method: 'PUT',
+        json: { id: 'r1', hello: 'again' }
+      })
+      assert.equal((await metaOf('r1')).writerId, undefined)
+    })
+
+    it('PUT /meta with `writerId` sets it; omitting it CLEARS it (unlike `epoch`)', async () => {
+      await alice.was.request({
+        path: resUrl('r2'),
+        method: 'PUT',
+        json: { id: 'r2' }
+      })
+      // Supplying `writerId` sets the label.
+      await alice.was.request({
+        path: `/space/${spaceId}/${collectionId}/r2/meta`,
+        method: 'PUT',
+        json: { custom: {}, writerId: 'writer-2' }
+      })
+      assert.equal((await metaOf('r2')).writerId, 'writer-2')
+      // Omitting `writerId` CLEARS the stored value -- a metadata write is
+      // itself a revision, unlike `epoch`'s omit-to-preserve.
+      await alice.was.request({
+        path: `/space/${spaceId}/${collectionId}/r2/meta`,
+        method: 'PUT',
+        json: { custom: { name: 'x' } }
+      })
+      assert.equal((await metaOf('r2')).writerId, undefined)
+    })
+
+    it('DELETE with a Writer-Id header labels the tombstone; the label rides the changes feed', async () => {
+      await alice.was.request({
+        path: resUrl('r-del'),
+        method: 'PUT',
+        json: { id: 'r-del' },
+        headers: { 'writer-id': 'writer-live' }
+      })
+      const del = await alice.was.request({
+        path: resUrl('r-del'),
+        method: 'DELETE',
+        headers: { 'writer-id': 'writer-deleter' }
+      })
+      assert.equal(del.status, 204)
+
+      const changes = await alice.was.request({
+        path: `/space/${spaceId}/${collectionId}/query`,
+        method: 'POST',
+        json: { profile: 'changes' }
+      })
+      const tomb = changes.data.documents.find(
+        (entry: any) => entry.id === 'r-del'
+      )
+      assert.equal(tomb._deleted, true)
+      assert.equal(
+        tomb.writerId,
+        'writer-deleter',
+        'the tombstone carries the label the DELETE itself declared, not the prior content-write label'
+      )
+    })
+
+    it('rejects an empty Writer-Id header (400)', async () => {
+      const err = await rejection(
+        alice.was.request({
+          path: resUrl('r-bad'),
+          method: 'PUT',
+          json: { id: 'r-bad' },
+          headers: { 'writer-id': '' }
+        })
+      )
+      assert.equal(err.response.status, 400)
+    })
+
+    it('rejects a non-string / empty `writerId` in a /meta body (400)', async () => {
+      await alice.was.request({
+        path: resUrl('r3'),
+        method: 'PUT',
+        json: { id: 'r3' }
+      })
+      const err = await rejection(
+        alice.was.request({
+          path: `/space/${spaceId}/${collectionId}/r3/meta`,
+          method: 'PUT',
+          json: { custom: {}, writerId: 123 }
+        })
+      )
+      assert.equal(err.response.status, 400)
+      assert.equal(err.data.errors?.[0]?.pointer, '/writerId')
+
+      const emptyErr = await rejection(
+        alice.was.request({
+          path: `/space/${spaceId}/${collectionId}/r3/meta`,
+          method: 'PUT',
+          json: { custom: {}, writerId: '' }
+        })
+      )
+      assert.equal(emptyErr.response.status, 400)
+      assert.equal(emptyErr.data.errors?.[0]?.pointer, '/writerId')
+    })
+  })
+
   describe('Collection Metadata object conditional writes (ETag / If-Match)', () => {
     it('GET returns an ETag; matching If-Match bumps it; stale If-Match 412s', async () => {
       const collectionId = 'cas-col'

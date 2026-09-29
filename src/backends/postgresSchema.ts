@@ -82,8 +82,14 @@ const MIGRATIONS: string[] = [
   -- was encrypted under (multi-recipient encrypted Collections), stored
   -- opaquely (the server never computes or verifies it); NULL when no epoch
   -- was declared (a plaintext Collection, or an encrypted write that omitted
-  -- the stamp). Neither is COLLATE "C": unlike 'created_at' / 'updated_at',
-  -- they never participate in an ORDER BY or keyset comparison.
+  -- the stamp). 'writer_id' is the client-declared writer-attribution label
+  -- (spec "Writer attribution"), stored opaquely and never verified; NULL
+  -- when no label was declared. Unlike 'epoch', a metadata write also sets
+  -- it declare-or-clear (an omitted 'writerId' clears it), and a soft delete
+  -- sets it from the deleting write's own declaration rather than preserving
+  -- the row's prior value. None of the three is COLLATE "C": unlike
+  -- 'created_at' / 'updated_at', they never participate in an ORDER BY or
+  -- keyset comparison.
   CREATE TABLE resources (
     space_id      text COLLATE "C" NOT NULL,
     collection_id text COLLATE "C" NOT NULL,
@@ -101,6 +107,7 @@ const MIGRATIONS: string[] = [
     updated_at    text COLLATE "C" NOT NULL,
     created_by    text,
     epoch         text,
+    writer_id     text,
     PRIMARY KEY (space_id, collection_id, resource_id),
     FOREIGN KEY (space_id, collection_id)
       REFERENCES collections ON DELETE CASCADE

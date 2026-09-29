@@ -25,6 +25,10 @@ import {
   parseWritePreconditions
 } from '../lib/etag.js'
 import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
+import {
+  parseWriterIdHeader,
+  parseMetaWriterId
+} from '../lib/writerAttribution.js'
 import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
 import { guardWebvhLogWrite } from '../lib/webvhLogWrite.js'
 import { WEBVH_LOG_RESOURCE_ID } from '../lib/validateDid.js'
@@ -130,6 +134,13 @@ export class ResourceRequest {
       headers: request.headers,
       requestName
     })
+    // The writer-attribution label (spec "Writer attribution") MAY be
+    // declared the same way, via the `Writer-Id` header; the server stores it
+    // opaquely and clears it when absent (declare-or-clear).
+    const { writerId } = parseWriterIdHeader({
+      headers: request.headers,
+      requestName
+    })
     // Any `unique: true` index entries the Collection declares ride along, so
     // the backend enforces the uniqueness claim atomically with the write (409).
     const uniqueIndexes = uniqueIndexesOf({
@@ -147,6 +158,7 @@ export class ResourceRequest {
         input,
         createdBy: invokerDid(request),
         epoch,
+        writerId,
         ...(uniqueIndexes.length > 0 && { uniqueIndexes }),
         ...preconditions
       })
@@ -429,10 +441,14 @@ export class ResourceRequest {
    * PUT /space/:spaceId/:collectionId/:resourceId/meta
    * Request handler for "Update Resource Metadata" request. A full replacement
    * of the Metadata object's user-writable `custom` object (any property omitted
-   * is cleared; a body with no `custom` clears them all). Server-managed
-   * properties are untouched, and any top-level property other than `custom` in
-   * the body is ignored (so a client may GET-modify-PUT the whole object). Does
-   * NOT create: a `PUT` to the `/meta` of a nonexistent Resource is a 404.
+   * is cleared; a body with no `custom` clears them all). The body may also
+   * carry `epoch` (omitted preserves the stored stamp) and `writerId` (omitted
+   * clears the stored label). Server-managed properties are untouched, and any
+   * other top-level property in the body is ignored, so a client may
+   * GET-modify-PUT the whole object. Such a client should replace the
+   * `writerId` it read with its own label, or drop it, rather than echo the
+   * previous writer's label back. Does NOT create: a `PUT` to the `/meta` of a
+   * nonexistent Resource is a 404.
    * Authorization is capability-only (the `PUT` action), the same as Put
    * Resource. Returns 204.
    *
@@ -504,6 +520,13 @@ export class ResourceRequest {
     // be a non-empty string (400).
     const { epoch } = parseMetaEpoch({ body, requestName })
 
+    // The writer-attribution label (spec "Writer attribution") MAY also be
+    // declared here as a top-level `writerId` member (a sibling of `custom`
+    // and `epoch`). Unlike `epoch`, an omitted `writerId` CLEARS the stored
+    // label rather than preserving it -- this write is itself a revision. A
+    // present value must be a non-empty string (400).
+    const { writerId } = parseMetaWriterId({ body, requestName })
+
     // Write Metadata to the Collection's selected (data-plane) backend. An
     // `If-Match` / `If-None-Match` precondition (the `conditional-writes`
     // feature) is evaluated on the `/meta` `metaVersion` atomically with the
@@ -528,6 +551,7 @@ export class ResourceRequest {
         resourceId,
         custom,
         epoch,
+        writerId,
         ...(uniqueIndexes.length > 0 && { uniqueIndexes }),
         ...parseWritePreconditions(request.headers)
       })
@@ -606,12 +630,21 @@ export class ResourceRequest {
     // storage layer atomically with the removal; a mismatch surfaces as 412
     // `precondition-failed` (rethrown unchanged below).
     const { ifMatch } = parseWritePreconditions(request.headers)
+    // A deletion is a revision like any other, so the `Writer-Id` header MAY
+    // declare its own writer-attribution label (spec "Writer attribution");
+    // where the backend keeps a tombstone, this is the label it carries.
+    // Absent clears any stored label, the same as a content write.
+    const { writerId } = parseWriterIdHeader({
+      headers: request.headers,
+      requestName
+    })
     try {
       await dataBackend.deleteResource({
         spaceId,
         collectionId,
         resourceId,
-        ifMatch
+        ifMatch,
+        writerId
       })
     } catch (err) {
       rethrowOrWrapStorageError({ err, requestName })

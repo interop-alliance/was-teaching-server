@@ -225,6 +225,7 @@ interface ResourceRow {
   updated_at: string
   created_by: IDID | null
   epoch: string | null
+  writer_id: string | null
 }
 
 /**
@@ -1729,8 +1730,9 @@ export class PostgresBackend implements StorageBackend {
         content_type: string
         custom: ResourceMetadataCustom | null
         epoch: string | null
+        writer_id: string | null
       }>(
-        `SELECT resource_id, content_type, custom, epoch FROM resources
+        `SELECT resource_id, content_type, custom, epoch, writer_id FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND NOT deleted
           AND ($3::text IS NULL OR resource_id > $3)
         ORDER BY resource_id
@@ -1753,6 +1755,7 @@ export class PostgresBackend implements StorageBackend {
         contentType: row.content_type,
         custom: row.custom ?? undefined,
         epoch: row.epoch ?? undefined,
+        writerId: row.writer_id ?? undefined,
         encrypted
       })
     )
@@ -1796,6 +1799,7 @@ export class PostgresBackend implements StorageBackend {
     input,
     createdBy,
     epoch,
+    writerId,
     uniqueIndexes,
     ifMatch,
     ifNoneMatch
@@ -1806,6 +1810,7 @@ export class PostgresBackend implements StorageBackend {
     input: ResourceInput
     createdBy?: IDID
     epoch?: string
+    writerId?: string
     uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: HeldValidators
@@ -2009,14 +2014,18 @@ export class PostgresBackend implements StorageBackend {
         // write stores it and CLEARS it when absent (the new ciphertext's epoch
         // is unknown), so both the INSERT and the conflict update set it from
         // this write -- it is NOT preserved from the prior row like `created_by`.
-        epoch ?? null
+        epoch ?? null,
+        // The client-declared writer-attribution label (spec "Writer
+        // attribution"): a content write stores it and CLEARS it when absent,
+        // the same declare-or-clear terms as `epoch`.
+        writerId ?? null
       ]
       const insertSql = `
         INSERT INTO resources (
           space_id, collection_id, resource_id, content_type, content,
           is_json, size_bytes, generation, version, meta_version, custom,
-          deleted, created_at, updated_at, created_by, epoch
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL, false, $10, $11, $12, $13)`
+          deleted, created_at, updated_at, created_by, epoch, writer_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL, false, $10, $11, $12, $13, $14)`
       /**
        * `created_at` / `meta_generation` / `meta_version` / `custom` are
        * deliberately NOT in the conflict update: an overwrite keeps the
@@ -2050,7 +2059,8 @@ export class PostgresBackend implements StorageBackend {
              deleted = false,
              updated_at = EXCLUDED.updated_at,
              created_by = resources.created_by,
-             epoch = EXCLUDED.epoch`,
+             epoch = EXCLUDED.epoch,
+             writer_id = EXCLUDED.writer_id`,
         values,
         createOnly: ifNoneMatch === '*' && prior === undefined,
         validator,
@@ -2213,12 +2223,14 @@ export class PostgresBackend implements StorageBackend {
     spaceId,
     collectionId,
     resourceId,
-    ifMatch
+    ifMatch,
+    writerId
   }: {
     spaceId: string
     collectionId: string
     resourceId: string
     ifMatch?: string
+    writerId?: string
   }): Promise<void> {
     await this.#withTransaction(async client => {
       // First lock of the backend-wide order (`#lockSpaceRow`).
@@ -2279,6 +2291,10 @@ export class PostgresBackend implements StorageBackend {
       // marker, so a later re-create continues both parts of the content
       // validator. `meta_generation` goes with `meta_version`: the `/meta`
       // validator dies with the metadata object.
+      // `writer_id` is set from THIS delete's own declaration, not preserved
+      // from the row -- a deletion is a revision like any other, and the
+      // tombstone carries the label the deleting write declared, if any
+      // (spec "Writer attribution").
       await client.query(
         `UPDATE resources SET
            content = NULL,
@@ -2288,10 +2304,11 @@ export class PostgresBackend implements StorageBackend {
            meta_version = NULL,
            custom = NULL,
            epoch = NULL,
+           writer_id = $5,
            deleted = true,
            updated_at = $4
          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
-        [spaceId, collectionId, resourceId, now]
+        [spaceId, collectionId, resourceId, now, writerId ?? null]
       )
     })
   }
@@ -2317,8 +2334,8 @@ export class PostgresBackend implements StorageBackend {
   }): Promise<(ResourceMetadata & VersionedMetadata) | undefined> {
     const { rows } = await this.#reader().query<ResourceRow>(
       `SELECT content_type, size_bytes, generation, version, meta_generation,
-              meta_version, custom, epoch, deleted, created_at, updated_at,
-              created_by
+              meta_version, custom, epoch, writer_id, deleted, created_at,
+              updated_at, created_by
          FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
       [spaceId, collectionId, resourceId]
@@ -2338,6 +2355,9 @@ export class PostgresBackend implements StorageBackend {
       ...(hasCustom && { custom: row.custom as ResourceMetadataCustom }),
       // The client-declared key epoch (the `key-epochs` feature), when stamped.
       ...(row.epoch !== null && { epoch: row.epoch }),
+      // The client-declared writer-attribution label (spec "Writer
+      // attribution"), when stamped.
+      ...(row.writer_id !== null && { writerId: row.writer_id }),
       // The row's generation pairs with `version` for the content `ETag`; the
       // metadata object's own `metaGeneration` pairs with `metaVersion` for
       // the `/meta` one.
@@ -2374,6 +2394,7 @@ export class PostgresBackend implements StorageBackend {
     resourceId,
     custom,
     epoch,
+    writerId,
     uniqueIndexes,
     ifMatch,
     ifNoneMatch
@@ -2383,6 +2404,7 @@ export class PostgresBackend implements StorageBackend {
     resourceId: string
     custom: ResourceMetadataCustom | Record<string, unknown>
     epoch?: string
+    writerId?: string
     uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: HeldValidators
@@ -2457,14 +2479,18 @@ export class PostgresBackend implements StorageBackend {
       // The key-epoch stamp describes the CONTENT write, so a supplied `epoch`
       // replaces it but an OMITTED one PRESERVES the stored value (unlike
       // `custom`, full-replace): `COALESCE($8, epoch)` keeps the current value
-      // when the parameter is NULL.
+      // when the parameter is NULL. The writer-attribution label is
+      // declare-or-clear at THIS level too (unlike `epoch`): this write is
+      // itself a revision, so `writer_id` is set straight from `$9` with no
+      // `COALESCE`, clearing it when the parameter is NULL.
       await client.query(
         `UPDATE resources SET
            meta_generation = $4,
            meta_version = $5,
            custom = $6::jsonb,
            updated_at = $7,
-           epoch = COALESCE($8, epoch)
+           epoch = COALESCE($8, epoch),
+           writer_id = $9
          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
         [
           spaceId,
@@ -2474,7 +2500,8 @@ export class PostgresBackend implements StorageBackend {
           metaVersion,
           hasCustom ? JSON.stringify(custom) : null,
           now,
-          epoch ?? null
+          epoch ?? null,
+          writerId ?? null
         ]
       )
       return { generation: metaGeneration, version: metaVersion }
@@ -2879,6 +2906,7 @@ export class PostgresBackend implements StorageBackend {
       data?: unknown
       custom?: ResourceMetadataCustom | Record<string, unknown>
       epoch?: string
+      writerId?: string
     }>
     checkpoint: { id: string; updatedAt: string } | null
   }> {
@@ -2887,7 +2915,8 @@ export class PostgresBackend implements StorageBackend {
       ResourceRow & { resource_id: string }
     >(
       `SELECT resource_id, content, version, meta_generation, meta_version,
-              generation, custom, epoch, deleted, updated_at, created_by
+              generation, custom, epoch, writer_id, deleted, updated_at,
+              created_by
          FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND is_json
           AND ($3::text IS NULL OR (updated_at, resource_id) > ($3, $4))
@@ -2912,7 +2941,10 @@ export class PostgresBackend implements StorageBackend {
           // A tombstone keeps its creator, as it keeps its `created_at`.
           ...(row.created_by !== null && { createdBy: row.created_by }),
           updatedAt: row.updated_at,
-          deleted: true
+          deleted: true,
+          // A tombstone carries the label its DELETE declared, if any (spec
+          // "Writer attribution").
+          ...(row.writer_id !== null && { writerId: row.writer_id })
         }
       }
       let data: unknown
@@ -2943,7 +2975,10 @@ export class PostgresBackend implements StorageBackend {
         ...(row.custom !== null && { custom: row.custom }),
         // The client-declared key epoch (the `key-epochs` feature) rides the
         // feed so a replicating reader picks the right epoch key.
-        ...(row.epoch !== null && { epoch: row.epoch })
+        ...(row.epoch !== null && { epoch: row.epoch }),
+        // The writer-attribution label (spec "Writer attribution") rides the
+        // feed so a replica recognizes its own writes echoed back.
+        ...(row.writer_id !== null && { writerId: row.writer_id })
       }
     })
 
@@ -3801,7 +3836,10 @@ export class PostgresBackend implements StorageBackend {
         generation: row.generation,
         version: row.version,
         deleted: true,
-        contentType: row.content_type
+        contentType: row.content_type,
+        // A tombstone's writer-attribution label survives the round trip too
+        // (spec "Writer attribution").
+        ...(row.writer_id !== null && { writerId: row.writer_id })
       }
     }
     return {
@@ -3817,7 +3855,10 @@ export class PostgresBackend implements StorageBackend {
       ...(row.custom !== null && { custom: row.custom }),
       // The client-declared key epoch (the `key-epochs` feature) rides the
       // `.meta.` sidecar so it survives an export/import round trip.
-      ...(row.epoch !== null && { epoch: row.epoch })
+      ...(row.epoch !== null && { epoch: row.epoch }),
+      // The client-declared writer-attribution label (spec "Writer
+      // attribution") rides the sidecar on the same terms.
+      ...(row.writer_id !== null && { writerId: row.writer_id })
     }
   }
 
@@ -3884,8 +3925,8 @@ export class PostgresBackend implements StorageBackend {
       >(
         `SELECT collection_id, resource_id, content_type, is_json,
                 size_bytes, generation, version, meta_generation,
-                meta_version, custom, epoch, deleted, created_at, updated_at,
-                created_by
+                meta_version, custom, epoch, writer_id, deleted, created_at,
+                updated_at, created_by
            FROM resources WHERE space_id = $1`,
         [spaceId]
       ),
@@ -4731,9 +4772,9 @@ export class PostgresBackend implements StorageBackend {
          space_id, collection_id, resource_id, content_type, content,
          is_json, size_bytes, generation, version, meta_generation,
          meta_version, custom, deleted, created_at, updated_at, created_by,
-         epoch
+         epoch, writer_id
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb,
-                 $13, $14, $15, $16, $17)`,
+                 $13, $14, $15, $16, $17, $18)`,
       [
         spaceId,
         collectionId,
@@ -4755,7 +4796,10 @@ export class PostgresBackend implements StorageBackend {
         sidecar?.createdBy ?? null,
         // Restore the client-declared key epoch (the `key-epochs` feature) from
         // the archived sidecar; a tombstone or an unstamped Resource has none.
-        sidecar?.epoch ?? null
+        sidecar?.epoch ?? null,
+        // Restore the client-declared writer-attribution label (spec "Writer
+        // attribution") the same way.
+        sidecar?.writerId ?? null
       ]
     )
   }

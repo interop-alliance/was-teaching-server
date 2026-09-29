@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 159
+nextAvailableId: 160
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -1708,8 +1708,8 @@ the desktop learns nothing.
 - discovered-from: whole-codebase review (2026-09-17), verified
 - acceptance:
   - [ ] The `+json` parser regex is anchored so `application/ld+jsonl` and
-        `application/ld+json-seq` take the binary path `isJsonContentType()` promises,
-        instead of handing a parsed object to `pipeline` (500)
+        `application/ld+json-seq` take the binary path `isJsonContentType()`
+        promises, instead of handing a parsed object to `pipeline` (500)
   - [ ] The multipart branch matches case-insensitively and only
         `multipart/form-data`; `multipart/mixed` and other multipart types are
         stored as blobs or refused with a typed 415

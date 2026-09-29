@@ -2287,6 +2287,199 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       })
     })
 
+    describe('writer-attribution stamping (writerId)', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-writer-id'
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId)
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('a content write stores the declared label; metadata read surfaces it', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'w1',
+          input: jsonInput({ v: 1 }),
+          writerId: 'writer-1'
+        })
+        const metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'w1'
+        })
+        assert.equal(metadata?.writerId, 'writer-1')
+      })
+
+      it('surfaces the label on listings and the changes feed', async () => {
+        const { backend } = harness
+        const listing = await backend.listCollectionItems({
+          spaceId,
+          collectionId: 'col'
+        })
+        const item = listing.items.find(entry => entry.id === 'w1')
+        assert.equal((item as { writerId?: string }).writerId, 'writer-1')
+        const feed = await backend.changesSince!({
+          spaceId,
+          collectionId: 'col',
+          limit: 100
+        })
+        const doc = feed.documents.find(entry => entry.resourceId === 'w1')
+        assert.equal((doc as { writerId?: string }).writerId, 'writer-1')
+      })
+
+      it('a content rewrite WITHOUT the label clears the stored value', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'w1',
+          input: jsonInput({ v: 2 })
+        })
+        const metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'w1'
+        })
+        assert.equal(metadata?.writerId, undefined)
+      })
+
+      it('a metadata write is declare-or-clear too, UNLIKE `epoch` (which preserves)', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'w2',
+          input: jsonInput({ v: 1 }),
+          writerId: 'writer-a'
+        })
+        // A metadata write supplying `writerId` sets it.
+        await backend.writeResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'w2',
+          custom: {},
+          writerId: 'writer-b'
+        })
+        let metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'w2'
+        })
+        assert.equal(metadata?.writerId, 'writer-b')
+        // A metadata write OMITTING `writerId` CLEARS it -- unlike `epoch`,
+        // which a metadata write preserves on omission.
+        await backend.writeResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'w2',
+          custom: {}
+        })
+        metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'w2'
+        })
+        assert.equal(metadata?.writerId, undefined)
+      })
+
+      it('DELETE declares the tombstone label; an unlabeled delete clears it', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'w-del',
+          input: jsonInput({ v: 1 }),
+          writerId: 'writer-live'
+        })
+        await backend.deleteResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'w-del',
+          writerId: 'writer-deleter'
+        })
+        const feed = await backend.changesSince!({
+          spaceId,
+          collectionId: 'col',
+          limit: 100
+        })
+        const tomb = feed.documents.find(
+          document => document.resourceId === 'w-del'
+        )
+        assert.equal(tomb?.deleted, true)
+        assert.equal(
+          (tomb as { writerId?: string }).writerId,
+          'writer-deleter',
+          'the tombstone carries the label the DELETE itself declared, not the prior content-write label'
+        )
+
+        // A second delete of the same id (re-create then delete again, with no
+        // Writer-Id) clears the label.
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'w-del',
+          input: jsonInput({ v: 2 }),
+          writerId: 'writer-live-2'
+        })
+        await backend.deleteResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'w-del'
+        })
+        const feed2 = await backend.changesSince!({
+          spaceId,
+          collectionId: 'col',
+          limit: 100
+        })
+        const tomb2 = feed2.documents.find(
+          document => document.resourceId === 'w-del'
+        )
+        assert.equal(
+          (tomb2 as { writerId?: string }).writerId,
+          undefined,
+          'a delete declaring no Writer-Id clears the stored label'
+        )
+      })
+
+      it('the writerId survives an export / import round trip', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'w-export',
+          input: jsonInput({ v: 1 }),
+          writerId: 'writer-export'
+        })
+        const archive = await backend.exportSpace({ spaceId })
+        const target = await makeBackend()
+        try {
+          await target.backend.writeSpace({
+            spaceId,
+            spaceMetadata: {
+              id: spaceId,
+              type: ['Space'],
+              name: `Space ${spaceId}`,
+              controller: CONTROLLER
+            }
+          })
+          await target.backend.importSpace({ spaceId, tarStream: archive })
+          const metadata = await target.backend.getResourceMetadata({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'w-export'
+          })
+          assert.equal(metadata?.writerId, 'writer-export')
+        } finally {
+          await target.cleanup()
+        }
+      })
+    })
+
     describe('Collection Metadata write atomicity (key-epochs review fixes)', () => {
       let harness: BackendHarness
       const spaceId = 'space-atomicity'

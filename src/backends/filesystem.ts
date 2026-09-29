@@ -2645,6 +2645,7 @@ export class FileSystemBackend implements StorageBackend {
           contentType,
           custom: sidecar?.custom as ResourceMetadataCustom | undefined,
           epoch: sidecar?.epoch,
+          writerId: sidecar?.writerId,
           encrypted
         })
       })
@@ -2697,6 +2698,7 @@ export class FileSystemBackend implements StorageBackend {
     input,
     createdBy,
     epoch,
+    writerId,
     uniqueIndexes,
     ifMatch,
     ifNoneMatch
@@ -2707,6 +2709,7 @@ export class FileSystemBackend implements StorageBackend {
     input: ResourceInput
     createdBy?: IDID
     epoch?: string
+    writerId?: string
     uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: HeldValidators
@@ -2731,6 +2734,7 @@ export class FileSystemBackend implements StorageBackend {
           input,
           createdBy,
           epoch,
+          writerId,
           ifMatch,
           ifNoneMatch
         })
@@ -2818,6 +2822,7 @@ export class FileSystemBackend implements StorageBackend {
     input,
     createdBy,
     epoch,
+    writerId,
     ifMatch,
     ifNoneMatch
   }: {
@@ -2827,6 +2832,7 @@ export class FileSystemBackend implements StorageBackend {
     input: ResourceInput
     createdBy?: IDID
     epoch?: string
+    writerId?: string
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator> {
@@ -2931,7 +2937,11 @@ export class FileSystemBackend implements StorageBackend {
           // when absent (the new ciphertext's epoch is unknown -- a stale stamp
           // is worse than none), so it is NOT preserved from `prior` like
           // `custom`.
-          ...(epoch !== undefined && { epoch })
+          ...(epoch !== undefined && { epoch }),
+          // The writer-attribution label is likewise set from this write's
+          // declaration and CLEARED when absent (declare-or-clear), so it is
+          // NOT preserved from `prior`.
+          ...(writerId !== undefined && { writerId })
         }
       }
     })
@@ -3532,6 +3542,9 @@ export class FileSystemBackend implements StorageBackend {
       ...(hasCustom && { custom: sidecar!.custom as ResourceMetadataCustom }),
       // The client-declared key epoch (the `key-epochs` feature), when stamped.
       ...(sidecar?.epoch !== undefined && { epoch: sidecar.epoch }),
+      // The client-declared writer-attribution label (spec "Writer
+      // attribution"), when stamped.
+      ...(sidecar?.writerId !== undefined && { writerId: sidecar.writerId }),
       ...(sidecar?.generation !== undefined && {
         generation: sidecar.generation
       }),
@@ -3580,6 +3593,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId,
     custom,
     epoch,
+    writerId,
     uniqueIndexes,
     ifMatch,
     ifNoneMatch
@@ -3589,6 +3603,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     custom: ResourceMetadataCustom | Record<string, unknown>
     epoch?: string
+    writerId?: string
     uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: HeldValidators
@@ -3657,7 +3672,11 @@ export class FileSystemBackend implements StorageBackend {
           metaGeneration,
           metaVersion,
           ...(hasCustom && { custom }),
-          ...(resolvedEpoch !== undefined && { epoch: resolvedEpoch })
+          ...(resolvedEpoch !== undefined && { epoch: resolvedEpoch }),
+          // The writer-attribution label is declare-or-clear at THIS level too
+          // (unlike `epoch`): this write is itself a revision, so an omitted
+          // `writerId` clears the stored label rather than preserving `prior`.
+          ...(writerId !== undefined && { writerId })
         }
       })
       return { generation: metaGeneration, version: metaVersion }
@@ -3738,12 +3757,14 @@ export class FileSystemBackend implements StorageBackend {
     spaceId,
     collectionId,
     resourceId,
-    ifMatch
+    ifMatch,
+    writerId
   }: {
     spaceId: string
     collectionId: string
     resourceId: string
     ifMatch?: string
+    writerId?: string
   }): Promise<void> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
     const softDelete = async (): Promise<void> => {
@@ -3819,7 +3840,11 @@ export class FileSystemBackend implements StorageBackend {
           }),
           version: (prior?.version ?? 0) + 1,
           deleted: true,
-          contentType
+          contentType,
+          // A deletion is a revision like any other: the tombstone carries the
+          // writer-attribution label THIS delete declared, not the Resource's
+          // prior one (declare-or-clear, same as a content write).
+          ...(writerId !== undefined && { writerId })
         }
       })
     }
@@ -4288,6 +4313,7 @@ export class FileSystemBackend implements StorageBackend {
       data?: unknown
       custom?: ResourceMetadataCustom | Record<string, unknown>
       epoch?: string
+      writerId?: string
     }>
     checkpoint: { id: string; updatedAt: string } | null
   }> {
@@ -4336,6 +4362,7 @@ export class FileSystemBackend implements StorageBackend {
           fileName: string
           custom?: ResourceMetadataCustom | Record<string, unknown>
           epoch?: string
+          writerId?: string
         }
       | {
           resourceId: string
@@ -4344,6 +4371,7 @@ export class FileSystemBackend implements StorageBackend {
           createdBy?: IDID
           updatedAt: string
           deleted: true
+          writerId?: string
         }
     const liveDescriptors = [...liveFileById].map(
       async ([resourceId, live]): Promise<Descriptor | undefined> => {
@@ -4395,7 +4423,12 @@ export class FileSystemBackend implements StorageBackend {
           ...(sidecar?.custom !== undefined && { custom: sidecar.custom }),
           // The client-declared key epoch (the `key-epochs` feature) rides the
           // feed so a replicating reader picks the right epoch key.
-          ...(sidecar?.epoch !== undefined && { epoch: sidecar.epoch })
+          ...(sidecar?.epoch !== undefined && { epoch: sidecar.epoch }),
+          // The writer-attribution label (spec "Writer attribution") rides
+          // the feed so a replica recognizes its own writes echoed back.
+          ...(sidecar?.writerId !== undefined && {
+            writerId: sidecar.writerId
+          })
         }
       }
     )
@@ -4427,7 +4460,10 @@ export class FileSystemBackend implements StorageBackend {
             createdBy: sidecar.createdBy
           }),
           updatedAt: sidecar.updatedAt,
-          deleted: true
+          deleted: true,
+          // A tombstone carries the label its DELETE declared, if any (spec
+          // "Writer attribution").
+          ...(sidecar.writerId !== undefined && { writerId: sidecar.writerId })
         }
       })
     const descriptors = (

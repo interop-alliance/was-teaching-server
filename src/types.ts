@@ -857,6 +857,15 @@ export interface StorageBackend {
      * verifies it.
      */
     epoch?: string
+    /**
+     * The client-declared writer-attribution label naming the writing agent
+     * that produced this revision (spec "Writer attribution"). Stored
+     * opaquely and returned by reads; a content write with no `writerId`
+     * CLEARS any stored label, on the same declare-or-clear terms as `epoch`.
+     * The server never verifies it, computes it, or uses it in any
+     * authorization decision.
+     */
+    writerId?: string
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator>
@@ -880,6 +889,15 @@ export interface StorageBackend {
     collectionId: string
     resourceId: string
     ifMatch?: string
+    /**
+     * The client-declared writer-attribution label naming the deleting agent
+     * (spec "Writer attribution"). A deletion is a revision like any other:
+     * where the backend keeps a tombstone, this is the label it carries,
+     * declared fresh by THIS delete rather than inherited from the Resource's
+     * prior `writerId`. Absent clears it, the same as an absent value does on
+     * a content write.
+     */
+    writerId?: string
   }): Promise<void>
   /**
    * Reads a Resource's Metadata object. `generation` with `version` /
@@ -929,6 +947,14 @@ export interface StorageBackend {
      * the metadata write -- while a supplied value replaces it. Stored opaquely.
      */
     epoch?: string
+    /**
+     * The client-declared writer-attribution label (spec "Writer
+     * attribution"), a sibling of `custom` and `epoch`. Unlike `epoch`, an
+     * OMITTED `writerId` CLEARS the stored value -- a metadata write is
+     * itself a revision, so keeping a previous writer's label would
+     * misattribute it. Stored opaquely.
+     */
+    writerId?: string
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator | undefined>
@@ -1106,6 +1132,14 @@ export interface StorageBackend {
        * replicating reader picks the right epoch key without a `/meta` fetch.
        */
       epoch?: string
+      /**
+       * The Resource's writer-attribution label (spec "Writer attribution"),
+       * when one was stamped. Rides the feed so a replica recognizes its own
+       * writes echoed back and breaks same-`updatedAt` ties on a shared
+       * `(updatedAt, writerId)` key. A tombstone carries the label the
+       * deleting write declared, if any.
+       */
+      writerId?: string
     }>
     checkpoint: { id: string; updatedAt: string } | null
   }>

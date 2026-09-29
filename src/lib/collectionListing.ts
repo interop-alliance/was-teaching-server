@@ -47,7 +47,9 @@ export function suppressesItemNames({
  * Collection suppresses names (see `suppressesItemNames`). `epoch` is the
  * client-declared key epoch (the `key-epochs` feature), which rides each
  * listing item so a reader can pick the right epoch key without a `/meta` fetch
- * per Resource.
+ * per Resource. `writerId` is the client-declared writer-attribution label
+ * (spec "Writer attribution"), which rides each listing item on the same
+ * terms.
  * @param options {object}
  * @param options.spaceId {string}
  * @param options.collectionId {string}
@@ -55,6 +57,7 @@ export function suppressesItemNames({
  * @param options.contentType {string}
  * @param [options.custom] {ResourceMetadataCustom}   the stored `custom` metadata
  * @param [options.epoch] {string}   the declared key-epoch id
+ * @param [options.writerId] {string}   the declared writer-attribution label
  * @param options.encrypted {boolean}   whether item names are suppressed
  * @returns {ResourceSummary}
  */
@@ -65,6 +68,7 @@ export function collectionListingItem({
   contentType,
   custom,
   epoch,
+  writerId,
   encrypted
 }: {
   spaceId: string
@@ -73,6 +77,7 @@ export function collectionListingItem({
   contentType: string
   custom?: ResourceMetadataCustom
   epoch?: string
+  writerId?: string
   encrypted: boolean
 }): ResourceSummary {
   const name = encrypted ? undefined : custom?.name
@@ -81,7 +86,8 @@ export function collectionListingItem({
     url: resourcePath({ spaceId, collectionId, resourceId }),
     contentType,
     ...(name !== undefined && { name }),
-    ...(epoch !== undefined && { epoch })
+    ...(epoch !== undefined && { epoch }),
+    ...(writerId !== undefined && { writerId })
   }
 }
 

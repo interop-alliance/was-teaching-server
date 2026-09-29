@@ -42,6 +42,7 @@ import {
 } from '../lib/backends.js'
 import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
+import { parseWriterIdHeader } from '../lib/writerAttribution.js'
 import { parsePageParams } from '../lib/pagination.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import { forgetDeletedWebvhLocation } from '../lib/webvhController.js'
@@ -191,6 +192,13 @@ export class CollectionRequest {
       headers: request.headers,
       requestName
     })
+    // The writer-attribution label (spec "Writer attribution") MAY be
+    // declared the same way, via the `Writer-Id` header; the server stores it
+    // opaquely and clears it when absent (declare-or-clear).
+    const { writerId } = parseWriterIdHeader({
+      headers: request.headers,
+      requestName
+    })
     // Any `unique: true` index entries the Collection declares ride along, so
     // the backend enforces the uniqueness claim atomically with the write (409).
     const uniqueIndexes = uniqueIndexesOf({
@@ -204,6 +212,7 @@ export class CollectionRequest {
         input,
         createdBy: invokerDid(request),
         epoch,
+        writerId,
         ...(uniqueIndexes.length > 0 && { uniqueIndexes })
       })
       response = {
@@ -1071,7 +1080,12 @@ export class CollectionRequest {
         // The client-declared key epoch (the `key-epochs` feature) rides the
         // feed so a replicating reader picks the right epoch key without a
         // `/meta` fetch.
-        ...(doc.epoch !== undefined && { epoch: doc.epoch })
+        ...(doc.epoch !== undefined && { epoch: doc.epoch }),
+        // The writer-attribution label (spec "Writer attribution") rides the
+        // feed so a replica recognizes its own writes echoed back and breaks
+        // same-`updatedAt` ties; a tombstone carries the label its DELETE
+        // declared, if any.
+        ...(doc.writerId !== undefined && { writerId: doc.writerId })
       }
     })
 

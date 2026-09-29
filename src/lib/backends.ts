@@ -31,9 +31,10 @@ export const DEFAULT_BACKEND_ID = 'default'
  * restarts -- only the display `name` distinguishes them.
  *
  * The descriptor advertises no affordances. The guarantees a Collection needs
- * -- conditional writes, the `epoch` stamp -- are baseline requirements of
- * every backend a Collection may be created on, because the server, not the
- * storage engine, serializes each write and mints its own opaque validator.
+ * -- conditional writes, the `epoch` stamp, the `writerId` writer-attribution
+ * label -- are baseline requirements of every backend a Collection may be
+ * created on, because the server, not the storage engine, serializes each
+ * write and mints its own opaque validator.
  *
  * The wire type only REQUIRES `id`; a server backend always populates every
  * field except the `external`-only `provider` / `connection`, so the return is

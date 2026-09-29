@@ -2,6 +2,16 @@
 
 ## 0.40.0 - TBD
 
+### Added
+
+- Writer attribution (spec `#writer-attribution`): an optional `Writer-Id`
+  request header on content writes and `DELETE`, and a top-level `writerId`
+  member on Update Resource Metadata, stored as the Resource Metadata `writerId`
+  property and echoed on `/meta` reads, listing item summaries, the `changes`
+  feed, and tombstones. Declare-or-clear at every level; a present but empty or
+  non-string value is `invalid-request-body`. The value is never verified,
+  computed, or used in any authorization decision.
+
 ### Changed
 
 - The JSON content-type check comes from `@interop/storage-core` (0.21.0) as
