@@ -74,6 +74,7 @@ import {
   suppressesItemNames
 } from '../lib/collectionListing.js'
 import { revocationFileName } from '../lib/revocations.js'
+import { applyStoreMigrations } from './filesystemStore.js'
 import { policyGrants } from '../policy.js'
 import { KeyedMutex, KeyedReadWriteLock } from '../lib/keyedMutex.js'
 import {
@@ -228,6 +229,11 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 export class FileSystemBackend implements StorageBackend {
+  /**
+   * The data root: `spaces/`, `keystores/` and `space-revocations/` sit under
+   * it, beside the `store.json` layout version stamp.
+   */
+  dataDir: string
   spacesDir: string
   /**
    * Root of the WebKMS keystore tree (`data/keystores/<localId>/`), a sibling
@@ -459,6 +465,7 @@ export class FileSystemBackend implements StorageBackend {
     maxCollectionsPerSpace?: number
     maxResourcesPerSpace?: number
   }) {
+    this.dataDir = dataDir
     this.spacesDir = path.join(dataDir, 'spaces')
     this.keystoresDir = path.join(dataDir, 'keystores')
     // A sibling of spacesDir, NOT nested under each Space: a `revocations/` dir
@@ -495,15 +502,28 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Startup hook: removes the staging temp files a killed process left behind
-   * under the Space, keystore, and revocation trees. Only temp files untouched
-   * for an hour are removed, since another process sharing the data directory
-   * may still be writing a fresher one. A failure to read or remove an entry is
-   * logged and does not stop startup.
+   * Startup hook: brings the data dir to the current storage layout version
+   * (see `filesystemStore.ts`), then removes the staging temp files a killed
+   * process left behind at the data root and under the Space, keystore, and
+   * revocation trees. Only temp files untouched for an hour are removed, since
+   * another process sharing the data directory may still be writing a fresher
+   * one. A failure to read or remove an entry is logged and does not stop
+   * startup.
    * @returns {Promise<void>}
    */
   async init(): Promise<void> {
-    let removed = 0
+    const storeVersion = await applyStoreMigrations({
+      dataDir: this.dataDir,
+      logger: this.logger
+    })
+    this.logger.info({ storeVersion }, 'Filesystem store version')
+    // The data root's own temp files (a `store.json` rewrite or a lock file's
+    // staging), without descending into `lost+found` and the trees below.
+    let removed = await sweepTempFiles({
+      root: this.dataDir,
+      logger: this.logger,
+      recursive: false
+    })
     for (const root of [
       this.spacesDir,
       this.keystoresDir,

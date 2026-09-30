@@ -21,6 +21,10 @@ import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { TEMP_FILE_ORPHAN_AGE_MS } from '../src/lib/atomicFile.js'
+import {
+  STORE_FILE_NAME,
+  STORE_MIGRATIONS
+} from '../src/backends/filesystemStore.js'
 import { startTestServer, zcapClients } from './helpers.js'
 
 /**
@@ -57,6 +61,11 @@ describe('Staging temp-file cleanup (filesystem backend)', () => {
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
+    // Stamped, as the earlier process would have left it.
+    await writeFile(
+      path.join(dataDir, STORE_FILE_NAME),
+      JSON.stringify({ version: STORE_MIGRATIONS.length })
+    )
     // Temp files an earlier process was killed while writing.
     // Their mtime is older than the orphan age, so the sweep removes them.
     const stale = new Date(Date.now() - TEMP_FILE_ORPHAN_AGE_MS - 60_000)

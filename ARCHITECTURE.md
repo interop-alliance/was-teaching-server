@@ -270,6 +270,20 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   (rooted at `data/`) that `createApp()` uses when no backend is injected. The
   active backend is injected via `createApp({ backend })` and decorated onto the
   instance as `request.server.storage`.
+- **`src/backends/filesystemStore.ts`** -- the filesystem backend's storage
+  layout version. The data root holds `store.json`, whose integer `version`
+  names the layout, beside `spaces/`, `keystores/` and `space-revocations/`.
+  `STORE_MIGRATIONS` is an ordered, append-only list of migration functions,
+  version `n` being entry `n - 1`, like `MIGRATIONS` in `postgresSchema.ts`. The
+  backend's `init()` applies pending steps in order under a lock and rewrites
+  `store.json` after each one, so every step must be idempotent. Each runner
+  creates its own `store.lock.<nonce>` file and withdraws if it then sees
+  another live one. A lock file whose heartbeat stopped, or whose holder is gone
+  from this host, is ignored and removed. An empty data dir is stamped at the
+  current version. Startup is refused when `store.json` names a version newer
+  than the code knows, or is absent over a data dir that holds data. The version
+  is private to the backend: it is not exported, not stored in any Space, and
+  not served.
 - **`src/backends/{filesystem}.ts`** — interchangeable persistence
   implementation (`implements StorageBackend` from `src/types.ts`). A backend
   offers no precondition primitive of its own to a client: the server serializes

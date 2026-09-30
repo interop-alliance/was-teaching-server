@@ -61,9 +61,10 @@ describe('Request validation API', () => {
         'expected a spec-required problem type'
       )
 
-      // Defense in depth: nothing was written outside the spaces/ root.
+      // Defense in depth: nothing was written outside the spaces/ root (the
+      // store.json layout stamp is the backend's own).
       const dataEntries = await readdir(dataDir)
-      assert.deepStrictEqual(dataEntries, ['spaces'])
+      assert.deepStrictEqual(dataEntries.sort(), ['spaces', 'store.json'])
       const parentEntries = await readdir(path.dirname(dataDir))
       assert.ok(
         !parentEntries.includes('pwned'),

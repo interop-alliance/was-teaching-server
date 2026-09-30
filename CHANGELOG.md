@@ -12,8 +12,16 @@
   non-string value is `invalid-request-body`. The value is never verified,
   computed, or used in any authorization decision.
 
+- The filesystem backend versions its storage layout. The data root holds
+  `store.json` with an integer `version`, and the backend applies pending layout
+  migrations at startup, under a lock file, before it serves requests. An empty
+  data dir is stamped with the current version.
+
 ### Changed
 
+- The filesystem backend refuses to start when `store.json` names a newer
+  version than the server knows, or is absent over a data dir that holds data.
+  An existing filesystem data dir must be wiped before deploying this release.
 - The provisioning gate (`WAS_ONBOARDING_TOKEN` / `authorizeProvisioning`) now
   covers Create Space by Id: a `PUT /space/:spaceId/meta` that creates a Space
   needs the token (or the policy's `grant`), as `POST /spaces/` does. An update

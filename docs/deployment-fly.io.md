@@ -267,6 +267,14 @@ The filesystem backend serializes writes inside one process, so run exactly one
 server process. A deploy then stops it and starts the new one, which means a
 short outage.
 
+The data directory's `store.json` records its storage layout version. The server
+applies any pending layout migrations when it starts, before it listens. Do not
+move this into a Fly `release_command`: Fly runs that command in a temporary
+machine that does not mount the app's volume. A server refuses to start on a
+data directory stamped with a newer version than it knows, and on a non-empty
+one with no `store.json`. A volume written by a release older than the stamp is
+not migrated: wipe it before deploying, or the server refuses to start.
+
 ### Postgres backend
 
 Setting `DATABASE_URL` selects the Postgres backend. The server applies its

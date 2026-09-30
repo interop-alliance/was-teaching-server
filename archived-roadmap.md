@@ -3499,3 +3499,38 @@ update. An unknown decision is refused as `deny` and logged. A set but empty
 fails plugin registration. Unset stays open provisioning. Under a gate, a
 create-by-`PUT` refusal tells the caller the id is free, which open provisioning
 (a 201) and `POST /spaces/` with an `id` (a 409) already do.
+
+### WAS-160: Filesystem backend store version and migration runner
+
+- status: done (2026-09-29)
+- priority: medium
+- labels: backends, migrations, operations
+- acceptance:
+  - [x] The data root holds `store.json`, a JSON object whose `version` member
+        is an integer naming the storage layout. It is a sibling of `spaces/`,
+        `keystores/` and `space-revocations/`, so it cannot collide with a Space
+        or Collection id
+  - [x] An ordered, append-only list of migration functions in the backend,
+        version `n` being entry `n - 1`, mirroring `MIGRATIONS` in
+        `postgresSchema.ts`
+  - [x] At startup the backend applies pending migrations in order, holding a
+        lock that keeps two processes on the same data dir from both running
+        them, and rewrites `store.json` (temp file plus rename) after each step
+  - [x] Each migration step is idempotent, so a run interrupted before its stamp
+        write is safely repeated on the next boot
+  - [x] An empty data dir is stamped with the current version and needs no
+        migration
+  - [x] Startup refuses, with an error naming both versions, when `store.json`
+        names a version higher than the code knows, or when it is absent over a
+        non-empty data dir
+  - [x] The applied version is logged at startup
+  - [x] The migrations run inside the server process at boot, not from a Fly
+        `release_command`: Fly runs that command in a temporary machine that
+        does not mount the app's volume
+  - [x] Tests: fresh dir stamped; pending step applied once; interrupted step
+        re-run; newer-than-code refused; unstamped non-empty dir refused
+
+The refusal on an unstamped non-empty data dir means the existing staging and
+prod filesystem volumes cannot boot the release that ships this. Under the
+greenfield stance they are wiped on that deploy rather than given a fallback
+that treats an unstamped store as version 0.

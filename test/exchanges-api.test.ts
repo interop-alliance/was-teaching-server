@@ -1,7 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import Fastify, { type FastifyInstance } from 'fastify'
 
 import { initExchangeRoutes } from '../src/exchanges.js'
+import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { startTestServer } from './helpers.js'
 
 const EXCHANGES_PATH = '/workflows/ephemeral/exchanges'
@@ -38,13 +42,18 @@ async function createExchange({
 describe('Ephemeral exchanges API', () => {
   let fastify: FastifyInstance
   let serverUrl: string
+  let dataDir: string
 
   beforeAll(async () => {
-    ;({ fastify, serverUrl } = await startTestServer())
+    dataDir = await mkdtemp(path.join(tmpdir(), 'was-exchanges-'))
+    ;({ fastify, serverUrl } = await startTestServer({
+      backend: new FileSystemBackend({ dataDir })
+    }))
   })
 
   afterAll(async () => {
     await fastify.close()
+    await rm(dataDir, { recursive: true, force: true })
   })
 
   describe('create', () => {

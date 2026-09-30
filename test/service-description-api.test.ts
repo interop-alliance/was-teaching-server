@@ -258,7 +258,11 @@ describe('Service description API', () => {
     })
 
     it('appends to a Link header a handler already set', async () => {
-      const app = createApp({ logger: false, serverUrl: 'https://was.example' })
+      const app = createApp({
+        backend: new FileSystemBackend({ dataDir }),
+        logger: false,
+        serverUrl: 'https://was.example'
+      })
       app.get('/test-links', async (request, reply) => {
         return reply
           .header(

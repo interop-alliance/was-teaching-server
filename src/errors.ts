@@ -500,6 +500,39 @@ export class StaleSpaceMetadataError extends Error {
 }
 
 /**
+ * Startup refusal: the filesystem backend's data directory is at a storage
+ * layout version this server cannot run on. Either its `store.json` names a
+ * version newer than the code knows, or it has no `store.json` over a data
+ * directory that already holds data. Never sent over the wire.
+ * @param options {object}
+ * @param options.detail {string}   names the stored and the known version
+ */
+export class StoreVersionError extends Error {
+  constructor({ detail }: { detail: string }) {
+    super(detail)
+    this.name = 'StoreVersionError'
+  }
+}
+
+/**
+ * Startup refusal: the filesystem backend could not take the migration lock
+ * on its data directory before the timeout, because another live process
+ * holds it (or a process on another host left it behind). Never sent over the
+ * wire.
+ * @param options {object}
+ * @param options.lockPath {string}   the lock file that stayed held
+ */
+export class StoreLockTimeoutError extends Error {
+  constructor({ lockPath }: { lockPath: string }) {
+    super(
+      `Timed out waiting for the store migration lock at ${lockPath}. ` +
+        'Remove it if no other server process uses this data directory.'
+    )
+    this.name = 'StoreLockTimeoutError'
+  }
+}
+
+/**
  * 400 — a pagination `cursor` query parameter is malformed or can no longer be
  * honored (not valid base64url, not JSON, or missing its keyset position; spec
  * `invalid-cursor`). Like `precondition-failed`, it is only ever observable by a

@@ -4,9 +4,11 @@
  * malformed value, including the sub-path rejection the URL-join sites
  * require -- plus the same serverUrl validation at fastifyWas registration.
  */
-import { it, describe } from 'vitest'
+import { afterAll, beforeAll, it, describe } from 'vitest'
 import assert from 'node:assert'
 import { randomBytes } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { IdEncoder } from '@digitalcredentials/bnid'
 
@@ -26,6 +28,16 @@ import {
 } from '../src/config.default.js'
 import { deriveKekId } from '../src/lib/kmsRecordCipher.js'
 import { createApp } from '../src/server.js'
+import { FileSystemBackend } from '../src/backends/filesystem.js'
+
+// A private data dir, so the suite never reads the repo's data/ directory.
+let dataDir: string
+beforeAll(async () => {
+  dataDir = await mkdtemp(path.join(tmpdir(), 'was-config-'))
+})
+afterAll(async () => {
+  await rm(dataDir, { recursive: true, force: true })
+})
 
 /** A base58btc Multikey `secretKeyMultibase` for a raw 32-byte AES-256 key. */
 function kekMultibase(key: Buffer): string {
@@ -396,7 +408,10 @@ describe('loadConfigFromEnv (KMS record KEK vars)', () => {
 
 describe('fastifyWas serverUrl validation', () => {
   it('rejects a path-bearing serverUrl at registration', async () => {
-    const fastify = createApp({ serverUrl: 'https://example.com/was' })
+    const fastify = createApp({
+      backend: new FileSystemBackend({ dataDir }),
+      serverUrl: 'https://example.com/was'
+    })
     await assert.rejects(async () => {
       await fastify.ready()
     }, /sub-path/)
@@ -404,7 +419,7 @@ describe('fastifyWas serverUrl validation', () => {
   })
 
   it('still allows omitting serverUrl (test compositions)', async () => {
-    const fastify = createApp()
+    const fastify = createApp({ backend: new FileSystemBackend({ dataDir }) })
     await fastify.ready()
     await fastify.close()
   })
@@ -420,7 +435,7 @@ describe('fastifyWas serverUrl validation', () => {
 
 describe('createApp logger option', () => {
   it('defaults to an active pino logger, shared with the backend', async () => {
-    const fastify = createApp()
+    const fastify = createApp({ backend: new FileSystemBackend({ dataDir }) })
     await fastify.ready()
     assert.strictEqual(fastify.log.level, 'info')
     assert.strictEqual(fastify.storage.logger, fastify.log)
@@ -428,7 +443,10 @@ describe('createApp logger option', () => {
   })
 
   it('logger: false silences Fastify and the backend hand-off', async () => {
-    const fastify = createApp({ logger: false })
+    const fastify = createApp({
+      backend: new FileSystemBackend({ dataDir }),
+      logger: false
+    })
     await fastify.ready()
     // Fastify substitutes a no-op logger (no `level`); the backend gets it too,
     // so its diagnostics calls resolve to no-ops rather than throwing.
@@ -439,7 +457,10 @@ describe('createApp logger option', () => {
   })
 
   it('accepts a pino options object', async () => {
-    const fastify = createApp({ logger: { level: 'error' } })
+    const fastify = createApp({
+      backend: new FileSystemBackend({ dataDir }),
+      logger: { level: 'error' }
+    })
     await fastify.ready()
     assert.strictEqual(fastify.log.level, 'error')
     await fastify.close()

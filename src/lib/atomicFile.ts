@@ -23,7 +23,7 @@ const { open, rename, unlink, link, opendir, stat } = fs.promises
 /**
  * The file-name prefix every staging temp file carries.
  */
-const TEMP_FILE_PREFIX = '.tmp-'
+export const TEMP_FILE_PREFIX = '.tmp-'
 
 /**
  * The temp path a write for `filePath` stages into: a `.tmp-<uuid>` dot-file in
@@ -45,7 +45,8 @@ export function tempPathFor(filePath: string): string {
 export const TEMP_FILE_ORPHAN_AGE_MS = 60 * 60 * 1000
 
 /**
- * Removes the stale staging temp files under `root`, at any depth. A write in
+ * Removes the stale staging temp files under `root`, at any depth unless
+ * `recursive` is false. A write in
  * flight when the process is killed leaves its temp file behind. No listing
  * shows it, but it stays on disk and counts against the Space's `du`-based
  * quota. A temp file modified within the last `olderThanMs` is kept, since
@@ -60,16 +61,20 @@ export const TEMP_FILE_ORPHAN_AGE_MS = 60 * 60 * 1000
  * @param options.root {string}   the directory tree to sweep
  * @param options.logger {FastifyBaseLogger}   where skipped entries are logged
  * @param [options.olderThanMs] {number}   minimum age since last modification
+ * @param [options.recursive] {boolean}   whether to descend into
+ *   subdirectories (default true)
  * @returns {Promise<number>}   how many temp files were removed
  */
 export async function sweepTempFiles({
   root,
   logger,
-  olderThanMs = TEMP_FILE_ORPHAN_AGE_MS
+  olderThanMs = TEMP_FILE_ORPHAN_AGE_MS,
+  recursive = true
 }: {
   root: string
   logger: FastifyBaseLogger
   olderThanMs?: number
+  recursive?: boolean
 }): Promise<number> {
   const cutoff = Date.now() - olderThanMs
   let removed = 0
@@ -80,7 +85,9 @@ export async function sweepTempFiles({
       for await (const entry of await opendir(dir)) {
         const entryPath = path.join(dir, entry.name)
         if (entry.isDirectory()) {
-          pending.push(entryPath)
+          if (recursive) {
+            pending.push(entryPath)
+          }
         } else if (entry.isFile() && entry.name.startsWith(TEMP_FILE_PREFIX)) {
           removed += await removeIfStale({
             filePath: entryPath,
