@@ -3534,3 +3534,22 @@ The refusal on an unstamped non-empty data dir means the existing staging and
 prod filesystem volumes cannot boot the release that ships this. Under the
 greenfield stance they are wiped on that deploy rather than given a fallback
 that treats an unstamped store as version 0.
+
+### WAS-161: Postgres backend refuses a database newer than the code
+
+- status: done (2026-09-29)
+- priority: medium
+- labels: backends, migrations, operations
+- acceptance:
+  - [x] `applyMigrations` in `src/backends/postgresSchema.ts` refuses, inside
+        the same transaction and advisory lock, when `schema_migrations` holds a
+        version greater than `MIGRATIONS.length`; the error names both versions
+  - [x] The applied version is logged at startup
+  - [x] Test: a database carrying a version past the code's list refuses to
+        start
+
+The migration runner already exists (append-only `MIGRATIONS`, the
+`schema_migrations` table, an advisory lock, one transaction). It applies what
+is missing but does not notice migrations it does not know about, which is what
+an older build sees after a rollback. It would then run against a schema it was
+not written for.

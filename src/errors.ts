@@ -500,10 +500,12 @@ export class StaleSpaceMetadataError extends Error {
 }
 
 /**
- * Startup refusal: the filesystem backend's data directory is at a storage
- * layout version this server cannot run on. Either its `store.json` names a
- * version newer than the code knows, or it has no `store.json` over a data
- * directory that already holds data. Never sent over the wire.
+ * Startup refusal: a backend's store is at a storage layout version this
+ * server cannot run on. For the filesystem backend, either its `store.json`
+ * names a version newer than the code knows, or it has no `store.json` over a
+ * data directory that already holds data. For the Postgres backend, its
+ * `schema_migrations` table records a version newer than the code knows.
+ * Never sent over the wire.
  * @param options {object}
  * @param options.detail {string}   names the stored and the known version
  */

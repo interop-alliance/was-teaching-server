@@ -23,6 +23,7 @@ import { Readable } from 'node:stream'
 import pg from 'pg'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { PostgresBackend } from '../src/backends/postgres.js'
+import { StoreVersionError } from '../src/errors.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
 import {
   describeStorageBackendContract,
@@ -39,7 +40,7 @@ async function makePostgresHarness(
     maxCollectionsPerSpace?: number
     maxResourcesPerSpace?: number
   } = {}
-): Promise<BackendHarness> {
+): Promise<BackendHarness & { schema: string }> {
   const schema = `was_test_${crypto.randomBytes(8).toString('hex')}`
   const backend = new PostgresBackend({
     connectionString: connectionString!,
@@ -49,6 +50,7 @@ async function makePostgresHarness(
   await backend.init()
   return {
     backend,
+    schema,
     async cleanup() {
       await backend.close()
       const admin = new pg.Client({ connectionString: connectionString! })
@@ -309,5 +311,41 @@ if (!connectionString) {
         }
       }
     )
+  })
+
+  describe('schema version', () => {
+    it('refuses to start on a schema newer than the code knows', async () => {
+      const harness = await makePostgresHarness()
+      const { schema } = harness
+      const admin = new pg.Client({ connectionString: connectionString! })
+      await admin.connect()
+      try {
+        const { rows } = await admin.query<{ version: number }>(
+          `SELECT max(version) AS version FROM "${schema}".schema_migrations`
+        )
+        const newerVersion = rows[0]!.version + 1
+        await admin.query(
+          `INSERT INTO "${schema}".schema_migrations (version) VALUES ($1)`,
+          [newerVersion]
+        )
+        const newer = new PostgresBackend({
+          connectionString: connectionString!,
+          schema
+        })
+        try {
+          await expect(newer.init()).rejects.toSatisfy(
+            (err: unknown) =>
+              err instanceof StoreVersionError &&
+              err.message.includes(`version ${newerVersion}`) &&
+              err.message.includes(`version ${newerVersion - 1}`)
+          )
+        } finally {
+          await newer.close()
+        }
+      } finally {
+        await admin.end()
+        await harness.cleanup()
+      }
+    })
   })
 }

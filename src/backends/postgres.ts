@@ -480,7 +480,7 @@ export class PostgresBackend implements StorageBackend {
       // holder's migration takes, and a future slow migration must not be
       // capped at the request-path timeout either.
       await client.query('SET statement_timeout = 0')
-      await applyMigrations({ client })
+      await applyMigrations({ client, logger: this.logger })
     } finally {
       // Destroy rather than pool-return the client, so the lifted timeout
       // never leaks into a request-path connection.

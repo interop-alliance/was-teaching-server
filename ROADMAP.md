@@ -1795,25 +1795,6 @@ Space, it is not exported, and it is not served on `/service`. It sits at the
 store root, beside the other server-private state that lives outside every
 Space.
 
-### WAS-161: Postgres backend refuses a database newer than the code
-
-- status: todo
-- priority: medium
-- labels: backends, migrations, operations
-- acceptance:
-  - [ ] `applyMigrations` in `src/backends/postgresSchema.ts` refuses, inside
-        the same transaction and advisory lock, when `schema_migrations` holds a
-        version greater than `MIGRATIONS.length`; the error names both versions
-  - [ ] The applied version is logged at startup
-  - [ ] Test: a database carrying a version past the code's list refuses to
-        start
-
-The migration runner already exists (append-only `MIGRATIONS`, the
-`schema_migrations` table, an advisory lock, one transaction). It applies what
-is missing but does not notice migrations it does not know about, which is what
-an older build sees after a rollback. It would then run against a schema it was
-not written for.
-
 ## Test coverage gaps (conformance suite + server `test/`)
 
 Produced by a 2026-07-22 coverage analysis: an inventory of the spec's 324

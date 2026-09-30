@@ -14,7 +14,9 @@
  * ISO-8601 strings the wire model uses (`new Date().toISOString()`), not
  * `timestamptz`, so change-feed checkpoints round-trip byte-identically.
  */
+import type { FastifyBaseLogger } from 'fastify'
 import type pg from 'pg'
+import { StoreVersionError } from '../errors.js'
 
 /**
  * Ordered migration scripts. Version `n` is `MIGRATIONS[n - 1]`; append only,
@@ -314,16 +316,25 @@ const MIGRATIONS: string[] = [
  * schema-scoped advisory lock so concurrent server instances sharing one
  * database serialize their startup migration runs. Idempotent: applied
  * versions are recorded in `schema_migrations` and skipped on the next run.
+ * Refuses to start (`StoreVersionError`) when `schema_migrations` records a
+ * version newer than `migrations` knows, as after a rollback to an older
+ * build, rather than run against a schema this code was not written for.
  * @param options {object}
  * @param options.client {pg.PoolClient}   a dedicated client (not the pool);
  *   the caller is responsible for releasing it
- * @returns {Promise<void>}
+ * @param options.logger {FastifyBaseLogger}
+ * @param [options.migrations] {string[]}   defaults to MIGRATIONS
+ * @returns {Promise<number>}   the version the schema is at afterwards
  */
 export async function applyMigrations({
-  client
+  client,
+  logger,
+  migrations = MIGRATIONS
 }: {
   client: pg.PoolClient
-}): Promise<void> {
+  logger: FastifyBaseLogger
+  migrations?: string[]
+}): Promise<number> {
   await client.query('BEGIN')
   try {
     // Scope the advisory lock to the active schema so parallel test schemas
@@ -341,18 +352,30 @@ export async function applyMigrations({
       'SELECT version FROM schema_migrations'
     )
     const applied = new Set(rows.map(row => row.version))
-    for (let index = 0; index < MIGRATIONS.length; index++) {
+    const currentVersion = migrations.length
+    const newestApplied = Math.max(0, ...applied)
+    if (newestApplied > currentVersion) {
+      throw new StoreVersionError({
+        detail:
+          `The Postgres schema_migrations table records version ` +
+          `${newestApplied}; this server knows up to version ${currentVersion}.`
+      })
+    }
+    for (let index = 0; index < migrations.length; index++) {
       const version = index + 1
       if (applied.has(version)) {
         continue
       }
-      await client.query(MIGRATIONS[index]!)
+      logger.info({ version }, 'Applying Postgres schema migration')
+      await client.query(migrations[index]!)
       await client.query(
         'INSERT INTO schema_migrations (version) VALUES ($1)',
         [version]
       )
     }
     await client.query('COMMIT')
+    logger.info({ version: currentVersion }, 'Postgres schema version')
+    return currentVersion
   } catch (err) {
     await client.query('ROLLBACK')
     throw err

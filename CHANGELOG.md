@@ -22,6 +22,9 @@
 - The filesystem backend refuses to start when `store.json` names a newer
   version than the server knows, or is absent over a data dir that holds data.
   An existing filesystem data dir must be wiped before deploying this release.
+- The Postgres backend refuses to start when its `schema_migrations` table
+  records a newer version than the server knows, as after a rollback to an older
+  build. It logs the schema version at startup.
 - The provisioning gate (`WAS_ONBOARDING_TOKEN` / `authorizeProvisioning`) now
   covers Create Space by Id: a `PUT /space/:spaceId/meta` that creates a Space
   needs the token (or the policy's `grant`), as `POST /spaces/` does. An update

@@ -283,7 +283,9 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   current version. Startup is refused when `store.json` names a version newer
   than the code knows, or is absent over a data dir that holds data. The version
   is private to the backend: it is not exported, not stored in any Space, and
-  not served.
+  not served. The Postgres backend's `applyMigrations` refuses the same way,
+  with the same `StoreVersionError`, when its `schema_migrations` table records
+  a version newer than `MIGRATIONS` knows.
 - **`src/backends/{filesystem}.ts`** — interchangeable persistence
   implementation (`implements StorageBackend` from `src/types.ts`). A backend
   offers no precondition primitive of its own to a client: the server serializes
