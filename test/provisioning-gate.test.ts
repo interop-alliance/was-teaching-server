@@ -130,6 +130,37 @@ describe('Provisioning gate', () => {
       assert.equal(signed.status, 200)
     })
 
+    it('POST /spaces/ with a Bearer token stores and echoes no client-supplied createdBy or unknown member', async () => {
+      await boot({ onboardingToken: TOKEN })
+      const spaceId = `token-strip-${crypto.randomUUID()}`
+      const response = await fetch(new URL('/spaces/', serverUrl), {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          ...createSpaceBody(spaceId),
+          createdBy: 'did:key:zAttacker',
+          foo: 1
+        })
+      })
+      assert.equal(response.status, 201)
+      const echoed = (await response.json()) as Record<string, unknown>
+      assert.equal('createdBy' in echoed, false)
+      assert.equal('foo' in echoed, false)
+      assert.equal(echoed.name, 'Provisioned Space')
+
+      const read = await alice.was.request({
+        path: `/space/${spaceId}/meta`,
+        method: 'GET'
+      })
+      assert.equal(read.status, 200)
+      const stored = read.data as Record<string, unknown>
+      assert.equal('createdBy' in stored, false)
+      assert.equal('foo' in stored, false)
+    })
+
     it('POST /spaces/ with no Authorization header returns 401', async () => {
       await boot({ onboardingToken: TOKEN })
       const response = await fetch(new URL('/spaces/', serverUrl), {

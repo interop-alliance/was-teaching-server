@@ -773,6 +773,13 @@ describe('Collection equality query profile', () => {
       // The same Resource re-asserting its own value is not a conflict.
       const reassert = await putMeta('uq-custom', 'r1', { name: 'dup' })
       assert.equal(reassert.status, 204)
+
+      // A claim on an absent Resource is the masked 404, not the 409: the
+      // existence check runs before the uniqueness scan.
+      const absent = await rejection(
+        putMeta('uq-custom', 'no-such-resource', { name: 'dup' })
+      )
+      assert.equal(absent.response.status, 404)
     })
 
     it('adding a unique claim over already-conflicting stored Resources is a 409', async () => {

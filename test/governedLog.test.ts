@@ -1,6 +1,6 @@
 /**
  * Unit tests for the governing history log helpers (`src/lib/governedLog.ts`)
- * at the stored-data boundary: a stored log body the line contract rejects is
+ * at the stored-data boundary: a stored log body the parser rejects is
  * a server-side fault (`StorageError`, 500), not the client-facing 400 the
  * parser raises on a request body.
  */
@@ -26,7 +26,15 @@ describe('deriveGovernedEncryption', () => {
   })
 
   it('surfaces a stored body that breaks the line contract as StorageError', () => {
-    for (const body of ['', 'not json\n', '{"noState":true}\n']) {
+    for (const body of [
+      '',
+      'not json\n',
+      '{"noState":true}\n',
+      // A genesis without `parameters.method`.
+      '{"state":{"scheme":"edv"}}\n',
+      // A `state` carrying the server-stamped `history` member.
+      '{"parameters":{"method":"m"},"state":{"history":{}}}\n'
+    ]) {
       assert.throws(
         () => deriveGovernedEncryption({ body, logUrl }),
         (err: Error) => err instanceof StorageError && err.statusCode === 500,

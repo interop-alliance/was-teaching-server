@@ -811,7 +811,9 @@ export function parseListFilter({
   query: Record<string, string | string[] | undefined>
   requestName?: string
 }): Record<string, string> | undefined {
-  const filters: Record<string, string> = {}
+  // A null-prototype map, so `filter[__proto__]` lands as an own key the
+  // handler then refuses as undeclared, instead of setting the prototype.
+  const filters: Record<string, string> = Object.create(null)
   let found = false
   for (const [key, value] of Object.entries(query)) {
     const match = /^filter\[(.+)\]$/.exec(key)

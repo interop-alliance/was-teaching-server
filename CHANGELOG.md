@@ -57,6 +57,26 @@
 - The JSON content-type check comes from `@interop/storage-core` (0.21.0) as
   `isJsonContentType`, the rule was-client shares. The local `isJson` helper is
   removed.
+- Small wire corrections from the whole-codebase review:
+  - The service description's `zcapCryptosuites` lists Data Integrity
+    cryptosuite names only (`['eddsa-jcs-2022']`). `Ed25519Signature2020`
+    delegation proofs are still verified, just no longer advertised there.
+  - A 304 on an implicitly-HEAD route no longer sends `Content-Length: 0`.
+  - A governed history log is refused as `invalid-request-body` (400) when its
+    genesis carries no string `parameters.method` or any entry `state` carries a
+    `history` member; the served `encryption.history` is always stamped. A `PUT`
+    of the stored log bytes unchanged is a no-op 204 instead of a 400.
+  - `PUT /space/:spaceId/meta` on an existing Space is a full replacement of the
+    user-writable members: an omitted `name` is removed.
+  - Create Space stores and echoes only `id`, `type`, `controller` and `name`; a
+    client-supplied `createdBy` or unknown member is dropped on the token path
+    too.
+  - `filter[__proto__]=v` on the equality query answers the documented 400.
+  - A unique-index claim on an absent Resource's `/meta` answers 404, not 409.
+  - Docs: the backend contract text for `getResource`, the precondition order
+    comments, the `declaredBytes` note, the chunk listing `count`, the quota
+    rows (chunks and auxiliary Spaces), the single-instance assumption behind
+    the metadata and policy cache TTLs, and `allowTargetQuery`.
 
 ## 0.39.0 - 2026-09-28
 

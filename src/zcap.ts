@@ -140,19 +140,19 @@ function delegationProofSuites(): [Ed25519Signature2020, DataIntegrityProof] {
 }
 
 /**
- * The names of the delegation-proof signature suites this server verifies, as
- * the `zcapCryptosuites` of the service description's authorization profile
- * entry advertises them. Read off {@link delegationProofSuites}, so adding or
- * dropping a suite there changes the advertisement with it. A Data Integrity
- * suite is named by its `cryptosuite`; a legacy suite that has none, by its
- * proof `type`.
+ * The Data Integrity cryptosuite names of the delegation-proof suites this
+ * server verifies, as the `zcapCryptosuites` of the service description's
+ * authorization profile entry advertises them. Read off
+ * {@link delegationProofSuites}, so adding or dropping a Data Integrity suite
+ * there changes the advertisement with it. Only a suite that carries a
+ * `cryptosuite` name is listed. The legacy `Ed25519Signature2020` proof type
+ * has none, so it is still accepted but not advertised.
  * @returns {string[]}
  */
 export function delegationProofCryptosuites(): string[] {
-  return delegationProofSuites().map(suite => {
-    const named = suite as unknown as { cryptosuite?: string; type: string }
-    return named.cryptosuite ?? named.type
-  })
+  return delegationProofSuites()
+    .map(suite => (suite as unknown as { cryptosuite?: unknown }).cryptosuite)
+    .filter(name => typeof name === 'string')
 }
 
 /**

@@ -99,7 +99,7 @@ describe('Service description API', () => {
                 'https://w3c-ccg.github.io/wallet-attached-storage-spec/' +
                 'authz-profile/',
               signatureAlgorithms: ['EdDSA'],
-              zcapCryptosuites: ['Ed25519Signature2020', 'eddsa-jcs-2022']
+              zcapCryptosuites: ['eddsa-jcs-2022']
             }
           ],
           'https://w3id.org/pws/encrypted-collections': [
@@ -128,10 +128,7 @@ describe('Service description API', () => {
       const core = specs['https://w3id.org/pws']![0]!
       const profile = specs['https://w3id.org/pws/authz-profile']![0]!
       expect(profile.signatureAlgorithms).toEqual(['EdDSA'])
-      expect(profile.zcapCryptosuites).toEqual([
-        'Ed25519Signature2020',
-        'eddsa-jcs-2022'
-      ])
+      expect(profile.zcapCryptosuites).toEqual(['eddsa-jcs-2022'])
       expect(core).not.toHaveProperty('signatureAlgorithms')
       expect(core).not.toHaveProperty('zcapCryptosuites')
     })
@@ -170,6 +167,23 @@ describe('Service description API', () => {
       expect(response.headers.get('cache-control')).toBe(
         `public, max-age=${SERVICE_DESCRIPTION_MAX_AGE}`
       )
+    })
+
+    it('sends no Content-Length on a 304, to GET or to HEAD', async () => {
+      // RFC 9110 section 8.6. HEAD here is Fastify's implicit HEAD route,
+      // whose own onSend hook would stamp `Content-Length: 0` on an empty
+      // reply.
+      const first = await fetch(`${serverUrl}/service`)
+      const etag = first.headers.get('etag')!
+      for (const method of ['GET', 'HEAD']) {
+        const response = await fetch(`${serverUrl}/service`, {
+          method,
+          headers: { 'if-none-match': etag }
+        })
+        expect(response.status, method).toBe(304)
+        expect(response.headers.get('etag'), method).toBe(etag)
+        expect(response.headers.get('content-length'), method).toBeNull()
+      }
     })
   })
 

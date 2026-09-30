@@ -394,9 +394,14 @@ export class ChunkRequest {
    * Request handler for "List Chunks": the discovery/reassembly listing. The
    * server never reassembles a chunked Resource -- a reader learns the chunk
    * set here (count + per-chunk index/size/contentType/version) and fetches
-   * `0..count-1` itself. Requires the parent Resource to exist (404
-   * otherwise). Authorization is capability-or-policy against the `chunks/`
-   * container path, resolved at the Resource's policy level.
+   * `0..count-1` itself. `count` is the number of chunks stored, not their
+   * total byte size (sum the per-chunk `size` values for that). It matches
+   * the highest index plus one only when no index is missing. Requires the
+   * parent Resource to exist (404 otherwise). Authorization is
+   * capability-or-policy against the `chunks/` container path, resolved at
+   * the Resource's policy level. Chunks count toward the Space's byte quota
+   * but not toward the Resource-count quota (`maxResourcesPerSpace`), which
+   * counts live Resources only.
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}

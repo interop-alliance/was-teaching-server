@@ -15,6 +15,7 @@
  */
 import type {
   BackendDescriptor,
+  IDID,
   SpaceMetadata,
   StorageBackend,
   StoredSpaceMetadata
@@ -22,6 +23,37 @@ import type {
 import { listRegisteredBackends } from './backends.js'
 import { embedMetadataValidator, stripMetadataValidator } from './etag.js'
 import { linksetPath, spacePath } from './paths.js'
+
+/**
+ * Composes the Space Metadata object a write stores from a request body: the
+ * user-writable members `controller` and `name` (kept only when the body
+ * carries one), under the server-decided `id` and `type`. Create Space and
+ * Update Space both go through it, so the two cannot drift on which members
+ * a client may write. A server-derived member (`createdBy`, `url`, ...) or an
+ * unknown one in the body is neither stored nor echoed.
+ *
+ * @param options {object}
+ * @param options.id {string}
+ * @param options.type {string[]}   the validated `type`, not the body's
+ * @param options.body {{ controller: IDID, name?: string }}
+ * @returns {SpaceMetadata}
+ */
+export function writableSpaceMetadata({
+  id,
+  type,
+  body
+}: {
+  id: string
+  type: string[]
+  body: { controller: IDID; name?: string }
+}): SpaceMetadata {
+  return {
+    id,
+    type,
+    controller: body.controller,
+    ...(body.name !== undefined && { name: body.name })
+  }
+}
 
 /**
  * Projects a stored Space record into the served Space Metadata object: the

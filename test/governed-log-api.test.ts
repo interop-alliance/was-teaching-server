@@ -325,24 +325,99 @@ describe('Governing history log API (meta/log)', () => {
       assertEtagVersion({ etag: read.headers.get('etag'), version: 1 })
     })
 
-    it('[signed] an append adds exactly one line: none or several is 400 invalid-request-body', async () => {
+    it('[signed] an append of several lines is 400 invalid-request-body', async () => {
       const { collectionId, body, etag } = await governedCollection()
-      for (const extended of [
-        body,
-        body +
+      const refused = await putLog({
+        collectionId,
+        body:
+          body +
           entryLine({ ordinal: 2, state: twoEpochs }) +
           '\n' +
           entryLine({ ordinal: 3, state: twoEpochs }) +
-          '\n'
-      ]) {
-        const refused = await putLog({
-          collectionId,
-          body: extended,
-          headers: { 'if-match': etag }
-        })
-        assert.equal(refused.status, 400)
-        assert.match(refused.problem.type, /#invalid-request-body$/)
+          '\n',
+        headers: { 'if-match': etag }
+      })
+      assert.equal(refused.status, 400)
+      assert.match(refused.problem.type, /#invalid-request-body$/)
+    })
+
+    it('[signed] an appended entry whose state carries history is 400 invalid-request-body', async () => {
+      const { collectionId, body, etag } = await governedCollection()
+      const refused = await putLog({
+        collectionId,
+        body:
+          body +
+          entryLine({
+            ordinal: 2,
+            state: { ...twoEpochs, history: { method: 'resource-log:0.1' } }
+          }) +
+          '\n',
+        headers: { 'if-match': etag }
+      })
+      assert.equal(refused.status, 400)
+      assert.match(refused.problem.type, /#invalid-request-body$/)
+    })
+
+    it('[signed] re-sending the stored log is a 204 no-op: the ETag is unchanged', async () => {
+      const { collectionId, body, etag } = await governedCollection()
+      const metaBefore = await alice.was.request({
+        url: metaUrl(collectionId),
+        method: 'GET'
+      })
+      for (const headers of [{ 'if-match': etag }, {}]) {
+        const resent = await putLog({ collectionId, body, headers })
+        assert.equal(resent.status, 204)
+        assert.equal(resent.etag, etag)
       }
+      const read = await alice.was.request({
+        url: logUrl(collectionId),
+        method: 'GET'
+      })
+      assert.equal(read.headers.get('etag'), etag)
+      assert.equal(await logText(read), body)
+      // Nothing was written, so the Collection Metadata object did not move.
+      const metaAfter = await alice.was.request({
+        url: metaUrl(collectionId),
+        method: 'GET'
+      })
+      assert.equal(
+        metaAfter.headers.get('etag'),
+        metaBefore.headers.get('etag')
+      )
+    })
+
+    it('[signed] re-sending the stored log still honors its preconditions', async () => {
+      const { collectionId, body } = await governedCollection()
+      const stale = await putLog({
+        collectionId,
+        body,
+        headers: { 'if-match': '"stale.9"' }
+      })
+      assert.equal(stale.status, 412)
+      assert.match(stale.problem.type, /#precondition-failed$/)
+    })
+
+    it('[signed] a strict prefix of the stored log is a 412 and the log is unchanged', async () => {
+      const { collectionId, body, etag } = await governedCollection()
+      const extended = body + entryLine({ ordinal: 2, state: twoEpochs }) + '\n'
+      const appended = await putLog({
+        collectionId,
+        body: extended,
+        headers: { 'if-match': etag }
+      })
+      assert.equal(appended.status, 204)
+      const erased = await putLog({
+        collectionId,
+        body,
+        headers: { 'if-match': appended.etag! }
+      })
+      assert.equal(erased.status, 412)
+      assert.match(erased.problem.type, /#precondition-failed$/)
+      const read = await alice.was.request({
+        url: logUrl(collectionId),
+        method: 'GET'
+      })
+      assert.equal(await logText(read), extended)
     })
 
     it('[signed] a write carrying no precondition is bound by the body: a fast-forward lands, a stale body is a 412', async () => {
@@ -454,6 +529,18 @@ describe('Governing history log API (meta/log)', () => {
         '',
         'not json\n',
         JSON.stringify({ versionId: '1-x', parameters: {} }) + '\n',
+        // A genesis without a string `parameters.method`.
+        entryLine({ ordinal: 1, state: oneEpoch }) + '\n',
+        entryLine({
+          ordinal: 1,
+          state: oneEpoch,
+          parameters: { method: 7 }
+        }) + '\n',
+        // A `state` carrying the `history` member the server stamps.
+        genesisLine({
+          ...oneEpoch,
+          history: { method: 'resource-log:0.1', resource: 'urn:x' }
+        }) + '\n',
         genesisLine(oneEpoch) +
           '\n\n' +
           entryLine({ ordinal: 2, state: oneEpoch })

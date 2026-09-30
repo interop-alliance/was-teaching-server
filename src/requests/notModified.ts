@@ -6,6 +6,7 @@
  * `ETag` the 200 would have carried and no body; a representation with no
  * `ETag` (matched only by `*`) carries none.
  */
+import { Readable } from 'node:stream'
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import {
   etagOf,
@@ -44,6 +45,13 @@ export function notModifiedReply({
   const notModified = reply.status(304)
   if (etag !== undefined) {
     notModified.header('etag', etag)
+  }
+  if (request.method === 'HEAD') {
+    // Fastify's implicit HEAD route stamps `Content-Length: 0` on an
+    // undefined payload, from an `onSend` hook that runs after every other.
+    // A 304 must not send one (RFC 9110 section 8.6). That hook leaves a
+    // stream payload's headers alone, so an empty stream carries no length.
+    return notModified.send(Readable.from([]))
   }
   return notModified.send()
 }

@@ -183,7 +183,8 @@ export interface ChunkMetadata {
 /**
  * Return shape of `listChunks()` (the `chunked-streams` feature): a Resource's
  * stored chunks in ascending `index` order (the discovery/reassembly listing),
- * with the total `count`.
+ * with their `count`. `count` is the number of chunks listed, not their total
+ * byte size.
  */
 export interface ChunkListing {
   count: number
@@ -203,9 +204,12 @@ export interface ChunkListing {
  * - `kind: 'json'` carries the parsed JSON value in `data`.
  * - `kind: 'binary'` carries a readable byte stream — a raw blob body, or the
  *   file extracted from a multipart upload. `declaredBytes` is the up-front size
- *   when known (a raw body's `Content-Length`), used for an early quota
- *   pre-flight; it is absent for multipart parts, whose size is unknown until
- *   the stream is consumed (the backend's streaming guard enforces the limit).
+ *   when known, used for an early quota pre-flight. A raw stream body takes it
+ *   from `Content-Length` and leaves it absent when that header is missing or
+ *   malformed (the backend's streaming guard then enforces the limit). A
+ *   buffered body carries its exact length. That covers a `text/plain` string
+ *   and a multipart file part, which the request layer drains into memory
+ *   before handing it over.
  *
  * In both cases `contentType` is the content-type the bytes are stored under.
  */
@@ -870,6 +874,10 @@ export interface StorageBackend {
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator>
+  /**
+   * Reads a Resource's current representation. Throws `ResourceNotFoundError`
+   * (404) when no Resource is stored under the id, or only its tombstone.
+   */
   getResource(options: {
     spaceId: string
     collectionId: string
@@ -976,7 +984,10 @@ export interface StorageBackend {
    * append under `ifMatch`, which carries the prior bytes forward). The
    * precondition is evaluated on the log's current `ETag` atomically with the
    * write (`precondition-failed`, 412, on a mismatch). Resolves `undefined`
-   * when the Collection does not exist (this operation never creates one).
+   * when the Collection does not exist (this operation never creates one). A
+   * `body` equal to the stored log, byte for byte, is a no-op once the
+   * precondition passes: the current validator is resolved, `assertTransition`
+   * is not invoked, and nothing is written.
    *
    * The write also bumps the Collection Metadata object's validator: the
    * served object's `encryption` member is derived from the log head, so its

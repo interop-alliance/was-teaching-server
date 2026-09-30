@@ -11,7 +11,10 @@ import {
   isRootInvocation
 } from '../zcap.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
-import { projectSpaceMetadata } from '../lib/spaceProjection.js'
+import {
+  projectSpaceMetadata,
+  writableSpaceMetadata
+} from '../lib/spaceProjection.js'
 import { type EtagValidator, formatEtag } from '../lib/etag.js'
 import {
   assertBodyController,
@@ -281,9 +284,9 @@ export class SpacesRepositoryRequest {
     }
 
     const spaceId = body.id || uuidv4()
-    // The server-decided members are applied after the body, so the validated
-    // `type` wins over whatever shape the body carried under that name.
-    const spaceMetadata = { ...body, id: spaceId, type }
+    // Only the user-writable members are taken from the body, under the
+    // validated `type`, not whatever shape the body carried under that name.
+    const spaceMetadata = writableSpaceMetadata({ id: spaceId, type, body })
 
     // The invocation must be *authorized by* the body's controller (spec:
     // Create Space): signed directly by it, or via a delegation chain rooted

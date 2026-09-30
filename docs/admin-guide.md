@@ -271,8 +271,8 @@ through Update Space, or restore the variable).
 6. Confirm: `GET /service` now carries `instance.serverDid`. Keep a copy of the
    log; the admin's copy is the source of truth (below).
 
-An admin script that performs steps 3 to 6 is planned; until it lands, the test
-suite's `test/server-identity-api.test.ts` shows the calls.
+`di`-based runbooks for steps 3 to 6 are planned (WAS-164); until they land, the
+test suite's `test/server-identity-api.test.ts` shows the calls.
 
 ### Rotating the seed
 

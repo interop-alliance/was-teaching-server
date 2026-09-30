@@ -650,6 +650,8 @@ describe('Resource API', () => {
       )
       assert.equal(response.status, 304)
       assert.equal(response.headers.get('etag'), etag)
+      // RFC 9110 section 8.6: a 304 does not describe its own empty body.
+      assert.equal(response.headers.get('content-length'), null)
       assert.equal(await response.text(), '')
     })
 
@@ -699,6 +701,7 @@ describe('Resource API', () => {
       )
       assert.equal(response.status, 304)
       assert.equal(response.headers.get('etag'), etag)
+      assert.equal(response.headers.get('content-length'), null)
     })
 
     it('[signed] GET /meta with a matching If-None-Match is 304 on the meta ETag', async () => {
@@ -720,6 +723,7 @@ describe('Resource API', () => {
       )
       assert.equal(unchanged.status, 304)
       assert.equal(unchanged.headers.get('etag'), metaEtag)
+      assert.equal(unchanged.headers.get('content-length'), null)
 
       // The metadata ETag has a generation of its own, so it never reads the
       // same as the content ETag; only the meta one is compared here. A

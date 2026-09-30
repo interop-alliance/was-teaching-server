@@ -4,12 +4,16 @@
  * as the Collection's `encryption` descriptor. The server checks the line
  * contract alone (JSON Lines, each line an object with a `state` member, the
  * last line is the head) and, on each append, runs the encryption descriptor's
- * transition checks between the prior head and the new one. Entry proofs, the
- * hash chain, `state.type`, and the reserved `history` member inside `state`
- * belong to the governing profile and are not checked here; a verifying reader
- * checks them and compares its result against the derived member.
+ * transition checks between the prior head and the new one. It also checks the
+ * two members the derived `history` stamp depends on: the genesis entry's
+ * `parameters.method`, and the absence of a `history` member in every entry's
+ * `state`. Entry proofs, the hash chain, and `state.type` belong to the
+ * governing profile and are not checked here; a verifying reader checks them
+ * and compares its result against the derived member.
  */
 import type { CollectionEncryption } from '@interop/storage-core'
+import type { StoredCollectionLog } from '../types.js'
+import type { EtagValidator } from './etag.js'
 import {
   InvalidRequestBodyError,
   PreconditionFailedError,
@@ -28,16 +32,18 @@ export const LOG_CONTENT_TYPE = 'text/jsonl'
 
 /**
  * Parses a log body under the line contract. Returns the head entry's `state`
- * and the genesis entry's `parameters.method` when it carries one (the
- * format identifier the derived member's `history.method` echoes). Throws
- * `invalid-request-body` (400) on a body that breaks the contract: empty, a
- * blank line other than a trailing newline, a line that is not a JSON object,
- * or a line without an object `state`.
+ * and the genesis entry's `parameters.method` (the format identifier the
+ * derived member's `history.method` echoes). Throws `invalid-request-body`
+ * (400) on a body that breaks the contract: empty, a blank line other than a
+ * trailing newline, a line that is not a JSON object, a line without an
+ * object `state`, a `state` carrying a `history` member (the server stamps
+ * that member itself), or a genesis entry without a string
+ * `parameters.method`.
  *
  * @param options {object}
  * @param options.body {string}   the JSON Lines log body
  * @param [options.requestName] {string}   request name for the 400 error title
- * @returns {{ head: Record<string, unknown>, method?: string }}
+ * @returns {{ head: Record<string, unknown>, method: string }}
  */
 export function parseGoverningLog({
   body,
@@ -45,7 +51,7 @@ export function parseGoverningLog({
 }: {
   body: string
   requestName?: string
-}): { head: Record<string, unknown>; method?: string } {
+}): { head: Record<string, unknown>; method: string } {
   const lines = body.split('\n')
   if (lines.at(-1) === '') {
     lines.pop()
@@ -71,16 +77,53 @@ export function parseGoverningLog({
           'object "state" member.'
       })
     }
+    if (Object.hasOwn(entry.state, 'history')) {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail:
+          `History log line ${index + 1} carries a "history" member in its ` +
+          '"state"; the server derives that member itself.'
+      })
+    }
     return entry
   })
-  const genesisParameters = entries[0]!.parameters
-  const method = isPlainObject(genesisParameters)
-    ? genesisParameters.method
-    : undefined
+  const parameters = entries[0]!.parameters
+  if (!isPlainObject(parameters) || typeof parameters.method !== 'string') {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail:
+        'The genesis entry of a history log must carry a string ' +
+        '"parameters.method" naming its format.'
+    })
+  }
   return {
     head: entries.at(-1)!.state as Record<string, unknown>,
-    ...(typeof method === 'string' && { method })
+    method: parameters.method
   }
+}
+
+/**
+ * The validator a log write answers with when its body equals the stored log
+ * byte for byte, or `undefined` when the write changes something. A re-sent
+ * log is a no-op once its preconditions pass: the current validator is
+ * returned, the transition checks are skipped, and neither the log nor the
+ * Collection Metadata object moves. Both backends decide it here.
+ * @param options {object}
+ * @param [options.prior] {StoredCollectionLog}   the stored log, if any
+ * @param options.body {string}   the new log body
+ * @returns {EtagValidator | undefined}
+ */
+export function unchangedLogValidator({
+  prior,
+  body
+}: {
+  prior?: StoredCollectionLog
+  body: string
+}): EtagValidator | undefined {
+  if (prior === undefined || prior.body !== body) {
+    return undefined
+  }
+  return { generation: prior.generation, version: prior.version }
 }
 
 /**
@@ -192,9 +235,10 @@ export function assertGoverningLogAppend({
  * what a verifying reader computes after stripping `history`.
  *
  * The body is stored data, validated when it was written (a `/log` PUT or an
- * import), so a body the line contract rejects here is a server-side fault
- * and surfaces as `StorageError` (500) rather than as the client-facing 400
- * the parser raises.
+ * import), so a body the parser rejects here (the genesis `method` and the
+ * `history` refusals included) is a server-side fault and surfaces as
+ * `StorageError` (500) rather than as the client-facing 400 the parser
+ * raises.
  *
  * @param options {object}
  * @param options.body {string}   the stored log body
@@ -219,11 +263,8 @@ export function deriveGovernedEncryption({
     })
   }
   const { head, method } = parsed
-  // `history` names the log's format identifier and location together; a
-  // log whose genesis carries no `parameters.method` gets no `history` stamp
-  // (the location is derivable from the Collection URL regardless).
   return {
     ...head,
-    ...(method !== undefined && { history: { method, resource: logUrl } })
+    history: { method, resource: logUrl }
   } as CollectionEncryption
 }

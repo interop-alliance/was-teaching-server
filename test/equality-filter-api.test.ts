@@ -237,6 +237,22 @@ describe('GET Collection equality filter', () => {
     assert.match(body.type, /#invalid-request-body/)
   })
 
+  it('rejects a prototype-named filter attribute as undeclared (400)', async () => {
+    // `__proto__` must reach the declared-name check as an own key rather
+    // than set the filter map's prototype and leave an empty filter.
+    await seedPublicCollection(
+      'f-proto',
+      ['parentId'],
+      [{ id: 'r1', parentId: 'p1' }]
+    )
+    for (const name of ['__proto__', 'constructor', 'prototype']) {
+      const response = await anonGet('f-proto', `?filter[${name}]=v`)
+      assert.equal(response.status, 400, name)
+      const body = (await response.json()) as { type: string }
+      assert.match(body.type, /#invalid-request-body/, name)
+    }
+  })
+
   it('rejects a repeated same filter attribute (400)', async () => {
     await seedPublicCollection(
       'f-repeat',

@@ -136,6 +136,7 @@ import {
   assertSpaceWritePrecondition,
   assertCollectionLogWritePrecondition
 } from '../lib/preconditions.js'
+import { unchangedLogValidator } from '../lib/governedLog.js'
 import type {
   SpaceMetadata,
   CollectionMetadata,
@@ -1483,6 +1484,10 @@ export class PostgresBackend implements StorageBackend {
         ifMatch,
         ifNoneMatch
       })
+      const unchanged = unchangedLogValidator({ prior, body })
+      if (unchanged !== undefined) {
+        return unchanged
+      }
       await assertTransition?.({ prior, collectionMetadata })
       const validator = {
         generation: resolveGeneration(prior?.generation),
@@ -1776,7 +1781,8 @@ export class PostgresBackend implements StorageBackend {
   /**
    * Writes a Resource representation as one transaction: row lock, shared
    * precondition evaluation (exact filesystem semantics -- a tombstone counts
-   * as "not exists", `ifNoneMatch` precedence per RFC9110), monotonic
+   * as "not exists"; `ifMatch` is checked first, then `ifNoneMatch`, and both
+   * must hold, per RFC 9110 section 13.2.2), monotonic
    * `version` bump continuing through delete/recreate under the row's
    * preserved `generation`, and the transactional quota delta. JSON is stored
    * as its serialized UTF-8 bytes; blobs buffer through the capped

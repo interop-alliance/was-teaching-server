@@ -462,7 +462,7 @@ describe('Server identity boot checks', () => {
     const ownDir = await mkdtemp(path.join(tmpdir(), 'was-server-identity-'))
     try {
       const admin = await Ed25519VerificationKey.generate()
-      const adminDid = `did:key:${admin.publicKeyMultibase}`
+      const adminDid = `did:key:${admin.publicKeyMultibase}` as const
       const winner = createApp({
         logger: false,
         serverUrl: 'http://localhost',

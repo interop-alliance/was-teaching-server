@@ -699,7 +699,8 @@ export class CollectionRequest {
    * the prior head, the encryption descriptor's transition checks, atomically
    * with the write. Authorization is capability-only (the `PUT` action), as
    * for `/meta`. Does NOT create a Collection. Returns 204 with the log's new
-   * `ETag`.
+   * `ETag`. A body equal to the stored log, byte for byte, is a no-op: the
+   * backend answers it with the current validator and writes nothing.
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}

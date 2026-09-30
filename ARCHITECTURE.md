@@ -181,6 +181,17 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   a slash-variant redirect and a POST route registered with `config.safe` (Query
   and Export, reads that use POST to carry a body) stay cacheable. The spec
   defers further `Cache-Control` semantics.
+- **`src/lib/spaceMetadataCache.ts`** and **`src/lib/policyCache.ts`** -- the
+  two short-TTL read caches on the authorization path, one per storage backend.
+  The first memoizes the Space Metadata object, whose `controller` every
+  capability check verifies against. The second memoizes the access-control
+  policies the policy fallback reads. Both expire entries after 10 s
+  (`SPACE_METADATA_CACHE_TTL`, `POLICY_CACHE_TTL` in `config.default.ts`). A
+  write drops the affected entries, but only in the process that made the write.
+  The TTLs therefore rest on a single-instance deployment. When several
+  instances share one storage backend, a controller retired by an Update Space
+  on one instance keeps its authority on another for up to one TTL. A changed or
+  deleted policy likewise keeps granting there for up to one TTL.
 - **`src/lib/governedLog.ts`** -- the `governed-history-logs` feature: a
   Collection's governing history log, served at its own sub-resource
   (`GET`/`PUT /space/:spaceId/:collectionId/meta/log`,
@@ -201,23 +212,30 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   served `encryption` member -- read by Get Collection and by every handler that
   loads the Collection Metadata object through `getCollectionOrThrow`, so the
   write-time envelope check sees it too -- is derived from the log's last line's
-  `state`, with a `history: { method, resource }` member stamped on (`method`
-  from the genesis line's `parameters.method`, `resource` the log's own URL);
-  the stored Collection Metadata object never carries that derived member, a
-  direct `encryption` write against it is refused with
+  `state`, with a `history: { method, resource }` member always stamped on
+  (`method` from the genesis line's `parameters.method`, `resource` the log's
+  own URL); the stored Collection Metadata object never carries that derived
+  member, a direct `encryption` write against it is refused with
   `encryption-history-log-governed` (409), and its other fields still update
-  normally. The server verifies neither proofs nor a hash chain: it checks that
+  normally. The server verifies neither proofs nor a hash chain. It checks that
   the body is JSON Lines, each line a JSON object with an object `state` member
-  and the last line the head (`invalid-request-body`, 400 on a break), that an
-  append fast-forwards the stored log (the stored bytes verbatim followed by
-  exactly one new line; a body the stored log is not a prefix of is
-  `precondition-failed`, 412, with or without `If-Match`, and one adding other
-  than one line is `invalid-request-body`, 400), and on every append it runs the
-  same encryption-descriptor transition checks against the prior head that an
-  ordinary Collection Metadata update runs. The fast-forward rule keeps the log
-  append-only at the server: a write capability can add history but not erase
-  it, while a break inside an appended entry stays the verifying reader's to
-  detect. A log write also bumps the Collection Metadata object's own `ETag`,
+  and the last line the head. It also checks that the genesis line's
+  `parameters` carries a string `method`, and that no line's `state` carries a
+  `history` member, since the server stamps that member itself. A break of any
+  of these is `invalid-request-body` (400). It also checks that an append
+  fast-forwards the stored log (the stored bytes verbatim followed by exactly
+  one new line; a body the stored log is not a prefix of is
+  `precondition-failed`, 412, with or without `If-Match`, and one adding more
+  than one line is `invalid-request-body`, 400). A body equal to the stored log
+  byte for byte is a no-op. Once its preconditions pass, it answers 204 with the
+  current `ETag` and writes nothing, so neither the log's version nor the
+  Collection Metadata object's moves. A body that is a strict prefix of the
+  stored log would erase lines and stays a 412. On every append the server runs
+  the same encryption-descriptor transition checks against the prior head that
+  an ordinary Collection Metadata update runs. The fast-forward rule keeps the
+  log append-only at the server: a write capability can add history but not
+  erase it, while a break inside an appended entry stays the verifying reader's
+  to detect. A log write also bumps the Collection Metadata object's own `ETag`,
   since its served content changed, but leaves its `updatedAt` untouched -- both
   backends advance only the version counter -- and is serialized with Collection
   Metadata writes through the same per-Collection lock.
@@ -361,18 +379,19 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   under an invocation of the Space's root capability (decided off the verified
   result, `verifiedRootInvocation` in `zcap.ts`: a dereferenced chain of one
   link is the synthesized root alone), skips them under a delegated chain, and
-  never restores a server-derived member or `controller`. `name` is restored, by
-  the same write Update Space Metadata makes. `type` is immutable once a Space
-  exists, so it is checked rather than applied: an archive naming a different
-  set of types than the destination's is refused as `invalid-import` (400)
-  before anything is written, and one whose `type` breaks the shape rule Update
-  Space enforces is treated as carrying none. An entry that does not parse as a
-  JSON object is treated as absent, so the rest of the archive still imports.
-  The outcome is the `spaceMetadata` member of the returned `ImportStats`:
-  `'restored'`, `'skipped'` (a delegated chain, or a Space with no stored object
-  to apply the entry over), or `'absent'` when the archive carried no such
-  entry. `test/space-archive-fixture.test.ts` pins this server's entry trees
-  against the archive fixture that package checks in.
+  never restores a server-derived member or `controller`. `name` is restored
+  when the archive carries one, by the same write Update Space Metadata makes;
+  an archive without a `name` leaves the destination's in place. `type` is
+  immutable once a Space exists, so it is checked rather than applied: an
+  archive naming a different set of types than the destination's is refused as
+  `invalid-import` (400) before anything is written, and one whose `type` breaks
+  the shape rule Update Space enforces is treated as carrying none. An entry
+  that does not parse as a JSON object is treated as absent, so the rest of the
+  archive still imports. The outcome is the `spaceMetadata` member of the
+  returned `ImportStats`: `'restored'`, `'skipped'` (a delegated chain, or a
+  Space with no stored object to apply the entry over), or `'absent'` when the
+  archive carried no such entry. `test/space-archive-fixture.test.ts` pins this
+  server's entry trees against the archive fixture that package checks in.
 - **`src/errors.ts`** — custom error classes plus `handleError`, the Fastify
   error handler installed by each route group.
 - **`src/exchanges.ts`** — the ephemeral exchanges facet
@@ -417,19 +436,23 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   (e.g. `['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']`) holds
   bookkeeping rather than user data and is excluded from List Spaces; a wallet
   reaches its auxiliary Space through the account document's service entry
-  instead. Its `url`, and the `Location` of a newly created Space, carry the
-  trailing slash. The object splits in two: its user-writable members are `type`
-  and `name`, and its server-derived members are `createdBy`, `url`, `linkset`
-  and `backends` (the same listing `GET /space/:spaceId/backends` serves,
-  carried here so a reader learns it without a second request). A server-derived
-  member supplied in a write body is ignored. `src/lib/spaceProjection.ts` holds
-  the two projections from the stored record: the served object, which Read
-  Space and the two create echoes go through, and the export archive's
-  `.space.<id>.json` entry, which keeps the on-disk layout and stamps only
-  `backends`; both derive `backends` there, so no path drifts on it. The create
-  echoes hand it the listing instead of having it read one: a Space that did not
-  exist before the write has no registrations, since registering one needs the
-  Space Metadata object to authorize against.
+  instead. It still counts toward its controller's `maxSpacesPerController`
+  quota (`MAX_SPACES_PER_CONTROLLER`), since both backends count every stored
+  Space by controller. Its `url`, and the `Location` of a newly created Space,
+  carry the trailing slash. The object splits in two: its user-writable members
+  are `type` and `name`, and its server-derived members are `createdBy`, `url`,
+  `linkset` and `backends` (the same listing `GET /space/:spaceId/backends`
+  serves, carried here so a reader learns it without a second request). A
+  server-derived member supplied in a write body is ignored, and an unknown
+  member is not stored. A `PUT` of the Space Metadata object on an existing
+  Space replaces its user-writable members in full, so an omitted `name` is
+  removed. `src/lib/spaceProjection.ts` holds the two projections from the
+  stored record: the served object, which Read Space and the two create echoes
+  go through, and the export archive's `.space.<id>.json` entry, which keeps the
+  on-disk layout and stamps only `backends`; both derive `backends` there, so no
+  path drifts on it. The create echoes hand it the listing instead of having it
+  read one: a Space that did not exist before the write has no registrations,
+  since registering one needs the Space Metadata object to authorize against.
 - **`server` Space** -- the auxiliary Space that hosts this server's own
   identity: its `id` Collection holds the `did.jsonl` history log of the
   server's `did:webvh`. Provisioned at startup under the administrator's
@@ -573,6 +596,13 @@ synthesizes the root capability on demand (its controller is the Space
 controller). For a bare root invocation that _is_ the capability; for a
 delegated invocation it's the terminal `parentCapability` at the base of the
 chain, which the verifier walks down to.
+
+The `allowTargetQuery` option of `verifyZcap`, set on the paginated listings and
+the other reads that carry a query, bounds the accepted root set only. It adds
+the query-bearing request URL's own root capability to that set. It does not
+decide which invocation targets are accepted. Every WAS route passes the Space's
+root as an accepted ancestor root, so on those routes the request URL, query
+included, is always an accepted invocation target, with or without the option.
 
 **The `did:webvh` resolver on every path:** each verification engages the local
 `did:webvh` resolver, whatever the scope's own controller is. That covers route
@@ -868,4 +898,7 @@ verify a delegation proof -- the invocation path, the revocation chain check,
 and the revocation's own invocation -- because clients upgrade on their own
 schedule and grants a wallet recorded before the switch are submitted back for
 revocation under the old suite. The two suites are told apart by `proof.type`
-and `proof.cryptosuite`, so the links of one chain may mix them.
+and `proof.cryptosuite`, so the links of one chain may mix them. The service
+description's `zcapCryptosuites` lists Data Integrity cryptosuite names only, so
+it names `eddsa-jcs-2022` alone. The legacy proof type is still accepted but not
+advertised.

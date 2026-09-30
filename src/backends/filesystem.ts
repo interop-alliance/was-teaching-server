@@ -134,6 +134,7 @@ import {
   assertSpaceWritePrecondition,
   assertCollectionLogWritePrecondition
 } from '../lib/preconditions.js'
+import { unchangedLogValidator } from '../lib/governedLog.js'
 import type {
   SpaceMetadata,
   CollectionMetadata,
@@ -2544,6 +2545,10 @@ export class FileSystemBackend implements StorageBackend {
                   ifMatch,
                   ifNoneMatch
                 })
+                const unchanged = unchangedLogValidator({ prior, body })
+                if (unchanged !== undefined) {
+                  return unchanged
+                }
                 await assertTransition?.({ prior, collectionMetadata })
 
                 const validator = {
@@ -2698,7 +2703,9 @@ export class FileSystemBackend implements StorageBackend {
    *   Resource already exists.
    * - `ifMatch` (an update-if-unchanged `If-Match: "<etag>"`) fails if the
    *   Resource is absent or its current `ETag` does not equal `ifMatch`.
-   * `ifNoneMatch` takes precedence when both are supplied (RFC9110).
+   * When both are supplied, `ifMatch` is evaluated first and then
+   * `ifNoneMatch` (RFC 9110 section 13.2.2). The write proceeds only if both
+   * hold, so neither header overrides the other.
    *
    * @param options {object}
    * @param options.spaceId {string}
@@ -3629,8 +3636,13 @@ export class FileSystemBackend implements StorageBackend {
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator | undefined> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
-    const writeMeta = async (): Promise<EtagValidator | undefined> => {
-      const filePath = await this.#findFile({ collectionDir, resourceId })
+    // `located` is the Resource file a caller already found, so the
+    // unique-index path does not look it up twice.
+    const writeMeta = async (
+      located?: string
+    ): Promise<EtagValidator | undefined> => {
+      const filePath =
+        located ?? (await this.#findFile({ collectionDir, resourceId }))
       if (!filePath) {
         return undefined
       }
@@ -3717,12 +3729,18 @@ export class FileSystemBackend implements StorageBackend {
           this.#writeMutex.run(
             this.#collectionLockKey({ spaceId, collectionId }),
             async () => {
+              // An absent Resource is the handler's 404, answered before any
+              // uniqueness claim is judged (as on the Postgres backend).
+              const filePath = await this.#findFile({
+                collectionDir,
+                resourceId
+              })
+              if (!filePath) {
+                return undefined
+              }
               assertNoUniqueEqualityConflict({
                 indexes: uniqueIndexes,
-                content: await this.#readResourceJsonContent({
-                  collectionDir,
-                  resourceId
-                }),
+                content: await this.#readJsonContentAt(filePath),
                 custom,
                 candidates: await this.#readEqualityCandidates({
                   spaceId,
@@ -3732,7 +3750,7 @@ export class FileSystemBackend implements StorageBackend {
               })
               return this.#writeMutex.run(
                 this.#resourceLockKey({ spaceId, collectionId, resourceId }),
-                writeMeta
+                () => writeMeta(filePath)
               )
             }
           )
@@ -4774,25 +4792,14 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Reads and parses a single Resource's stored JSON content, or resolves
-   * `undefined` when the Resource is absent, a blob, or unparsable JSON -- the
-   * content side of a custom-sourced unique-attribute claim on a metadata write.
-   * @param options {object}
-   * @param options.collectionDir {string}
-   * @param options.resourceId {string}
+   * Reads and parses the stored JSON content of a Resource file already
+   * located by `#findFile`, or resolves `undefined` when it is a blob or
+   * unparsable JSON -- the content side of a custom-sourced unique-attribute
+   * claim on a metadata write.
+   * @param filePath {string}
    * @returns {Promise<unknown>}
    */
-  async #readResourceJsonContent({
-    collectionDir,
-    resourceId
-  }: {
-    collectionDir: string
-    resourceId: string
-  }): Promise<unknown> {
-    const filePath = await this.#findFile({ collectionDir, resourceId })
-    if (!filePath) {
-      return undefined
-    }
+  async #readJsonContentAt(filePath: string): Promise<unknown> {
     const { contentType } = parseResourceFileName(path.basename(filePath))
     if (!isJsonContentType(contentType)) {
       return undefined

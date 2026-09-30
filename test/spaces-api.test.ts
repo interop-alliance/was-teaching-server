@@ -247,6 +247,36 @@ describe('Spaces', () => {
       assert.equal(description?.name, 'Renamed')
     })
 
+    it('[root] a PUT /meta that omits name removes the stored name (full replacement)', async () => {
+      const spaceId = crypto.randomUUID()
+      await alice.was.createSpace({
+        id: spaceId,
+        name: 'Named Space',
+        controller: alice.did
+      })
+      const metaUrl = new URL(`/space/${spaceId}/meta`, serverUrl).toString()
+
+      const named = await alice.was.request({
+        url: metaUrl,
+        method: 'PUT',
+        json: { name: 'Renamed', controller: alice.did }
+      })
+      assert.equal(named.status, 204)
+      assert.equal((await alice.was.space(spaceId).describe())?.name, 'Renamed')
+
+      const unnamed = await alice.was.request({
+        url: metaUrl,
+        method: 'PUT',
+        json: { controller: alice.did }
+      })
+      assert.equal(unnamed.status, 204)
+      const description = await alice.was.space(spaceId).describe()
+      assert.equal('name' in description!, false)
+      // The immutable and server-managed members survive the replacement.
+      assert.deepEqual(description?.type, ['Space'])
+      assert.equal(description?.createdBy, alice.did)
+    })
+
     it('GET a space with no auth headers falls through to policy and 404s (no public policy)', async () => {
       // Reads no longer 401 at the hook: an anonymous read is allowed to attempt,
       // and is denied as 404 (no-leak) when no access-control policy grants it.

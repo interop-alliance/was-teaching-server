@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 163
+nextAvailableId: 169
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -162,324 +162,212 @@ legal/policy item, not a technical one.
 
 ## Data model gaps
 
-### WAS-7: Authenticated provenance across export/import (server DID + signed metadata)
+### WAS-164: Admin runbooks for the server DID log via `di` (mint, rotate, restore)
 
-- status: in-progress
+- status: todo
 - priority: medium
-- labels: data-model, security
-- touches:
-  - was-teaching-server: `src/serviceDescription.ts` (the two new members on the
-    core version entry), `src/server.ts` / `src/start.ts` (seed env var, boot
-    provisioning of the `server` Space), `src/lib/webvhController.ts` (resolving
-    the server's own DID), the export path in both backends,
-    `src/lib/importTar.ts`, a new admin script beside
-    `scripts/reencrypt-kms-records.ts`, ARCHITECTURE.md (Glossary entry for the
-    `server` Space and the server identity), `docs/admin-guide.md`
-  - space-archive: the envelope entry in the archive layout and the embedded DID
-    log snapshot; the reader side verifies, so the wallets that read a backup
-    see the outcome
-  - wallet-attached-storage-spec: the server-DID anchor (how a server advertises
-    its identity in the Service Description) and the normative reference from
-    Export/Import to the container spec that owns the envelope (WASS-25 in that
-    repo's roadmap)
+- labels: operations, security, tooling
+- blocked-by: did-cli-typescript CLI-20, CLI-21, CLI-23
 - acceptance:
-  - [x] The server derives its Ed25519 signing key from a seed held in an env
-        var (the `KMS_RECORD_KEK` pattern) and advertises it as a `did:key` on
-        the `instance` member of `/service` (`exportSigningKey`), from first
-        boot
-  - [x] The server's DID is the self-hosted
-        `did:webvh:{SCID}:{host}:space:server:id`, whose log is the `did.jsonl`
-        Resource of Collection `id` in Space `server`; the server provisions
-        that Space at boot when absent, typed `AuxiliarySpace` plus
-        `ServerInstanceSpace`, with the admin DID from an env var as its
-        controller, so it is hidden from List Spaces; the id is reserved on
-        every client create, configured or not
-  - [ ] The server never mints or extends its own log; an admin script builds
-        the genesis entry (`updateKeys` = the admin's `did:key`, the server key
-        as a `verificationMethod` under `assertionMethod` only,
-        `portable: true`) and `PUT`s it through the ordinary write path, and the
-        same script appends the rotation and domain-move entries
-  - [x] Once the resolved current document lists the advertised key under
-        `assertionMethod`, `/service` also carries the server DID (second new
-        member); while the log is absent or does not list the key, that member
-        is absent, exports are unsigned, and the server logs a warning at boot
-  - [x] The server key resolves under no other verification relationship, so it
-        can neither root-invoke nor be read as a ladder or transient annex
-        verification method by the client-annex clause; a test pins that
-  - [ ] Export signs each Resource metadata sidecar and each Space and
-        Collection Metadata object over a canonical serialization covering the
-        server-managed fields and the resource content digest, referencing the
-        DID log `versionId`, and embeds a snapshot of the DID log so archives
-        verify offline; the signature envelope is signing-time-agnostic (no
-        export-specific context in the signed bytes); chunked resources use a
-        composite digest over the ordered chunk-digest list
-  - [ ] Import verifies signatures: verified archives keep `createdBy`;
-        unverified archives import with `createdBy` dropped, not rejected; the
-        import report distinguishes "signature invalid" from "signature valid,
-        content mismatch"
-  - [ ] `docs/admin-guide.md` gains runbooks for provisioning the identity,
-        restoring the log after a data wipe, rotating the seed, `SERVER_URL`
-        migration, and compromise recovery
+  - [ ] `docs/admin-guide.md`'s "Server identity" runbooks (provisioning, seed
+        rotation, restore after a wipe) are step lists of
+        `di` commands in place of the hand-built library calls (the mint
+        sequence is sketched below); each runbook ends by checking `serverDid`
+        on `/service`
+  - [ ] The provisioning runbook states that the log's update key is a
+        CLI-managed key with pre-rotation armed (the CLI default), distinct from
+        the admin `did:key` that controls the `server` Space and signs the
+        `PUT`, and that the admin's CLI wallet (document, log, update-keys
+        sidecar) must be backed up: losing the sidecar freezes the log
+  - [ ] A compromise-recovery runbook is added covering each secret separately:
+        a leaked server seed (rotate the seed, `di did webvh replace-key`, note
+        the `versionId` from which archives signed by the old key are suspect),
+        a leaked update key (`di did webvh rotate-keys`, which the staged next
+        key makes safe), and a leaked admin `did:key` (change `WAS_ADMIN_DID`,
+        restate the Space controller)
+  - [ ] The runbooks never have the admin hold or print the server seed; the
+        server key enters the log as its public `exportSigningKey` only
+  - [ ] A test drives the mint and rotate runbooks against an in-process server
+        by invoking the `di` command factories (or the built `di` binary) and
+        asserts `serverDid` on `/service` before and after
 
-Raised 2026-07-09, while implementing server-managed `createdBy`. Design revised
-2026-09-29; the earlier decisions it replaces are summarized under _Superseded
-decisions_ below.
+Split from WAS-7 (archived) on 2026-09-29; the design lives there. Rewritten on
+2026-09-30 to use `@interop/did-cli` as the log author instead of a bespoke
+script: the CLI already keeps a did:webvh's log and update keys in the admin's
+local wallet with pre-rotation armed, and `di was` already signs writes into a
+Space as its controller. The server never inspects the log's `updateKeys` (it
+resolves the log and checks only that the document lists the export-signing key
+under `assertionMethod` alone), so pre-rotation is invisible to it and needs no
+server change. What changes against WAS-7's design: the log's update key is no
+longer the admin `did:key` but a CLI-managed key whose staged successor makes a
+single-key compromise non-fatal; the cost is a second secret to back up. The
+server never mints or extends its own log (it holds no update key), so the CLI
+is the only writer and the admin's copy is the source of truth; the CLI's
+served-log fast-forward check (CLI-23) is what keeps that copy from diverging
+after a failed `PUT` or a second admin machine. A rotation appends rather than
+re-mints so that archives signed under the old key keep verifying against the
+log epoch their envelope names (WAS-165). The three CLI items this depends on
+live in did-cli-typescript's ROADMAP.md. The `SERVER_URL` move runbook is
+WAS-168, split out on 2026-09-30.
 
-_The gap._ The server records a server-managed `createdBy` (the DID of whoever
-created a Space, Collection, or Resource) and refuses to let a client set it:
-every live write path strips a `createdBy` carried in a request body and
-substitutes the verified invoker's DID. Within a running server that property
-holds. It does not survive **export/import**. An exported archive carries the
-on-disk representation: `.meta.<id>.json` sidecars, `.space.<id>.json` and
-`.collection.<id>.json` Metadata objects, and resource bodies. On import the
-server reads `createdBy` straight out of those entries and persists it. Nothing
-authenticates them. So:
+Mint sequence, as the provisioning runbook will spell it out:
 
-- A hand-crafted archive can attribute any Resource to any DID. The importer
-  only needs write access to a Space of its own.
-- Round-tripping through export/import launders provenance: the value that comes
-  back out is whatever the archive said, not what any server ever observed.
-- The same is true of `createdAt` and the monotonic `version`. `createdBy` is
-  simply the first field where the forgery is _interesting_, because it names a
-  party rather than describing a byte range.
+```
+di was space add {SERVER_URL}/space/server --handle server --did <admin>
+di was collection create server --id id --name "Server identity"
+di did create webvh --url {SERVER_URL}/space/server/id \
+  --verification-key <exportSigningKey multibase> --purpose assertionMethod \
+  --vm-id-fragment multibase --save --handle server-id
+di was put server/id/did.jsonl <log path> --content-type text/jsonl
+```
 
-Import cannot fix this by validating harder. Import must preserve `createdBy`,
-which is what makes a backup a backup, so it necessarily trusts the archive.
-Refusing to import a `createdBy` would break restore; accepting it means
-accepting whatever the file says. The trust has to come from somewhere else.
+### WAS-168: `SERVER_URL` move runbook for the server DID log (portable domain move)
 
-_The shape of a fix._ Give the server its own DID and signing key, distinct from
-any Space controller, and have it sign the metadata it claims authorship of:
+- status: todo
+- priority: low
+- labels: operations, security, tooling
+- blocked-by: WAS-164, did-cli-typescript CLI-22
+- acceptance:
+  - [ ] The "Moving `SERVER_URL`" runbook in `docs/admin-guide.md` is a step
+        list of `di` commands (`di did webvh move` to the new
+        `{NEW_SERVER_URL}/space/server/id` address, then the fast-forward `PUT`
+        under the new host) and ends by checking `serverDid` on `/service`
+  - [ ] The runbook states that the log must have been minted with
+        `portable: true`, what to do when it was not (re-mint, losing
+        provenance continuity), and that the SCID is unchanged across the move
+  - [ ] A test moves an in-process server's identity log to a second
+        `serverUrl` and asserts `serverDid` is dropped from `/service` before
+        the move entry lands and served again after it
 
-- On export, the server signs each `.meta.<id>.json` sidecar and each Space and
-  Collection Metadata object, over a canonical serialization that covers the
-  server-managed fields (`createdBy`, `createdAt`, `version`, `metaVersion`) and
-  the resource content digest.
-- On import, the server verifies the signature. An archive whose provenance was
-  signed by a server DID the importer trusts keeps its `createdBy`; one that was
-  not, or that fails verification, is imported with `createdBy` dropped (absent
-  = "not recorded", the semantics already defined) rather than rejected. That
-  degrades cleanly: a hand-rolled archive still imports, it just carries no
-  attribution it did not earn.
-- Cross-server import then becomes meaningful: `createdBy` from server B is
-  worth something to server A exactly insofar as A trusts B's DID.
+Split from WAS-164 on 2026-09-30 (discovered-from: WAS-164), so the mint,
+rotate, and restore runbooks can land without waiting on the domain-move
+command. The mechanism is the one the existing prose of that runbook describes:
+the DID string carries the host, so a log written for another host does not
+resolve as this server's and `/service` drops `serverDid` after the move; a
+domain-move entry appended to a portable log re-addresses it under the new host
+with the same SCID. Not scheduled for implementation yet.
 
-This turns `createdBy` from a value the current server happens to remember into
-a statement some named server actually made, in effect a verifiable credential
-about a storage event.
+### WAS-165: Export signs provenance (`provenance.jsonl` + DID log snapshot in the archive)
 
-_Design decisions (2026-09-29)._
+- status: todo
+- priority: medium
+- labels: data-model, security, export
+- touches:
+  - space-archive: two root entries in the layout beside `manifest.yml` and
+    `service.json`, both listed in the manifest: `provenance.jsonl` and
+    `did.jsonl`; the packer takes them and the reader exposes them without
+    verifying (verification is the importer's, WAS-166, and the wallets' when
+    they choose)
+  - wallet-attached-storage-spec: the normative reference from Export/Import to
+    the container spec that owns the envelope (WASS-25 in that repo's roadmap)
+- acceptance:
+  - [ ] Both backends' `exportSpace` emit one statement per exported object
+        (each Resource, the Space Metadata object, each Collection Metadata
+        object) in manifest order into `provenance.jsonl`, each carrying one
+        `eddsa-jcs-2022` Data Integrity proof (`proofPurpose` `assertionMethod`)
+        by the seed-derived key, with `verificationMethod`
+        `{serverDid}#{publicKeyMultibase}`
+  - [ ] The statement is
+        `{ id, type: 'StorageAttestation', createdBy, createdAt, version, digest, didLogVersionId }`,
+        where `id` is the object's URL (the manifest's own key), `digest` is the
+        `Digest` header's string form (`mh=` + base64url sha-256 multihash) over
+        the content, a chunked Resource's `digest` is the multihash over the JCS
+        serialization of the ordered array of chunk digest strings, and a Space
+        or Collection Metadata statement carries `metaVersion` in place of
+        `version` and `digest`; `didLogVersionId` is the served log's head
+        `versionId` at export time
+  - [ ] The signed bytes carry no export-specific context (no export timestamp,
+        no manifest reference), so the same statement signed at write time later
+        is bit-compatible
+  - [ ] The archive's root `did.jsonl` is the server's log snapshot, verbatim
+        bytes as served, and the layout under `space/` is unchanged so
+        `importTar.ts`'s walk does not move
+  - [ ] When the server has no identity (`serverDid` absent from `/service`) the
+        export carries neither entry and the handler logs one `warn` line, not
+        one per object
+  - [ ] `test/space-archive-fixture.test.ts` pins the two entries against the
+        fixture that package checks in, and a test verifies every statement
+        offline with `resolveDIDFromLog` over the embedded snapshot
 
-- **DID method: self-hosted `did:webvh`.** `did:key` cannot express key history;
-  `did:web` has no verifiable history. `did:webvh` gives both, and its log is
-  self-certifying (SCID-bound, hash-chained, each entry signed by the previously
-  authorized update key), so an export embeds a log snapshot and an importer
-  verifies provenance offline, against the key epoch the envelope names, without
-  the origin server being reachable. Minted with `portable: true` so a
-  `SERVER_URL` migration keeps the SCID.
-- **The DID is hosted in a reserved Space.** The DID is
-  `did:webvh:{SCID}:{host}:space:server:id`, the self-hosted path form the
-  resolver in `lib/webvhController.ts` already reads: its log is the `did.jsonl`
-  Resource of Collection `id` in Space `server`. Nothing new resolves it. The
-  log gets the existing fast-forward and verify-on-append rules, and the
-  archive's embedded snapshot verifies with `resolveDIDFromLog`. The spec
-  reserves no Space ids, so the server provisions `server` at boot, before any
-  client can claim it, typed `AuxiliarySpace` plus a subtype of its own so List
-  Spaces hides it. The name says the Space hosts the server's identity, not that
-  the server controls it (next point).
-- **Two keys: the admin manages the DID, the server only signs.** The log's
-  `updateKeys` is the admin's own `did:key`; the server's key appears in the
-  document as a `verificationMethod` referenced from `assertionMethod` and from
-  no other relation. The `server` Space's controller is that admin DID, read
-  from an env var at boot (public data, so the env-var surface is fine). The
-  server never writes into the Space; the admin does, through the ordinary front
-  door, with an admin script that fetches the server's advertised key, builds
-  the genesis entry, and `PUT`s the log. Rotation, a `SERVER_URL` move, and
-  compromise recovery are the same script appending entries. Consequences:
-  server compromise is no longer DID compromise. An attacker with the box forges
-  envelopes until the admin appends a rotation entry, and cannot take the DID
-  over. The server key holds no `capabilityInvocation`, so it can never
-  root-invoke, and no `capabilityDelegation`, so the client-annex clause's
-  relation-asymmetry checks never classify it as a ladder or transient annex
-  method. The server DID is not the admin identity: the DID that authorizes
-  operator actions is the admin's, and the server's signing key never enters the
-  admin tool.
-- **The server key comes from a seed in an env var.** A Fly secret, as the KEK
-  already is, derives the Ed25519 key. It survives reboots and data wipes, and
-  every machine of an app carries the same key. The server advertises the key as
-  a `did:key` on the `instance` member of `/service`, beside `name` and
-  `source`: the members describe this deployment, not a specification it
-  implements, so they do not belong on a `specs` entry, and not as a `features`
-  token, since those name spec sections served. A second `instance` member
-  carries the server DID once the resolved current document lists the advertised
-  key under `assertionMethod`; its absence tells the admin script the server has
-  no identity yet, and its appearance is the script's success condition. A new
-  seed value is a new `did:key`; the admin appends an entry that adds the new
-  method and drops the old, and archives signed before it keep verifying against
-  the epoch they name. A leaked seed is bounded the same way.
-- **No self-mint, and no first-boot rule.** The server cannot mint its own log,
-  since it holds no update key, so there is nothing to fork on a restore. Boot
-  is a check: log absent means no identity yet, exports go unsigned and the
-  server warns; log present means the current document must list the seed's key
-  under `assertionMethod`, else the server refuses to sign and warns. The
-  `SERVER_URL` mismatch case is the same check, since the DID string carries the
-  host: a log minted for another host does not resolve as this server's.
-- **The log is admin-custodied state.** It lives in the data dir and dies with a
-  wipe. The admin signs every entry, so the admin's copy (kept by the script) is
-  the source of truth, and after a wipe the script re-`PUT`s it, same SCID, same
-  DID. Excluding `spaces/server` from a wipe is a deployment convenience, not a
-  correctness requirement. The resolver's anti-rollback head record is in memory
-  and dropped with the Space, so a full restore lands. Backing up the log is an
-  operator duty (admin guide), as is holding the update key.
-- **Sign on export, not on write.** The cost of sign-on-write is not CPU
-  (Ed25519 sign is microseconds; every authenticated request already does a zcap
-  signature verification) but complexity: canonicalization on every write path
-  in both backends, and since `version`/`metaVersion` bump on every write, each
-  write re-signs and discards the previous signature, machinery that ends up
-  holding exactly one signature per object, over its latest state, which is what
-  a single export-time pass produces anyway. Nor does sign-on-write buy real
-  tamper-evidence here: the seed is on the same box as the store, and an
-  importer cannot tell when a signature was made, so the exported artifact's
-  trust semantics are identical either way. The obligation this choice imposes:
-  the canonical serialization and signature envelope must be
-  signing-time-agnostic, a statement about the object (server-managed fields +
-  content digest + DID log `versionId`) with no export-specific context (no
-  export timestamp, no manifest reference) inside the signed bytes, so signing
-  the same envelope at write time can be added later as an opt-in producing
-  bit-compatible signatures. Triggers for revisiting: custody separation (a
-  backend where the store lives with a party the operator does not fully trust,
-  such as an external Postgres or BYOS metadata on Google Drive), and write
-  receipts (see _Option value_).
-- **The envelope binds the content digest.** The signature is a claim that "DID
-  X created content with digest D"; leaving the content unbound would let an
-  archive pair authentic metadata with substituted bytes. This chains to the
-  existing Request Body Integrity enforcement: the server verified a
-  client-signed multihash over the content at write time, so the digest it
-  attests at export traces back to something the client signed. Same multihash
-  encoding (sha-256, `mh=`) as the `Digest` header, for consistency and hash
-  agility. Riders:
-  - _Chunked resources_ get a composite digest over the ordered list of chunk
-    digests, not the concatenated bytes, so verification stays streaming and
-    per-chunk. (Consequence for write receipts: the full-content digest exists
-    only once the last chunk lands, so a receipt is mintable at completion, not
-    per-chunk.)
-  - _Conflated failure is intentional but must be reported distinctly._ A
-    corrupted body fails verification and drops `createdBy` just like a forgery.
-    That is correct, since the attribution does not apply to different bytes,
-    but import must distinguish "signature invalid" from "signature valid,
-    content mismatch" in its logging/report, or operators debugging bit-rot will
-    conclude signatures are flaky.
-  - _Content-transforming migrations invalidate provenance._ Any future tool
-    that rewrites bytes (re-encryption, plaintext/EDV conversion) must either
-    re-attest over the transformed content or accept the drop.
-  - _Omission stays invisible._ Every surviving envelope still verifies after an
-    object is deleted from an archive. Completeness is inherently the export
-    manifest's job (see _Option value_); the per-object envelope covers
-    portability, not completeness. Complementary, not redundant.
-- **Signer id in the envelope.** A proof's `verificationMethod` is
-  `did:webvh:{SCID}:{host}:space:server:id#{fragment}`, the fragment being
-  whatever the admin script gives the method (the library's `createVMID` default
-  is the last 8 characters of `publicKeyMultibase`; the full multibase is the
-  alternative). The verifier reads the method off the resolved document at the
-  named `versionId`, so the choice only has to be consistent in the script. It
-  is a wire decision.
+Split from WAS-7 (archived) on 2026-09-29; the design decisions and the wire
+decisions approved that day are recorded there and are settled: sign on export
+rather than on write, the envelope binds the content digest, `didLogVersionId`
+names the key epoch explicitly since `proof.created` is not trustworthy, and the
+statement is not a VC (WASS-25 may wrap it later). The per-object envelope
+covers portability, not completeness: an object omitted from an archive leaves
+every surviving statement valid, and omission detection belongs to a signed
+manifest (parked in WAS-167). The codec change in `@interop/space-archive` is a
+prerequisite of the server half and is filed there under this item's `touches`.
+Not blocked by WAS-164: the identity can be provisioned by hand per the admin
+guide until the `di` runbooks land.
 
-_Wire decisions (approved 2026-09-29)._
+### WAS-166: Import verifies provenance and drops unearned `createdBy`
 
-- Env vars: `WAS_SERVER_KEY_SEED`, a 32-byte Ed25519 seed in bnid's
-  secret-key-seed encoding (multibase base58btc over a multihash-wrapped seed,
-  `z1A...`, what `generateSecretKeySeed()` mints and `decodeSecretKeySeed()`
-  reads; unset: no signing key, no key member on `/service`, unsigned exports);
-  `WAS_ADMIN_DID`, a `did:key` string, the controller of the `server` Space
-  (unset: the Space is not provisioned and the identity path is off). The Space
-  id `server` is reserved unconditionally: a client create naming it is
-  `reserved-id` (409) whether or not the identity is configured.
-- `/service` members, on the document's `instance` member beside `name`,
-  `source` and `homepage`: `exportSigningKey`, the `did:key` of the seed's key,
-  present whenever the seed is set; `serverDid`, the server's `did:webvh`
-  string, present only once the resolved current document lists that key under
-  `assertionMethod`. Flat members, since the two have different lifecycles.
-  (Revised 2026-09-29 from the core `specs` entry and the name `did`.)
-- Space subtype: `ServerInstanceSpace`, so the `server` Space is typed
-  `['AuxiliarySpace', 'ServerInstanceSpace', 'Space']`. Create Space refuses the
-  subtype from clients; only boot provisioning writes it.
-- Verification method fragment: the full `publicKeyMultibase`, so the signer id
-  is `did:webvh:{SCID}:{host}:space:server:id#z6Mk...`, mirroring the `did:key`
-  fragment convention and matching `exportSigningKey` by eye.
-- Envelope: one Data Integrity proof (`eddsa-jcs-2022`, `proofPurpose`
-  `assertionMethod`) per attested object over a plain JSON statement
-  `{ id, type: 'StorageAttestation', createdBy, createdAt, version, digest, didLogVersionId }`,
-  where `id` is the object's URL (the manifest's own key), `digest` is the
-  `Digest` header's string form (`mh=` + base64url sha-256 multihash), a chunked
-  Resource's `digest` is the multihash over the JCS serialization of the ordered
-  array of chunk digest strings, a Space or Collection Metadata statement
-  carries `metaVersion` in place of `version` and `digest`, and
-  `didLogVersionId` names the log epoch explicitly since `proof.created` is not
-  trustworthy. Not a VC; WASS-25 may wrap it later.
-- Archive entries, at the root beside `manifest.yml` and `service.json`, both
-  listed in the manifest: `provenance.jsonl`, one statement per line in manifest
-  order; `did.jsonl`, the server's DID log snapshot, verbatim bytes as served.
-  The layout under `space/` is untouched, so import's walk does not change.
+- status: todo
+- priority: medium
+- labels: data-model, security, import
+- blocked-by: WAS-165
+- acceptance:
+  - [ ] Import reads `provenance.jsonl` and `did.jsonl` when present, verifies
+        the embedded log offline (SCID pinning plus full chain verification via
+        `@interop/did-method-webvh`), resolves each statement's
+        `verificationMethod` at the `didLogVersionId` it names, and checks the
+        proof and then the content digest against the imported bytes
+  - [ ] An object whose statement verifies keeps its `createdBy` (and
+        `createdAt`, `version` / `metaVersion` as today); an object with no
+        statement, a failing proof, or a digest mismatch is imported with
+        `createdBy` dropped, not rejected, in both backends
+  - [ ] Which server DIDs an importer accepts attribution from is decided and
+        documented before this ships (the importer's own `serverDid` at least;
+        an allowlist for cross-server restores is a configuration decision to
+        take to the user)
+  - [ ] The `ImportStats` report counts verified, unattested, `proof-invalid`
+        and `content-mismatch` objects separately, and `handleError`-level
+        logging tells the last two apart, so bit-rot is not read as a flaky
+        signature
+  - [ ] Tests cover a verified round trip, a hand-edited `createdBy`, a
+        substituted body under an authentic statement, and an archive from a
+        server whose DID the importer does not accept
 
-_Superseded decisions (2026-07-22)._ The first design had the server mint its
-own `did:webvh` on first boot, hold the update key as KEK-encrypted server state
-outside Space storage, serve the log at a well-known route, and refuse to boot
-when the identity was absent over a non-empty store (to avoid forking the
-identity on a restore that lost the key), with an admin script as the only
-override and a boot-time `SERVER_URL` check against a recorded URL. The
-2026-09-29 revision drops all of that: the admin holds the update key, so the
-server has nothing to mint, nothing to fork, and no key file to lose, and the
-self-hosted path form replaces the well-known route. The one property the first
-design had that this one gives up is a server that works with no operator step
-at all; an unprovisioned server now runs and exports, unsigned.
+Split from WAS-7 (archived) on 2026-09-29. Import must preserve `createdBy` to
+be a restore, so it necessarily trusts the archive; this item moves that trust
+from the file to the signing server's DID. Degrades cleanly: a hand-rolled
+archive still imports and just carries no attribution it did not earn. A
+content-transforming migration (re-encryption, plaintext/EDV conversion) either
+re-attests over the transformed bytes or accepts the drop; note that in the tool
+that first does one.
 
-_Spec status (resolved 2026-07-22)._ The spec defines `createdBy` on the Space,
-Collection, and Resource Metadata data models (OPTIONAL, server-managed,
-read-only) but no way to _authenticate_ that claim once the data leaves the
-server, nor a server DID to anchor it. Resolution: the WAS spec itself gains
-only (a) a server-DID anchor, how a server advertises its DID in the Service
-Description, and (b) a normative reference from the Export/Import operations to
-a separate reusable **container spec** (WASS-25 in the spec roadmap, draft) that
-owns the envelope format, manifest, and verification procedure. The Keyhive
-"concap" format check moves to WASS-25's design phase. Implementation does not
-wait on either: WAS-7 ships against the de facto format, and the spec text is
-extracted from it (this repo's existing pattern).
+### WAS-167: Further uses of the server identity (write receipts, epoch attestation, delegatee, signed manifest)
 
-_Option value._ Once the server has a DID and signing key, other uses become
-cheap; recorded here so the option value is not lost (razor: TLS already
-authenticates live reads, so a signature only earns its keep where the statement
-outlives the connection, stored for later, shown to a third party, or compared
-between parties):
+- status: draft
+- priority: low
+- labels: someday, security
 
-- **Write receipts**: a signed "stored resource `id` with content digest D at
-  version N at time T" returned to the writer; the live-path counterpart of the
-  export signing. The signing-time-agnostic envelope (see design decisions)
-  keeps this a later opt-in: mint the same envelope at write time and return it
-  to the client, without storing it.
-- **Signed changes-feed checkpoints**: promoted to its own item, WAS-36.
+Parking record split from WAS-7 (archived) on 2026-09-29, so the option value of
+the server identity is not lost. It is a draft because none of these has a
+consumer asking for it yet; each is promoted to its own item when one does. The
+razor: TLS already authenticates live reads, so a server signature earns its
+keep only where the statement outlives the connection, is stored for later,
+shown to a third party, or compared between parties.
+
+- **Write receipts**: the WAS-165 statement minted at write time and returned to
+  the writer, not stored; the signing-time-agnostic envelope keeps the
+  signatures bit-compatible. For a chunked Resource the full-content digest
+  exists only once the last chunk lands, so a receipt is mintable at completion.
 - **Epoch anti-rollback**: a signed current-epoch statement for multi-recipient
-  collections; with `epochsMac` retired (client 0.32.0), epoch configuration is
-  bound by log-chain verification, and a server signature would additionally
-  make the freshness claim third-party- and offline-verifiable.
-- **Server as zcap delegatee**: the receiving direction. A user delegates a read
-  capability to the server's DID so it can pull from a peer server unattended
-  (server-to-server backup / replication / migration). This needs a
-  `capabilityInvocation` method on the server DID, which the current design
-  deliberately withholds; adding one is an admin log entry and a review of the
-  clause consequences above. Any future federation story needs the server DID as
-  a prerequisite.
-- **Signed export manifest**: a whole-archive "backup receipt" over the
-  manifest's content digests. The completeness complement to the per-object
-  envelopes: per-object signatures cannot detect an object _omitted_ from an
-  archive (see the digest-binding decision), so omission-detection is inherently
-  the manifest's job.
+  Collections, making the freshness claim third-party- and offline-verifiable
+  beyond what log-chain verification gives.
+- **Server as zcap delegatee**: a user delegates a read capability to the server
+  DID so it can pull from a peer server unattended (server-to-server backup,
+  replication, migration). Needs a `capabilityInvocation` method on the server
+  DID, which the current design deliberately withholds; adding one is an admin
+  log entry plus a review of the client-annex clause consequences recorded in
+  WAS-7.
+- **Signed export manifest**: a whole-archive receipt over the manifest's
+  content digests, the completeness complement to WAS-165's per-object
+  statements, which cannot detect an omitted object.
 
-_Related._ `createdBy` implementation: `invokerDid()` in
-`src/auth-header-hooks.ts`; the strip-and-apply in `writeSpace` /
-`writeCollection` / `_writeResourceLocked` (both backends). The import path that
-trusts the archive: `importSpace` in `src/backends/filesystem.ts` (writes
-Metadata objects and sidecars raw) and in `src/backends/postgres.ts` (routes
-through `_upsertCollection`, still trusting the archived value).
+Signed changes-feed checkpoints already have their own item, WAS-36.
 
 ### WAS-59: Enforce the reserved-path authorization classes (bounded target attenuation)
 
@@ -1798,48 +1686,29 @@ the desktop learns nothing.
         so a trailing-slash `SERVER_URL` does not yield `//space/...` in
         `encryption.history.resource`; `exchanges.ts` likewise
 
-### WAS-147: Small wire and doc corrections from the review
+### WAS-163: Space subtypes in List Spaces results, optionally
 
 - status: todo
 - priority: low
-- labels: cleanup, wire-contract, docs
-- discovered-from: whole-codebase review (2026-09-17)
+- labels: spec-gap, wire-contract, list-spaces
+- discovered-from: WAS-147
+- touches:
+  - the WAS spec, "List Spaces Operation" (a new optional query parameter and an
+    optional item member)
+  - was-client, `listSpaces()`
+  - `src/requests/SpacesRepositoryRequest.ts`
 - acceptance:
-  - [ ] `zcapCryptosuites` in the service description lists cryptosuite names
-        only; `Ed25519Signature2020` is a proof `type` and either moves to a
-        separate member or is dropped (WAS-69)
-  - [ ] `notModifiedReply` sends no `Content-Length: 0` on a 304 for an
-        implicit-HEAD route
-  - [ ] `deriveGovernedEncryption` always stamps `history.resource` with the
-        log's own URL and drops a client-written `history` when the genesis
-        carries no `parameters.method`, or the doc says `history` is not
-        server-guaranteed
-  - [ ] An identical-body governed-log `PUT` (zero new lines, stored bytes
-        unchanged) is a no-op 204, not `invalid-request-body`
-  - [ ] `PUT /space/:spaceId/meta` on an existing Space is the full replacement
-        its contract states (an omitted `name` is removed), or the contract says
-        merge
-  - [ ] The 201 of a token-provisioned Create Space echoes what was persisted
-        (no client-supplied `createdBy`); unknown body members are not stored
-  - [ ] `filter[__proto__]=v` on the equality query answers the documented 400,
-        not an empty 200
-  - [ ] `StorageBackend`'s contract text matches `getResource` (throws),
-        `getChunk` (rejects) and `deleteChunk` (resolves `false`); the
-        `filesystem.ts` comment claiming `ifNoneMatch` takes precedence is
-        corrected; `generator.ts`'s header matches clear-on-omit; `types.ts`'s
-        `declaredBytes` note matches the multipart branch
-  - [ ] ARCHITECTURE.md states the single-instance assumption the 10 s
-        `spaceMetadataCache` and `policyCache` TTLs rest on (a retired
-        controller keeps authority on another instance for one TTL), and that
-        `allowTargetQuery` bounds the accepted root set only (the query-bearing
-        request URL is always an accepted target)
-  - [ ] `putMeta`'s uniqueness scan runs after the Resource-existence check, so
-        a claim on an absent Resource is 404, not 409
-  - [ ] The chunk listing documents `count` as cardinality, or reports the
-        extent alongside it; chunk writes are documented as outside the
-        Resource-count quota
-  - [ ] Auxiliary Spaces count toward `maxSpacesPerController` but are excluded
-        from List Spaces; document or expose them
+  - [ ] List Spaces takes an opt-in query parameter (name to be decided by the
+        maintainer) under which auxiliary Spaces are included in the results
+  - [ ] each item then carries the Space's `type` array, so a wallet can tell an
+        auxiliary Space from a data Space without a Read Space per item
+  - [ ] the default listing is unchanged: data Spaces only, no `type` member
+  - [ ] spec text and the conformance suite cover the parameter
+
+Auxiliary Spaces (`AuxiliarySpace` subtypes such as `DelegatedClientsSpace` and
+`ServerInstanceSpace`) count toward `MAX_SPACES_PER_CONTROLLER` but are hidden
+from List Spaces, so a controller near its quota cannot see what is using it.
+The wire shape (parameter name, item member) is the maintainer's call.
 
 ## Storage versioning (2026-09-29)
 
@@ -2102,11 +1971,11 @@ currently lacks. Interlocks with the tombstone-GC follow-on (WAS-13).
 - status: todo
 - priority: low
 - labels: someday, sync, security
-- blocked-by: WAS-7
+- blocked-by: WAS-165
 - acceptance:
   - [ ] The server signs feed checkpoints ("as of feed version N, the head hash
-        is X") with its server DID key, reusing the WAS-7 canonical
-        serialization and referencing the DID log `versionId`
+        is X") with its server DID key, reusing the canonical serialization
+        WAS-165 defines and referencing the DID log `versionId`
   - [ ] The signed checkpoint is available to sync clients (in `changesSince`
         responses and, once WAS-12 lands, SSE checkpoint batches)
   - [ ] Two clients comparing signed checkpoints for the same feed version can

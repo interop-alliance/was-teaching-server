@@ -44,7 +44,10 @@ import {
   spaceTypeChangeProblem
 } from '../lib/spaceType.js'
 import { listRegisteredBackends } from '../lib/backends.js'
-import { projectSpaceMetadata } from '../lib/spaceProjection.js'
+import {
+  projectSpaceMetadata,
+  writableSpaceMetadata
+} from '../lib/spaceProjection.js'
 import { buildServiceDescription } from '../serviceDescription.js'
 import {
   metadataEtagOf,
@@ -972,24 +975,15 @@ async function authorizeAndWriteSpaceMetadata({
     }
   }
 
-  // Compose the Space Metadata object, new or updated. `name` is optional,
-  // so only include it when the request supplies one.
-  const spaceMetadata = existingSpaceMetadata
-    ? // Existing: update only the allowed fields. The stored object's
-      // out-of-band validator is not part of the body handed to storage.
-      {
-        ...stripMetadataValidator(existingSpaceMetadata),
-        id: spaceId,
-        controller: body.controller,
-        ...(body.name !== undefined && { name: body.name })
-      }
-    : // New Space
-      {
-        id: spaceId,
-        type: requestedType ?? defaultSpaceType(),
-        controller: body.controller,
-        ...(body.name !== undefined && { name: body.name })
-      }
+  // Compose the Space Metadata object, new or updated: a full replacement of
+  // the user-writable members, so a `name` the body omits is removed. `type`
+  // is immutable and kept from the stored object on an update (checked
+  // below). `createdBy` is resolved by the backend from the stored object.
+  const spaceMetadata = writableSpaceMetadata({
+    id: spaceId,
+    type: existingSpaceMetadata?.type ?? requestedType ?? defaultSpaceType(),
+    body
+  })
 
   // A Space Metadata object's `type` is set at creation and immutable after
   // it, so a Space cannot change role under a consumer that already
