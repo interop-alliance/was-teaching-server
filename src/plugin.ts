@@ -36,11 +36,17 @@ import {
 import { defaultBackend } from './storage.js'
 import { bufferedBodyLimit } from './lib/bodyLimit.js'
 import { onboardingTokenAuthorizer } from './provisioning.js'
+import {
+  createServerSigningKey,
+  provisionServerSpace,
+  resolveServerDid
+} from './lib/serverIdentity.js'
 import type {
   StorageBackend,
   BackendProviderRegistry,
   KmsRecordKekRegistry,
-  AuthorizeProvisioning
+  AuthorizeProvisioning,
+  IDID
 } from './types.js'
 
 export interface FastifyWasOptions {
@@ -144,6 +150,20 @@ export interface FastifyWasOptions {
    * switch to `/health` and the welcome page. Defaults to `true`.
    */
   discloseVersion?: boolean
+  /**
+   * The 32-byte Ed25519 seed the server's export-signing key is derived from
+   * (config `WAS_SERVER_KEY_SEED`). The key is advertised on `/service` as
+   * `exportSigningKey`. `undefined` means no signing key: exports are
+   * unsigned and neither identity member is served.
+   */
+  serverKeySeed?: Uint8Array
+  /**
+   * The `did:key` that controls the `server` Space hosting the server's own
+   * `did:webvh` history log (config `WAS_ADMIN_DID`). When set, that Space is
+   * provisioned at registration if absent, and a stored one must carry this
+   * controller. `undefined` means the Space is not provisioned.
+   */
+  adminDid?: IDID
 }
 
 /**
@@ -171,7 +191,9 @@ async function wasPlugin(
     kmsRecordKek,
     authorizeProvisioning,
     onboardingToken,
-    discloseVersion = true
+    discloseVersion = true,
+    serverKeySeed,
+    adminDid
   } = options
 
   // Fail fast on a malformed base URL: a serverUrl carrying a path, query, or
@@ -232,6 +254,35 @@ async function wasPlugin(
     fastify.addHook('onClose', async () => {
       await storage.close!()
     })
+  }
+
+  // The server's own identity. The `server` Space is provisioned (or checked)
+  // once storage is up, and the export-signing key is derived from the seed.
+  // Whether the key is listed by a resolvable server DID is read per
+  // `/service` request rather than fixed here, since the admin writes that
+  // log after boot; the boot-time read below only warns.
+  if (adminDid !== undefined) {
+    await provisionServerSpace({ storage, adminDid })
+  }
+  const serverSigningKey =
+    serverKeySeed === undefined
+      ? undefined
+      : await createServerSigningKey({ seed: serverKeySeed })
+  fastify.decorate('serverSigningKey', serverSigningKey)
+  if (serverSigningKey !== undefined && serverUrl !== undefined) {
+    const did = await resolveServerDid({
+      storage,
+      serverUrl,
+      signingKey: serverSigningKey,
+      logger: fastify.log
+    })
+    if (did === undefined) {
+      fastify.log.warn(
+        { exportSigningKey: serverSigningKey.exportSigningKey },
+        'No server DID lists the export-signing key yet; exports are ' +
+          'unsigned until the admin writes the server history log.'
+      )
+    }
   }
 
   // The provider-adapter registry the resolver (lib/backendRegistry.ts) consults

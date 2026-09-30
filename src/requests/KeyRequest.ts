@@ -20,7 +20,7 @@
  * leaving open).
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
-import { generateId } from '@digitalcredentials/bnid'
+import { generateId } from '@interop/bnid'
 import { fetchKeystoreAndVerify } from './keystoreContext.js'
 import {
   generateKmsKey,

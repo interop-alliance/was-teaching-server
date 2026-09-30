@@ -10,7 +10,11 @@ import { randomBytes } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { IdEncoder } from '@digitalcredentials/bnid'
+import {
+  IdEncoder,
+  decodeSecretKeySeed,
+  generateSecretKeySeed
+} from '@interop/bnid'
 
 import {
   DEFAULT_HOST,
@@ -23,6 +27,8 @@ import {
   parseHost,
   parseMaxUploadBytes,
   parsePort,
+  parseAdminDid,
+  parseServerKeySeed,
   parseServerUrl,
   parseStorageLimit
 } from '../src/config.default.js'
@@ -402,6 +408,61 @@ describe('loadConfigFromEnv (KMS record KEK vars)', () => {
           KMS_RECORD_KEKS: kekMultibase(randomBytes(32))
         }),
       /only one of KMS_RECORD_KEK or KMS_RECORD_KEKS/
+    )
+  })
+})
+
+describe('parseServerKeySeed', () => {
+  it('returns undefined when unset or empty', () => {
+    assert.equal(parseServerKeySeed(undefined), undefined)
+    assert.equal(parseServerKeySeed('  '), undefined)
+  })
+
+  it('decodes a bnid secret key seed', async () => {
+    const encoded = await generateSecretKeySeed()
+    const seed = parseServerKeySeed(` ${encoded} `)
+    assert.deepStrictEqual(
+      seed,
+      decodeSecretKeySeed({ secretKeySeed: encoded })
+    )
+    assert.equal(seed!.length, 32)
+  })
+
+  it('refuses a malformed value without echoing it', async () => {
+    const raw = (await generateSecretKeySeed()).slice(1)
+    assert.throws(
+      () => parseServerKeySeed(raw),
+      (err: Error) =>
+        /WAS_SERVER_KEY_SEED is not a valid encoded secret key seed/.test(
+          err.message
+        ) && !err.message.includes(raw)
+    )
+  })
+
+  it('refuses a seed of the wrong length', async () => {
+    const short = await generateSecretKeySeed({ bitLength: 128 })
+    assert.throws(
+      () => parseServerKeySeed(short),
+      /WAS_SERVER_KEY_SEED is not a valid encoded secret key seed/
+    )
+  })
+})
+
+describe('parseAdminDid', () => {
+  it('returns undefined when unset or empty', () => {
+    assert.equal(parseAdminDid(undefined), undefined)
+    assert.equal(parseAdminDid(''), undefined)
+  })
+
+  it('accepts an Ed25519 did:key', () => {
+    const did = 'did:key:z6Mkud27oH7SyTr495b67UgZ6tFmA72egaxyte23ygpUfEvD'
+    assert.equal(parseAdminDid(` ${did} `), did)
+  })
+
+  it('refuses any other DID', () => {
+    assert.throws(
+      () => parseAdminDid('did:web:example.com'),
+      /WAS_ADMIN_DID must be an Ed25519 did:key/
     )
   })
 })

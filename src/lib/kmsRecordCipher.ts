@@ -23,7 +23,7 @@ import {
   createHash,
   randomBytes
 } from 'node:crypto'
-import { IdDecoder } from '@digitalcredentials/bnid'
+import { IdDecoder } from '@interop/bnid'
 import { createKek } from '@interop/minimal-cipher/algorithms'
 import type {
   KmsEncryptedEnvelope,

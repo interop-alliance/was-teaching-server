@@ -264,8 +264,15 @@ export class UniqueAttributeConflictError extends ProblemError {
  * @param options.id {string}   the offending reserved id
  */
 export class ReservedIdError extends ProblemError {
-  constructor({ kind, id }: { kind: string; id: string }) {
-    const detail = `'${id}' is a reserved path segment and cannot be used as a ${kind} id.`
+  constructor({
+    kind,
+    id,
+    detail = `'${id}' is a reserved path segment and cannot be used as a ${kind} id.`
+  }: {
+    kind: string
+    id: string
+    detail?: string
+  }) {
     super({
       type: ProblemTypes.RESERVED_ID,
       title: `Invalid ${kind} id (from reserved list).`,

@@ -130,7 +130,9 @@ export async function startServer(): Promise<void> {
       enabledBackendProviders: config.enabledBackendProviders,
       kmsRecordKek: config.kmsRecordKek,
       onboardingToken: config.onboardingToken,
-      discloseVersion: config.discloseVersion
+      discloseVersion: config.discloseVersion,
+      serverKeySeed: config.serverKeySeed,
+      adminDid: config.adminDid
     })
     // Warn (once, at startup, where the Fastify logger now exists) about limits
     // left implicitly unbounded. These warnings live only here so library and

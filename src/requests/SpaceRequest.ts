@@ -18,7 +18,11 @@ import {
 } from './controllerConsent.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { consultProvisioningPolicy } from '../provisioning.js'
-import { assertValidIds, assertValidId } from '../lib/validateId.js'
+import {
+  assertCreatableSpaceId,
+  assertValidIds,
+  assertValidId
+} from '../lib/validateId.js'
 import {
   composeCollectionMetadata,
   parseCollectionMetadataBody
@@ -34,6 +38,7 @@ import {
   resolveWebvhController
 } from '../lib/webvhController.js'
 import {
+  assertClientCreatableSpaceType,
   assertValidSpaceType,
   defaultSpaceType,
   spaceTypeChangeProblem
@@ -914,6 +919,13 @@ async function authorizeAndWriteSpaceMetadata({
     // shape the pre-check above admits is a controller a Space may be
     // updated to, not one it may be created with.
     assertValidController(body.controller, { requestName: 'Update Space' })
+    // Only boot provisioning creates the `server` Space or a
+    // `ServerInstanceSpace`; an update of that Space restating its stored
+    // `type` passes the shape check above.
+    assertCreatableSpaceId(spaceId)
+    assertClientCreatableSpaceType(requestedType, {
+      requestName: 'Update Space'
+    })
     // The gate decided from its own earlier read of the Space. If it saw one
     // that has since been deleted, it let this request through as an update
     // without consulting the provisioning policy, so consult it now (a no-op

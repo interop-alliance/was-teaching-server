@@ -28,7 +28,7 @@ import {
   type AsymmetricKey
 } from '@interop/webkms-client'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
-import { IdEncoder } from '@digitalcredentials/bnid'
+import { IdEncoder } from '@interop/bnid'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { parseKmsRecordKekRegistry } from '../src/config.default.js'

@@ -237,18 +237,30 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   version (`0.1`) and its rendered location, and carries the accepted
   `signatureAlgorithms` and `zcapCryptosuites` (profile
   ["Service Description Entry"](https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/#service-description-entry)).
-  Listing the profile is how a client learns this server authorizes with
-  capability invocations, before its first signed request. The last two members
-  are read off `zcap.ts` (`INVOCATION_SIGNATURE_ALGORITHMS`,
-  `delegationProofCryptosuites`), so a change to what verification accepts
-  changes the advertisement too. The third entry, under
-  `https://w3id.org/pws/encrypted-collections`, is the Encrypted Collections
-  profile (version `0.1`). Listing it at all is this server's claim that it
-  serves the chunk endpoints -- no token names those -- and its `features` array
-  names the profile's two optional affordances this server serves,
-  `blinded-index-query` and `governed-history-logs`. Those two moved here off
-  the Backend descriptor: they are affordances of that companion specification,
-  not of a storage engine. The fourth entry, under
+  The document's `instance` member, the operator's disclosure of the deployed
+  software, also carries the instance's identity when the server has one
+  (`lib/serverIdentity.ts`, below): `exportSigningKey`, the `did:key` of the key
+  the server will sign export archives with, present whenever
+  `WAS_SERVER_KEY_SEED` is set; and `serverDid`, the server's own self-hosted
+  `did:webvh`, present only once the resolved current document of the log at
+  `server/id/did.jsonl` lists that key under `assertionMethod` and under no
+  other relationship. They sit on `instance` rather than on a `specs` entry
+  because they describe this deployment, not a specification it implements.
+  `serverDid` is read per request, since the admin writes that log after boot,
+  and the served body and its `ETag` are recomputed when it changes. The outcome
+  is memoized per backend on the log Resource's `ETag`, so a request costs one
+  metadata read while the log stands still. Listing the profile is how a client
+  learns this server authorizes with capability invocations, before its first
+  signed request. The last two members are read off `zcap.ts`
+  (`INVOCATION_SIGNATURE_ALGORITHMS`, `delegationProofCryptosuites`), so a
+  change to what verification accepts changes the advertisement too. The third
+  entry, under `https://w3id.org/pws/encrypted-collections`, is the Encrypted
+  Collections profile (version `0.1`). Listing it at all is this server's claim
+  that it serves the chunk endpoints -- no token names those -- and its
+  `features` array names the profile's two optional affordances this server
+  serves, `blinded-index-query` and `governed-history-logs`. Those two moved
+  here off the Backend descriptor: they are affordances of that companion
+  specification, not of a storage engine. The fourth entry, under
   `https://w3id.org/pws/client-annex`, is the client annex profile (version
   `0.1`). Listing it is this server's claim that it enforces the client-annex
   delegation clause described below. It carries `version` alone, since it is a
@@ -266,6 +278,38 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   linksets carry the same URL under the `service` relation. The
   `discloseVersion` option (`WAS_DISCLOSE_VERSION`) withholds the version from
   the document's `instance` member, `/health`, and the welcome page together.
+- **`src/lib/serverIdentity.ts`** -- the server's own identity, the first half
+  of authenticated export provenance. Two keys with two holders: the server
+  derives an Ed25519 export-signing key from `WAS_SERVER_KEY_SEED` and holds
+  nothing else; the administrator's `did:key` (`WAS_ADMIN_DID`) holds the update
+  key of the server's `did:webvh` history log, so the server never mints or
+  extends its own log and a compromised server cannot take the DID over. The DID
+  is the self-hosted `did:webvh:{scid}:{host}:space:server:id`, whose log is the
+  `did.jsonl` Resource of the `id` Collection in the `server` Space; it resolves
+  through the same `webvhController.ts` path as any Space controller, so the log
+  gets the fast-forward and verify-on-append rules and the document cache with
+  no code of its own. The plugin provisions the `server` Space at registration
+  when `WAS_ADMIN_DID` is set, as a guarded create typed
+  `['AuxiliarySpace', 'ServerInstanceSpace', 'Space']` with the admin DID as
+  controller, and refuses to start over a stored `server` Space that lacks the
+  subtype or carries another controller. A create that loses the guarded write
+  to another instance booting over the same storage re-reads and checks what the
+  winner stored, and one the Space count quota refuses fails naming
+  `WAS_ADMIN_DID`. The Space id `server` is reserved on every client create
+  (`assertCreatableSpaceId`, `reserved-id` 409), configured or not, and the
+  subtype is refused there too (`assertClientCreatableSpaceType`) while the
+  shape check still admits it, so the admin's own Update Space, which must
+  restate the stored `type` set, goes through. `resolveServerDid` reads the
+  log's head for the DID, checks it is hosted at `server/id` of this server,
+  resolves it, and requires the signing key to be listed under `assertionMethod`
+  alone, reading every method that carries the key and any method embedded in a
+  relationship: a key under `capabilityInvocation` could root-invoke, and one
+  under `capabilityDelegation` without `capabilityInvocation` would read as a
+  ladder verification method to the client-annex clause. A log that is absent,
+  does not verify, or lists the key otherwise leaves `serverDid` off `/service`
+  with a `warn` line, logged once per log version rather than per request, and
+  the server signs nothing. The log is admin-custodied state: it dies with a
+  data wipe, and the admin's copy is what restores it.
 - **`src/storage.ts`** — supplies `defaultBackend()`, the `FileSystemBackend`
   (rooted at `data/`) that `createApp()` uses when no backend is injected. The
   active backend is injected via `createApp({ backend })` and decorated onto the
@@ -386,6 +430,24 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   echoes hand it the listing instead of having it read one: a Space that did not
   exist before the write has no registrations, since registering one needs the
   Space Metadata object to authorize against.
+- **`server` Space** -- the auxiliary Space that hosts this server's own
+  identity: its `id` Collection holds the `did.jsonl` history log of the
+  server's `did:webvh`. Provisioned at startup under the administrator's
+  `did:key` (`WAS_ADMIN_DID`) and typed
+  `['AuxiliarySpace', 'ServerInstanceSpace', 'Space']`, so List Spaces hides it.
+  The id is reserved on every client create, configured or not, and no client
+  can create a Space under that subtype. The name says the Space hosts the
+  server's identity, not that the server controls it: the admin is the
+  controller and the only writer, and the server only reads the log. Avoid:
+  admin Space (the admin's own data Space, if any, is an ordinary Space),
+  server-controlled Space.
+- **Server identity** -- the server's `did:webvh`
+  (`did:webvh:{scid}:{host}:space:server:id`) together with the export-signing
+  key derived from `WAS_SERVER_KEY_SEED`. The key is advertised on `/service` as
+  `exportSigningKey`; the DID is advertised there as `serverDid` once the log
+  lists the key under `assertionMethod` alone. Distinct from the admin identity,
+  which holds the log's update key and authorizes operator actions. Avoid:
+  server DID key (ambiguous between the two), server controller.
 - **Collection** — a named grouping of Resources within a Space, canonically
   addressed with a trailing slash (`/space/:spaceId/:collectionId/`): `GET`
   lists its Resources, `POST` adds one, `DELETE` removes the Collection. Its

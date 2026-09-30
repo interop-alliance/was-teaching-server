@@ -245,9 +245,9 @@ that renews every 90 days has to survive that check each time.
 
 The README's Environment Variables table lists every setting. `SERVER_URL` is
 the one that is required. Keep secrets such as `WAS_ONBOARDING_TOKEN`,
-`KMS_RECORD_KEK` and `DATABASE_URL` in the platform's secret store rather than
-in the repo. Leaving `STORAGE_LIMIT_PER_SPACE` unset makes startup log a warning
-until you set a quota or `unlimited`.
+`KMS_RECORD_KEK`, `WAS_SERVER_KEY_SEED` and `DATABASE_URL` in the platform's
+secret store rather than in the repo. Leaving `STORAGE_LIMIT_PER_SPACE` unset
+makes startup log a warning until you set a quota or `unlimited`.
 
 Changing `SERVER_URL` gives the server a new identity. Space URLs, ZCap
 invocation targets, and the did:webvh DIDs this server hosts all derive from it.
@@ -334,6 +334,7 @@ app name and the wallet's domain:
 fly apps create <app>
 fly volumes create was_data --app <app> --region iad --size 1
 fly secrets set --app <app> WAS_ONBOARDING_TOKEN=...   # optional
+fly secrets set --app <app> WAS_SERVER_KEY_SEED=z...     # optional, see the admin guide
 fly deploy --app <app> --env SERVER_URL=https://<domain> --no-public-ips --ha=false
 fly ips allocate-v6 --private --app <app>
 ```

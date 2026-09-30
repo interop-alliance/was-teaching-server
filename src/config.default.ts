@@ -4,8 +4,10 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { decodeSecretKeySeed } from '@interop/bnid'
 import { parseKekMultibase } from './lib/kmsRecordCipher.js'
-import type { KmsRecordKekRegistry, RecordKek } from './types.js'
+import { isValidController } from './lib/validateDid.js'
+import type { IDID, KmsRecordKekRegistry, RecordKek } from './types.js'
 
 // package.json sits a level above both src/ (dev, via tsx) and dist/ (prod),
 // so '../package.json' from import.meta.dirname resolves in either layout.
@@ -509,6 +511,16 @@ export interface EnvConfig {
    * `/health`, the welcome page, and the service description; unset = `true`.
    */
   discloseVersion: boolean
+  /**
+   * The 32-byte Ed25519 seed the server's export-signing key is derived from
+   * (`WAS_SERVER_KEY_SEED`); unset = no signing key, unsigned exports.
+   */
+  serverKeySeed?: Uint8Array
+  /**
+   * The `did:key` that controls the `server` Space hosting the server's own
+   * identity (`WAS_ADMIN_DID`); unset = the Space is not provisioned.
+   */
+  adminDid?: IDID
 }
 
 /**
@@ -549,7 +561,9 @@ export function loadConfigFromEnv(
       currentKek: env.KMS_RECORD_CURRENT_KEK
     }),
     onboardingToken: parseOnboardingToken(env.WAS_ONBOARDING_TOKEN),
-    discloseVersion: parseDiscloseVersion(env.WAS_DISCLOSE_VERSION)
+    discloseVersion: parseDiscloseVersion(env.WAS_DISCLOSE_VERSION),
+    serverKeySeed: parseServerKeySeed(env.WAS_SERVER_KEY_SEED),
+    adminDid: parseAdminDid(env.WAS_ADMIN_DID)
   }
 }
 
@@ -1062,6 +1076,56 @@ export function parseDiscloseVersion(raw: string | undefined): boolean {
   throw new Error(
     `WAS_DISCLOSE_VERSION must be "true" or "false"; got "${raw}".`
   )
+}
+
+/**
+ * Parses the `WAS_SERVER_KEY_SEED` env value: the 32-byte Ed25519 seed the
+ * server's export-signing key is derived from, in bnid's secret-key-seed
+ * encoding (multibase base58btc over a multihash-wrapped seed, `z1A...`, the
+ * form `generateSecretKeySeed()` mints). An unset or empty value returns
+ * `undefined`, meaning the server has no signing key and exports unsigned. A
+ * malformed value or one of the wrong length throws, naming the variable but
+ * never echoing the secret.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {Uint8Array|undefined}   the 32-byte seed, or `undefined` when unset
+ */
+export function parseServerKeySeed(
+  raw: string | undefined
+): Uint8Array | undefined {
+  const value = raw?.trim() ?? ''
+  if (value === '') {
+    return undefined
+  }
+  try {
+    return decodeSecretKeySeed({ secretKeySeed: value })
+  } catch (err) {
+    throw new Error(
+      'WAS_SERVER_KEY_SEED is not a valid encoded secret key seed ' +
+        '(multibase base58btc, multihash, 32 bytes).',
+      { cause: err }
+    )
+  }
+}
+
+/**
+ * Parses the `WAS_ADMIN_DID` env value: the Ed25519 `did:key` that controls
+ * the `server` Space hosting the server's own identity. An unset or empty
+ * value returns `undefined`, meaning that Space is not provisioned. Anything
+ * but a syntactically valid Ed25519 `did:key` throws.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {IDID|undefined}
+ */
+export function parseAdminDid(raw: string | undefined): IDID | undefined {
+  const value = raw?.trim() ?? ''
+  if (value === '') {
+    return undefined
+  }
+  if (!isValidController(value)) {
+    throw new Error(
+      `WAS_ADMIN_DID must be an Ed25519 did:key (did:key:z6Mk...); got "${raw}".`
+    )
+  }
+  return value
 }
 
 export const SPEC_URL =

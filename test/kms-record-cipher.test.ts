@@ -9,7 +9,7 @@
 import { it, describe } from 'vitest'
 import assert from 'node:assert'
 import { randomBytes } from 'node:crypto'
-import { IdEncoder } from '@digitalcredentials/bnid'
+import { IdEncoder } from '@interop/bnid'
 
 import {
   encryptKeyRecord,

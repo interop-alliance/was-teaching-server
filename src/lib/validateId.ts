@@ -79,6 +79,17 @@ export const RESERVED_COLLECTION_IDS = new Set([
   'query',
   'quotas'
 ])
+/**
+ * Space ids no client may create a Space under. Unlike the two registries
+ * above, this is not a path-segment collision: `/space/{id}` has no static
+ * neighbors. The `server` Space hosts the server's own identity
+ * (`lib/serverIdentity.ts`) and is provisioned at boot, so a client create
+ * naming it is refused with the same 409 `reserved-id`, whether or not the
+ * Space exists yet, and whether or not the identity is configured. A stored
+ * `server` Space is still addressable by its controller like any other.
+ */
+export const RESERVED_SPACE_IDS = new Set(['server'])
+
 export const RESERVED_RESOURCE_IDS = new Set([
   'backend',
   'linkset',
@@ -126,6 +137,24 @@ export function assertValidId(
         : undefined
   if (reserved?.has(id)) {
     throw new ReservedIdError({ kind, id })
+  }
+}
+
+/**
+ * Asserts that a client-chosen Space id is not one of
+ * {@link RESERVED_SPACE_IDS}, throwing the 409 `reserved-id` error. Run on
+ * the two create paths only (Create Space, and Create Space by Id), not on
+ * every route param, since the reserved Space itself is served normally.
+ * @param id {string}   the client-chosen Space id
+ * @returns {void}
+ */
+export function assertCreatableSpaceId(id: string): void {
+  if (RESERVED_SPACE_IDS.has(id)) {
+    throw new ReservedIdError({
+      kind: 'space',
+      id,
+      detail: `'${id}' is reserved for the server and cannot be used as a space id.`
+    })
   }
 }
 

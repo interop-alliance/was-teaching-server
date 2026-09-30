@@ -34,6 +34,17 @@ export const AUXILIARY_SPACE_TYPE = 'AuxiliarySpace'
 export const DELEGATED_CLIENTS_SPACE_TYPE = 'DelegatedClientsSpace'
 
 /**
+ * The auxiliary-Space subtype naming the Space that hosts this server's own
+ * identity (`lib/serverIdentity.ts`): its `id` Collection holds the server's
+ * `did:webvh` history log. Only boot provisioning writes it, with the admin
+ * DID as controller; a client-supplied `type` naming it is refused on
+ * creation ({@link assertClientCreatableSpaceType}), so the id `server` cannot
+ * be claimed ahead of provisioning under the same type. Like
+ * `DelegatedClientsSpace`, it is only valid alongside `AuxiliarySpace`.
+ */
+export const SERVER_INSTANCE_SPACE_TYPE = 'ServerInstanceSpace'
+
+/**
  * Validates a client-supplied Space Metadata `type` and returns it, or
  * `undefined` when the request body carries none (the caller defaults it).
  *
@@ -88,16 +99,47 @@ export function spaceTypeProblem(type: unknown): string | undefined {
     )
   }
   const typeArray = type as string[]
-  if (
-    typeArray.includes(DELEGATED_CLIENTS_SPACE_TYPE) &&
-    !typeArray.includes(AUXILIARY_SPACE_TYPE)
-  ) {
-    return (
-      `A Space Metadata "type" naming "${DELEGATED_CLIENTS_SPACE_TYPE}"` +
-      ` must also name "${AUXILIARY_SPACE_TYPE}".`
-    )
+  for (const subtype of [
+    DELEGATED_CLIENTS_SPACE_TYPE,
+    SERVER_INSTANCE_SPACE_TYPE
+  ]) {
+    if (
+      typeArray.includes(subtype) &&
+      !typeArray.includes(AUXILIARY_SPACE_TYPE)
+    ) {
+      return (
+        `A Space Metadata "type" naming "${subtype}"` +
+        ` must also name "${AUXILIARY_SPACE_TYPE}".`
+      )
+    }
   }
   return undefined
+}
+
+/**
+ * Refuses a client-supplied `type` on a Space *create* that names
+ * `ServerInstanceSpace`, the subtype only boot provisioning may write. The
+ * shape check ({@link assertValidSpaceType}) still admits the subtype, since
+ * an update of the provisioned Space must restate its stored `type` set.
+ *
+ * @param type {string[] | undefined}   the validated `type`, if any
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ * @returns {void}
+ */
+export function assertClientCreatableSpaceType(
+  type: string[] | undefined,
+  { requestName }: { requestName?: string } = {}
+): void {
+  if (type?.includes(SERVER_INSTANCE_SPACE_TYPE)) {
+    throw new InvalidRequestBodyError({
+      requestName,
+      detail:
+        `A Space Metadata "type" naming "${SERVER_INSTANCE_SPACE_TYPE}"` +
+        ' is reserved for the server itself.',
+      pointer: '#/type'
+    })
+  }
 }
 
 /**
@@ -174,6 +216,24 @@ export function isAuxiliarySpace(
 ): boolean {
   const { type } = spaceMetadata ?? {}
   return Array.isArray(type) && type.includes(AUXILIARY_SPACE_TYPE)
+}
+
+/**
+ * Whether a Space Metadata object declares itself the Space hosting this
+ * server's identity: typed with both `AuxiliarySpace` and
+ * `ServerInstanceSpace`. The check boot provisioning runs on a stored Space.
+ * @param spaceMetadata {{ type?: unknown } | undefined}
+ * @returns {boolean}
+ */
+export function isServerInstanceSpace(
+  spaceMetadata: { type?: unknown } | undefined
+): boolean {
+  const { type } = spaceMetadata ?? {}
+  return (
+    Array.isArray(type) &&
+    type.includes(AUXILIARY_SPACE_TYPE) &&
+    type.includes(SERVER_INSTANCE_SPACE_TYPE)
+  )
 }
 
 /**

@@ -18,7 +18,7 @@ import {
   verifyBodyControllerConsent
 } from './controllerConsent.js'
 import { invokerDid } from '../auth-header-hooks.js'
-import { assertValidId } from '../lib/validateId.js'
+import { assertCreatableSpaceId, assertValidId } from '../lib/validateId.js'
 import { spacePath, spacesPath } from '../lib/paths.js'
 import { decodeCursor } from '../lib/cursor.js'
 import {
@@ -29,6 +29,7 @@ import {
 } from '../lib/pagination.js'
 import { assertValidController } from '../lib/validateDid.js'
 import {
+  assertClientCreatableSpaceType,
   assertValidSpaceType,
   defaultSpaceType,
   isAuxiliarySpace
@@ -271,9 +272,12 @@ export class SpacesRepositoryRequest {
     const type =
       assertValidSpaceType(body.type, { requestName: 'Create Space' }) ??
       defaultSpaceType()
+    // Only boot provisioning creates a `ServerInstanceSpace`.
+    assertClientCreatableSpaceType(type, { requestName: 'Create Space' })
     // Reject a path-traversal / non-URL-safe client-supplied space id.
     if (body.id !== undefined) {
       assertValidId(body.id, { kind: 'space', requestName: 'Create Space' })
+      assertCreatableSpaceId(body.id)
     }
 
     const spaceId = body.id || uuidv4()

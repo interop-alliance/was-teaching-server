@@ -38,6 +38,7 @@ import type {
 } from '@interop/data-integrity-core/loader'
 
 import type { EtagValidator, HeldValidators } from './lib/etag.js'
+import type { ServerSigningKey } from './lib/serverIdentity.js'
 import type {
   BlindedIndexQuery,
   BlindedIndexQueryPage
@@ -1438,6 +1439,12 @@ declare module 'fastify' {
      * Set by `fastify.decorate` in plugin.ts.
      */
     kmsRecordKek?: KmsRecordKekRegistry
+    /**
+     * The server's export-signing key, derived from the seed (config
+     * `WAS_SERVER_KEY_SEED`) and advertised on `/service`; `undefined` means
+     * the server has no signing key. Set by `fastify.decorate` in plugin.ts.
+     */
+    serverSigningKey?: ServerSigningKey
     /**
      * The optional provisioning gate for the open provisioning endpoints
      * (`POST /spaces/`, Create Space by Id, `POST /kms/keystores`).

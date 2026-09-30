@@ -14,7 +14,7 @@
  * rejected.
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
-import { generateId } from '@digitalcredentials/bnid'
+import { generateId } from '@interop/bnid'
 import { handleZcapVerify } from '../zcap.js'
 import {
   assertValidController,

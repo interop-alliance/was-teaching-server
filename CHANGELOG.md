@@ -12,12 +12,31 @@
   non-string value is `invalid-request-body`. The value is never verified,
   computed, or used in any authorization decision.
 
+- Server identity, the first half of authenticated export provenance. The server
+  derives an Ed25519 export-signing key from `WAS_SERVER_KEY_SEED` and
+  advertises it on the `/service` document's `instance` member as
+  `exportSigningKey` (a `did:key`). With `WAS_ADMIN_DID` set, it provisions the
+  `server` Space at startup under that admin `did:key`, typed
+  `['AuxiliarySpace', 'ServerInstanceSpace', 'Space']` and hidden from List
+  Spaces. The Space id `server` is reserved on every client create
+  (`reserved-id`, 409), configured or not, and a client create naming
+  `ServerInstanceSpace` is `invalid-request-body`. The server's own DID is the
+  self-hosted `did:webvh:{scid}:{host}:space:server:id`, whose log the admin
+  writes at `/space/server/id/did.jsonl` with the server key as a verification
+  method under `assertionMethod` only. Once that log resolves and lists the key
+  that way, `instance` also carries the DID as `serverDid`; a log listing the
+  key under any other relationship, or not at all, withdraws it. The server
+  signs nothing yet; export signing and import verification follow.
+
 - The filesystem backend versions its storage layout. The data root holds
   `store.json` with an integer `version`, and the backend applies pending layout
   migrations at startup, under a lock file, before it serves requests. An empty
   data dir is stamped with the current version.
 
 ### Changed
+
+- `@digitalcredentials/bnid` is replaced by its maintained fork `@interop/bnid`
+  (same API).
 
 - The filesystem backend refuses to start when `store.json` names a newer
   version than the server knows, or is absent over a data dir that holds data.

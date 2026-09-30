@@ -10,9 +10,11 @@
  * delegation clause and carries `version` alone. It is served unauthenticated at
  * `/service`, and every response the server sends links to it with a
  * `Link: <...>; rel="service"` header, which is how a client finds it from any
- * URL it holds. The document has no storage access and no auth hooks; it
- * depends only on `serverUrl` and the configuration the plugin was registered
- * with.
+ * URL it holds. The document has no auth hooks; it depends on `serverUrl`, the
+ * configuration the plugin was registered with, and one storage read: whether
+ * the server's own history log lists its export-signing key
+ * (`lib/serverIdentity.ts`), which decides the `instance` member's
+ * `serverDid`.
  */
 import { createHash } from 'node:crypto'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
@@ -34,6 +36,7 @@ import {
   SPEC_VERSION
 } from './config.default.js'
 import { serviceDescriptionPath, spacesPath } from './lib/paths.js'
+import { resolveServerDid } from './lib/serverIdentity.js'
 import type {
   AuthzProfileVersionEntry,
   PwsVersionEntry,
@@ -100,14 +103,21 @@ export function serviceDescriptionUrl(serverUrl: string): string {
  * @param options {object}
  * @param options.serverUrl {string}
  * @param options.discloseVersion {boolean}   include `instance.version`
+ * @param [options.identity] {object}   the instance's identity members
+ *   (`exportSigningKey`, `serverDid`); absent members are left out
  * @returns {ServiceDescription}
  */
 export function buildServiceDescription({
   serverUrl,
-  discloseVersion
+  discloseVersion,
+  identity = {}
 }: {
   serverUrl: string
   discloseVersion: boolean
+  identity?: Pick<
+    NonNullable<ServiceDescription['instance']>,
+    'exportSigningKey' | 'serverDid'
+  >
 }): ServiceDescription {
   return {
     url: serviceDescriptionUrl(serverUrl),
@@ -146,7 +156,13 @@ export function buildServiceDescription({
       name: PACKAGE_INSTANCE.name,
       ...(discloseVersion && { version: SERVER_VERSION }),
       source: PACKAGE_INSTANCE.source,
-      homepage: PACKAGE_INSTANCE.homepage
+      homepage: PACKAGE_INSTANCE.homepage,
+      ...(identity.exportSigningKey !== undefined && {
+        exportSigningKey: identity.exportSigningKey
+      }),
+      ...(identity.serverDid !== undefined && {
+        serverDid: identity.serverDid
+      })
     }
   }
 }
@@ -183,9 +199,11 @@ export function addServiceLinkHook(fastify: FastifyInstance): void {
 
 /**
  * Registers `GET /service` (and Fastify's implicit bodyless `HEAD`). The
- * serialized document and its `ETag` are computed once per `serverUrl`, since
- * the document changes with nothing else. An app composed without a
- * `serverUrl` answers 404, like an unmatched route.
+ * serialized document and its `ETag` are computed once per `serverUrl` and
+ * server DID, since the document changes with nothing else; the DID is read
+ * per request through the cached resolver, because the admin writes the
+ * server's history log after boot. An app composed without a `serverUrl`
+ * answers 404, like an unmatched route.
  * @param fastify {FastifyInstance}
  * @param options {object}
  * @param options.discloseVersion {boolean}   include `instance.version`
@@ -195,23 +213,45 @@ export async function initServiceDescriptionRoutes(
   fastify: FastifyInstance,
   { discloseVersion }: { discloseVersion: boolean }
 ): Promise<void> {
-  let cached: { serverUrl: string; body: string; etag: string } | undefined
+  let cached:
+    | { serverUrl: string; did: string | undefined; body: string; etag: string }
+    | undefined
 
   fastify.get(
     serviceDescriptionPath(),
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { serverUrl } = request.server
+      const { serverUrl, serverSigningKey, storage } = request.server
       // The document's `url` is required and absolute, so an app composed
       // without a `serverUrl` has no document to serve.
       if (serverUrl === undefined) {
         return reply.callNotFound()
       }
-      if (cached === undefined || cached.serverUrl !== serverUrl) {
+      const did =
+        serverSigningKey === undefined
+          ? undefined
+          : await resolveServerDid({
+              storage,
+              serverUrl,
+              signingKey: serverSigningKey,
+              logger: request.log
+            })
+      if (
+        cached === undefined ||
+        cached.serverUrl !== serverUrl ||
+        cached.did !== did
+      ) {
         const body = JSON.stringify(
-          buildServiceDescription({ serverUrl, discloseVersion })
+          buildServiceDescription({
+            serverUrl,
+            discloseVersion,
+            identity: {
+              exportSigningKey: serverSigningKey?.exportSigningKey,
+              serverDid: did
+            }
+          })
         )
         const digest = createHash('sha256').update(body).digest('base64url')
-        cached = { serverUrl, body, etag: `"${digest}"` }
+        cached = { serverUrl, did, body, etag: `"${digest}"` }
       }
       reply.header(
         'cache-control',
