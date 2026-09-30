@@ -211,12 +211,23 @@ export archives with. Both are published on `GET /service` under `instance`
 (`exportSigningKey`, `serverDid`). Nothing is signed yet; this section covers
 provisioning the identity so that signing can be switched on later.
 
-**Two keys, two holders.** The server holds only a signing key, derived from
-`WAS_SERVER_KEY_SEED`. The administrator holds the update key of the DID's
-history log (their own `did:key`, named in `WAS_ADMIN_DID`). The server never
-mints or extends its own log. So a compromised server can forge signatures until
-the log is rotated, but cannot take the DID over, and a data wipe cannot lose
-the update key because the server never had it.
+**Three secrets, two holders.** The server holds one secret, the seed its
+signing key is derived from (`WAS_SERVER_KEY_SEED`). The administrator holds the
+other two. The first is the admin's own `did:key`, named in `WAS_ADMIN_DID`. It
+controls the `server` Space and signs the `PUT` that stores the log there. The
+second is the update key of the DID's history log. It is not the admin
+`did:key`. It is a key that the `di` command-line tool (`@interop/did-cli`)
+creates and keeps in the admin's local wallet, with pre-rotation armed, which is
+the CLI default. Pre-rotation means the log already commits to the hash of a
+staged next key, so one leaked update key is not fatal (see Compromise
+recovery).
+
+The server never mints or extends its own log, and it holds no update key. The
+CLI is the only writer, and the admin's wallet copy is the source of truth. A
+compromised server can forge signatures until the seed is rotated, but it cannot
+take the DID over. A data wipe cannot lose the update key, because the server
+never had it. The admin, in turn, never holds or sees the seed. The server key
+enters the log only as its public `exportSigningKey`, read off `/service`.
 
 **Where the log lives.** The DID is `did:webvh:{scid}:{host}:space:server:id`,
 and its log is the `did.jsonl` Resource of the `id` Collection in the `server`
@@ -225,12 +236,27 @@ Space. The server provisions that Space at startup, controlled by
 List Spaces. The admin writes the log there like any other client write, signed
 by the admin key.
 
+**The admin's wallet.** The CLI keeps its state under `$WALLET_DIR` (default
+`~/.config/did-cli-wallet`), with DIDs under `dids/<method>/`. For the server's
+`did:webvh` it holds these files:
+
+- `<did>.json` -- the DID document.
+- `<did>.jsonl` -- the history log, the bytes the admin `PUT`s to the server.
+- `<did>.update-keys.json` -- the secrets of the active and the staged update
+  key.
+- `<did>.meta.json` -- the local metadata, such as the handle.
+
+`di did meta server-id --json` prints the file locations. Back up the whole
+wallet directory after every append. Losing the update-keys file freezes the
+log: no further entry can be signed. The DID still resolves, but it cannot
+change, so the next rotation needs a fresh identity.
+
 ### Configuration surface
 
-| variable              | role                                                                                                                                     |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `WAS_SERVER_KEY_SEED` | 32-byte Ed25519 seed in bnid's secret-key-seed encoding (`z1A...`). Unset: no signing key, and `/service` carries no `exportSigningKey`. |
-| `WAS_ADMIN_DID`       | The admin's Ed25519 `did:key`. Unset: the `server` Space is not provisioned, and no client can be told apart as the admin.               |
+| variable              | role                                                                                                                                                                                         |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WAS_SERVER_KEY_SEED` | 32-byte Ed25519 seed in bnid's secret-key-seed encoding (`z1A...`). Unset: no signing key, and `/service` carries no `exportSigningKey`.                                                     |
+| `WAS_ADMIN_DID`       | The admin's Ed25519 `did:key`, controller of the `server` Space. It is not the log's update key. Unset: the `server` Space is not provisioned, and no client can be told apart as the admin. |
 
 Both are read at startup. A malformed seed, a seed of the wrong length, or a
 `WAS_ADMIN_DID` that is not an Ed25519 `did:key` fails the deploy. So does a
@@ -240,6 +266,10 @@ is not `WAS_ADMIN_DID` (the admin DID changed; update the Space's controller
 through Update Space, or restore the variable).
 
 ### Provisioning the identity
+
+The runbooks below use `{SERVER_URL}` for the server's public URL, and the
+wallet handles `admin` (the admin `did:key`), `server` (the `server` Space) and
+`server-id` (the server's `did:webvh`).
 
 1. Generate the seed with `@interop/bnid`'s `generateSecretKeySeed()` (the
    encoding the test fixtures' seeds use). From this repo:
@@ -251,55 +281,185 @@ through Update Space, or restore the variable).
    Set it as `WAS_SERVER_KEY_SEED`, with the same secret hygiene as the KEK.
    Every machine of a deployment gets the same seed, so they share one key.
 
-2. Set `WAS_ADMIN_DID` to the admin's `did:key` and restart. The log line
+2. Create the admin key in the wallet. Its printed `id` is the `did:key`:
+
+   ```bash
+   di did create key --save --handle admin
+   ```
+
+   To import an existing admin key instead, pass its seed:
+   `SECRET_KEY_SEED=<seed> di did create key --save --handle admin`. Unset
+   `SECRET_KEY_SEED` again before step 6. There it would seed the log's update
+   key.
+
+3. Set `WAS_ADMIN_DID` to that `did:key` and restart. The log line
    `No server DID lists the export-signing key yet` is expected at this point.
 
-3. Read the key: `GET /service`, member `instance.exportSigningKey`
-   (`did:key:z6Mk...`). The `publicKeyMultibase` is the part after `did:key:`.
+4. Register the `server` Space, create the `id` Collection, and publish it:
 
-4. Build the genesis entry with `@interop/did-method-webvh`'s `createDID`:
-   `address` `{SERVER_URL}/space/server/id`, `updateKeys` the admin key's
-   `publicKeyMultibase`, `portable: true`, `vmIdFragment: 'multibase'`, and one
-   verification method of type `Multikey` carrying the server key with
-   `purpose: ['assertionMethod']` and nothing else. Any other relationship on
-   that method withdraws the identity: the server refuses to advertise a key
-   that could invoke or delegate.
+   ```bash
+   di was space add {SERVER_URL}/space/server --handle server --did admin
+   di was collection create server --id id --name "Server identity"
+   di was publish server/id
+   ```
 
-5. Create the `id` Collection in the `server` Space and `PUT` the log to
-   `/space/server/id/did.jsonl` as `text/jsonl`, signed by the admin key.
+   The Collection is world-readable on purpose. A `did:webvh` log is what
+   outside resolvers read. The CLI also fetches it unauthenticated for its
+   fast-forward check before every append. That check treats a 404 as "never
+   published", so on an unpublished log it would pass without checking anything.
 
-6. Confirm: `GET /service` now carries `instance.serverDid`. Keep a copy of the
-   log; the admin's copy is the source of truth (below).
+5. Read the server key off `/service`. The multibase is the part after
+   `did:key:`:
 
-`di`-based runbooks for steps 3 to 6 are planned (WAS-164); until they land, the
-test suite's `test/server-identity-api.test.ts` shows the calls.
+   ```bash
+   curl -s {SERVER_URL}/service | jq -r .instance.exportSigningKey
+   ```
+
+6. Mint the DID around that key:
+
+   ```bash
+   di did create webvh --url {SERVER_URL}/space/server/id \
+     --verification-key <exportSigningKey multibase> --purpose assertionMethod \
+     --vm-id-fragment multibase --save --handle server-id
+   ```
+
+   Pass `--purpose assertionMethod` alone. Any other relationship on the server
+   key withdraws `serverDid`, because the server refuses to advertise a key that
+   could invoke or delegate.
+
+7. Store the log. Always pass `--content-type text/jsonl`:
+
+   ```bash
+   di was put server/id/did.jsonl "$(di did meta server-id --json | jq -r .files.log)" --content-type text/jsonl
+   ```
+
+8. Confirm, then back up the wallet directory:
+
+   ```bash
+   curl -s {SERVER_URL}/service | jq -r .instance.serverDid
+   ```
+
+   This prints the `did:webvh`.
 
 ### Rotating the seed
 
-A new seed is a new key. Set the new `WAS_SERVER_KEY_SEED`, restart, read the
-new `exportSigningKey`, append a log entry (`updateDID`) whose verification
-methods list the new key under `assertionMethod` alone and drop the old one, and
-`PUT` the whole log back. `/service` drops `serverDid` between the restart and
-the append, and picks it up again once the new entry lands. Archives signed
-under the old key keep verifying against the log epoch they name. A leaked seed
-is handled the same way.
+A new seed is a new key. A rotation appends to the log rather than minting a new
+one, so the SCID and the DID stay the same.
+
+1. Set the new `WAS_SERVER_KEY_SEED` and restart. `/service` drops `serverDid`
+   from here until step 4.
+2. Read the new `exportSigningKey` off `/service`, as in provisioning step 5.
+3. Replace the key in the log:
+
+   ```bash
+   di did webvh replace-key server-id --verification-key <new multibase> -y
+   ```
+
+   This appends one entry. It lists the new key under the same relationship and
+   drops the old method. The update key advances as part of the same entry. The
+   fast-forward check runs first, so the server must be reachable.
+
+4. Store the whole log again, as in provisioning step 7.
+5. Check that `serverDid` is back on `/service`, and back up the wallet.
+
+Archives signed under the old key keep verifying against the log epoch their
+envelope names.
+
+### Rotating the update key
+
+Rotate the update key on a schedule, or after a suspected leak:
+
+```bash
+di did webvh rotate-keys server-id -y
+```
+
+This reveals the staged key, retires the active one, and stages a fresh next
+key. The document's verification methods are unchanged. `--keep-old-key` keeps
+the retired secret in the update-keys file. Then store the log as in
+provisioning step 7, check that `serverDid` is unchanged on `/service`, and back
+up the wallet.
 
 ### Restoring the log after a data wipe
 
 The log lives in the data dir and dies with it. The seed survives in the secret
 store, so the key does not change. After the wipe the server re-provisions the
-empty `server` Space at startup; the admin re-creates the `id` Collection and
-`PUT`s the saved log back unchanged. Same SCID, same DID. Keeping the log out of
-the wipe (`spaces/server` on the filesystem backend) is a convenience, not a
-requirement. Losing both the log and the admin key means the DID cannot be
-extended; the operator provisions a fresh identity, and old archives still
-verify against the log snapshot they embed.
+empty `server` Space at startup. The admin's local registry still knows the
+`server` handle, so the admin re-creates the Collection and stores the wallet's
+log unchanged:
+
+```bash
+di was collection create server --id id --name "Server identity"
+di was publish server/id
+di was put server/id/did.jsonl "$(di did meta server-id --json | jq -r .files.log)" --content-type text/jsonl
+```
+
+Same SCID, same DID. Check `serverDid` on `/service`. Keeping the log out of the
+wipe (`spaces/server` on the filesystem backend) is a convenience, not a
+requirement. If the wallet is lost too, the DID cannot be extended. The operator
+provisions a fresh identity, and old archives still verify against the log
+snapshot they embed.
+
+### Compromise recovery
+
+Each secret is recovered on its own.
+
+#### Leaked server seed
+
+Rotate the seed exactly as in "Rotating the seed". Then note the `versionId` of
+the entry `replace-key` appended, for example `2-Qm...`:
+
+```bash
+di did show server-id --meta --json | jq -r .versionId
+```
+
+Archives whose envelope names an earlier epoch were signed by a key the attacker
+may have held. Treat the ones made from the time of the leak onward as suspect.
+
+#### Leaked update key
+
+Run `di did webvh rotate-keys server-id -y`, store the log, and check
+`serverDid`. Pre-rotation is what makes this safe. A valid next entry must be
+signed by the staged key, whose hash the log already committed to, so the
+attacker's copy of the active key cannot sign one. The server verifies every
+append, and refuses one that does not verify. The update-keys file holds the
+staged secret too, so a leak of that whole file gives the attacker a key that
+can sign. Rotate before the attacker can use it. Storing an entry also needs
+write authority on the `server` Space, which is the admin key's, not the update
+key's. The server accepts only a log that extends the one it serves. If the
+served log still carries an entry the wallet did not write, delete the `id`
+Collection as the admin (`di was collection delete server/id`), then re-create,
+publish and store the wallet's log as in "Restoring the log after a data wipe",
+and rotate.
+
+#### Leaked admin `did:key`
+
+The log is untouched, since the admin key was never its update key. Move the
+`server` Space to a new admin key, in this order:
+
+1. Create the new key: `di did create key --save --handle admin-2`.
+2. Restate the Space's controller, signed by the old key. `di was space update`
+   has no controller option, so this is a `PUT` of the Space Metadata object at
+   `{SERVER_URL}/space/server/meta`. Its body restates the stored `type`
+   (`["AuxiliarySpace", "ServerInstanceSpace", "Space"]`) with the new
+   `controller`.
+3. Set `WAS_ADMIN_DID` to the new `did:key` and restart. Do step 2 first: the
+   server refuses to start when the stored controller and `WAS_ADMIN_DID`
+   disagree.
+4. Re-register the Space under the new key:
+
+   ```bash
+   di was space forget server
+   di was space add {SERVER_URL}/space/server --handle server --did admin-2
+   ```
+
+5. Check `serverDid` on `/service`.
 
 ### Moving `SERVER_URL`
 
 The DID string carries the host, so a log written for another host does not
 resolve as this server's, and `/service` drops `serverDid` after the move. The
-log was created with `portable: true`; the admin appends a domain-move entry
-addressing `{NEW_SERVER_URL}/space/server/id` and `PUT`s it under the new host.
-The SCID is unchanged. Re-minting a fresh identity instead is also fine, at the
-cost of provenance continuity.
+log was created portable (the CLI default), so a domain-move entry addressing
+`{NEW_SERVER_URL}/space/server/id` keeps the SCID. The CLI's domain-move command
+is not shipped yet. Until it is, the admin appends that entry with a library
+call and `PUT`s the log under the new host. Re-minting a fresh identity instead
+is also fine, at the cost of provenance continuity.

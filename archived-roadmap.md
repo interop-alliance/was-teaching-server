@@ -3924,3 +3924,62 @@ on.
         Resource-count quota
   - [x] Auxiliary Spaces count toward `maxSpacesPerController` but are excluded
         from List Spaces; document or expose them
+
+### WAS-164: Admin runbooks for the server DID log via `di` (mint, rotate, restore)
+
+- status: done
+- done: 2026-09-30
+- priority: medium
+- labels: operations, security, tooling
+- blocked-by: did-cli-typescript CLI-20, CLI-21, CLI-23
+- acceptance:
+  - [x] `docs/admin-guide.md`'s "Server identity" runbooks (provisioning, seed
+        rotation, restore after a wipe) are step lists of `di` commands in place
+        of the hand-built library calls (the mint sequence is sketched below);
+        each runbook ends by checking `serverDid` on `/service`
+  - [x] The provisioning runbook states that the log's update key is a
+        CLI-managed key with pre-rotation armed (the CLI default), distinct from
+        the admin `did:key` that controls the `server` Space and signs the
+        `PUT`, and that the admin's CLI wallet (document, log, update-keys
+        sidecar) must be backed up: losing the sidecar freezes the log
+  - [x] A compromise-recovery runbook is added covering each secret separately:
+        a leaked server seed (rotate the seed, `di did webvh replace-key`, note
+        the `versionId` from which archives signed by the old key are suspect),
+        a leaked update key (`di did webvh rotate-keys`, which the staged next
+        key makes safe), and a leaked admin `did:key` (change `WAS_ADMIN_DID`,
+        restate the Space controller)
+  - [x] The runbooks never have the admin hold or print the server seed; the
+        server key enters the log as its public `exportSigningKey` only
+  - [x] A test drives the mint and rotate runbooks against an in-process server
+        by invoking the `di` command factories (or the built `di` binary) and
+        asserts `serverDid` on `/service` before and after
+
+Split from WAS-7 (archived) on 2026-09-29; the design lives there. Rewritten on
+2026-09-30 to use `@interop/did-cli` as the log author instead of a bespoke
+script: the CLI already keeps a did:webvh's log and update keys in the admin's
+local wallet with pre-rotation armed, and `di was` already signs writes into a
+Space as its controller. The server never inspects the log's `updateKeys` (it
+resolves the log and checks only that the document lists the export-signing key
+under `assertionMethod` alone), so pre-rotation is invisible to it and needs no
+server change. What changes against WAS-7's design: the log's update key is no
+longer the admin `did:key` but a CLI-managed key whose staged successor makes a
+single-key compromise non-fatal; the cost is a second secret to back up. The
+server never mints or extends its own log (it holds no update key), so the CLI
+is the only writer and the admin's copy is the source of truth; the CLI's
+served-log fast-forward check (CLI-23) is what keeps that copy from diverging
+after a failed `PUT` or a second admin machine. A rotation appends rather than
+re-mints so that archives signed under the old key keep verifying against the
+log epoch their envelope names (WAS-165). The three CLI items this depends on
+live in did-cli-typescript's ROADMAP.md. The `SERVER_URL` move runbook is
+WAS-168, split out on 2026-09-30.
+
+Mint sequence, as the provisioning runbook will spell it out:
+
+```
+di was space add {SERVER_URL}/space/server --handle server --did <admin>
+di was collection create server --id id --name "Server identity"
+di did create webvh --url {SERVER_URL}/space/server/id \
+  --verification-key <exportSigningKey multibase> --purpose assertionMethod \
+  --vm-id-fragment multibase --save --handle server-id
+di was put server/id/did.jsonl <log path> --content-type text/jsonl
+```

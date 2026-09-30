@@ -28,6 +28,16 @@
   key under any other relationship, or not at all, withdraws it. The server
   signs nothing yet; export signing and import verification follow.
 
+- Admin runbooks for the server identity log in `docs/admin-guide.md`, written
+  as `di` (`@interop/did-cli`) command sequences: provisioning, seed rotation,
+  update-key rotation, restore after a data wipe, and compromise recovery for
+  each secret. The log's update key is a CLI-managed key with pre-rotation
+  armed, distinct from the admin `did:key` that controls the `server` Space and
+  signs the `PUT`; the admin never holds the server seed. The `id` Collection is
+  published world-readable so resolvers and the CLI's fast-forward check read
+  the served log. A test drives the runbooks against an in-process server
+  through the `di` binary.
+
 - The filesystem backend versions its storage layout. The data root holds
   `store.json` with an integer `version`, and the backend applies pending layout
   migrations at startup, under a lock file, before it serves requests. An empty
