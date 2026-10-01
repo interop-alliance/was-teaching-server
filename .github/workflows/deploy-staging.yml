@@ -41,6 +41,8 @@ jobs:
       FLY_APP: ${{ vars.FLY_APP }}
       SERVER_URL: ${{ vars.SERVER_URL }}
     steps:
+      - name: Fail on purpose to test the failure notifier
+        run: exit 1
       - name: Check deployment variables
         run: |
           if [ -z "$FLY_APP" ] || [ -z "$SERVER_URL" ]; then
