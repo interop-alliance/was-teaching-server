@@ -1,0 +1,40 @@
+name: Notify failure
+
+# Post to Discord when any workflow listed below finishes with a failure.
+# `workflow_run` only fires from this file's copy on the default branch, so a
+# change here takes effect once merged to main. Add a workflow's `name:` to the
+# list to cover it. Values reach the shell through env (not inline ${{ }}) and
+# the JSON is built with jq, so a branch name carrying quotes can neither break
+# the payload nor inject shell.
+on:
+  workflow_run:
+    workflows: [CI, Deploy (staging), Deploy, Publish]
+    types: [completed]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    steps:
+      - name: Notify Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW: ${{ github.event.workflow_run.name }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK_URL not set"
+            exit 1
+          fi
+
+          jq -n \
+            --arg content "$(printf '🚨 GitHub Actions failed\nRepository: %s\nWorkflow: %s\nBranch: %s\nTrigger: %s\nRun: %s' \
+              "$REPOSITORY" "$WORKFLOW" "$BRANCH" "$EVENT" "$RUN_URL")" \
+            '{content: $content}' \
+            | curl -fsS \
+                -H "Content-Type: application/json" \
+                -d @- \
+                "$DISCORD_WEBHOOK_URL"
