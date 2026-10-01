@@ -398,6 +398,11 @@ wallet app proxies to the staging server's Flycast name. Then:
    secret and the staging app's `FLY_APP` and `SERVER_URL` as its variables.
 3. Limit the environment's deployment branches to `main`.
 
+Running the staging workflow by hand offers a `wipe_data` option. It clears the
+staging volume before deploying, through `fly machine exec` on the running
+machine, so the server starts over an empty data directory. That goes through
+the same Machines API the deploy uses, so the deploy token covers it.
+
 Neither workflow runs on pull requests, so a pull request from a fork cannot
 read the tokens or the variables. The staging workflow runs after every CI run,
 but deploys only when the run passed and was triggered by a push.
