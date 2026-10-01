@@ -296,18 +296,19 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   linksets carry the same URL under the `service` relation. The
   `discloseVersion` option (`WAS_DISCLOSE_VERSION`) withholds the version from
   the document's `instance` member, `/health`, and the welcome page together.
-- **`src/lib/serverIdentity.ts`** -- the server's own identity, the first half
-  of authenticated export provenance. Two keys with two holders: the server
-  derives an Ed25519 export-signing key from `WAS_SERVER_KEY_SEED` and holds
-  nothing else; the administrator's `did:key` (`WAS_ADMIN_DID`) holds the update
-  key of the server's `did:webvh` history log, so the server never mints or
-  extends its own log and a compromised server cannot take the DID over. The DID
-  is the self-hosted `did:webvh:{scid}:{host}:space:server:id`, whose log is the
-  `did.jsonl` Resource of the `id` Collection in the `server` Space; it resolves
-  through the same `webvhController.ts` path as any Space controller, so the log
-  gets the fast-forward and verify-on-append rules and the document cache with
-  no code of its own. The plugin provisions the `server` Space at registration
-  when `WAS_ADMIN_DID` is set, as a guarded create typed
+- **`src/lib/serverIdentity.ts`** -- the server's own identity, which export
+  provenance (`lib/exportProvenance.ts`, below) signs with. Two keys with two
+  holders: the server derives an Ed25519 export-signing key from
+  `WAS_SERVER_KEY_SEED` and holds nothing else; the administrator's `did:key`
+  (`WAS_ADMIN_DID`) holds the update key of the server's `did:webvh` history
+  log, so the server never mints or extends its own log and a compromised server
+  cannot take the DID over. The DID is the self-hosted
+  `did:webvh:{scid}:{host}:space:server:id`, whose log is the `did.jsonl`
+  Resource of the `id` Collection in the `server` Space; it resolves through the
+  same `webvhController.ts` path as any Space controller, so the log gets the
+  fast-forward and verify-on-append rules and the document cache with no code of
+  its own. The plugin provisions the `server` Space at registration when
+  `WAS_ADMIN_DID` is set, as a guarded create typed
   `['AuxiliarySpace', 'ServerInstanceSpace', 'Space']` with the admin DID as
   controller, and refuses to start over a stored `server` Space that lacks the
   subtype or carries another controller. A create that loses the guarded write
@@ -328,6 +329,42 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   with a `warn` line, logged once per log version rather than per request, and
   the server signs nothing. The log is admin-custodied state: it dies with a
   data wipe, and the admin's copy is what restores it.
+- **`src/lib/exportProvenance.ts`** -- export provenance, the signing half of
+  the server identity. `loadExportAttestor` runs once per Export Space request.
+  It takes the server DID from `resolveServerDid`, reads the log's bytes as the
+  log Resource serves them, and checks that snapshot on its own terms: its head
+  names the same DID, it verifies as that DID's log, and its document lists the
+  seed key under `assertionMethod` alone as the method
+  `{serverDid}#{publicKeyMultibase}`. With no identity the handler logs one
+  `warn` line naming the reason and the export carries no provenance. With one,
+  the backend's `exportSpace` hands its finished entry tree to
+  `attestArchiveEntries` before packing it. That call emits one
+  `StorageAttestation` statement per exported object in manifest order: the
+  Space Metadata object, each Collection Metadata object, and each Resource with
+  a representation (a tombstone holds no content and gets none). A statement is
+  `{ id, type, createdBy, createdAt, version, digest, didLogVersionId }`. `id`
+  is the object's absolute URL on this server. The server-managed members are
+  read back off the archived Metadata file or `.meta.<id>.json` sidecar, and a
+  member the record lacks is left out. `digest` is the `Digest` header's `mh=`
+  form over the representation's archived bytes. A chunked Resource's `digest`
+  is the same form over the JCS serialization of its chunk digests in index
+  order, so its parent representation's bytes are not covered. A Metadata
+  statement carries `metaVersion` (the file's embedded `_version`) in place of
+  `version` and `digest`. `didLogVersionId` is the snapshot head's `versionId`,
+  since `proof.created` is not trustworthy. Each statement carries one
+  `eddsa-jcs-2022` proof, `proofPurpose` `assertionMethod`, made straight from
+  the suite rather than through `jsigs.sign`, which would add a JSON-LD
+  `@context` the statement does not carry. The proof has no `created`, and
+  Ed25519 is deterministic, so signing the same statement again yields the same
+  bytes. That keeps a later write-time signature interchangeable with an
+  export-time one. The statements go into the archive's `provenance.jsonl` and
+  the snapshot into its `did.jsonl`, both root entries ahead of `space/`, so
+  each Resource is read twice, once to digest it and once to pack it. The export
+  is not one transaction, so a Resource written between the two reads leaves a
+  statement that does not match its archived bytes. One deleted after the
+  backend built the entry tree gets no statement, and the export goes on.
+  Verifying the entries on import is not implemented yet: `importTar.ts` ignores
+  both.
 - **`src/storage.ts`** — supplies `defaultBackend()`, the `FileSystemBackend`
   (rooted at `data/`) that `createApp()` uses when no backend is injected. The
   active backend is injected via `createApp({ backend })` and decorated onto the
@@ -371,27 +408,32 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   verbatim as its `service.json` entry beside `manifest.yml`, so an importer can
   read which specification versions and feature set the contents were written
   under before it writes anything. It is informational, and `importTar.ts`
-  ignores it. The archive's `.space.<id>.json` entry is the stored Space
-  Metadata object in the filesystem backend's on-disk layout, with the
-  server-derived `backends` listing stamped on (`archivedSpaceMetadata` in
-  `lib/spaceProjection.ts`, the same module the served object is projected in).
-  On the way back in, an import reads that object's user-writable members only
-  under an invocation of the Space's root capability (decided off the verified
-  result, `verifiedRootInvocation` in `zcap.ts`: a dereferenced chain of one
-  link is the synthesized root alone), skips them under a delegated chain, and
-  never restores a server-derived member or `controller`. `name` is restored
-  when the archive carries one, by the same write Update Space Metadata makes;
-  an archive without a `name` leaves the destination's in place. `type` is
-  immutable once a Space exists, so it is checked rather than applied: an
-  archive naming a different set of types than the destination's is refused as
-  `invalid-import` (400) before anything is written, and one whose `type` breaks
-  the shape rule Update Space enforces is treated as carrying none. An entry
-  that does not parse as a JSON object is treated as absent, so the rest of the
-  archive still imports. The outcome is the `spaceMetadata` member of the
-  returned `ImportStats`: `'restored'`, `'skipped'` (a delegated chain, or a
-  Space with no stored object to apply the entry over), or `'absent'` when the
-  archive carried no such entry. `test/space-archive-fixture.test.ts` pins this
-  server's entry trees against the archive fixture that package checks in.
+  ignores it. When the handler has an export attestor (the server has an
+  identity), the backend also passes the codec the `provenance.jsonl` statements
+  `attestArchiveEntries` builds over its entry tree and the `did.jsonl` log
+  snapshot (see `lib/exportProvenance.ts` above); the layout under `space/` does
+  not change, so the import walk is the same either way. The archive's
+  `.space.<id>.json` entry is the stored Space Metadata object in the filesystem
+  backend's on-disk layout, with the server-derived `backends` listing stamped
+  on (`archivedSpaceMetadata` in `lib/spaceProjection.ts`, the same module the
+  served object is projected in). On the way back in, an import reads that
+  object's user-writable members only under an invocation of the Space's root
+  capability (decided off the verified result, `verifiedRootInvocation` in
+  `zcap.ts`: a dereferenced chain of one link is the synthesized root alone),
+  skips them under a delegated chain, and never restores a server-derived member
+  or `controller`. `name` is restored when the archive carries one, by the same
+  write Update Space Metadata makes; an archive without a `name` leaves the
+  destination's in place. `type` is immutable once a Space exists, so it is
+  checked rather than applied: an archive naming a different set of types than
+  the destination's is refused as `invalid-import` (400) before anything is
+  written, and one whose `type` breaks the shape rule Update Space enforces is
+  treated as carrying none. An entry that does not parse as a JSON object is
+  treated as absent, so the rest of the archive still imports. The outcome is
+  the `spaceMetadata` member of the returned `ImportStats`: `'restored'`,
+  `'skipped'` (a delegated chain, or a Space with no stored object to apply the
+  entry over), or `'absent'` when the archive carried no such entry.
+  `test/space-archive-fixture.test.ts` pins this server's entry trees against
+  the archive fixture that package checks in.
 - **`src/errors.ts`** — custom error classes plus `handleError`, the Fastify
   error handler installed by each route group.
 - **`src/exchanges.ts`** — the ephemeral exchanges facet
@@ -468,9 +510,18 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   (`did:webvh:{scid}:{host}:space:server:id`) together with the export-signing
   key derived from `WAS_SERVER_KEY_SEED`. The key is advertised on `/service` as
   `exportSigningKey`; the DID is advertised there as `serverDid` once the log
-  lists the key under `assertionMethod` alone. Distinct from the admin identity,
-  which holds the log's update key and authorizes operator actions. Avoid:
-  server DID key (ambiguous between the two), server controller.
+  lists the key under `assertionMethod` alone. The key signs an export's
+  provenance statements as the method `{serverDid}#{publicKeyMultibase}`, and
+  only while the DID is advertised. Distinct from the admin identity, which
+  holds the log's update key and authorizes operator actions. Avoid: server DID
+  key (ambiguous between the two), server controller.
+- **Provenance statement** -- one line of an export archive's
+  `provenance.jsonl`: a `StorageAttestation` JSON object naming one exported
+  object by its absolute URL, its server-managed members, and its content
+  digest, signed by the server identity with one `eddsa-jcs-2022` proof. Built
+  by `lib/exportProvenance.ts`. It is not a verifiable credential. Avoid:
+  receipt (reserved for a future write-time statement returned to the writer),
+  signature envelope, VC.
 - **Collection** — a named grouping of Resources within a Space, canonically
   addressed with a trailing slash (`/space/:spaceId/:collectionId/`): `GET`
   lists its Resources, `POST` adds one, `DELETE` removes the Collection. Its

@@ -364,7 +364,8 @@ describe('Governing history log API (meta/log)', () => {
         url: metaUrl(collectionId),
         method: 'GET'
       })
-      for (const headers of [{ 'if-match': etag }, {}]) {
+      const variants: Record<string, string>[] = [{ 'if-match': etag }, {}]
+      for (const headers of variants) {
         const resent = await putLog({ collectionId, body, headers })
         assert.equal(resent.status, 204)
         assert.equal(resent.etag, etag)

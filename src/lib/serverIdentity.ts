@@ -15,7 +15,7 @@
  * Space controller goes through (`webvhController.ts`), so the log gets the
  * fast-forward and verify-on-append rules and the document cache for free.
  */
-import { text } from 'node:stream/consumers'
+import { buffer } from 'node:stream/consumers'
 import type { FastifyBaseLogger } from 'fastify'
 import { readLogFromString } from '@interop/did-method-webvh'
 import type { DIDDoc } from '@interop/did-method-webvh'
@@ -289,6 +289,33 @@ async function resolveServerDidUncached({
 }
 
 /**
+ * Reads the stored server history log's bytes, exactly as the log Resource
+ * serves them, or `undefined` when there is no log.
+ * @param options {object}
+ * @param options.storage {StorageBackend}
+ * @returns {Promise<Buffer | undefined>}
+ */
+export async function readServerLog({
+  storage
+}: {
+  storage: StorageBackend
+}): Promise<Buffer | undefined> {
+  try {
+    const { resourceStream } = await storage.getResource({
+      spaceId: SERVER_SPACE_ID,
+      collectionId: SERVER_IDENTITY_COLLECTION_ID,
+      resourceId: WEBVH_LOG_RESOURCE_ID
+    })
+    return await buffer(resourceStream)
+  } catch (err) {
+    if (err instanceof ProblemError && err.statusCode === 404) {
+      return undefined
+    }
+    throw err
+  }
+}
+
+/**
  * Reads the DID the stored server log's head entry names, or `undefined` when
  * there is no log or it does not parse.
  * @param options {object}
@@ -300,22 +327,12 @@ async function readHeadDid({
 }: {
   storage: StorageBackend
 }): Promise<string | undefined> {
-  let logText: string
-  try {
-    const { resourceStream } = await storage.getResource({
-      spaceId: SERVER_SPACE_ID,
-      collectionId: SERVER_IDENTITY_COLLECTION_ID,
-      resourceId: WEBVH_LOG_RESOURCE_ID
-    })
-    logText = await text(resourceStream)
-  } catch (err) {
-    if (err instanceof ProblemError && err.statusCode === 404) {
-      return undefined
-    }
-    throw err
+  const logBytes = await readServerLog({ storage })
+  if (logBytes === undefined) {
+    return undefined
   }
   try {
-    const did = readLogFromString(logText).at(-1)?.state?.id
+    const did = readLogFromString(logBytes.toString('utf8')).at(-1)?.state?.id
     return typeof did === 'string' ? did : undefined
   } catch {
     return undefined

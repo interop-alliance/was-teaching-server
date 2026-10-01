@@ -20,6 +20,16 @@
  * that form from the other side, packing the same tree with a bare JSON Lines
  * log and asserting the import refuses it.
  *
+ * A second fixture carries the two provenance root entries beside the
+ * manifest (`provenance.jsonl`, `did.jsonl`). The package packs their bodies
+ * verbatim; this server wrote them, by exporting the same tree at
+ * `https://was.example` with the export-signing key derived from the all-`0x01`
+ * seed. The case below stages the fixture's own `did.jsonl` as this server's
+ * history log, derives the key from the same seed, and asserts the export is
+ * byte-identical to that fixture, statements and all. Ed25519 signatures are
+ * deterministic and the proofs carry no `created`, so the signing is
+ * reproducible.
+ *
  * The Postgres backend gets no arm here: its entry tree is built out of rows
  * written through its own API, which stamps the same validators, so the
  * fixture tree cannot be staged there verbatim either -- and the Postgres
@@ -32,8 +42,21 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { Readable } from 'node:stream'
-import { fileNameFor, packSpaceArchive } from '@interop/space-archive'
+import assert from 'node:assert'
+import { pino } from 'pino'
+import {
+  fileNameFor,
+  packSpaceArchive,
+  readSpaceArchive
+} from '@interop/space-archive'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import { loadExportAttestor } from '../src/lib/exportProvenance.js'
+import {
+  createServerSigningKey,
+  SERVER_IDENTITY_COLLECTION_ID,
+  SERVER_SPACE_ID
+} from '../src/lib/serverIdentity.js'
+import { verifyProvenanceOffline } from './helpers.js'
 
 const SPACE_ID = 'zFixtureSpace'
 const COLLECTION_ID = 'notes'
@@ -53,6 +76,27 @@ function readFixtureArchive(): Buffer {
     )
   )
 }
+
+/**
+ * The provenance fixture archive's bytes: the same tree, plus the
+ * `provenance.jsonl` and `did.jsonl` root entries.
+ * @returns {Buffer}
+ */
+function readProvenanceFixtureArchive(): Buffer {
+  return fs.readFileSync(
+    fileURLToPath(
+      import.meta
+        .resolve('@interop/space-archive/fixtures/space-archive-provenance.tar')
+    )
+  )
+}
+
+/**
+ * The base URL and export-signing key seed the provenance fixture was
+ * written under.
+ */
+const PROVENANCE_FIXTURE_SERVER_URL = 'https://was.example'
+const PROVENANCE_FIXTURE_SEED = new Uint8Array(32).fill(1)
 
 /**
  * Writes the fixture's entry tree into a `FileSystemBackend`'s layout: the
@@ -155,6 +199,61 @@ describe('Space archive fixture (@interop/space-archive counterpart)', () => {
       await backend.exportSpace({ spaceId: SPACE_ID })
     )
     expect(exported.equals(fixture)).toBe(true)
+  })
+
+  it("exports bytes identical to the package's provenance fixture archive", async () => {
+    const provenanceFixture = readProvenanceFixtureArchive()
+    const { didLog } = await readSpaceArchive(provenanceFixture)
+    assert.ok(didLog, 'the provenance fixture carries a did.jsonl')
+    await backend.writeSpace({
+      spaceId: SERVER_SPACE_ID,
+      spaceMetadata: {
+        id: SERVER_SPACE_ID,
+        type: ['AuxiliarySpace', 'ServerInstanceSpace', 'Space'],
+        controller: 'did:key:z6MkfixtureAdmin'
+      }
+    })
+    await backend.writeCollection({
+      spaceId: SERVER_SPACE_ID,
+      collectionId: SERVER_IDENTITY_COLLECTION_ID,
+      collectionMetadata: {
+        id: SERVER_IDENTITY_COLLECTION_ID,
+        type: ['Collection']
+      }
+    })
+    await backend.writeResource({
+      spaceId: SERVER_SPACE_ID,
+      collectionId: SERVER_IDENTITY_COLLECTION_ID,
+      resourceId: 'did.jsonl',
+      input: {
+        kind: 'binary',
+        contentType: 'text/jsonl',
+        stream: Readable.from([Buffer.from(didLog)])
+      }
+    })
+    const loaded = await loadExportAttestor({
+      storage: backend,
+      serverUrl: PROVENANCE_FIXTURE_SERVER_URL,
+      signingKey: await createServerSigningKey({
+        seed: PROVENANCE_FIXTURE_SEED
+      }),
+      logger: pino({ level: 'silent' })
+    })
+    assert.ok('attestor' in loaded, 'the fixture log lists the seed key')
+    const exported = await collect(
+      await backend.exportSpace({
+        spaceId: SPACE_ID,
+        attestor: loaded.attestor
+      })
+    )
+    expect(exported.equals(provenanceFixture)).toBe(true)
+    const archive = await readSpaceArchive(provenanceFixture)
+    await archive.close()
+    const { statements } = await verifyProvenanceOffline({
+      provenance: archive.provenance!,
+      didLog: archive.didLog!
+    })
+    expect(statements).toHaveLength(3)
   })
 
   it('refuses an archive whose history log is unwrapped', async () => {

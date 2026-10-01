@@ -7,10 +7,17 @@
  */
 import { it, describe, beforeAll, afterAll, expect } from 'vitest'
 import assert from 'node:assert'
+import { randomBytes } from 'node:crypto'
 import { Readable } from 'node:stream'
 import * as tar from 'tar-stream'
+import { pino } from 'pino'
+import { createHeaderValue } from '@interop/http-digest-header'
+import { collectBytes, readSpaceArchive } from '@interop/space-archive'
 import { formatEtag } from '../src/lib/etag.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
+import { loadExportAttestor } from '../src/lib/exportProvenance.js'
+import type { ExportAttestor } from '../src/lib/exportProvenance.js'
+import { provisionServerIdentity, verifyProvenanceOffline } from './helpers.js'
 import {
   PreconditionFailedError,
   ProblemError,
@@ -5716,6 +5723,204 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           await source.cleanup()
           await target.cleanup()
         }
+      })
+    })
+
+    describe('export provenance', () => {
+      let harness: BackendHarness
+      let attestor: ExportAttestor
+      const spaceId = 'space-provenance'
+      const serverUrl = 'https://was.example'
+
+      /**
+       * Exports the Space and opens the archive, collecting every content
+       * file's bytes by archive path.
+       */
+      async function exportAndRead(withAttestor: boolean) {
+        const archive = await readSpaceArchive(
+          await collectBytes(
+            await harness.backend.exportSpace({
+              spaceId,
+              ...(withAttestor && { attestor })
+            })
+          )
+        )
+        const files = new Map<string, Uint8Array>()
+        for await (const entry of archive.entries) {
+          if (entry.type === 'file') {
+            files.set(entry.name, await entry.bytes())
+          }
+        }
+        return { archive, files }
+      }
+
+      beforeAll(async () => {
+        harness = await makeBackend()
+        const { backend } = harness
+        const { signingKey } = await provisionServerIdentity({
+          backend,
+          serverUrl,
+          seed: randomBytes(32)
+        })
+        const loaded = await loadExportAttestor({
+          storage: backend,
+          serverUrl,
+          signingKey,
+          logger: pino({ level: 'silent' })
+        })
+        assert.ok('attestor' in loaded)
+        attestor = loaded.attestor
+
+        await provisionSpace(backend, spaceId)
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'plain',
+          input: jsonInput({ hello: 'world' }),
+          createdBy: CREATOR_ONE
+        })
+        // Eleven chunks, so the chunk files' name order (`r.10` before `r.2`)
+        // differs from their index order.
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'big',
+          input: jsonInput({ chunks: 11 }),
+          createdBy: CREATOR_TWO
+        })
+        for (let chunkIndex = 0; chunkIndex < 11; chunkIndex++) {
+          await backend.writeChunk({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'big',
+            chunkIndex,
+            input: binaryInput(Buffer.from(`chunk ${chunkIndex}`))
+          })
+        }
+        // A tombstone holds no content and gets no statement.
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'gone',
+          input: jsonInput({ soon: 'deleted' })
+        })
+        await backend.deleteResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'gone'
+        })
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('signs one statement per exported object, in manifest order, verifiable offline', async () => {
+        const { archive, files } = await exportAndRead(true)
+        assert.ok(archive.provenance && archive.didLog)
+        assert.deepStrictEqual(
+          Buffer.from(archive.didLog),
+          Buffer.from(attestor.didLog)
+        )
+        const { did, statements } = await verifyProvenanceOffline({
+          provenance: archive.provenance,
+          didLog: archive.didLog
+        })
+        assert.equal(did, attestor.serverDid)
+
+        const base = `${serverUrl}/space/${spaceId}`
+        assert.deepStrictEqual(
+          statements.map(statement => statement.id),
+          [
+            `${base}/meta`,
+            `${base}/col/meta`,
+            `${base}/col/big`,
+            `${base}/col/plain`
+          ]
+        )
+        for (const statement of statements) {
+          assert.equal(statement.type, 'StorageAttestation')
+          assert.equal(statement.didLogVersionId, attestor.didLogVersionId)
+          assert.equal(statement.proof.cryptosuite, 'eddsa-jcs-2022')
+          assert.equal(statement.proof.proofPurpose, 'assertionMethod')
+          assert.equal(
+            statement.proof.verificationMethod,
+            `${did}#${attestor.keyPair.publicKeyMultibase}`
+          )
+          assert.equal(statement.proof.created, undefined)
+        }
+
+        const [spaceStatement, collectionStatement, big, plain] = statements
+        const spaceMetadata = await harness.backend.getSpaceMetadata({
+          spaceId
+        })
+        assert.equal(spaceStatement.metaVersion, spaceMetadata!.metaVersion)
+        assert.equal(spaceStatement.digest, undefined)
+        assert.equal(spaceStatement.version, undefined)
+        const collectionMetadata = await harness.backend.getCollectionMetadata({
+          spaceId,
+          collectionId: 'col'
+        })
+        assert.equal(
+          collectionStatement.metaVersion,
+          collectionMetadata!.metaVersion
+        )
+        assert.equal(
+          collectionStatement.createdAt,
+          collectionMetadata!.createdAt
+        )
+        assert.equal(collectionStatement.digest, undefined)
+
+        const plainMetadata = await harness.backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'plain'
+        })
+        assert.equal(plain.createdBy, CREATOR_ONE)
+        assert.equal(plain.createdAt, plainMetadata!.createdAt)
+        assert.equal(plain.version, plainMetadata!.version)
+        const prefix = `space/${spaceId}/col/`
+        const representation = [...files].find(([name]) =>
+          name.startsWith(`${prefix}r.plain.`)
+        )
+        assert.ok(representation)
+        assert.equal(
+          plain.digest,
+          await createHeaderValue({ data: representation[1] })
+        )
+
+        // The composite digest: each chunk's digest in index order, as a JSON
+        // array of strings (its JCS serialization, since the strings are
+        // plain ASCII), digested again.
+        assert.equal(big.createdBy, CREATOR_TWO)
+        const chunkDigests: string[] = []
+        for (let chunkIndex = 0; chunkIndex < 11; chunkIndex++) {
+          const chunk = [...files].find(([name]) =>
+            name.startsWith(`${prefix}.chunks.big/r.${chunkIndex}.`)
+          )
+          assert.ok(chunk, `chunk ${chunkIndex} is archived`)
+          chunkDigests.push(await createHeaderValue({ data: chunk[1] }))
+        }
+        assert.equal(
+          big.digest,
+          await createHeaderValue({ data: JSON.stringify(chunkDigests) })
+        )
+      })
+
+      it('signs the same statement bytes on a later export', async () => {
+        const first = await exportAndRead(true)
+        const second = await exportAndRead(true)
+        assert.deepStrictEqual(
+          Buffer.from(second.archive.provenance!),
+          Buffer.from(first.archive.provenance!)
+        )
+      })
+
+      it('carries neither entry without an attestor', async () => {
+        const { archive } = await exportAndRead(false)
+        assert.equal(archive.provenance, undefined)
+        assert.equal(archive.didLog, undefined)
+        assert.equal(archive.manifest.contents['provenance.jsonl'], undefined)
+        assert.equal(archive.manifest.contents['did.jsonl'], undefined)
       })
     })
   })

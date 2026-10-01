@@ -1,6 +1,6 @@
 allowBuilds:
-  core-js: set this to true or false
+  core-js: false
   esbuild: true
 minimumReleaseAgeExclude:
   - '@interop/*'
-  - byoe-context@0.1.0
+  - 'byoe-context*'

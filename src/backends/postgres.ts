@@ -72,6 +72,8 @@ import {
   serverBackendDescriptor
 } from '../lib/backends.js'
 import { archivedSpaceMetadata } from '../lib/spaceProjection.js'
+import { attestArchiveEntries } from '../lib/exportProvenance.js'
+import type { ExportAttestor } from '../lib/exportProvenance.js'
 import { backendUsageFieldsFor } from '../lib/backendUsage.js'
 import {
   collectionListingItem,
@@ -3877,14 +3879,19 @@ export class PostgresBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @param [options.service] {ServiceDescription}   this server's Service
    *   Description, written into the archive as its `service.json` entry
+   * @param [options.attestor] {ExportAttestor}   the server's signing
+   *   identity; with one, the archive carries `provenance.jsonl` and the
+   *   `did.jsonl` log snapshot
    * @returns {Promise<Readable>}   tar-stream pack
    */
   async exportSpace({
     spaceId,
-    service
+    service,
+    attestor
   }: {
     spaceId: string
     service?: ServiceDescription
+    attestor?: ExportAttestor
   }): Promise<Readable> {
     const spaceMetadata = await this.getSpaceMetadata({ spaceId })
     if (!spaceMetadata) {
@@ -4155,6 +4162,13 @@ export class PostgresBackend implements StorageBackend {
       }))
       .sort((a, b) => a.name.localeCompare(b.name))
 
+    // One signed statement per exported object, over the entry tree about to
+    // be packed, plus the log snapshot they verify against.
+    const provenance =
+      attestor === undefined
+        ? undefined
+        : await attestArchiveEntries({ spaceId, entries: topLevel, attestor })
+
     // `packSpaceArchive` resolves a tar-stream `Pack`, a streamx readable;
     // `exportSpace` hands its callers a Node `Readable`.
     const pack = await packSpaceArchive({
@@ -4163,7 +4177,9 @@ export class PostgresBackend implements StorageBackend {
       revocations,
       // Written verbatim as the archive's `service.json`; absent when the
       // caller had no description to declare.
-      service
+      service,
+      provenance,
+      didLog: attestor?.didLog
     })
     return Readable.from(pack)
   }

@@ -208,8 +208,9 @@ easier to recover from with a backup.
 **Scope.** The server has an identity of its own, separate from every Space
 controller: a `did:webvh` DID whose document lists the key the server will sign
 export archives with. Both are published on `GET /service` under `instance`
-(`exportSigningKey`, `serverDid`). Nothing is signed yet; this section covers
-provisioning the identity so that signing can be switched on later.
+(`exportSigningKey`, `serverDid`). Once the identity is provisioned, every Space
+export carries signed provenance (see Signed exports below). Until then exports
+are unsigned.
 
 **Three secrets, two holders.** The server holds one secret, the seed its
 signing key is derived from (`WAS_SERVER_KEY_SEED`). The administrator holds the
@@ -255,7 +256,7 @@ change, so the next rotation needs a fresh identity.
 
 | variable              | role                                                                                                                                                                                         |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WAS_SERVER_KEY_SEED` | 32-byte Ed25519 seed in bnid's secret-key-seed encoding (`z1A...`). Unset: no signing key, and `/service` carries no `exportSigningKey`.                                                     |
+| `WAS_SERVER_KEY_SEED` | 32-byte Ed25519 seed in bnid's secret-key-seed encoding (`z1A...`). Unset: no signing key, `/service` carries no `exportSigningKey`, and exports carry no provenance.                        |
 | `WAS_ADMIN_DID`       | The admin's Ed25519 `did:key`, controller of the `server` Space. It is not the log's update key. Unset: the `server` Space is not provisioned, and no client can be told apart as the admin. |
 
 Both are read at startup. A malformed seed, a seed of the wrong length, or a
@@ -340,6 +341,29 @@ wallet handles `admin` (the admin `did:key`), `server` (the `server` Space) and
    ```
 
    This prints the `did:webvh`.
+
+### Signed exports
+
+With the identity provisioned, `POST /space/:spaceId/export` adds two entries at
+the root of the archive, beside `manifest.yml` and `service.json`:
+
+- `provenance.jsonl` -- one signed statement per exported object: the Space
+  Metadata object, each Collection Metadata object, and each Resource. A
+  statement names the object's URL, its `createdBy`, `createdAt`, and `version`
+  (`metaVersion` for a Metadata object), a digest of its content, and the
+  `versionId` of the log entry the key was listed in (`didLogVersionId`).
+- `did.jsonl` -- a copy of the server's history log as it stood at export time,
+  so an importer verifies the statements offline, with no request to this
+  server.
+
+The statements name the key as `{serverDid}#{publicKeyMultibase}`, which is the
+method id provisioning step 6 writes with `--vm-id-fragment multibase`. A log
+that lists the key under another id keeps `serverDid` on `/service` but leaves
+exports unsigned.
+
+An export made while the server has no identity carries neither entry, and the
+server logs one `warn` line per export, `Exporting without provenance`, with the
+reason. Importing does not check the entries yet.
 
 ### Rotating the seed
 

@@ -39,6 +39,7 @@ import type {
 
 import type { EtagValidator, HeldValidators } from './lib/etag.js'
 import type { ServerSigningKey } from './lib/serverIdentity.js'
+import type { ExportAttestor } from './lib/exportProvenance.js'
 import type {
   BlindedIndexQuery,
   BlindedIndexQueryPage
@@ -695,11 +696,16 @@ export interface StorageBackend {
    * archive verbatim as its `service.json` entry so an importer can read which
    * specification versions and feature set the contents were written under; an
    * export run with none (a backend called directly, outside a request) writes
-   * no such entry.
+   * no such entry. With an `attestor` (a server with an identity), the
+   * archive also carries `provenance.jsonl`, one signed statement per
+   * exported object built by `attestArchiveEntries` over the entry tree
+   * packed, and `did.jsonl`, the attestor's DID log snapshot; without one it
+   * carries neither.
    */
   exportSpace(options: {
     spaceId: string
     service?: ServiceDescription
+    attestor?: ExportAttestor
   }): Promise<Readable>
   /**
    * Merges a Space-export archive into an existing Space, skip-not-overwrite

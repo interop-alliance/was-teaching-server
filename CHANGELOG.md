@@ -25,8 +25,21 @@
   writes at `/space/server/id/did.jsonl` with the server key as a verification
   method under `assertionMethod` only. Once that log resolves and lists the key
   that way, `instance` also carries the DID as `serverDid`; a log listing the
-  key under any other relationship, or not at all, withdraws it. The server
-  signs nothing yet; export signing and import verification follow.
+  key under any other relationship, or not at all, withdraws it.
+
+- Signed export provenance. While the server DID is advertised, Export Space
+  adds two root entries to the archive: `provenance.jsonl`, one
+  `StorageAttestation` statement per exported object (the Space Metadata object,
+  each Collection Metadata object, each Resource), and `did.jsonl`, the server's
+  history log snapshot as served. A statement is
+  `{ id, type, createdBy, createdAt, version, digest, didLogVersionId }`: `id`
+  is the object's URL, `digest` the `mh=` sha-256 multihash of its archived
+  content (a chunked Resource digests the JCS array of its chunk digests), and a
+  Metadata statement carries `metaVersion` in place of `version` and `digest`.
+  Each carries one `eddsa-jcs-2022` proof (`assertionMethod`, no `created`) by
+  the export-signing key, named `{serverDid}#{publicKeyMultibase}`. Without an
+  identity the export carries neither entry and the server logs one `warn` line
+  per export. Import does not verify the entries yet.
 
 - Admin runbooks for the server identity log in `docs/admin-guide.md`, written
   as `di` (`@interop/did-cli`) command sequences: provisioning, seed rotation,
@@ -47,6 +60,9 @@
 
 - `@digitalcredentials/bnid` is replaced by its maintained fork `@interop/bnid`
   (same API).
+
+- Depends on `@interop/space-archive` 0.5.0, which carries the provenance root
+  entries.
 
 - The filesystem backend refuses to start when `store.json` names a newer
   version than the server knows, or is absent over a data dir that holds data.

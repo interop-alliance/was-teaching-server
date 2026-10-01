@@ -67,6 +67,7 @@ import {
   quotasPath
 } from '../lib/paths.js'
 import { parsePageParams } from '../lib/pagination.js'
+import { loadExportAttestor } from '../lib/exportProvenance.js'
 import {
   ProblemError,
   InvalidImportError,
@@ -569,7 +570,27 @@ export class SpaceRequest {
       serverUrl === undefined
         ? undefined
         : buildServiceDescription({ serverUrl, discloseVersion })
-    const tarFile = await storage.exportSpace({ spaceId, service })
+    // A server with an identity signs one provenance statement per exported
+    // object and embeds its DID log snapshot. One without says so once per
+    // export, not once per object.
+    const { serverSigningKey } = request.server
+    const loaded =
+      serverSigningKey === undefined || serverUrl === undefined
+        ? { reason: 'No export-signing key is configured.' }
+        : await loadExportAttestor({
+            storage,
+            serverUrl,
+            signingKey: serverSigningKey,
+            logger: request.log
+          })
+    if ('reason' in loaded) {
+      request.log.warn(
+        { spaceId, reason: loaded.reason },
+        'Exporting without provenance: the server has no identity to sign with.'
+      )
+    }
+    const attestor = 'attestor' in loaded ? loaded.attestor : undefined
+    const tarFile = await storage.exportSpace({ spaceId, service, attestor })
 
     return reply.status(200).type('application/x-tar').send(tarFile)
   }

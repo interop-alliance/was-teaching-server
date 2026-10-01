@@ -1,6 +1,7 @@
 import assert from 'node:assert'
 import { createHash, randomUUID } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
+import { Readable } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
 import { ZcapClient } from '@interop/ezcap'
 import { WasClient } from '@interop/was-client'
@@ -11,15 +12,22 @@ import type { ISigner } from '@interop/data-integrity-core'
 import {
   createDID,
   logToJsonlString,
+  readLogFromString,
+  resolveDIDFromLog,
   signerFromExternalKey
 } from '@interop/did-method-webvh'
 import type { DIDLog, ServiceEndpoint } from '@interop/did-method-webvh'
+import { DataIntegrityProof } from '@interop/data-integrity-proof'
+import { createVerifyCryptosuite } from '@interop/ed25519-signature/eddsa-jcs-2022'
+import jsigs from '@interop/jsonld-signatures'
 
 import {
   ENCRYPTED_COLLECTIONS_IDENTIFIER,
   ENCRYPTED_COLLECTIONS_VERSION
 } from '../src/config.default.js'
 import { createApp } from '../src/server.js'
+import { createServerSigningKey } from '../src/lib/serverIdentity.js'
+import type { ServerSigningKey } from '../src/lib/serverIdentity.js'
 import type { IDID, IRootZcap, StorageBackend } from '../src/types.js'
 
 /**
@@ -713,4 +721,133 @@ export async function provisionProviderContainers({
     collectionId,
     collectionMetadata: { id: collectionId, type: ['Collection'] }
   })
+}
+
+/**
+ * Gives a bare backend a server identity, the way an admin would through the
+ * front door: the `server` Space under an admin `did:key`, its `id`
+ * Collection, and a `did.jsonl` history log whose document lists the
+ * seed-derived export-signing key under `assertionMethod` alone, named by its
+ * full `publicKeyMultibase`. Written through the backend API, so no server
+ * needs to run.
+ *
+ * @param options {object}
+ * @param options.backend {StorageBackend}
+ * @param options.serverUrl {string}   the host the DID is minted for
+ * @param options.seed {Uint8Array}   the export-signing key's 32-byte seed
+ * @returns {Promise<{ signingKey: ServerSigningKey, did: string, didLog: string }>}
+ */
+export async function provisionServerIdentity({
+  backend,
+  serverUrl,
+  seed
+}: {
+  backend: StorageBackend
+  serverUrl: string
+  seed: Uint8Array
+}): Promise<{ signingKey: ServerSigningKey; did: string; didLog: string }> {
+  const signingKey = await createServerSigningKey({ seed })
+  const admin = await Ed25519VerificationKey.generate()
+  const adminSigner = admin.didKeySigner()
+  const { did, log } = await createDID({
+    address: `${serverUrl}/space/server/id`,
+    signer: signerFromExternalKey({
+      publicKeyMultibase: admin.publicKeyMultibase!,
+      sign: async ({ data }: { data: Uint8Array }) =>
+        await adminSigner.sign({ data })
+    }),
+    updateKeys: [admin.publicKeyMultibase!],
+    vmIdFragment: 'multibase',
+    portable: true,
+    verificationMethods: [
+      {
+        type: 'Multikey',
+        publicKeyMultibase: signingKey.keyPair.publicKeyMultibase,
+        purpose: ['assertionMethod']
+      }
+    ] as any
+  })
+  const didLog = logToJsonlString(log)
+  await backend.writeSpace({
+    spaceId: 'server',
+    spaceMetadata: {
+      id: 'server',
+      type: ['AuxiliarySpace', 'ServerInstanceSpace', 'Space'],
+      controller: `did:key:${admin.publicKeyMultibase}` as IDID
+    }
+  })
+  await backend.writeCollection({
+    spaceId: 'server',
+    collectionId: 'id',
+    collectionMetadata: { id: 'id', type: ['Collection'], name: 'id' }
+  })
+  await backend.writeResource({
+    spaceId: 'server',
+    collectionId: 'id',
+    resourceId: 'did.jsonl',
+    input: {
+      kind: 'binary',
+      contentType: 'text/jsonl',
+      stream: Readable.from([Buffer.from(didLog)])
+    }
+  })
+  return { signingKey, did, didLog }
+}
+
+/**
+ * Verifies an archive's provenance offline, the way an importer would: the
+ * embedded `did.jsonl` snapshot is verified with `resolveDIDFromLog` (SCID,
+ * hash chain, update keys), then every statement's `eddsa-jcs-2022` proof is
+ * checked against the verification method the snapshot's document lists,
+ * under `assertionMethod`. Throws on the first statement that fails.
+ *
+ * @param options {object}
+ * @param options.provenance {Uint8Array}   the `provenance.jsonl` bytes
+ * @param options.didLog {Uint8Array}   the `did.jsonl` bytes
+ * @returns {Promise<{ did: string, statements: any[] }>}   the statements, in
+ *   archive order
+ */
+export async function verifyProvenanceOffline({
+  provenance,
+  didLog
+}: {
+  provenance: Uint8Array
+  didLog: Uint8Array
+}): Promise<{ did: string; statements: any[] }> {
+  const log = readLogFromString(Buffer.from(didLog).toString('utf8'))
+  const { did, doc } = await resolveDIDFromLog(log)
+  assert.ok(doc, 'the embedded log resolves to a document')
+  const text = Buffer.from(provenance).toString('utf8')
+  assert.ok(text.endsWith('\n'), 'every statement line ends with a newline')
+  const statements: any[] = text
+    .slice(0, -1)
+    .split('\n')
+    .map(line => JSON.parse(line))
+  for (const statement of statements) {
+    const methodId: string = statement.proof.verificationMethod
+    const method: object | undefined = doc.verificationMethod?.find(
+      vm => vm.id === methodId
+    )
+    assert.ok(method, `the log lists ${methodId}`)
+    const result = await jsigs.verify(structuredClone(statement), {
+      suite: new DataIntegrityProof({ cryptosuite: createVerifyCryptosuite() }),
+      purpose: new jsigs.purposes.AssertionProofPurpose({ controller: doc }),
+      documentLoader: async (url: string) => {
+        if (url !== methodId) {
+          throw new Error(`Unexpected document load: "${url}".`)
+        }
+        return {
+          document: {
+            '@context': 'https://w3id.org/security/multikey/v1',
+            ...method
+          }
+        }
+      }
+    })
+    assert.ok(
+      result.verified,
+      `statement ${statement.id} verifies: ${String(result.error)}`
+    )
+  }
+  return { did, statements }
 }

@@ -18,6 +18,7 @@ import { promisify } from 'node:util'
 import type { FastifyInstance } from 'fastify'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { IDID } from '../src/types.js'
 import { startTestServer } from './helpers.js'
 
 const execFileAsync = promisify(execFile)
@@ -57,7 +58,7 @@ describe('Server identity runbooks (di CLI)', () => {
     walletDir: string,
     dataDir: string,
     wipedDataDir: string,
-    adminDid: string,
+    adminDid: IDID,
     seed: Uint8Array,
     serverDid: string,
     logPath: string,
@@ -145,7 +146,7 @@ describe('Server identity runbooks (di CLI)', () => {
       '--handle',
       'admin'
     ])
-    adminDid = printedDid(stdout)
+    adminDid = printedDid(stdout) as IDID
     assert.match(adminDid, /^did:key:z6Mk/)
     seed = randomBytes(32)
     port = 0

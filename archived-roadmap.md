@@ -3983,3 +3983,76 @@ di did create webvh --url {SERVER_URL}/space/server/id \
   --vm-id-fragment multibase --save --handle server-id
 di was put server/id/did.jsonl <log path> --content-type text/jsonl
 ```
+
+### WAS-165: Export signs provenance (`provenance.jsonl` + DID log snapshot in the archive)
+
+- status: done
+- done: 2026-09-30
+- priority: medium
+- labels: data-model, security, export
+- touches:
+  - space-archive: two root entries in the layout beside `manifest.yml` and
+    `service.json`, both listed in the manifest: `provenance.jsonl` and
+    `did.jsonl`; the packer takes them and the reader exposes them without
+    verifying (verification is the importer's, WAS-166, and the wallets' when
+    they choose) -- shipped as SAR-5 (space-archive 0.5.0, unpublished; this
+    server consumes it through a temporary `link:../space-archive` reference
+    until it is published), including the second fixture
+    `fixtures/space-archive-provenance.tar`
+  - wallet-attached-storage-spec: the normative reference from Export/Import to
+    the container spec that owns the envelope (WASS-25 in that repo's roadmap)
+    -- pending: WASS-25 is still draft there; nothing in this item changes the
+    WAS spec text itself
+- acceptance:
+  - [x] Both backends' `exportSpace` emit one statement per exported object
+        (each Resource, the Space Metadata object, each Collection Metadata
+        object) in manifest order into `provenance.jsonl`, each carrying one
+        `eddsa-jcs-2022` Data Integrity proof (`proofPurpose` `assertionMethod`)
+        by the seed-derived key, with `verificationMethod`
+        `{serverDid}#{publicKeyMultibase}`
+  - [x] The statement is
+        `{ id, type: 'StorageAttestation', createdBy, createdAt, version, digest, didLogVersionId }`,
+        where `id` is the object's URL (the manifest's own key), `digest` is the
+        `Digest` header's string form (`mh=` + base64url sha-256 multihash) over
+        the content, a chunked Resource's `digest` is the multihash over the JCS
+        serialization of the ordered array of chunk digest strings, and a Space
+        or Collection Metadata statement carries `metaVersion` in place of
+        `version` and `digest`; `didLogVersionId` is the served log's head
+        `versionId` at export time
+  - [x] The signed bytes carry no export-specific context (no export timestamp,
+        no manifest reference), so the same statement signed at write time later
+        is bit-compatible
+  - [x] The archive's root `did.jsonl` is the server's log snapshot, verbatim
+        bytes as served, and the layout under `space/` is unchanged so
+        `importTar.ts`'s walk does not move
+  - [x] When the server has no identity (`serverDid` absent from `/service`) the
+        export carries neither entry and the handler logs one `warn` line, not
+        one per object
+  - [x] `test/space-archive-fixture.test.ts` pins the two entries against the
+        fixture that package checks in, and a test verifies every statement
+        offline with `resolveDIDFromLog` over the embedded snapshot
+
+Split from WAS-7 (archived) on 2026-09-29; the design decisions and the wire
+decisions approved that day are recorded there and are settled: sign on export
+rather than on write, the envelope binds the content digest, `didLogVersionId`
+names the key epoch explicitly since `proof.created` is not trustworthy, and the
+statement is not a VC (WASS-25 may wrap it later). The per-object envelope
+covers portability, not completeness: an object omitted from an archive leaves
+every surviving statement valid, and omission detection belongs to a signed
+manifest (parked in WAS-167). The codec change in `@interop/space-archive` is a
+prerequisite of the server half and is filed there under this item's `touches`.
+Not blocked by WAS-164: the identity can be provisioned by hand per the admin
+guide until the `di` runbooks land.
+
+_Shipped (2026-09-30)._ Choices made where the item text left room, recorded for
+WAS-166: a statement's `id` is the absolute URL on the exporting server
+(`{serverUrl}/space/{S}/meta`, `.../{C}/meta`, `.../{C}/{R}`); a member the
+stored record lacks is left out of the statement rather than nulled; the proof
+carries no `created`, so re-signing an unchanged statement yields the same
+bytes; a tombstone gets no statement; a chunked Resource's statement covers its
+chunks only, not the parent representation's bytes, as the item states; the two
+root entries are listed in the manifest with no documenting `url`, and are
+packed after `service.json` in the order `provenance.jsonl`, `did.jsonl`, so an
+importer holds the statements before the first object. Statements are built over
+the archive's own entry tree in `src/lib/exportProvenance.ts`, so each Resource
+is read twice per export.
