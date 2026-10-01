@@ -45,8 +45,9 @@ export type StoreMigration = (options: {
  * entries are appended. An applied entry is not edited.
  */
 export const STORE_MIGRATIONS: StoreMigration[] = [
-  // v1: the baseline layout. A data dir is stamped at the current version when
-  // it is first used, so this step has nothing to convert.
+  // v1: the baseline layout, the one every data dir written before `store.json`
+  // existed is already in. An unstamped dir that holds data starts at version
+  // 0, so this step is what stamps it; it has nothing to convert.
   async () => {}
 ]
 
@@ -99,10 +100,12 @@ const runnerMutex = new KeyedMutex()
 /**
  * Brings the data dir at `dataDir` to the newest layout version: stamps an
  * empty dir at that version, applies each pending migration in order, and
- * rewrites `store.json` after each step. Refuses to start (`StoreVersionError`)
- * when `store.json` names a version newer than `migrations` knows, or when it
- * is absent over a data dir that already holds data. Holds a lock file for the
- * whole run, so two processes sharing the data dir cannot both migrate it.
+ * rewrites `store.json` after each step. A dir that holds data but no
+ * `store.json` predates the stamp and is at the baseline layout, so it starts
+ * at version 0 and every step runs over it. Refuses to start
+ * (`StoreVersionError`) when `store.json` names a version newer than
+ * `migrations` knows. Holds a lock file for the whole run, so two processes
+ * sharing the data dir cannot both migrate it.
  * @param options {object}
  * @param options.dataDir {string}   the backend's data root
  * @param options.logger {FastifyBaseLogger}
@@ -150,17 +153,17 @@ async function migrateUnderLock({
   const currentVersion = migrations.length
   const lock = await acquireLock({ dataDir, lockTimeoutMs, logger })
   try {
-    const stampedVersion = await readStoreVersion({ dataDir })
+    let stampedVersion = await readStoreVersion({ dataDir })
     if (stampedVersion === undefined) {
-      if (!(await isEmptyDataDir({ dataDir }))) {
-        throw new StoreVersionError({
-          detail:
-            `The data directory ${dataDir} holds data but no ` +
-            `${STORE_FILE_NAME}; this server expects version ${currentVersion}.`
-        })
+      if (await isEmptyDataDir({ dataDir })) {
+        await writeStoreVersion({ dataDir, version: currentVersion })
+        return currentVersion
       }
-      await writeStoreVersion({ dataDir, version: currentVersion })
-      return currentVersion
+      logger.info(
+        { dataDir },
+        `Data directory holds data but no ${STORE_FILE_NAME}; migrating from the baseline layout`
+      )
+      stampedVersion = 0
     }
     if (stampedVersion > currentVersion) {
       throw new StoreVersionError({

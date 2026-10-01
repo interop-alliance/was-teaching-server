@@ -65,9 +65,9 @@
 - The filesystem backend versions its storage layout. The data root holds
   `store.json` with an integer `version`, and the backend applies pending layout
   migrations at startup, under a lock file, before it serves requests. An empty
-  data dir is stamped with the current version.
-
-### Changed
+  data dir is stamped with the current version. One that holds data but no
+  `store.json` is taken as the baseline layout and migrated forward, so a volume
+  written by an earlier release starts without a wipe.
 
 - `@digitalcredentials/bnid` is replaced by its maintained fork `@interop/bnid`
   (same API).

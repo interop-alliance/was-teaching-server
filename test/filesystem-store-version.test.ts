@@ -259,17 +259,24 @@ describe('Filesystem store version', () => {
     assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length + 1)
   })
 
-  it('refuses an unstamped data dir that holds data', async () => {
+  it('migrates an unstamped data dir that holds data from version 0', async () => {
+    await mkdir(path.join(dataDir, 'spaces'))
+    const counting = countingMigration()
+    const migrations = [noop, counting.migration]
+    assert.equal(await applyStoreMigrations({ dataDir, logger, migrations }), 2)
+    assert.equal(counting.runs(), 1, 'every step runs over pre-stamp data')
+    assert.equal(await storedVersion(dataDir), 2)
+    assert.deepEqual((await readdir(dataDir)).sort(), [
+      'spaces',
+      STORE_FILE_NAME
+    ])
+  })
+
+  it('stamps an unstamped data dir that holds data on backend init', async () => {
     await mkdir(path.join(dataDir, 'spaces'))
     const backend = new FileSystemBackend({ dataDir })
-    await assert.rejects(
-      backend.init(),
-      (err: Error) =>
-        err instanceof StoreVersionError &&
-        err.message.includes(STORE_FILE_NAME) &&
-        err.message.includes(`version ${STORE_MIGRATIONS.length}`)
-    )
-    assert.deepEqual(await readdir(dataDir), ['spaces'])
+    await backend.init()
+    assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
   })
 
   it('refuses a store.json with no integer version', async () => {

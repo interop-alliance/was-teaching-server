@@ -409,12 +409,14 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   creates its own `store.lock.<nonce>` file and withdraws if it then sees
   another live one. A lock file whose heartbeat stopped, or whose holder is gone
   from this host, is ignored and removed. An empty data dir is stamped at the
-  current version. Startup is refused when `store.json` names a version newer
-  than the code knows, or is absent over a data dir that holds data. The version
-  is private to the backend: it is not exported, not stored in any Space, and
-  not served. The Postgres backend's `applyMigrations` refuses the same way,
-  with the same `StoreVersionError`, when its `schema_migrations` table records
-  a version newer than `MIGRATIONS` knows.
+  current version. A data dir that holds data but no `store.json` predates the
+  stamp and is at the baseline layout, so it is taken as version 0 and every
+  step runs over it, the baseline step stamping it first. Startup is refused
+  when `store.json` names a version newer than the code knows. The version is
+  private to the backend: it is not exported, not stored in any Space, and not
+  served. The Postgres backend's `applyMigrations` refuses the same way, with
+  the same `StoreVersionError`, when its `schema_migrations` table records a
+  version newer than `MIGRATIONS` knows.
 - **`src/backends/{filesystem}.ts`** — interchangeable persistence
   implementation (`implements StorageBackend` from `src/types.ts`). A backend
   offers no precondition primitive of its own to a client: the server serializes
