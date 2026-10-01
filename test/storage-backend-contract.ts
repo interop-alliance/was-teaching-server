@@ -17,7 +17,11 @@ import { formatEtag } from '../src/lib/etag.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
 import { loadExportAttestor } from '../src/lib/exportProvenance.js'
 import type { ExportAttestor } from '../src/lib/exportProvenance.js'
-import { provisionServerIdentity, verifyProvenanceOffline } from './helpers.js'
+import {
+  importArchive,
+  provisionServerIdentity,
+  verifyProvenanceOffline
+} from './helpers.js'
 import {
   PreconditionFailedError,
   ProblemError,
@@ -855,7 +859,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             type: 'directory'
           })
           pack.finalize()
-          await backend.importSpace({
+          await importArchive({
+            backend: backend,
             spaceId: legacySpaceId,
             tarStream: Readable.from(pack)
           })
@@ -2282,7 +2287,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
               controller: CONTROLLER
             }
           })
-          await target.backend.importSpace({ spaceId, tarStream: archive })
+          await importArchive({
+            backend: target.backend,
+            spaceId,
+            tarStream: archive
+          })
           const metadata = await target.backend.getResourceMetadata({
             spaceId,
             collectionId: 'col',
@@ -2475,7 +2484,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
               controller: CONTROLLER
             }
           })
-          await target.backend.importSpace({ spaceId, tarStream: archive })
+          await importArchive({
+            backend: target.backend,
+            spaceId,
+            tarStream: archive
+          })
           const metadata = await target.backend.getResourceMetadata({
             spaceId,
             collectionId: 'col',
@@ -3857,7 +3870,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           await provisionSpace(target.backend, spaceId)
           let error: unknown
           try {
-            await target.backend.importSpace({ spaceId, tarStream })
+            await importArchive({ backend: target.backend, spaceId, tarStream })
           } catch (err) {
             error = err
           }
@@ -3922,7 +3935,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           await provisionSpace(target.backend, spaceId)
           let error: unknown
           try {
-            await target.backend.importSpace({ spaceId, tarStream })
+            await importArchive({ backend: target.backend, spaceId, tarStream })
           } catch (err) {
             error = err
           }
@@ -3963,7 +3976,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
               input: jsonInput({ id: resourceId })
             })
           }
-          const stats = await target.backend.importSpace({ spaceId, tarStream })
+          const stats = await importArchive({
+            backend: target.backend,
+            spaceId,
+            tarStream
+          })
           assert.equal(stats.collectionsCreated, 0)
           assert.equal(stats.collectionsSkipped, 1)
           assert.equal(stats.resourcesCreated, 0)
@@ -4114,7 +4131,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         pack.entry({ name: `space/${spaceId}/col/`, type: 'directory' })
         pack.finalize()
         await assert.rejects(
-          backend.importSpace({ spaceId, tarStream: Readable.from(pack) }),
+          importArchive({
+            backend: backend,
+            spaceId,
+            tarStream: Readable.from(pack)
+          }),
           isNotFound
         )
 
@@ -5300,7 +5321,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             spaceId: exportSpaceId
           })
           await provisionSpace(target.backend, exportSpaceId)
-          await target.backend.importSpace({
+          await importArchive({
+            backend: target.backend,
             spaceId: exportSpaceId,
             tarStream
           })
@@ -5341,7 +5363,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             }
           })
           const before = (await target.backend.getSpaceMetadata({ spaceId }))!
-          const restored = await target.backend.importSpace({
+          const restored = await importArchive({
+            backend: target.backend,
             spaceId,
             tarStream: await archive(),
             restoreSpaceMetadata: true
@@ -5359,7 +5382,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             spaceId,
             spaceMetadata: { ...after, name: 'Destination' }
           })
-          const skipped = await target.backend.importSpace({
+          const skipped = await importArchive({
+            backend: target.backend,
             spaceId,
             tarStream: await archive()
           })
@@ -5383,7 +5407,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           })
           await provisionSpace(target.backend, otherKind)
           await expect(
-            target.backend.importSpace({
+            importArchive({
+              backend: target.backend,
               spaceId: otherKind,
               tarStream: await source.backend.exportSpace({
                 spaceId: otherKind
@@ -5464,7 +5489,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           // Space, as the request layer guarantees).
           await provisionSpace(target.backend, spaceId)
           await target.backend.deletePolicy({ spaceId })
-          const stats = await target.backend.importSpace({
+          const stats = await importArchive({
+            backend: target.backend,
             spaceId,
             tarStream
           })
@@ -5546,7 +5572,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           // the archived 'col' is created rather than skipped (an existing
           // Collection keeps its own metadata, as it keeps its policy).
           await provisionSpace(target.backend, spaceId, 'other')
-          await target.backend.importSpace({ spaceId, tarStream })
+          await importArchive({ backend: target.backend, spaceId, tarStream })
 
           const metadata = await target.backend.getCollectionMetadata({
             spaceId,
@@ -5613,7 +5639,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           pack.finalize()
 
           await provisionSpace(target.backend, spaceId)
-          await target.backend.importSpace({
+          await importArchive({
+            backend: target.backend,
             spaceId,
             tarStream: pack as unknown as Readable
           })
@@ -5688,7 +5715,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
           const tarStream = await source.backend.exportSpace({ spaceId })
           await provisionSpace(target.backend, spaceId)
-          await target.backend.importSpace({ spaceId, tarStream })
+          await importArchive({ backend: target.backend, spaceId, tarStream })
           assert.equal(
             await target.backend.isRevoked({
               scope: { spaceId },
@@ -5711,7 +5738,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
           // Re-importing the same archive skips the already-stored record
           // rather than rejecting the import as a duplicate.
-          await target.backend.importSpace({
+          await importArchive({
+            backend: target.backend,
             spaceId,
             tarStream: await source.backend.exportSpace({ spaceId })
           })
@@ -6007,7 +6035,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             controller: CONTROLLER
           }
         })
-        const stats = await backend.importSpace({
+        const stats = await importArchive({
+          backend: backend,
           spaceId,
           tarStream: Readable.from([bytes])
         })

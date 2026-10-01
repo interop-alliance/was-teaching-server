@@ -122,6 +122,13 @@
     rows (chunks and auxiliary Spaces), the single-instance assumption behind
     the metadata and policy cache TTLs, and `allowTargetQuery`.
 
+### Changed
+
+- The Import Space handler now decodes the archive, builds its merge plan, and
+  judges its provenance once, before the backend is called. The backend
+  `importSpace` contract takes that plan and the provenance counts in place of a
+  tar stream, and only persists what it is handed.
+
 ## 0.39.0 - 2026-09-28
 
 ### Added

@@ -4098,3 +4098,47 @@ archive still imports and just carries no attribution it did not earn. A
 content-transforming migration (re-encryption, plaintext/EDV conversion) either
 re-attests over the transformed bytes or accepts the drop; note that in the tool
 that first does one.
+
+### WAS-169: Build and judge the import plan in the Import Space handler, not in the backends
+
+- status: done
+- done: 2026-10-01
+- priority: medium
+- labels: cleanup, import, provenance, filesystem-backend, postgres-backend
+- touches:
+  - `src/requests/SpaceRequest.ts` (`import`), `src/lib/importTar.ts`,
+    `src/lib/importProvenance.ts`, `src/backends/filesystem.ts`,
+    `src/backends/postgres.ts`, `src/types.ts` (`StorageBackend.importSpace`),
+    `test/storage-backend-contract.ts`: shipped here (server-internal; the
+    shared call is `prepareImportPlan` in the new `src/lib/importPlan.ts`, and
+    direct-to-backend tests use the `importArchive` helper in `test/helpers.ts`)
+  - unaffected: storage-core, was-client (`ImportStats` and the Import Space
+    wire contract are unchanged)
+- acceptance:
+  - [x] `StorageBackend.importSpace` takes a built plan and the provenance
+        counts (`{ spaceId, plan, provenance, restoreSpaceMetadata }`) instead
+        of a tar stream; a backend only persists what it is handed
+  - [x] The Import Space handler extracts the entries, builds the plan, and
+        judges the archive's provenance once, through one call, so a backend
+        cannot skip verification by calling `buildImportPlan` directly
+  - [x] `assertImportBodiesFit` moves with it, or is the one pre-flight each
+        backend keeps because it reads the backend's own `maxUploadBytes`
+  - [x] `buildVerifiedImportPlan` is gone, and `importTar.ts` no longer imports
+        `importProvenance.ts` (the type-only cycle between the two goes with it)
+  - [x] The backend contract tests build the plan through the same shared call
+        the handler uses, so an archive-level test stays one per backend
+  - [x] The import tests in `test/` and the conformance suite stay green on both
+        backends
+
+Context: both backends open `importSpace` the same way: `extractTarEntries`,
+then `buildVerifiedImportPlan`, which builds the plan and runs
+`applyImportProvenance` over it. Judging a signed archive and removing the
+`createdBy` members it did not earn is request-level policy, not persistence,
+and ARCHITECTURE.md gives the backends persistence alone. Threading the
+backend's logger and the `ImportStats.provenance` counts through two backends
+exists only to serve that call. A third backend that calls `buildImportPlan` on
+its own imports unearned attribution and nothing fails. Hoisting the
+plan-building into the handler removes the duplicated extraction code from both
+backends and makes the verification step impossible to leave out. WAS-126 adds
+further validation to the same pre-write path and lands more simply once that
+path runs in one place.

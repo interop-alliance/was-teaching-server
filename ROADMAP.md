@@ -1032,45 +1032,6 @@ should move to the named base builder or a sub-resource builder.
 Findings from a cleanup review of the import provenance change that were too
 large to apply in that pass.
 
-### WAS-169: Build and judge the import plan in the Import Space handler, not in the backends
-
-- status: todo
-- priority: medium
-- labels: cleanup, import, provenance, filesystem-backend, postgres-backend
-- touches:
-  - `src/requests/SpaceRequest.ts` (`import`), `src/lib/importTar.ts`,
-    `src/lib/importProvenance.ts`, `src/backends/filesystem.ts`,
-    `src/backends/postgres.ts`, `src/types.ts` (`StorageBackend.importSpace`),
-    `test/storage-backend-contract.ts`
-- acceptance:
-  - [ ] `StorageBackend.importSpace` takes a built plan and the provenance
-        counts (`{ spaceId, plan, provenance, restoreSpaceMetadata }`) instead
-        of a tar stream; a backend only persists what it is handed
-  - [ ] The Import Space handler extracts the entries, builds the plan, and
-        judges the archive's provenance once, through one call, so a backend
-        cannot skip verification by calling `buildImportPlan` directly
-  - [ ] `assertImportBodiesFit` moves with it, or is the one pre-flight each
-        backend keeps because it reads the backend's own `maxUploadBytes`
-  - [ ] `buildVerifiedImportPlan` is gone, and `importTar.ts` no longer imports
-        `importProvenance.ts` (the type-only cycle between the two goes with it)
-  - [ ] The backend contract tests build the plan through the same shared call
-        the handler uses, so an archive-level test stays one per backend
-  - [ ] The import tests in `test/` and the conformance suite stay green on both
-        backends
-
-Context: both backends open `importSpace` the same way: `extractTarEntries`,
-then `buildVerifiedImportPlan`, which builds the plan and runs
-`applyImportProvenance` over it. Judging a signed archive and removing the
-`createdBy` members it did not earn is request-level policy, not persistence,
-and ARCHITECTURE.md gives the backends persistence alone. Threading the
-backend's logger and the `ImportStats.provenance` counts through two backends
-exists only to serve that call. A third backend that calls `buildImportPlan` on
-its own imports unearned attribution and nothing fails. Hoisting the
-plan-building into the handler removes the duplicated extraction code from both
-backends and makes the verification step impossible to leave out. WAS-126 adds
-further validation to the same pre-write path and lands more simply once that
-path runs in one place.
-
 ### WAS-170: Move the provenance statement contract out of `exportProvenance.ts` into a neutral module
 
 - status: todo

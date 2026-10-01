@@ -365,20 +365,23 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   backend built the entry tree gets no statement, and the export goes on. Import
   verifies both entries (`lib/importProvenance.ts`, below).
 - **`src/lib/importProvenance.ts`** -- import provenance, the verifying half.
-  `buildVerifiedImportPlan` in `importTar.ts` hands it the plan the walk built,
-  and it removes every `createdBy` the archive did not earn before either
-  backend writes anything. The signer is the DID the `did.jsonl` snapshot's head
-  names, and the whole snapshot must verify offline as that DID's history log
-  (`verifyWebvhLog`). Any server DID whose log verifies is accepted. There is no
-  allowlist and no setting, and the importer's own `serverDid` gets no special
-  treatment: the log, not the importer, establishes who signed. A statement is
-  then judged on its own. Its `verificationMethod` must name the snapshot's DID,
-  and that DID must be the `server/id` DID of the host the statement's `id`
-  names. The document is resolved at the log entry whose `versionId` equals the
-  statement's `didLogVersionId`, by verifying the log up to that entry, and must
-  list the method under `assertionMethod` alone. Then the `eddsa-jcs-2022` proof
-  is verified. Last, the statement's claims are compared with the archived
-  object: `createdBy`, `createdAt`, `version` or `metaVersion`, and a Resource's
+  The Import Space handler runs it through one call, `prepareImportPlan` in
+  `lib/importPlan.ts`, which extracts the archive and builds the plan with
+  `importTar.ts` first. It removes every `createdBy` the archive did not earn
+  before the plan reaches a backend. A backend's `importSpace` takes the judged
+  plan and the verdict counts, and persists what it is handed. The signer is the
+  DID the `did.jsonl` snapshot's head names, and the whole snapshot must verify
+  offline as that DID's history log (`verifyWebvhLog`). Any server DID whose log
+  verifies is accepted. There is no allowlist and no setting, and the importer's
+  own `serverDid` gets no special treatment: the log, not the importer,
+  establishes who signed. A statement is then judged on its own. Its
+  `verificationMethod` must name the snapshot's DID, and that DID must be the
+  `server/id` DID of the host the statement's `id` names. The document is
+  resolved at the log entry whose `versionId` equals the statement's
+  `didLogVersionId`, by verifying the log up to that entry, and must list the
+  method under `assertionMethod` alone. Then the `eddsa-jcs-2022` proof is
+  verified. Last, the statement's claims are compared with the archived object:
+  `createdBy`, `createdAt`, `version` or `metaVersion`, and a Resource's
   `digest` (the composite chunk digest for a chunked Resource, through the same
   `chunkedDigest` export uses). Each object the archive carries an attestable
   entry for gets one verdict, whether or not the destination already holds it:

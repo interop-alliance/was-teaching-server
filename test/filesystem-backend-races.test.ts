@@ -15,6 +15,7 @@ import { Readable } from 'node:stream'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { ResourceNotFoundError } from '../src/errors.js'
+import { importArchive } from './helpers.js'
 
 const controller = 'did:key:z6MkRacesTestController'
 
@@ -284,11 +285,13 @@ describe('FileSystemBackend races', () => {
       await new Promise(resolve => setTimeout(resolve, 20))
 
       let importFinished = false
-      const importRun = backend
-        .importSpace({ spaceId, tarStream: archive })
-        .then(() => {
-          importFinished = true
-        })
+      const importRun = importArchive({
+        backend: backend,
+        spaceId,
+        tarStream: archive
+      }).then(() => {
+        importFinished = true
+      })
       await new Promise(resolve => setTimeout(resolve, 100))
       assert.equal(
         importFinished,

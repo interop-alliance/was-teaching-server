@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import { Readable } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
+import pino from 'pino'
 import { ZcapClient } from '@interop/ezcap'
 import { WasClient } from '@interop/was-client'
 import { decodeSecretKeySeed } from '@interop/bnid'
@@ -26,9 +27,15 @@ import {
   ENCRYPTED_COLLECTIONS_VERSION
 } from '../src/config.default.js'
 import { createApp } from '../src/server.js'
+import { prepareImportPlan } from '../src/lib/importPlan.js'
 import { createServerSigningKey } from '../src/lib/serverIdentity.js'
 import type { ServerSigningKey } from '../src/lib/serverIdentity.js'
-import type { IDID, IRootZcap, StorageBackend } from '../src/types.js'
+import type {
+  IDID,
+  IRootZcap,
+  ImportStats,
+  StorageBackend
+} from '../src/types.js'
 
 /**
  * Boots a test server on an OS-assigned ephemeral port and returns the
@@ -850,4 +857,39 @@ export async function verifyProvenanceOffline({
     )
   }
   return { did, statements }
+}
+
+/**
+ * Imports an archive straight into a backend the way the Import Space handler
+ * does: the plan is built and its provenance judged through the same shared
+ * call (`prepareImportPlan`), then handed to `importSpace`.
+ *
+ * @param options {object}
+ * @param options.backend {StorageBackend}
+ * @param options.spaceId {string}
+ * @param options.tarStream {Readable}
+ * @param [options.restoreSpaceMetadata] {boolean}
+ * @returns {Promise<ImportStats>}
+ */
+export async function importArchive({
+  backend,
+  spaceId,
+  tarStream,
+  restoreSpaceMetadata
+}: {
+  backend: StorageBackend
+  spaceId: string
+  tarStream: Readable
+  restoreSpaceMetadata?: boolean
+}): Promise<ImportStats> {
+  const { plan, provenance } = await prepareImportPlan({
+    tarStream,
+    logger: backend.logger ?? pino({ level: 'silent' })
+  })
+  return backend.importSpace({
+    spaceId,
+    plan,
+    provenance,
+    ...(restoreSpaceMetadata !== undefined && { restoreSpaceMetadata })
+  })
 }

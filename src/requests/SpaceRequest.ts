@@ -68,6 +68,7 @@ import {
 } from '../lib/paths.js'
 import { parsePageParams } from '../lib/pagination.js'
 import { loadExportAttestor } from '../lib/exportProvenance.js'
+import { prepareImportPlan } from '../lib/importPlan.js'
 import {
   ProblemError,
   InvalidImportError,
@@ -631,9 +632,16 @@ export class SpaceRequest {
     })
 
     try {
+      // Decode the archive, build its merge plan, and judge its provenance
+      // once, here, so the backend only persists what it is handed.
+      const { plan, provenance } = await prepareImportPlan({
+        tarStream: request.body,
+        logger: request.log
+      })
       const summary = await storage.importSpace({
         spaceId,
-        tarStream: request.body,
+        plan,
+        provenance,
         // A delegated chain reaches the import route by attenuation, and
         // rewriting the Space's own description is the controller's.
         restoreSpaceMetadata: rootInvocation

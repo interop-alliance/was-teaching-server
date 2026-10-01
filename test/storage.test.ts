@@ -13,6 +13,7 @@ import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { fileNameFor } from '@interop/space-archive'
 import { formatEtag } from '../src/lib/etag.js'
 import { PreconditionFailedError } from '../src/errors.js'
+import { importArchive } from './helpers.js'
 
 /**
  * Consumes a readable stream into a single string (test helper).
@@ -288,7 +289,8 @@ describe('Storage API', () => {
             controller: 'did:key:test-controller'
           }
         })
-        const stats = await backend.importSpace({
+        const stats = await importArchive({
+          backend: backend,
           spaceId: dst,
           tarStream: pack
         })
@@ -373,7 +375,7 @@ describe('Storage API', () => {
             controller: 'did:key:test-controller'
           }
         })
-        await backend.importSpace({ spaceId: dst, tarStream: pack })
+        await importArchive({ backend: backend, spaceId: dst, tarStream: pack })
 
         const after = await backend.getResourceMetadata({
           spaceId: dst,
@@ -463,7 +465,7 @@ describe('Storage API', () => {
             controller: 'did:key:test-controller'
           }
         })
-        await backend.importSpace({ spaceId: dst, tarStream: pack })
+        await importArchive({ backend: backend, spaceId: dst, tarStream: pack })
 
         // The tombstone survives: no content file, a `deleted` sidecar carried
         // verbatim, and it stays invisible to normal reads on the target.

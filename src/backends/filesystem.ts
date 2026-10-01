@@ -36,12 +36,11 @@ import {
   normalizeCapacityBytes
 } from '../config.default.js'
 import {
-  extractTarEntries,
-  buildVerifiedImportPlan,
   assertImportBodiesFit,
   metaSidecarFileId,
   restoredSpaceMetadata
 } from '../lib/importTar.js'
+import type { ImportPlan } from '../lib/importTar.js'
 import { isJsonContentType } from '@interop/storage-core'
 import { collectionPath, spacePath } from '../lib/paths.js'
 import {
@@ -1729,7 +1728,10 @@ export class FileSystemBackend implements StorageBackend {
    * resources that already exist are skipped, not overwritten).
    * @param options {object}
    * @param options.spaceId {string}
-   * @param options.tarStream {Readable}
+   * @param options.plan {ImportPlan}   the archive's merge plan, its
+   *   provenance already judged (`prepareImportPlan`)
+   * @param options.provenance {ImportStats['provenance']}   the verdict counts,
+   *   returned unchanged
    * @param [options.restoreSpaceMetadata] {boolean}   whether to apply the
    *   archived Space Metadata object's user-writable members over the
    *   destination's
@@ -1737,24 +1739,20 @@ export class FileSystemBackend implements StorageBackend {
    */
   async importSpace({
     spaceId,
-    tarStream,
+    plan: {
+      spaceMetadata: archivedSpaceMetadata,
+      spacePolicy,
+      collections,
+      revocations
+    },
+    provenance,
     restoreSpaceMetadata = false
   }: {
     spaceId: string
-    tarStream: Readable
+    plan: ImportPlan
+    provenance: ImportStats['provenance']
     restoreSpaceMetadata?: boolean
   }): Promise<ImportStats> {
-    const entries = await extractTarEntries(tarStream)
-    const {
-      plan: {
-        spaceMetadata: archivedSpaceMetadata,
-        spacePolicy,
-        collections,
-        revocations
-      },
-      provenance
-    } = await buildVerifiedImportPlan({ entries, logger: this.logger })
-
     // Shared pre-flight over every staged body (`assertImportBodiesFit`): the
     // per-upload 413 cap and the fail-closed encryption check, run before
     // anything is written so a rejected import leaves the Space untouched. It

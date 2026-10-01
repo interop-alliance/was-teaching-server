@@ -45,12 +45,10 @@ import {
 import { isJsonContentType } from '@interop/storage-core'
 import { applyMigrations } from './postgresSchema.js'
 import {
-  extractTarEntries,
-  buildVerifiedImportPlan,
   assertImportBodiesFit,
   restoredSpaceMetadata
 } from '../lib/importTar.js'
-import type { ImportPlanCollection } from '../lib/importTar.js'
+import type { ImportPlan, ImportPlanCollection } from '../lib/importTar.js'
 import { collectionPath, spacePath } from '../lib/paths.js'
 import {
   fileNameFor,
@@ -4254,7 +4252,10 @@ export class PostgresBackend implements StorageBackend {
    * untouched atomically.
    * @param options {object}
    * @param options.spaceId {string}
-   * @param options.tarStream {Readable}
+   * @param options.plan {ImportPlan}   the archive's merge plan, its
+   *   provenance already judged (`prepareImportPlan`)
+   * @param options.provenance {ImportStats['provenance']}   the verdict counts,
+   *   returned unchanged
    * @param [options.restoreSpaceMetadata] {boolean}   whether to apply the
    *   archived Space Metadata object's user-writable members over the
    *   destination's
@@ -4262,23 +4263,20 @@ export class PostgresBackend implements StorageBackend {
    */
   async importSpace({
     spaceId,
-    tarStream,
+    plan: {
+      spaceMetadata: archivedSpaceMetadata,
+      spacePolicy,
+      collections,
+      revocations
+    },
+    provenance,
     restoreSpaceMetadata = false
   }: {
     spaceId: string
-    tarStream: Readable
+    plan: ImportPlan
+    provenance: ImportStats['provenance']
     restoreSpaceMetadata?: boolean
   }): Promise<ImportStats> {
-    const entries = await extractTarEntries(tarStream)
-    const {
-      plan: {
-        spaceMetadata: archivedSpaceMetadata,
-        spacePolicy,
-        collections,
-        revocations
-      },
-      provenance
-    } = await buildVerifiedImportPlan({ entries, logger: this.logger })
     // Chunk entries (the `chunked-streams` feature): the plan carries each
     // chunk file (representation + optional version sidecar) with its decoded
     // fields; the `chunks` table stores a chunk as one row, so merge the two

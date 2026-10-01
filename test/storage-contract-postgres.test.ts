@@ -29,6 +29,7 @@ import {
   describeStorageBackendContract,
   type BackendHarness
 } from './storage-backend-contract.js'
+import { importArchive } from './helpers.js'
 
 const connectionString = process.env.WAS_TEST_DATABASE_URL
 
@@ -213,7 +214,8 @@ if (!connectionString) {
               controller: 'did:key:z6MkRoundTrip'
             }
           })
-          await pgTarget.backend.importSpace({
+          await importArchive({
+            backend: pgTarget.backend,
             spaceId,
             tarStream: await fsSource.backend.exportSpace({ spaceId })
           })
@@ -262,7 +264,8 @@ if (!connectionString) {
               controller: 'did:key:z6MkRoundTrip'
             }
           })
-          const stats = await fsTarget.backend.importSpace({
+          const stats = await importArchive({
+            backend: fsTarget.backend,
             spaceId,
             tarStream: await pgTarget.backend.exportSpace({ spaceId })
           })

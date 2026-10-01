@@ -40,6 +40,7 @@ import type {
 import type { EtagValidator, HeldValidators } from './lib/etag.js'
 import type { ServerSigningKey } from './lib/serverIdentity.js'
 import type { ExportAttestor } from './lib/exportProvenance.js'
+import type { ImportPlan } from './lib/importTar.js'
 import type {
   BlindedIndexQuery,
   BlindedIndexQueryPage
@@ -712,6 +713,11 @@ export interface StorageBackend {
    * per item; the archive's revocation records are restored under this
    * Space's scope on the same terms (already-stored records are skipped).
    *
+   * The backend persists what it is handed. `plan` is the archive's merge
+   * plan with its provenance already judged, and `provenance` the verdict
+   * counts, both built by `prepareImportPlan`; the counts are returned as the
+   * stats' `provenance` member unchanged.
+   *
    * The archived Space Metadata object's user-writable members are applied
    * only when `restoreSpaceMetadata` asks for it -- the Import Space handler
    * asks under an invocation of the Space's root capability and not under a
@@ -728,7 +734,8 @@ export interface StorageBackend {
    */
   importSpace(options: {
     spaceId: string
-    tarStream: Readable
+    plan: ImportPlan
+    provenance: ImportStats['provenance']
     restoreSpaceMetadata?: boolean
   }): Promise<ImportStats>
 

@@ -24,7 +24,7 @@ import {
   PayloadTooLargeError,
   ResourceNotFoundError
 } from '../src/errors.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import { importArchive, startTestServer, zcapClients } from './helpers.js'
 
 // 512 KiB cap; oversized payloads below exceed it outright (regardless of the
 // small baseline usage from provisioning the Space + Collection).
@@ -297,13 +297,15 @@ describe('Quota enforcement (backend)', () => {
         }
       })
       await seed(targetBackend)
-      await targetBackend.importSpace({
+      await importArchive({
+        backend: targetBackend,
         spaceId: importSpaceId,
         tarStream: await sourceBackend.exportSpace({ spaceId: importSpaceId })
       })
       // Re-import the same archive: every body is skipped, so the reservation
       // it took must come back rather than linger in the snapshot.
-      await targetBackend.importSpace({
+      await importArchive({
+        backend: targetBackend,
         spaceId: importSpaceId,
         tarStream: await sourceBackend.exportSpace({ spaceId: importSpaceId })
       })
@@ -366,7 +368,8 @@ describe('Quota enforcement (backend)', () => {
     })
 
     await assert.rejects(
-      small.importSpace({
+      importArchive({
+        backend: small,
         spaceId,
         tarStream: await source.exportSpace({ spaceId })
       }),

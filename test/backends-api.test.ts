@@ -13,6 +13,7 @@ import type { FastifyInstance } from 'fastify'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
+  importArchive,
   etagGeneration,
   responseOf,
   startTestServer,
@@ -383,7 +384,7 @@ describe('Space backend registration (/backends)', () => {
 
     const dst = await freshSpace('Export Target Space')
     const pack = await backend.exportSpace({ spaceId: src })
-    await backend.importSpace({ spaceId: dst, tarStream: pack })
+    await importArchive({ backend: backend, spaceId: dst, tarStream: pack })
 
     // The registration did not travel: the target has no registered backends,
     // so its GET /backends reports only the server default.

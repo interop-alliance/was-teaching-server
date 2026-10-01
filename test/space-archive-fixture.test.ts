@@ -56,7 +56,7 @@ import {
   SERVER_IDENTITY_COLLECTION_ID,
   SERVER_SPACE_ID
 } from '../src/lib/serverIdentity.js'
-import { verifyProvenanceOffline } from './helpers.js'
+import { importArchive, verifyProvenanceOffline } from './helpers.js'
 
 const SPACE_ID = 'zFixtureSpace'
 const COLLECTION_ID = 'notes'
@@ -309,7 +309,8 @@ describe('Space archive fixture (@interop/space-archive counterpart)', () => {
         }
       })
       await expect(
-        importBackend.importSpace({
+        importArchive({
+          backend: importBackend,
           spaceId: SPACE_ID,
           tarStream: Readable.from(unwrapped)
         })
