@@ -8,13 +8,15 @@
  * The community `createApp()` (server.ts) registers this plugin with defaults;
  * a hardened downstream composition registers the same plugin (with its own
  * backend and policy plugins around it) and inherits the identical wire
- * behavior. Wrapped with `fastify-plugin`, so the decorations and parsers land
- * on the root instance -- while each route group still creates its own
- * encapsulated context for its hooks.
+ * behavior. Its `ownsBackend` and `cors` options let such a composition keep
+ * the backend lifecycle and the CORS policy to itself. Wrapped with
+ * `fastify-plugin`, so the decorations and parsers land on the root instance
+ * -- while each route group still creates its own encapsulated context for
+ * its hooks.
  */
 import type { FastifyInstance } from 'fastify'
 import fp from 'fastify-plugin'
-import cors from '@fastify/cors'
+import cors, { type FastifyCorsOptions } from '@fastify/cors'
 import Multipart from '@fastify/multipart'
 
 import {
@@ -52,17 +54,37 @@ import type {
 export interface FastifyWasOptions {
   /**
    * This server's base URL; used to build and match ZCap invocationTarget URLs
-   * (host and port must match exactly). When provided, it must be an absolute
-   * `http:`/`https:` URL with no path, query, or fragment (validated at
-   * registration -- sub-path deployment is not supported).
+   * (host and port must match exactly). Required: it must be an absolute
+   * `http:`/`https:` URL with no userinfo, path, query, or fragment (validated
+   * at registration -- sub-path deployment is not supported).
    */
-  serverUrl?: string
+  serverUrl: string
   /**
    * Persistence backend to use; defaults to a filesystem backend rooted at
    * `dataDir` (the project `data/` directory when that is unset). Tests inject
    * their own (e.g. a FileSystemBackend over a temp dir).
    */
   backend?: StorageBackend
+  /**
+   * Whether the plugin manages the backend's lifecycle. When `true` (the
+   * default), it routes the backend's `logger` to `fastify.log`, awaits its
+   * `init()` during registration (e.g. Postgres migrations, the filesystem
+   * store stamp), and wires its `close()` to Fastify's `onClose`. When
+   * `false`, it does none of these, and the composition initializes, logs,
+   * and closes the backend itself. `false` requires an injected `backend`,
+   * since the composition can only run the lifecycle of a backend it holds a
+   * handle to; passing it without one is refused at registration.
+   */
+  ownsBackend?: boolean
+  /**
+   * The `@fastify/cors` registration. `false` registers no CORS plugin, so a
+   * composition can bring its own. An options object overrides `origin`
+   * and/or `methods`. `undefined` keeps the default: `origin: '*'`, the
+   * methods the WAS routes serve, the exposed headers browser clients need,
+   * and a cached preflight. WAS authorization is signature-based rather than
+   * cookie-based, so a wide-open origin is the protocol-appropriate default.
+   */
+  cors?: false | Pick<FastifyCorsOptions, 'origin' | 'methods'>
   /**
    * Filesystem root the default backend stores under (env `WAS_DATA_DIR`);
    * applied only to the default backend (an injected `backend` carries its
@@ -180,6 +202,8 @@ async function wasPlugin(
   const {
     serverUrl,
     backend,
+    ownsBackend = true,
+    cors: corsOptions,
     dataDir,
     storageLimitPerSpace,
     maxUploadBytes,
@@ -196,12 +220,11 @@ async function wasPlugin(
     adminDid
   } = options
 
-  // Fail fast on a malformed base URL: a serverUrl carrying a path, query, or
-  // fragment silently breaks every ZCap invocationTarget match and Location
-  // header (URL-joins drop the base path), so it is rejected at registration.
-  if (serverUrl !== undefined) {
-    assertValidServerUrl(serverUrl)
-  }
+  // Fail fast on a missing or malformed base URL: without one no ZCap
+  // invocationTarget can be built or matched, and one carrying a path, query,
+  // or fragment silently breaks every match and Location header (URL-joins
+  // drop the base path).
+  assertValidServerUrl(serverUrl)
 
   // An empty token would read as no gate at all, so it is refused rather than
   // silently leaving provisioning open.
@@ -215,10 +238,15 @@ async function wasPlugin(
     )
   }
 
-  fastify.decorate('serverUrl', serverUrl as string)
+  // A composition that runs the backend lifecycle itself needs the backend in
+  // hand; over the default one it would skip the store stamp check and the
+  // layout migrations `init()` runs, and serve an unchecked data dir.
+  if (!ownsBackend && backend === undefined) {
+    throw new Error('ownsBackend: false requires an injected backend option.')
+  }
+
+  fastify.decorate('serverUrl', serverUrl)
   fastify.decorate('discloseVersion', discloseVersion)
-  // Route the backend's diagnostics through the Fastify pino logger (the backend
-  // defaults to a silent logger until wired here).
   const storage =
     backend ??
     defaultBackend({
@@ -229,7 +257,11 @@ async function wasPlugin(
       maxCollectionsPerSpace,
       maxResourcesPerSpace
     })
-  storage.logger = fastify.log
+  // Route the backend's diagnostics through the Fastify pino logger (the backend
+  // defaults to a silent logger until wired here).
+  if (ownsBackend) {
+    storage.logger = fastify.log
+  }
   fastify.decorate('storage', storage)
 
   // The buffered-body limit, derived from the active backend's per-upload cap
@@ -247,13 +279,15 @@ async function wasPlugin(
   // Backend lifecycle: run the optional startup hook (e.g. Postgres connect +
   // migrations) during registration, before the server starts listening, and
   // wire the optional shutdown hook (pool drain) to Fastify's close.
-  if (storage.init) {
-    await storage.init()
-  }
-  if (storage.close) {
-    fastify.addHook('onClose', async () => {
-      await storage.close!()
-    })
+  if (ownsBackend) {
+    if (storage.init) {
+      await storage.init()
+    }
+    if (storage.close) {
+      fastify.addHook('onClose', async () => {
+        await storage.close!()
+      })
+    }
   }
 
   // The server's own identity. The `server` Space is provisioned (or checked)
@@ -269,7 +303,7 @@ async function wasPlugin(
       ? undefined
       : await createServerSigningKey({ seed: serverKeySeed })
   fastify.decorate('serverSigningKey', serverSigningKey)
-  if (serverSigningKey !== undefined && serverUrl !== undefined) {
+  if (serverSigningKey !== undefined) {
     const did = await resolveServerDid({
       storage,
       serverUrl,
@@ -312,19 +346,30 @@ async function wasPlugin(
   // Service Description"), so the hook sits on the root instance.
   addServiceLinkHook(fastify)
 
-  // Disable CORS. `exposedHeaders` is required for browser clients: without
-  // it, cross-origin JS cannot read `Location` (space/resource creation),
-  // `ETag` (metaVersion concurrency), `Link` (pagination, policy linksets), or
+  // Open CORS by default (`cors: false` leaves it to the composition).
+  // `exposedHeaders` is required for browser clients: without it,
+  // cross-origin JS cannot read `Location` (space/resource creation), `ETag`
+  // (metaVersion concurrency), `Link` (pagination, policy linksets), or
   // `Allow` -- which RFC 9110 makes the whole point of the `405` a `PUT` at a
   // container URL answers, since it names the methods the container does
   // accept. `maxAge` lets browsers cache the preflight answer instead of
-  // re-asking before nearly every signed request.
-  fastify.register(cors, {
-    origin: '*',
-    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    exposedHeaders: ['Location', 'ETag', 'Link', 'Allow'],
-    maxAge: CORS_PREFLIGHT_MAX_AGE
-  })
+  // re-asking before nearly every signed request. No WAS route serves
+  // `PATCH`, so it is not offered.
+  if (corsOptions !== false) {
+    fastify.register(cors, {
+      origin: corsOptions?.origin ?? '*',
+      methods: corsOptions?.methods ?? [
+        'GET',
+        'HEAD',
+        'POST',
+        'PUT',
+        'DELETE',
+        'OPTIONS'
+      ],
+      exposedHeaders: ['Location', 'ETag', 'Link', 'Allow'],
+      maxAge: CORS_PREFLIGHT_MAX_AGE
+    })
+  }
 
   // Multipart file uploading. The cap is `files: 2`, not `1`: a write MUST carry
   // exactly one file part, and `resolveResourceInput` enforces that by iterating

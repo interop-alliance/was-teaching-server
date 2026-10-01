@@ -29,7 +29,10 @@ describe('Canonicalization redirects', () => {
    * A fresh app over the suite's private data dir.
    */
   function testApp() {
-    return createApp({ backend: new FileSystemBackend({ dataDir }) })
+    return createApp({
+      serverUrl: 'http://localhost',
+      backend: new FileSystemBackend({ dataDir })
+    })
   }
 
   it('adds the trailing slash on GET /spaces (308)', async () => {

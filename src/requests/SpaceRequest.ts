@@ -564,19 +564,15 @@ export class SpaceRequest {
     // zCap checks out, continue
     // The archive carries this server's Service Description verbatim, so an
     // importer can read which specification versions and feature set the
-    // contents were written under. An app composed without a `serverUrl` has
-    // no absolute URL to build one from, and exports without it.
+    // contents were written under.
     const { serverUrl, discloseVersion } = request.server
-    const service =
-      serverUrl === undefined
-        ? undefined
-        : buildServiceDescription({ serverUrl, discloseVersion })
+    const service = buildServiceDescription({ serverUrl, discloseVersion })
     // A server with an identity signs one provenance statement per exported
     // object and embeds its DID log snapshot. One without says so once per
     // export, not once per object.
     const { serverSigningKey } = request.server
     const loaded =
-      serverSigningKey === undefined || serverUrl === undefined
+      serverSigningKey === undefined
         ? { reason: 'No export-signing key is configured.' }
         : await loadExportAttestor({
             storage,

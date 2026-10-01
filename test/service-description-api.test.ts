@@ -358,22 +358,3 @@ describe('Service description with the version withheld', () => {
     expect(body).not.toContain(packageJson.version)
   })
 })
-
-describe('Service description without a serverUrl', () => {
-  let app: FastifyInstance, dataDir: string
-
-  beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-service-'))
-    app = createApp({ backend: new FileSystemBackend({ dataDir }) })
-  })
-  afterAll(async () => {
-    await app.close()
-    await rm(dataDir, { recursive: true, force: true })
-  })
-
-  it('serves no document and no service link', async () => {
-    const response = await app.inject({ method: 'GET', url: '/service' })
-    expect(response.statusCode).toBe(404)
-    expect(response.headers.link).toBeUndefined()
-  })
-})

@@ -96,7 +96,10 @@ export async function governedEncryptionOf({
   return log
     ? deriveGovernedEncryption({
         body: log.body,
-        logUrl: `${serverUrl}${collectionLogPath({ spaceId, collectionId })}`
+        logUrl: new URL(
+          collectionLogPath({ spaceId, collectionId }),
+          serverUrl
+        ).toString()
       })
     : undefined
 }

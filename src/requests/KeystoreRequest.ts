@@ -65,8 +65,8 @@ interface KeystoreConfigBody {
  * @param options.requestName {string}   request name used in error titles
  * @param [options.isUpdate] {boolean}   validate the update shape (requires
  *   `id`, allows any non-negative `sequence`)
- * @param [options.serverUrl] {string}   this server's base URL; required by
- *   the update shape (the did:webvh acceptance is self-hosted-only)
+ * @param options.serverUrl {string}   this server's base URL (the update
+ *   shape's did:webvh acceptance is self-hosted-only)
  * @returns {KeystoreConfigBody}   the body, narrowed
  */
 function assertKeystoreConfigBody({
@@ -78,7 +78,7 @@ function assertKeystoreConfigBody({
   body: unknown
   requestName: string
   isUpdate?: boolean
-  serverUrl?: string
+  serverUrl: string
 }): KeystoreConfigBody {
   const value = assertJsonObjectBody({
     body,
@@ -95,7 +95,7 @@ function assertKeystoreConfigBody({
     pointerPrefix: '#'
   })
   const config = value as Partial<KeystoreConfigBody>
-  if (isUpdate && serverUrl) {
+  if (isUpdate) {
     assertValidSpaceController(config.controller, { serverUrl, requestName })
   } else {
     assertValidController(config.controller, { requestName })
@@ -161,7 +161,7 @@ export class KeystoreRequest {
     const { body } = request
     const { serverUrl, storage } = request.server
 
-    assertKeystoreConfigBody({ body, requestName })
+    assertKeystoreConfigBody({ body, requestName, serverUrl })
 
     // The invocation must be *authorized by* the body's controller (see
     // `verifyBodyControllerConsent`). Skipped when the provisioning policy

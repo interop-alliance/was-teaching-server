@@ -4208,3 +4208,23 @@ The wire shape (parameter name, item member) is the maintainer's call.
 Maintainer decision (2026-10-01): no opt-in parameter. List Spaces always lists
 every Space the requester is authorized for, auxiliary Spaces included, and
 every item always carries `type`.
+
+### WAS-146: Startup and composition hardening in `plugin.ts` and `server.ts`
+
+- status: done
+- done: 2026-10-01
+- priority: low
+- labels: library-surface, config
+- discovered-from: whole-codebase review (2026-09-17)
+- acceptance:
+  - [x] `createApp` / `fastifyWas` refuse `serverUrl: undefined` at registration
+        (the documented library example passes `process.env.SERVER_URL`
+        unguarded); `assertValidServerUrl` rejects userinfo
+  - [x] The plugin sets `logger`, calls `init()` and `close()` only on a backend
+        it built itself, or takes an explicit `ownsBackend` option
+  - [x] CORS is an option (origin, methods without `PATCH`), or the docs state
+        that a hardened composition inherits `origin: '*'` and the `'*'` parser
+        on its own routes
+  - [x] `src/requests/collectionContext.ts` builds the log URL with `new URL`,
+        so a trailing-slash `SERVER_URL` does not yield `//space/...` in
+        `encryption.history.resource`; `exchanges.ts` likewise

@@ -479,10 +479,27 @@ describe('fastifyWas serverUrl validation', () => {
     await fastify.close()
   })
 
-  it('still allows omitting serverUrl (test compositions)', async () => {
-    const fastify = createApp({ backend: new FileSystemBackend({ dataDir }) })
-    await fastify.ready()
+  it('refuses a missing serverUrl at registration', async () => {
+    const fastify = createApp({
+      backend: new FileSystemBackend({ dataDir }),
+      // A library composition passing an unset env var, unguarded.
+      serverUrl: undefined as unknown as string
+    })
+    await assert.rejects(async () => {
+      await fastify.ready()
+    }, /serverUrl .* is required/)
     await fastify.close()
+  })
+
+  it('rejects a serverUrl carrying userinfo', () => {
+    assert.throws(
+      () => assertValidServerUrl('https://user:secret@example.com'),
+      /must not include userinfo/
+    )
+    assert.throws(
+      () => assertValidServerUrl('https://user@example.com'),
+      /must not include userinfo/
+    )
   })
 
   it('exposes assertValidServerUrl for downstream compositions', () => {
@@ -496,7 +513,10 @@ describe('fastifyWas serverUrl validation', () => {
 
 describe('createApp logger option', () => {
   it('defaults to an active pino logger, shared with the backend', async () => {
-    const fastify = createApp({ backend: new FileSystemBackend({ dataDir }) })
+    const fastify = createApp({
+      serverUrl: 'http://localhost',
+      backend: new FileSystemBackend({ dataDir })
+    })
     await fastify.ready()
     assert.strictEqual(fastify.log.level, 'info')
     assert.strictEqual(fastify.storage.logger, fastify.log)
@@ -505,6 +525,7 @@ describe('createApp logger option', () => {
 
   it('logger: false silences Fastify and the backend hand-off', async () => {
     const fastify = createApp({
+      serverUrl: 'http://localhost',
       backend: new FileSystemBackend({ dataDir }),
       logger: false
     })
@@ -519,6 +540,7 @@ describe('createApp logger option', () => {
 
   it('accepts a pino options object', async () => {
     const fastify = createApp({
+      serverUrl: 'http://localhost',
       backend: new FileSystemBackend({ dataDir }),
       logger: { level: 'error' }
     })

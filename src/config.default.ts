@@ -569,15 +569,25 @@ export function loadConfigFromEnv(
 
 /**
  * Validates a server base URL (the `serverUrl` option / `SERVER_URL` env
- * value): it must be an absolute `http:`/`https:` URL with no path, query, or
- * fragment. ZCap `invocationTarget` URLs and `Location` headers are built by
- * resolving absolute paths against this base (`new URL(path, serverUrl)`),
- * which silently drops any base path -- so a sub-path deployment would break
- * every delegated invocation. Rejected at startup instead (fail-fast).
- * @param serverUrl {string}   the candidate base URL
- * @returns {void}   throws on an invalid value
+ * value): it must be present, and an absolute `http:`/`https:` URL with no
+ * userinfo, path, query, or fragment. ZCap `invocationTarget` URLs and
+ * `Location` headers are built by resolving absolute paths against this base
+ * (`new URL(path, serverUrl)`), which silently drops any base path -- so a
+ * sub-path deployment would break every delegated invocation. Rejected at
+ * startup instead (fail-fast).
+ * @param serverUrl {unknown}   the candidate base URL
+ * @returns {asserts serverUrl is string}   throws on an invalid value
  */
-export function assertValidServerUrl(serverUrl: string): void {
+export function assertValidServerUrl(
+  serverUrl: unknown
+): asserts serverUrl is string {
+  // A composition passing an unset env var through unguarded lands here.
+  if (typeof serverUrl !== 'string') {
+    throw new Error(
+      'serverUrl (env SERVER_URL) is required: the server base URL used to ' +
+        "build and match ZCap invocationTarget URLs (e.g. 'http://localhost:3002')."
+    )
+  }
   let url: URL
   try {
     url = new URL(serverUrl)
@@ -589,6 +599,14 @@ export function assertValidServerUrl(serverUrl: string): void {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error(
       `serverUrl (env SERVER_URL) must use http: or https:; got "${serverUrl}".`
+    )
+  }
+  // A `user:pass@` component would be copied into every invocationTarget and
+  // URL the server builds, putting a credential on the wire.
+  if (url.username !== '' || url.password !== '') {
+    throw new Error(
+      `serverUrl (env SERVER_URL) must not include userinfo (user:pass@); ` +
+        `got "${url.protocol}//${url.host}".`
     )
   }
   if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {

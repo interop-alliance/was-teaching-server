@@ -121,7 +121,24 @@
     rows (chunks and auxiliary Spaces), the single-instance assumption behind
     the metadata and policy cache TTLs, and `allowTargetQuery`.
 
+- `fastifyWas` / `createApp` options `ownsBackend` and `cors`. With
+  `ownsBackend: false` the plugin leaves the backend's `logger`, `init()` and
+  `close()` to the composition; it requires an injected `backend`. `cors: false`
+  skips `@fastify/cors`, and a `cors` object overrides `origin` and/or
+  `methods`; a member set to `undefined` keeps the default.
+
 ### Changed
+
+- `serverUrl` is a required `fastifyWas` / `createApp` option, refused at
+  registration when missing. `assertValidServerUrl` also rejects a URL carrying
+  userinfo (`user:pass@`). The code paths for an app with no `serverUrl` are
+  gone: `/service`, the `service` link and linkset entry, and an export's
+  `service.json` are always present.
+
+- The default CORS registration no longer lists `PATCH`, which no route serves.
+
+- A trailing-slash `serverUrl` no longer yields a doubled slash in the governed
+  log URL (`encryption.history.resource`) or in a minted exchange URL.
 
 - List Spaces lists auxiliary Spaces (typed `AuxiliarySpace`) like any other
   Space, and `totalItems` counts them. They count toward

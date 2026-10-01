@@ -51,7 +51,10 @@ afterAll(async () => {
  * A fresh app over the suite's private data dir.
  */
 function testApp() {
-  return createApp({ backend: new FileSystemBackend({ dataDir }) })
+  return createApp({
+    serverUrl: 'http://localhost',
+    backend: new FileSystemBackend({ dataDir })
+  })
 }
 
 describe('CORS proxy API', () => {
@@ -712,7 +715,10 @@ describe('CORS proxy relayed headers and cache directives', () => {
       expect(response.headers['content-encoding']).toBeUndefined()
       expect(response.headers['transfer-encoding']).toBeUndefined()
       expect(response.headers['set-cookie']).toBeUndefined()
-      expect(response.headers.link).toBeUndefined()
+      // Only the server's own `service` link remains; the upstream's is dropped.
+      expect(response.headers.link).toBe(
+        '<http://localhost/service>; rel="service"'
+      )
       expect(response.headers.date).not.toBe('Mon, 01 Jan 2024 00:00:00 GMT')
       expect(response.headers['content-length']).toBe('11')
     }

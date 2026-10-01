@@ -154,7 +154,10 @@ export async function initExchangeRoutes(
     serverUrl: string
     exchangeId: string
   }): string {
-    return `${serverUrl}/workflows/ephemeral/exchanges/${exchangeId}`
+    return new URL(
+      `/workflows/ephemeral/exchanges/${exchangeId}`,
+      serverUrl
+    ).toString()
   }
 
   app.post<{ Body: { request?: unknown } | null }>(

@@ -173,19 +173,23 @@ export function buildServiceDescription({
  * redirects, and CORS preflights alike. The hook appends to a `Link` header a
  * handler already set rather than replacing it. It must be called on the root
  * instance (or inside a `fastify-plugin`-wrapped plugin) so the hook reaches
- * every route and the not-found handler. An app composed without a
- * `serverUrl` has no absolute URL to link to, so it sends no link.
+ * every route and the not-found handler.
  * @param fastify {FastifyInstance}
  * @returns {void}
  */
 export function addServiceLinkHook(fastify: FastifyInstance): void {
+  // The link is a function of `serverUrl` alone, so it is rebuilt only when
+  // that changes (the test helpers reassign it after `listen()`).
+  let linkFor: string | undefined
+  let serviceLink = ''
   fastify.addHook('onSend', async (request, reply, payload) => {
-    if (request.server.serverUrl === undefined) {
-      return payload
+    const { serverUrl } = request.server
+    if (linkFor !== serverUrl) {
+      linkFor = serverUrl
+      serviceLink =
+        `<${serviceDescriptionUrl(serverUrl)}>; ` +
+        `rel="${SERVICE_LINK_RELATION}"`
     }
-    const serviceLink =
-      `<${serviceDescriptionUrl(request.server.serverUrl)}>; ` +
-      `rel="${SERVICE_LINK_RELATION}"`
     const existing = reply.getHeader('link')
     if (existing === undefined) {
       reply.header('link', serviceLink)
@@ -202,8 +206,7 @@ export function addServiceLinkHook(fastify: FastifyInstance): void {
  * serialized document and its `ETag` are computed once per `serverUrl` and
  * server DID, since the document changes with nothing else; the DID is read
  * per request through the cached resolver, because the admin writes the
- * server's history log after boot. An app composed without a `serverUrl`
- * answers 404, like an unmatched route.
+ * server's history log after boot.
  * @param fastify {FastifyInstance}
  * @param options {object}
  * @param options.discloseVersion {boolean}   include `instance.version`
@@ -221,11 +224,6 @@ export async function initServiceDescriptionRoutes(
     serviceDescriptionPath(),
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { serverUrl, serverSigningKey, storage } = request.server
-      // The document's `url` is required and absolute, so an app composed
-      // without a `serverUrl` has no document to serve.
-      if (serverUrl === undefined) {
-        return reply.callNotFound()
-      }
       const did =
         serverSigningKey === undefined
           ? undefined

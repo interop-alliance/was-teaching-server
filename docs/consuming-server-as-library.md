@@ -90,21 +90,23 @@ Two things to get right:
 
 ## Plugin options (`FastifyWasOptions`)
 
-| Option                    | Meaning                                                                                                                                                                                                                         |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `serverUrl`               | Base URL used to build and match zcap `invocationTarget`s (exact-match, see above). Validated at registration: must be an absolute `http:`/`https:` URL with no path, query, or fragment (sub-path deployment is not supported) |
-| `backend`                 | The `StorageBackend` to use; defaults to `defaultBackend()` (see the caveat above)                                                                                                                                              |
-| `dataDir`                 | Filesystem root the default backend stores under; applied only to the default backend (an injected `backend` carries its own root). `undefined` uses the project `data/` directory                                              |
-| `storageLimitPerSpace`    | Per-Space byte quota, applied only to the default backend (an injected backend carries its own `capacityBytes`)                                                                                                                 |
-| `maxUploadBytes`          | Per-upload byte cap, likewise only for the default backend; also bounds the multipart buffer. Default-on: `undefined` applies the 64 MiB default; `Infinity` disables the cap                                                   |
-| `maxSpacesPerController`  | Max Spaces one controller may create (default-on count quota, default 100), only for the default backend; `Infinity` disables the cap                                                                                           |
-| `maxCollectionsPerSpace`  | Max Collections per Space (default-on count quota, default 100), only for the default backend; `Infinity` disables the cap                                                                                                      |
-| `maxResourcesPerSpace`    | Max live Resources per Space across all Collections (default-on count quota, default 10000), only for the default backend; `Infinity` disables the cap                                                                          |
-| `providers`               | Provider-adapter registry for external (BYOS) Collection backends; defaults to empty                                                                                                                                            |
-| `enabledBackendProviders` | Allowlist of registrable backend `provider` names; `undefined` = permissive                                                                                                                                                     |
-| `kmsRecordKek`            | At-rest WebKMS key-record encryption registry (multi-KEK, for rotation); `undefined` = key records written plaintext (the teaching default)                                                                                     |
-| `authorizeProvisioning`   | Gate callback for `POST /spaces/` and `POST /kms/keystores`; returns `'verify'` / `'grant'` / `'deny'` (or throws a `ProblemError`). `undefined` = allow (the teaching default)                                                 |
-| `onboardingToken`         | Shared-secret gate for the same two endpoints: when set, they require `Authorization: Bearer <token>` (which substitutes for zcap verification). Mutually exclusive with `authorizeProvisioning`                                |
+| Option                    | Meaning                                                                                                                                                                                                                                                                                                    |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `serverUrl`               | Required. Base URL used to build and match zcap `invocationTarget`s (exact-match, see above). Validated at registration: a missing value is refused, and it must be an absolute `http:`/`https:` URL with no userinfo, path, query, or fragment (sub-path deployment is not supported)                     |
+| `backend`                 | The `StorageBackend` to use; defaults to `defaultBackend()` (see the caveat above)                                                                                                                                                                                                                         |
+| `ownsBackend`             | Whether the plugin manages the backend's lifecycle (default `true`): it sets the backend's `logger` to `fastify.log`, awaits `init()` at registration, and calls `close()` on Fastify's `onClose`. `false` does none of these, for a composition that runs them itself, and requires an injected `backend` |
+| `cors`                    | The `@fastify/cors` registration. `false` registers none, so the composition can bring its own. An object overrides `origin` and/or `methods`. Default: `origin: '*'`, the methods the WAS routes serve, and the exposed headers browser clients need                                                      |
+| `dataDir`                 | Filesystem root the default backend stores under; applied only to the default backend (an injected `backend` carries its own root). `undefined` uses the project `data/` directory                                                                                                                         |
+| `storageLimitPerSpace`    | Per-Space byte quota, applied only to the default backend (an injected backend carries its own `capacityBytes`)                                                                                                                                                                                            |
+| `maxUploadBytes`          | Per-upload byte cap, likewise only for the default backend; also bounds the multipart buffer. Default-on: `undefined` applies the 64 MiB default; `Infinity` disables the cap                                                                                                                              |
+| `maxSpacesPerController`  | Max Spaces one controller may create (default-on count quota, default 100), only for the default backend; `Infinity` disables the cap                                                                                                                                                                      |
+| `maxCollectionsPerSpace`  | Max Collections per Space (default-on count quota, default 100), only for the default backend; `Infinity` disables the cap                                                                                                                                                                                 |
+| `maxResourcesPerSpace`    | Max live Resources per Space across all Collections (default-on count quota, default 10000), only for the default backend; `Infinity` disables the cap                                                                                                                                                     |
+| `providers`               | Provider-adapter registry for external (BYOS) Collection backends; defaults to empty                                                                                                                                                                                                                       |
+| `enabledBackendProviders` | Allowlist of registrable backend `provider` names; `undefined` = permissive                                                                                                                                                                                                                                |
+| `kmsRecordKek`            | At-rest WebKMS key-record encryption registry (multi-KEK, for rotation); `undefined` = key records written plaintext (the teaching default)                                                                                                                                                                |
+| `authorizeProvisioning`   | Gate callback for `POST /spaces/` and `POST /kms/keystores`; returns `'verify'` / `'grant'` / `'deny'` (or throws a `ProblemError`). `undefined` = allow (the teaching default)                                                                                                                            |
+| `onboardingToken`         | Shared-secret gate for the same two endpoints: when set, they require `Authorization: Bearer <token>` (which substitutes for zcap verification). Mutually exclusive with `authorizeProvisioning`                                                                                                           |
 
 ## What the plugin does (and does not) register
 
@@ -112,10 +114,12 @@ Two things to get right:
 **root** Fastify instance:
 
 - decorations: `serverUrl`, `storage` (the active backend, with its logger wired
-  to `fastify.log`), `backendProviders`, `enabledBackendProviders`;
-- `@fastify/cors` (`origin: '*'`, all methods -- WAS auth is signature-based,
-  not cookie-based, so wide-open CORS is the protocol-appropriate setting; do
-  **not** register `@fastify/cors` again yourself);
+  to `fastify.log` unless `ownsBackend: false`), `backendProviders`,
+  `enabledBackendProviders`;
+- `@fastify/cors`, unless `cors: false` (by default `origin: '*'` and every
+  method a WAS route serves -- WAS auth is signature-based, not cookie-based, so
+  wide-open CORS is the protocol-appropriate setting; do not register
+  `@fastify/cors` again yourself unless you pass `cors: false`);
 - `@fastify/multipart` (its `fileSize` limit follows the backend's
   `maxUploadBytes`);
 - content-type parsers: `application/*+json` parsed as JSON, and a catch-all
@@ -139,7 +143,11 @@ same options and passes them through to the plugin:
 ```ts
 import { createApp } from 'was-teaching-server'
 
-const fastify = createApp({ serverUrl: process.env.SERVER_URL })
+const serverUrl = process.env.SERVER_URL
+if (serverUrl === undefined) {
+  throw new Error('SERVER_URL is required.')
+}
+const fastify = createApp({ serverUrl })
 await fastify.listen({ port: 3002, host: '0.0.0.0' })
 ```
 
@@ -156,15 +164,31 @@ import helmet from '@fastify/helmet'
 import rateLimit from '@fastify/rate-limit'
 import { fastifyWas, PostgresBackend } from 'was-teaching-server'
 
+const serverUrl = process.env.SERVER_URL
+if (serverUrl === undefined) {
+  throw new Error('SERVER_URL is required.')
+}
+
 const fastify = Fastify({ logger: true })
+
+// The composition owns its backend: it runs the migrations and drains the
+// pool itself, so the plugin is told not to.
+const backend = new PostgresBackend({
+  connectionString: process.env.DATABASE_URL
+})
+await backend.init()
+fastify.addHook('onClose', async () => {
+  await backend.close()
+})
 
 fastify.register(helmet)
 fastify.register(rateLimit, { max: 100, timeWindow: '1 minute' })
 // ... metrics, an onboarding/registration gate, an admin route group ...
 
 fastify.register(fastifyWas, {
-  serverUrl: process.env.SERVER_URL,
-  backend: new PostgresBackend({ connectionString: process.env.DATABASE_URL })
+  serverUrl,
+  backend,
+  ownsBackend: false
 })
 
 fastify.get('/health', async (request, reply) => {
@@ -173,6 +197,22 @@ fastify.get('/health', async (request, reply) => {
 
 await fastify.listen({ port: 3002, host: '0.0.0.0' })
 ```
+
+Two plugin defaults reach the composition's own routes, because `fastifyWas`
+registers them on the root instance:
+
+- `@fastify/cors` with `origin: '*'`. Every route the composition adds answers
+  any origin too. To set its own CORS policy, a hardened composition passes
+  `cors: false` and registers `@fastify/cors` itself, or passes a `cors` object
+  with its own `origin`.
+- The `'*'` catch-all content-type parser, which hands any body with an
+  unmatched media type to the handler as a raw stream instead of answering 415.
+  A composition route that expects only JSON checks the content type itself, or
+  sits in an encapsulated context that calls `removeAllContentTypeParsers()` and
+  adds back the parsers it accepts.
+
+With `ownsBackend: false` the plugin does not set the backend's `logger`, so the
+composition wires its own if it wants backend diagnostics in its log.
 
 ## Implementing a custom backend
 
@@ -193,7 +233,8 @@ invariants are documented on the interface itself; the load-bearing ones:
   the spec's problem-details responses;
 - expose a `logger` property typed as Fastify's `FastifyBaseLogger`, defaulting
   to a silent logger -- the plugin overwrites it with `fastify.log` at
-  registration, so backend diagnostics flow to the server log.
+  registration (unless `ownsBackend: false`), so backend diagnostics flow to the
+  server log.
 
 ```ts
 import type { StorageBackend } from 'was-teaching-server'

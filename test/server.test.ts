@@ -25,7 +25,10 @@ describe('Server', () => {
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    fastify = createApp({ backend: new FileSystemBackend({ dataDir }) })
+    fastify = createApp({
+      serverUrl: 'http://localhost',
+      backend: new FileSystemBackend({ dataDir })
+    })
     await fastify.listen()
     serverUrl =
       'http://localhost:' + (fastify.server.address() as AddressInfo).port

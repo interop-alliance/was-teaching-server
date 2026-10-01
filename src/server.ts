@@ -39,7 +39,7 @@ export function createApp({
   ...options
 }: FastifyWasOptions & {
   logger?: FastifyServerOptions['logger']
-} = {}): FastifyInstance {
+}): FastifyInstance {
   const fastify = Fastify({ logger })
   // One switch withholds the version from all three places that publish it:
   // the welcome page, `/health`, and the service description (in the plugin).

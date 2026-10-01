@@ -126,11 +126,11 @@ export function policyGrants({
  *   advertised unconditionally (both endpoints always exist).
  * - `service` (`SERVICE_LINK_RELATION`) -- the server-wide service
  *   description, advertised on both, by absolute URL since it is not a
- *   sub-resource of the container. Omitted when the app has no `serverUrl`.
+ *   sub-resource of the container.
  *
  * @param options {object}
  * @param options.storage {StorageBackend}   the request's storage backend
- * @param [options.serverUrl] {string}   the server base URL
+ * @param options.serverUrl {string}   the server base URL
  * @param options.spaceId {string}
  * @param [options.collectionId] {string}
  * @returns {Promise<object>} a `{ linkset: [...] }` object
@@ -142,7 +142,7 @@ export async function buildLinkset({
   collectionId
 }: {
   storage: StorageBackend
-  serverUrl?: string
+  serverUrl: string
   spaceId: string
   collectionId?: string
 }): Promise<{ linkset: Array<Record<string, unknown>> }> {
@@ -179,10 +179,8 @@ export async function buildLinkset({
       { href: quotasPath({ spaceId }), type: 'application/json' }
     ]
   }
-  if (serverUrl !== undefined) {
-    entry[SERVICE_LINK_RELATION] = [
-      { href: serviceDescriptionUrl(serverUrl), type: 'application/json' }
-    ]
-  }
+  entry[SERVICE_LINK_RELATION] = [
+    { href: serviceDescriptionUrl(serverUrl), type: 'application/json' }
+  ]
   return { linkset: [entry] }
 }
