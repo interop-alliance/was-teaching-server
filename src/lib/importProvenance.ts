@@ -1,7 +1,8 @@
 /**
  * Import provenance: judges an archive's `provenance.jsonl` statements against
  * its `did.jsonl` snapshot and its archived bytes, and drops each `createdBy`
- * the archive did not earn. The verifying half of `exportProvenance.ts`.
+ * the archive did not earn. The verifying half of `exportProvenance.ts`; the
+ * statement contract the two share is in `provenanceStatement.ts`.
  *
  * The signer is the DID the snapshot's head entry names. The snapshot must
  * verify offline as that DID's history log (SCID pinning plus the full hash
@@ -40,15 +41,17 @@ import {
 import type { ArchiveFile } from '@interop/space-archive'
 import type { FastifyBaseLogger } from 'fastify'
 import type { ImportStats } from '../types.js'
+import type { ImportPlan, TarEntry } from './importTar.js'
+import { isPlainObject } from './isPlainObject.js'
+import { collectionMetaPath, resourcePath, spaceMetaPath } from './paths.js'
 import {
+  CLAIM_MEMBERS,
   chunkedDigest,
   fileDigest,
   serverFieldsOf,
   STORAGE_ATTESTATION_TYPE
-} from './exportProvenance.js'
-import type { ImportPlan, TarEntry } from './importTar.js'
-import { isPlainObject } from './isPlainObject.js'
-import { collectionMetaPath, resourcePath, spaceMetaPath } from './paths.js'
+} from './provenanceStatement.js'
+import type { Claims } from './provenanceStatement.js'
 import {
   SERVER_IDENTITY_COLLECTION_ID,
   SERVER_SPACE_ID,
@@ -66,25 +69,6 @@ type Verdict = keyof ImportStats['provenance']
  * One parsed `provenance.jsonl` line: a `StorageAttestation` with a URL `id`.
  */
 type Statement = Record<string, unknown> & { id: string }
-
-/**
- * The members a statement attests, as read off the archived object and keyed
- * by the statement's own member names: a Metadata object's version is its
- * `metaVersion`, a Resource's its `version`.
- */
-type Claims = {
-  createdBy?: string
-  createdAt?: string
-  version?: number
-  metaVersion?: number
-}
-
-const CLAIM_MEMBERS = [
-  'createdBy',
-  'createdAt',
-  'version',
-  'metaVersion'
-] as const satisfies readonly (keyof Claims)[]
 
 /**
  * The verifying suite is stateless, so one instance serves every statement.

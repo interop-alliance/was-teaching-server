@@ -4142,3 +4142,34 @@ plan-building into the handler removes the duplicated extraction code from both
 backends and makes the verification step impossible to leave out. WAS-126 adds
 further validation to the same pre-write path and lands more simply once that
 path runs in one place.
+
+### WAS-170: Move the provenance statement contract out of `exportProvenance.ts` into a neutral module
+
+- status: done
+- done: 2026-10-01
+- priority: low
+- labels: cleanup, provenance, export, import
+- touches:
+  - `src/lib/exportProvenance.ts`, `src/lib/importProvenance.ts`, and the new
+    module (`src/lib/provenanceStatement.ts` or similar)
+- acceptance:
+  - [x] `STORAGE_ATTESTATION_TYPE`, `serverFieldsOf`, `fileDigest` and
+        `chunkedDigest` live in one module that neither provenance module owns,
+        together with the `Claims` members a statement attests
+  - [x] `importProvenance.ts` imports nothing from `exportProvenance.ts`, and
+        `exportProvenance.ts` nothing from `importProvenance.ts`
+  - [x] ARCHITECTURE.md's two provenance entries point at the shared module for
+        the digest and server-member rules
+  - [x] The export, import and provenance tests stay green on both backends
+
+Context: import verification needs the same digest form, the same chunked
+composite digest, and the same reading of the server-managed members as export
+signing, so those four pieces were exported from `exportProvenance.ts` and
+imported by `importProvenance.ts`. Export and import are siblings: one signs
+statements, the other judges them, and the contract between them (what a
+statement names and how its `digest` is computed) belongs to neither. Keeping it
+in the signing module reads as import depending on export's internals, and a
+reader checking that the two sides agree has to find the shared pieces among the
+signing code. Neither module imports the other today, so there is no cycle to
+break; the move is for ownership and legibility only, which is why it is low
+priority.

@@ -129,6 +129,10 @@
   `importSpace` contract takes that plan and the provenance counts in place of a
   tar stream, and only persists what it is handed.
 
+- The provenance statement contract (the statement type, the attested members,
+  the server-managed member reading, and the file and chunked digests) moved
+  into its own module, shared by export signing and import verification.
+
 ## 0.39.0 - 2026-09-28
 
 ### Added

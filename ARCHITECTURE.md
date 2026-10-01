@@ -329,6 +329,15 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   with a `warn` line, logged once per log version rather than per request, and
   the server signs nothing. The log is admin-custodied state: it dies with a
   data wipe, and the admin's copy is what restores it.
+- **`src/lib/provenanceStatement.ts`** -- the provenance statement contract,
+  shared by the two halves below and owned by neither. It holds the statement
+  `type` (`STORAGE_ATTESTATION_TYPE`), the members a statement attests
+  (`Claims`, `CLAIM_MEMBERS`), and the rules for computing them from an archived
+  object. `serverFieldsOf` reads the server-managed members off an archived
+  Metadata file or `.meta.<id>.json` sidecar. `fileDigest` digests a file's
+  bytes in the `Digest` header's `mh=` form. `chunkedDigest` computes a chunked
+  Resource's composite digest. Export signs what these compute, and import
+  recomputes the same values to judge a statement.
 - **`src/lib/exportProvenance.ts`** -- export provenance, the signing half of
   the server identity. `loadExportAttestor` runs once per Export Space request.
   It takes the server DID from `resolveServerDid`, reads the log's bytes as the
@@ -348,10 +357,11 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   member the record lacks is left out. `digest` is the `Digest` header's `mh=`
   form over the representation's archived bytes. A chunked Resource's `digest`
   is the same form over the JCS serialization of its chunk digests in index
-  order, so its parent representation's bytes are not covered. A Metadata
-  statement carries `metaVersion` (the file's embedded `_version`) in place of
-  `version` and `digest`. `didLogVersionId` is the snapshot head's `versionId`,
-  since `proof.created` is not trustworthy. Each statement carries one
+  order, so its parent representation's bytes are not covered. These reading and
+  digest rules live in `lib/provenanceStatement.ts`. A Metadata statement
+  carries `metaVersion` (the file's embedded `_version`) in place of `version`
+  and `digest`. `didLogVersionId` is the snapshot head's `versionId`, since
+  `proof.created` is not trustworthy. Each statement carries one
   `eddsa-jcs-2022` proof, `proofPurpose` `assertionMethod`, made straight from
   the suite rather than through `jsigs.sign`, which would add a JSON-LD
   `@context` the statement does not carry. The proof has no `created`, and
@@ -382,22 +392,23 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   method under `assertionMethod` alone. Then the `eddsa-jcs-2022` proof is
   verified. Last, the statement's claims are compared with the archived object:
   `createdBy`, `createdAt`, `version` or `metaVersion`, and a Resource's
-  `digest` (the composite chunk digest for a chunked Resource, through the same
-  `chunkedDigest` export uses). Each object the archive carries an attestable
-  entry for gets one verdict, whether or not the destination already holds it:
-  `verified`, `unattested` (no statement, or no `provenance.jsonl`),
-  `proofInvalid`, `contentMismatch`, or `unknownSigner` (no `did.jsonl`, a log
-  that does not verify, a method outside the snapshot's DID, a version the log
-  lacks, or a method not under `assertionMethod` alone there). The counts are
-  the `provenance` member of the returned `ImportStats`. Outside `verified` the
-  object is still imported, with its `createdBy` removed. A tombstone carries no
-  statement and is not counted, and its sidecar loses `createdBy` too, since a
-  re-create over a tombstone keeps the tombstone's creator. The Space Metadata
-  object's verdict is counted only, since an import never restores its
-  `createdBy`. A `proofInvalid` and a `contentMismatch` are logged at `warn`
-  with different messages, so damaged bytes are not read as a bad signature.
-  `createdAt` and the version members keep their import behavior whatever the
-  verdict.
+  `digest` (the composite chunk digest for a chunked Resource). The archived
+  object's members and digests are computed by the same
+  `lib/provenanceStatement.ts` functions export signs with. Each object the
+  archive carries an attestable entry for gets one verdict, whether or not the
+  destination already holds it: `verified`, `unattested` (no statement, or no
+  `provenance.jsonl`), `proofInvalid`, `contentMismatch`, or `unknownSigner` (no
+  `did.jsonl`, a log that does not verify, a method outside the snapshot's DID,
+  a version the log lacks, or a method not under `assertionMethod` alone there).
+  The counts are the `provenance` member of the returned `ImportStats`. Outside
+  `verified` the object is still imported, with its `createdBy` removed. A
+  tombstone carries no statement and is not counted, and its sidecar loses
+  `createdBy` too, since a re-create over a tombstone keeps the tombstone's
+  creator. The Space Metadata object's verdict is counted only, since an import
+  never restores its `createdBy`. A `proofInvalid` and a `contentMismatch` are
+  logged at `warn` with different messages, so damaged bytes are not read as a
+  bad signature. `createdAt` and the version members keep their import behavior
+  whatever the verdict.
 - **`src/storage.ts`** — supplies `defaultBackend()`, the `FileSystemBackend`
   (rooted at `data/`) that `createApp()` uses when no backend is injected. The
   active backend is injected via `createApp({ backend })` and decorated onto the

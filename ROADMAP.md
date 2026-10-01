@@ -1027,41 +1027,6 @@ no-slash form is wanted mostly inside `paths.ts` itself, as the prefix the
 sub-resource builders extend; about 9 external call sites use it, and each
 should move to the named base builder or a sub-resource builder.
 
-## Simplify pass follow-ups (2026-10-01)
-
-Findings from a cleanup review of the import provenance change that were too
-large to apply in that pass.
-
-### WAS-170: Move the provenance statement contract out of `exportProvenance.ts` into a neutral module
-
-- status: todo
-- priority: low
-- labels: cleanup, provenance, export, import
-- touches:
-  - `src/lib/exportProvenance.ts`, `src/lib/importProvenance.ts`, and the new
-    module (`src/lib/provenanceStatement.ts` or similar)
-- acceptance:
-  - [ ] `STORAGE_ATTESTATION_TYPE`, `serverFieldsOf`, `fileDigest` and
-        `chunkedDigest` live in one module that neither provenance module owns,
-        together with the `Claims` members a statement attests
-  - [ ] `importProvenance.ts` imports nothing from `exportProvenance.ts`, and
-        `exportProvenance.ts` nothing from `importProvenance.ts`
-  - [ ] ARCHITECTURE.md's two provenance entries point at the shared module for
-        the digest and server-member rules
-  - [ ] The export, import and provenance tests stay green on both backends
-
-Context: import verification needs the same digest form, the same chunked
-composite digest, and the same reading of the server-managed members as export
-signing, so those four pieces were exported from `exportProvenance.ts` and
-imported by `importProvenance.ts`. Export and import are siblings: one signs
-statements, the other judges them, and the contract between them (what a
-statement names and how its `digest` is computed) belongs to neither. Keeping it
-in the signing module reads as import depending on export's internals, and a
-reader checking that the two sides agree has to find the shared pieces among the
-signing code. Neither module imports the other today, so there is no cycle to
-break; the move is for ownership and legibility only, which is why it is low
-priority.
-
 ## Whole-codebase review follow-ups (2026-09-17)
 
 Findings from an adversarial review of every module in `src/*.ts` and
