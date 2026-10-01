@@ -4056,3 +4056,45 @@ packed after `service.json` in the order `provenance.jsonl`, `did.jsonl`, so an
 importer holds the statements before the first object. Statements are built over
 the archive's own entry tree in `src/lib/exportProvenance.ts`, so each Resource
 is read twice per export.
+
+### WAS-166: Import verifies provenance and drops unearned `createdBy`
+
+- status: done
+- done: 2026-09-30
+- priority: medium
+- labels: data-model, security, import
+- touches:
+  - storage-core: `ImportStats.provenance` added in 0.24.0 (publish pending;
+    this repo links it until then)
+  - was-client: unaffected (re-exports `ImportStats` from storage-core; picks up
+    `provenance` with its next storage-core bump)
+- blocked-by: WAS-165
+- acceptance:
+  - [x] Import reads `provenance.jsonl` and `did.jsonl` when present, verifies
+        the embedded log offline (SCID pinning plus full chain verification via
+        `@interop/did-method-webvh`), resolves each statement's
+        `verificationMethod` at the `didLogVersionId` it names, and checks the
+        proof and then the content digest against the imported bytes
+  - [x] An object whose statement verifies keeps its `createdBy` (and
+        `createdAt`, `version` / `metaVersion` as today); an object with no
+        statement, a failing proof, or a digest mismatch is imported with
+        `createdBy` dropped, not rejected, in both backends
+  - [x] Which server DIDs an importer accepts attribution from is decided and
+        documented before this ships (the importer's own `serverDid` at least;
+        an allowlist for cross-server restores is a configuration decision to
+        take to the user)
+  - [x] The `ImportStats` report counts verified, unattested, `proof-invalid`
+        and `content-mismatch` objects separately, and `handleError`-level
+        logging tells the last two apart, so bit-rot is not read as a flaky
+        signature
+  - [x] Tests cover a verified round trip, a hand-edited `createdBy`, a
+        substituted body under an authentic statement, and an archive from a
+        server whose DID the importer does not accept
+
+Split from WAS-7 (archived) on 2026-09-29. Import must preserve `createdBy` to
+be a restore, so it necessarily trusts the archive; this item moves that trust
+from the file to the signing server's DID. Degrades cleanly: a hand-rolled
+archive still imports and just carries no attribution it did not earn. A
+content-transforming migration (re-encryption, plaintext/EDV conversion) either
+re-attests over the transformed bytes or accepts the drop; note that in the tool
+that first does one.

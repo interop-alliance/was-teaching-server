@@ -220,6 +220,16 @@ describe('Export/Import Space API (wire level)', () => {
       // Alice invoked the root capability, so the archived Space Metadata
       // object's user-writable members were applied.
       assert.equal(stats.spaceMetadata, 'restored')
+      // This server has no identity, so its export carries no provenance:
+      // every object it holds is counted unattested, and nothing else.
+      const { unattested, ...attested } = stats.provenance
+      assert.ok(unattested >= 3, 'expected unattested objects counted')
+      assert.deepStrictEqual(attested, {
+        verified: 0,
+        proofInvalid: 0,
+        contentMismatch: 0,
+        unknownSigner: 0
+      })
 
       // The imported Resource is readable in the destination Space.
       const readBack = await alice.was.request({

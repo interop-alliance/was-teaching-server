@@ -641,7 +641,7 @@ const MULTIKEY_CONTEXT = 'https://w3id.org/security/multikey/v1'
  * @param options.id {string}   the fully-qualified node id (`did#fragment`)
  * @returns {Record<string, unknown>}   the matched node, with an `@context`
  */
-function dereferenceFragment({
+export function dereferenceFragment({
   doc,
   id
 }: {

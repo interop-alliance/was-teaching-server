@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 169
+nextAvailableId: 171
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -187,42 +187,6 @@ the DID string carries the host, so a log written for another host does not
 resolve as this server's and `/service` drops `serverDid` after the move; a
 domain-move entry appended to a portable log re-addresses it under the new host
 with the same SCID. Not scheduled for implementation yet.
-
-### WAS-166: Import verifies provenance and drops unearned `createdBy`
-
-- status: todo
-- priority: medium
-- labels: data-model, security, import
-- blocked-by: WAS-165
-- acceptance:
-  - [ ] Import reads `provenance.jsonl` and `did.jsonl` when present, verifies
-        the embedded log offline (SCID pinning plus full chain verification via
-        `@interop/did-method-webvh`), resolves each statement's
-        `verificationMethod` at the `didLogVersionId` it names, and checks the
-        proof and then the content digest against the imported bytes
-  - [ ] An object whose statement verifies keeps its `createdBy` (and
-        `createdAt`, `version` / `metaVersion` as today); an object with no
-        statement, a failing proof, or a digest mismatch is imported with
-        `createdBy` dropped, not rejected, in both backends
-  - [ ] Which server DIDs an importer accepts attribution from is decided and
-        documented before this ships (the importer's own `serverDid` at least;
-        an allowlist for cross-server restores is a configuration decision to
-        take to the user)
-  - [ ] The `ImportStats` report counts verified, unattested, `proof-invalid`
-        and `content-mismatch` objects separately, and `handleError`-level
-        logging tells the last two apart, so bit-rot is not read as a flaky
-        signature
-  - [ ] Tests cover a verified round trip, a hand-edited `createdBy`, a
-        substituted body under an authentic statement, and an archive from a
-        server whose DID the importer does not accept
-
-Split from WAS-7 (archived) on 2026-09-29. Import must preserve `createdBy` to
-be a restore, so it necessarily trusts the archive; this item moves that trust
-from the file to the signing server's DID. Degrades cleanly: a hand-rolled
-archive still imports and just carries no attribution it did not earn. A
-content-transforming migration (re-encryption, plaintext/EDV conversion) either
-re-attests over the transformed bytes or accepts the drop; note that in the tool
-that first does one.
 
 ### WAS-167: Further uses of the server identity (write receipts, epoch attestation, delegatee, signed manifest)
 
@@ -1062,6 +1026,80 @@ by its last character, in exactly the members that need to be canonical. The
 no-slash form is wanted mostly inside `paths.ts` itself, as the prefix the
 sub-resource builders extend; about 9 external call sites use it, and each
 should move to the named base builder or a sub-resource builder.
+
+## Simplify pass follow-ups (2026-10-01)
+
+Findings from a cleanup review of the import provenance change that were too
+large to apply in that pass.
+
+### WAS-169: Build and judge the import plan in the Import Space handler, not in the backends
+
+- status: todo
+- priority: medium
+- labels: cleanup, import, provenance, filesystem-backend, postgres-backend
+- touches:
+  - `src/requests/SpaceRequest.ts` (`import`), `src/lib/importTar.ts`,
+    `src/lib/importProvenance.ts`, `src/backends/filesystem.ts`,
+    `src/backends/postgres.ts`, `src/types.ts` (`StorageBackend.importSpace`),
+    `test/storage-backend-contract.ts`
+- acceptance:
+  - [ ] `StorageBackend.importSpace` takes a built plan and the provenance
+        counts (`{ spaceId, plan, provenance, restoreSpaceMetadata }`) instead
+        of a tar stream; a backend only persists what it is handed
+  - [ ] The Import Space handler extracts the entries, builds the plan, and
+        judges the archive's provenance once, through one call, so a backend
+        cannot skip verification by calling `buildImportPlan` directly
+  - [ ] `assertImportBodiesFit` moves with it, or is the one pre-flight each
+        backend keeps because it reads the backend's own `maxUploadBytes`
+  - [ ] `buildVerifiedImportPlan` is gone, and `importTar.ts` no longer imports
+        `importProvenance.ts` (the type-only cycle between the two goes with it)
+  - [ ] The backend contract tests build the plan through the same shared call
+        the handler uses, so an archive-level test stays one per backend
+  - [ ] The import tests in `test/` and the conformance suite stay green on both
+        backends
+
+Context: both backends open `importSpace` the same way: `extractTarEntries`,
+then `buildVerifiedImportPlan`, which builds the plan and runs
+`applyImportProvenance` over it. Judging a signed archive and removing the
+`createdBy` members it did not earn is request-level policy, not persistence,
+and ARCHITECTURE.md gives the backends persistence alone. Threading the
+backend's logger and the `ImportStats.provenance` counts through two backends
+exists only to serve that call. A third backend that calls `buildImportPlan` on
+its own imports unearned attribution and nothing fails. Hoisting the
+plan-building into the handler removes the duplicated extraction code from both
+backends and makes the verification step impossible to leave out. WAS-126 adds
+further validation to the same pre-write path and lands more simply once that
+path runs in one place.
+
+### WAS-170: Move the provenance statement contract out of `exportProvenance.ts` into a neutral module
+
+- status: todo
+- priority: low
+- labels: cleanup, provenance, export, import
+- touches:
+  - `src/lib/exportProvenance.ts`, `src/lib/importProvenance.ts`, and the new
+    module (`src/lib/provenanceStatement.ts` or similar)
+- acceptance:
+  - [ ] `STORAGE_ATTESTATION_TYPE`, `serverFieldsOf`, `fileDigest` and
+        `chunkedDigest` live in one module that neither provenance module owns,
+        together with the `Claims` members a statement attests
+  - [ ] `importProvenance.ts` imports nothing from `exportProvenance.ts`, and
+        `exportProvenance.ts` nothing from `importProvenance.ts`
+  - [ ] ARCHITECTURE.md's two provenance entries point at the shared module for
+        the digest and server-member rules
+  - [ ] The export, import and provenance tests stay green on both backends
+
+Context: import verification needs the same digest form, the same chunked
+composite digest, and the same reading of the server-managed members as export
+signing, so those four pieces were exported from `exportProvenance.ts` and
+imported by `importProvenance.ts`. Export and import are siblings: one signs
+statements, the other judges them, and the contract between them (what a
+statement names and how its `digest` is computed) belongs to neither. Keeping it
+in the signing module reads as import depending on export's internals, and a
+reader checking that the two sides agree has to find the shared pieces among the
+signing code. Neither module imports the other today, so there is no cycle to
+break; the move is for ownership and legibility only, which is why it is low
+priority.
 
 ## Whole-codebase review follow-ups (2026-09-17)
 

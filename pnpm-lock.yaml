@@ -66,8 +66,8 @@ importers:
         specifier: ^0.5.0
         version: 0.5.0
       '@interop/storage-core':
-        specifier: ^0.23.1
-        version: 0.23.1
+        specifier: ^0.24.0
+        version: 0.24.0
       '@interop/x25519-key-agreement-key':
         specifier: ^5.4.1
         version: 5.4.1
@@ -713,8 +713,8 @@ packages:
     resolution: {integrity: sha512-XduxAdgKQX0Wi8AH7jNn3OyZxIJM6bMMJGRPm+RTKqFV6Fpo+s+1h10yw6Lc586GEVs92YxDw55gsSemFNlobA==}
     engines: {node: '>=22.0'}
 
-  '@interop/storage-core@0.23.1':
-    resolution: {integrity: sha512-/zFTJSsv1kX4V1GI90Zl59HocFJZx1k1Lb3VC93nM2Ah5a04qVG8b4dZ8WIIh1uAvl2tcdrWVdH42AMes6iA+g==}
+  '@interop/storage-core@0.24.0':
+    resolution: {integrity: sha512-CanIuQGaANPJC4bSg8zo0F97jmcRQt/x6oY7sV+LBl6Eau7LMdWvHktcBGJSY1jnBxhECIz5RuFN30X1B9qZ+Q==}
     engines: {node: '>=22.0'}
 
   '@interop/vc-bitstring-status-list@3.2.0':
@@ -3606,7 +3606,7 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.8.0
 
-  '@interop/storage-core@0.23.1':
+  '@interop/storage-core@0.24.0':
     dependencies:
       '@interop/data-integrity-core': 8.8.0
 

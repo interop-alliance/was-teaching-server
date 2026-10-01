@@ -37,7 +37,7 @@ import {
 } from '../config.default.js'
 import {
   extractTarEntries,
-  buildImportPlan,
+  buildVerifiedImportPlan,
   assertImportBodiesFit,
   metaSidecarFileId,
   restoredSpaceMetadata
@@ -1746,11 +1746,14 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<ImportStats> {
     const entries = await extractTarEntries(tarStream)
     const {
-      spaceMetadata: archivedSpaceMetadata,
-      spacePolicy,
-      collections,
-      revocations
-    } = buildImportPlan(entries)
+      plan: {
+        spaceMetadata: archivedSpaceMetadata,
+        spacePolicy,
+        collections,
+        revocations
+      },
+      provenance
+    } = await buildVerifiedImportPlan({ entries, logger: this.logger })
 
     // Shared pre-flight over every staged body (`assertImportBodiesFit`): the
     // per-upload 413 cap and the fail-closed encryption check, run before
@@ -1809,7 +1812,8 @@ export class FileSystemBackend implements StorageBackend {
             resourcesSkipped: 0,
             policiesCreated: 0,
             policiesSkipped: 0,
-            spaceMetadata: archivedSpaceMetadata ? 'skipped' : 'absent'
+            spaceMetadata: archivedSpaceMetadata ? 'skipped' : 'absent',
+            provenance
           }
 
           // The archived Space Metadata object's user-writable members,

@@ -46,7 +46,7 @@ import { isJsonContentType } from '@interop/storage-core'
 import { applyMigrations } from './postgresSchema.js'
 import {
   extractTarEntries,
-  buildImportPlan,
+  buildVerifiedImportPlan,
   assertImportBodiesFit,
   restoredSpaceMetadata
 } from '../lib/importTar.js'
@@ -4271,11 +4271,14 @@ export class PostgresBackend implements StorageBackend {
   }): Promise<ImportStats> {
     const entries = await extractTarEntries(tarStream)
     const {
-      spaceMetadata: archivedSpaceMetadata,
-      spacePolicy,
-      collections,
-      revocations
-    } = buildImportPlan(entries)
+      plan: {
+        spaceMetadata: archivedSpaceMetadata,
+        spacePolicy,
+        collections,
+        revocations
+      },
+      provenance
+    } = await buildVerifiedImportPlan({ entries, logger: this.logger })
     // Chunk entries (the `chunked-streams` feature): the plan carries each
     // chunk file (representation + optional version sidecar) with its decoded
     // fields; the `chunks` table stores a chunk as one row, so merge the two
@@ -4388,7 +4391,8 @@ export class PostgresBackend implements StorageBackend {
         resourcesSkipped: 0,
         policiesCreated: 0,
         policiesSkipped: 0,
-        spaceMetadata: archivedSpaceMetadata ? 'skipped' : 'absent'
+        spaceMetadata: archivedSpaceMetadata ? 'skipped' : 'absent',
+        provenance
       }
 
       // The archived Space Metadata object's user-writable members, applied

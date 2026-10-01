@@ -39,7 +39,18 @@
   Each carries one `eddsa-jcs-2022` proof (`assertionMethod`, no `created`) by
   the export-signing key, named `{serverDid}#{publicKeyMultibase}`. Without an
   identity the export carries neither entry and the server logs one `warn` line
-  per export. Import does not verify the entries yet.
+  per export.
+
+- Import Space verifies export provenance. The archive's `did.jsonl` must verify
+  offline as the history log of the DID its head names; any server DID whose log
+  verifies is accepted. Each statement's method is resolved at the log version
+  its `didLogVersionId` names and must sit under `assertionMethod` alone. Then
+  its proof is verified and its claims and `digest` are compared with the
+  archived bytes. An object outside `verified` is still imported, with its
+  `createdBy` dropped; a tombstone's `createdBy` is always dropped.
+  `ImportStats` gains `provenance`, counting `verified`, `unattested`,
+  `proofInvalid`, `contentMismatch`, and `unknownSigner` objects. A
+  `proofInvalid` and a `contentMismatch` are logged apart at `warn`.
 
 - Admin runbooks for the server identity log in `docs/admin-guide.md`, written
   as `di` (`@interop/did-cli`) command sequences: provisioning, seed rotation,
@@ -63,6 +74,13 @@
 
 - Depends on `@interop/space-archive` 0.5.0, which carries the provenance root
   entries.
+
+- Depends on `@interop/storage-core` 0.24.0, whose `ImportStats` carries
+  `provenance`.
+
+- Import Space no longer restores a `createdBy` its archive does not attest. An
+  archive exported without provenance, by an older release or by a server with
+  no identity, imports with no `createdBy` on any object.
 
 - The filesystem backend refuses to start when `store.json` names a newer
   version than the server knows, or is absent over a data dir that holds data.

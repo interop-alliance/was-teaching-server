@@ -43,7 +43,8 @@ import type {
   CollectionMetadata,
   StoredCollectionMetadata,
   SpaceMetadata,
-  IDID
+  IDID,
+  ImportStats
 } from '../src/types.js'
 
 /** A backend instance plus its teardown, as produced by the suite factory. */
@@ -5487,8 +5488,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             resourceId: 'doc'
           })
           assert.deepEqual(metadata?.custom, { name: 'Doc' })
-          // `createdBy` (the resource's creator) travels with the export too.
-          assert.equal(metadata?.createdBy, CREATOR_ONE)
+          // An export without an attestor carries no provenance, so the
+          // Resource's `createdBy` is unearned and dropped on import.
+          assert.equal(metadata?.createdBy, undefined)
+          assert.equal(stats.provenance.unattested, 3)
 
           // The tombstone carried over: invisible to reads, blocks
           // resurrection, and still replicates through the feed.
@@ -5921,6 +5924,401 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(archive.didLog, undefined)
         assert.equal(archive.manifest.contents['provenance.jsonl'], undefined)
         assert.equal(archive.manifest.contents['did.jsonl'], undefined)
+      })
+    })
+
+    describe('import provenance', () => {
+      let harness: BackendHarness
+      let archiveBytes: Buffer
+      const sourceSpaceId = 'space-attested'
+      const serverUrl = 'https://was.example'
+      const FORGER = 'did:key:z6MkContractSuiteForger' as IDID
+      const warnings: { msg: string; ids?: string[]; count?: number }[] = []
+      let importCount = 0
+
+      /**
+       * Rewrites the exported archive: `edit` returns an entry's new body, or
+       * `undefined` to leave the entry out. `before` adds entries ahead of
+       * the named one.
+       */
+      async function rewriteArchive(
+        edit: (name: string, body: Buffer) => Buffer | undefined,
+        before?: (name: string) => { name: string; body: Buffer }[]
+      ): Promise<Buffer> {
+        const entries = await extractTarEntries(Readable.from([archiveBytes]))
+        const pack = tar.pack()
+        for (const [name, entry] of entries) {
+          if (entry.type === 'directory') {
+            pack.entry({ name, type: 'directory' })
+            continue
+          }
+          for (const added of before?.(name) ?? []) {
+            pack.entry({ name: added.name }, added.body)
+          }
+          const body = edit(name, entry.body!)
+          if (body !== undefined) {
+            pack.entry({ name }, body)
+          }
+        }
+        pack.finalize()
+        return Buffer.from(
+          await collectBytes(pack as unknown as AsyncIterable<Uint8Array>)
+        )
+      }
+
+      /**
+       * Rewrites the one JSON line of a JSON Lines body that `match` selects.
+       */
+      function editJsonLine(
+        body: Buffer,
+        match: (line: any) => boolean,
+        edit: (line: any) => void
+      ): Buffer {
+        const lines = body
+          .toString('utf8')
+          .split('\n')
+          .map(line => {
+            if (line.length === 0) {
+              return line
+            }
+            const parsed = JSON.parse(line)
+            if (!match(parsed)) {
+              return line
+            }
+            edit(parsed)
+            return JSON.stringify(parsed)
+          })
+        return Buffer.from(lines.join('\n'))
+      }
+
+      /**
+       * Imports archive bytes into a fresh Space, returning its id and the
+       * import's stats.
+       */
+      async function importInto(bytes: Buffer) {
+        const { backend } = harness
+        const spaceId = `restore-${++importCount}`
+        await backend.writeSpace({
+          spaceId,
+          spaceMetadata: {
+            id: spaceId,
+            type: ['Space'],
+            name: `Space ${spaceId}`,
+            controller: CONTROLLER
+          }
+        })
+        const stats = await backend.importSpace({
+          spaceId,
+          tarStream: Readable.from([bytes])
+        })
+        return { spaceId, stats }
+      }
+
+      async function createdByOf(spaceId: string, resourceId: string) {
+        const metadata = await harness.backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId
+        })
+        assert.ok(metadata, `${resourceId} was imported`)
+        return metadata.createdBy
+      }
+
+      async function collectionCreatedBy(spaceId: string) {
+        const metadata = await harness.backend.getCollectionMetadata({
+          spaceId,
+          collectionId: 'notes'
+        })
+        assert.ok(metadata, 'the notes Collection was imported')
+        return metadata.createdBy
+      }
+
+      const plainSidecar = `space/${sourceSpaceId}/col/.meta.plain.json`
+      const isPlainStatement = (line: any) =>
+        line.id === `${serverUrl}/space/${sourceSpaceId}/col/plain`
+
+      /**
+       * A metadata sidecar's bytes with its `createdBy` set to the forger.
+       */
+      function forgedSidecar(body: Buffer): Buffer {
+        return Buffer.from(
+          JSON.stringify({
+            ...JSON.parse(body.toString('utf8')),
+            createdBy: FORGER
+          })
+        )
+      }
+
+      /**
+       * The five provenance counts, every one not given being zero.
+       */
+      function counts(
+        given: Partial<ImportStats['provenance']>
+      ): ImportStats['provenance'] {
+        return {
+          verified: 0,
+          unattested: 0,
+          proofInvalid: 0,
+          contentMismatch: 0,
+          unknownSigner: 0,
+          ...given
+        }
+      }
+
+      beforeAll(async () => {
+        harness = await makeBackend()
+        const { backend } = harness
+        backend.logger = pino(
+          { level: 'warn' },
+          {
+            write(line: string) {
+              warnings.push(JSON.parse(line))
+            }
+          }
+        )
+        const { signingKey } = await provisionServerIdentity({
+          backend,
+          serverUrl,
+          seed: randomBytes(32)
+        })
+        const loaded = await loadExportAttestor({
+          storage: backend,
+          serverUrl,
+          signingKey,
+          logger: pino({ level: 'silent' })
+        })
+        assert.ok('attestor' in loaded)
+
+        await provisionSpace(backend, sourceSpaceId)
+        await backend.writeCollection({
+          spaceId: sourceSpaceId,
+          collectionId: 'notes',
+          collectionMetadata: { id: 'notes', type: ['Collection'], name: 'N' },
+          createdBy: CREATOR_ONE
+        })
+        await backend.writeResource({
+          spaceId: sourceSpaceId,
+          collectionId: 'col',
+          resourceId: 'plain',
+          input: jsonInput({ hello: 'world' }),
+          createdBy: CREATOR_ONE
+        })
+        await backend.writeResource({
+          spaceId: sourceSpaceId,
+          collectionId: 'col',
+          resourceId: 'big',
+          input: jsonInput({ chunks: 3 }),
+          createdBy: CREATOR_TWO
+        })
+        for (let chunkIndex = 0; chunkIndex < 3; chunkIndex++) {
+          await backend.writeChunk({
+            spaceId: sourceSpaceId,
+            collectionId: 'col',
+            resourceId: 'big',
+            chunkIndex,
+            input: binaryInput(Buffer.from(`chunk ${chunkIndex}`))
+          })
+        }
+        // A tombstone carries no statement and is not counted.
+        await backend.writeResource({
+          spaceId: sourceSpaceId,
+          collectionId: 'col',
+          resourceId: 'gone',
+          input: jsonInput({ soon: 'deleted' }),
+          createdBy: CREATOR_ONE
+        })
+        await backend.deleteResource({
+          spaceId: sourceSpaceId,
+          collectionId: 'col',
+          resourceId: 'gone'
+        })
+        archiveBytes = Buffer.from(
+          await collectBytes(
+            await backend.exportSpace({
+              spaceId: sourceSpaceId,
+              attestor: loaded.attestor
+            })
+          )
+        )
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('keeps createdBy on a verified round trip', async () => {
+        const { spaceId, stats } = await importInto(archiveBytes)
+        // The Space Metadata object, two Collection Metadata objects, and the
+        // two live Resources.
+        assert.deepStrictEqual(stats.provenance, counts({ verified: 5 }))
+        assert.equal(await createdByOf(spaceId, 'plain'), CREATOR_ONE)
+        assert.equal(await createdByOf(spaceId, 'big'), CREATOR_TWO)
+        assert.equal(await collectionCreatedBy(spaceId), CREATOR_ONE)
+      })
+
+      it('drops a hand-edited createdBy whose statement was edited to match (proofInvalid)', async () => {
+        const before = warnings.length
+        const forged = await rewriteArchive((name, body) => {
+          if (name === plainSidecar) {
+            return forgedSidecar(body)
+          }
+          if (name === 'provenance.jsonl') {
+            return editJsonLine(body, isPlainStatement, line => {
+              line.createdBy = FORGER
+            })
+          }
+          return body
+        })
+        const { spaceId, stats } = await importInto(forged)
+        assert.equal(stats.provenance.proofInvalid, 1)
+        assert.equal(stats.provenance.verified, 4)
+        assert.equal(stats.resourcesCreated, 3)
+        assert.equal(await createdByOf(spaceId, 'plain'), undefined)
+        assert.equal(await createdByOf(spaceId, 'big'), CREATOR_TWO)
+        const logged = warnings.slice(before)
+        assert.equal(logged.length, 1)
+        assert.match(logged[0]!.msg, /proof does not verify/)
+        assert.equal(logged[0]!.count, 1)
+        assert.deepStrictEqual(logged[0]!.ids, [
+          `${serverUrl}/space/${sourceSpaceId}/col/plain`
+        ])
+      })
+
+      it('drops a createdBy edited in the sidecar alone (contentMismatch)', async () => {
+        const forged = await rewriteArchive((name, body) =>
+          name === plainSidecar ? forgedSidecar(body) : body
+        )
+        const { spaceId, stats } = await importInto(forged)
+        assert.equal(stats.provenance.contentMismatch, 1)
+        assert.equal(stats.provenance.verified, 4)
+        assert.equal(await createdByOf(spaceId, 'plain'), undefined)
+      })
+
+      it('drops createdBy from a substituted body under an authentic statement (contentMismatch)', async () => {
+        const before = warnings.length
+        const prefix = `space/${sourceSpaceId}/col/r.plain.`
+        const substituted = await rewriteArchive((name, body) =>
+          name.startsWith(prefix)
+            ? Buffer.from(JSON.stringify({ hello: 'substituted' }))
+            : body
+        )
+        const { spaceId, stats } = await importInto(substituted)
+        assert.deepStrictEqual(
+          stats.provenance,
+          counts({ verified: 4, contentMismatch: 1 })
+        )
+        // Imported anyway, with no attribution.
+        assert.equal(await createdByOf(spaceId, 'plain'), undefined)
+        const { resourceStream } = await harness.backend.getResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'plain'
+        })
+        assert.deepStrictEqual(
+          JSON.parse(
+            Buffer.from(await collectBytes(resourceStream)).toString()
+          ),
+          { hello: 'substituted' }
+        )
+        const logged = warnings.slice(before)
+        assert.equal(logged.length, 1)
+        assert.match(logged[0]!.msg, /does not match the archived object/)
+      })
+
+      it('judges only the representation the import writes when two files share a Resource id', async () => {
+        // A forged second representation of `plain` is placed ahead of the
+        // authentic file in archive order, so it is the one the import
+        // writes. The authentic bytes behind it must not earn its createdBy.
+        const prefix = `space/${sourceSpaceId}/col/r.plain.`
+        const forgedName = `${prefix}text%2Fplain.txt`
+        const substituted = await rewriteArchive(
+          (_name, body) => body,
+          name =>
+            name.startsWith(prefix)
+              ? [{ name: forgedName, body: Buffer.from('substituted') }]
+              : []
+        )
+        const { spaceId, stats } = await importInto(substituted)
+        assert.deepStrictEqual(
+          stats.provenance,
+          counts({ verified: 4, contentMismatch: 1 })
+        )
+        assert.equal(stats.resourcesCreated, 3)
+        assert.equal(await createdByOf(spaceId, 'plain'), undefined)
+        const { resourceStream } = await harness.backend.getResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'plain'
+        })
+        assert.equal(
+          Buffer.from(await collectBytes(resourceStream)).toString(),
+          'substituted'
+        )
+      })
+
+      it('drops createdBy from a chunk substituted under an authentic statement', async () => {
+        const chunk = `space/${sourceSpaceId}/col/.chunks.big/r.1.`
+        const substituted = await rewriteArchive((name, body) =>
+          name.startsWith(chunk) ? Buffer.from('another chunk') : body
+        )
+        const { spaceId, stats } = await importInto(substituted)
+        assert.equal(stats.provenance.contentMismatch, 1)
+        assert.equal(await createdByOf(spaceId, 'big'), undefined)
+        assert.equal(await createdByOf(spaceId, 'plain'), CREATOR_ONE)
+      })
+
+      it('drops every createdBy from an archive with no provenance.jsonl (unattested)', async () => {
+        const unsigned = await rewriteArchive((name, body) =>
+          name === 'provenance.jsonl' ? undefined : body
+        )
+        const { spaceId, stats } = await importInto(unsigned)
+        assert.deepStrictEqual(stats.provenance, counts({ unattested: 5 }))
+        assert.equal(stats.resourcesCreated, 3)
+        assert.equal(await createdByOf(spaceId, 'plain'), undefined)
+        assert.equal(await createdByOf(spaceId, 'big'), undefined)
+        assert.equal(await collectionCreatedBy(spaceId), undefined)
+      })
+
+      it('drops every createdBy when did.jsonl is absent (unknownSigner)', async () => {
+        const withoutLog = await rewriteArchive((name, body) =>
+          name === 'did.jsonl' ? undefined : body
+        )
+        const { spaceId, stats } = await importInto(withoutLog)
+        assert.equal(stats.provenance.unknownSigner, 5)
+        assert.equal(stats.provenance.verified, 0)
+        assert.equal(await createdByOf(spaceId, 'plain'), undefined)
+        assert.equal(await collectionCreatedBy(spaceId), undefined)
+      })
+
+      it('drops every createdBy when did.jsonl is tampered (unknownSigner)', async () => {
+        const tampered = await rewriteArchive((name, body) =>
+          name === 'did.jsonl'
+            ? editJsonLine(
+                body,
+                () => true,
+                line => {
+                  line.versionTime = '2001-01-01T00:00:00Z'
+                }
+              )
+            : body
+        )
+        const { spaceId, stats } = await importInto(tampered)
+        assert.equal(stats.provenance.unknownSigner, 5)
+        assert.equal(stats.provenance.verified, 0)
+        assert.equal(await createdByOf(spaceId, 'big'), undefined)
+      })
+
+      it('drops createdBy when a statement names a log version the log lacks (unknownSigner)', async () => {
+        const renamed = await rewriteArchive((name, body) =>
+          name === 'provenance.jsonl'
+            ? editJsonLine(body, isPlainStatement, line => {
+                line.didLogVersionId = '9-QmNoSuchEntry'
+              })
+            : body
+        )
+        const { spaceId, stats } = await importInto(renamed)
+        assert.equal(stats.provenance.unknownSigner, 1)
+        assert.equal(stats.provenance.verified, 4)
+        assert.equal(await createdByOf(spaceId, 'plain'), undefined)
       })
     })
   })

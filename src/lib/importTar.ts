@@ -1,6 +1,7 @@
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
 import type { Readable } from 'node:stream'
+import type { FastifyBaseLogger } from 'fastify'
 import { assertValidId } from './validateId.js'
 import {
   parseChunkDirName,
@@ -18,11 +19,13 @@ import {
 } from '@interop/space-archive'
 import { assertEncryptedWriteConforms } from './encryption.js'
 import { assertGoverningLogAppend } from './governedLog.js'
+import { applyImportProvenance } from './importProvenance.js'
 import { isPlainObject } from './isPlainObject.js'
 import { spaceTypeChangeProblem, spaceTypeProblem } from './spaceType.js'
 import { InvalidImportError, ProblemError } from '../errors.js'
 import type {
   CollectionMetadata,
+  ImportStats,
   PolicyDocument,
   RevocationRecord,
   SpaceMetadata
@@ -312,6 +315,11 @@ export interface ImportedSpaceMetadata {
 /** The merge plan produced by {@link buildImportPlan}. */
 export interface ImportPlan {
   /**
+   * The Space id the archive's `space/<sourceSpaceId>/` tree is keyed by:
+   * the exporting Space's id, which the provenance statements' URLs name.
+   */
+  sourceSpaceId: string
+  /**
    * The archived Space Metadata object's user-writable members, when the
    * archive carries a `.space.<sourceSpaceId>.json` entry that parses as a
    * JSON object; undefined when it does not (an import then reports
@@ -414,6 +422,9 @@ export function validateManifest(entries: Map<string, TarEntry>): void {
  * - manifest.yml
  * - service.json (the exporting server's Service Description; informational,
  *   and ignored by this walk)
+ * - provenance.jsonl and did.jsonl (the exporting server's signed statements
+ *   and its DID history log snapshot; optional, and judged by
+ *   `applyImportProvenance` rather than by this walk)
  * - revocations/<digest>.json (Space-scoped zcap revocations; optional)
  * - space/
  * - space/<sourceSpaceId>/
@@ -494,6 +505,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
 
     const collectionPrefix = `${prefix}${collectionId}/`
     const resources: ImportPlanResource[] = []
+    const resourceIds = new Set<string>()
     let collectionPolicy: PolicyDocument | undefined
     let collectionLog: Buffer | undefined
     const resourcePolicies = new Map<string, PolicyDocument>()
@@ -614,6 +626,15 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
         requestName: 'Import Space'
       })
 
+      // One representation per Resource id: the first in archive order is the
+      // one the backends write, so a second file under the same id (another
+      // content type) is left out of the plan here. Provenance then judges
+      // only the bytes that are written.
+      if (resourceIds.has(resourceId)) {
+        continue
+      }
+      resourceIds.add(resourceId)
+
       resources.push({
         fileName,
         resourceId,
@@ -634,11 +655,37 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
   })
 
   return {
+    sourceSpaceId,
     ...(spaceMetadata !== undefined && { spaceMetadata }),
     spacePolicy,
     collections,
     revocations: revocationRecords(entries)
   }
+}
+
+/**
+ * Builds the merge plan and judges the archive's provenance over it
+ * (`applyImportProvenance`): the plan comes back with every `createdBy` the
+ * archive did not earn removed, beside the per-verdict counts both backends
+ * report as `ImportStats.provenance`.
+ *
+ * @param options {object}
+ * @param options.entries {Map<string, TarEntry>}
+ * @param options.logger {FastifyBaseLogger}   the backend's logger
+ * @returns {Promise<{ plan: ImportPlan, provenance: ImportStats['provenance'] }>}
+ */
+export async function buildVerifiedImportPlan({
+  entries,
+  logger
+}: {
+  entries: Map<string, TarEntry>
+  logger: FastifyBaseLogger
+}): Promise<{ plan: ImportPlan; provenance: ImportStats['provenance'] }> {
+  return applyImportProvenance({
+    entries,
+    plan: buildImportPlan(entries),
+    logger
+  })
 }
 
 /**

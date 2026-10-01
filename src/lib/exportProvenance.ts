@@ -182,9 +182,8 @@ export async function loadExportAttestor({
 /**
  * Reads the server-managed members off one archived JSON dot-file: a Space or
  * Collection Metadata object (whose version is its embedded `_version`) or a
- * Resource metadata sidecar (whose version is its `version`). A body that is
- * not a JSON object yields no members, and a member of the wrong type is
- * left out. A file that is gone yields `undefined`.
+ * Resource metadata sidecar (whose version is its `version`). A file that is
+ * gone yields `undefined`.
  * @param options {object}
  * @param options.file {ArchiveFile}
  * @param options.versionMember {'_version' | 'version'}
@@ -200,9 +199,28 @@ async function archivedServerFields({
   { createdBy?: string; createdAt?: string; version?: number } | undefined
 > {
   const bytes = await fileBytes(file)
-  if (bytes === undefined) {
-    return undefined
-  }
+  return bytes === undefined
+    ? undefined
+    : serverFieldsOf({ bytes, versionMember })
+}
+
+/**
+ * The server-managed members a statement attests, read off one archived JSON
+ * dot-file's bytes. A body that is not a JSON object yields no members, and a
+ * member of the wrong type is left out. Shared with import, which reads the
+ * same members back to check them against a statement.
+ * @param options {object}
+ * @param options.bytes {Uint8Array}
+ * @param options.versionMember {'_version' | 'version'}
+ * @returns {{ createdBy?: string, createdAt?: string, version?: number }}
+ */
+export function serverFieldsOf({
+  bytes,
+  versionMember
+}: {
+  bytes: Uint8Array
+  versionMember: '_version' | 'version'
+}): { createdBy?: string; createdAt?: string; version?: number } {
   let body: unknown
   try {
     body = JSON.parse(Buffer.from(bytes).toString('utf8'))
@@ -252,7 +270,9 @@ async function fileBytes(file: ArchiveFile): Promise<Uint8Array | undefined> {
  * @param file {ArchiveFile}
  * @returns {Promise<string | undefined>}
  */
-async function fileDigest(file: ArchiveFile): Promise<string | undefined> {
+export async function fileDigest(
+  file: ArchiveFile
+): Promise<string | undefined> {
   const bytes = await fileBytes(file)
   return bytes === undefined ? undefined : createHeaderValue({ data: bytes })
 }
@@ -262,10 +282,11 @@ async function fileDigest(file: ArchiveFile): Promise<string | undefined> {
  * digest, in chunk index order, serialized with JCS, and that serialization
  * digested in the same `mh=` form. A chunk directory's metadata sidecars are
  * not content and are skipped. Returns `undefined` when any chunk is gone.
+ * Shared with import, which recomputes it over the chunk files it restores.
  * @param chunkFiles {ArchiveEntry[]}   the chunk directory's entries
  * @returns {Promise<string | undefined>}
  */
-async function chunkedDigest(
+export async function chunkedDigest(
   chunkFiles: ArchiveEntry[]
 ): Promise<string | undefined> {
   const chunks: { index: number; file: ArchiveFile }[] = []

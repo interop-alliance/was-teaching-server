@@ -362,9 +362,39 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   each Resource is read twice, once to digest it and once to pack it. The export
   is not one transaction, so a Resource written between the two reads leaves a
   statement that does not match its archived bytes. One deleted after the
-  backend built the entry tree gets no statement, and the export goes on.
-  Verifying the entries on import is not implemented yet: `importTar.ts` ignores
-  both.
+  backend built the entry tree gets no statement, and the export goes on. Import
+  verifies both entries (`lib/importProvenance.ts`, below).
+- **`src/lib/importProvenance.ts`** -- import provenance, the verifying half.
+  `buildVerifiedImportPlan` in `importTar.ts` hands it the plan the walk built,
+  and it removes every `createdBy` the archive did not earn before either
+  backend writes anything. The signer is the DID the `did.jsonl` snapshot's head
+  names, and the whole snapshot must verify offline as that DID's history log
+  (`verifyWebvhLog`). Any server DID whose log verifies is accepted. There is no
+  allowlist and no setting, and the importer's own `serverDid` gets no special
+  treatment: the log, not the importer, establishes who signed. A statement is
+  then judged on its own. Its `verificationMethod` must name the snapshot's DID,
+  and that DID must be the `server/id` DID of the host the statement's `id`
+  names. The document is resolved at the log entry whose `versionId` equals the
+  statement's `didLogVersionId`, by verifying the log up to that entry, and must
+  list the method under `assertionMethod` alone. Then the `eddsa-jcs-2022` proof
+  is verified. Last, the statement's claims are compared with the archived
+  object: `createdBy`, `createdAt`, `version` or `metaVersion`, and a Resource's
+  `digest` (the composite chunk digest for a chunked Resource, through the same
+  `chunkedDigest` export uses). Each object the archive carries an attestable
+  entry for gets one verdict, whether or not the destination already holds it:
+  `verified`, `unattested` (no statement, or no `provenance.jsonl`),
+  `proofInvalid`, `contentMismatch`, or `unknownSigner` (no `did.jsonl`, a log
+  that does not verify, a method outside the snapshot's DID, a version the log
+  lacks, or a method not under `assertionMethod` alone there). The counts are
+  the `provenance` member of the returned `ImportStats`. Outside `verified` the
+  object is still imported, with its `createdBy` removed. A tombstone carries no
+  statement and is not counted, and its sidecar loses `createdBy` too, since a
+  re-create over a tombstone keeps the tombstone's creator. The Space Metadata
+  object's verdict is counted only, since an import never restores its
+  `createdBy`. A `proofInvalid` and a `contentMismatch` are logged at `warn`
+  with different messages, so damaged bytes are not read as a bad signature.
+  `createdAt` and the version members keep their import behavior whatever the
+  verdict.
 - **`src/storage.ts`** — supplies `defaultBackend()`, the `FileSystemBackend`
   (rooted at `data/`) that `createApp()` uses when no backend is injected. The
   active backend is injected via `createApp({ backend })` and decorated onto the
@@ -412,7 +442,8 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   identity), the backend also passes the codec the `provenance.jsonl` statements
   `attestArchiveEntries` builds over its entry tree and the `did.jsonl` log
   snapshot (see `lib/exportProvenance.ts` above); the layout under `space/` does
-  not change, so the import walk is the same either way. The archive's
+  not change, so the import walk is the same either way, and
+  `lib/importProvenance.ts` judges the two root entries beside it. The archive's
   `.space.<id>.json` entry is the stored Space Metadata object in the filesystem
   backend's on-disk layout, with the server-derived `backends` listing stamped
   on (`archivedSpaceMetadata` in `lib/spaceProjection.ts`, the same module the
@@ -519,9 +550,10 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   `provenance.jsonl`: a `StorageAttestation` JSON object naming one exported
   object by its absolute URL, its server-managed members, and its content
   digest, signed by the server identity with one `eddsa-jcs-2022` proof. Built
-  by `lib/exportProvenance.ts`. It is not a verifiable credential. Avoid:
-  receipt (reserved for a future write-time statement returned to the writer),
-  signature envelope, VC.
+  by `lib/exportProvenance.ts` and judged on import by
+  `lib/importProvenance.ts`. It is not a verifiable credential. Avoid: receipt
+  (reserved for a future write-time statement returned to the writer), signature
+  envelope, VC.
 - **Collection** — a named grouping of Resources within a Space, canonically
   addressed with a trailing slash (`/space/:spaceId/:collectionId/`): `GET`
   lists its Resources, `POST` adds one, `DELETE` removes the Collection. Its
