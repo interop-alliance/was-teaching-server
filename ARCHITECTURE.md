@@ -523,36 +523,39 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   and immutable afterward; `PUT` there creates the Space when absent or replaces
   it (`PUT` at the bare Space URL answers 405). A Space typed `AuxiliarySpace`
   (e.g. `['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']`) holds
-  bookkeeping rather than user data and is excluded from List Spaces; a wallet
-  reaches its auxiliary Space through the account document's service entry
-  instead. It still counts toward its controller's `maxSpacesPerController`
-  quota (`MAX_SPACES_PER_CONTROLLER`), since both backends count every stored
-  Space by controller. Its `url`, and the `Location` of a newly created Space,
-  carry the trailing slash. The object splits in two: its user-writable members
-  are `type` and `name`, and its server-derived members are `createdBy`, `url`,
-  `linkset` and `backends` (the same listing `GET /space/:spaceId/backends`
-  serves, carried here so a reader learns it without a second request). A
-  server-derived member supplied in a write body is ignored, and an unknown
-  member is not stored. A `PUT` of the Space Metadata object on an existing
-  Space replaces its user-writable members in full, so an omitted `name` is
-  removed. `src/lib/spaceProjection.ts` holds the two projections from the
-  stored record: the served object, which Read Space and the two create echoes
-  go through, and the export archive's `.space.<id>.json` entry, which keeps the
-  on-disk layout and stamps only `backends`; both derive `backends` there, so no
-  path drifts on it. The create echoes hand it the listing instead of having it
-  read one: a Space that did not exist before the write has no registrations,
-  since registering one needs the Space Metadata object to authorize against.
+  bookkeeping rather than user data. A wallet reaches its auxiliary Space
+  through the account document's service entry. It counts toward its
+  controller's `maxSpacesPerController` quota (`MAX_SPACES_PER_CONTROLLER`),
+  since both backends count every stored Space by controller. List Spaces
+  therefore lists it like any other Space, so a controller can see what uses its
+  quota. Every List Spaces item carries the Space's `type` array, which is how a
+  wallet tells an auxiliary Space from a data Space without a Read Space per
+  item. Its `url`, and the `Location` of a newly created Space, carry the
+  trailing slash. The object splits in two: its user-writable members are `type`
+  and `name`, and its server-derived members are `createdBy`, `url`, `linkset`
+  and `backends` (the same listing `GET /space/:spaceId/backends` serves,
+  carried here so a reader learns it without a second request). A server-derived
+  member supplied in a write body is ignored, and an unknown member is not
+  stored. A `PUT` of the Space Metadata object on an existing Space replaces its
+  user-writable members in full, so an omitted `name` is removed.
+  `src/lib/spaceProjection.ts` holds the two projections from the stored record:
+  the served object, which Read Space and the two create echoes go through, and
+  the export archive's `.space.<id>.json` entry, which keeps the on-disk layout
+  and stamps only `backends`; both derive `backends` there, so no path drifts on
+  it. The create echoes hand it the listing instead of having it read one: a
+  Space that did not exist before the write has no registrations, since
+  registering one needs the Space Metadata object to authorize against.
 - **`server` Space** -- the auxiliary Space that hosts this server's own
   identity: its `id` Collection holds the `did.jsonl` history log of the
   server's `did:webvh`. Provisioned at startup under the administrator's
   `did:key` (`WAS_ADMIN_DID`) and typed
-  `['AuxiliarySpace', 'ServerInstanceSpace', 'Space']`, so List Spaces hides it.
-  The id is reserved on every client create, configured or not, and no client
-  can create a Space under that subtype. The name says the Space hosts the
-  server's identity, not that the server controls it: the admin is the
-  controller and the only writer, and the server only reads the log. Avoid:
-  admin Space (the admin's own data Space, if any, is an ordinary Space),
-  server-controlled Space.
+  `['AuxiliarySpace', 'ServerInstanceSpace', 'Space']`. List Spaces lists it for
+  the admin with that `type`. The id is reserved on every client create,
+  configured or not, and no client can create a Space under that subtype. The
+  name says the Space hosts the server's identity, not that the server controls
+  it: the admin is the controller and the only writer, and the server only reads
+  the log. Avoid: admin Space (the admin's own data Space, if any, is an
+  ordinary Space), server-controlled Space.
 - **Server identity** -- the server's `did:webvh`
   (`did:webvh:{scid}:{host}:space:server:id`) together with the export-signing
   key derived from `WAS_SERVER_KEY_SEED`. The key is advertised on `/service` as

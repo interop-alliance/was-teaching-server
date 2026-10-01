@@ -233,9 +233,9 @@ enters the log only as its public `exportSigningKey`, read off `/service`.
 **Where the log lives.** The DID is `did:webvh:{scid}:{host}:space:server:id`,
 and its log is the `did.jsonl` Resource of the `id` Collection in the `server`
 Space. The server provisions that Space at startup, controlled by
-`WAS_ADMIN_DID`, typed `AuxiliarySpace` + `ServerInstanceSpace`, and hidden from
-List Spaces. The admin writes the log there like any other client write, signed
-by the admin key.
+`WAS_ADMIN_DID` and typed `AuxiliarySpace` + `ServerInstanceSpace`. List Spaces
+lists it for the admin with that `type`. The admin writes the log there like any
+other client write, signed by the admin key.
 
 **The admin's wallet.** The CLI keeps its state under `$WALLET_DIR` (default
 `~/.config/did-cli-wallet`), with DIDs under `dids/<method>/`. For the server's

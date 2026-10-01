@@ -79,7 +79,7 @@ export async function createServerSigningKey({
  *
  * An absent Space is created as a guarded write with `adminDid` as its
  * controller, typed `['AuxiliarySpace', 'ServerInstanceSpace', 'Space']`, so
- * List Spaces hides it and no client can claim the id afterwards. A stored
+ * no client can claim the id afterwards. A stored
  * Space must carry that subtype and that controller; anything else means the
  * id was claimed before the admin DID was configured, or the admin DID
  * changed, and either is an operator decision, so registration fails naming

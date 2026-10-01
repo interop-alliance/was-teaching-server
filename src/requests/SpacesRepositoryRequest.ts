@@ -34,8 +34,7 @@ import { assertValidController } from '../lib/validateDid.js'
 import {
   assertClientCreatableSpaceType,
   assertValidSpaceType,
-  defaultSpaceType,
-  isAuxiliarySpace
+  defaultSpaceType
 } from '../lib/spaceType.js'
 import {
   SpaceControllerMismatchError,
@@ -68,9 +67,11 @@ export class SpacesRepositoryRequest {
    * delegated chain here roots in the `/spaces/` root capability, which no
    * revocation route accepts, so a listing grant is bounded by its `expires`.
    *
-   * Spaces typed `AuxiliarySpace` are omitted: they hold bookkeeping rather
-   * than user data, and a wallet finds them through the account document's
-   * service entry instead. `totalItems` therefore counts listed Spaces only.
+   * Auxiliary Spaces (typed `AuxiliarySpace`) are listed like any other. They
+   * count toward the controller's `maxSpacesPerController` quota, so the
+   * controller must be able to see what uses it. Each item carries the Space's
+   * `type` array, so a wallet tells an auxiliary Space from a data Space
+   * without a Read Space per item.
    *
    * OPTIONALLY cursor-paginated (spec "Pagination"): pagination happens here in
    * the handler, not the backend, because the page is a page of AUTHORIZED
@@ -157,13 +158,6 @@ export class SpacesRepositoryRequest {
     let hasMore = false
     for (let index = startIndex; index < spaces.length; index++) {
       const space = spaces[index]!
-      // Auxiliary Spaces hold bookkeeping rather than user data, so they are
-      // not part of this listing. Skipped before any verification work: a
-      // wallet reaches its auxiliary Space through the account document's
-      // service entry, so there is no opt-in listing parameter to honor.
-      if (isAuxiliarySpace(space)) {
-        continue
-      }
       if (space.controller !== eligibleController) {
         continue
       }
@@ -215,7 +209,8 @@ export class SpacesRepositoryRequest {
       // form (spec "Space Metadata Data Model").
       const item: SpaceSummary = {
         id: space.id,
-        url: spacePath({ spaceId: space.id, trailingSlash: true })
+        url: spacePath({ spaceId: space.id, trailingSlash: true }),
+        type: space.type
       }
       if (space.name !== undefined) {
         item.name = space.name

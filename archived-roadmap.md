@@ -4173,3 +4173,38 @@ reader checking that the two sides agree has to find the shared pieces among the
 signing code. Neither module imports the other today, so there is no cycle to
 break; the move is for ownership and legibility only, which is why it is low
 priority.
+
+### WAS-163: Space subtypes in List Spaces results, optionally
+
+- status: done
+- done: 2026-10-01
+- priority: low
+- labels: spec-gap, wire-contract, list-spaces
+- discovered-from: WAS-147
+- touches:
+  - the WAS spec, "List Spaces Operation" (auxiliary Spaces listed, a required
+    `type` item member) -- text being updated in the spec repo
+  - was-client, `listSpaces()` -- was-client ROADMAP item (filed)
+  - `src/requests/SpacesRepositoryRequest.ts` -- shipped
+  - `@interop/storage-core`, `SpaceSummary` -- shipped (required `type` member),
+    publish pending
+  - `@interop/was-conformance-suite` -- the
+    `listSpaces includes a created space` case pins the old item shape and fails
+    until updated
+- acceptance:
+  - [x] List Spaces takes no query parameter: auxiliary Spaces are always
+        included in the results, and `totalItems` counts them
+  - [x] each item carries the Space's `type` array, so a wallet can tell an
+        auxiliary Space from a data Space without a Read Space per item
+  - [x] the listing has no separate default shape: every item carries `type`
+  - [x] spec text covers the listing; the conformance suite follow-up is noted
+        under `touches:`
+
+Auxiliary Spaces (`AuxiliarySpace` subtypes such as `DelegatedClientsSpace` and
+`ServerInstanceSpace`) count toward `MAX_SPACES_PER_CONTROLLER` but are hidden
+from List Spaces, so a controller near its quota cannot see what is using it.
+The wire shape (parameter name, item member) is the maintainer's call.
+
+Maintainer decision (2026-10-01): no opt-in parameter. List Spaces always lists
+every Space the requester is authorized for, auxiliary Spaces included, and
+every item always carries `type`.

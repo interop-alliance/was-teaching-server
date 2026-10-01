@@ -1064,7 +1064,8 @@ describe('Spaces', () => {
         {
           id: aliceSpaceId,
           name: 'Alice Listing Test',
-          url: `/space/${aliceSpaceId}/`
+          url: `/space/${aliceSpaceId}/`,
+          type: ['Space']
         }
       )
       // Bob's space is invisible to Alice...

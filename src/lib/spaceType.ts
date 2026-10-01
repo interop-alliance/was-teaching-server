@@ -5,8 +5,8 @@
  * a Space may declare a more specific role while every consumer keeps matching
  * on the base `Space` type. An auxiliary Space -- one holding server-side
  * bookkeeping rather than user data, e.g.
- * `['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']` -- is excluded from
- * user-data listings on that basis.
+ * `['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']` -- is still listed by
+ * List Spaces, whose items carry `type` so a client can tell the two apart.
  *
  * `type` is set at creation and immutable afterwards, so a Space cannot change
  * role under a consumer that already classified it.
@@ -17,8 +17,7 @@ import { InvalidRequestBodyError } from '../errors.js'
 const BASE_SPACE_TYPE = 'Space'
 
 /**
- * The general subtype for a Space that is not a user data Space. Auxiliary
- * Spaces are excluded from List Spaces.
+ * The general subtype for a Space that is not a user data Space.
  */
 export const AUXILIARY_SPACE_TYPE = 'AuxiliarySpace'
 
@@ -28,8 +27,8 @@ export const AUXILIARY_SPACE_TYPE = 'AuxiliarySpace'
  * ladder-signed delegation whose `invocationTarget` is the trailing-slash URL
  * of a Space so typed. Because that widens what a ladder VM may delegate, the
  * subtype is only valid alongside `AuxiliarySpace` ({@link
- * assertValidSpaceType}): a Space carrying it is bookkeeping by declaration
- * and excluded from List Spaces, so it cannot double as a listed data Space.
+ * assertValidSpaceType}): a Space carrying it is bookkeeping by declaration,
+ * so it cannot double as a data Space.
  */
 export const DELEGATED_CLIENTS_SPACE_TYPE = 'DelegatedClientsSpace'
 
@@ -204,18 +203,6 @@ export function isSameTypeSet({
     }
   }
   return true
-}
-
-/**
- * Whether a Space Metadata object declares itself an auxiliary Space.
- * @param spaceMetadata {{ type?: unknown } | undefined}
- * @returns {boolean}
- */
-export function isAuxiliarySpace(
-  spaceMetadata: { type?: unknown } | undefined
-): boolean {
-  const { type } = spaceMetadata ?? {}
-  return Array.isArray(type) && type.includes(AUXILIARY_SPACE_TYPE)
 }
 
 /**

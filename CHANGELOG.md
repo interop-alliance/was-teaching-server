@@ -17,15 +17,14 @@
   advertises it on the `/service` document's `instance` member as
   `exportSigningKey` (a `did:key`). With `WAS_ADMIN_DID` set, it provisions the
   `server` Space at startup under that admin `did:key`, typed
-  `['AuxiliarySpace', 'ServerInstanceSpace', 'Space']` and hidden from List
-  Spaces. The Space id `server` is reserved on every client create
-  (`reserved-id`, 409), configured or not, and a client create naming
-  `ServerInstanceSpace` is `invalid-request-body`. The server's own DID is the
-  self-hosted `did:webvh:{scid}:{host}:space:server:id`, whose log the admin
-  writes at `/space/server/id/did.jsonl` with the server key as a verification
-  method under `assertionMethod` only. Once that log resolves and lists the key
-  that way, `instance` also carries the DID as `serverDid`; a log listing the
-  key under any other relationship, or not at all, withdraws it.
+  `['AuxiliarySpace', 'ServerInstanceSpace', 'Space']`. The Space id `server` is
+  reserved on every client create (`reserved-id`, 409), configured or not, and a
+  client create naming `ServerInstanceSpace` is `invalid-request-body`. The
+  server's own DID is the self-hosted `did:webvh:{scid}:{host}:space:server:id`,
+  whose log the admin writes at `/space/server/id/did.jsonl` with the server key
+  as a verification method under `assertionMethod` only. Once that log resolves
+  and lists the key that way, `instance` also carries the DID as `serverDid`; a
+  log listing the key under any other relationship, or not at all, withdraws it.
 
 - Signed export provenance. While the server DID is advertised, Export Space
   adds two root entries to the archive: `provenance.jsonl`, one
@@ -123,6 +122,11 @@
     the metadata and policy cache TTLs, and `allowTargetQuery`.
 
 ### Changed
+
+- List Spaces lists auxiliary Spaces (typed `AuxiliarySpace`) like any other
+  Space, and `totalItems` counts them. They count toward
+  `MAX_SPACES_PER_CONTROLLER`, so a controller can now see what uses its quota.
+  Every item carries the Space's `type` array. This is a wire-contract change.
 
 - The Import Space handler now decodes the archive, builds its merge plan, and
   judges its provenance once, before the backend is called. The backend

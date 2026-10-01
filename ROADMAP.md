@@ -1537,30 +1537,6 @@ the desktop learns nothing.
         so a trailing-slash `SERVER_URL` does not yield `//space/...` in
         `encryption.history.resource`; `exchanges.ts` likewise
 
-### WAS-163: Space subtypes in List Spaces results, optionally
-
-- status: todo
-- priority: low
-- labels: spec-gap, wire-contract, list-spaces
-- discovered-from: WAS-147
-- touches:
-  - the WAS spec, "List Spaces Operation" (a new optional query parameter and an
-    optional item member)
-  - was-client, `listSpaces()`
-  - `src/requests/SpacesRepositoryRequest.ts`
-- acceptance:
-  - [ ] List Spaces takes an opt-in query parameter (name to be decided by the
-        maintainer) under which auxiliary Spaces are included in the results
-  - [ ] each item then carries the Space's `type` array, so a wallet can tell an
-        auxiliary Space from a data Space without a Read Space per item
-  - [ ] the default listing is unchanged: data Spaces only, no `type` member
-  - [ ] spec text and the conformance suite cover the parameter
-
-Auxiliary Spaces (`AuxiliarySpace` subtypes such as `DelegatedClientsSpace` and
-`ServerInstanceSpace`) count toward `MAX_SPACES_PER_CONTROLLER` but are hidden
-from List Spaces, so a controller near its quota cannot see what is using it.
-The wire shape (parameter name, item member) is the maintainer's call.
-
 ## Storage versioning (2026-09-29)
 
 Each backend versions its own storage layout, independently of the archive

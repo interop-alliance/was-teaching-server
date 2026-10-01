@@ -1,8 +1,8 @@
 /**
  * Typed Space Description tests (Vitest): the OPTIONAL `type` array a Space
  * Description carries, its validation on the two create paths, its immutability
- * on update, and the one listing consequence -- an `AuxiliarySpace` is omitted
- * from List Spaces.
+ * on update, and its listing -- every List Spaces item, an `AuxiliarySpace`
+ * included, carries the Space's `type`.
  *
  * A Space Description's `type` subtypes `Space`, so every consumer keeps
  * matching on the base `Space` type while a Space declares a more specific role
@@ -335,7 +335,7 @@ describe('Space Description type', () => {
     })
   })
 
-  describe('List Spaces (GET /spaces/) omits auxiliary Spaces', () => {
+  describe('List Spaces (GET /spaces/) lists auxiliary Spaces with their type', () => {
     let ordinarySpaceId: string, auxiliarySpaceId: string
 
     beforeAll(async () => {
@@ -362,17 +362,33 @@ describe('Space Description type', () => {
       })
     })
 
-    it('lists the ordinary Space only, and counts only listed items', async () => {
+    it('lists both Spaces, each with its type, and counts both', async () => {
       const listing = await bob.was.listSpaces()
-      assert.deepStrictEqual(listing.items, [
+      const expected = [
         {
           id: ordinarySpaceId,
           name: "Bob's Data",
           // List Spaces names a Space in its canonical container form.
-          url: `/space/${ordinarySpaceId}/`
+          url: `/space/${ordinarySpaceId}/`,
+          type: ['Space']
+        },
+        {
+          id: auxiliarySpaceId,
+          name: "Bob's Delegated Clients",
+          url: `/space/${auxiliarySpaceId}/`,
+          type: AUXILIARY_TYPE
         }
-      ])
-      assert.equal(listing.totalItems, 1)
+      ].sort((left, right) => (left.id < right.id ? -1 : 1))
+      assert.deepStrictEqual(listing.items, expected)
+      assert.equal(listing.totalItems, 2)
+    })
+
+    it("each item's type matches the stored Space Metadata object", async () => {
+      const listing = await bob.was.listSpaces()
+      for (const item of listing.items) {
+        const metadata = await bob.was.space(item.id).describe()
+        assert.deepStrictEqual(item.type, metadata.type)
+      }
     })
 
     it('the auxiliary Space is still directly readable by its controller', async () => {

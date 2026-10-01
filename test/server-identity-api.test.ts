@@ -123,9 +123,16 @@ describe('Server identity', () => {
       ])
     })
 
-    it('is hidden from List Spaces', async () => {
+    it('is listed for the admin by List Spaces, with its type', async () => {
       const listing = await admin.was.listSpaces()
-      assert.deepStrictEqual(listing.items, [])
+      assert.deepStrictEqual(listing.items, [
+        {
+          id: 'server',
+          url: '/space/server/',
+          type: ['AuxiliarySpace', 'ServerInstanceSpace', 'Space']
+        }
+      ])
+      assert.equal(listing.totalItems, 1)
     })
 
     it('is reserved: Create Space naming the id is `reserved-id`', async () => {
