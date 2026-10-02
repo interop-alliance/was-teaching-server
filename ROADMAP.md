@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 171
+nextAvailableId: 180
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -883,41 +883,6 @@ No compatibility path is offered for a persisted `{ id, updatedAt }` checkpoint.
 The server refuses it as malformed, the replica restarts its pull from the
 beginning, and the apply path, keyed by Resource id, makes that safe.
 
-### WAS-94: Drop the filesystem backend's legacy stat-based fallbacks
-
-- status: todo
-- priority: medium
-- labels: filesystem-backend, cleanup, greenfield
-- acceptance:
-  - [ ] `getResourceMetadata` reports no `createdAt` / `updatedAt` when the
-        Resource has no sidecar, rather than substituting `birthtime` / `mtime`
-        (both members are already optional on `ResourceMetadata`)
-  - [ ] `changesSince` drops the mtime fallback: a sidecar-less Resource has no
-        feed position and is left out of the feed
-  - [ ] The `ETag` path stays as it is -- a Resource with no validator already
-        carries no `ETag` -- and the three sites read consistently
-  - [ ] A test in `test/` writes a representation file into a Collection dir
-        with no sidecar and asserts the metadata read omits the timestamps and
-        the feed omits the Resource
-  - [ ] CHANGELOG.md records the behavior change
-
-Context: three places in `src/backends/filesystem.ts` accommodate a Resource
-written before the `.meta.` sidecar existed. `getResourceMetadata` (line 3506)
-falls back to `stats.birthtime` / `stats.mtime` for `createdAt` / `updatedAt`;
-`changesSince` (line 4341) falls back to the file's mtime for the feed's
-ordering key; the ETag path (line 3620) leaves such a Resource without a content
-`ETag`. The first two are data-migration accommodations for a `data/` tree
-written by an older build, which this project does not carry. They are also
-inconsistent with the neighbouring `createdBy`, which has no stat-based fallback
-and is simply absent ("there is no stat-based fallback for it, as there is for
-the timestamps"). Dropping them is type-clean: both timestamp members are
-optional. The mtime fallback is worse than absence for the feed in particular --
-a stat time bears no relation to the server's write order, so `cp` without `-p`,
-a restore, or a `touch` silently moves a Resource's feed position, and can move
-it below a checkpoint a client already holds (the same skip WAS-93 describes,
-from a different cause). Once WAS-95 lands, the only way to reach these paths is
-writing into `data/` behind the server's back.
-
 ### WAS-95: Import writes a Resource with no sidecar, so it has no feed position
 
 - status: todo
@@ -1699,6 +1664,12 @@ spec's Query Profile Registry appendix + Conditional Requests section).
 Interlocks with WAS-15: how long a tombstone must outlive the slowest client is
 really "how far back the newest checkpoint reaches".
 
+Under replication (WAS-96) a tombstone must also outlive the slowest peer: one
+reaped before every peer has pulled past it resurrects on the next pull. The
+pull-only transport gives the serving server no view of what a peer has pulled,
+so v1 of replication never reaps (Collection tombstones included, WAS-174);
+retention needs peers to report their position back, which this item designs.
+
 ### WAS-14: Attachment / blob replication for sync
 
 - status: todo
@@ -1708,6 +1679,21 @@ really "how far back the newest checkpoint reaches".
   - [ ] A size/streaming design produced, tied to the chunked-streams and
         EDV-chunking work
   - [ ] Replication implemented per that design
+
+Context from the WAS-96 design (2026-10-01), which this item inherits without
+change: a chunk is a versioned record, so it takes the same origin stamp and
+four-field validator (WAS-172), and a puller fetching chunk bytes with a plain
+`GET` learns the stamp from the `ETag` alone. Chunks inherit the Collection's
+`revisions` descriptor and resolve per chunk under LWW. Three things are this
+item's to decide: discovery (chunks and binary Resources are outside the changes
+feed by spec, and a chunk write does not re-surface its parent, so the pull loop
+needs a second feed or a per-parent chunk listing walk); chunk tombstones (a
+chunk is hard-deleted today, so an individual chunk delete cannot replicate;
+either a stamped tombstone reusing the WAS-174 mechanism, or chunk deletion
+defined as cascade-only through the parent's tombstone); and whole-stream
+consistency (two origins each rewriting a whole stream converge on a mix of
+chunks under per-chunk LWW; tying a chunk's validity to the parent revision it
+was written under is one additive member on the chunk record).
 
 ### WAS-15: Client-produced snapshot/checkpoint entries in the changes feed
 
@@ -1968,93 +1954,458 @@ JSON Pointer for nested attributes.
 
 ### WAS-96: Multi-primary Spaces (replicated write identity and conflict model)
 
-- status: draft
+- status: todo
 - priority: medium
-- labels: data-model, replication, changes-feed, etag, spec-blocked
-- discovered-from: WAS-93
+- labels: data-model, replication, changes-feed, etag, sync
+- design: designs/WAS-96-multi-primary-spaces.md
+- design-approved:
+- blocked-by: WAS-93, WAS-171, WAS-172, WAS-173, WAS-174, WAS-175, WAS-176,
+  WAS-177, WAS-178
 - touches:
-  - wallet-attached-storage-spec: the Resource data model (a replicated origin
-    identity and the validators), the `changes` profile (per-source or vector
-    checkpoints), and a new section on server-to-server sync
-  - storage-core: `ChangeDocument`, `ChangesCheckpoint`, and the Resource
-    metadata model
-  - was-teaching-server: the `ETag` derivation in `src/lib/etag.ts`, the sidecar
-    and `resources` row layouts, both `changesSince` implementations, and a sync
-    facet that pulls a peer's feed under a delegated capability
-  - was-client and was-sync: one checkpoint per server a replica pulls from, and
-    idempotent apply across sources
+  - wallet-attached-storage-spec: the Resource data model (the origin stamp
+    members and the validator), the `changes` profile (stamp members on the
+    change document; `updatedAt`/`writerId` LWW text revised), the Collection
+    Metadata object (`revisions`), Collection tombstones, and a new section on
+    server-to-server replication (the registration, the pull loop, the apply
+    rule, the clock bound)
+  - storage-core: `ChangeDocument`, the Resource and Metadata models (stamp
+    members), `CollectionMetadata.revisions`
+  - was-teaching-server: every item in `blocked-by`; ARCHITECTURE.md's
+    validator, hard-delete, resolver, and container-rule sections
+  - was-client: `Collection.changes()` document type; the `replicas` member on
+    the Space Metadata object
+  - was-sync: the apply comparison (stamp order replaces the `writerId` echo
+    check as the deciding rule; `writerId` stays a fast path)
+  - freewallet: controller delegations per replica (one per server), the replica
+    registration flow, and a controller log that now replicates
+  - conformance-suite: stamp members and validator layout, `revisions` refusals,
+    Collection tombstone listing
+- acceptance:
+  - [ ] The design doc is reviewed and approved, and every wire-level convention
+        it flags is individually signed off
+  - [ ] Each `blocked-by` item is done
+  - [ ] A test boots two in-process servers over separate data dirs, registers
+        one as the other's source for a Space, writes on the source, and asserts
+        the replica serves the same bytes, the same `ETag`, and the same
+        `updatedAt`; then writes the same Resource on both while the pull is
+        paused and asserts both converge on the write with the greater stamp
+  - [ ] The same test covers a one-way (backup-only) registration: nothing
+        written on the replica reaches the source
+  - [ ] The spec gains the server-to-server replication section and the revised
+        data-model text, and the conformance suite covers the wire changes
+  - [ ] ARCHITECTURE.md records the new resolver clause, the stamp and validator
+        rules, Collection tombstones, and the replication facet
 
-Draft rather than todo: the done-state depends on a Resource-model decision the
-spec has not made (how two concurrent versions of one Resource are represented
-and resolved), so there are no acceptance criteria yet. This item records what
-multi-primary forces, so that the single-server items filed in the meantime
-(WAS-93 first) do not close the door. Promote it to `todo` once the conflict
-model is decided, with acceptance criteria per bullet below.
+Context: a Space lives on one server today, because every capability's
+`invocationTarget` embeds that server's URL, and the only multi-writer case is
+many clients pushing to one server that serializes them. The goal is a Space
+that lives on more than one server, each accepting writes, with the servers
+converging. With two primaries there is no total order over a Collection's
+writes, only each server's local commit order; everything below follows from
+that. Promoted from `draft` to `todo` on 2026-10-01 once the conflict model was
+decided; the design doc holds the full enumeration, and the decisions are
+summarized here so the item reads on its own.
 
-The goal: a Space lives on more than one server, each accepts writes to the same
-Collection, and the servers sync with each other. Today a Space lives on one
-server, because every capability's `invocationTarget` embeds that server's URL,
-and the only multi-writer case is many clients pushing to one server that
-serializes them. With two primaries there is no total order over a Collection's
-writes, only each server's local commit order. Everything below follows from
-that.
+Conflict model (decision 1). A per-Collection `revisions` descriptor on the
+Collection Metadata object, with two independent axes: `resolution` (what the
+server does with concurrent revisions; `last-writer-wins` is the default and the
+only value in v1; `keep-conflicts` is reserved for the version-vector and
+revision-tree disciplines, where the server keeps losing revisions for a client
+to merge) and `immutable` (write-once Resources; a re-create with the same
+digest is idempotent, with different bytes refused). A client-declared `merge`
+member names the merge discipline the Collection's apps apply and is served
+verbatim, like `generator`. The server never merges content. Under LWW a stale
+`If-Match` stays 412 for now. `writerId` is not part of the server's order: the
+spec forbids it as an input to a server decision, and the stamp makes it
+unreachable anyway.
 
-Feed position is local. A client's checkpoint is a position in one server's feed
-and means nothing on the other. Either a replica keeps one checkpoint per server
-it pulls from (CouchDB's per source-target checkpoint), or the checkpoint
-becomes a vector with one entry per source (CouchDB's clustered sequence).
-WAS-93 makes the checkpoint opaque and server-scoped so either extension fits
-inside it.
+Write identity (decisions 2 and 3). Each write is stamped at its origin with a
+hybrid logical clock (`updatedAt` is the physical part in ms, an integer
+`updatedAtCounter` ticks when the ms did not advance) plus the origin id, and
+every replica stores the stamp verbatim. The order key is
+`(ms, counter, origin)`, a total order, which is the LWW rule, the dedup rule,
+and the loop check in one comparison. The per-record `version` and `metaVersion`
+counters have no job left and go. The validator becomes
+`"<generation>.<ms>.<counter>.<origin>"`; the generation stays an opaque marker
+minted at the creating write's origin (random, an implementation detail the spec
+does not name). Two servers re-creating one id while partitioned mint two
+generations and the stamp picks the winner, so the hard-delete rule needs no
+multi-server special case. The origin id is a per-store value (`WAS_ORIGIN_ID`,
+else minted at init), not the server DID, so it exists from first boot.
 
-A write needs a replicated identity. When server B receives a write that
-originated on A, B assigns it a position in B's own feed, but the write keeps an
-origin stamp: the accepting server's identifier plus a stamp from that server.
-Without it a client pulling both feeds sees the write twice and cannot tell, and
-A cannot recognize its own write returning from B and stop the loop. A hybrid
-logical clock (physical time plus a logical counter, as in CockroachDB and
-MongoDB's cluster time) is the natural stamp: it stays close to wall time and is
-comparable across servers, which a last-writer-wins rule needs, and it lets
-`updatedAt` remain the origin's honest clock rather than the receiving server's.
-The exact members, their encoding, and where they live (sidecar, row, feed
-document, `/meta`) are wire decisions to be made when the item is promoted.
+Checkpoints (decision 4). A client replicates against one server at a time and
+the servers replicate among themselves, so WAS-93's opaque per-server checkpoint
+is unchanged and no vector checkpoint is needed. Each change document carries
+the write's stamp members, so a client switching servers re-reads from the start
+and applies by the same comparison without writing what it already holds.
 
-Record metadata must be origin-owned and replicated verbatim. This is the `ETag`
-consideration. Today the validator is `"<generation>.<version>"`, the generation
-a random marker minted by this server when the record's counter starts, and the
-version a per-server counter. If B re-mints either on receive, a client holding
-an `ETag` from A cannot send `If-Match` to B, and the same logical write carries
-different validators on each replica. So `generation`, `version`, `updatedAt`,
-and the `/meta` pair (`metaGeneration`, `metaVersion`) become facts about the
-write, minted once at its origin and stored unchanged by every replica. The
-quoted byte layout of the validator can stay; what changes is who mints it and
-that it travels with the write. The generation could remain random-at-origin or
-be derived from the origin identity; either way it can no longer be a per-server
-marker. The hard-delete rule ("a new record under the same id mints a new
-generation") also needs a multi-server reading, since two servers could
-re-create the same id independently.
+Sync (decision 5). Pull only: a replicated write must carry its origin stamp,
+and no ordinary write route can accept one. A server pulls its peer's changes
+feed and fetches each representation with a plain `GET` (the `ETag` carries the
+whole stamp), applying through a backend-level path that stores it verbatim. By
+kind: Resources, their tombstones and `/meta`, Collection Metadata objects, the
+Space Metadata object, and policies apply under LWW, verbatim (the origin
+already ran the transition checks); governed history logs and `did.jsonl` logs
+fast-forward, two forks stall with a `warn`; revocations are a set union;
+backend registrations, quotas, keystores, and chunks (WAS-14) do not replicate.
+Collections get a stamped tombstone and a listing channel (WAS-174); Delete
+Space stays a hard delete per replica, since a Space on two servers is two URL
+identities and the registration dies with the Space. Tombstones are never reaped
+in v1 (WAS-13). A received stamp more than a bound ahead of the receiver's clock
+stalls the pull at that position with a `warn` naming the peer.
 
-Concurrent versions need a merge rule. Two primaries can each accept a write to
-`x` while partitioned, and a single counter cannot express that. The known
-choices are a version vector or revision tree that surfaces the conflict to the
-client (CouchDB, Riak), or last-writer-wins on the origin clock. The `If-Match`
-precondition model assumes one authority per Resource, and multi-primary
-replaces that with the merge rule. This is the spec-level decision the item is
-blocked on. Encrypted Collections constrain it further: the server cannot merge
-opaque envelopes, so any resolution beyond last-writer-wins must be a
-client-side merge of surfaced conflicts.
+Identity and registration (decision 6). Capability targets stay host-bound (a
+controller delegates once per replica; DID-relative targets are future spec
+work). The replica is the Space: a per-server, controller-only registration
+names one source peer, its Space URL, the delegated pull capability, and an
+optional Collection list; Space-level state and the Collection holding the
+controller's log always replicate regardless of the list. Direction is per
+registration, so a backup-only replica is a Space with one registration and no
+counterpart. The served Space Metadata object carries a server-derived
+`replicas` member for discovery. A self-hosted `did:webvh` controller resolves
+on the replica from the replicated copy of its log, still a local storage read
+(WAS-177); the `id` Collection replicates normally so the account survives the
+loss of its original host. The pulling server signs with a sync key derived from
+`WAS_SERVER_KEY_SEED`, delegated to as the server's `did:webvh` method once the
+admin lists it under `capabilityInvocation`, or as its `did:key` form before
+then (WAS-175).
 
-Server-to-server sync itself. A server can act as a client of its peer: the
-Space controller delegates a capability to the peer server's DID, and the peer
-pulls the changes feed under it, keeping one checkpoint per peer. Received
-writes take a local feed position and keep their origin stamp; a write whose
-origin is the receiving server itself is a loop and is dropped. The capability's
-`invocationTarget` embeds the peer's URL, so a Space on two hosts has two URL
-identities under one controller; how a client discovers the replica set (a
-service entry on the controller document, or the Space Description) is open.
-
-Out of scope until promoted: the reader-safety watermark (closed timestamps)
+Out of scope until later items: the reader-safety watermark (closed timestamps)
 that would be needed if per-Collection write serialization were ever relaxed;
-blob and chunk replication (WAS-14); and server-signed checkpoints (WAS-36),
-which interact with per-source checkpoints and should be designed together.
+blob and chunk replication (WAS-14); server-signed checkpoints (WAS-36), which
+interact with per-source checkpoints; a read-only replica switch (WAS-179);
+`keep-conflicts` and stale-`If-Match`-as-sibling.
+
+---
+
+### WAS-171: Per-store origin id (`WAS_ORIGIN_ID`)
+
+- status: todo
+- priority: medium
+- labels: replication, filesystem-backend, postgres-backend, config,
+  service-description
+- touches:
+  - was-teaching-server: `src/backends/filesystemStore.ts` (`store.json`), the
+    Postgres schema (`MIGRATIONS`), `src/config.default.ts`, `start.ts`,
+    `src/serviceDescription.ts`, `docs/admin-guide.md`
+  - wallet-attached-storage-spec: the service description's `instance` member
+- acceptance:
+  - [ ] `WAS_ORIGIN_ID`, when set, is used verbatim and must match
+        `[A-Za-z0-9_-]{1,64}`; a value outside that is refused at boot
+  - [ ] When unset, the filesystem backend mints a random base58 id into
+        `store.json` on first init (a store migration step) and the Postgres
+        backend into its own store row; the id is read from there on every later
+        boot
+  - [ ] A set `WAS_ORIGIN_ID` that differs from the stored id refuses to start,
+        naming both
+  - [ ] `StorageBackend` exposes the id; `/service` advertises it on `instance`
+        (member name pending sign-off), and the admin guide says it must be
+        unique among every server a Space may replicate to
+  - [ ] Tests cover mint, verbatim use, mismatch refusal, and the charset
+
+Context (discovered-from: WAS-96, decision 2). The origin half of a write's
+replicated identity. Not the server DID: most deployments have none, it embeds
+the host, and it changes if the admin re-mints the log; the id only has to be
+stable and unique, since nothing verifies a stamp. A human names a peer by URL
+or DID at registration and the server reads the peer's origin id off its
+`/service`, so the id can be short and opaque; an operator who wants a readable
+one sets it. A data wipe (staging) mints a fresh id, which is fine, since there
+is no data to replicate.
+
+---
+
+### WAS-172: Hybrid-logical-clock write stamp and the four-field validator
+
+- status: todo
+- priority: medium
+- labels: data-model, etag, changes-feed, wire-contract, filesystem-backend,
+  postgres-backend
+- blocked-by: WAS-171, WAS-93
+- touches:
+  - wallet-attached-storage-spec: the Resource data model (`updatedAtCounter`
+    and `origin` members on Resource metadata and the Metadata objects; the
+    validator layout; `version`/`metaVersion` retired), the `changes` profile
+    (stamp members on the change document; the `(updatedAt, writerId)` tie-break
+    sentence replaced by the stamp order)
+  - storage-core: the Resource metadata, `CollectionMetadata`, `SpaceMetadata`,
+    and `ChangeDocument` types
+  - was-teaching-server: `src/lib/etag.ts`, both backends' sidecar and row
+    layouts and every write path that stamps them, `src/lib/preconditions.ts`,
+    the `/meta` and Metadata-object projections, `changesSince`
+  - was-client: types only
+  - was-sync: the apply comparison
+  - conformance-suite: validator layout and stamp members on every record kind
+- acceptance:
+  - [ ] Each backend holds one HLC per store: `l = max(l, now)`, counter
+        incremented when `l` stood still, reset when it advanced; minted inside
+        the write's critical section; the HLC is advanced by received stamps
+        (WAS-176) under the clock bound
+  - [ ] Every versioned record (Resource, chunk, Resource `/meta`, Space and
+        Collection Metadata objects, Collection tombstone) stores `updatedAt`
+        (ISO, the HLC physical part), `updatedAtCounter`, and `origin` verbatim,
+        and serves the first two on its metadata
+  - [ ] `formatEtag` emits `"<generation>.<ms>.<counter>.<origin>"` with `ms`
+        the epoch integer; `If-Match` / `If-None-Match` compare the whole
+        string; the `version` and `metaVersion` counters are removed from the
+        sidecars, rows, and wire objects
+  - [ ] Each change document carries `updatedAtCounter` and `origin` beside
+        `updatedAt`
+  - [ ] The ARCHITECTURE note that a client "may read the trailing integer as
+        the revision number" is removed
+  - [ ] Tests freeze the clock and assert two same-ms writes get counters 0 and
+        1, that a clock step backwards does not lower `updatedAt`, and the
+        validator layout on every record kind
+
+Context (discovered-from: WAS-96, decisions 2 and 3). The research note
+`_spec/research-write-stamps.md` (2026-10-01) surveys CouchDB, Riak, Cassandra,
+CockroachDB, MongoDB, Dynamo, Spanner, Automerge and Yjs: no system serves LWW,
+dedup and a cross-replica validator from one field; time-plus- counter stamps
+serve LWW and, carried verbatim, the validator, while dedup always needs an
+origin-scoped key. The HLC paper's stamp has no node id and no tie-break, so the
+origin is part of the order key and of the validator (two origins can mint the
+same `(ms, counter)` for one Resource). The encoding is two members rather than
+the paper's packed 64-bit integer, which exceeds JavaScript's safe range.
+
+---
+
+### WAS-173: `revisions` descriptor on the Collection Metadata object
+
+- status: todo
+- priority: medium
+- labels: data-model, wire-contract, collection-metadata
+- touches:
+  - wallet-attached-storage-spec: the Collection Metadata data model
+  - storage-core: `CollectionMetadata`
+  - was-teaching-server: `src/lib/encryption.ts` (the descriptor-transition
+    pattern to follow), `CollectionRequest`, both backends' Resource write paths
+    (the immutable check), the governed-log derivation
+  - conformance-suite: refusals and the immutable semantics
+- acceptance:
+  - [ ] `revisions` is an optional object with `resolution` (closed set;
+        `last-writer-wins` only in v1, default when absent), `immutable`
+        (boolean, default false), and an optional client-declared `merge` object
+        served verbatim; an unknown `resolution` is refused with
+        `invalid-request-body` (400)
+  - [ ] Once set, `resolution` and `immutable` are immutable, refused with the
+        same transition error class `encryption` uses; a governed Collection's
+        descriptor is derived from the log like `encryption`
+  - [ ] On an `immutable` Collection an update of an existing Resource is
+        refused (error name pending sign-off), a re-create over a tombstone or a
+        repeat create with an equal body `Digest` is idempotent, and one with a
+        different digest is refused
+  - [ ] Tests cover defaults, refusals, immutability, and the digest rule on
+        plaintext and encrypted Collections
+
+Context (discovered-from: WAS-96, decision 1). The two axes are independent:
+resolution says what the server does with concurrent revisions, immutability
+restricts which writes exist. A content-addressed, append-only Collection is the
+immutable axis under the default resolution; its only conflict is a create
+against a tombstone of the same id, which the stamp resolves. `keep-conflicts`
+(losing revisions retained for a client merge, stale `If-Match` accepted as a
+sibling) is reserved and not implemented. Member values are wire decisions
+pending sign-off.
+
+---
+
+### WAS-174: Collection tombstones
+
+- status: todo
+- priority: medium
+- labels: data-model, replication, filesystem-backend, postgres-backend
+- blocked-by: WAS-172
+- touches:
+  - wallet-attached-storage-spec: Delete Collection, the Space listing
+  - storage-core: the Collection listing type
+  - was-teaching-server: both backends' `deleteCollection` and Space listing,
+    `src/lib/etag.ts` hard-delete rule, ARCHITECTURE.md
+  - conformance-suite: the listing flag
+- acceptance:
+  - [ ] Delete Collection leaves a stamped tombstone (the Collection Metadata
+        record marked deleted, carrying its stamp and generation) in place of
+        the hard delete; Resources and chunks under it are still removed
+  - [ ] A re-create under the same id mints a new generation; the tombstone's
+        stamp decides against a replicated concurrent write
+  - [ ] The Space listing can include tombstoned Collections under a query flag
+        (name pending sign-off) for the puller, and excludes them otherwise
+  - [ ] Tombstones are never reaped (WAS-13 owns retention)
+  - [ ] Tests cover the tombstone, the listing flag, and re-creation
+
+Context (discovered-from: WAS-96, decision 5). A hard delete replicated by pull
+resurrects on the next pull from a peer that still holds the Collection, the
+Cassandra `gc_grace_seconds` hazard. The changes feed is per Collection, so the
+Space listing is the channel in which a deleted Collection can be seen. Delete
+Space needs no tombstone: a Space on two servers is two URL identities, each
+deleted by its own root invocation, and the replication registration (WAS-176)
+dies with the Space.
+
+---
+
+### WAS-175: Server sync key and verification of a peer's invocations
+
+- status: todo
+- priority: medium
+- labels: replication, security, zcap, webvh, service-description
+- touches:
+  - was-teaching-server: `src/lib/serverIdentity.ts`, `src/zcap.ts`,
+    `src/lib/webvhController.ts`, `src/serviceDescription.ts`,
+    `docs/admin-guide.md` (a `di` runbook step)
+  - wallet-attached-storage-spec: the service description's `instance` member;
+    the authz profile (a server-identity invoker)
+  - freewallet: delegating the pull capability to a server identity
+- acceptance:
+  - [ ] A second Ed25519 key is derived from `WAS_SERVER_KEY_SEED` with its own
+        derivation label (pending sign-off); its `did:key` is advertised on
+        `/service` `instance` (member name pending sign-off); the export key's
+        `assertionMethod`-alone check is unchanged
+  - [ ] The admin guide shows adding the key to the server log under
+        `capabilityInvocation`; `resolveServerDid` tolerates that key there and
+        still refuses the export key under any relationship but
+        `assertionMethod`
+  - [ ] The server signs sync invocations with the `did:webvh` method
+        `{serverDid}#{key}` when the log lists it, else with the `did:key`
+  - [ ] A foreign `did:webvh` is resolved over the network only when it is the
+        invoker named by a delegated capability whose chain already verified to
+        the Space controller and its path is `space:server:id`; the log is
+        fetched from that host, verified like any log, cached per DID,
+        re-fetched once when a signature names a key the cached document lacks,
+        with a size bound and timeout; any other foreign `did:webvh` stays
+        refused
+  - [ ] Tests cover both signing forms, the bounded fetch, the re-fetch on a key
+        miss, and the refusals
+
+Context (discovered-from: WAS-96, decision 6c). The pulling server's own
+`did:webvh` lives in its `server` Space, which no user controller replicates, so
+the serving server cannot resolve it from storage. The fetch is the first
+network resolution in this server and is bounded by shape and by the
+controller's delegation. WAS-162's findings note covers the general question and
+applies here; this item takes the bounded form only. The `did:key` form is the
+same key, so promoting a peer to its `did:webvh` is a re-delegation, not a
+rotation.
+
+---
+
+### WAS-176: Replica registration, pull loop, and the apply path
+
+- status: todo
+- priority: medium
+- labels: replication, routes, filesystem-backend, postgres-backend,
+  space-metadata
+- blocked-by: WAS-171, WAS-172, WAS-173, WAS-174, WAS-175, WAS-177, WAS-178,
+  WAS-93
+- touches:
+  - wallet-attached-storage-spec: the replication section (registration object,
+    pull loop, apply rule, clock bound), the Space Metadata object's `replicas`
+    member
+  - storage-core: `SpaceMetadata.replicas`, the registration type
+  - was-teaching-server: `routes.ts`, a `*Request` class for the registration,
+    `src/lib/containerRule.ts`, a sync module, `StorageBackend` (apply methods),
+    `src/lib/spaceProjection.ts`, ARCHITECTURE.md
+  - was-client: the `replicas` member; a registration API
+  - freewallet: the registration flow
+  - conformance-suite: the registration endpoints
+- acceptance:
+  - [ ] A controller-only, per-server registration sub-resource of the Space
+        (path pending sign-off) holds one source peer: the peer's Space URL, the
+        delegated pull capability, and an optional Collection list; registering
+        reads the peer's `/service` for its origin id, refuses a peer
+        advertising this server's own id, and refuses a peer whose Space `type`
+        set differs
+  - [ ] The registration is not replicated and is removed with Delete Space
+  - [ ] A pull loop per registration lists the peer's Space (tombstones
+        included), filters by the Collection list with Space-level state and the
+        controller's log Collection always included, pulls each Collection's
+        changes feed under the per-peer opaque checkpoint, fetches each
+        representation by `GET`, and applies through backend `apply*` methods
+        that store the stamp verbatim and take a local feed position
+  - [ ] Apply is one comparison on `(ms, counter, origin)`: greater than the
+        held revision applies, else skipped (dedup and loop check included);
+        logs fast-forward or stall; revocations union; a received stamp more
+        than the configured bound ahead of local time stalls the pull with a
+        `warn`
+  - [ ] The served Space Metadata object carries a server-derived `replicas`
+        member listing each registered peer's Space URL and role
+  - [ ] A peer answering 404 for the Space stops the loop with one `warn`
+  - [ ] Tests: the two-server test named on WAS-96
+
+Context (discovered-from: WAS-96, decisions 4 to 6). Pull only, because a
+replicated write must arrive with its origin stamp and no ordinary write route
+can accept one without a new kind of trust. The replica is the Space so that
+Space-level state, Collection lifecycle, and discovery ride one loop; the
+Collection list gives per-peer selectivity. One-way replication is the default
+shape: a registration names a source, and nothing flows back without a
+counterpart registration on the other side.
+
+---
+
+### WAS-177: Resolve a replicated peer-hosted `did:webvh` controller from storage
+
+- status: todo
+- priority: medium
+- labels: replication, webvh, zcap, security
+- blocked-by: WAS-176
+- touches:
+  - was-teaching-server: `src/lib/webvhController.ts`, `src/zcap.ts`,
+    ARCHITECTURE.md (the Controller and self-hosted `did:webvh` entries)
+  - wallet-attached-storage-spec: the authz profile's self-hosted rule
+  - freewallet: a controller log that now has copies; the DR flow (appending on
+    the surviving replica)
+- acceptance:
+  - [ ] A `did:webvh` whose host is a registered peer and whose log Collection
+        is replicated here resolves from the local copy, through the same
+        verify, cache, head-record and fast-forward path as a native log; no
+        network fetch
+  - [ ] Update Space to such a controller, and Create Space by Id under one,
+        work on the replica
+  - [ ] Any other cross-host `did:webvh` stays refused
+  - [ ] Tests resolve a controller minted on server A against server B after a
+        pull, and assert a key retired on A stops authorizing on B after the
+        next pull
+
+Context (discovered-from: WAS-96, decision 6b). The replica can authorize
+nothing without the controller's document. Fetching it from the original host
+was rejected: if that host is lost for good, a cached document can never be
+refreshed and the account can never rotate a key again, which defeats the
+disaster-recovery purpose of a replica. A replicated copy keeps the account
+alive on the surviving server, where the wallet can keep appending.
+
+---
+
+### WAS-178: Read a Space's revocations
+
+- status: todo
+- priority: medium
+- labels: replication, zcap, routes
+- touches:
+  - was-teaching-server: `routes.ts`, the revocation request handler,
+    `src/lib/revocations.ts`
+  - wallet-attached-storage-spec: the revocations endpoint
+  - conformance-suite: the listing
+- acceptance:
+  - [ ] `GET` on the Space's revocations endpoint lists the stored revocations
+        under a capability on the Space subtree (paginated like the other
+        listings)
+  - [ ] Tests cover the listing and its authorization
+
+Context (discovered-from: WAS-96, decision 5). Revocations replicate as a set
+union, and the puller needs a read; today the endpoint accepts submissions only.
+
+---
+
+### WAS-179: Read-only replica switch
+
+- status: todo
+- priority: low
+- labels: someday, replication
+- blocked-by: WAS-176
+- acceptance:
+  - [ ] A per-server, controller-only switch on a replicated Space refuses every
+        unsafe method except the apply path and the controller's own
+        registration management
+  - [ ] Refused writes answer a problem type pending sign-off
+
+Context (discovered-from: WAS-96, decision 6). A backup-only replica is still
+writable by any grant the controller delegates on it, and such a write never
+reaches the source. For v1 the controller manages this by not delegating write
+grants on the replica; this item enforces it.
 
 ---

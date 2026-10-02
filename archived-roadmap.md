@@ -4262,3 +4262,38 @@ foreign key refuses the same insert, but as a 500. The absent-scope refusal is a
 before the insert, so only the race reaches it. The keystore scope has the same
 check-then-write shape. It is outside this item unless keystores gain a delete
 path.
+
+### WAS-94: Drop the filesystem backend's legacy stat-based fallbacks
+
+- status: done (2026-10-01)
+- priority: medium
+- labels: filesystem-backend, cleanup, greenfield
+- acceptance:
+  - [x] `getResourceMetadata` reports no `createdAt` / `updatedAt` when the
+        Resource has no sidecar, rather than substituting `birthtime` / `mtime`
+        (both members are already optional on `ResourceMetadata`)
+  - [x] `changesSince` drops the mtime fallback: a sidecar-less Resource has no
+        feed position and is left out of the feed
+  - [x] The `ETag` path stays as it is -- a Resource with no validator already
+        carries no `ETag` -- and the three sites read consistently
+  - [x] A test in `test/` writes a representation file into a Collection dir
+        with no sidecar and asserts the metadata read omits the timestamps and
+        the feed omits the Resource
+  - [x] CHANGELOG.md records the behavior change
+
+Context: three places in `src/backends/filesystem.ts` accommodate a Resource
+written before the `.meta.` sidecar existed. `getResourceMetadata` (line 3506)
+falls back to `stats.birthtime` / `stats.mtime` for `createdAt` / `updatedAt`;
+`changesSince` (line 4341) falls back to the file's mtime for the feed's
+ordering key; the ETag path (line 3620) leaves such a Resource without a content
+`ETag`. The first two are data-migration accommodations for a `data/` tree
+written by an older build, which this project does not carry. They are also
+inconsistent with the neighbouring `createdBy`, which has no stat-based fallback
+and is simply absent ("there is no stat-based fallback for it, as there is for
+the timestamps"). Dropping them is type-clean: both timestamp members are
+optional. The mtime fallback is worse than absence for the feed in particular --
+a stat time bears no relation to the server's write order, so `cp` without `-p`,
+a restore, or a `touch` silently moves a Resource's feed position, and can move
+it below a checkpoint a client already holds (the same skip WAS-93 describes,
+from a different cause). Once WAS-95 lands, the only way to reach these paths is
+writing into `data/` behind the server's back.

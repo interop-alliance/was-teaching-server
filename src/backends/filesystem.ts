@@ -1995,7 +1995,7 @@ export class FileSystemBackend implements StorageBackend {
 
                   // A metadata sidecar travels with a newly-created resource (preserving
                   // its timestamps and user-writable `custom`); an absent one leaves
-                  // `getResourceMetadata` to fall back to the file's stat times.
+                  // the Resource with no timestamps and no changes-feed position.
                   const metadataBytes = resourceMetadata.get(resourceId)
                   if (metadataBytes) {
                     await atomicWriteFile({
@@ -3427,8 +3427,8 @@ export class FileSystemBackend implements StorageBackend {
    * sidecar together -- the shared core of the two metadata getters
    * (`getResourceMetadata` and `getChunkMetadata`). Resolves `undefined` when no
    * representation file is present (including a delete race on `stat`). Unlike
-   * `#readRepresentation`, the `stat` result is USED (the reported `size`, and
-   * the timestamp fallbacks in `getResourceMetadata`), so it is not dropped.
+   * `#readRepresentation`, the `stat` result is USED (the reported `size`), so
+   * it is not dropped.
    * @param options {object}
    * @param options.collectionDir {string}   the dir the representation lives in
    * @param options.resourceId {string}   the representation id (a resourceId, or
@@ -3496,7 +3496,7 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Reads a Resource's metadata sidecar. Resolves `undefined` when none has been
-   * written yet (e.g. a Resource created before sidecars existed).
+   * written.
    * @param options {object}
    * @param options.collectionDir {string}
    * @param options.resourceId {string}
@@ -3541,10 +3541,10 @@ export class FileSystemBackend implements StorageBackend {
    * Reads the metadata of a Resource's current representation: the REQUIRED
    * server-managed fields (`contentType`, `size`, both derived from the stored
    * file), plus the OPTIONAL `createdAt` / `updatedAt` timestamps and the
-   * user-writable `custom` object read from the sidecar. For a Resource written
-   * before sidecars existed, the timestamps fall back to the file's birth/modify
-   * times and `custom` is omitted. Resolves `undefined` when the Resource is
-   * absent (including a delete race on `stat`).
+   * user-writable `custom` object read from the sidecar. A member the sidecar
+   * does not carry is omitted, so a Resource with no sidecar reports only
+   * `contentType` and `size`. Resolves `undefined` when the Resource is absent
+   * (including a delete race on `stat`).
    *
    * Also surfaces the two ETag validators when recorded, so the request layer
    * can set the `ETag` header: HEAD / the resource itself pair the sidecar's
@@ -3574,17 +3574,19 @@ export class FileSystemBackend implements StorageBackend {
     }
     const { stats, contentType, sidecar } = stated
 
-    const createdAt = sidecar?.createdAt ?? stats.birthtime.toISOString()
-    const updatedAt = sidecar?.updatedAt ?? stats.mtime.toISOString()
     const hasCustom = sidecar?.custom && Object.keys(sidecar.custom).length > 0
 
     return {
       contentType,
       size: stats.size,
-      createdAt,
-      updatedAt,
-      // Absent for a Resource created before `createdBy` was recorded; there is
-      // no stat-based fallback for it, as there is for the timestamps.
+      // Each is absent when the sidecar does not carry it. No member falls back
+      // to the file's stat times.
+      ...(sidecar?.createdAt !== undefined && {
+        createdAt: sidecar.createdAt
+      }),
+      ...(sidecar?.updatedAt !== undefined && {
+        updatedAt: sidecar.updatedAt
+      }),
       ...(sidecar?.createdBy !== undefined && { createdBy: sidecar.createdBy }),
       // `custom` is returned verbatim -- `{ name, tags }` on a plaintext
       // Collection, the opaque encryption envelope on an encrypted one.
@@ -3684,16 +3686,9 @@ export class FileSystemBackend implements StorageBackend {
       })
 
       const now = new Date().toISOString()
-      // Fall back to the file's birth time for `createdAt` if the Resource
-      // predates sidecars (so a meta write does not lose its creation time).
-      let createdAt = prior?.createdAt
-      if (!createdAt) {
-        try {
-          createdAt = (await fsStat(filePath)).birthtime.toISOString()
-        } catch {
-          createdAt = now
-        }
-      }
+      // A Resource whose sidecar carries no `createdAt` takes this write's
+      // time.
+      const createdAt = prior?.createdAt ?? now
       // The metadata object's own generation: minted by the first metadata
       // write (a tombstone dropped any earlier one with `metaVersion`, so a
       // re-created Resource starts afresh here) and kept by every later one.
@@ -4442,17 +4437,11 @@ export class FileSystemBackend implements StorageBackend {
           collectionDir,
           resourceId
         })
-        // `updatedAt` / `version` come from the sidecar; fall back to the file's
-        // mtime for a legacy Resource written before sidecars existed.
-        let updatedAt = sidecar?.updatedAt
+        // `updatedAt` / `version` come from the sidecar. A Resource whose
+        // sidecar carries no `updatedAt` has no feed position and is left out.
+        const updatedAt = sidecar?.updatedAt
         if (!updatedAt) {
-          try {
-            updatedAt = (
-              await fsStat(path.join(collectionDir, live.fileName))
-            ).mtime.toISOString()
-          } catch {
-            return undefined
-          }
+          return undefined
         }
         return {
           resourceId,

@@ -154,6 +154,12 @@
   the server-managed member reading, and the file and chunked digests) moved
   into its own module, shared by export signing and import verification.
 
+- The filesystem backend no longer substitutes a file's stat times for a
+  Resource's missing `createdAt` / `updatedAt`; Read Resource Metadata omits
+  them instead. Such a Resource has no changes-feed position and is left out of
+  the feed. A `/meta` write on one takes its own time as `createdAt` rather than
+  the file's birth time.
+
 ### Fixed
 
 - A Space-scoped revocation insert racing a Delete Space no longer leaves a
