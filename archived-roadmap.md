@@ -4228,3 +4228,37 @@ every item always carries `type`.
   - [x] `src/requests/collectionContext.ts` builds the log URL with `new URL`,
         so a trailing-slash `SERVER_URL` does not yield `//space/...` in
         `encryption.history.resource`; `exchanges.ts` likewise
+
+### WAS-158: Re-check the Space inside the lock on a revocation insert
+
+- status: done
+- done: 2026-10-01
+- priority: medium
+- labels: filesystem-backend, postgres-backend, consistency, revocation
+- discovered-from: WAS-125
+- acceptance:
+  - [x] The filesystem `insertRevocation` checks a Space scope's Metadata object
+        under the Space gate's shared side (`#underSpaceWrite` with
+        `container`), so a Delete Space cannot land between the check and the
+        write, and `mkdir -p` never recreates the Space's revocation directory
+        after the delete removed it
+  - [x] An insert under a Space with no Metadata object is refused with a 404 on
+        both backends, not a `StorageError` (500). This includes the Postgres
+        foreign-key violation (SQLSTATE `23503`) raised when the Space row was
+        deleted first
+  - [x] A contract test issues a revocation insert racing a Delete Space and
+        asserts that either the insert is refused or the delete removed it. In
+        both orders, a Space re-created under the same id has no revocations
+
+`insertRevocation` reads the Space Metadata object before any lock, then creates
+the record under `spaceRevocationsDir/<S>/`, a sibling tree outside the Space
+dir. A Delete Space landing between the two removes that tree, and the insert's
+`mkdir -p` recreates it. The record then outlives its Space and applies to the
+next Space created under id `S`. Capability ids are normally random, so a stale
+record rarely matches a new grant, but the stored state is wrong, and the new
+Space's export carries the old record. On Postgres the `space_revocations`
+foreign key refuses the same insert, but as a 500. The absent-scope refusal is a
+`StorageError` on both backends today. The HTTP route masks unknown scopes
+before the insert, so only the race reaches it. The keystore scope has the same
+check-then-write shape. It is outside this item unless keystores gain a delete
+path.

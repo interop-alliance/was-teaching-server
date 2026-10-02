@@ -154,6 +154,13 @@
   the server-managed member reading, and the file and chunked digests) moved
   into its own module, shared by export signing and import verification.
 
+### Fixed
+
+- A Space-scoped revocation insert racing a Delete Space no longer leaves a
+  record that the next Space under the same id inherits. Both backends re-check
+  the Space Metadata object under the lock Delete Space takes. An insert under a
+  Space with no Metadata object is now the masked 404, not a 500.
+
 ## 0.39.0 - 2026-09-28
 
 ### Added

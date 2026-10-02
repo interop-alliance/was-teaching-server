@@ -1379,9 +1379,12 @@ export interface StorageBackend {
    * Inserts a revocation record, create-only: rejects with the protocol's 409
    * duplicate (`DuplicateRevocationError`) when a record already exists at
    * `(meta.delegator, capability.id)`, atomically with the write. The scope
-   * must exist: inserting under an absent keystore or Space rejects with
+   * must exist. A Space scope is re-checked under the lock that Delete Space
+   * takes, so an insert under a Space with no Metadata object rejects with
+   * `SpaceNotFoundError` (404), and one racing a Delete Space is either
+   * refused or removed by it. An insert under an absent keystore rejects with
    * `StorageError` (the request layer 404-masks unknown scopes long before
-   * this; the Postgres backend's foreign keys enforce the same at the store).
+   * this).
    */
   insertRevocation(options: {
     scope: RevocationScope

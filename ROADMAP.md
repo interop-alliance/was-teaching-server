@@ -1037,39 +1037,6 @@ permanent the bad state is. Findings already tracked elsewhere are noted on
 those items (WAS-61, WAS-65, WAS-70, WAS-73, WAS-92, WAS-108) rather than
 re-filed.
 
-### WAS-158: Re-check the Space inside the lock on a revocation insert
-
-- status: todo
-- priority: medium
-- labels: filesystem-backend, postgres-backend, consistency, revocation
-- discovered-from: WAS-125
-- acceptance:
-  - [ ] The filesystem `insertRevocation` checks a Space scope's Metadata object
-        under the Space gate's shared side (`#underSpaceWrite` with
-        `container`), so a Delete Space cannot land between the check and the
-        write, and `mkdir -p` never recreates the Space's revocation directory
-        after the delete removed it
-  - [ ] An insert under a Space with no Metadata object is refused with a 404 on
-        both backends, not a `StorageError` (500). This includes the Postgres
-        foreign-key violation (SQLSTATE `23503`) raised when the Space row was
-        deleted first
-  - [ ] A contract test issues a revocation insert racing a Delete Space and
-        asserts that either the insert is refused or the delete removed it. In
-        both orders, a Space re-created under the same id has no revocations
-
-`insertRevocation` reads the Space Metadata object before any lock, then creates
-the record under `spaceRevocationsDir/<S>/`, a sibling tree outside the Space
-dir. A Delete Space landing between the two removes that tree, and the insert's
-`mkdir -p` recreates it. The record then outlives its Space and applies to the
-next Space created under id `S`. Capability ids are normally random, so a stale
-record rarely matches a new grant, but the stored state is wrong, and the new
-Space's export carries the old record. On Postgres the `space_revocations`
-foreign key refuses the same insert, but as a 500. The absent-scope refusal is a
-`StorageError` on both backends today. The HTTP route masks unknown scopes
-before the insert, so only the race reaches it. The keystore scope has the same
-check-then-write shape. It is outside this item unless keystores gain a delete
-path.
-
 ### WAS-126: Import Space validates what it installs
 
 - status: todo
@@ -1517,17 +1484,6 @@ the desktop learns nothing.
   - [ ] A multipart create's 201 echoes the stored `content-type`, not the
         request envelope's
   - [ ] `test/` covers each case
-
-## Storage versioning (2026-09-29)
-
-Each backend versions its own storage layout, independently of the archive
-format. The archive's `ubc-version` versions the interchange format that data
-crosses backends in. Its value says nothing about a given backend's layout, and
-backend internals change without the archive changing. The store version is an
-implementation concern: the spec does not name it, it is not stored in any
-Space, it is not exported, and it is not served on `/service`. It sits at the
-store root, beside the other server-private state that lives outside every
-Space.
 
 ## Cross-host did:webvh invokers (2026-09-29)
 

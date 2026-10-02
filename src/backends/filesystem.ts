@@ -5427,6 +5427,14 @@ export class FileSystemBackend implements StorageBackend {
    * (`wx`) enforces the `(delegator, capability.id)` uniqueness atomically,
    * rejecting a duplicate with the protocol's 409
    * (`DuplicateRevocationError`).
+   *
+   * A Space-scoped insert runs on the Space gate's shared side and re-checks
+   * the Space Metadata object there (`SpaceNotFoundError`, 404). A Delete
+   * Space therefore lands wholly before the insert, which is then refused, or
+   * wholly after it, and removes the record. The record's directory sits
+   * outside the Space dir, so without the gate the insert's `mkdir` could
+   * recreate it behind the delete, and the record would apply to the next
+   * Space created under the same id.
    * @param options {object}
    * @param options.scope {RevocationScope}   the owning keystore or Space
    * @param options.record {RevocationRecord}   the revocation to store
@@ -5439,22 +5447,45 @@ export class FileSystemBackend implements StorageBackend {
     scope: RevocationScope
     record: RevocationRecord
   }): Promise<void> {
-    // The scope must already exist -- the postgres backend enforces this via
-    // its foreign keys, so an absent-parent insert rejects identically on
-    // both backends instead of mkdir-ing an orphan record dir here. (The HTTP
-    // route 404-masks unknown scopes before reaching the store; this guards
-    // direct backend use.)
-    const scopeExists =
-      'keystoreId' in scope
-        ? Boolean(await this.getKeystore({ keystoreId: scope.keystoreId }))
-        : Boolean(await this.getSpaceMetadata({ spaceId: scope.spaceId }))
-    if (!scopeExists) {
-      throw new StorageError({
-        cause: new Error(
-          'Cannot insert a revocation under an absent keystore or Space.'
-        )
-      })
+    if ('keystoreId' in scope) {
+      // The keystore must already exist -- the postgres backend enforces this
+      // via its foreign keys, so an absent-parent insert rejects identically
+      // on both backends instead of mkdir-ing an orphan record dir here. (The
+      // HTTP route 404-masks unknown scopes before reaching the store; this
+      // guards direct backend use.)
+      if (!(await this.getKeystore({ keystoreId: scope.keystoreId }))) {
+        throw new StorageError({
+          cause: new Error(
+            'Cannot insert a revocation under an absent keystore.'
+          )
+        })
+      }
+      return this.#writeRevocationFile({ scope, record })
     }
+    // The gate admits readers re-entrantly, so an import, which already holds
+    // the shared side, nests safely.
+    return this.#underSpaceWrite({
+      spaceId: scope.spaceId,
+      container: { requestName: 'Revoke Capability' },
+      write: () => this.#writeRevocationFile({ scope, record })
+    })
+  }
+
+  /**
+   * `insertRevocation`'s write, for a caller that has already checked the
+   * scope exists (and, for a Space, holds the Space gate).
+   * @param options {object}
+   * @param options.scope {RevocationScope}   the owning keystore or Space
+   * @param options.record {RevocationRecord}   the revocation to store
+   * @returns {Promise<void>}
+   */
+  async #writeRevocationFile({
+    scope,
+    record
+  }: {
+    scope: RevocationScope
+    record: RevocationRecord
+  }): Promise<void> {
     const revocationFile = this.#revocationFile({
       scope,
       delegator: record.meta.delegator,

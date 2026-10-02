@@ -4170,6 +4170,47 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await assertNothingAdopted(spaceId)
       })
 
+      it('a revocation insert racing the Space delete leaves no record for the next Space', async () => {
+        const { backend } = harness
+        const capabilities = [
+          {
+            capabilityId: 'urn:zcap:raced-revocation',
+            delegator: 'did:key:z6MkDelegator'
+          }
+        ]
+        const record = revocationRecord(capabilities[0]!)
+        // Both issue orders. Either the insert lands first and the delete
+        // removes it, or it lands second and is refused with a 404. Neither
+        // order may leave a record for the next Space under this id.
+        for (const deleteFirst of [true, false]) {
+          const spaceId = `space-rev-race-${deleteFirst ? 'delete' : 'insert'}`
+          await provisionSpace(backend, spaceId)
+          const operations = deleteFirst
+            ? [
+                backend.deleteSpace({ spaceId }),
+                backend.insertRevocation({ scope: { spaceId }, record })
+              ]
+            : [
+                backend.insertRevocation({ scope: { spaceId }, record }),
+                backend.deleteSpace({ spaceId })
+              ]
+          const [first, second] = await Promise.allSettled(operations)
+          const deletion = deleteFirst ? first! : second!
+          const insertion = deleteFirst ? second! : first!
+          assert.equal(deletion.status, 'fulfilled')
+          if (insertion.status === 'rejected') {
+            assert.ok(isNotFound(insertion.reason), String(insertion.reason))
+          }
+          await assertNothingAdopted(spaceId)
+          assert.equal(
+            await backend.isRevoked({ scope: { spaceId }, capabilities }),
+            false
+          )
+          // Gone, not merely shadowed: the same pair inserts again cleanly.
+          await backend.insertRevocation({ scope: { spaceId }, record })
+        }
+      })
+
       it('refuses Resource, chunk and policy writes into a deleted Collection', async () => {
         const { backend } = harness
         const spaceId = 'space-col-gone'
@@ -4618,19 +4659,20 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       it('insertRevocation rejects under an absent scope (no orphan records)', async () => {
         // The request layer 404-masks unknown scopes before the store is
         // reached; at the store, an absent-parent insert must reject the same
-        // way on every backend (postgres enforces it via foreign keys)
-        // rather than silently creating an orphan record.
+        // way on every backend rather than silently creating an orphan
+        // record. An absent Space is the 404 a Delete Space race reaches.
         const { backend } = harness
         const record = revocationRecord({
           capabilityId: 'urn:zcap:orphan-1',
           delegator: 'did:key:z6MkDelegator'
         })
-        await expect(
+        await assert.rejects(
           backend.insertRevocation({
             scope: { spaceId: 'no-such-space' },
             record
-          })
-        ).rejects.toBeInstanceOf(StorageError)
+          }),
+          isNotFound
+        )
         await expect(
           backend.insertRevocation({
             scope: { keystoreId: 'no-such-keystore' },

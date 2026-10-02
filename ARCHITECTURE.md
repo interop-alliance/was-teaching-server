@@ -443,19 +443,21 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   filesystem backend's Space gate, the Postgres `spaces` row). It is refused
   with a 404 otherwise. The request layer's own existence check runs before that
   lock, so a write racing a delete would otherwise recreate the removed
-  container. Each backend's `exportSpace` builds the archive's entry tree out of
-  its own storage and hands it to `packSpaceArchive`; the per-Space archive
-  codec itself -- the file-name dialect, the `manifest.yml` document and the
-  packer -- lives in `@interop/space-archive`, shared with the wallets that read
-  a backup, and `src/lib/importTar.ts` reads the same dialect back. The codec is
-  isomorphic and resolves a streamx-based tar-stream `Pack`, which the backend
-  wraps with `Readable.from`. The Export Space handler passes this server's
-  Service Description to `exportSpace`, which the codec writes into the archive
-  verbatim as its `service.json` entry beside `manifest.yml`, so an importer can
-  read which specification versions and feature set the contents were written
-  under before it writes anything. It is informational, and `importTar.ts`
-  ignores it. When the handler has an export attestor (the server has an
-  identity), the backend also passes the codec the `provenance.jsonl` statements
+  container. A Space-scoped revocation insert is one of these writes, though its
+  records live outside the Space tree. Each backend's `exportSpace` builds the
+  archive's entry tree out of its own storage and hands it to
+  `packSpaceArchive`; the per-Space archive codec itself -- the file-name
+  dialect, the `manifest.yml` document and the packer -- lives in
+  `@interop/space-archive`, shared with the wallets that read a backup, and
+  `src/lib/importTar.ts` reads the same dialect back. The codec is isomorphic
+  and resolves a streamx-based tar-stream `Pack`, which the backend wraps with
+  `Readable.from`. The Export Space handler passes this server's Service
+  Description to `exportSpace`, which the codec writes into the archive verbatim
+  as its `service.json` entry beside `manifest.yml`, so an importer can read
+  which specification versions and feature set the contents were written under
+  before it writes anything. It is informational, and `importTar.ts` ignores it.
+  When the handler has an export attestor (the server has an identity), the
+  backend also passes the codec the `provenance.jsonl` statements
   `attestArchiveEntries` builds over its entry tree and the `did.jsonl` log
   snapshot (see `lib/exportProvenance.ts` above); the layout under `space/` does
   not change, so the import walk is the same either way, and

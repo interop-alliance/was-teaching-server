@@ -3740,6 +3740,12 @@ export class PostgresBackend implements StorageBackend {
    * Inserts a revocation record, create-only on
    * `(scope id, delegator, capability.id)`; a duplicate rejects with the
    * protocol's 409 (`DuplicateRevocationError`).
+   *
+   * A Space-scoped insert holds the Space's row lock and re-checks its
+   * Metadata object (`#lockLiveContainers`), so a Space with none, or one a
+   * Delete Space removed in between, is refused with `SpaceNotFoundError`
+   * (404). A foreign-key violation (SQLSTATE `23503`) on the Space row maps to
+   * the same 404.
    * @param options {object}
    * @param options.scope {RevocationScope}
    * @param options.record {RevocationRecord}
@@ -3754,6 +3760,7 @@ export class PostgresBackend implements StorageBackend {
   }): Promise<void> {
     // `table` / `column` are internal constants, not user input; ids are bound.
     const { table, column, id } = this.#revocationTable(scope)
+    const requestName = 'Revoke Capability'
     try {
       // Prune rows past their GC horizon while on this (rare) write path, so
       // the hot read path (`isRevoked`, consulted on every delegated-chain
@@ -3765,21 +3772,42 @@ export class PostgresBackend implements StorageBackend {
           WHERE expires IS NOT NULL AND expires <= $1`,
         [new Date().toISOString()]
       )
-      await this.#reader().query(
-        `INSERT INTO ${table}
-           (${column}, delegator, capability_id, record, expires)
-         VALUES ($1, $2, $3, $4::jsonb, $5)`,
-        [
-          id,
-          record.meta.delegator,
-          record.capability.id,
-          JSON.stringify(record),
-          record.meta.expires ?? null
-        ]
-      )
+      const insert = async (queryable: Queryable): Promise<void> => {
+        await queryable.query(
+          `INSERT INTO ${table}
+             (${column}, delegator, capability_id, record, expires)
+           VALUES ($1, $2, $3, $4::jsonb, $5)`,
+          [
+            id,
+            record.meta.delegator,
+            record.capability.id,
+            JSON.stringify(record),
+            record.meta.expires ?? null
+          ]
+        )
+      }
+      if ('keystoreId' in scope) {
+        await insert(this.#reader())
+      } else {
+        await this.#withTransaction(async client => {
+          await this.#lockLiveContainers({
+            client,
+            spaceId: scope.spaceId,
+            requestName
+          })
+          await insert(client)
+        })
+      }
     } catch (err) {
-      if ((err as { code?: string }).code === '23505') {
+      if (err instanceof SpaceNotFoundError) {
+        throw err
+      }
+      const code = (err as { code?: string }).code
+      if (code === '23505') {
         throw new DuplicateRevocationError()
+      }
+      if (code === '23503' && 'spaceId' in scope) {
+        throw new SpaceNotFoundError({ requestName })
       }
       throw new StorageError({ cause: err as Error })
     }
