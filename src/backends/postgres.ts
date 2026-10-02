@@ -162,6 +162,7 @@ import type {
   StoredSpaceMetadata,
   StoredCollectionMetadata,
   StoredCollectionLog,
+  CollectionTransitionContext,
   VersionedMetadata,
   KeystoreConfig,
   KmsKeyRecord,
@@ -298,6 +299,33 @@ function storedMetadataFromRow<T extends object>(
       metaGeneration: row.meta_generation
     }),
     metaVersion: row.meta_version
+  }
+}
+
+/**
+ * Reads a Collection row's governing history log out of its three log
+ * columns, or `undefined` when the row holds none (or does not exist).
+ * Shared by every statement that selects the columns, so the shape is
+ * decided once.
+ * @param row {object | undefined}
+ * @returns {StoredCollectionLog | undefined}
+ */
+function storedLogFromRow(
+  row:
+    | {
+        log_body: string | null
+        log_generation: string | null
+        log_version: number | null
+      }
+    | undefined
+): StoredCollectionLog | undefined {
+  if (!row || row.log_body === null || row.log_version === null) {
+    return undefined
+  }
+  return {
+    body: row.log_body,
+    generation: resolveGeneration(row.log_generation),
+    version: row.log_version
   }
 }
 
@@ -1217,7 +1245,9 @@ export class PostgresBackend implements StorageBackend {
    *   current `ETag`; a stale validator throws `PreconditionFailedError` (412)
    * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *`, the guarded
    *   create; an existing Collection throws `PreconditionFailedError` (412)
-   * @param [options.assertTransition] {Function}
+   * @param [options.assertTransition] {Function}   the request layer's
+   *   state-transition checks, run against the row just read under its lock,
+   *   the history log columns included
    * @returns {Promise<EtagValidator>}   the Collection's new validator (its
    *   `generation` and bumped `version`, the `ETag`)
    */
@@ -1237,7 +1267,7 @@ export class PostgresBackend implements StorageBackend {
     ifMatch?: string
     ifNoneMatch?: HeldValidators
     assertTransition?: (
-      prior?: StoredCollectionMetadata
+      context: CollectionTransitionContext
     ) => void | Promise<void>
   }): Promise<EtagValidator> {
     return this.#withTransaction(async client => {
@@ -1254,13 +1284,19 @@ export class PostgresBackend implements StorageBackend {
       // and validator, so the `If-Match` compare-and-swap, the transition
       // checks, the create detection, the server-managed member resolution,
       // and the monotonic version bump are all atomic with the write (two
-      // concurrent recipient edits cannot clobber one another).
+      // concurrent recipient edits cannot clobber one another). The history
+      // log columns ride along for the transition checks, so they cost no
+      // second round trip while the row lock is held.
       const { rows } = await client.query<{
         metadata: CollectionMetadata | null
         meta_generation: string | null
         meta_version: number
+        log_body: string | null
+        log_generation: string | null
+        log_version: number | null
       }>(
-        `SELECT metadata, meta_generation, meta_version
+        `SELECT metadata, meta_generation, meta_version,
+                log_body, log_generation, log_version
            FROM collections
           WHERE space_id = $1 AND collection_id = $2 FOR UPDATE`,
         [spaceId, collectionId]
@@ -1281,8 +1317,9 @@ export class PostgresBackend implements StorageBackend {
         ifNoneMatch
       })
       // The request layer's state-transition checks (e.g. epoch append-only),
-      // re-evaluated here against the row just read under the lock.
-      await assertTransition?.(prior)
+      // re-evaluated here against the row just read under the lock, its
+      // history log included.
+      await assertTransition?.({ prior, log: storedLogFromRow(rows[0]) })
       // Count quota (create path only): a create is no row or a placeholder
       // (NULL-metadata) row; writing one must not push the Space past
       // `maxCollectionsPerSpace` (spec "Quotas").
@@ -1434,15 +1471,7 @@ export class PostgresBackend implements StorageBackend {
         WHERE space_id = $1 AND collection_id = $2`,
       [spaceId, collectionId]
     )
-    const row = rows[0]
-    if (!row || row.log_body === null || row.log_version === null) {
-      return undefined
-    }
-    return {
-      body: row.log_body,
-      generation: resolveGeneration(row.log_generation),
-      version: row.log_version
-    }
+    return storedLogFromRow(rows[0])
   }
 
   /**
@@ -1502,14 +1531,7 @@ export class PostgresBackend implements StorageBackend {
       if (row === undefined || collectionMetadata === undefined) {
         return undefined
       }
-      const prior: StoredCollectionLog | undefined =
-        row.log_body !== null && row.log_version !== null
-          ? {
-              body: row.log_body,
-              generation: resolveGeneration(row.log_generation),
-              version: row.log_version
-            }
-          : undefined
+      const prior = storedLogFromRow(row)
       assertCollectionLogWritePrecondition({
         collectionId,
         currentEtag: etagOf({

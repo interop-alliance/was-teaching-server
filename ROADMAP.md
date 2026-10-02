@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 182
+nextAvailableId: 184
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -805,42 +805,6 @@ time is the cheaper rule to state.
 Findings from a cleanup review of the v0.5 route-table change that were too
 large to apply in that pass.
 
-### WAS-102: Stop re-parsing a governed Collection's history log on every Metadata read
-
-- status: todo
-- priority: low
-- labels: governed-history-logs, performance, filesystem-backend,
-  postgres-backend
-- acceptance:
-  - [ ] A `PUT /space/:spaceId/:collectionId/meta` on a log-governed Collection
-        parses the log at most once per request, while the recheck under the
-        backend's lock still sees the log state as of the lock
-  - [ ] `getCollectionOrThrow` no longer parses the whole log on each call:
-        either the derived `encryption` is cached per Collection (invalidated by
-        every `writeCollectionLog` and by Delete Collection / Delete Space /
-        import), or the derivation reads only the head line it needs
-  - [ ] The Postgres `writeCollection` recheck reads the log columns from the
-        row it already holds `FOR UPDATE` instead of issuing a second `SELECT`
-  - [ ] Existing governed-log tests stay green, plus a test that a log append is
-        visible to the very next Metadata read and write
-
-Context: `CollectionRequest.putMeta` calls `governedEncryptionOf`
-(`src/requests/collectionContext.ts`) twice per write, once for the early
-rejection and again inside `assertTransition` under the per-Collection lock.
-Each call reads the whole log body and `deriveGovernedEncryption`
-(`src/lib/governedLog.ts`) runs `parseGoverningLog` over every line, though only
-the last line's `state` and the genesis line's `parameters.method` are used. The
-log is append-only and grows without bound, so the cost is O(log size), twice.
-Before v0.5 an annotation-only write (a rename, a `custom` or `epoch` edit) went
-through a narrower endpoint that never touched the log; the merged full-replace
-`PUT /meta` now pays it on every write. `getCollectionOrThrow`, which nearly
-every Collection- and Resource-level handler calls, pays it once per request
-too. A cache would follow the per-backend `LruCache` pattern of
-`src/lib/spaceMetadataCache.ts` and `src/lib/policyCache.ts`. On Postgres the
-recheck's log read is a second query against the `collections` row whose
-`FOR UPDATE` lock `writeCollection` already holds, so the lock is held across an
-extra round trip.
-
 ### WAS-103: Make `spacePath` / `collectionPath` return the canonical container URL by default
 
 - status: todo
@@ -1561,15 +1525,15 @@ change: a chunk is a versioned record, so it takes the same origin stamp and
 four-field validator (WAS-172), and a puller fetching chunk bytes with a plain
 `GET` learns the stamp from the `ETag` alone. Chunks inherit the Collection's
 `revisions` descriptor and resolve per chunk under LWW. Three things are this
-item's to decide: discovery (chunks and binary Resources are outside the changes
-feed by spec, and a chunk write does not re-surface its parent, so the pull loop
-needs a second feed or a per-parent chunk listing walk); chunk tombstones (a
-chunk is hard-deleted today, so an individual chunk delete cannot replicate;
-either a stamped tombstone reusing the WAS-174 mechanism, or chunk deletion
-defined as cascade-only through the parent's tombstone); and whole-stream
-consistency (two origins each rewriting a whole stream converge on a mix of
-chunks under per-chunk LWW; tying a chunk's validity to the parent revision it
-was written under is one additive member on the chunk record).
+item's to decide: discovery (binary Resources join the changes feed under
+WAS-182, but a chunk write does not re-surface its parent, so the pull loop
+needs a chunk kind in that feed or a per-parent chunk listing walk); chunk
+tombstones (a chunk is hard-deleted today, so an individual chunk delete cannot
+replicate; either a stamped tombstone reusing the WAS-174 mechanism, or chunk
+deletion defined as cascade-only through the parent's tombstone); and
+whole-stream consistency (two origins each rewriting a whole stream converge on
+a mix of chunks under per-chunk LWW; tying a chunk's validity to the parent
+revision it was written under is one additive member on the chunk record).
 
 ### WAS-15: Client-produced snapshot/checkpoint entries in the changes feed
 
@@ -1836,7 +1800,7 @@ JSON Pointer for nested attributes.
 - design: designs/WAS-96-multi-primary-spaces.md
 - design-approved:
 - blocked-by: WAS-93, WAS-171, WAS-172, WAS-173, WAS-174, WAS-175, WAS-176,
-  WAS-177, WAS-178
+  WAS-177, WAS-182, WAS-183
 - touches:
   - wallet-attached-storage-spec: the Resource data model (the origin stamp
     members and the validator), the `changes` profile (stamp members on the
@@ -1999,7 +1963,7 @@ is no data to replicate.
 - blocked-by: WAS-171, WAS-93
 - touches:
   - wallet-attached-storage-spec: the Resource data model (`updatedAtCounter`
-    and `origin` members on Resource metadata and the Metadata objects; the
+    and `originId` members on Resource metadata and the Metadata objects; the
     validator layout; `version`/`metaVersion` retired), the `changes` profile
     (stamp members on the change document; the `(updatedAt, writerId)` tie-break
     sentence replaced by the stamp order)
@@ -2018,13 +1982,13 @@ is no data to replicate.
         (WAS-176) under the clock bound
   - [ ] Every versioned record (Resource, chunk, Resource `/meta`, Space and
         Collection Metadata objects, Collection tombstone) stores `updatedAt`
-        (ISO, the HLC physical part), `updatedAtCounter`, and `origin` verbatim,
-        and serves the first two on its metadata
+        (ISO, the HLC physical part), `updatedAtCounter`, and `originId`
+        verbatim, and serves the first two on its metadata
   - [ ] `formatEtag` emits `"<generation>.<ms>.<counter>.<origin>"` with `ms`
         the epoch integer; `If-Match` / `If-None-Match` compare the whole
         string; the `version` and `metaVersion` counters are removed from the
         sidecars, rows, and wire objects
-  - [ ] Each change document carries `updatedAtCounter` and `origin` beside
+  - [ ] Each change document carries `updatedAtCounter` and `originId` beside
         `updatedAt`
   - [ ] The ARCHITECTURE note that a client "may read the trailing integer as
         the revision number" is removed
@@ -2166,8 +2130,8 @@ rotation.
 - priority: medium
 - labels: replication, routes, filesystem-backend, postgres-backend,
   space-metadata
-- blocked-by: WAS-171, WAS-172, WAS-173, WAS-174, WAS-175, WAS-177, WAS-178,
-  WAS-93
+- blocked-by: WAS-171, WAS-172, WAS-173, WAS-174, WAS-175, WAS-177, WAS-182,
+  WAS-183, WAS-93
 - touches:
   - wallet-attached-storage-spec: the replication section (registration object,
     pull loop, apply rule, clock bound), the Space Metadata object's `replicas`
@@ -2195,9 +2159,9 @@ rotation.
         that store the stamp verbatim and take a local feed position
   - [ ] Apply is one comparison on `(ms, counter, origin)`: greater than the
         held revision applies, else skipped (dedup and loop check included);
-        logs fast-forward or stall; revocations union; a received stamp more
-        than the configured bound ahead of local time stalls the pull with a
-        `warn`
+        logs fast-forward or stall; revocations are not replicated; a received
+        stamp more than the configured bound ahead of local time stalls the pull
+        with a `warn`
   - [ ] The served Space Metadata object carries a server-derived `replicas`
         member listing each registered peer's Space URL and role
   - [ ] A peer answering 404 for the Space stops the loop with one `warn`
@@ -2262,8 +2226,12 @@ alive on the surviving server, where the wallet can keep appending.
         listings)
   - [ ] Tests cover the listing and its authorization
 
-Context (discovered-from: WAS-96, decision 5). Revocations replicate as a set
-union, and the puller needs a read; today the endpoint accepts submissions only.
+Context (discovered-from: WAS-96, decision 5). Filed for a replication set union
+that the design review dropped: capability targets are host-bound, so a
+revocation stored on one replica names a grant that never verifies on another,
+and a pulled record would bypass the submission's chain verification. The read
+stays on its own merits: a wallet can list the revocations it has submitted on a
+Space; today the endpoint accepts submissions only.
 
 ---
 
@@ -2308,5 +2276,84 @@ Context (discovered-from: WAS-96, decision 6). A backup-only replica is still
 writable by any grant the controller delegates on it, and such a write never
 reaches the source. For v1 the controller manages this by not delegating write
 grants on the replica; this item enforces it.
+
+---
+
+### WAS-182: Changes feed carries every record kind in the Collection
+
+- status: todo
+- priority: medium
+- labels: changes-feed, replication, wire-contract, filesystem-backend,
+  postgres-backend
+- blocked-by: WAS-172
+- touches:
+  - wallet-attached-storage-spec: the `changes` profile (the `kind` member, the
+    `contentType` member, every content type admitted; the "Collection Metadata
+    writes are invisible to replication" sentence revised)
+  - storage-core: `ChangeDocument`
+  - was-teaching-server: `changesSince` in both backends, the feed position
+    assignment on every write kind, ARCHITECTURE.md
+  - was-client: `Collection.changes()` document type
+  - was-sync, dcw, was-react: filter the feed on `kind`
+  - conformance-suite: feed cases for binary Resources and the other kinds
+- acceptance:
+  - [ ] Every Resource write, whatever its content type (binary, `text/jsonl`,
+        JSON), and every Resource tombstone takes a feed position and appears in
+        the feed with a `contentType` member
+  - [ ] A Collection Metadata write, a Collection or Resource `/policy` write or
+        tombstone, and a governed-log append each take a feed position and
+        appear in the feed, each change document carrying a `kind` member
+        (values pending sign-off) that existing consumers filter on; a Resource
+        change carries the Resource kind
+  - [ ] Each change document carries the record's stamp and generation, so a
+        puller can decide apply-or-skip from the feed alone
+  - [ ] Tests cover each kind in both backends, and the client repos' filters
+
+Context (discovered-from: WAS-96, open point 7). The feed carried JSON Resources
+only, so binary Resources, `did.jsonl`, their tombstones, Collection Metadata
+writes, policies and the governed log were invisible to a replica, and the
+controller's log, the one Collection the design always replicates, could not be
+discovered. A separate replication listing was weighed and declined: one channel
+with a `kind` discriminator is one checkpoint and one stamp order per
+Collection, and a client syncing a Collection should see every Resource in it
+regardless of content type. Space-level state (Space Metadata `name`, the Space
+policy, Collection tombstones) has no Collection feed to ride and is discovered
+by the pull loop (WAS-176) through the tombstone-aware Space listing and
+conditional reads.
+
+---
+
+### WAS-183: Stamped, tombstoned access-control policies
+
+- status: todo
+- priority: medium
+- labels: data-model, authz, replication, etag, wire-contract,
+  filesystem-backend, postgres-backend
+- blocked-by: WAS-172
+- touches:
+  - wallet-attached-storage-spec: "Access Control Policies" (the served stamp
+    members, the `ETag`, the preconditions, the tombstone)
+  - storage-core: `PolicyDocument`
+  - was-teaching-server: `PolicyRequest`, both backends' policy storage,
+    `src/lib/policyCache.ts`, ARCHITECTURE.md
+  - was-client: policy preconditions (optional)
+  - conformance-suite: policy `ETag` and precondition cases
+- acceptance:
+  - [ ] A stored policy carries the three stamp members and a generation;
+        `GET /policy` at each level serves the four-field `ETag` and the stamp
+        members as server-derived members a write body ignores
+  - [ ] `PUT` and `DELETE /policy` take `If-Match` / `If-None-Match: *`
+  - [ ] `DELETE` writes a tombstone (`deleted: true`) in place of the hard
+        delete; a tombstoned policy grants nothing and reads as absent
+        everywhere except the changes feed (WAS-182) and the apply path
+        (WAS-176); the Space policy's tombstone is readable with its stamp by
+        the pull loop (shape pending sign-off)
+  - [ ] Tests cover the validator, the preconditions, the tombstone and the
+        fail-closed read at all three levels, in both backends
+
+Context (discovered-from: WAS-96, open point 6). A policy had no validator, no
+`updatedAt`, and a hard delete, so "LWW by stamp" could not order two replicas'
+policies and a removed `PublicCanRead` policy would come back from a peer that
+still held it, a privacy regression rather than a stale record.
 
 ---

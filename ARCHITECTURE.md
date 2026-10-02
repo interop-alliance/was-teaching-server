@@ -230,6 +230,18 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   instances share one storage backend, a controller retired by an Update Space
   on one instance keeps its authority on another for up to one TTL. A changed or
   deleted policy likewise keeps granting there for up to one TTL.
+- **`src/lib/governedEncryptionCache.ts`** -- a third read cache, one per
+  storage backend, memoizing the `encryption` descriptor derived from a
+  log-governed Collection's history log. The parse is what it saves, since the
+  log is append-only and grows. The log body is still read on each request. An
+  entry is keyed by Collection and by the log's own validator
+  (`<generation>.<version>`), so a log write leaves the old key behind and the
+  next derivation misses on a new one. It therefore carries none of the
+  multi-instance staleness the two caches above carry. Delete Collection, Delete
+  Space, and Import Space still drop entries by prefix, since an import installs
+  an archived log with the archive's own validator, which could coincide with a
+  cached one over different bytes. Entries expire after 600 s and are capped at
+  1000 (`GOVERNED_ENCRYPTION_CACHE_TTL`, `GOVERNED_ENCRYPTION_CACHE_MAX`).
 - **`src/lib/governedLog.ts`** -- the `governed-history-logs` feature: a
   Collection's governing history log, served at its own sub-resource
   (`GET`/`PUT /space/:spaceId/:collectionId/meta/log`,
@@ -255,23 +267,26 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   own URL); the stored Collection Metadata object never carries that derived
   member, a direct `encryption` write against it is refused with
   `encryption-history-log-governed` (409), and its other fields still update
-  normally. The server verifies neither proofs nor a hash chain. It checks that
-  the body is JSON Lines, each line a JSON object with an object `state` member
-  and the last line the head. It also checks that the genesis line's
-  `parameters` carries a string `method`, and that no line's `state` carries a
-  `history` member, since the server stamps that member itself. A break of any
-  of these is `invalid-request-body` (400). It also checks that an append
-  fast-forwards the stored log (the stored bytes verbatim followed by exactly
-  one new line; a body the stored log is not a prefix of is
-  `precondition-failed`, 412, with or without `If-Match`, and one adding more
-  than one line is `invalid-request-body`, 400). A body equal to the stored log
-  byte for byte is a no-op. Once its preconditions pass, it answers 204 with the
-  current `ETag` and writes nothing, so neither the log's version nor the
-  Collection Metadata object's moves. A body that is a strict prefix of the
-  stored log would erase lines and stays a 412. On every append the server runs
-  the same encryption-descriptor transition checks against the prior head that
-  an ordinary Collection Metadata update runs. The fast-forward rule keeps the
-  log append-only at the server: a write capability can add history but not
+  normally. The derivation is memoized per backend by the log's validator
+  (`lib/governedEncryptionCache.ts`, above). Update Collection's recheck under
+  the lock derives from the log the backend hands its `assertTransition`
+  callback, so a Metadata write parses the log at most once. The server verifies
+  neither proofs nor a hash chain. It checks that the body is JSON Lines, each
+  line a JSON object with an object `state` member and the last line the head.
+  It also checks that the genesis line's `parameters` carries a string `method`,
+  and that no line's `state` carries a `history` member, since the server stamps
+  that member itself. A break of any of these is `invalid-request-body` (400).
+  It also checks that an append fast-forwards the stored log (the stored bytes
+  verbatim followed by exactly one new line; a body the stored log is not a
+  prefix of is `precondition-failed`, 412, with or without `If-Match`, and one
+  adding more than one line is `invalid-request-body`, 400). A body equal to the
+  stored log byte for byte is a no-op. Once its preconditions pass, it answers
+  204 with the current `ETag` and writes nothing, so neither the log's version
+  nor the Collection Metadata object's moves. A body that is a strict prefix of
+  the stored log would erase lines and stays a 412. On every append the server
+  runs the same encryption-descriptor transition checks against the prior head
+  that an ordinary Collection Metadata update runs. The fast-forward rule keeps
+  the log append-only at the server: a write capability can add history but not
   erase it, while a break inside an appended entry stays the verifying reader's
   to detect. A log write also bumps the Collection Metadata object's own `ETag`,
   since its served content changed, but leaves its `updatedAt` untouched -- both

@@ -45,6 +45,7 @@ import type {
   RevocationRecord,
   ResourceInput,
   CollectionMetadata,
+  StoredCollectionLog,
   StoredCollectionMetadata,
   SpaceMetadata,
   IDID,
@@ -2523,7 +2524,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             type: ['Collection'],
             name: 'Created'
           },
-          assertTransition: prior => {
+          assertTransition: ({ prior }) => {
             seen = prior
           }
         })
@@ -2551,7 +2552,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             type: ['Collection'],
             name: 'Second'
           },
-          assertTransition: prior => {
+          assertTransition: ({ prior }) => {
             seen = prior
           }
         })
@@ -2560,6 +2561,57 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(seen?.name, 'First')
         assert.equal(seen?.metaVersion, 1)
         assert.ok(seen?.metaGeneration)
+      })
+
+      it('invokes assertTransition with the governing history log as of the lock', async () => {
+        const { backend } = harness
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'at-log',
+          collectionMetadata: {
+            id: 'at-log',
+            type: ['Collection'],
+            name: 'Governed'
+          }
+        })
+        let seenLog: StoredCollectionLog | undefined
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'at-log',
+          collectionMetadata: {
+            id: 'at-log',
+            type: ['Collection'],
+            name: 'Not yet governed'
+          },
+          assertTransition: ({ log }) => {
+            seenLog = log
+          }
+        })
+        // No log yet: the callback is handed none.
+        assert.equal(seenLog, undefined)
+        const created = await backend.writeCollectionLog({
+          spaceId,
+          collectionId: 'at-log',
+          body: '{"state":{}}\n',
+          ifNoneMatch: '*'
+        })
+        await backend.writeCollection({
+          spaceId,
+          collectionId: 'at-log',
+          collectionMetadata: {
+            id: 'at-log',
+            type: ['Collection'],
+            name: 'Governed now'
+          },
+          assertTransition: ({ log }) => {
+            seenLog = log
+          }
+        })
+        // The very next Metadata write sees the log just written, body and
+        // validator alike, without a read of its own.
+        assert.equal(seenLog?.body, '{"state":{}}\n')
+        assert.equal(seenLog?.version, created?.version)
+        assert.equal(seenLog?.generation, created?.generation)
       })
 
       it('a throwing assertTransition aborts the write (object and version unchanged)', async () => {

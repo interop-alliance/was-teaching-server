@@ -161,6 +161,7 @@ import type {
   StoredCollectionMetadata,
   StoredSpaceMetadata,
   StoredCollectionLog,
+  CollectionTransitionContext,
   VersionedMetadata,
   KeystoreConfig,
   KmsKeyRecord,
@@ -2238,7 +2239,7 @@ export class FileSystemBackend implements StorageBackend {
    *   create; an existing Collection throws `PreconditionFailedError` (412)
    * @param [options.assertTransition] {Function}   the request layer's
    *   state-transition checks, run atomically with the write against the
-   *   prior object
+   *   prior object and the Collection's history log as of the lock
    * @returns {Promise<EtagValidator>}   the Collection Metadata object's new
    *   validator (its `generation` and bumped `version`, the `ETag`)
    */
@@ -2258,7 +2259,7 @@ export class FileSystemBackend implements StorageBackend {
     ifMatch?: string
     ifNoneMatch?: HeldValidators
     assertTransition?: (
-      prior?: StoredCollectionMetadata
+      context: CollectionTransitionContext
     ) => void | Promise<void>
   }): Promise<EtagValidator> {
     // Serialize the read-check-write under the per-Collection metadata lock so
@@ -2297,8 +2298,17 @@ export class FileSystemBackend implements StorageBackend {
 
             // The request layer's state-transition checks (e.g. epoch
             // append-only), re-evaluated here against the object just read
-            // under the lock.
-            await assertTransition?.(prior)
+            // under the lock, together with the governing history log as of
+            // the same lock: a log write takes this lock first, so the log
+            // cannot move between this read and the write below. The log is
+            // read only when a check will see it; a create has none, since
+            // the log goes with its Collection.
+            if (assertTransition) {
+              const log = prior
+                ? await this.getCollectionLog({ spaceId, collectionId })
+                : undefined
+              await assertTransition({ prior, log })
+            }
 
             // Count quota (create path only): a new Collection must not push its
             // Space past `maxCollectionsPerSpace`; overwriting an existing

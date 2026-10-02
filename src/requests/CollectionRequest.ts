@@ -52,6 +52,10 @@ import { resolveBackend } from '../lib/backendRegistry.js'
 import { forgetDeletedWebvhLocation } from '../lib/webvhController.js'
 import { invalidateCollectionPolicies } from '../lib/policyCache.js'
 import {
+  getCachedGovernedEncryption,
+  invalidateCollectionGovernedEncryption
+} from '../lib/governedEncryptionCache.js'
+import {
   collectionPath,
   resourcePath,
   linksetPath,
@@ -584,16 +588,20 @@ export class CollectionRequest {
         // just-added `plaintext`, dropped by this full replacement) even
         // though both writers passed the checks -- the guarantees must hold
         // unconditionally, not just under `If-Match`.
-        assertTransition: async prior => {
+        // The governed descriptor is derived from the log the backend hands
+        // over, read under that same lock; the derivation is memoized by the
+        // log's validator, so it is parsed again only if the log moved.
+        assertTransition: async ({ prior, log }) => {
           assertCollectionMetadataTransition({
             parsed,
             existing: prior,
             governedEncryption: prior
-              ? await governedEncryptionOf({
+              ? await getCachedGovernedEncryption({
                   storage,
                   serverUrl,
                   spaceId,
-                  collectionId
+                  collectionId,
+                  log
                 })
               : undefined,
             requestName
@@ -1215,8 +1223,9 @@ export class CollectionRequest {
       // own, so its recorded heads go too.
       forgetDeletedWebvhLocation({ storage, spaceId, collectionId })
       // ...and every policy cached at the Collection level or under any of
-      // its Resources.
+      // its Resources, and the descriptor derived from its governing log.
       invalidateCollectionPolicies({ storage, spaceId, collectionId })
+      invalidateCollectionGovernedEncryption({ storage, spaceId, collectionId })
     }
 
     return reply.status(204).send()

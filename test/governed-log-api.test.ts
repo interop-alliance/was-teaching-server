@@ -278,6 +278,72 @@ describe('Governing history log API (meta/log)', () => {
       assert.equal(described.data.encryption.epochs.length, 2)
     })
 
+    it('[signed] a log write is visible to the very next Metadata read and write', async () => {
+      const collectionId = await freshCollection()
+      // The Metadata object is read before the Collection is governed, so
+      // whatever the server memoizes about it is warm.
+      const ungoverned = await alice.was.request({
+        url: metaUrl(collectionId),
+        method: 'GET'
+      })
+      assert.equal(ungoverned.data.encryption, undefined)
+
+      const body = genesisLine(oneEpoch) + '\n'
+      const created = await putLog({
+        collectionId,
+        body,
+        headers: { 'if-none-match': '*' }
+      })
+      assert.equal(created.status, 204)
+      // The next read serves the derived member...
+      const governed = await alice.was.request({
+        url: metaUrl(collectionId),
+        method: 'GET'
+      })
+      assert.equal(governed.data.encryption.currentEpoch, 'urn:epoch:1')
+      // ...and the next write is already refused as governed.
+      const direct = await rejection(
+        alice.was.request({
+          url: metaUrl(collectionId),
+          method: 'PUT',
+          json: { encryption: oneEpoch }
+        })
+      )
+      assert.equal(direct.response.status, 409)
+      assert.match(direct.data.type, /#encryption-history-log-governed$/)
+
+      const appended = await putLog({
+        collectionId,
+        body: body + entryLine({ ordinal: 2, state: twoEpochs }) + '\n',
+        headers: { 'if-match': created.etag! }
+      })
+      assert.equal(appended.status, 204)
+      // The read right after the append serves the new head, under a moved
+      // Metadata ETag.
+      const moved = await alice.was.request({
+        url: metaUrl(collectionId),
+        method: 'GET'
+      })
+      assert.equal(moved.data.encryption.currentEpoch, 'urn:epoch:2')
+      assert.notEqual(moved.headers.get('etag'), governed.headers.get('etag'))
+      // A Metadata write right after it lands against the new head, and the
+      // stored object still carries no descriptor of its own: the read after
+      // the write derives the same head again.
+      const annotated = await alice.was.request({
+        url: metaUrl(collectionId),
+        method: 'PUT',
+        json: { custom: envelope }
+      })
+      assert.equal(annotated.status, 204)
+      const after = await alice.was.request({
+        url: metaUrl(collectionId),
+        method: 'GET'
+      })
+      assert.equal(after.data.encryption.currentEpoch, 'urn:epoch:2')
+      assert.equal(after.data.encryption.epochs.length, 2)
+      assert.deepStrictEqual(after.data.custom, envelope)
+    })
+
     it('[signed] a stale If-Match is a 412 and the log is unchanged', async () => {
       const { collectionId, body, etag } = await governedCollection()
       const extended = body + entryLine({ ordinal: 2, state: twoEpochs }) + '\n'

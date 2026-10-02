@@ -550,6 +550,17 @@ export interface StoredCollectionLog {
  * the write. The check is atomic with the write against a concurrent Delete
  * Space or Delete Collection.
  */
+/**
+ * What a Collection Metadata write's `assertTransition` check is handed,
+ * read under the backend's per-Collection lock: the current object (`prior`,
+ * `undefined` on a create) and the Collection's governing history log
+ * (`log`, `undefined` when it has none).
+ */
+export interface CollectionTransitionContext {
+  prior?: StoredCollectionMetadata
+  log?: StoredCollectionLog
+}
+
 export interface StorageBackend {
   /**
    * Optional logger the backend writes diagnostics through (Fastify's pino
@@ -770,13 +781,18 @@ export interface StorageBackend {
     /**
      * Invoked atomically with the write (inside the backend's per-Collection
      * lock / row-locking transaction) against the freshly re-read current
-     * object (`undefined` on a create); throwing aborts the write. Carries
-     * the request layer's state-transition checks -- e.g. the epoch
-     * append-only rule -- which are otherwise evaluated against a pre-lock
-     * read and could miss a concurrent write.
+     * object (`undefined` on a create) and the Collection's governing
+     * history log as of the same lock (`undefined` when it has none);
+     * throwing aborts the write. Carries the request layer's
+     * state-transition checks -- e.g. the epoch append-only rule, and the
+     * refusal of a direct `encryption` write on a log-governed Collection --
+     * which are otherwise evaluated against a pre-lock read and could miss a
+     * concurrent write. The log is handed over rather than re-read by the
+     * callback, so the recheck costs no second read and sees the log the
+     * lock covers.
      */
     assertTransition?: (
-      prior?: StoredCollectionMetadata
+      context: CollectionTransitionContext
     ) => void | Promise<void>
   }): Promise<EtagValidator>
   /**

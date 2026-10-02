@@ -628,7 +628,7 @@ critical section (the per-Space and per-Collection locks in
 `filesystem.ts:2296-2317`, the row locks in Postgres).
 
 Every versioned record stores `updatedAt` (ISO of `ms`), `updatedAtCounter`, and
-`origin`. `EtagValidator` becomes `{ generation, ms, counter, origin }` and
+`originId` (named `origin` in the draft; renamed at open point 9). `EtagValidator` becomes `{ generation, ms, counter, origin }` and
 `formatEtag` emits `"<generation>.<ms>.<counter>.<origin>"`. `version` and
 `metaVersion` are removed from sidecars, rows, wire objects, and
 `provenanceStatement.ts` claims, which attest the three stamp members instead.
@@ -879,7 +879,7 @@ fork. The recommendation is first.
    (spec "declare-or-clear at both levels") now that `writerId` is a
    content-record member; recommended: a `/meta` write no longer touches it.
    Decided 2026-10-01: the `/meta` record's stamp and generation are one
-   nested object, `meta: { updatedAt, updatedAtCounter, origin, generation }`,
+   nested object, `meta: { updatedAt, updatedAtCounter, originId, generation }`,
    on the sidecar, the change document, the provenance statement and the
    served `/meta` object; the flat `metaGeneration` / `metaVersion` members
    go (no migration, data wipe assumed). The content record's `updatedAt`
@@ -934,22 +934,37 @@ fork. The recommendation is first.
    `If-None-Match: *`; a tombstoned policy reads as absent everywhere except
    the replication listing and the apply path.
 7. Discovery channel (section 5.10). Recommended: a replication listing.
+   Decided 2026-10-01: against the recommendation, alternative (b). The
+   `changes` profile is widened (WAS-182): every Resource regardless of
+   content type, and the non-Resource kinds (Collection Metadata, policies,
+   governed log) under a `kind` discriminator consumers filter on. Leaving
+   binary Resources out of the feed was an oversight, not a design choice.
 8. Stall granularity and record (section 5.11). Recommended as stated.
+   Decided 2026-10-01: per Collection, as stated.
 9. Names. `replicas` is already used by a spec ednote for per-Collection backend
    replicas (`spec.md:3955-3975`); recommended: keep `replicas` for the
    Space-level registration and rename the ednote's concept when it lands.
+   Decided 2026-10-01: confirmed; `backends` is the natural name for the
+   ednote's per-Collection concept.
    `origin` sits beside `generator.origin` (a Web origin) on the same Collection
-   Metadata object; recommended: keep, since one is nested. `originId` on
+   Metadata object; recommended: keep, since one is nested. Decided
+   2026-10-01: the stamp member is renamed `originId`, on every record, the
+   change document, the provenance statement and the nested `meta` object;
+   the order key is written `(ms, counter, originId)`. `originId` on
    `instance` is gated on by registration, which the spec forbids
    (`spec.md:1105`); recommended: advertise it on the core
    `https://w3id.org/pws` `specs` entry instead (or a replication profile
-   entry), not on `instance`. `zcaps` and `replicas` join the reserved registry
-   (invariant 22).
+   entry), not on `instance`. Decided 2026-10-01: on the core `specs` entry;
+   the sync key stays on `instance`, since nothing gates on it. `zcaps` and
+   `replicas` join the reserved registry (invariant 22). Decided 2026-10-01:
+   confirmed; `zcaps` is a registry omission independent of this design.
 10. Revocations. Capability targets are host-bound, so a revocation stored on A
     names a capability that can only ever be invoked at A; unioning it into B
     revokes nothing there and lets a peer inject unverified records.
     Recommended: drop the union from v1 (WAS-178 then stands alone as a read, or
     is withdrawn); key retirement through the log is the cross-replica revoke.
+    Decided 2026-10-01: dropped from v1; revocations are per replica, like
+    grants. WAS-178 stays as a plain read for the wallet.
 11. Provenance `createdBy` for a foreign origin (invariant 14). Recommended:
     omit the member from the statement's claims when `origin` is not the
     exporting server; import then strips `createdBy` on that object as it does
@@ -996,25 +1011,27 @@ controller's log, the one Collection the design always replicates, was
 unreachable. The listing items of List Collections carry `id`, `url`, `name`
 only (`spec.md:1821-1823`), so a listing walk cannot tell what changed either.
 
-Recommended (open point 7): a replication listing, one read endpoint under the
-Space (`GET /space/:spaceId/replicas/changes` or a sibling name the maintainer
-picks), capability-only, paged under the same opaque checkpoint discipline as
-the feed, enumerating every replicated record kind in the Space with its kind,
-URL and stamp: Collection Metadata objects and tombstones, policies at every
-level, governed logs, and every Resource and Resource tombstone regardless of
-content type (chunk bytes stay with WAS-14, which inherits this channel for
-discovery). The client-facing `changes` profile is left as it is. Alternatives:
-(b) widen the `changes` profile to emit every kind, which changes every wallet
-client's feed; (c) a per-cycle `GET` of each `meta`, `policy` and `meta/log`
-plus a full Collection listing walk, which costs one request per record per
-cycle and still cannot see a binary tombstone.
+Decided 2026-10-01 (open point 7): the `changes` profile itself is widened
+(WAS-182). Every Resource write and tombstone takes a feed position whatever
+its content type, with a `contentType` member on the change document; a
+Collection Metadata write, a Collection or Resource `/policy` write or
+tombstone, and a governed-log append each take a feed position too, and every
+change document carries a `kind` member that existing consumers (was-sync, dcw,
+was-react) filter on. The feed stays per Collection, so the checkpoint is per
+Collection and matches the stall unit of section 5.11. Space-level state has no
+Collection feed to ride: Space Metadata `name`, the Space policy and Collection
+tombstones are discovered by the tombstone-aware Space listing and conditional
+`GET`s of the Space's `meta` and `policy`; the Space policy's tombstone must be
+readable with its stamp by the pull loop (WAS-183). Chunk bytes stay with
+WAS-14, which decides between a chunk kind in the feed and a per-parent listing
+walk. Declined: a separate replication listing under the Space (a second channel
+and a second checkpoint discipline for the same records), and a per-cycle `GET`
+of each `meta`, `policy` and `meta/log` plus a listing walk (one request per
+record per cycle, and blind to a binary tombstone).
 
-The listing takes a Collection filter (the registration's Collection list, or
-one Collection), so the cursor is per Collection and matches the stall unit of
-section 5.11; a Space-wide cursor would let one stalled Collection hold every
-other. Per-cycle cost is then one listing page per Collection that changed plus
-one `GET` per changed record, and nothing for a Collection whose head the
-listing shows unchanged. Two further costs the review sized: the widened
+Per-cycle cost is one feed page per Collection that changed plus one `GET` per
+changed record, and nothing for a Collection whose feed is unchanged. Two further
+costs the review sized: the widened
 `parseSelfHostedWebvh` adds one cached registration lookup to every request that
 carries a `did:webvh` key id (section 5.8), and the apply path's registration
 check holds the Space lock once per batch, not per record.
@@ -1057,7 +1074,8 @@ what the replicated controller log buys (alternative 11). DID-relative targets
 ### Wire-level decisions pending individual sign-off
 
 Agreed with the maintainer on 2026-10-01: the names `revisions`, `resolution`,
-`updatedAtCounter`, `origin`; the validator
+`updatedAtCounter`, `originId` (renamed from `origin` at open point 9); the
+validator
 `"<generation>.<ms>.<counter>.<origin>"` with `ms` the epoch integer;
 `WAS_ORIGIN_ID` used verbatim; the order key `(ms, counter, origin)`. The rest
 are proposals:
@@ -1067,8 +1085,8 @@ are proposals:
 2. The immutable-write refusal: error name and status (proposal:
    `resource-immutable`, 409).
 3. The origin-id charset `[A-Za-z0-9_-]{1,64}` and its `/service` member name
-   and placement (proposal: `originId`; placement per open point 9).
-4. The change-document stamp members: `updatedAtCounter` and `origin` beside
+   and placement (decided: `originId` on the core `specs` entry, open point 9).
+4. The change-document stamp members: `updatedAtCounter` and `originId` beside
    `updatedAt`, and the `/meta` record's three (open point 2).
 5. The Space listing query flag for tombstoned Collections (proposal:
    `?include=deleted`).
@@ -1089,7 +1107,8 @@ are proposals:
     point 1).
 12. (review) The policy document's stamp members and `deleted` marker (open
     point 6).
-13. (review) The replication listing's path and document shape (open point 7).
+13. (review) The change document's `kind` values and `contentType` member
+    (open point 7, WAS-182).
 14. (review) The provenance statement's `createdBy` rule for a foreign origin
     (open point 11).
 15. (review) The checkpoint's embedded generation (opaque, so internal, but it
@@ -1229,8 +1248,9 @@ are proposals:
 ## 8. Open questions
 
 1. WAS-14, three items this design leaves to it: discovery of chunk and binary
-   changes (now the replication listing of section 5.10, which WAS-14 inherits
-   for chunks); chunk tombstones (stamped, or cascade-only through the parent);
+   changes (binary Resources now ride the widened feed of section 5.10; a
+   chunk kind in that feed or a per-parent listing walk is WAS-14's to pick);
+   chunk tombstones (stamped, or cascade-only through the parent);
    whole-stream consistency (tying a chunk's validity to the parent revision it
    was written under). Owner: WAS-14.
 2. Tombstone retention. Never reaped in v1; a retention rule needs peers to

@@ -9,8 +9,7 @@
  */
 import type { FastifyRequest } from 'fastify'
 import { resolveBackend } from '../lib/backendRegistry.js'
-import { deriveGovernedEncryption } from '../lib/governedLog.js'
-import { collectionLogPath } from '../lib/paths.js'
+import { getCachedGovernedEncryption } from '../lib/governedEncryptionCache.js'
 import {
   CollectionNotFoundError,
   ResourceNotFoundError,
@@ -74,6 +73,10 @@ export async function getCollectionOrThrow({
  * its history log's head (the `governed-history-logs` feature), or
  * `undefined` when the Collection has no log. The stored object carries no
  * `encryption` for such a Collection; a direct write of the member is refused.
+ * The derivation is memoized per backend by the log's validator
+ * (`lib/governedEncryptionCache.ts`); a caller that already holds a
+ * lock-consistent log (Update Collection's recheck under the backend's lock)
+ * calls `getCachedGovernedEncryption` with it directly instead.
  * @param options {object}
  * @param options.storage {StorageBackend}
  * @param options.serverUrl {string}
@@ -93,15 +96,13 @@ export async function governedEncryptionOf({
   collectionId: string
 }): Promise<CollectionMetadata['encryption']> {
   const log = await storage.getCollectionLog({ spaceId, collectionId })
-  return log
-    ? deriveGovernedEncryption({
-        body: log.body,
-        logUrl: new URL(
-          collectionLogPath({ spaceId, collectionId }),
-          serverUrl
-        ).toString()
-      })
-    : undefined
+  return await getCachedGovernedEncryption({
+    storage,
+    serverUrl,
+    spaceId,
+    collectionId,
+    log
+  })
 }
 
 /**

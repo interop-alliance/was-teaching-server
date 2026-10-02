@@ -193,6 +193,21 @@
   `@interop/storage-core` 0.26.0, whose `ChangesCheckpoint` is a string and
   whose `ChangeDocument` carries `checkpoint`.
 
+- A log-governed Collection's served `encryption` member is derived from its
+  history log once per log version and memoized per backend, keyed by the log's
+  generation and version. The log body is still read on each request. Only the
+  parse is saved. Delete Collection, Delete Space, and Import Space drop the
+  affected entries. New settings `GOVERNED_ENCRYPTION_CACHE_TTL` (600 s) and
+  `GOVERNED_ENCRYPTION_CACHE_MAX` (1000) in `config.default.ts`.
+
+- The `assertTransition` callback of `StorageBackend.writeCollection` now
+  receives `{ prior, log }`: the prior Collection Metadata object and the
+  governing history log, both read under the backend's lock. Update Collection
+  derives the governed descriptor for its recheck from that log instead of
+  reading it again. On Postgres the log columns come from the
+  `SELECT ... FOR UPDATE` that already locks the Collection row, so the recheck
+  issues no second query. This is a backend contract change.
+
 ### Fixed
 
 - A Space-scoped revocation insert racing a Delete Space no longer leaves a

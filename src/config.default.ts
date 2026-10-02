@@ -143,6 +143,15 @@ export const POLICY_CACHE_TTL = 10_000 // milliseconds
 export const POLICY_CACHE_MAX = 1_000
 
 /**
+ * Derived governed-encryption cache (see src/lib/governedEncryptionCache.ts
+ * for the keying and invalidation rationale). An entry is keyed by the log's
+ * own validator, so the TTL only bounds how long a superseded entry lingers.
+ */
+export const GOVERNED_ENCRYPTION_CACHE_TTL = 600_000 // milliseconds
+/** Max number of derived descriptors held per backend cache (LRU-bounded). */
+export const GOVERNED_ENCRYPTION_CACHE_MAX = 1_000
+
+/**
  * `Access-Control-Max-Age` (seconds) on CORS preflight responses. Without it
  * browsers re-preflight the same URL every few seconds (Chrome's default is
  * 5 s), and a signed-request client preflights nearly every call, so about

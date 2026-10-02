@@ -4427,7 +4427,10 @@ beginning, and the apply path, keyed by Resource id, makes that safe.
     already took a position and matched the synthesized values)
   - conformance-suite: an import case whose archive carries a Resource with no
     metadata entry, asserting the imported Resource appears in the changes feed
-    (PWSCS-17 filed in that repo's roadmap on 2026-10-01)
+    (unaffected: conformance-suite (PWSCS-17 was filed and withdrawn on
+    2026-10-01; import is a reserved, unspecified operation and the sidecar
+    layout is this implementation's, so the server's contract test is the
+    coverage))
 - acceptance:
   - [x] `importSpace` never creates a Resource without the record that carries
         its feed ordering key: an archive entry with no metadata gets a
@@ -4456,3 +4459,39 @@ has to participate in allocating it: a watermarked `updatedAt` is computed on
 the write path an import bypasses, and a per-Collection sequence has no value at
 all for an imported Resource. Blocked on WAS-93 because the key's shape decides
 what import mints.
+
+### WAS-102: Stop re-parsing a governed Collection's history log on every Metadata read
+
+- status: done (2026-10-01)
+- priority: low
+- labels: governed-history-logs, performance, filesystem-backend,
+  postgres-backend
+- acceptance:
+  - [x] A `PUT /space/:spaceId/:collectionId/meta` on a log-governed Collection
+        parses the log at most once per request, while the recheck under the
+        backend's lock still sees the log state as of the lock
+  - [x] `getCollectionOrThrow` no longer parses the whole log on each call:
+        either the derived `encryption` is cached per Collection (invalidated by
+        every `writeCollectionLog` and by Delete Collection / Delete Space /
+        import), or the derivation reads only the head line it needs
+  - [x] The Postgres `writeCollection` recheck reads the log columns from the
+        row it already holds `FOR UPDATE` instead of issuing a second `SELECT`
+  - [x] Existing governed-log tests stay green, plus a test that a log append is
+        visible to the very next Metadata read and write
+
+Context: `CollectionRequest.putMeta` calls `governedEncryptionOf`
+(`src/requests/collectionContext.ts`) twice per write, once for the early
+rejection and again inside `assertTransition` under the per-Collection lock.
+Each call reads the whole log body and `deriveGovernedEncryption`
+(`src/lib/governedLog.ts`) runs `parseGoverningLog` over every line, though only
+the last line's `state` and the genesis line's `parameters.method` are used. The
+log is append-only and grows without bound, so the cost is O(log size), twice.
+Before v0.5 an annotation-only write (a rename, a `custom` or `epoch` edit) went
+through a narrower endpoint that never touched the log; the merged full-replace
+`PUT /meta` now pays it on every write. `getCollectionOrThrow`, which nearly
+every Collection- and Resource-level handler calls, pays it once per request
+too. A cache would follow the per-backend `LruCache` pattern of
+`src/lib/spaceMetadataCache.ts` and `src/lib/policyCache.ts`. On Postgres the
+recheck's log read is a second query against the `collections` row whose
+`FOR UPDATE` lock `writeCollection` already holds, so the lock is held across an
+extra round trip.
