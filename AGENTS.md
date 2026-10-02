@@ -105,6 +105,8 @@ Rules:
   item.
 - `blocked-by` links only express dependencies implied by the work itself; do
   not invent orderings.
+- Never refer to invariants just by number, always include a brief description
+  in parentheses.
 
 ## Ecosystem conventions
 

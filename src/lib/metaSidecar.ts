@@ -6,6 +6,7 @@
  * interchangeable between the two backends. A Collection has no sidecar: its
  * annotation members live in its one Collection Metadata file.
  */
+import { isPlainObject } from './isPlainObject.js'
 import type { IDID, ResourceMetadataCustom } from '../types.js'
 
 /**
@@ -58,6 +59,15 @@ import type { IDID, ResourceMetadataCustom } from '../types.js'
  * last-known content-type, which the content filename no longer carries once it
  * is gone -- present only on a tombstone (a live Resource derives its
  * content-type from the filename).
+ *
+ * `feedPosition` is the Resource's position in its Collection's changes feed:
+ * each content write, metadata write, soft delete, and import of the Resource
+ * takes the Collection's next position. It is one server's fact about its own
+ * feed, so it never replicates. Export strips it (`withoutSidecarMember`),
+ * import ignores an archived one and assigns a fresh position, and the
+ * Postgres backend keeps the same fact in a column instead.
+ * A sidecar written before feed positions existed carries none, and its
+ * Resource is absent from the feed until it is rewritten.
  */
 export interface MetaSidecar {
   createdAt: string
@@ -94,4 +104,48 @@ export interface MetaSidecar {
   writerId?: string
   deleted?: boolean
   contentType?: string
+  feedPosition?: number
+}
+
+/**
+ * Parses a Resource sidecar's bytes. Resolves `undefined` for bytes that are
+ * not a JSON object.
+ * @param bytes {Buffer}
+ * @returns {MetaSidecar | undefined}
+ */
+export function parseSidecarBytes(bytes: Buffer): MetaSidecar | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(bytes.toString('utf8'))
+  } catch {
+    return undefined
+  }
+  // The member types are not checked here: a reader takes each member it
+  // uses on its own terms, as it does for a sidecar read off the disk.
+  return isPlainObject(parsed) ? (parsed as unknown as MetaSidecar) : undefined
+}
+
+/**
+ * Removes one member from a Resource sidecar's bytes. Bytes that do not parse
+ * as a JSON object, or that carry no such member, are returned unchanged.
+ * Export uses it to strip the server-local `feedPosition`, and import to
+ * strip a `createdBy` the archive did not earn.
+ * @param options {object}
+ * @param options.bytes {Buffer}   the stored sidecar bytes
+ * @param options.member {keyof MetaSidecar}
+ * @returns {Buffer}
+ */
+export function withoutSidecarMember({
+  bytes,
+  member
+}: {
+  bytes: Buffer
+  member: keyof MetaSidecar
+}): Buffer {
+  const sidecar = parseSidecarBytes(bytes)
+  if (sidecar === undefined || !(member in sidecar)) {
+    return bytes
+  }
+  const { [member]: _dropped, ...rest } = sidecar
+  return Buffer.from(JSON.stringify(rest))
 }

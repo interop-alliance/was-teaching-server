@@ -6,7 +6,7 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { v4 as uuidv4 } from 'uuid'
-import type { ChangeDocument } from '@interop/storage-core'
+import type { ChangeDocument, ChangesCheckpoint } from '@interop/storage-core'
 
 import { buildLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
@@ -44,6 +44,10 @@ import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
 import { parseWriterIdHeader } from '../lib/writerAttribution.js'
 import { parsePageParams } from '../lib/pagination.js'
+import {
+  decodeChangesCheckpoint,
+  encodeChangesCheckpoint
+} from '../lib/changesCheckpoint.js'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import { forgetDeletedWebvhLocation } from '../lib/webvhController.js'
 import { invalidateCollectionPolicies } from '../lib/policyCache.js'
@@ -847,8 +851,8 @@ export class CollectionRequest {
    * `profile`:
    *
    * - `changes` -- the replication change feed: the Collection's JSON
-   *   documents and tombstones changed strictly after `checkpoint`, in change
-   *   order, capped at `limit`.
+   *   documents and tombstones changed strictly after the opaque
+   *   `checkpoint`, in feed position order, capped at `limit`.
    * - `blinded-index` -- the EDV blinded-attribute query (the
    *   `blinded-index-query` backend feature): `{index, equals | has, count,
    *   limit, cursor}` evaluated against the HMAC-blinded `indexed` entries of
@@ -880,7 +884,7 @@ export class CollectionRequest {
       Params: { spaceId: string; collectionId: string }
       Body: {
         profile?: string
-        checkpoint?: { id?: unknown; updatedAt?: unknown }
+        checkpoint?: unknown
         limit?: unknown
         index?: unknown
         equals?: unknown
@@ -936,6 +940,7 @@ export class CollectionRequest {
     if (body.profile === 'changes' && dataBackend.changesSince) {
       return CollectionRequest.#queryChanges({
         reply,
+        serverUrl: request.server.serverUrl,
         dataBackend,
         spaceId,
         collectionId,
@@ -991,8 +996,19 @@ export class CollectionRequest {
    * above): parses the checkpoint/limit, pulls the page from the backend's
    * change feed, and projects it to the wire shape.
    *
+   * The checkpoint is opaque on the wire (`lib/changesCheckpoint.ts`). It
+   * carries a feed position scoped to this Collection's absolute URL and to
+   * the generation of its feed counter, so a checkpoint issued by another
+   * server or for another Collection, one in the retired `{ id, updatedAt }`
+   * shape, or one issued for this Collection before it was deleted and
+   * re-created is refused with `invalid-request-body` (400). A replica then
+   * restarts its pull from the beginning. The generation is the backend's to
+   * know, so the position is handed to the backend first and the generation
+   * compared with the one its page reports.
+   *
    * @param options {object}
    * @param options.reply {import('fastify').FastifyReply}
+   * @param options.serverUrl {string}   this server's base URL
    * @param options.dataBackend {StorageBackend}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -1002,6 +1018,7 @@ export class CollectionRequest {
    */
   static async #queryChanges({
     reply,
+    serverUrl,
     dataBackend,
     spaceId,
     collectionId,
@@ -1009,28 +1026,44 @@ export class CollectionRequest {
     requestName
   }: {
     reply: FastifyReply
+    serverUrl: string
     dataBackend: StorageBackend
     spaceId: string
     collectionId: string
     body: {
-      checkpoint?: { id?: unknown; updatedAt?: unknown }
+      checkpoint?: unknown
       limit?: unknown
     }
     requestName: string
   }): Promise<FastifyReply> {
-    // Parse the optional checkpoint: when present it must carry both string
-    // fields (a malformed one is a client error, 400). Absent = start of feed.
-    let checkpoint: { id: string; updatedAt: string } | undefined
+    // The feed a checkpoint is scoped to: this Collection's canonical
+    // container URL on this server.
+    const feed = `${serverUrl}${collectionPath({
+      spaceId,
+      collectionId,
+      trailingSlash: true
+    })}`
+
+    // Parse the optional checkpoint: absent = start of feed. A present one
+    // must be a checkpoint this server issued for this Collection, under the
+    // generation its feed counter still carries (checked against the page
+    // below).
+    const refusedCheckpoint = () =>
+      new InvalidRequestBodyError({
+        requestName,
+        detail:
+          'The checkpoint was not issued by this server for this Collection.',
+        pointer: '#/checkpoint'
+      })
+    let resumeFrom: { generation: string; position: number } | undefined
     if (body.checkpoint !== undefined) {
-      const { id, updatedAt } = body.checkpoint
-      if (typeof id !== 'string' || typeof updatedAt !== 'string') {
-        throw new InvalidRequestBodyError({
-          requestName,
-          detail: 'checkpoint must have string "id" and "updatedAt" fields.',
-          pointer: '#/checkpoint'
-        })
+      resumeFrom = decodeChangesCheckpoint({
+        checkpoint: body.checkpoint,
+        feed
+      })
+      if (resumeFrom === undefined) {
+        throw refusedCheckpoint()
       }
-      checkpoint = { id, updatedAt }
     }
 
     // Coerce `limit` (the requested batch size) to a positive integer, else
@@ -1045,9 +1078,20 @@ export class CollectionRequest {
     const result = await dataBackend.changesSince!({
       spaceId,
       collectionId,
-      ...(checkpoint !== undefined && { checkpoint }),
+      ...(resumeFrom !== undefined && { afterPosition: resumeFrom.position }),
       limit
     })
+    // A checkpoint from another life of this feed: the Collection was deleted
+    // and re-created under the same URL since it was issued, and its counter
+    // restarted at 1, so reading the position would skip the new feed up to
+    // it. A feed that has handed out no position yet has no generation, and
+    // no checkpoint can have been issued under it.
+    if (
+      resumeFrom !== undefined &&
+      resumeFrom.generation !== result.feedGeneration
+    ) {
+      throw refusedCheckpoint()
+    }
 
     // Project the change feed to the wire shape: a tombstone's `deleted` becomes
     // RxDB's `_deleted`, and the document body stays under `data` (kept out of
@@ -1059,8 +1103,19 @@ export class CollectionRequest {
     // Resource. The content `etag` and `/meta` `metaEtag` -- the quoted strong
     // validators exactly as the server emits them in the `ETag` header -- ride
     // the feed too, so a replica can send `If-Match` from feed state alone
-    // without a GET per Resource. The RxDB browser adapter does the final
-    // reshape into RxDB documents.
+    // without a GET per Resource. Each document carries the opaque checkpoint
+    // that resumes right after it, so a client can checkpoint on any prefix
+    // of a page. `updatedAt` is a plain wall-clock stamp with no ordering
+    // role. The RxDB browser adapter does the final reshape into RxDB
+    // documents.
+    // `feedGeneration` is set whenever the page has a document: every
+    // position on it was handed out under it.
+    const issueCheckpoint = (position: number): ChangesCheckpoint =>
+      encodeChangesCheckpoint({
+        feed,
+        generation: result.feedGeneration!,
+        position
+      })
     const documents: ChangeDocument[] = result.documents.map(doc => {
       const etag = etagOf({ generation: doc.generation, version: doc.version })
       const metaEtag = etagOf({
@@ -1071,6 +1126,7 @@ export class CollectionRequest {
         id: doc.resourceId,
         _deleted: doc.deleted,
         updatedAt: doc.updatedAt,
+        checkpoint: issueCheckpoint(doc.feedPosition),
         version: doc.version,
         ...(doc.metaVersion !== undefined && { metaVersion: doc.metaVersion }),
         ...(etag !== undefined && { etag }),
@@ -1090,10 +1146,13 @@ export class CollectionRequest {
       }
     })
 
+    // The page's checkpoint is its last document's, or null on an empty page.
+    const checkpoint =
+      result.checkpoint === null ? null : issueCheckpoint(result.checkpoint)
     return reply
       .status(200)
       .type('application/json')
-      .send(JSON.stringify({ documents, checkpoint: result.checkpoint }))
+      .send(JSON.stringify({ documents, checkpoint }))
   }
 
   /**

@@ -181,6 +181,43 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   a slash-variant redirect and a POST route registered with `config.safe` (Query
   and Export, reads that use POST to carry a body) stay cacheable. The spec
   defers further `Cache-Control` semantics.
+- **`src/lib/changesCheckpoint.ts`** -- the `changes` query profile's wire
+  checkpoint. The feed is ordered by a per-Collection feed position, a positive
+  integer sequence. Every Resource-level write takes the next one: a content
+  write, a metadata write, a soft delete, and a Resource written by an import. A
+  chunk write takes none, so it never moves its parent. The position is assigned
+  inside the per-Collection critical section that makes the write visible, so no
+  write lands at or before a position a reader was already handed. `updatedAt`
+  has no ordering role: two writes can share a millisecond. The filesystem
+  backend keeps the counter in `.feed.<collectionId>.json` in the Collection dir
+  and stamps the position on the sidecar as `feedPosition`, under a `feed:` key
+  nested inside the per-Resource lock. `changesSince` reads the counter under
+  that key and admits only positions at or below it. The Postgres backend
+  increments `collections.feed_position` with `UPDATE ... RETURNING`, whose row
+  lock is held to commit, so positions are commit-ordered, and stamps
+  `resources.feed_position` in the same transaction. A position is one server's
+  fact about its own feed: export strips it and import assigns fresh ones. A
+  Resource stored before positions existed has none and is absent from the feed
+  until it is rewritten. The counter has a generation, minted with the first
+  position it hands out and kept for the Collection's life (`generation` in the
+  counter file, `collections.feed_generation` in Postgres). It goes with the
+  Collection, so a Collection re-created under the same id, by hand or by an
+  import, restarts at 1 under a fresh one; an import keeps the archived
+  Collection Metadata generation, so that one cannot tell the two lives apart.
+  On the wire the checkpoint is an opaque string, which a client compares by
+  equality only and echoes back verbatim. This server encodes it as
+  `base64urlnopad(JSON.stringify({ feed, generation, position }))`, where `feed`
+  is the Collection's absolute trailing-slash URL and `generation` the feed
+  counter's, so a checkpoint is scoped to the server, the Collection, and the
+  life of its feed that issued it. Each feed document carries the checkpoint
+  that resumes right after it, and the page's `checkpoint` is its last
+  document's. A checkpoint this server did not issue for the Collection, the
+  retired `{ id, updatedAt }` object included, is `invalid-request-body` (400)
+  at `#/checkpoint`. So is one issued for the Collection before it was deleted
+  and re-created: reading its position into the new feed would skip every write
+  at or below it. The handler learns the current generation from the backend's
+  page (`feedGeneration`), so the position goes to the backend first and the
+  generation is compared afterward.
 - **`src/lib/spaceMetadataCache.ts`** and **`src/lib/policyCache.ts`** -- the
   two short-TTL read caches on the authorization path, one per storage backend.
   The first memoizes the Space Metadata object, whose `controller` every
@@ -587,6 +624,14 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   slash.
 - **Resource** — an individual stored item, JSON object or binary blob, within a
   Collection (`/space/:spaceId/:collectionId/:resourceId`).
+- **Feed position** -- a Resource's place in its Collection's `changes` feed:
+  the per-Collection sequence number its latest Resource-level write took
+  (`feedPosition` on the filesystem sidecar, `feed_position` in Postgres). Local
+  to one server and never replicated. The wire **checkpoint** wraps one in an
+  opaque string scoped to the issuing Collection URL and to the feed counter's
+  generation, which a re-create of the Collection replaces (see
+  `lib/changesCheckpoint.ts`). Avoid: keyset, cursor (the listings' pagination
+  token), `updatedAt` as an ordering key.
 - **Controller** — the DID that owns a Space; its Ed25519 key signs capability
   invocations and is checked during ZCap verification. Two shapes are accepted:
   a `did:key` (the only one a Space may be _created_ with), or a **self-hosted

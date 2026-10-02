@@ -43,6 +43,7 @@ import type { FastifyBaseLogger } from 'fastify'
 import type { ImportStats } from '../types.js'
 import type { ImportPlan, TarEntry } from './importTar.js'
 import { isPlainObject } from './isPlainObject.js'
+import { withoutSidecarMember } from './metaSidecar.js'
 import { collectionMetaPath, resourcePath, spaceMetaPath } from './paths.js'
 import {
   CLAIM_MEMBERS,
@@ -262,7 +263,10 @@ export async function applyImportProvenance({
     // unattested Resources, and tombstones, which carry no statement.
     for (const [resourceId, bytes] of resourceMetadata) {
       if (!earned.has(resourceId)) {
-        resourceMetadata.set(resourceId, withoutCreatedByBytes(bytes))
+        resourceMetadata.set(
+          resourceId,
+          withoutSidecarMember({ bytes, member: 'createdBy' })
+        )
       }
     }
     collections.push({ ...collection, collectionMetadata, resourceMetadata })
@@ -559,23 +563,4 @@ function withoutCreatedBy<T extends { createdBy?: unknown }>(
 ): Omit<T, 'createdBy'> {
   const { createdBy: _dropped, ...rest } = record
   return rest
-}
-
-/**
- * A metadata sidecar's bytes with its `createdBy` removed. Bytes that do not
- * parse as a JSON object, or carry no `createdBy`, come back unchanged.
- * @param bytes {Buffer}
- * @returns {Buffer}
- */
-function withoutCreatedByBytes(bytes: Buffer): Buffer {
-  let sidecar: unknown
-  try {
-    sidecar = JSON.parse(bytes.toString('utf8'))
-  } catch {
-    return bytes
-  }
-  if (!isPlainObject(sidecar) || !('createdBy' in sidecar)) {
-    return bytes
-  }
-  return Buffer.from(JSON.stringify(withoutCreatedBy(sidecar)))
 }

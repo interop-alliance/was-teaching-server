@@ -6,6 +6,10 @@
  * Signed queries use the raw `was.request` escape hatch: the high-level client
  * does not yet surface the change feed. The query parameters ride the signed
  * JSON body.
+ *
+ * The same-millisecond cases (a rewrite or a lower-sorting id landing in the
+ * checkpoint's millisecond) are the storage contract's, under a frozen
+ * clock, since the request layer only wraps the backend's feed position.
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
@@ -13,6 +17,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
+import { base64urlnopad } from '@scure/base'
 
 import type { Space } from '@interop/was-client'
 
@@ -26,6 +31,31 @@ describe('Collection changes query profile', () => {
     alice: any,
     bob: any,
     aliceSpace: Space
+
+  /**
+   * Builds a checkpoint in this server's encoding by hand, for the refusal
+   * cases: the client never builds one, it only echoes what it was handed.
+   */
+  function forgeCheckpoint(value: unknown): string {
+    return base64urlnopad.encode(
+      new TextEncoder().encode(JSON.stringify(value))
+    )
+  }
+
+  /** Decodes a checkpoint in this server's encoding. */
+  function readCheckpoint(checkpoint: string): unknown {
+    return JSON.parse(
+      new TextDecoder().decode(base64urlnopad.decode(checkpoint))
+    )
+  }
+
+  /** The absolute URL of one of Alice's Collections, the checkpoint's scope. */
+  function feedUrl(collectionId: string): string {
+    return new URL(
+      `/space/${alice.space1.id}/${collectionId}/`,
+      serverUrl
+    ).toString()
+  }
 
   /** POSTs the `changes` query body to a Collection's `/query` with `signer`. */
   async function queryChanges(
@@ -75,25 +105,37 @@ describe('Collection changes query profile', () => {
   }
 
   it('returns changed documents with id/_deleted/updatedAt/version/data + checkpoint', async () => {
-    await seedCollection('feed', ['a', 'b', 'c'])
+    await seedCollection('feed', ['c', 'a', 'b'])
     const { data } = await queryChanges(alice, 'feed', { limit: 10 })
 
-    assert.deepEqual(data.documents.map((doc: any) => doc.id).sort(), [
-      'a',
-      'b',
-      'c'
-    ])
+    // Feed order is write order, not id order.
+    assert.deepEqual(
+      data.documents.map((doc: any) => doc.id),
+      ['c', 'a', 'b']
+    )
     for (const doc of data.documents) {
       assert.equal(doc._deleted, false)
       assert.equal(doc.version, 1)
       assert.deepEqual(doc.data, { n: doc.id })
       assert.ok(typeof doc.updatedAt === 'string')
+      assert.ok(typeof doc.checkpoint === 'string')
     }
+    // The page's checkpoint is its last document's, an opaque string.
     const last = data.documents[data.documents.length - 1]
-    assert.deepEqual(data.checkpoint, {
-      id: last.id,
-      updatedAt: last.updatedAt
-    })
+    assert.equal(typeof data.checkpoint, 'string')
+    assert.equal(data.checkpoint, last.checkpoint)
+    // This server's encoding: the Collection's absolute URL, its feed
+    // counter's generation, and the feed position, base64url-encoded JSON.
+    const { generation, ...rest } = readCheckpoint(data.checkpoint) as any
+    assert.equal(typeof generation, 'string')
+    assert.deepEqual(rest, { feed: feedUrl('feed'), position: 3 })
+    // Every checkpoint of one feed carries the same generation.
+    for (const doc of data.documents) {
+      assert.equal(
+        (readCheckpoint(doc.checkpoint) as any).generation,
+        generation
+      )
+    }
   })
 
   it('surfaces a tombstone as _deleted:true with no data', async () => {
@@ -179,7 +221,7 @@ describe('Collection changes query profile', () => {
   it('iterates by checkpoint, returning only newer changes', async () => {
     await seedCollection('iter', ['a', 'b', 'c', 'd', 'e'])
     const seen: string[] = []
-    let checkpoint: { id: string; updatedAt: string } | undefined
+    let checkpoint: string | undefined
 
     for (let guard = 0; guard < 10; guard++) {
       const { data } = await queryChanges(alice, 'iter', {
@@ -231,18 +273,120 @@ describe('Collection changes query profile', () => {
     assert.equal(thrown.response.status, 501)
   })
 
-  it('rejects a malformed checkpoint with 400', async () => {
-    await seedCollection('bad-checkpoint', ['a'])
-    let thrown: any
-    try {
-      await queryChanges(alice, 'bad-checkpoint', {
-        checkpoint: { id: 'a' } // missing updatedAt
-      })
-    } catch (err) {
-      thrown = err
+  it("resumes from any document's checkpoint, not only the page's", async () => {
+    await seedCollection('prefix-resume', ['a', 'b', 'c', 'd'])
+    const { data } = await queryChanges(alice, 'prefix-resume', { limit: 10 })
+    assert.deepEqual(
+      data.documents.map((doc: any) => doc.id),
+      ['a', 'b', 'c', 'd']
+    )
+    // A client that applied only `a` and `b` checkpoints on `b`.
+    const { data: rest } = await queryChanges(alice, 'prefix-resume', {
+      limit: 10,
+      checkpoint: data.documents[1].checkpoint
+    })
+    assert.deepEqual(
+      rest.documents.map((doc: any) => doc.id),
+      ['c', 'd']
+    )
+    assert.equal(rest.checkpoint, data.checkpoint)
+  })
+
+  describe('refuses a checkpoint this server did not issue for this Collection', () => {
+    /** Asserts the query is refused as `invalid-request-body` at the checkpoint. */
+    async function assertRefused(collectionId: string, checkpoint: unknown) {
+      let thrown: any
+      try {
+        await queryChanges(alice, collectionId, { checkpoint })
+      } catch (err) {
+        thrown = err
+      }
+      assert.ok(thrown, 'expected the checkpoint to be rejected')
+      assert.equal(thrown.response.status, 400)
+      assert.equal(
+        thrown.data.type,
+        'https://w3id.org/pws#invalid-request-body'
+      )
+      assert.equal(thrown.data.errors?.[0]?.pointer, '#/checkpoint')
     }
-    assert.ok(thrown, 'expected a malformed checkpoint to be rejected')
-    assert.equal(thrown.response.status, 400)
+
+    it('the retired { id, updatedAt } object', async () => {
+      await seedCollection('retired-checkpoint', ['a'])
+      const { data } = await queryChanges(alice, 'retired-checkpoint', {
+        limit: 10
+      })
+      await assertRefused('retired-checkpoint', {
+        id: 'a',
+        updatedAt: data.documents[0].updatedAt
+      })
+    })
+
+    it("another Collection's checkpoint", async () => {
+      await seedCollection('scope-one', ['a'])
+      await seedCollection('scope-two', ['a'])
+      const { data } = await queryChanges(alice, 'scope-one', { limit: 10 })
+      await assertRefused('scope-two', data.checkpoint)
+    })
+
+    it("another server's checkpoint for the same path", async () => {
+      await seedCollection('scope-server', ['a'])
+      const { data } = await queryChanges(alice, 'scope-server', { limit: 10 })
+      const { generation } = readCheckpoint(data.checkpoint) as any
+      await assertRefused(
+        'scope-server',
+        forgeCheckpoint({
+          feed: `https://elsewhere.example/space/${alice.space1.id}/scope-server/`,
+          generation,
+          position: 1
+        })
+      )
+    })
+
+    it('a checkpoint from before the Collection was deleted and re-created', async () => {
+      // The re-created Collection has the same URL, and its feed restarts at
+      // 1. Reading the old position would skip the new feed up to it.
+      const collection = await seedCollection('reborn', ['a', 'b', 'c'])
+      const { data: before } = await queryChanges(alice, 'reborn', {
+        limit: 10
+      })
+      await collection.delete()
+      await seedCollection('reborn', ['a', 'b'])
+      await assertRefused('reborn', before.checkpoint)
+      // A checkpoint held from before its first write is refused as well: no
+      // position has been handed out under any generation yet.
+      await aliceSpace.collection('reborn').delete()
+      await aliceSpace.createCollection({ id: 'reborn', name: 'reborn' })
+      await assertRefused('reborn', before.checkpoint)
+      // The new feed issues checkpoints of its own, which resume it.
+      const { data: after } = await queryChanges(alice, 'reborn', { limit: 10 })
+      assert.deepEqual(after.documents, [])
+      assert.equal(after.checkpoint, null)
+    })
+
+    it('strings that do not decode to this shape', async () => {
+      await seedCollection('bad-checkpoint', ['a'])
+      const feed = feedUrl('bad-checkpoint')
+      const { data } = await queryChanges(alice, 'bad-checkpoint', {
+        limit: 10
+      })
+      const { generation } = readCheckpoint(data.checkpoint) as any
+      for (const checkpoint of [
+        'not base64url!',
+        forgeCheckpoint('just a string'),
+        forgeCheckpoint({ feed }),
+        forgeCheckpoint({ feed, generation }),
+        forgeCheckpoint({ feed, position: 1 }),
+        forgeCheckpoint({ feed, generation: 'other', position: 1 }),
+        forgeCheckpoint({ feed, generation: 1, position: 1 }),
+        forgeCheckpoint({ feed, generation, position: -1 }),
+        forgeCheckpoint({ feed, generation, position: 1.5 }),
+        forgeCheckpoint({ feed, generation, position: '1' }),
+        forgeCheckpoint({ feed, generation, position: 1, extra: true }),
+        42
+      ]) {
+        await assertRefused('bad-checkpoint', checkpoint)
+      }
+    })
   })
 
   it('returns 404 to a caller not authorized to read the Collection', async () => {

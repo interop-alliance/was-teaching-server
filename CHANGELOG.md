@@ -160,6 +160,37 @@
   the feed. A `/meta` write on one takes its own time as `createdAt` rather than
   the file's birth time.
 
+- The `changes` feed is ordered by a per-Collection feed position instead of the
+  `(updatedAt, id)` keyset, which skipped writes that shared a millisecond with
+  a checkpoint. Every content write, metadata write, soft delete, and imported
+  Resource takes the Collection's next position, assigned inside the
+  per-Collection critical section that makes the write visible. A chunk write
+  takes none. The filesystem backend does not yet stamp a Resource imported with
+  no metadata entry. This is a wire-contract change:
+  - The checkpoint is an opaque string, scoped to this server and Collection and
+    to one life of the Collection's feed. A client compares it by equality only
+    and echoes it back verbatim. A checkpoint issued before the Collection was
+    deleted and re-created under the same id, by hand or by an import, is
+    refused like a foreign one, since the re-created feed restarts at 1.
+  - Each feed document carries `checkpoint`, the checkpoint that resumes right
+    after it. The page's `checkpoint` is its last document's, or `null`.
+  - A checkpoint this server did not issue for the Collection, including the
+    retired `{ id, updatedAt }` object, is refused with `invalid-request-body`
+    (400) at `#/checkpoint`. A replica restarts its pull from the beginning.
+  - `updatedAt` stays on every document as a wall-clock stamp with no ordering
+    role.
+  - Resources stored before this version have no feed position and are absent
+    from the feed until they are rewritten. There is no backfill.
+
+  The filesystem backend keeps the counter and its generation in
+  `.feed.<collectionId>.json` in the Collection dir and the position in each
+  sidecar's `feedPosition`; the Postgres backend adds
+  `collections.feed_position` (the counter), `collections.feed_generation`, and
+  `resources.feed_position` (schema version 7). The position never leaves the
+  server: export strips it, and import assigns fresh ones. Depends on
+  `@interop/storage-core` 0.26.0, whose `ChangesCheckpoint` is a string and
+  whose `ChangeDocument` carries `checkpoint`.
+
 ### Fixed
 
 - A Space-scoped revocation insert racing a Delete Space no longer leaves a

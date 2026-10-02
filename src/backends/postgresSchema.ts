@@ -12,7 +12,7 @@
  * supplementary-plane characters -- unreachable here because the request layer
  * validates ids as URL-safe ASCII.) Timestamps are stored as the fixed-width
  * ISO-8601 strings the wire model uses (`new Date().toISOString()`), not
- * `timestamptz`, so change-feed checkpoints round-trip byte-identically.
+ * `timestamptz`, so they round-trip byte-identically.
  */
 import type { FastifyBaseLogger } from 'fastify'
 import type pg from 'pg'
@@ -308,6 +308,31 @@ const MIGRATIONS: string[] = [
   ALTER TABLE spaces RENAME COLUMN description TO metadata;
   ALTER TABLE spaces RENAME COLUMN description_generation TO meta_generation;
   ALTER TABLE spaces RENAME COLUMN description_version TO meta_version;
+  `,
+  // v7: the changes feed orders on a per-Collection feed position instead of
+  // the (updated_at, resource_id) keyset, which is not a total order when
+  // two writes share a millisecond. 'collections.feed_position' is the
+  // counter: the last position handed out, 0 for a Collection with none.
+  // Every Resource-level write takes the next one with
+  // 'UPDATE collections SET feed_position = feed_position + 1 ... RETURNING',
+  // whose row lock is held to commit, so positions are commit-ordered.
+  // 'resources.feed_position' is the position the row's latest write took.
+  // It is NULL for a row written before v7: no backfill, so such a Resource
+  // is absent from the feed until it is rewritten. A chunk write takes none.
+  // 'collections.feed_generation' is the counter's generation, minted with
+  // the first position and kept for the row's life, NULL before it. The wire
+  // checkpoint carries it, so a checkpoint from a Collection since deleted
+  // and re-created under the same id is refused instead of skipping the new
+  // feed's first positions.
+  `
+  ALTER TABLE collections
+    ADD COLUMN feed_position bigint NOT NULL DEFAULT 0,
+    ADD COLUMN feed_generation text;
+  ALTER TABLE resources
+    ADD COLUMN feed_position bigint;
+  DROP INDEX resources_changes_idx;
+  CREATE INDEX resources_feed_idx
+    ON resources (space_id, collection_id, feed_position);
   `
 ]
 

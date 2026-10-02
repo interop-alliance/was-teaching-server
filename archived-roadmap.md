@@ -4297,3 +4297,118 @@ a restore, or a `touch` silently moves a Resource's feed position, and can move
 it below a checkpoint a client already holds (the same skip WAS-93 describes,
 from a different cause). Once WAS-95 lands, the only way to reach these paths is
 writing into `data/` behind the server's back.
+
+### WAS-93: Changes-feed keyset is not a total order
+
+- status: done (2026-10-01)
+- priority: high
+- labels: changes-feed, wire-contract, replication, filesystem-backend,
+  postgres-backend
+- touches:
+  - wallet-attached-storage-spec: the Query Profile Registry's `changes`
+    profile. Its "Ordering and resumption" paragraph states the feed is ordered
+    by an ascending `(updatedAt, id)` keyset and that the checkpoint is an
+    `{ id, updatedAt }` object; both statements change (the new text is
+    described below) (filed in parallel, see that repo)
+  - storage-core: `ChangesCheckpoint` (`src/was.ts`), today
+    `{ id: string, updatedAt: string }`, becomes the opaque checkpoint type, and
+    the wire `ChangeDocument` gains the feed-position member (shipped in this
+    change: `ChangesCheckpoint = string`, `ChangeDocument.checkpoint`, 0.26.0)
+  - was-teaching-server: `src/backends/filesystem.ts` (`changesSince` and the
+    Resource write paths that stamp the sidecar), `src/backends/postgres.ts`
+    (`changesSince`, the `resources` table, and its write statements),
+    `src/requests/CollectionRequest.ts` (`#queryChanges`, the checkpoint parse
+    and the wire projection), `src/types.ts` (the `StorageBackend.changesSince`
+    contract) (shipped 2026-10-01)
+  - was-client: `Collection.changes()` passes the checkpoint through unchanged
+    and needs only the new type; the loop guard in `Collection.documents()` that
+    detects a non-advancing checkpoint concatenates `updatedAt` and `id` and
+    must compare the opaque value instead (filed in parallel, see that repo)
+  - was-sync: `createPullHandler` (`src/changesQuery.ts`) already treats the
+    checkpoint as opaque; only its `SyncCheckpoint` alias follows the type
+    (filed in parallel, see that repo)
+  - conformance-suite: a case that writes two Resources into one Collection
+    within a single millisecond, pages the feed with a checkpoint between them,
+    and asserts neither is skipped; and a case asserting that a checkpoint from
+    before a write, echoed back after it, surfaces the write (filed in parallel,
+    see that repo)
+- acceptance:
+  - [x] Each write to a Collection takes a per-Collection feed position, a
+        sequence number assigned inside the same per-Collection critical section
+        that makes the write visible, so no write can ever land at or before a
+        position already handed to a client
+  - [x] Both backends order and seek on that position, and a page's returned
+        checkpoint resumes exactly after the last document
+  - [x] The checkpoint is opaque on the wire: a client stores it, compares it by
+        equality only, and echoes it back verbatim. The server rejects a
+        checkpoint it did not issue (including the retired `{ id, updatedAt }`
+        shape) with `invalid-request-body` (400), and a replica then restarts
+        its pull from the beginning
+  - [x] Each feed document carries its feed position, so a client can build a
+        checkpoint from any prefix of a page
+  - [x] `updatedAt` stays a plain wall-clock stamp with no ordering role; the
+        spec's "Ordering and resumption" paragraph says the feed is ordered by
+        the issuing server's feed position, that the checkpoint is opaque and
+        scoped to the server URL that issued it, and that `updatedAt` carries no
+        ordering guarantee (server half shipped; the spec paragraph is filed in
+        parallel in the spec repo)
+  - [x] A test in `test/` (and a conformance case) covers both skips described
+        below, with the backend clock injected or frozen so the same-millisecond
+        condition is asserted rather than raced (the `test/` half shipped: the
+        contract suite on both backends and `changes-query-api.test.ts`; the
+        conformance case is filed in parallel in the suite repo)
+  - [x] The checkpoint's exact encoding is agreed before it is coded, and the
+        Query Profile Registry states it
+
+Context: both backends key the feed on `(updatedAt, resourceId)` and seek
+strictly past the checkpoint, and both stamp `updatedAt` from
+`new Date().toISOString()` -- millisecond granularity. Two writes in a
+Collection can therefore share an `updatedAt`, and the keyset stops being a
+total order. Two skips follow. A client checkpoints on Resource `x` at time `T`
+and a writer rewrites `x` within that same millisecond: `x` keeps its position,
+every later pull skips it, and the replica serves the stale body until some
+unrelated write moves `x`'s timestamp. And a Resource whose id sorts below the
+checkpoint's id, written in the checkpoint's millisecond, sorts before the
+checkpoint and is skipped the same way. A per-Resource tiebreak such as the
+monotonic `version` the record already carries closes only the first skip. The
+defect is not that two documents share a key; it is that a write can be assigned
+a key behind a checkpoint already handed out. Only a per-Collection quantity
+that only grows closes both.
+
+A third gap hides behind the first two and constrains where the position is
+assigned. A write that takes its key early and becomes visible late can still
+land behind a checkpoint: writer A takes key `T`, is preempted, and finishes
+after writer B took `T+1`, wrote, and was served to a reader who checkpointed
+there. Both backends already serialize writes per Collection (a keyed lock in
+the filesystem backend, an advisory lock in Postgres), so the position must be
+taken inside that critical section, at the point the write becomes visible. This
+is the same rule that makes a WAL log sequence number safe where a plain
+database sequence (`nextval`, which is not commit-ordered) is not.
+
+Two fixes were weighed. Stamping `updatedAt` as
+`max(now, collectionWatermark + 1ms)` keeps the wire checkpoint unchanged and
+makes the existing key a total order, at the cost of an `updatedAt` that runs
+ahead of the wall clock during a burst. It was rejected for a structural reason
+rather than that one: it makes `updatedAt` serve as the feed key, so the
+receiving server must mint it, so it cannot be a fact about the write that
+replicates verbatim between servers. The multi-primary direction recorded in
+WAS-96 needs exactly that separation: a write's metadata (`updatedAt`,
+`version`, `generation`) is owned by the server that accepted it and travels
+with the write, while a feed position is a property of one server's feed and is
+never replicated. The per-Collection sequence number is the design replication
+feeds normally use (CouchDB's per-database update sequence, Postgres's WAL
+position, Kafka's partition offset) and is the one to implement.
+
+The checkpoint is opaque by decision, not merely by convention. CouchDB moved
+its update sequence from an integer to an opaque string between 1.x and 2.x,
+when a clustered feed needed one counter per shard, and broke every client that
+had done arithmetic on it. Declaring the checkpoint opaque and scoped to the
+issuing server now means the per-source or vector checkpoint that multi-primary
+needs (WAS-96) can arrive without a second wire break. The client side is
+already there: the RxDB pull handler in was-sync echoes the checkpoint verbatim
+and RxDB persists it without inspection, so the only client code that reads
+inside the checkpoint is the loop guard named under `touches`.
+
+No compatibility path is offered for a persisted `{ id, updatedAt }` checkpoint.
+The server refuses it as malformed, the replica restarts its pull from the
+beginning, and the apply path, keyed by Resource id, makes that safe.

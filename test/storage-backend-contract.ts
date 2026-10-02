@@ -5,7 +5,7 @@
  * Not a test file itself -- see storage-contract-filesystem.test.ts and
  * storage-contract-postgres.test.ts for the per-backend entry points.
  */
-import { it, describe, beforeAll, afterAll, expect } from 'vitest'
+import { it, describe, beforeAll, afterAll, expect, vi } from 'vitest'
 import assert from 'node:assert'
 import { randomBytes } from 'node:crypto'
 import { Readable } from 'node:stream'
@@ -2878,9 +2878,14 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId,
           resourceId
         })
-        // The keyset position a replicating client would checkpoint at after
+        // The feed position a replicating client would checkpoint at after
         // seeing the create.
-        const checkpoint = { id: resourceId, updatedAt: first!.updatedAt! }
+        const afterCreate = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          limit: 50
+        })
+        const checkpoint = afterCreate.checkpoint!
         // Far enough apart that the two writes cannot share a millisecond.
         await new Promise(resolve => setTimeout(resolve, 25))
         await backend.writeResource({
@@ -2902,14 +2907,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           Date.parse(second!.updatedAt!) > Date.parse(first!.updatedAt!),
           'updatedAt must advance on an overwrite'
         )
-        // The consequence that matters: a replica resuming from the create's
-        // checkpoint must be told about the overwrite. A rewound `updatedAt`
-        // leaves the Resource at or before the checkpoint's keyset position,
-        // and the change is never replicated at all.
+        // A replica resuming from the create's checkpoint must be told about
+        // the overwrite.
         const feed = await backend.changesSince!({
           spaceId,
           collectionId,
-          checkpoint,
+          afterPosition: checkpoint,
           limit: 50
         })
         assert.ok(
@@ -2918,7 +2921,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         )
       })
 
-      it('orders by (updatedAt, resourceId), resumes from a checkpoint, and carries tombstones', async () => {
+      it('orders by feed position, resumes from a checkpoint, and carries tombstones', async () => {
         const { backend } = harness
         await backend.writeResource({
           spaceId,
@@ -2960,10 +2963,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(tombstone!.deleted, true)
         assert.equal(tombstone!.data, undefined)
         assert.equal(tombstone!.version, 2)
-        assert.deepEqual(full.checkpoint, {
-          id: tombstone!.resourceId,
-          updatedAt: tombstone!.updatedAt
-        })
+        // Positions ascend through the page, and the page's checkpoint is the
+        // last document's position.
+        assert.ok(live!.feedPosition < tombstone!.feedPosition)
+        assert.equal(full.checkpoint, tombstone!.feedPosition)
 
         // Paged: limit 1, then resume from the returned checkpoint.
         const page1 = await backend.changesSince!({
@@ -2975,7 +2978,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const page2 = await backend.changesSince!({
           spaceId,
           collectionId: 'col',
-          checkpoint: page1.checkpoint!,
+          afterPosition: page1.checkpoint!,
           limit: 10
         })
         assert.deepEqual(
@@ -2987,7 +2990,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const done = await backend.changesSince!({
           spaceId,
           collectionId: 'col',
-          checkpoint: full.checkpoint!,
+          afterPosition: full.checkpoint!,
           limit: 10
         })
         assert.deepEqual(done.documents, [])
@@ -3010,7 +3013,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const after = await backend.changesSince!({
           spaceId,
           collectionId: 'col',
-          checkpoint: before.checkpoint!,
+          afterPosition: before.checkpoint!,
           limit: 100
         })
         assert.deepEqual(
@@ -3022,6 +3025,208 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(doc.metaVersion, 1)
         assert.deepEqual(doc.data, { n: 2 })
         assert.deepEqual(doc.custom, { name: 'Two' })
+      })
+
+      it('skips no write that shares a millisecond with the checkpoint (frozen clock)', async () => {
+        const { backend } = harness
+        // Its own Collection, so the shared fixture's feed is untouched.
+        const collectionId = 'col-same-ms'
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: {
+            id: collectionId,
+            type: ['Collection'],
+            name: collectionId
+          }
+        })
+        // Freeze the wall clock, so every write below stamps the same
+        // `updatedAt`: the same-millisecond condition is asserted, not raced.
+        const frozen = '2026-10-01T12:00:00.000Z'
+        vi.useFakeTimers({ toFake: ['Date'] })
+        vi.setSystemTime(new Date(frozen))
+        try {
+          await backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId: 'm',
+            input: jsonInput({ n: 1 })
+          })
+          const first = await backend.changesSince!({
+            spaceId,
+            collectionId,
+            limit: 10
+          })
+          assert.deepEqual(
+            first.documents.map(document => document.resourceId),
+            ['m']
+          )
+
+          // (a) The checkpointed Resource is rewritten in the same
+          // millisecond: the next pull surfaces it.
+          await backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId: 'm',
+            input: jsonInput({ n: 2 })
+          })
+          const second = await backend.changesSince!({
+            spaceId,
+            collectionId,
+            afterPosition: first.checkpoint!,
+            limit: 10
+          })
+          assert.deepEqual(
+            second.documents.map(document => document.resourceId),
+            ['m']
+          )
+          assert.deepEqual(second.documents[0]!.data, { n: 2 })
+
+          // (b) A Resource whose id sorts below the checkpoint's, written in
+          // the checkpoint's millisecond, is surfaced.
+          await backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId: 'a',
+            input: jsonInput({ n: 3 })
+          })
+          const third = await backend.changesSince!({
+            spaceId,
+            collectionId,
+            afterPosition: second.checkpoint!,
+            limit: 10
+          })
+          assert.deepEqual(
+            third.documents.map(document => document.resourceId),
+            ['a']
+          )
+
+          // (c) A checkpoint taken before a write, echoed back after it,
+          // surfaces the write: the first checkpoint now yields both.
+          const replay = await backend.changesSince!({
+            spaceId,
+            collectionId,
+            afterPosition: first.checkpoint!,
+            limit: 10
+          })
+          assert.deepEqual(
+            replay.documents.map(document => document.resourceId),
+            ['m', 'a']
+          )
+
+          // Every document shares one `updatedAt`, so a keyset on it could
+          // not have ordered them.
+          for (const document of replay.documents) {
+            assert.equal(document.updatedAt, frozen)
+          }
+        } finally {
+          vi.useRealTimers()
+        }
+      })
+
+      it('a chunk write does not move its parent Resource in the feed', async () => {
+        const { backend } = harness
+        const collectionId = 'col-chunk-feed'
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: {
+            id: collectionId,
+            type: ['Collection'],
+            name: collectionId
+          }
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'parent',
+          input: jsonInput({ chunked: true })
+        })
+        const before = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          limit: 10
+        })
+        await backend.writeChunk({
+          spaceId,
+          collectionId,
+          resourceId: 'parent',
+          chunkIndex: 0,
+          input: binaryInput(Buffer.from('chunk'))
+        })
+        const after = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          afterPosition: before.checkpoint!,
+          limit: 10
+        })
+        assert.deepEqual(after.documents, [])
+        assert.equal(after.checkpoint, null)
+      })
+
+      it("import assigns fresh feed positions after the destination's own", async () => {
+        const { backend } = harness
+        const sourceSpaceId = 'space-feed-import-src'
+        const targetSpaceId = 'space-feed-import-dst'
+        await provisionSpace(backend, sourceSpaceId)
+        await provisionSpace(backend, targetSpaceId)
+        for (const resourceId of ['s1', 's2']) {
+          await backend.writeResource({
+            spaceId: sourceSpaceId,
+            collectionId: 'col',
+            resourceId,
+            input: jsonInput({ resourceId })
+          })
+        }
+        // The destination already holds history of its own.
+        for (const resourceId of ['d1', 'd2', 'd3']) {
+          await backend.writeResource({
+            spaceId: targetSpaceId,
+            collectionId: 'col',
+            resourceId,
+            input: jsonInput({ resourceId })
+          })
+        }
+        const before = await backend.changesSince!({
+          spaceId: targetSpaceId,
+          collectionId: 'col',
+          limit: 100
+        })
+        await importArchive({
+          backend,
+          spaceId: targetSpaceId,
+          tarStream: await backend.exportSpace({ spaceId: sourceSpaceId })
+        })
+        const after = await backend.changesSince!({
+          spaceId: targetSpaceId,
+          collectionId: 'col',
+          afterPosition: before.checkpoint!,
+          limit: 100
+        })
+        assert.deepEqual(
+          after.documents.map(document => document.resourceId).sort(),
+          ['s1', 's2']
+        )
+        for (const document of after.documents) {
+          assert.ok(document.feedPosition > before.checkpoint!)
+        }
+
+        // A feed position is one server's fact: no archive entry carries it.
+        const entries = await extractTarEntries(
+          await backend.exportSpace({ spaceId: sourceSpaceId })
+        )
+        for (const [entryName, entry] of entries) {
+          assert.ok(
+            !entryName.split('/').pop()!.startsWith('.feed.'),
+            `unexpected feed counter entry ${entryName}`
+          )
+          if (entry.body !== undefined) {
+            assert.ok(
+              !entry.body.toString('utf8').includes('feedPosition'),
+              `${entryName} carries a feed position`
+            )
+          }
+        }
       })
 
       it('carries createdBy on live documents and on tombstones, and omits it when unrecorded', async () => {
@@ -3098,6 +3303,92 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.ok(doc, 'expected the Resource in the feed')
         assert.equal(doc!.generation, metadata!.generation)
         assert.equal(typeof doc!.generation, 'string')
+      })
+
+      it('reports a feed generation minted with the first position and replaced by a re-create', async () => {
+        const { backend } = harness
+        const collectionId = 'col-generation'
+        const collectionMetadata = {
+          id: collectionId,
+          type: ['Collection'],
+          name: collectionId
+        }
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata
+        })
+        // No position handed out yet: no generation.
+        const empty = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          limit: 10
+        })
+        assert.equal(empty.feedGeneration, undefined)
+
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'one',
+          input: jsonInput({ n: 1 })
+        })
+        const first = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          limit: 10
+        })
+        assert.equal(typeof first.feedGeneration, 'string')
+        // Kept across later positions, and across an empty page.
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'two',
+          input: jsonInput({ n: 2 })
+        })
+        const second = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          afterPosition: first.checkpoint!,
+          limit: 10
+        })
+        assert.equal(second.feedGeneration, first.feedGeneration)
+        const drained = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          afterPosition: second.checkpoint!,
+          limit: 10
+        })
+        assert.deepEqual(drained.documents, [])
+        assert.equal(drained.feedGeneration, first.feedGeneration)
+
+        // A re-create under the same id restarts the feed at 1 under a fresh
+        // generation, so a position held from before cannot be read into it.
+        await backend.deleteCollection({ spaceId, collectionId })
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata
+        })
+        const reborn = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          limit: 10
+        })
+        assert.equal(reborn.feedGeneration, undefined)
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'one',
+          input: jsonInput({ n: 1 })
+        })
+        const restarted = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          limit: 10
+        })
+        assert.equal(typeof restarted.feedGeneration, 'string')
+        assert.notEqual(restarted.feedGeneration, first.feedGeneration)
+        assert.equal(restarted.documents[0]!.feedPosition, 1)
       })
     })
 

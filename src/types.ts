@@ -1098,10 +1098,34 @@ export interface StorageBackend {
 
   /**
    * OPTIONAL replication change feed (the `changes` query profile). Returns
-   * the Collection's JSON-document Resources and tombstones changed strictly
-   * after `checkpoint`, in change order (`(updatedAt, resourceId)` ascending),
-   * capped at `limit` (a backend MAY clamp an oversized value to its own
-   * maximum). With no `checkpoint`, the feed starts from the beginning.
+   * the Collection's JSON-document Resources and tombstones whose feed
+   * position is strictly after `afterPosition`, in ascending feed position
+   * order, capped at `limit` (a backend MAY clamp an oversized value to its
+   * own maximum). With no `afterPosition`, the feed starts from the
+   * beginning.
+   *
+   * The feed position is a per-Collection sequence, a positive integer
+   * starting at 1. Every Resource-level write in the Collection takes the
+   * next one: a content write, a metadata write, a soft delete, and a
+   * Resource written by an import. A chunk write takes none, so it never
+   * moves its parent Resource. The backend assigns the position inside the
+   * per-Collection critical section that makes the write visible to this
+   * method, so no write can land at or before a position already returned.
+   * Positions are unique within a Collection but need not be contiguous. A
+   * position is one server's fact about its own feed: it is never exported
+   * or replicated, and an import assigns fresh ones. A Resource stored before
+   * feed positions existed has none and is absent from the feed until it is
+   * rewritten. The request layer wraps the position in the opaque wire
+   * checkpoint; a backend never sees that string.
+   *
+   * The counter has a generation, minted with the first position it hands
+   * out and kept for the Collection's life. It is removed with the
+   * Collection, so a Collection re-created under the same id, by hand or by
+   * an import, restarts at 1 under a fresh one. The result's `feedGeneration`
+   * is that generation, absent while the Collection has handed out no
+   * position. The request layer puts it in the checkpoint and refuses a
+   * checkpoint that carries another, so a reader holding one from before a
+   * re-create restarts rather than skipping the new feed's first positions.
    *
    * Each document carries its monotonic content `version`, its
    * `metaGeneration` and `metaVersion` (when a metadata write has occurred),
@@ -1115,14 +1139,15 @@ export interface StorageBackend {
    * `metaGeneration` with `metaVersion` for its `metaEtag` -- the quoted
    * strong validators a replica can send back as `If-Match` without a GET per
    * Resource. A tombstone keeps its `createdBy`, as it keeps its `createdAt`.
-   * A metadata-only edit re-surfaces the Resource with a bumped `updatedAt` /
-   * `metaVersion` but its `version` / `data` unchanged. A tombstone
+   * A metadata-only edit re-surfaces the Resource at a new feed position, with
+   * a bumped `updatedAt` / `metaVersion` but its `version` / `data` unchanged.
+   * `updatedAt` is a plain wall-clock stamp with no ordering role. A tombstone
    * (soft-deleted Resource) is surfaced with `deleted: true` and no `data` so
    * the delete replicates until clients catch up. Binary (non-JSON) Resources
-   * are excluded -- attachment replication is future work. The result's
-   * `checkpoint` is the `{ id, updatedAt }` of the last returned document (the
-   * keyset position a follow-up call resumes after), or `null` when nothing
-   * changed since `checkpoint`.
+   * are excluded -- attachment replication is future work. Each document
+   * carries its `feedPosition`. The result's `checkpoint` is the last returned
+   * document's feed position (what a follow-up call passes as
+   * `afterPosition`), or `null` when nothing changed since `afterPosition`.
    *
    * OPTIONAL: a backend that omits this method does not serve the change feed,
    * and the request layer returns `unsupported-operation` (501). The Space and
@@ -1131,11 +1156,13 @@ export interface StorageBackend {
   changesSince?(options: {
     spaceId: string
     collectionId: string
-    checkpoint?: { id: string; updatedAt: string }
+    afterPosition?: number
     limit: number
   }): Promise<{
     documents: Array<{
       resourceId: string
+      // The document's position in the Collection's changes feed.
+      feedPosition: number
       version: number
       metaVersion?: number
       // Absent for a legacy Resource with no generation. Paired with
@@ -1166,7 +1193,9 @@ export interface StorageBackend {
        */
       writerId?: string
     }>
-    checkpoint: { id: string; updatedAt: string } | null
+    checkpoint: number | null
+    // The feed counter's generation; absent until the first position.
+    feedGeneration?: string
   }>
 
   /**

@@ -65,6 +65,7 @@ import {
 } from '@interop/space-archive'
 import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
 import type { MetaSidecar } from '../lib/metaSidecar.js'
+import { parseSidecarBytes } from '../lib/metaSidecar.js'
 import {
   sanitizeBackendRecord,
   serverBackendDescriptor
@@ -92,6 +93,7 @@ import {
   embedMetadataValidator,
   etagOf,
   metadataEtagOf,
+  newGeneration,
   resolveGeneration,
   stripMetadataValidator
 } from '../lib/etag.js'
@@ -227,6 +229,9 @@ interface ResourceRow {
   created_by: IDID | null
   epoch: string | null
   writer_id: string | null
+  // Postgres returns a `bigint` as a string; NULL for a row written before
+  // feed positions existed.
+  feed_position: string | null
 }
 
 /**
@@ -293,24 +298,6 @@ function storedMetadataFromRow<T extends object>(
       metaGeneration: row.meta_generation
     }),
     metaVersion: row.meta_version
-  }
-}
-
-/**
- * Parses an archived `.meta.<resourceId>.json` sidecar's bytes into the
- * shared sidecar shape; unparseable (or absent) bytes yield `undefined`, and
- * the import falls back to fresh-write defaults.
- * @param bytes {Buffer|undefined}
- * @returns {MetaSidecar|undefined}
- */
-function parseSidecar(bytes: Buffer | undefined): MetaSidecar | undefined {
-  if (!bytes) {
-    return undefined
-  }
-  try {
-    return JSON.parse(bytes.toString('utf8')) as MetaSidecar
-  } catch {
-    return undefined
   }
 }
 
@@ -623,6 +610,12 @@ export class PostgresBackend implements StorageBackend {
    * Space Metadata paths take no other), and `#lockSameKeyCreate` /
    * `#lockCollectionUniqueness` are taken AFTER it.
    *
+   * A Resource-level write takes its feed position (`#takeFeedPosition`,
+   * which locks the `collections` row) after `#lockCollectionUniqueness` and
+   * before it locks the `resources` row, the `collections` before `resources`
+   * step of the order above. Every Resource-level write, `writeResourceMetadata`
+   * included, takes this Space row first.
+   *
    * A write into an existing Space takes this same lock through
    * `#lockLiveContainers`, which also refuses a Space or Collection with no
    * Metadata object. This variant checks nothing, so a delete path that finds
@@ -788,6 +781,48 @@ export class PostgresBackend implements StorageBackend {
       'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
       [spaceId, collectionId]
     )
+  }
+
+  /**
+   * Takes the Collection's next changes-feed position: increments the
+   * `collections.feed_position` counter and returns the new value. The
+   * `UPDATE` locks the Collection row until commit, so a second writer's
+   * increment waits for this transaction to commit or roll back. Positions
+   * are therefore handed out in commit order, and a reader that sees a
+   * position also sees every lower one (a plain sequence, whose `nextval` is
+   * not commit-ordered, would let a write land behind a checkpoint already
+   * served). A rolled-back write returns its position with it. Every
+   * Resource-level write takes one; a chunk write does not. The first
+   * position taken in a Collection mints `collections.feed_generation` with
+   * it, and every later one keeps it; the column goes with the row, so a
+   * Collection re-created under the same id starts under a fresh generation
+   * (see `changesSince`). See `#lockSpaceRow` for where this sits in the
+   * lock order.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<number | undefined>}   the position, or `undefined`
+   *   when the Collection row is gone
+   */
+  async #takeFeedPosition({
+    client,
+    spaceId,
+    collectionId
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId: string
+  }): Promise<number | undefined> {
+    const { rows } = await client.query<{ feed_position: string }>(
+      `UPDATE collections
+          SET feed_position = feed_position + 1,
+              feed_generation = COALESCE(feed_generation, $3)
+        WHERE space_id = $1 AND collection_id = $2
+        RETURNING feed_position`,
+      [spaceId, collectionId, newGeneration()]
+    )
+    return rows[0] ? Number(rows[0].feed_position) : undefined
   }
 
   /**
@@ -1886,6 +1921,15 @@ export class PostgresBackend implements StorageBackend {
         })
       }
 
+      // The write's changes-feed position, taken before the row lock (see
+      // `#lockSpaceRow`). `#lockLiveContainers` saw the Collection, and the
+      // Space row it holds keeps a Collection delete out.
+      const feedPosition = (await this.#takeFeedPosition({
+        client,
+        spaceId,
+        collectionId
+      }))!
+
       // Lock the row (re-reading under the create lock when it does not exist
       // yet, so `exists` / `priorSize` below reflect a concurrent creator's
       // committed row). Narrow projection: the lock needs the row, not its
@@ -2011,8 +2055,7 @@ export class PostgresBackend implements StorageBackend {
         // create; `updated_at` is ALWAYS this write's clock, on both the
         // insert and the conflict arm. They are separate parameters because
         // binding one to both rewinds an overwrite's `updated_at` to the
-        // row's creation time, which would also hide the write from the
-        // `(updated_at, resource_id)` change feed.
+        // row's creation time.
         prior?.created_at ?? now,
         now,
         creator,
@@ -2024,14 +2067,16 @@ export class PostgresBackend implements StorageBackend {
         // The client-declared writer-attribution label (spec "Writer
         // attribution"): a content write stores it and CLEARS it when absent,
         // the same declare-or-clear terms as `epoch`.
-        writerId ?? null
+        writerId ?? null,
+        feedPosition
       ]
       const insertSql = `
         INSERT INTO resources (
           space_id, collection_id, resource_id, content_type, content,
           is_json, size_bytes, generation, version, meta_version, custom,
-          deleted, created_at, updated_at, created_by, epoch, writer_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL, false, $10, $11, $12, $13, $14)`
+          deleted, created_at, updated_at, created_by, epoch, writer_id,
+          feed_position
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL, false, $10, $11, $12, $13, $14, $15)`
       /**
        * `created_at` / `meta_generation` / `meta_version` / `custom` are
        * deliberately NOT in the conflict update: an overwrite keeps the
@@ -2066,7 +2111,8 @@ export class PostgresBackend implements StorageBackend {
              updated_at = EXCLUDED.updated_at,
              created_by = resources.created_by,
              epoch = EXCLUDED.epoch,
-             writer_id = EXCLUDED.writer_id`,
+             writer_id = EXCLUDED.writer_id,
+             feed_position = EXCLUDED.feed_position`,
         values,
         createOnly: ifNoneMatch === '*' && prior === undefined,
         validator,
@@ -2241,6 +2287,18 @@ export class PostgresBackend implements StorageBackend {
     await this.#withTransaction(async client => {
       // First lock of the backend-wide order (`#lockSpaceRow`).
       await this.#lockSpaceRow({ client, spaceId })
+      // The tombstone's changes-feed position, taken before the row lock (see
+      // `#lockSpaceRow`). A no-op delete commits it unused, which leaves a
+      // harmless gap in the sequence. No Collection row means no Resource
+      // row either, so the delete is a no-op.
+      const feedPosition = await this.#takeFeedPosition({
+        client,
+        spaceId,
+        collectionId
+      })
+      if (feedPosition === undefined) {
+        return
+      }
       // Narrow projection: the lock needs the row, not the `content` bytea
       // that is about to be dropped anyway.
       const { rows } = await client.query<
@@ -2312,9 +2370,10 @@ export class PostgresBackend implements StorageBackend {
            epoch = NULL,
            writer_id = $5,
            deleted = true,
-           updated_at = $4
+           updated_at = $4,
+           feed_position = $6
          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
-        [spaceId, collectionId, resourceId, now, writerId ?? null]
+        [spaceId, collectionId, resourceId, now, writerId ?? null, feedPosition]
       )
     })
   }
@@ -2416,15 +2475,31 @@ export class PostgresBackend implements StorageBackend {
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator | undefined> {
     return this.#withTransaction(async client => {
+      // First lock of the backend-wide order (`#lockSpaceRow`). Without it
+      // the `collections` row taken below and the `resources` row taken after
+      // it would be acquired in the opposite order to Delete Collection's,
+      // and a metadata write racing a delete could deadlock.
+      await this.#lockSpaceRow({ client, spaceId })
       // A metadata write can create a plaintext equality unique claim for a
       // `custom`-sourced attribute (the `equality-query` feature). When the
       // Collection declares any unique index, take the per-Collection advisory
-      // lock first (held to commit, serializing concurrent claimants) so the
+      // lock (held to commit, serializing concurrent claimants) so the
       // conflict scan below is atomic with the write.
       const equalityUnique =
         uniqueIndexes !== undefined && uniqueIndexes.length > 0
       if (equalityUnique) {
         await this.#lockCollectionUniqueness({ client, spaceId, collectionId })
+      }
+      // The write's changes-feed position, taken before the Resource row lock
+      // (see `#lockSpaceRow`). A write that finds no Resource commits it
+      // unused, a harmless gap. No Collection row means no Resource row either.
+      const feedPosition = await this.#takeFeedPosition({
+        client,
+        spaceId,
+        collectionId
+      })
+      if (feedPosition === undefined) {
+        return undefined
       }
       const { rows } = await client.query<ResourceRow>(
         `SELECT meta_generation, meta_version, deleted FROM resources
@@ -2496,7 +2571,8 @@ export class PostgresBackend implements StorageBackend {
            custom = $6::jsonb,
            updated_at = $7,
            epoch = COALESCE($8, epoch),
-           writer_id = $9
+           writer_id = $9,
+           feed_position = $10
          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
         [
           spaceId,
@@ -2507,7 +2583,8 @@ export class PostgresBackend implements StorageBackend {
           hasCustom ? JSON.stringify(custom) : null,
           now,
           epoch ?? null,
-          writerId ?? null
+          writerId ?? null,
+          feedPosition
         ]
       )
       return { generation: metaGeneration, version: metaVersion }
@@ -2879,29 +2956,35 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
-   * Replication change feed (the `changes` query profile): one indexed keyset
-   * query over `(updatedAt, resourceId)`, tombstones included, JSON documents
-   * only, bodies parsed for the returned page.
+   * Replication change feed (the `changes` query profile): one indexed query
+   * seeking strictly past `afterPosition` on `feed_position`, tombstones
+   * included, JSON documents only, bodies parsed for the returned page.
+   * Positions are commit-ordered (`#takeFeedPosition`), so the statement's
+   * snapshot never holds a position without every lower one. A row with no
+   * `feed_position` (written before feed positions existed; there is no
+   * backfill) is left out until it is rewritten.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @param [options.checkpoint] {{ id: string, updatedAt: string }}
+   * @param [options.afterPosition] {number}   resume strictly after this
+   *   feed position
    * @param options.limit {number}
-   * @returns {Promise<{ documents: Array<object>, checkpoint: object | null }>}
+   * @returns {Promise<{ documents: Array<object>, checkpoint: number | null }>}
    */
   async changesSince({
     spaceId,
     collectionId,
-    checkpoint,
+    afterPosition,
     limit
   }: {
     spaceId: string
     collectionId: string
-    checkpoint?: { id: string; updatedAt: string }
+    afterPosition?: number
     limit: number
   }): Promise<{
     documents: Array<{
       resourceId: string
+      feedPosition: number
       version: number
       metaVersion?: number
       generation?: string
@@ -2914,33 +2997,43 @@ export class PostgresBackend implements StorageBackend {
       epoch?: string
       writerId?: string
     }>
-    checkpoint: { id: string; updatedAt: string } | null
+    checkpoint: number | null
+    feedGeneration?: string
   }> {
     const pageSize = clampPageSize(limit)
+    // The generation the Collection's positions were handed out under, NULL
+    // until the first one (`#takeFeedPosition`). Read first: a re-create
+    // between the two statements replaces the rows as well as the column, and
+    // a stale generation then refuses the checkpoint the page is issued under.
+    const { rows: counterRows } = await this.#reader().query<{
+      feed_generation: string | null
+    }>(
+      `SELECT feed_generation FROM collections
+        WHERE space_id = $1 AND collection_id = $2`,
+      [spaceId, collectionId]
+    )
+    const feedGeneration = counterRows[0]?.feed_generation ?? undefined
     const { rows } = await this.#reader().query<
       ResourceRow & { resource_id: string }
     >(
       `SELECT resource_id, content, version, meta_generation, meta_version,
               generation, custom, epoch, writer_id, deleted, updated_at,
-              created_by
+              created_by, feed_position
          FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND is_json
-          AND ($3::text IS NULL OR (updated_at, resource_id) > ($3, $4))
-        ORDER BY updated_at, resource_id
-        LIMIT $5`,
-      [
-        spaceId,
-        collectionId,
-        checkpoint?.updatedAt ?? null,
-        checkpoint?.id ?? null,
-        pageSize
-      ]
+          AND feed_position IS NOT NULL AND feed_position > $3
+        ORDER BY feed_position
+        LIMIT $4`,
+      [spaceId, collectionId, afterPosition ?? 0, pageSize]
     )
 
     const documents = rows.map(row => {
+      // Selected only when non-null (see the WHERE clause).
+      const feedPosition = Number(row.feed_position)
       if (row.deleted) {
         return {
           resourceId: row.resource_id,
+          feedPosition,
           version: row.version,
           ...(row.meta_version !== null && { metaVersion: row.meta_version }),
           generation: row.generation,
@@ -2963,6 +3056,7 @@ export class PostgresBackend implements StorageBackend {
       }
       return {
         resourceId: row.resource_id,
+        feedPosition,
         version: row.version,
         ...(row.meta_version !== null && { metaVersion: row.meta_version }),
         // The row's generation pairs with `version` and `metaGeneration` with
@@ -2991,9 +3085,8 @@ export class PostgresBackend implements StorageBackend {
     const last = documents[documents.length - 1]
     return {
       documents,
-      checkpoint: last
-        ? { id: last.resourceId, updatedAt: last.updatedAt }
-        : null
+      checkpoint: last ? last.feedPosition : null,
+      ...(feedGeneration !== undefined && { feedGeneration })
     }
   }
 
@@ -4575,6 +4668,7 @@ export class PostgresBackend implements StorageBackend {
             liveResourceCount++
           }
           const { contentType } = parseResourceFileName(fileName)
+          const metadataBytes = resourceMetadata.get(resourceId)
           await this.#insertImportedResource({
             client,
             spaceId,
@@ -4582,7 +4676,7 @@ export class PostgresBackend implements StorageBackend {
             resourceId,
             contentType,
             body,
-            sidecar: parseSidecar(resourceMetadata.get(resourceId))
+            sidecar: metadataBytes && parseSidecarBytes(metadataBytes)
           })
           existingResourceIds.add(resourceId)
           createdBytes += body.length
@@ -4608,11 +4702,11 @@ export class PostgresBackend implements StorageBackend {
         const importedResourceIds = new Set(
           resources.map(resource => resource.resourceId)
         )
-        for (const resourceId of resourceMetadata.keys()) {
+        for (const [resourceId, metadataBytes] of resourceMetadata) {
           if (importedResourceIds.has(resourceId)) {
             continue
           }
-          const sidecar = parseSidecar(resourceMetadata.get(resourceId))
+          const sidecar = parseSidecarBytes(metadataBytes)
           if (sidecar?.deleted !== true) {
             continue
           }
@@ -4819,14 +4913,22 @@ export class PostgresBackend implements StorageBackend {
   }): Promise<void> {
     const now = new Date().toISOString()
     const deleted = body === null
+    // A feed position is this server's own fact: any the archived sidecar
+    // carries is ignored, and the row takes this Collection's next one. The
+    // import holds the Space row, and the Collection row exists by now.
+    const feedPosition = await this.#takeFeedPosition({
+      client,
+      spaceId,
+      collectionId
+    })
     await client.query(
       `INSERT INTO resources (
          space_id, collection_id, resource_id, content_type, content,
          is_json, size_bytes, generation, version, meta_generation,
          meta_version, custom, deleted, created_at, updated_at, created_by,
-         epoch, writer_id
+         epoch, writer_id, feed_position
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb,
-                 $13, $14, $15, $16, $17, $18)`,
+                 $13, $14, $15, $16, $17, $18, $19)`,
       [
         spaceId,
         collectionId,
@@ -4851,7 +4953,8 @@ export class PostgresBackend implements StorageBackend {
         sidecar?.epoch ?? null,
         // Restore the client-declared writer-attribution label (spec "Writer
         // attribution") the same way.
-        sidecar?.writerId ?? null
+        sidecar?.writerId ?? null,
+        feedPosition ?? null
       ]
     )
   }

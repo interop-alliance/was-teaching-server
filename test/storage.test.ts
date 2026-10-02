@@ -468,17 +468,20 @@ describe('Storage API', () => {
         await importArchive({ backend: backend, spaceId: dst, tarStream: pack })
 
         // The tombstone survives: no content file, a `deleted` sidecar carried
-        // verbatim, and it stays invisible to normal reads on the target.
+        // verbatim, and it stays invisible to normal reads on the target. The
+        // feed position is the one member that does not travel: the target
+        // Collection assigns its own (the live Resource took 1, the tombstone
+        // 2), whatever the source's was.
         const dstCollectionDir = path.join(tempDir, 'spaces', dst, collectionId)
         const dstTombstone = await backend.readMetaSidecar({
           collectionDir: dstCollectionDir,
           resourceId: 'gone'
         })
-        assert.deepEqual(
-          dstTombstone,
-          srcTombstone,
-          'tombstone sidecar carried verbatim'
-        )
+        const { feedPosition: srcFeedPosition, ...srcRest } = srcTombstone!
+        const { feedPosition: dstFeedPosition, ...dstRest } = dstTombstone!
+        assert.deepEqual(dstRest, srcRest, 'tombstone sidecar carried verbatim')
+        assert.equal(srcFeedPosition, 3)
+        assert.equal(dstFeedPosition, 2)
         const dstFiles = (await readdir(dstCollectionDir)).filter(name =>
           name.startsWith('r.gone.')
         )
@@ -815,25 +818,7 @@ describe('Storage API', () => {
       return { backend, tempDir, spaceId, collectionId }
     }
 
-    /** True if `documents` are non-decreasing by (updatedAt, resourceId). */
-    function isSorted(
-      documents: Array<{ resourceId: string; updatedAt: string }>
-    ): boolean {
-      for (let i = 1; i < documents.length; i++) {
-        const prev = documents[i - 1]!
-        const curr = documents[i]!
-        const ordered =
-          prev.updatedAt < curr.updatedAt ||
-          (prev.updatedAt === curr.updatedAt &&
-            prev.resourceId <= curr.resourceId)
-        if (!ordered) {
-          return false
-        }
-      }
-      return true
-    }
-
-    it('returns JSON documents with data + version, ordered, plus a checkpoint', async () => {
+    it('returns JSON documents with data + version, in write order, plus a checkpoint', async () => {
       const { backend, tempDir, spaceId, collectionId } =
         await provisionCollection()
       try {
@@ -854,25 +839,21 @@ describe('Storage API', () => {
           collectionId,
           limit: 10
         })
-        assert.deepEqual(documents.map(doc => doc.resourceId).sort(), [
-          'a',
-          'b',
-          'c'
-        ])
-        assert.ok(
-          isSorted(documents),
-          'documents ordered by (updatedAt, resourceId)'
+        // Ordered by feed position, which is write order, not by id.
+        assert.deepEqual(
+          documents.map(doc => doc.resourceId),
+          ['b', 'a', 'c']
+        )
+        assert.deepEqual(
+          documents.map(doc => doc.feedPosition),
+          [1, 2, 3]
         )
         for (const doc of documents) {
           assert.equal(doc.deleted, false)
           assert.equal(doc.version, 1)
           assert.deepEqual(doc.data, { id: doc.resourceId })
         }
-        const lastDoc = documents[documents.length - 1]!
-        assert.deepEqual(checkpoint, {
-          id: lastDoc.resourceId,
-          updatedAt: lastDoc.updatedAt
-        })
+        assert.equal(checkpoint, 3, "the last document's feed position")
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }
@@ -895,13 +876,13 @@ describe('Storage API', () => {
           })
         }
         const seen: string[] = []
-        let checkpoint: { id: string; updatedAt: string } | undefined
+        let afterPosition: number | undefined
         // Pull two at a time until a page comes back short (catch-up complete).
         for (let guard = 0; guard < 10; guard++) {
           const page = await backend.changesSince({
             spaceId,
             collectionId,
-            checkpoint,
+            afterPosition,
             limit: 2
           })
           seen.push(...page.documents.map(doc => doc.resourceId))
@@ -910,14 +891,14 @@ describe('Storage API', () => {
             const tail = await backend.changesSince({
               spaceId,
               collectionId,
-              checkpoint: page.checkpoint ?? undefined,
+              afterPosition: page.checkpoint ?? undefined,
               limit: 2
             })
             assert.deepEqual(tail.documents, [])
             assert.equal(tail.checkpoint, null)
             break
           }
-          checkpoint = page.checkpoint ?? undefined
+          afterPosition = page.checkpoint ?? undefined
         }
         assert.deepEqual(
           seen.sort(),

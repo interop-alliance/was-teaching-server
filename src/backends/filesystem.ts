@@ -57,9 +57,11 @@ import {
   SPACE_POLICY_FILE_NAME,
   metaSidecarFileName,
   collectionLogFileName,
+  JSON_FILE_SUFFIX,
   packSpaceArchive
 } from '@interop/space-archive'
 import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
+import { parseSidecarBytes, withoutSidecarMember } from '../lib/metaSidecar.js'
 import type { MetaSidecar } from '../lib/metaSidecar.js'
 import {
   sanitizeBackendRecord,
@@ -89,6 +91,7 @@ import {
   metadataEtagOf,
   embedMetadataValidator,
   etagOf,
+  newGeneration,
   resolveGeneration,
   storedMetadataFromFile,
   stripMetadataValidator
@@ -178,6 +181,19 @@ const execFileAsync = promisify(execFile)
  * `fastify.log` in, or in tests).
  */
 const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
+
+/**
+ * Builds the file name of a Collection's changes-feed counter,
+ * `.feed.<collectionId>.json`, a dot-file in the Collection dir holding
+ * `{ "generation": g, "position": n }`: the counter's generation and the last
+ * feed position handed out. Local to this backend: it is not an archive
+ * entry, and export leaves it out.
+ * @param collectionId {string}
+ * @returns {string}
+ */
+function feedCounterFileName(collectionId: string): string {
+  return `.feed.${collectionId}${JSON_FILE_SUFFIX}`
+}
 
 /**
  * Opens a read stream for a file, resolving once the stream has opened (and
@@ -309,6 +325,13 @@ export class FileSystemBackend implements StorageBackend {
    * `version`, evaluates `If-Match` / `If-None-Match`, and writes -- all under
    * this lock, keyed per Resource -- so two concurrent writers cannot both
    * observe the same prior version and both succeed. Single-instance only.
+   *
+   * The same mutex holds other key domains, each namespaced by a prefix:
+   * `unique:` (a Collection's unique-claim scan), `feed:` (a Collection's
+   * changes-feed counter, see `#writeFeedSidecar`), `spacemeta:` and `cmeta:`
+   * (the container Metadata objects). Within a Collection the nesting order is
+   * `unique:` key, then the Resource key, then the `feed:` key. The `feed:`
+   * key is innermost: nothing is acquired while it is held.
    */
   #writeMutex = new KeyedMutex()
 
@@ -1620,13 +1643,30 @@ export class FileSystemBackend implements StorageBackend {
         const collectionEntries = await fs.promises.readdir(entryPath, {
           withFileTypes: true
         })
+        // The changes-feed counter and each sidecar's `feedPosition` are
+        // this server's own facts about its feed, so neither travels: the
+        // counter file is left out, and the member is stripped from every
+        // Resource sidecar (an importer assigns its own positions).
         const files: ArchiveEntry[] = collectionEntries
-          .filter(child => child.isFile())
+          .filter(
+            child =>
+              child.isFile() && child.name !== feedCounterFileName(entry.name)
+          )
           .sort((a, b) => a.name.localeCompare(b.name))
-          .map(child => ({
-            name: child.name,
-            read: () => fs.promises.readFile(path.join(entryPath, child.name))
-          }))
+          .map(child => {
+            const childPath = path.join(entryPath, child.name)
+            return {
+              name: child.name,
+              read:
+                metaSidecarFileId(child.name) === undefined
+                  ? () => fs.promises.readFile(childPath)
+                  : async () =>
+                      withoutSidecarMember({
+                        bytes: await fs.promises.readFile(childPath),
+                        member: 'feedPosition'
+                      })
+            }
+          })
         // Per-Resource chunk directories (`.chunks.<encId>/`; the
         // `chunked-streams` feature) are subdirectories of a Collection dir, so
         // the file filter above skips them. Append each one's files here so a
@@ -1996,15 +2036,30 @@ export class FileSystemBackend implements StorageBackend {
                   // A metadata sidecar travels with a newly-created resource (preserving
                   // its timestamps and user-writable `custom`); an absent one leaves
                   // the Resource with no timestamps and no changes-feed position.
+                  // A feed position is this server's own fact: any the archive
+                  // carries is dropped, and the sidecar takes this Collection's
+                  // next one. Bytes that are not a JSON object are kept verbatim
+                  // and take none.
                   const metadataBytes = resourceMetadata.get(resourceId)
                   if (metadataBytes) {
-                    await atomicWriteFile({
-                      filePath: this.#metaSidecarPath({
+                    const sidecar = parseSidecarBytes(metadataBytes)
+                    if (sidecar) {
+                      await this.#writeFeedSidecar({
+                        spaceId,
+                        collectionId,
                         collectionDir,
-                        resourceId
-                      }),
-                      data: metadataBytes
-                    })
+                        resourceId,
+                        sidecar
+                      })
+                    } else {
+                      await atomicWriteFile({
+                        filePath: this.#metaSidecarPath({
+                          collectionDir,
+                          resourceId
+                        }),
+                        data: metadataBytes
+                      })
+                    }
                   }
                   return true
                 }
@@ -2040,12 +2095,7 @@ export class FileSystemBackend implements StorageBackend {
               if (importedResourceIds.has(resourceId)) {
                 continue
               }
-              let sidecar: MetaSidecar | undefined
-              try {
-                sidecar = JSON.parse(metadataBytes.toString('utf8'))
-              } catch {
-                continue
-              }
+              const sidecar = parseSidecarBytes(metadataBytes)
               if (sidecar?.deleted !== true) {
                 continue
               }
@@ -2064,12 +2114,14 @@ export class FileSystemBackend implements StorageBackend {
                     stats.resourcesSkipped++
                     return
                   }
-                  await atomicWriteFile({
-                    filePath: this.#metaSidecarPath({
-                      collectionDir,
-                      resourceId
-                    }),
-                    data: metadataBytes
+                  // The tombstone takes this Collection's next feed position,
+                  // as the content restore above does.
+                  await this.#writeFeedSidecar({
+                    spaceId,
+                    collectionId,
+                    collectionDir,
+                    resourceId,
+                    sidecar
                   })
                   bytesWritten += metadataBytes.length
                   stats.resourcesCreated++
@@ -2778,6 +2830,7 @@ export class FileSystemBackend implements StorageBackend {
       this.#writeMutex.run(lockKey, () =>
         this.#writeResourceLocked({
           spaceId,
+          collectionId,
           collectionDir,
           resourceId,
           input,
@@ -2866,6 +2919,7 @@ export class FileSystemBackend implements StorageBackend {
    */
   async #writeResourceLocked({
     spaceId,
+    collectionId,
     collectionDir,
     resourceId,
     input,
@@ -2876,6 +2930,7 @@ export class FileSystemBackend implements StorageBackend {
     ifNoneMatch
   }: {
     spaceId: string
+    collectionId: string
     collectionDir: string
     resourceId: string
     input: ResourceInput
@@ -2963,10 +3018,14 @@ export class FileSystemBackend implements StorageBackend {
     // later writer backfilled into it. A tombstone keeps both, so re-creating a
     // deleted id under a different invoker preserves the original creator, as
     // it does the original `createdAt`.
+    //
+    // The sidecar write takes the Collection's next feed position, which
+    // moves the Resource to the end of the changes feed.
     return this.#bumpSidecarVersion({
       collectionDir,
       resourceId,
       prior,
+      feed: { spaceId, collectionId },
       build: ({ prior, generation, version, now }) => {
         const creator = prior ? prior.createdBy : createdBy
         return {
@@ -3191,7 +3250,9 @@ export class FileSystemBackend implements StorageBackend {
    * Metadata / `createdBy` / epoch stamp -- so `build` supplies the sidecar body
    * from the shared `{ prior, generation, version, now }` inputs and MUST write
    * the `generation` it is handed into the sidecar. The caller passes the item's
-   * current sidecar in, since it has already read it under the same lock.
+   * current sidecar in, since it has already read it under the same lock. A
+   * Resource write passes `feed`, so the sidecar takes the Collection's next
+   * feed position (`#writeFeedSidecar`); a chunk write passes none.
    * @param options {object}
    * @param options.collectionDir {string}   the dir the sidecar lives in (a
    *   Collection dir, or a chunk dir for a chunk)
@@ -3203,17 +3264,23 @@ export class FileSystemBackend implements StorageBackend {
    *   version: number, now: string }) => MetaSidecar}   builds the sidecar to
    *   persist from the prior sidecar, the resolved `generation`, the bumped
    *   `version`, and the write timestamp
+   * @param [options.feed] {object}   the Resource's Collection, whose next
+   *   feed position the sidecar takes; absent for a chunk
+   * @param options.feed.spaceId {string}
+   * @param options.feed.collectionId {string}
    * @returns {Promise<EtagValidator>}
    */
   async #bumpSidecarVersion({
     collectionDir,
     resourceId,
     prior,
+    feed,
     build
   }: {
     collectionDir: string
     resourceId: string
     prior?: MetaSidecar
+    feed?: { spaceId: string; collectionId: string }
     build: (context: {
       prior?: MetaSidecar
       generation: string
@@ -3228,11 +3295,17 @@ export class FileSystemBackend implements StorageBackend {
     // delete) takes it along, so the next item under that id starts fresh.
     const generation = resolveGeneration(prior?.generation)
     const version = (prior?.version ?? 0) + 1
-    await this.#writeMetaSidecar({
-      collectionDir,
-      resourceId,
-      sidecar: build({ prior, generation, version, now })
-    })
+    const sidecar = build({ prior, generation, version, now })
+    if (feed) {
+      await this.#writeFeedSidecar({
+        ...feed,
+        collectionDir,
+        resourceId,
+        sidecar
+      })
+    } else {
+      await this.#writeMetaSidecar({ collectionDir, resourceId, sidecar })
+    }
     return { generation, version }
   }
 
@@ -3275,6 +3348,146 @@ export class FileSystemBackend implements StorageBackend {
     collectionId: string
   }): string {
     return `unique:${spaceId}/${collectionId}`
+  }
+
+  /**
+   * The Collection's changes-feed mutex key (`feed:` prefix, distinct from
+   * the per-Resource and `unique:` key domains). Held only for the short
+   * critical section that takes the next feed position and writes the sidecar
+   * carrying it (`#writeFeedSidecar`), and by `changesSince` to read the
+   * counter. It is the innermost lock: taken inside a Resource key, and
+   * nothing is acquired while it is held, so it cannot deadlock.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {string}
+   */
+  #feedLockKey({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): string {
+    return `feed:${spaceId}/${collectionId}`
+  }
+
+  /**
+   * The path of a Collection's changes-feed counter
+   * (`.feed.<collectionId>.json`, holding `{ "generation": g, "position": n }`)
+   * in its Collection dir. A dot-file, so the Resource listings and scans,
+   * which read `r.` files and `.meta.` sidecars only, never see it; export
+   * leaves it out. It is removed with the Collection dir, so a Collection
+   * re-created under the same id, by hand or by an import, starts its feed at
+   * 1 again under a fresh generation. The request layer puts the generation
+   * in the wire checkpoint, so a checkpoint held from before the re-create is
+   * refused rather than read as a position in the new feed, which would skip
+   * everything written at or below it.
+   * @param options {object}
+   * @param options.collectionDir {string}
+   * @param options.collectionId {string}
+   * @returns {string}
+   */
+  #feedCounterPath({
+    collectionDir,
+    collectionId
+  }: {
+    collectionDir: string
+    collectionId: string
+  }): string {
+    const filePath = path.join(collectionDir, feedCounterFileName(collectionId))
+    this.#assertContained(filePath)
+    return filePath
+  }
+
+  /**
+   * Reads a Collection's feed counter: the last feed position handed out, 0
+   * when none has been, and the counter's generation, absent until the first
+   * position. Callers hold the Collection's `feed:` key.
+   * @param options {object}
+   * @param options.collectionDir {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<{ generation?: string, position: number }>}
+   */
+  async #readFeedCounter({
+    collectionDir,
+    collectionId
+  }: {
+    collectionDir: string
+    collectionId: string
+  }): Promise<{ generation?: string; position: number }> {
+    const counter = await this.#readJsonFile<{
+      generation?: unknown
+      position?: unknown
+    }>(this.#feedCounterPath({ collectionDir, collectionId }))
+    const { generation, position } = counter ?? {}
+    return {
+      ...(typeof generation === 'string' && { generation }),
+      position: Number.isSafeInteger(position) ? (position as number) : 0
+    }
+  }
+
+  /**
+   * Writes a Resource's sidecar stamped with the Collection's next feed
+   * position. The position is taken and the sidecar written in one critical
+   * section on the Collection's `feed:` key, which is the point the write
+   * becomes visible to the changes feed (which orders on `feedPosition`).
+   * So no write can land at or before a position `changesSince` already
+   * handed to a reader. The counter is written first: a crash between the
+   * two writes leaves a gap in the sequence, never a reused position. The
+   * first position minted in a Collection mints the counter's generation with
+   * it; every later one keeps it. The caller holds the Resource's own key;
+   * this nests inside it.
+   *
+   * A chunk sidecar never goes through here: a chunk write does not move its
+   * parent Resource in the feed.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.collectionDir {string}
+   * @param options.resourceId {string}
+   * @param options.sidecar {MetaSidecar}   the sidecar to write; any
+   *   `feedPosition` it carries is replaced
+   * @returns {Promise<void>}
+   */
+  async #writeFeedSidecar({
+    spaceId,
+    collectionId,
+    collectionDir,
+    resourceId,
+    sidecar
+  }: {
+    spaceId: string
+    collectionId: string
+    collectionDir: string
+    resourceId: string
+    sidecar: MetaSidecar
+  }): Promise<void> {
+    await this.#writeMutex.run(
+      this.#feedLockKey({ spaceId, collectionId }),
+      async () => {
+        const counter = await this.#readFeedCounter({
+          collectionDir,
+          collectionId
+        })
+        const feedPosition = counter.position + 1
+        await atomicWriteFile({
+          filePath: this.#feedCounterPath({ collectionDir, collectionId }),
+          data: JSON.stringify({
+            generation: counter.generation ?? newGeneration(),
+            position: feedPosition
+          })
+        })
+        // Written last, so `withoutFeedPosition` restores the bytes a sidecar
+        // without it would have.
+        const { feedPosition: _prior, ...rest } = sidecar
+        await this.#writeMetaSidecar({
+          collectionDir,
+          resourceId,
+          sidecar: { ...rest, feedPosition }
+        })
+      }
+    )
   }
 
   /**
@@ -3701,7 +3914,11 @@ export class FileSystemBackend implements StorageBackend {
       // write, so a supplied `epoch` replaces it but an omitted one PRESERVES
       // the stored value (unlike `custom`, which is full-replace).
       const resolvedEpoch = epoch ?? prior?.epoch
-      await this.#writeMetaSidecar({
+      // A metadata write re-surfaces the Resource in the changes feed, so the
+      // sidecar takes the Collection's next feed position.
+      await this.#writeFeedSidecar({
+        spaceId,
+        collectionId,
         collectionDir,
         resourceId,
         sidecar: {
@@ -3867,9 +4084,8 @@ export class FileSystemBackend implements StorageBackend {
         recursive: true,
         force: true
       })
-      // Bump `version` / `updatedAt` so the tombstone sorts after the Resource's
-      // prior state in the change feed, and continues the monotonic version (a
-      // later re-create reads this sidecar and keeps counting up). The
+      // Bump `version` / `updatedAt`. The version continues the monotonic
+      // count (a later re-create reads this sidecar and keeps counting up). The
       // `generation` is kept for the same reason: the counter survives, so the
       // validator it forms stays continuous across the soft delete. The
       // metadata object is dropped whole -- `custom` with its validator,
@@ -3879,9 +4095,14 @@ export class FileSystemBackend implements StorageBackend {
       // pass `If-Match` against it. `createdAt` / `createdBy` are kept: they
       // are the server's record of the Resource's origin, which a re-create
       // under the same id continues.
+      //
+      // The tombstone takes the Collection's next feed position, so the
+      // delete replicates.
       const now = new Date().toISOString()
       const prior = await this.readMetaSidecar({ collectionDir, resourceId })
-      await this.#writeMetaSidecar({
+      await this.#writeFeedSidecar({
+        spaceId,
+        collectionId,
         collectionDir,
         resourceId,
         sidecar: {
@@ -4330,34 +4551,46 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Replication change feed (the `changes` query profile; see the
-   * `StorageBackend.changesSince` contract.
-   * Enumerates the Collection once, builds a lightweight descriptor for every
-   * JSON-document Resource (live) and JSON tombstone, orders them by
-   * `(updatedAt, resourceId)`, seeks strictly past `checkpoint`, takes a page of
-   * `limit`, and reads JSON bodies ONLY for that page. O(n) over the Collection
-   * per call (it must read every sidecar to order by `updatedAt`) -- acceptable
-   * for this teaching backend; an indexed backend would answer it from an
-   * `updatedAt` index.
+   * `StorageBackend.changesSince` contract).
+   * Reads the Collection's feed counter under its `feed:` key, enumerates the
+   * Collection once, builds a lightweight descriptor for every JSON-document
+   * Resource (live) and JSON tombstone, orders them by `feedPosition`, seeks
+   * strictly past `afterPosition`, takes a page of `limit`, and reads JSON
+   * bodies ONLY for that page. O(n) over the Collection per call (it must
+   * read every sidecar to order by position) -- acceptable for this teaching
+   * backend; an indexed backend would answer it from a position index.
+   *
+   * The counter read is the snapshot: a position is taken and its sidecar
+   * written in one `feed:` critical section, so every position up to the
+   * counter's value is on disk when it is read. The scan runs outside the
+   * lock and admits only positions at or below that value. A Resource
+   * rewritten during the scan moves past it, is left out of this page, and
+   * is served by the next pull, so no position a reader is handed can later
+   * gain a write behind it. A sidecar with no `feedPosition` (one written
+   * before feed positions existed) is left out until the Resource is
+   * rewritten.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @param [options.checkpoint] {{ id: string, updatedAt: string }}   resume position
+   * @param [options.afterPosition] {number}   resume strictly after this
+   *   feed position
    * @param options.limit {number}   page cap (clamped to the backend maximum)
-   * @returns {Promise<{ documents: Array<object>, checkpoint: object | null }>}
+   * @returns {Promise<{ documents: Array<object>, checkpoint: number | null }>}
    */
   async changesSince({
     spaceId,
     collectionId,
-    checkpoint,
+    afterPosition,
     limit
   }: {
     spaceId: string
     collectionId: string
-    checkpoint?: { id: string; updatedAt: string }
+    afterPosition?: number
     limit: number
   }): Promise<{
     documents: Array<{
       resourceId: string
+      feedPosition: number
       version: number
       metaVersion?: number
       generation?: string
@@ -4370,9 +4603,31 @@ export class FileSystemBackend implements StorageBackend {
       epoch?: string
       writerId?: string
     }>
-    checkpoint: { id: string; updatedAt: string } | null
+    checkpoint: number | null
+    feedGeneration?: string
   }> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
+
+    // The highest position whose sidecar is already on disk (see above), and
+    // the generation the counter hands positions out under.
+    const { generation: feedGeneration, position: highWater } =
+      await this.#writeMutex.run(
+        this.#feedLockKey({ spaceId, collectionId }),
+        () => this.#readFeedCounter({ collectionDir, collectionId })
+      )
+    // A caught-up reader (the steady-state poll of a replica) is answered
+    // off the counter alone, with no directory scan.
+    if ((afterPosition ?? 0) >= highWater) {
+      return {
+        documents: [],
+        checkpoint: null,
+        ...(feedGeneration !== undefined && { feedGeneration })
+      }
+    }
+    const inFeed = (feedPosition: unknown): feedPosition is number =>
+      Number.isSafeInteger(feedPosition) &&
+      (feedPosition as number) > (afterPosition ?? 0) &&
+      (feedPosition as number) <= highWater
 
     const entries = await this.#readDirEntries(collectionDir)
 
@@ -4407,6 +4662,7 @@ export class FileSystemBackend implements StorageBackend {
     type Descriptor =
       | {
           resourceId: string
+          feedPosition: number
           version: number
           metaVersion?: number
           generation?: string
@@ -4421,6 +4677,7 @@ export class FileSystemBackend implements StorageBackend {
         }
       | {
           resourceId: string
+          feedPosition: number
           version: number
           generation?: string
           createdBy?: IDID
@@ -4437,14 +4694,17 @@ export class FileSystemBackend implements StorageBackend {
           collectionDir,
           resourceId
         })
-        // `updatedAt` / `version` come from the sidecar. A Resource whose
-        // sidecar carries no `updatedAt` has no feed position and is left out.
+        // The feed position, `updatedAt` and `version` come from the
+        // sidecar. A Resource with no feed position in range, or no
+        // `updatedAt`, is left out.
+        const feedPosition = sidecar?.feedPosition
         const updatedAt = sidecar?.updatedAt
-        if (!updatedAt) {
+        if (!inFeed(feedPosition) || !updatedAt) {
           return undefined
         }
         return {
           resourceId,
+          feedPosition,
           version: sidecar?.version ?? 0,
           ...(sidecar?.metaVersion !== undefined && {
             metaVersion: sidecar.metaVersion
@@ -4492,12 +4752,14 @@ export class FileSystemBackend implements StorageBackend {
         })
         if (
           sidecar?.deleted !== true ||
-          !isJsonContentType(sidecar.contentType)
+          !isJsonContentType(sidecar.contentType) ||
+          !inFeed(sidecar.feedPosition)
         ) {
           return undefined
         }
         return {
           resourceId,
+          feedPosition: sidecar.feedPosition,
           version: sidecar.version ?? 0,
           // A soft delete dropped the `/meta` object, so a tombstone carries no
           // `metaGeneration` / `metaVersion`.
@@ -4519,29 +4781,13 @@ export class FileSystemBackend implements StorageBackend {
       await Promise.all([...liveDescriptors, ...tombstoneDescriptors])
     ).filter((desc): desc is Descriptor => desc !== undefined)
 
-    // Order by `(updatedAt, resourceId)` ascending -- the SAME total order the
-    // checkpoint seek uses (ISO-8601 `updatedAt` sorts chronologically as a
-    // string; `resourceId` breaks same-instant ties), so the keyset is stable.
-    descriptors.sort(
-      (left, right) =>
-        compareCodeUnits(left.updatedAt, right.updatedAt) ||
-        compareCodeUnits(left.resourceId, right.resourceId)
-    )
-
-    // Seek to the first descriptor strictly after the checkpoint's position.
-    let startIndex = 0
-    if (checkpoint !== undefined) {
-      const found = descriptors.findIndex(
-        desc =>
-          desc.updatedAt > checkpoint.updatedAt ||
-          (desc.updatedAt === checkpoint.updatedAt &&
-            desc.resourceId > checkpoint.id)
-      )
-      startIndex = found === -1 ? descriptors.length : found
-    }
+    // Order by feed position ascending. Positions are unique within the
+    // Collection, so this is a total order, and the seek past `afterPosition`
+    // already happened in `inFeed`.
+    descriptors.sort((left, right) => left.feedPosition - right.feedPosition)
 
     const pageSize = clampPageSize(limit)
-    const pageDescriptors = descriptors.slice(startIndex, startIndex + pageSize)
+    const pageDescriptors = descriptors.slice(0, pageSize)
 
     // Read JSON bodies only for this page. A tombstone carries no `data` (the
     // delete replicates on `deleted: true` alone), and no `fileName` either, so
@@ -4575,9 +4821,8 @@ export class FileSystemBackend implements StorageBackend {
     const last = documents[documents.length - 1]
     return {
       documents,
-      checkpoint: last
-        ? { id: last.resourceId, updatedAt: last.updatedAt }
-        : null
+      checkpoint: last ? last.feedPosition : null,
+      ...(feedGeneration !== undefined && { feedGeneration })
     }
   }
 
