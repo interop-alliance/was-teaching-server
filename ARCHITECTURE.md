@@ -196,16 +196,17 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   increments `collections.feed_position` with `UPDATE ... RETURNING`, whose row
   lock is held to commit, so positions are commit-ordered, and stamps
   `resources.feed_position` in the same transaction. A position is one server's
-  fact about its own feed: export strips it and import assigns fresh ones. A
-  Resource stored before positions existed has none and is absent from the feed
-  until it is rewritten. The counter has a generation, minted with the first
-  position it hands out and kept for the Collection's life (`generation` in the
-  counter file, `collections.feed_generation` in Postgres). It goes with the
-  Collection, so a Collection re-created under the same id, by hand or by an
-  import, restarts at 1 under a fresh one; an import keeps the archived
-  Collection Metadata generation, so that one cannot tell the two lives apart.
-  On the wire the checkpoint is an opaque string, which a client compares by
-  equality only and echoes back verbatim. This server encodes it as
+  fact about its own feed: export strips it and import assigns fresh ones. An
+  imported Resource with no archived metadata gets fresh metadata, so it takes a
+  position too. A Resource stored before positions existed has none and is
+  absent from the feed until it is rewritten. The counter has a generation,
+  minted with the first position it hands out and kept for the Collection's life
+  (`generation` in the counter file, `collections.feed_generation` in Postgres).
+  It goes with the Collection, so a Collection re-created under the same id, by
+  hand or by an import, restarts at 1 under a fresh one; an import keeps the
+  archived Collection Metadata generation, so that one cannot tell the two lives
+  apart. On the wire the checkpoint is an opaque string, which a client compares
+  by equality only and echoes back verbatim. This server encodes it as
   `base64urlnopad(JSON.stringify({ feed, generation, position }))`, where `feed`
   is the Collection's absolute trailing-slash URL and `generation` the feed
   counter's, so a checkpoint is scoped to the server, the Collection, and the

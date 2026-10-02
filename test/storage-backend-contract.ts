@@ -6682,6 +6682,104 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(stats.provenance.verified, 4)
         assert.equal(await createdByOf(spaceId, 'plain'), undefined)
       })
+
+      it('gives a Resource archived with no metadata entry a fresh sidecar and a feed position', async () => {
+        const { backend } = harness
+        const bigSidecar = `space/${sourceSpaceId}/col/.meta.big.json`
+        // `plain` loses its metadata entry. `big` keeps one, with a `custom`
+        // member added (no statement claims `custom`, so `big` still verifies).
+        const sidecarless = await rewriteArchive((name, body) => {
+          if (name === plainSidecar) {
+            return undefined
+          }
+          if (name === bigSidecar) {
+            return Buffer.from(
+              JSON.stringify({
+                ...JSON.parse(body.toString('utf8')),
+                custom: { name: 'Big' }
+              })
+            )
+          }
+          return body
+        })
+        const sourceBig = await backend.getResourceMetadata({
+          spaceId: sourceSpaceId,
+          collectionId: 'col',
+          resourceId: 'big'
+        })
+
+        // The destination Collection already holds history of its own.
+        const spaceId = `restore-${++importCount}`
+        await provisionSpace(backend, spaceId)
+        for (const resourceId of ['d1', 'd2']) {
+          await backend.writeResource({
+            spaceId,
+            collectionId: 'col',
+            resourceId,
+            input: jsonInput({ resourceId })
+          })
+        }
+        const before = await backend.changesSince!({
+          spaceId,
+          collectionId: 'col',
+          limit: 100
+        })
+        assert.equal(before.documents.length, 2)
+
+        await importArchive({
+          backend,
+          spaceId,
+          tarStream: Readable.from([sidecarless])
+        })
+
+        const plain = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'plain'
+        })
+        assert.ok(plain, 'plain was imported')
+        assert.equal(typeof plain.createdAt, 'string')
+        assert.equal(plain.updatedAt, plain.createdAt)
+        assert.equal(typeof plain.generation, 'string')
+        assert.equal(plain.version, 1)
+        assert.equal(plain.createdBy, undefined)
+        assert.equal(plain.custom, undefined)
+        const served = await backend.getResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'plain'
+        })
+        assert.equal(served.version, 1)
+        assert.equal(
+          await streamToString(served.resourceStream),
+          JSON.stringify({ hello: 'world' })
+        )
+
+        const after = await backend.changesSince!({
+          spaceId,
+          collectionId: 'col',
+          afterPosition: before.checkpoint!,
+          limit: 100
+        })
+        assert.deepEqual(
+          after.documents.map(document => document.resourceId).sort(),
+          ['big', 'gone', 'plain']
+        )
+        for (const document of after.documents) {
+          assert.ok(document.feedPosition > before.checkpoint!)
+        }
+
+        // The archived sidecar's members are kept; only the position is new.
+        const big = await backend.getResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'big'
+        })
+        assert.ok(big, 'big was imported')
+        assert.equal(big.createdAt, sourceBig!.createdAt)
+        assert.equal(big.createdBy, CREATOR_TWO)
+        assert.deepEqual(big.custom, { name: 'Big' })
+      })
     })
   })
 }

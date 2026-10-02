@@ -2033,33 +2033,39 @@ export class FileSystemBackend implements StorageBackend {
                   bytesWritten += body.length
                   stats.resourcesCreated++
 
-                  // A metadata sidecar travels with a newly-created resource (preserving
-                  // its timestamps and user-writable `custom`); an absent one leaves
-                  // the Resource with no timestamps and no changes-feed position.
-                  // A feed position is this server's own fact: any the archive
-                  // carries is dropped, and the sidecar takes this Collection's
-                  // next one. Bytes that are not a JSON object are kept verbatim
-                  // and take none.
+                  // A metadata sidecar travels with a newly-created resource
+                  // (preserving its timestamps, `createdBy`, and user-writable
+                  // `custom`). A feed position is this server's own fact: any
+                  // the archive carries is dropped, and the sidecar takes this
+                  // Collection's next one. An entry with no sidecar, or with
+                  // bytes that are not a JSON object, gets a fresh one built
+                  // as a first write builds it (`createdAt` and `updatedAt`
+                  // now, a new generation, version 1, no `createdBy`), so
+                  // every imported Resource is served with a validator and
+                  // appears in the changes feed.
                   const metadataBytes = resourceMetadata.get(resourceId)
-                  if (metadataBytes) {
-                    const sidecar = parseSidecarBytes(metadataBytes)
-                    if (sidecar) {
-                      await this.#writeFeedSidecar({
-                        spaceId,
-                        collectionId,
-                        collectionDir,
-                        resourceId,
-                        sidecar
+                  const sidecar =
+                    metadataBytes && parseSidecarBytes(metadataBytes)
+                  if (sidecar) {
+                    await this.#writeFeedSidecar({
+                      spaceId,
+                      collectionId,
+                      collectionDir,
+                      resourceId,
+                      sidecar
+                    })
+                  } else {
+                    await this.#bumpSidecarVersion({
+                      collectionDir,
+                      resourceId,
+                      feed: { spaceId, collectionId },
+                      build: ({ generation, version, now }) => ({
+                        createdAt: now,
+                        updatedAt: now,
+                        generation,
+                        version
                       })
-                    } else {
-                      await atomicWriteFile({
-                        filePath: this.#metaSidecarPath({
-                          collectionDir,
-                          resourceId
-                        }),
-                        data: metadataBytes
-                      })
-                    }
+                    })
                   }
                   return true
                 }

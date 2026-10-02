@@ -927,6 +927,12 @@ fork. The recommendation is first.
 6. Policy stamps (invariant 21). Recommended: the policy document gains the
    three stamp members and a `deleted` marker, same names as a Resource; the
    policy `ETag` becomes the four-field validator. The members are wire.
+   Decided 2026-10-01: as recommended. The stored policy gains the three stamp
+   members, a generation and a `deleted` tombstone marker; `GET /policy`
+   serves the four-field `ETag` and the stamp members as server-derived
+   members the write body ignores; `PUT` and `DELETE` take `If-Match` /
+   `If-None-Match: *`; a tombstoned policy reads as absent everywhere except
+   the replication listing and the apply path.
 7. Discovery channel (section 5.10). Recommended: a replication listing.
 8. Stall granularity and record (section 5.11). Recommended as stated.
 9. Names. `replicas` is already used by a spec ednote for per-Collection backend

@@ -4412,3 +4412,47 @@ inside the checkpoint is the loop guard named under `touches`.
 No compatibility path is offered for a persisted `{ id, updatedAt }` checkpoint.
 The server refuses it as malformed, the replica restarts its pull from the
 beginning, and the apply path, keyed by Resource id, makes that safe.
+
+### WAS-95: Import writes a Resource with no sidecar, so it has no feed position
+
+- status: done (2026-10-01)
+- priority: high
+- labels: import-export, changes-feed, filesystem-backend, postgres-backend
+- blocked-by: WAS-93
+- touches:
+  - was-teaching-server: `src/backends/filesystem.ts` (`importSpace`),
+    `src/backends/postgres.ts` (`importSpace`), and whatever allocates the feed
+    ordering key once WAS-93 settles it (shipped 2026-10-01: the filesystem
+    backend synthesizes the sidecar through its one feed-position path; Postgres
+    already took a position and matched the synthesized values)
+  - conformance-suite: an import case whose archive carries a Resource with no
+    metadata entry, asserting the imported Resource appears in the changes feed
+    (PWSCS-17 filed in that repo's roadmap on 2026-10-01)
+- acceptance:
+  - [x] `importSpace` never creates a Resource without the record that carries
+        its feed ordering key: an archive entry with no metadata gets a
+        synthesized one, stamped by the same allocation path an ordinary write
+        uses, under the same per-Resource lock
+  - [x] The archive's `createdAt`, `createdBy`, and `custom` are preserved when
+        present; only the ordering key is minted
+  - [x] A test in `test/` imports an archive carrying a Resource with no
+        metadata entry and asserts the Resource appears in the changes feed at a
+        position after every pre-existing document
+  - [x] Both backends behave identically, and the storage-backend contract test
+        covers it
+
+Context: discovered-from WAS-93. `importSpace` in `src/backends/filesystem.ts`
+(line 1730) writes the representation unconditionally and the sidecar only if
+the archive carried one: "A metadata sidecar travels with a newly-created
+resource ...; an absent one leaves `getResourceMetadata` to fall back to the
+file's stat times." An archive this server exported always carries the sidecars,
+since export packs the Collection dir verbatim, so the gap is reachable through
+a hand-built or foreign archive -- on a fresh server with no history at all. The
+Postgres backend differs in degree, not in kind: `#insertImportedResource`
+(line 4825) falls back to `sidecar?.updatedAt ?? now`, so an imported Resource
+always has a feed position, but that `now` is stamped outside whatever
+allocation WAS-93 introduces. Whichever ordering key WAS-93 settles on, import
+has to participate in allocating it: a watermarked `updatedAt` is computed on
+the write path an import bypasses, and a per-Collection sequence has no value at
+all for an imported Resource. Blocked on WAS-93 because the key's shape decides
+what import mints.

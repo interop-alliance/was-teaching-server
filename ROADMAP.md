@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap (spec gap analysis)
 
-nextAvailableId: 181
+nextAvailableId: 182
 
 Status as of 2026-07-22. Produced by comparing `spec.md` (in the
 [w3c-ccg/wallet-attached-storage-spec](https://github.com/w3c-ccg/wallet-attached-storage-spec)
@@ -774,46 +774,31 @@ tree; WAS-93 is the one finding whose fix changes a wire artifact, so it is
 recorded here rather than coded. WAS-94 and WAS-95 came out of following that
 finding into the sidecar-less Resource paths it depends on.
 
-### WAS-95: Import writes a Resource with no sidecar, so it has no feed position
+### WAS-181: Import of a sidecar that parses but lacks timestamps differs by backend
 
 - status: todo
-- priority: high
-- labels: import-export, changes-feed, filesystem-backend, postgres-backend
-- blocked-by: WAS-93
+- priority: low
+- labels: import-export, filesystem-backend, postgres-backend
 - touches:
   - was-teaching-server: `src/backends/filesystem.ts` (`importSpace`),
-    `src/backends/postgres.ts` (`importSpace`), and whatever allocates the feed
-    ordering key once WAS-93 settles it
-  - conformance-suite: an import case whose archive carries a Resource with no
-    metadata entry, asserting the imported Resource appears in the changes feed
+    `src/backends/postgres.ts` (`#insertImportedResource`),
+    `test/storage-backend-contract.ts`
 - acceptance:
-  - [ ] `importSpace` never creates a Resource without the record that carries
-        its feed ordering key: an archive entry with no metadata gets a
-        synthesized one, stamped by the same allocation path an ordinary write
-        uses, under the same per-Resource lock
-  - [ ] The archive's `createdAt`, `createdBy`, and `custom` are preserved when
-        present; only the ordering key is minted
-  - [ ] A test in `test/` imports an archive carrying a Resource with no
-        metadata entry and asserts the Resource appears in the changes feed at a
-        position after every pre-existing document
-  - [ ] Both backends behave identically, and the storage-backend contract test
-        covers it
+  - [ ] An archived sidecar that parses as a JSON object but carries no
+        `createdAt` or `updatedAt` is imported the same way on both backends:
+        the missing stamps are filled with the import time, and the members the
+        sidecar does carry (`createdBy`, `custom`, `epoch`, `writerId`, the
+        validators) are kept
+  - [ ] The storage-backend contract test imports such an archive and asserts
+        the served `/meta` object carries both timestamps on both backends
 
-Context: discovered-from WAS-93. `importSpace` in `src/backends/filesystem.ts`
-(line 1730) writes the representation unconditionally and the sidecar only if
-the archive carried one: "A metadata sidecar travels with a newly-created
-resource ...; an absent one leaves `getResourceMetadata` to fall back to the
-file's stat times." An archive this server exported always carries the sidecars,
-since export packs the Collection dir verbatim, so the gap is reachable through
-a hand-built or foreign archive -- on a fresh server with no history at all. The
-Postgres backend differs in degree, not in kind: `#insertImportedResource`
-(line 4825) falls back to `sidecar?.updatedAt ?? now`, so an imported Resource
-always has a feed position, but that `now` is stamped outside whatever
-allocation WAS-93 introduces. Whichever ordering key WAS-93 settles on, import
-has to participate in allocating it: a watermarked `updatedAt` is computed on
-the write path an import bypasses, and a per-Collection sequence has no value at
-all for an imported Resource. Blocked on WAS-93 because the key's shape decides
-what import mints.
+Context: discovered-from WAS-95. The Postgres import fills a missing `createdAt`
+/ `updatedAt` with `now`, since its columns are not nullable. The filesystem
+import writes the parsed sidecar as it is, so the Resource is served with no
+timestamps while its feed position and validator are fine. A sidecar with no
+timestamps only comes from a hand-built or foreign archive, so the gap is low
+priority, but the two backends should agree on it, and filling with the import
+time is the cheaper rule to state.
 
 ## Simplify pass follow-ups (2026-09-12)
 

@@ -165,8 +165,10 @@
   a checkpoint. Every content write, metadata write, soft delete, and imported
   Resource takes the Collection's next position, assigned inside the
   per-Collection critical section that makes the write visible. A chunk write
-  takes none. The filesystem backend does not yet stamp a Resource imported with
-  no metadata entry. This is a wire-contract change:
+  takes none. A Resource imported with no metadata entry, or with one that is
+  not a JSON object, gets fresh metadata on both backends: `createdAt` and
+  `updatedAt` at import time, a new generation, version 1, and no `createdBy`.
+  This is a wire-contract change:
   - The checkpoint is an opaque string, scoped to this server and Collection and
     to one life of the Collection's feed. A client compares it by equality only
     and echoes it back verbatim. A checkpoint issued before the Collection was
