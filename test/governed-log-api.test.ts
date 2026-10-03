@@ -10,15 +10,12 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
   assertEncryptedCollectionsFeature,
   assertEtagVersion,
+  openTempBackend,
   responseOf,
   startTestServer,
   zcapClients
@@ -84,19 +81,14 @@ const twoEpochs = {
 describe('Governing history log API (meta/log)', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
     alice: any,
     aliceDelegatedApp: any
   const spaceId = `governed-log-space-${crypto.randomUUID()}`
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
+    // A small per-upload cap, so the oversize-log refusal is cheap to hit.
     ;({ fastify, serverUrl } = await startTestServer({
-      // A small per-upload cap, so the oversize-log refusal is cheap to hit.
-      backend: await FileSystemBackend.open({
-        dataDir,
-        maxUploadBytes: 64 * 1024
-      })
+      backend: await openTempBackend({ maxUploadBytes: 64 * 1024 })
     }))
     ;({ alice, aliceDelegatedApp } = await zcapClients({ serverUrl }))
     await alice.was.createSpace({
@@ -107,7 +99,6 @@ describe('Governing history log API (meta/log)', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   // The canonical (trailing-slash) container URL of a Collection.

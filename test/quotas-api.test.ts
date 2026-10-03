@@ -6,13 +6,9 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 const ISO_8601 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/
 
@@ -33,15 +29,14 @@ interface QuotaReportBody {
 }
 
 describe('Quotas API', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string
+  let fastify: FastifyInstance, serverUrl: string
   let alice: any, bob: any
   const spaceId = `quotas-space-${crypto.randomUUID()}`
   const collectionId = 'credentials'
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
 
@@ -63,7 +58,6 @@ describe('Quotas API', () => {
 
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('[root] reports the Space quota grouped by backend', async () => {

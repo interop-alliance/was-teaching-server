@@ -11,16 +11,16 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import type { JsonObject, Space } from '@interop/was-client'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import {
   assertEncryptedCollectionsFeature,
+  openTempBackend,
   startTestServer,
   zcapClients
 } from './helpers.js'
@@ -57,7 +57,7 @@ function envelope(
 describe('Collection blinded-index query profile', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
+    backend: TempFileSystemBackend,
     alice: any,
     bob: any,
     aliceSpace: Space
@@ -80,10 +80,8 @@ describe('Collection blinded-index query profile', () => {
   }
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
-    }))
+    backend = await openTempBackend()
+    ;({ fastify, serverUrl } = await startTestServer({ backend }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
 
     aliceSpace = await alice.was.createSpace({
@@ -94,7 +92,6 @@ describe('Collection blinded-index query profile', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   /** Creates a Collection and PUTs each envelope at its id. */
@@ -314,7 +311,7 @@ describe('Collection blinded-index query profile', () => {
     // opens cannot fail it.
     await writeFile(
       path.join(
-        dataDir,
+        backend.dataDir,
         'spaces',
         alice.space1.id,
         'vault-sidecar',

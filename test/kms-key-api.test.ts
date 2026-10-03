@@ -18,9 +18,6 @@
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import { randomBytes } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import {
   KmsClient,
@@ -34,27 +31,30 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import { KEY_LIST_LIMIT } from '../src/config.default.js'
 import { compareCodeUnits } from '../src/lib/pagination.js'
 import type { IRootZcap } from '../src/types.js'
-import { client, startTestServer, zcapClients } from './helpers.js'
+import {
+  client,
+  openTempBackend,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
   let fastify: FastifyInstance,
-    backend: FileSystemBackend,
+    backend: TempFileSystemBackend,
     serverUrl: string,
     keystoresUrl: string,
     keystoreId: string,
     keystoreAgent: KeystoreAgent,
-    dataDir: string,
     alice: any,
     aliceDelegatedApp: any,
     bob: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = await FileSystemBackend.open({ dataDir })
+    backend = await openTempBackend()
     ;({ fastify, serverUrl } = await startTestServer({ backend }))
     keystoresUrl = `${serverUrl}/kms/keystores`
     ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
@@ -76,7 +76,6 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   /**

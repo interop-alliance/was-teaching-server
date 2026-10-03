@@ -36,22 +36,19 @@
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { KmsClient } from '@interop/webkms-client'
 
 import { logToJsonlString, updateDID } from '@interop/did-method-webvh'
 import type { DIDLog } from '@interop/did-method-webvh'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
   anHourFromNow,
   assertSpaceController,
   bareDidKeyOf,
   client,
   delegate,
+  openTempBackend,
   requestError,
   rootZcap,
   provisionWebvhIdentity,
@@ -70,16 +67,13 @@ const AUXILIARY_TYPE = ['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']
 const WAS_ACTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
 
 describe('client-annex clause (ladder-VM delegation bounds)', () => {
-  let fastify: FastifyInstance,
-    serverUrl: string,
-    dataDir: string,
-    alice: any,
-    bob: any
+  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
 
   /** The account identity every ladder delegation below is signed under. */
-  let account: WebvhIdentity
+  let account: WebvhIdentity & Required<Pick<WebvhIdentity, 'ladderKeyPair'>>
   /** The annex DID the account document's service entry names. */
-  let clientAnnex: WebvhIdentity
+  let clientAnnex: WebvhIdentity &
+    Required<Pick<WebvhIdentity, 'transientKeyPair'>>
   let accountSpaceUrl: string
   let accountSpaceMetaUrl: string
   let accountLogUrl: string
@@ -87,9 +81,8 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
   let openCollectionUrl: string
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
 
@@ -152,7 +145,6 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
 
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   /** The account Space's root capability id, the parent of every WAS-route

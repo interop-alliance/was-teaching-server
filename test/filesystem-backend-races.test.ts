@@ -8,26 +8,24 @@
  */
 import { it, describe, beforeEach, afterEach, vi } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm, readdir, chmod } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { rm, readdir, chmod } from 'node:fs/promises'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import { ResourceNotFoundError } from '../src/errors.js'
-import { importArchive } from './helpers.js'
+import { importArchive, openTempBackend } from './helpers.js'
 
 const controller = 'did:key:z6MkRacesTestController'
 
 describe('FileSystemBackend races', () => {
-  let dataDir: string
-  let backend: FileSystemBackend
+  let backend: TempFileSystemBackend
   const spaceId = 'races-space'
   const collectionId = 'credentials'
 
   beforeEach(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = await FileSystemBackend.open({ dataDir })
+    backend = await openTempBackend()
     await backend.writeSpace({
       spaceId,
       spaceMetadata: { id: spaceId, type: ['Space'], controller }
@@ -44,7 +42,7 @@ describe('FileSystemBackend races', () => {
   })
 
   afterEach(async () => {
-    await rm(dataDir, { recursive: true, force: true })
+    await backend.close()
   })
 
   /**
@@ -52,7 +50,9 @@ describe('FileSystemBackend races', () => {
    */
   const collectionDirEntries = async (): Promise<string[]> => {
     try {
-      return await readdir(path.join(dataDir, 'spaces', spaceId, collectionId))
+      return await readdir(
+        path.join(backend.dataDir, 'spaces', spaceId, collectionId)
+      )
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         return []
@@ -118,7 +118,7 @@ describe('FileSystemBackend races', () => {
 
     const metadata = await backend.getSpaceMetadata({ spaceId })
     if (metadata === undefined) {
-      const spaceDir = path.join(dataDir, 'spaces', spaceId)
+      const spaceDir = path.join(backend.dataDir, 'spaces', spaceId)
       let entries: string[] = []
       try {
         entries = await readdir(spaceDir)
@@ -140,7 +140,7 @@ describe('FileSystemBackend races', () => {
    */
   const spaceDirEntries = async (): Promise<string[]> => {
     try {
-      return await readdir(path.join(dataDir, 'spaces', spaceId))
+      return await readdir(path.join(backend.dataDir, 'spaces', spaceId))
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         return []
@@ -239,8 +239,7 @@ describe('FileSystemBackend races', () => {
     // Tested as the invariant rather than the interleaving: with a write to
     // `doc` in flight (holding its lock), an import that also carries `doc`
     // must not be able to write it.
-    const sourceDir = await mkdtemp(path.join(tmpdir(), 'was-test-src-'))
-    const sourceBackend = await FileSystemBackend.open({ dataDir: sourceDir })
+    const sourceBackend = await openTempBackend({ prefix: 'was-test-src-' })
     try {
       await sourceBackend.writeSpace({
         spaceId,
@@ -303,7 +302,7 @@ describe('FileSystemBackend races', () => {
       await inFlight
       await importRun
     } finally {
-      await rm(sourceDir, { recursive: true, force: true })
+      await sourceBackend.close()
     }
   })
 
@@ -313,7 +312,7 @@ describe('FileSystemBackend races', () => {
     // total for a full TTL -- refusing the client's follow-up write over space
     // the delete had just freed.
     const capped = await FileSystemBackend.open({
-      dataDir,
+      dataDir: backend.dataDir,
       capacityBytes: 200_000
     })
     const validator = await capped.writeResource({
@@ -393,7 +392,12 @@ describe('FileSystemBackend races', () => {
       collectionId
     })
     assert.ok(collectionMetadata)
-    const collectionDir = path.join(dataDir, 'spaces', spaceId, collectionId)
+    const collectionDir = path.join(
+      backend.dataDir,
+      'spaces',
+      spaceId,
+      collectionId
+    )
     await chmod(collectionDir, 0o000)
     try {
       await assert.rejects(
@@ -419,7 +423,12 @@ describe('FileSystemBackend races', () => {
       resourceId: 'vanishing',
       input: { kind: 'json', contentType: 'application/json', data: { a: 1 } }
     })
-    const collectionDir = path.join(dataDir, 'spaces', spaceId, collectionId)
+    const collectionDir = path.join(
+      backend.dataDir,
+      'spaces',
+      spaceId,
+      collectionId
+    )
     const files = await readdir(collectionDir)
     const representation = files.find(name => name.startsWith('r.vanishing'))
     assert.ok(representation)

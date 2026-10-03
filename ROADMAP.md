@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 187
+nextAvailableId: 189
 
 <!-- roadmap-order:index:start -->
 
@@ -157,6 +157,8 @@ Ready:
 
 Ready:
 
+- WAS-187 [H] Export the in-process test boot as `was-teaching-server/testing`
+  (blocks 1)
 - WAS-46 [H] Un-skip the Postgres and flag-gated storage-contract tests
 - WAS-47 [M] Cover `start.ts` and the untested config parsers
 - WAS-9 [M] Open the upstream `minimal-cipher` AEAD-gap issue
@@ -165,6 +167,11 @@ Ready:
   URL by default
 - WAS-168 [L] `SERVER_URL` move runbook for the server DID log (portable domain
   move)
+
+Chains:
+
+- WAS-187 [H] Export the in-process test boot as `was-teaching-server/testing`
+  - WAS-188 [H] A request-level tear and hold seam on the testing export
 
 **Someday / Maybe**
 
@@ -1333,7 +1340,7 @@ doc; the other items are its sub-items in dependency order.
 
 ### WAS-172: [M] [blocks 6] Hybrid-logical-clock write stamp and the four-field validator
 
-- status: todo
+- status: in-progress
 - priority: medium
 - labels: data-model, etag, changes-feed, wire-contract, filesystem-backend,
   postgres-backend
@@ -1346,10 +1353,16 @@ doc; the other items are its sub-items in dependency order.
     sentence replaced by the stamp order)
   - storage-core: the Resource metadata, `CollectionMetadata`, `SpaceMetadata`,
     and `ChangeDocument` types
+    (shipped 2026-10-03, unpublished: storage-core 0.28.0 adds `WriteStamp` and
+    `ResourceMetaStamp`, and drops `version` / `metaVersion` from
+    `ChangeDocument`)
   - was-teaching-server: `src/lib/etag.ts`, both backends' sidecar and row
     layouts and every write path that stamps them, `src/lib/preconditions.ts`,
     the `/meta` and Metadata-object projections, `changesSince`
-  - was-client: types only
+  - was-client: types only (shipped 2026-10-03, unpublished: was-client 0.87.0
+    drops `parseEtag`, `WriteAck.version` and `MasterState.version` /
+    `metaVersion`, and carries the stamp on `WireDoc` and `MasterState`; it
+    consumes storage-core through a `link:` until 0.28.0 is published)
   - was-sync: the apply comparison
   - conformance-suite: validator layout and stamp members on every record kind
 - acceptance:
@@ -2000,6 +2013,109 @@ testable normative statements matched against the conformance suite's tests,
 plus a survey of the server's own `test/` suite. Suite-side items land in
 `@interop/was-conformance-suite` (tracked here per convention); the `test/`
 items are in-repo.
+
+### WAS-187: [H] [blocks 1] Export the in-process test boot as `was-teaching-server/testing`
+
+- status: in-progress
+- priority: high
+- labels: tests, packaging, consumers
+- discovered-from: FW-633 (freewallet's test-infrastructure read, 2026-10-03)
+- blocks: WAS-188
+- touches:
+  - [ ] freewallet (FW-633: takes the server as a devDependency and boots
+        through this export)
+  - [ ] wallet-core (WC-269: its integration tier boots through this export)
+  - [ ] was-sync, was-react, dcw (each copies the boot recipe today and still
+        calls `new FileSystemBackend(...)`)
+  - [x] `docs/consuming-server-as-library.md` (shipped: the "Testing against
+        the server" section)
+- acceptance:
+  - [x] `package.json` exports `./testing`, built to `dist`, with types
+  - [x] The export carries `startTestServer` (the `localhost` server URL
+        fix-up included) and a helper that opens a `FileSystemBackend` on a
+        fresh temp dir and removes it on close
+  - [x] The export carries the webvh identity provisioner
+        (`provisionWebvhIdentity`, with its ladder and transient VM shapes).
+        Decided 2026-10-03: it is exported
+  - [x] The export pulls in no test runner: nothing under it imports
+        `vitest`
+  - [x] The server's own suites import the helpers from the same source
+        file the export is built from, so there is one copy
+  - [x] `docs/consuming-server-as-library.md` shows the boot through the
+        export and through the async `open()` backend factory
+  - [ ] The release that carries the export is published to npm, and
+        CHANGELOG.md names the export
+
+The in-process boot lives in `test/helpers.ts`, which is outside `dist`.
+Every consumer that runs tests against the real server copies the recipe:
+`createApp` with `serverUrl: 'http://localhost'`, `listen({ port: 0 })`, read
+the port, then set `fastify.serverUrl`. was-sync, was-react, dcw, and
+freewallet's conformance suite each carry a copy, and wallet-core is about to
+add another. The `localhost` detail matters, since webkms-client relaxes its
+loopback checks for that host alone, and a copy that uses `127.0.0.1` fails in
+the KMS facet only.
+
+The same consumers construct the backend with `new FileSystemBackend(...)`.
+The 0.40.0 source makes backends come only from the async `open()` factory, so
+each of them breaks on that release. A shared helper that opens the backend
+gives them one call to move to.
+
+`provisionWebvhIdentity` is exported too (decided 2026-10-03). It builds a
+did:webvh identity by hand, in the ladder and transient VM shapes, without
+running a wallet ceremony. That suits a consumer test about a server rule,
+where the identity is setup and the ceremony is not under test. A test about
+the ceremonies themselves builds its account through wallet-core's account
+builder (WC-270) instead.
+
+The export is test support. It adds nothing to the production plugin's
+options.
+
+### WAS-188: [H] [after WAS-187] A request-level tear and hold seam on the testing export
+
+- status: todo
+- priority: high
+- labels: tests, fault-injection, consumers
+- discovered-from: FW-634 (freewallet's test-infrastructure read, 2026-10-03)
+- blocked-by: WAS-187
+- touches:
+  - [ ] freewallet (FW-634: ports one torn-ceremony case to the seam)
+  - [ ] wallet-core (WC-269: its integration tier tears with the seam)
+- acceptance:
+  - [ ] A first check settles the mechanism. A root Fastify hook added after
+        `createApp()` either reaches every route group, the KMS facet
+        included, or the item records what does
+  - [ ] Tear, grade one: the first request matching a predicate (method,
+        path, invoking DID) is refused before any handler runs, with a
+        chosen status
+  - [ ] Tear, grade two: the first matching request is applied and its
+        response is dropped, so the client sees a transport failure over a
+        write that landed
+  - [ ] Hold: a matching request pauses until the test releases it
+  - [ ] Every request is recorded in order with its method, path, and
+        invoking DID
+  - [ ] Each of the four has a test in this repo's own suite
+  - [ ] The seam is reachable only through `was-teaching-server/testing`,
+        and `FastifyWasOptions` gains no member for it
+
+Consumers test ceremonies that write several resources in order, and most of
+their open bugs are about a run interrupted between two of those writes. The
+server has no way to fail a chosen request. Its only fault tests mock
+`node:fs/promises` at the syscall level. So each consumer invents its own
+tear: freewallet's Playwright suite aborts routes in the browser, compiles
+window-flag seams into the app, and simulates a tab death, and wallet-core's
+fakes carry hand-written kill switches.
+
+The two tear grades are different states. A refused request leaves the store
+untouched. A dropped response leaves the write durable while the client
+believes it failed. The second is the case a consumer's re-run has to detect
+from stored state, and a browser-side route abort cannot produce it.
+
+The hold is for interleaving two clients at a chosen write, such as two
+signups whose existence probes both miss before either one binds.
+
+A wrapper around the storage backend was the other candidate. It tears after
+authorization and has to cover the whole `StorageBackend` interface, about 50
+members. The hook is tried first for that reason.
 
 ### WAS-46: [H] Un-skip the Postgres and flag-gated storage-contract tests
 

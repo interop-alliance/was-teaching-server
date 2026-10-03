@@ -5,20 +5,15 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import type { Space, Collection } from '@interop/was-client'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 describe('Access-control policy API', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
     alice: any,
     bob: any,
     aliceSpace: Space,
@@ -29,9 +24,8 @@ describe('Access-control policy API', () => {
     `/space/${alice.space1.id}/public-credentials/public-vc`
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
 
@@ -52,7 +46,6 @@ describe('Access-control policy API', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('anonymous GET of a resource with no policy is denied (404)', async () => {

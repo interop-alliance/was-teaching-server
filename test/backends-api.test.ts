@@ -6,15 +6,13 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import {
   importArchive,
   etagGeneration,
+  openTempBackend,
   responseOf,
   startTestServer,
   zcapClients
@@ -22,9 +20,8 @@ import {
 
 describe('Space backend registration (/backends)', () => {
   let fastify: FastifyInstance,
-    backend: FileSystemBackend,
+    backend: TempFileSystemBackend,
     serverUrl: string,
-    dataDir: string,
     alice: any,
     bob: any
 
@@ -55,14 +52,12 @@ describe('Space backend registration (/backends)', () => {
   }
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = await FileSystemBackend.open({ dataDir })
+    backend = await openTempBackend()
     ;({ fastify, serverUrl } = await startTestServer({ backend }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   async function freshSpace(name: string): Promise<string> {

@@ -1,20 +1,17 @@
 import {
   afterAll,
   afterEach,
-  beforeAll,
   beforeEach,
   describe,
   expect,
   it,
   vi
 } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import { Agent } from 'undici'
 
 import { createApp } from '../src/server.js'
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { FastifyInstance } from 'fastify'
+import { openTempBackend } from './helpers.js'
 import { createPinnedLookup } from '../src/corsProxy.js'
 import {
   CORS_PROXY_AGENT_CACHE_TTL,
@@ -38,23 +35,24 @@ vi.mock('undici', async importOriginal => ({
 }))
 vi.mock('node:dns/promises', () => ({ lookup: lookupMock }))
 
-// A private data dir, so the suite never reads the repo's data/ directory.
-let dataDir: string
-beforeAll(async () => {
-  dataDir = await mkdtemp(path.join(tmpdir(), 'was-cors-proxy-'))
-})
+// Every app the suite creates, closed in afterAll so each app's private temp
+// data dir is removed (the plugin owns its backend), even when a test does not
+// close its own app.
+const apps: FastifyInstance[] = []
 afterAll(async () => {
-  await rm(dataDir, { recursive: true, force: true })
+  await Promise.all(apps.splice(0).map(app => app.close()))
 })
 
 /**
- * A fresh app over the suite's private data dir.
+ * A fresh app over a private temp data dir.
  */
 async function testApp() {
-  return createApp({
+  const app = await createApp({
     serverUrl: 'http://localhost',
-    backend: await FileSystemBackend.open({ dataDir })
+    backend: await openTempBackend({ prefix: 'was-cors-proxy-' })
   })
+  apps.push(app)
+  return app
 }
 
 describe('CORS proxy API', () => {

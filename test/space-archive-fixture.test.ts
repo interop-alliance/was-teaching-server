@@ -37,10 +37,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { mkdtemp, rm } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import assert from 'node:assert'
 import { pino } from 'pino'
@@ -49,14 +47,18 @@ import {
   packSpaceArchive,
   readSpaceArchive
 } from '@interop/space-archive'
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import { loadExportAttestor } from '../src/lib/exportProvenance.js'
 import {
   createServerSigningKey,
   SERVER_IDENTITY_COLLECTION_ID,
   SERVER_SPACE_ID
 } from '../src/lib/serverIdentity.js'
-import { importArchive, verifyProvenanceOffline } from './helpers.js'
+import {
+  importArchive,
+  openTempBackend,
+  verifyProvenanceOffline
+} from './helpers.js'
 
 const SPACE_ID = 'zFixtureSpace'
 const COLLECTION_ID = 'notes'
@@ -180,18 +182,16 @@ async function collect(
 }
 
 describe('Space archive fixture (@interop/space-archive counterpart)', () => {
-  let dataDir: string
-  let backend: FileSystemBackend
+  let backend: TempFileSystemBackend
   const fixture = readFixtureArchive()
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(os.tmpdir(), 'was-archive-fixture-'))
-    backend = await FileSystemBackend.open({ dataDir })
-    stageFixtureTree(dataDir)
+    backend = await openTempBackend({ prefix: 'was-archive-fixture-' })
+    stageFixtureTree(backend.dataDir)
   })
 
   afterAll(async () => {
-    await rm(dataDir, { recursive: true, force: true })
+    await backend.close()
   })
 
   it("exports bytes identical to the package's fixture archive", async () => {
@@ -295,11 +295,8 @@ describe('Space archive fixture (@interop/space-archive counterpart)', () => {
         ]
       })
     )
-    const importDataDir = await mkdtemp(
-      path.join(os.tmpdir(), 'was-archive-import-')
-    )
-    const importBackend = await FileSystemBackend.open({
-      dataDir: importDataDir
+    const importBackend = await openTempBackend({
+      prefix: 'was-archive-import-'
     })
     try {
       await importBackend.writeSpace({
@@ -318,7 +315,7 @@ describe('Space archive fixture (@interop/space-archive counterpart)', () => {
         })
       ).rejects.toThrow(/history log of Collection 'notes'/)
     } finally {
-      await rm(importDataDir, { recursive: true, force: true })
+      await importBackend.close()
     }
   })
 })

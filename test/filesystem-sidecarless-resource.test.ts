@@ -6,15 +6,14 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { fileNameFor } from '@interop/space-archive'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
+import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 describe('FileSystemBackend: Resource with no metadata sidecar', () => {
   const collectionId = 'bare'
@@ -22,13 +21,11 @@ describe('FileSystemBackend: Resource with no metadata sidecar', () => {
   const bareBody = JSON.stringify({ n: bareId })
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
-    backend: FileSystemBackend,
+    backend: TempFileSystemBackend,
     alice: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = await FileSystemBackend.open({ dataDir })
+    backend = await openTempBackend()
     ;({ fastify, serverUrl } = await startTestServer({ backend }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
@@ -57,7 +54,6 @@ describe('FileSystemBackend: Resource with no metadata sidecar', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   function resourceUrl(resourceId: string): string {

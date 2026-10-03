@@ -5,50 +5,50 @@
  * backend, and the Postgres backend rejects an unbounded cap at construction
  * (its single-`bytea` writes buffer through memory).
  */
-import os from 'node:os'
-import path from 'node:path'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { it, describe, afterAll, beforeAll } from 'vitest'
+import { it, describe, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import { PostgresBackend } from '../src/backends/postgres.js'
 import { DEFAULT_MAX_UPLOAD_BYTES } from '../src/config.default.js'
+import { openTempBackend } from './helpers.js'
 
 describe('FileSystemBackend upload cap normalization', () => {
-  let dataDir: string
-
-  beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(os.tmpdir(), 'was-upload-limits-'))
-  })
+  const backends: TempFileSystemBackend[] = []
 
   afterAll(async () => {
-    await rm(dataDir, { recursive: true, force: true })
+    await Promise.all(backends.splice(0).map(backend => backend.close()))
   })
 
+  async function open(options: Parameters<typeof openTempBackend>[0] = {}) {
+    const backend = await openTempBackend({
+      prefix: 'was-upload-limits-',
+      ...options
+    })
+    backends.push(backend)
+    return backend
+  }
+
   it('applies DEFAULT_MAX_UPLOAD_BYTES when no cap is configured', async () => {
-    const backend = await FileSystemBackend.open({ dataDir })
+    const backend = await open()
     assert.equal(backend.maxUploadBytes, DEFAULT_MAX_UPLOAD_BYTES)
   })
 
   it('honors a finite configured cap', async () => {
-    const backend = await FileSystemBackend.open({
-      dataDir,
+    const backend = await open({
       maxUploadBytes: 4096
     })
     assert.equal(backend.maxUploadBytes, 4096)
   })
 
   it('normalizes Infinity (explicit unlimited) to undefined (no cap)', async () => {
-    const backend = await FileSystemBackend.open({
-      dataDir,
+    const backend = await open({
       maxUploadBytes: Infinity
     })
     assert.equal(backend.maxUploadBytes, undefined)
   })
 
   it('normalizes an Infinity capacity to undefined (no limit)', async () => {
-    const backend = await FileSystemBackend.open({
-      dataDir,
+    const backend = await open({
       capacityBytes: Infinity
     })
     assert.equal(backend.capacityBytes, undefined)

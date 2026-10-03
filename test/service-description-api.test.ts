@@ -5,18 +5,16 @@
  * the Space and Collection linksets, and the version-disclosure switch.
  */
 import { it, describe, beforeAll, afterAll, expect } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import type { Space } from '@interop/was-client'
 
 import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import { SERVICE_DESCRIPTION_MAX_AGE } from '../src/config.default.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 const packageJson = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8')
@@ -30,16 +28,14 @@ const packageJson = JSON.parse(
 describe('Service description API', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
-    backend: FileSystemBackend,
+    backend: TempFileSystemBackend,
     alice: any,
     aliceSpace: Space
 
   const serviceLink = () => `<${serverUrl}/service>; rel="service"`
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-service-'))
-    backend = await FileSystemBackend.open({ dataDir })
+    backend = await openTempBackend({ prefix: 'was-service-' })
     ;({ fastify, serverUrl } = await startTestServer({ backend }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
@@ -56,7 +52,6 @@ describe('Service description API', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   describe('GET /service', () => {
@@ -276,7 +271,7 @@ describe('Service description API', () => {
 
     it('appends to a Link header a handler already set', async () => {
       const app = createApp({
-        backend: await FileSystemBackend.open({ dataDir }),
+        backend: await FileSystemBackend.open({ dataDir: backend.dataDir }),
         logger: false,
         serverUrl: 'https://was.example'
       })
@@ -325,18 +320,16 @@ describe('Service description API', () => {
 })
 
 describe('Service description with the version withheld', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string
+  let fastify: FastifyInstance, serverUrl: string
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-service-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir }),
+      backend: await openTempBackend({ prefix: 'was-service-' }),
       discloseVersion: false
     }))
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('omits instance.version and keeps the other members', async () => {

@@ -2,10 +2,7 @@
  * Runs the shared StorageBackend contract suite against the filesystem
  * backend (each harness over a private temp dir).
  */
-import os from 'node:os'
-import path from 'node:path'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import { openTempBackend } from './helpers.js'
 import { describeStorageBackendContract } from './storage-backend-contract.js'
 
 describeStorageBackendContract({
@@ -17,9 +14,8 @@ describeStorageBackendContract({
     maxCollectionsPerSpace,
     maxResourcesPerSpace
   } = {}) {
-    const dataDir = await mkdtemp(path.join(os.tmpdir(), 'was-contract-fs-'))
-    const backend = await FileSystemBackend.open({
-      dataDir,
+    const backend = await openTempBackend({
+      prefix: 'was-contract-fs-',
       capacityBytes,
       maxUploadBytes,
       maxSpacesPerController,
@@ -29,7 +25,7 @@ describeStorageBackendContract({
     return {
       backend,
       async cleanup() {
-        await rm(dataDir, { recursive: true, force: true })
+        await backend.close()
       }
     }
   },

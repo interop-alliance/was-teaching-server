@@ -16,14 +16,12 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import type { BackendProviderRegistry } from '../src/types.js'
 import {
+  openTempBackend,
   provisionProviderContainers,
   startTestServer,
   zcapClients
@@ -32,30 +30,27 @@ import {
 describe('Collection Metadata full replacement', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
-    providerDir: string,
-    providerBackend: FileSystemBackend,
+    backend: TempFileSystemBackend,
+    providerBackend: TempFileSystemBackend,
     alice: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    providerDir = await mkdtemp(path.join(tmpdir(), 'was-test-provider-'))
-    providerBackend = await FileSystemBackend.open({ dataDir: providerDir })
+    backend = await openTempBackend()
+    providerBackend = await openTempBackend({ prefix: 'was-test-provider-' })
     // A fake provider whose adapter is a second filesystem backend over its
     // own dir, so a Resource routed to it demonstrably lands elsewhere.
     const providers: BackendProviderRegistry = new Map([
       ['test-provider', () => providerBackend]
     ])
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir }),
+      backend,
       providers
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
-    await rm(providerDir, { recursive: true, force: true })
+    await providerBackend.close()
   })
 
   /** Provisions a fresh Space and returns its id. */

@@ -3,19 +3,16 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 
 import { NotFoundError } from '@interop/was-client'
 import type { Space, Collection } from '@interop/was-client'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
   assertEtagVersion,
   etagGeneration,
+  openTempBackend,
   responseOf,
   startTestServer,
   zcapClients
@@ -24,16 +21,14 @@ import {
 describe('Resource API', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
     alice: any,
     bob: any,
     aliceSpace: Space,
     aliceCredentials: Collection
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
 
@@ -52,7 +47,6 @@ describe('Resource API', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('GET a resource with no auth headers falls through to policy and 404s (no public policy)', async () => {

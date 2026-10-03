@@ -40,28 +40,23 @@
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import {
-  createDID,
-  logToJsonlString,
-  signerFromExternalKey
-} from '@interop/did-method-webvh'
+import { createDID, logToJsonlString } from '@interop/did-method-webvh'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import type { IDID } from '../src/types.js'
 import { verifyZcap } from '../src/zcap.js'
 import {
   client,
+  openTempBackend,
   requestError,
   rootZcap,
   startTestServer,
-  zcapClients
+  zcapClients,
+  webvhLogSigner
 } from './helpers.js'
 
 /**
@@ -88,20 +83,17 @@ interface PromotedSpace {
 describe('root-invocation relation scoping (did:webvh controller)', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
-    backend: FileSystemBackend,
+    backend: TempFileSystemBackend,
     alice: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = await FileSystemBackend.open({ dataDir })
+    backend = await openTempBackend()
     ;({ fastify, serverUrl } = await startTestServer({ backend }))
     ;({ alice } = await zcapClients({ serverUrl }))
   })
 
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   /**
@@ -119,12 +111,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
     await space.collection('id').configure({ force: true })
 
     const updateKeyPair = await Ed25519VerificationKey.generate()
-    const updateKeySigner = updateKeyPair.didKeySigner()
-    const logSigner = signerFromExternalKey({
-      publicKeyMultibase: updateKeyPair.publicKeyMultibase!,
-      sign: async ({ data }: { data: Uint8Array }) =>
-        await updateKeySigner.sign({ data })
-    })
+    const logSigner = webvhLogSigner({ keyPair: updateKeyPair })
 
     const allRelations = await Ed25519VerificationKey.generate()
     const invocationOnly = await Ed25519VerificationKey.generate()

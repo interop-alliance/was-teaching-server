@@ -134,7 +134,19 @@
   `cors: false` skips `@fastify/cors`, and a `cors` object overrides `origin`
   and/or `methods`; a member set to `undefined` keeps the default.
 
+- A `was-teaching-server/testing` entry point for consumer tests.
+  `startTestServer()` boots `createApp()` on an OS-assigned port and returns its
+  `http://localhost:<port>` `serverUrl`. `openTempBackend()` opens a
+  `FileSystemBackend` on a fresh temp dir that its `close()` removes.
+  `provisionWebvhIdentity()` mints and publishes a self-hosted `did:webvh` in a
+  new Space. `webvhLogSigner()` builds a history-log signer from a `did:key` key
+  pair. The entry point imports no test runner.
+
 ### Changed
+
+- The startup warning for an export-signing key no server DID lists is logged
+  once the server is listening, and reads `serverUrl` then. An app that never
+  listens (`inject()` only) does not log it.
 
 - `FileSystemBackend` and `PostgresBackend` are obtained from a static async
   `open()` factory, which runs the store migrations and settles the origin id

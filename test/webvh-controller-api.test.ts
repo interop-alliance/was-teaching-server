@@ -23,32 +23,29 @@ import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { KmsClient } from '@interop/webkms-client'
 
 import {
   createDID,
   logToJsonlString,
-  signerFromExternalKey,
   updateDID
 } from '@interop/did-method-webvh'
 import type { DIDLog, Signer } from '@interop/did-method-webvh'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { spaceRevocationsPath } from '../src/lib/paths.js'
 import { invalidateResolvedWebvhDid } from '../src/lib/webvhController.js'
 import {
   client,
   delegate,
+  openTempBackend,
   requestError,
   rootZcap,
   startTestServer,
   wasClient,
-  zcapClients
+  zcapClients,
+  webvhLogSigner
 } from './helpers.js'
 
 /** A Space promoted to (or being prepared for) a did:webvh controller. */
@@ -67,22 +64,16 @@ interface WebvhSpace {
 }
 
 describe('did:webvh Space controller', () => {
-  let fastify: FastifyInstance,
-    serverUrl: string,
-    dataDir: string,
-    alice: any,
-    bob: any
+  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   /**
@@ -108,12 +99,7 @@ describe('did:webvh Space controller', () => {
     address?: string
   }) {
     const updateKeyPair = await Ed25519VerificationKey.generate()
-    const updateKeySigner = updateKeyPair.didKeySigner()
-    const logSigner = signerFromExternalKey({
-      publicKeyMultibase: updateKeyPair.publicKeyMultibase!,
-      sign: async ({ data }: { data: Uint8Array }) =>
-        await updateKeySigner.sign({ data })
-    })
+    const logSigner = webvhLogSigner({ keyPair: updateKeyPair })
     const clientKeyPair = await Ed25519VerificationKey.generate()
 
     const created = await createDID({

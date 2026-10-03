@@ -331,7 +331,10 @@ async function wasPlugin(
   // once storage is up, and the export-signing key is derived from the seed.
   // Whether the key is listed by a resolvable server DID is read per
   // `/service` request rather than fixed here, since the admin writes that
-  // log after boot; the boot-time read below only warns.
+  // log after boot; the read at listen time below only warns. It runs once
+  // the server is listening, and reads the `serverUrl` decoration then, so a
+  // composition that learns its port from `listen()` is checked against the
+  // URL it serves. Fastify does not await it, and logs what it throws.
   if (adminDid !== undefined) {
     await provisionServerSpace({ storage, adminDid })
   }
@@ -341,19 +344,21 @@ async function wasPlugin(
       : await createServerSigningKey({ seed: serverKeySeed })
   fastify.decorate('serverSigningKey', serverSigningKey)
   if (serverSigningKey !== undefined) {
-    const did = await resolveServerDid({
-      storage,
-      serverUrl,
-      signingKey: serverSigningKey,
-      logger: fastify.log
+    fastify.addHook('onListen', async function warnWithoutServerDid() {
+      const did = await resolveServerDid({
+        storage,
+        serverUrl: fastify.serverUrl,
+        signingKey: serverSigningKey,
+        logger: fastify.log
+      })
+      if (did === undefined) {
+        fastify.log.warn(
+          { exportSigningKey: serverSigningKey.exportSigningKey },
+          'No server DID lists the export-signing key yet; exports are ' +
+            'unsigned until the admin writes the server history log.'
+        )
+      }
     })
-    if (did === undefined) {
-      fastify.log.warn(
-        { exportSigningKey: serverSigningKey.exportSigningKey },
-        'No server DID lists the export-signing key yet; exports are ' +
-          'unsigned until the admin writes the server history log.'
-      )
-    }
   }
 
   // The provider-adapter registry the resolver (lib/backendRegistry.ts) consults

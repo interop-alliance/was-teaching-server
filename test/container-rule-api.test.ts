@@ -39,18 +39,15 @@
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
   anHourFromNow,
   assertSpaceController,
   bareDidKeyOf,
   client,
   delegate,
+  openTempBackend,
   requestError,
   rootZcap,
   provisionWebvhIdentity,
@@ -69,23 +66,17 @@ const AUXILIARY_TYPE = ['AuxiliarySpace', 'DelegatedClientsSpace', 'Space']
 const WAS_ACTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
 
 describe('container rule (unsafe methods at a container URL)', () => {
-  let fastify: FastifyInstance,
-    serverUrl: string,
-    dataDir: string,
-    alice: any,
-    bob: any
+  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
   })
 
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   /** One provisioned Space, with the URLs every case below addresses. */
@@ -687,7 +678,8 @@ describe('container rule (unsafe methods at a container URL)', () => {
     // delegations and the container writes is the container rule, plus the
     // clause's transient-annex bound on the one shape the rule admits.
     let account: WebvhIdentity
-    let clientAnnex: WebvhIdentity
+    let clientAnnex: WebvhIdentity &
+      Required<Pick<WebvhIdentity, 'transientKeyPair'>>
     let auxSpace: TestSpace
 
     beforeAll(async () => {
@@ -1114,7 +1106,8 @@ describe('container rule (unsafe methods at a container URL)', () => {
     // bound stays out of it; the ladder bound admits a chain whose every
     // ladder-signed link is target-exact and DELETE-only; the container rule
     // reads the same tail.
-    let ladderAccount: WebvhIdentity
+    let ladderAccount: WebvhIdentity &
+      Required<Pick<WebvhIdentity, 'ladderKeyPair'>>
 
     beforeAll(async () => {
       ladderAccount = await provisionWebvhIdentity({

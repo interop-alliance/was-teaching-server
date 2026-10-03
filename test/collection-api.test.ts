@@ -3,18 +3,16 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { NotFoundError } from '@interop/was-client'
 import type { Space } from '@interop/was-client'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import {
   assertEtagVersion,
   etagGeneration,
+  openTempBackend,
   requestError,
   responseOf,
   startTestServer,
@@ -24,16 +22,14 @@ import {
 describe('Collections API', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
+    backend: TempFileSystemBackend,
     alice: any,
     bob: any,
     aliceSpace: Space
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
-    }))
+    backend = await openTempBackend()
+    ;({ fastify, serverUrl } = await startTestServer({ backend }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
 
     // Provision the Space this suite operates on. This suite uses its own
@@ -47,7 +43,6 @@ describe('Collections API', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('POST /space/:spaceId/ should 401 error when no authorization headers', async () => {

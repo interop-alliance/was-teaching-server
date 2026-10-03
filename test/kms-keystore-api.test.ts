@@ -8,17 +8,14 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { KmsClient } from '@interop/webkms-client'
 import { ProblemTypes } from '@interop/storage-core'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
   client,
   delegate,
+  openTempBackend,
   rootZcap,
   startTestServer,
   zcapClients
@@ -26,24 +23,21 @@ import {
 
 describe('WebKMS keystore lifecycle (/kms/keystores)', () => {
   let fastify: FastifyInstance,
-    backend: FileSystemBackend,
     serverUrl: string,
     keystoresUrl: string,
-    dataDir: string,
     alice: any,
     aliceDelegatedApp: any,
     bob: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = await FileSystemBackend.open({ dataDir })
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
+    ;({ fastify, serverUrl } = await startTestServer({
+      backend: await openTempBackend()
+    }))
     keystoresUrl = `${serverUrl}/kms/keystores`
     ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   /** Creates a keystore for the given identity, resolving its bare config. */

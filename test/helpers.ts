@@ -1,8 +1,6 @@
 import assert from 'node:assert'
-import { createHash, randomUUID } from 'node:crypto'
-import type { AddressInfo } from 'node:net'
+import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
-import type { FastifyInstance } from 'fastify'
 import pino from 'pino'
 import { ZcapClient } from '@interop/ezcap'
 import { WasClient } from '@interop/was-client'
@@ -14,10 +12,8 @@ import {
   createDID,
   logToJsonlString,
   readLogFromString,
-  resolveDIDFromLog,
-  signerFromExternalKey
+  resolveDIDFromLog
 } from '@interop/did-method-webvh'
-import type { DIDLog, ServiceEndpoint } from '@interop/did-method-webvh'
 import { DataIntegrityProof } from '@interop/data-integrity-proof'
 import { createVerifyCryptosuite } from '@interop/ed25519-signature/eddsa-jcs-2022'
 import jsigs from '@interop/jsonld-signatures'
@@ -26,10 +22,10 @@ import {
   ENCRYPTED_COLLECTIONS_IDENTIFIER,
   ENCRYPTED_COLLECTIONS_VERSION
 } from '../src/config.default.js'
-import { createApp } from '../src/server.js'
 import { prepareImportPlan } from '../src/lib/importPlan.js'
 import { createServerSigningKey } from '../src/lib/serverIdentity.js'
 import type { ServerSigningKey } from '../src/lib/serverIdentity.js'
+import { webvhLogSigner } from '../src/testing.js'
 import type {
   IDID,
   IRootZcap,
@@ -37,55 +33,16 @@ import type {
   StorageBackend
 } from '../src/types.js'
 
-/**
- * Boots a test server on an OS-assigned ephemeral port and returns the
- * `serverUrl` it is actually reachable at, so parallel Vitest workers can never
- * collide on a port.
- *
- * ZCap `invocationTarget` URLs embed host and port, so `serverUrl` must match
- * the listening port exactly. The port is not known until `listen()` resolves,
- * so the app boots against a placeholder base URL and the `serverUrl`
- * decoration is corrected before the first request is served. Handlers read
- * `request.server.serverUrl` per request, so no route captures the placeholder.
- *
- * Callers must build their ZCap clients from the returned `serverUrl`, not from
- * a precomputed one.
- *
- * A suite that tears a server down and boots a replacement over the same
- * `dataDir` must pin the replacement to the returned `port`, so that ids minted
- * by the first server (which embed `serverUrl`) still resolve.
- *
- * @param [options] {object}   `createApp()` options, minus `serverUrl`
- * @param [options.port] {number}   pin the listening port; defaults to an
- *   OS-assigned ephemeral port
- * @param [options.logger] {boolean|object}   Fastify logger; defaults to
- *   `false` so per-request log lines stay out of the test output
- * @returns {Promise<{ fastify: FastifyInstance, serverUrl: string, port: number }>}
- */
-export async function startTestServer({
-  port = 0,
-  logger = false,
-  ...options
-}: Omit<NonNullable<Parameters<typeof createApp>[0]>, 'serverUrl'> & {
-  port?: number
-} = {}): Promise<{
-  fastify: FastifyInstance
-  serverUrl: string
-  port: number
-}> {
-  const fastify = createApp({
-    ...options,
-    logger,
-    serverUrl: 'http://localhost'
-  })
-  await fastify.listen({ port })
-  const listeningPort = (fastify.server.address() as AddressInfo).port
-  // `localhost`, not `127.0.0.1`: webkms-client only relaxes its loopback
-  // checks for a `localhost` host.
-  const serverUrl = `http://localhost:${listeningPort}`
-  fastify.serverUrl = serverUrl
-  return { fastify, serverUrl, port: listeningPort }
-}
+// The in-process boot and the webvh identity provisioner live in the source
+// file the `was-teaching-server/testing` export is built from.
+export {
+  openTempBackend,
+  provisionWebvhIdentity,
+  startTestServer,
+  webvhLogSigner,
+  type TempFileSystemBackend,
+  type WebvhIdentity
+} from '../src/testing.js'
 
 /**
  * Builds a root capability object for a target URL: the
@@ -491,145 +448,6 @@ export async function delegate({
 }
 
 /**
- * A minted, published self-hosted `did:webvh` and the keys it lists.
- */
-export interface WebvhIdentity {
-  spaceId: string
-  /** the Space's canonical trailing-slash URL */
-  spaceUrl: string
-  did: string
-  log: DIDLog
-  /** the update-key signer every log entry of this identity is signed by */
-  logSigner: any
-  /** the enrolled-client key: all four relations */
-  clientKeyPair: any
-  /** the delegation-only (ladder) key, when the document lists one */
-  ladderKeyPair?: any
-  /** the invocation-and-delegation (transient annex) key, when listed */
-  transientKeyPair?: any
-}
-
-/**
- * Provisions a Space controlled by a `did:key` client, mints a `did:webvh`
- * anchored in one of its Collections, and publishes the history log there.
- * Promotion of the Space to the new DID is left to the caller (Space creation
- * is `did:key`-only).
- *
- * @param options {object}
- * @param options.owner {any}   a `zcapClients` entry whose `was` handle
- *   creates the Space
- * @param options.serverUrl {string}   the server the log is anchored on
- * @param [options.withLadderKey] {boolean}   also list a method under
- *   `assertionMethod` and `capabilityDelegation` alone -- the ladder VM
- *   shape, recognized by relation asymmetry
- * @param [options.withTransientKey] {boolean}   also list a method under
- *   `capabilityInvocation` and `capabilityDelegation` alone -- the shape a
- *   per-visit annex verification method publishes under
- * @param [options.collectionId] {string}   the Collection anchoring the log
- * @param [options.services] {ServiceEndpoint[]}   service entries for the
- *   created document
- * @returns {Promise<WebvhIdentity>}
- */
-export async function provisionWebvhIdentity({
-  owner,
-  serverUrl,
-  withLadderKey = false,
-  withTransientKey = false,
-  collectionId = 'id',
-  services
-}: {
-  owner: any
-  serverUrl: string
-  withLadderKey?: boolean
-  withTransientKey?: boolean
-  collectionId?: string
-  services?: ServiceEndpoint[]
-}): Promise<WebvhIdentity> {
-  const spaceId = randomUUID()
-  const space = owner.was.space(spaceId)
-  await space.configure({ name: 'Identity Space', controller: owner.did })
-  await space.collection(collectionId).configure({ force: true })
-
-  const [updateKeyPair, clientKeyPair, ladderKeyPair, transientKeyPair] =
-    await Promise.all([
-      Ed25519VerificationKey.generate(),
-      Ed25519VerificationKey.generate(),
-      withLadderKey ? Ed25519VerificationKey.generate() : undefined,
-      withTransientKey ? Ed25519VerificationKey.generate() : undefined
-    ])
-  const updateKeySigner = updateKeyPair.didKeySigner()
-  const logSigner = signerFromExternalKey({
-    publicKeyMultibase: updateKeyPair.publicKeyMultibase!,
-    sign: async ({ data }: { data: Uint8Array }) =>
-      await updateKeySigner.sign({ data })
-  })
-
-  // Relationship wiring is driven entirely through `purpose`: passing
-  // explicit relationship arrays alongside would override it wholesale.
-  const verificationMethods = [
-    {
-      type: 'Multikey',
-      publicKeyMultibase: clientKeyPair.publicKeyMultibase!,
-      purpose: [
-        'authentication',
-        'assertionMethod',
-        'capabilityInvocation',
-        'capabilityDelegation'
-      ]
-    }
-  ]
-  if (ladderKeyPair) {
-    verificationMethods.push({
-      type: 'Multikey',
-      publicKeyMultibase: ladderKeyPair.publicKeyMultibase!,
-      purpose: ['assertionMethod', 'capabilityDelegation']
-    })
-  }
-  if (transientKeyPair) {
-    verificationMethods.push({
-      type: 'Multikey',
-      publicKeyMultibase: transientKeyPair.publicKeyMultibase!,
-      purpose: ['capabilityInvocation', 'capabilityDelegation']
-    })
-  }
-
-  const created = await createDID({
-    address: `${serverUrl}/space/${spaceId}/${collectionId}`,
-    signer: logSigner,
-    updateKeys: [updateKeyPair.publicKeyMultibase!],
-    vmIdFragment: 'multibase',
-    verificationMethods: verificationMethods as any,
-    ...(services ? { services } : {})
-  })
-
-  for (const keyPair of [clientKeyPair, ladderKeyPair, transientKeyPair]) {
-    if (keyPair) {
-      keyPair.id = `${created.did}#${keyPair.publicKeyMultibase}`
-      keyPair.controller = created.did
-    }
-  }
-
-  const published = await owner.was.request({
-    path: `/space/${spaceId}/${collectionId}/did.jsonl`,
-    method: 'PUT',
-    headers: { 'content-type': 'text/jsonl' },
-    body: new Blob([logToJsonlString(created.log)], { type: 'text/jsonl' })
-  })
-  assert.equal(published.status, 204)
-
-  return {
-    spaceId,
-    spaceUrl: new URL(`/space/${spaceId}/`, serverUrl).toString(),
-    did: created.did,
-    log: created.log,
-    logSigner,
-    clientKeyPair,
-    ladderKeyPair,
-    transientKeyPair
-  }
-}
-
-/**
  * Asserts a Space still carries `controller`, read from its Metadata object
  * under a root invocation by that controller's key. The survival check after
  * a refused controller rewrite or delete.
@@ -755,14 +573,9 @@ export async function provisionServerIdentity({
 }): Promise<{ signingKey: ServerSigningKey; did: string; didLog: string }> {
   const signingKey = await createServerSigningKey({ seed })
   const admin = await Ed25519VerificationKey.generate()
-  const adminSigner = admin.didKeySigner()
   const { did, log } = await createDID({
     address: `${serverUrl}/space/server/id`,
-    signer: signerFromExternalKey({
-      publicKeyMultibase: admin.publicKeyMultibase!,
-      sign: async ({ data }: { data: Uint8Array }) =>
-        await adminSigner.sign({ data })
-    }),
+    signer: webvhLogSigner({ keyPair: admin }),
     updateKeys: [admin.publicKeyMultibase!],
     vmIdFragment: 'multibase',
     portable: true,

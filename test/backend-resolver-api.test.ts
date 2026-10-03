@@ -11,14 +11,12 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import type { BackendProviderRegistry } from '../src/types.js'
 import {
+  openTempBackend,
   provisionProviderContainers,
   startTestServer,
   zcapClients
@@ -26,18 +24,14 @@ import {
 
 describe('Per-Collection backend resolver (selectable registered backends)', () => {
   let fastify: FastifyInstance,
-    defaultBackend: FileSystemBackend,
-    providerBackend: FileSystemBackend,
+    defaultBackend: TempFileSystemBackend,
+    providerBackend: TempFileSystemBackend,
     serverUrl: string,
-    dataDir: string,
-    providerDir: string,
     alice: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-default-'))
-    providerDir = await mkdtemp(path.join(tmpdir(), 'was-test-provider-'))
-    defaultBackend = await FileSystemBackend.open({ dataDir })
-    providerBackend = await FileSystemBackend.open({ dataDir: providerDir })
+    defaultBackend = await openTempBackend({ prefix: 'was-test-default-' })
+    providerBackend = await openTempBackend({ prefix: 'was-test-provider-' })
     // A fake `test-provider` whose adapter is a second filesystem backend over
     // its own dir, so a Resource routed to it lands there, not in the default dir.
     const providers: BackendProviderRegistry = new Map([
@@ -51,8 +45,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
-    await rm(providerDir, { recursive: true, force: true })
+    await providerBackend.close()
   })
 
   function url(relativePath: string): string {
@@ -224,20 +217,22 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
 })
 
 describe('Backend registration allowlist (WAS_ENABLED_BACKENDS)', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string, alice: any
+  let fastify: FastifyInstance,
+    serverUrl: string,
+    backend: TempFileSystemBackend,
+    alice: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-allowlist-'))
+    backend = await openTempBackend({ prefix: 'was-test-allowlist-' })
     // Only `test-provider` may be registered.
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir }),
+      backend,
       enabledBackendProviders: ['test-provider']
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   function backendsUrl(spaceId: string): string {

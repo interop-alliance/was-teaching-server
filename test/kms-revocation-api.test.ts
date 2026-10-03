@@ -8,9 +8,6 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import {
   KmsClient,
@@ -20,11 +17,12 @@ import {
 
 import { ProblemTypes } from '@interop/storage-core'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import { kmsRevocationsPath } from '../src/lib/paths.js'
 import {
   client,
   delegate,
+  openTempBackend,
   requestError,
   rootZcap as makeRootZcap,
   startTestServer,
@@ -33,21 +31,19 @@ import {
 
 describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)', () => {
   let fastify: FastifyInstance,
-    backend: FileSystemBackend,
+    backend: TempFileSystemBackend,
     serverUrl: string,
     keystoresUrl: string,
     keystoreId: string,
     keystoreLocalId: string,
     keystoreAgent: KeystoreAgent,
     kmsClient: KmsClient,
-    dataDir: string,
     alice: any,
     aliceDelegatedApp: any,
     bob: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = await FileSystemBackend.open({ dataDir })
+    backend = await openTempBackend()
     ;({ fastify, serverUrl } = await startTestServer({ backend }))
     keystoresUrl = `${serverUrl}/kms/keystores`
     ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
@@ -68,7 +64,6 @@ describe('WebKMS zcap revocations (/kms/keystores/:keystoreId/zcaps/revocations)
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   // The root capability for a target URL, controlled by Alice (this suite's

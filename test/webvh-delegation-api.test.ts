@@ -15,26 +15,20 @@
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import {
-  createDID,
-  logToJsonlString,
-  signerFromExternalKey
-} from '@interop/did-method-webvh'
+import { createDID, logToJsonlString } from '@interop/did-method-webvh'
 import type { DIDLog, Signer } from '@interop/did-method-webvh'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
   client,
   delegate,
+  openTempBackend,
   requestError,
   startTestServer,
-  zcapClients
+  zcapClients,
+  webvhLogSigner
 } from './helpers.js'
 
 /** A minted, published self-hosted `did:webvh` and its enrolled client key. */
@@ -49,21 +43,18 @@ interface WebvhIdentity {
 describe('did:webvh delegation and chain depth', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
     alice: any,
     aliceDelegatedApp: any,
     bob: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   /**
@@ -77,12 +68,7 @@ describe('did:webvh delegation and chain depth', () => {
    */
   async function mintWebvhDid({ spaceId }: { spaceId: string }) {
     const updateKeyPair = await Ed25519VerificationKey.generate()
-    const updateKeySigner = updateKeyPair.didKeySigner()
-    const logSigner = signerFromExternalKey({
-      publicKeyMultibase: updateKeyPair.publicKeyMultibase!,
-      sign: async ({ data }: { data: Uint8Array }) =>
-        await updateKeySigner.sign({ data })
-    })
+    const logSigner = webvhLogSigner({ keyPair: updateKeyPair })
     const clientKeyPair = await Ed25519VerificationKey.generate()
 
     const created = await createDID({

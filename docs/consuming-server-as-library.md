@@ -16,9 +16,11 @@ section.)
 pnpm add was-teaching-server    # or: npm install was-teaching-server
 ```
 
-The package is ESM-only (`"type": "module"`) and requires Node.js >= 24. Only
-the package root is importable (the `exports` map does not expose deep
-`dist/...` paths).
+The package is ESM-only (`"type": "module"`) and requires Node.js >= 24. Two
+entry points are importable. The package root carries the server. The
+`was-teaching-server/testing` subpath carries test support (see
+[Testing against the server](#testing-against-the-server)). The `exports` map
+does not expose deep `dist/...` paths.
 
 ## What the package exports
 
@@ -33,6 +35,10 @@ the package root is importable (the `exports` map does not expose deep
 | `onboardingTokenAuthorizer`    | Stock `authorizeProvisioning` callback that checks a shared-secret bearer token     |
 | `StorageBackend` (and friends) | The backend contract plus the rest of the domain types                              |
 | `ProblemError` subclasses      | The typed protocol errors (`ResourceNotFoundError`, `PreconditionFailedError`, ...) |
+
+The test support helpers (`startTestServer`, `openTempBackend`,
+`provisionWebvhIdentity`) are exported from `was-teaching-server/testing`, not
+from the root. See [Testing against the server](#testing-against-the-server).
 
 Importing anything from the package also loads its Fastify module augmentation,
 so `FastifyInstance.serverUrl` / `.storage` and `FastifyRequest.zcap` are typed
@@ -83,8 +89,9 @@ Two things to get right:
   _installed package_ (i.e. inside `node_modules`) -- fine for the standalone
   checkout, almost never what a consumer wants. Pass a `dataDir` to move that
   root (the standalone server reads `WAS_DATA_DIR` into it; a library consumer
-  reads its own env), or construct a `FileSystemBackend` with an explicit
-  `dataDir` (plus `capacityBytes` / `maxUploadBytes` caps), or supply your own
+  reads its own env), or open a `FileSystemBackend` with an explicit `dataDir`
+  through `await FileSystemBackend.open({ dataDir })` (plus `capacityBytes` /
+  `maxUploadBytes` caps; the constructor is protected), or supply your own
   `StorageBackend` implementation. An injected `backend` carries its own root,
   so `dataDir` is ignored alongside one.
 
@@ -253,6 +260,152 @@ export class S3Backend implements StorageBackend {
   // ...
 }
 ```
+
+## Testing against the server
+
+A consumer's own tests can boot the real server in-process through the
+`was-teaching-server/testing` entry point. It carries the boot this package's
+own suites use. It imports no test runner, so it works under Vitest,
+`node:test`, or any other runner. It adds nothing to the plugin's options. It is
+test support, not part of a production composition.
+
+| Export                      | What it is                                                                         |
+| --------------------------- | ---------------------------------------------------------------------------------- |
+| `startTestServer`           | Boots `createApp()` on an OS-assigned port; returns `{ fastify, serverUrl, port }` |
+| `openTempBackend`           | Opens a `FileSystemBackend` on a fresh temp dir; its `close()` removes the dir     |
+| `TempFileSystemBackend`     | The type `openTempBackend()` returns (a type-only export)                          |
+| `provisionWebvhIdentity`    | Mints and publishes a self-hosted `did:webvh` with no wallet involved              |
+| `WebvhIdentity`             | The type `provisionWebvhIdentity()` returns                                        |
+| `webvhLogSigner`            | The `did:webvh` history-log signer for a `did:key` key pair                        |
+| `WebvhIdentityPublishError` | Thrown by `provisionWebvhIdentity()` when the log `PUT` is not answered 204        |
+
+`startTestServer()` takes the `createApp()` options except `serverUrl`, plus an
+optional `port` and `logger`. The logger defaults to `false`. The server listens
+on an OS-assigned port, so parallel test workers do not collide. The returned
+`serverUrl` is `http://localhost:<port>`. The host is `localhost` because
+`@interop/webkms-client` relaxes its loopback checks for that host alone.
+
+ZCap `invocationTarget` URLs embed host and port. The port is not known until
+the server listens, so build every client from the returned `serverUrl`, after
+the boot.
+
+When the boot fails, for example on a port already in use, `startTestServer()`
+closes the Fastify instance before it rethrows. A backend the plugin owns is
+closed with it. `openTempBackend()` likewise removes its temp dir when the
+backend fails to open.
+
+```ts
+import assert from 'node:assert'
+import { randomUUID } from 'node:crypto'
+import { afterAll, beforeAll, it } from 'vitest'
+import type { FastifyInstance } from 'fastify'
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
+import { WasClient } from '@interop/was-client'
+import { openTempBackend, startTestServer } from 'was-teaching-server/testing'
+
+let fastify: FastifyInstance
+let serverUrl: string
+let did: string
+let was: WasClient
+
+beforeAll(async () => {
+  const started = await startTestServer({ backend: await openTempBackend() })
+  fastify = started.fastify
+  serverUrl = started.serverUrl
+
+  // Clients come after the boot, from the serverUrl it returned.
+  const keyPair = await Ed25519VerificationKey.generate()
+  did = `did:key:${keyPair.fingerprint()}`
+  was = WasClient.fromSigner({ serverUrl, signer: keyPair.didKeySigner() })
+})
+
+afterAll(async () => {
+  await fastify.close()
+})
+
+it('creates a Space', async () => {
+  const space = was.space(randomUUID())
+  await space.configure({ name: 'Test Space', controller: did })
+  const metadata = await space.describe()
+  assert.equal(metadata?.controller, did)
+})
+```
+
+The examples here use `@interop/was-client` and
+`@interop/ed25519-verification-key`, which a consumer adds as its own dev
+dependencies.
+
+The plugin owns an injected backend by default (`ownsBackend: true`), so
+`fastify.close()` calls the backend's `close()` and removes the temp dir. Call
+`backend.close()` yourself when the server was started with
+`ownsBackend: false`, when the backend never reached a server, or when a refused
+plugin option failed the registration. A repeat call is a no-op.
+
+A test that stops a server and boots a replacement over the same data needs a
+dir that outlives the first server. It opens a plain `FileSystemBackend` over
+its own dir through the async `open()` factory, and pins the replacement to the
+first server's `port`. Ids the first server minted embed its `serverUrl`, so
+they resolve only on the same port. The test removes its dir when it is done.
+
+```ts
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { FileSystemBackend } from 'was-teaching-server'
+import { startTestServer } from 'was-teaching-server/testing'
+
+const dataDir = await mkdtemp(path.join(tmpdir(), 'my-suite-'))
+
+const first = await startTestServer({
+  backend: await FileSystemBackend.open({ dataDir })
+})
+// ... write through clients built from first.serverUrl ...
+await first.fastify.close()
+
+const second = await startTestServer({
+  backend: await FileSystemBackend.open({ dataDir }),
+  port: first.port
+})
+// ... read back what the first server wrote ...
+await second.fastify.close()
+await rm(dataDir, { recursive: true, force: true })
+```
+
+`provisionWebvhIdentity()` sets up a self-hosted `did:webvh` by hand. It creates
+a Space under a `did:key` owner, mints the DID in one of that Space's
+Collections (`id` by default), and publishes its `did.jsonl` log there. It fits
+a test about a server rule in which the identity is setup, not the thing under
+test. The `owner` is a `{ did, was }` pair, where `was` is a `WasClient` signed
+by that `did:key`. The parameter is typed by the members the function calls,
+since this package does not depend on `@interop/was-client`. When a step fails
+after the Space was created, the Space is deleted before the error is rethrown.
+
+```ts
+import { provisionWebvhIdentity } from 'was-teaching-server/testing'
+
+const ownerKey = await Ed25519VerificationKey.generate()
+const owner = {
+  did: `did:key:${ownerKey.fingerprint()}`,
+  was: WasClient.fromSigner({ serverUrl, signer: ownerKey.didKeySigner() })
+}
+const account = await provisionWebvhIdentity({
+  owner,
+  serverUrl,
+  withLadderKey: true
+})
+// account.did resolves on this server. account.clientKeyPair and
+// account.ladderKeyPair are listed in its document.
+```
+
+The document always lists one enrolled-client key under all four signing
+relations. `withLadderKey` adds a key under `assertionMethod` and
+`capabilityDelegation` alone, the ladder verification method shape.
+`withTransientKey` adds one under `capabilityInvocation` and
+`capabilityDelegation` alone, the transient annex verification method shape. The
+returned `ladderKeyPair` and `transientKeyPair` are typed as present when the
+matching flag is the literal `true`. `services` sets the document's service
+entries. The Space stays under the `did:key` owner. Promoting it to the new DID
+is left to the test, since Space creation accepts a `did:key` controller alone.
 
 ## Verifying your composition
 

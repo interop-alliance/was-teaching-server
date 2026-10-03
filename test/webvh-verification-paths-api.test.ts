@@ -12,18 +12,15 @@
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { ProblemTypes } from '@interop/storage-core'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { spaceRevocationsPath } from '../src/lib/paths.js'
 import {
   client,
   delegate,
+  openTempBackend,
   provisionWebvhIdentity,
   requestError,
   rootZcap,
@@ -33,22 +30,16 @@ import {
 } from './helpers.js'
 
 describe('did:webvh on the revocation, consent, and listing paths', () => {
-  let fastify: FastifyInstance,
-    serverUrl: string,
-    dataDir: string,
-    alice: any,
-    bob: any
+  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   describe('revocation on a did:key Space', () => {

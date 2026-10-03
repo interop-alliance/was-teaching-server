@@ -13,18 +13,21 @@
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import { Readable } from 'node:stream'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import {
   QuotaExceededError,
   PayloadTooLargeError,
   ResourceNotFoundError
 } from '../src/errors.js'
-import { importArchive, startTestServer, zcapClients } from './helpers.js'
+import {
+  importArchive,
+  openTempBackend,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 // 512 KiB cap; oversized payloads below exceed it outright (regardless of the
 // small baseline usage from provisioning the Space + Collection).
@@ -32,17 +35,16 @@ const CAPACITY_BYTES = 512 * 1024
 const OVERSIZED = 'x'.repeat(600 * 1024)
 
 describe('Quota enforcement (API)', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string
+  let fastify: FastifyInstance,
+    serverUrl: string,
+    backend: TempFileSystemBackend
   let alice: any, aliceCredentials: any
   const spaceId = `quota-enforce-${crypto.randomUUID()}`
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
+    backend = await openTempBackend({ capacityBytes: CAPACITY_BYTES })
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({
-        dataDir,
-        capacityBytes: CAPACITY_BYTES
-      })
+      backend
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
@@ -59,7 +61,6 @@ describe('Quota enforcement (API)', () => {
 
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('accepts a write that fits under the quota', async () => {
@@ -105,8 +106,7 @@ describe('Quota enforcement (API)', () => {
 })
 
 describe('Quota enforcement (backend)', () => {
-  let dataDir: string
-  let backend: FileSystemBackend
+  let backend: TempFileSystemBackend
   const spaceId = `quota-backend-${crypto.randomUUID()}`
   const collectionId = 'credentials'
   // Small enough that a ~300 KB resource overflows it, large enough that
@@ -114,8 +114,7 @@ describe('Quota enforcement (backend)', () => {
   const capacityBytes = 200_000
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = await FileSystemBackend.open({ dataDir, capacityBytes })
+    backend = await openTempBackend({ capacityBytes })
     await backend.writeSpace({
       spaceId,
       spaceMetadata: {
@@ -136,7 +135,7 @@ describe('Quota enforcement (backend)', () => {
   })
 
   afterAll(async () => {
-    await rm(dataDir, { recursive: true, force: true })
+    await backend.close()
   })
 
   it('writes a small blob that fits', async () => {
@@ -186,15 +185,11 @@ describe('Quota enforcement (backend)', () => {
     // write reserved zero bytes and nothing credited what it wrote. Every write
     // inside the usage-cache TTL was then admitted against the same stale
     // snapshot, and the Space sailed past `capacityBytes`.
-    const streamedDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     // The bodies are sized well over half the capacity, so the second is
     // refused with room to spare: `du` measures allocated blocks, so the
     // Space's baseline (its dirs and description files) costs a few filesystem
     // blocks, and how many depends on the filesystem the temp dir lives on.
-    const streamedBackend = await FileSystemBackend.open({
-      dataDir: streamedDir,
-      capacityBytes: 200_000
-    })
+    const streamedBackend = await openTempBackend({ capacityBytes: 200_000 })
     const streamedSpace = `quota-streamed-${crypto.randomUUID()}`
     try {
       await streamedBackend.writeSpace({
@@ -249,7 +244,7 @@ describe('Quota enforcement (backend)', () => {
         (err: unknown) => err instanceof ResourceNotFoundError
       )
     } finally {
-      await rm(streamedDir, { recursive: true, force: true })
+      await streamedBackend.close()
     }
   })
 
@@ -258,12 +253,10 @@ describe('Quota enforcement (backend)', () => {
     // re-import of an unchanged archive -- every body skipped -- left the whole
     // archive size sitting in the usage snapshot, refusing unrelated writes
     // with 507 until the TTL expired.
-    const sourceDir = await mkdtemp(path.join(tmpdir(), 'was-test-src-'))
-    const targetDir = await mkdtemp(path.join(tmpdir(), 'was-test-dst-'))
-    const sourceBackend = await FileSystemBackend.open({ dataDir: sourceDir })
+    const sourceBackend = await openTempBackend({ prefix: 'was-test-src-' })
     // Capacity fits the archive once, but not the archive twice over.
-    const targetBackend = await FileSystemBackend.open({
-      dataDir: targetDir,
+    const targetBackend = await openTempBackend({
+      prefix: 'was-test-dst-',
       capacityBytes: 120_000
     })
     const importSpaceId = `quota-import-${crypto.randomUUID()}`
@@ -326,16 +319,15 @@ describe('Quota enforcement (backend)', () => {
         }
       })
     } finally {
-      await rm(sourceDir, { recursive: true, force: true })
-      await rm(targetDir, { recursive: true, force: true })
+      await sourceBackend.close()
+      await targetBackend.close()
     }
   })
 
   it('importSpace rejects a bulk import that exceeds the quota', async () => {
     // Stage an export from an unlimited backend that holds a ~300 KB resource,
     // then import it into a backend whose capacity cannot hold it.
-    const sourceDir = await mkdtemp(path.join(tmpdir(), 'was-test-src-'))
-    const source = await FileSystemBackend.open({ dataDir: sourceDir })
+    const source = await openTempBackend({ prefix: 'was-test-src-' })
     await source.writeSpace({
       spaceId,
       spaceMetadata: {
@@ -364,9 +356,8 @@ describe('Quota enforcement (backend)', () => {
       }
     })
 
-    const smallDir = await mkdtemp(path.join(tmpdir(), 'was-test-dst-'))
-    const small = await FileSystemBackend.open({
-      dataDir: smallDir,
+    const small = await openTempBackend({
+      prefix: 'was-test-dst-',
       capacityBytes: 100_000
     })
 
@@ -379,8 +370,8 @@ describe('Quota enforcement (backend)', () => {
       (err: unknown) => err instanceof QuotaExceededError
     )
 
-    await rm(sourceDir, { recursive: true, force: true })
-    await rm(smallDir, { recursive: true, force: true })
+    await source.close()
+    await small.close()
   })
 })
 
@@ -389,18 +380,17 @@ describe('Quota enforcement (backend)', () => {
 const MAX_UPLOAD_BYTES = 64 * 1024
 
 describe('Upload cap (maxUploadBytes) (API)', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string
+  let fastify: FastifyInstance,
+    serverUrl: string,
+    backend: TempFileSystemBackend
   let alice: any, aliceCredentials: any
   const spaceId = `upload-cap-${crypto.randomUUID()}`
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
+    backend = await openTempBackend({ maxUploadBytes: MAX_UPLOAD_BYTES })
     // A per-upload cap but no cumulative Space quota: isolates 413 from 507.
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({
-        dataDir,
-        maxUploadBytes: MAX_UPLOAD_BYTES
-      })
+      backend
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
@@ -417,7 +407,6 @@ describe('Upload cap (maxUploadBytes) (API)', () => {
 
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('accepts an upload under the cap', async () => {
@@ -473,17 +462,12 @@ describe('Upload cap (maxUploadBytes) (API)', () => {
 })
 
 describe('Upload cap (maxUploadBytes) (backend)', () => {
-  let dataDir: string
-  let backend: FileSystemBackend
+  let backend: TempFileSystemBackend
   const spaceId = `upload-cap-backend-${crypto.randomUUID()}`
   const collectionId = 'credentials'
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = await FileSystemBackend.open({
-      dataDir,
-      maxUploadBytes: MAX_UPLOAD_BYTES
-    })
+    backend = await openTempBackend({ maxUploadBytes: MAX_UPLOAD_BYTES })
     await backend.writeSpace({
       spaceId,
       spaceMetadata: {
@@ -504,7 +488,7 @@ describe('Upload cap (maxUploadBytes) (backend)', () => {
   })
 
   afterAll(async () => {
-    await rm(dataDir, { recursive: true, force: true })
+    await backend.close()
   })
 
   it('the streaming guard rejects an undeclared oversized blob and cleans up', async () => {

@@ -10,18 +10,18 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Readable } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
 
 import type { Space, Collection } from '@interop/was-client'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import {
   assertEtagVersion,
   etagGeneration,
+  openTempBackend,
   responseOf,
   startTestServer,
   zcapClients
@@ -41,7 +41,7 @@ async function statusOf(promise: Promise<{ status: number }>): Promise<number> {
 describe('Chunk API (chunked-streams)', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
+    backend: TempFileSystemBackend,
     alice: any,
     aliceSpace: Space,
     dataCollection: Collection
@@ -57,10 +57,8 @@ describe('Chunk API (chunked-streams)', () => {
     `${serverUrl}/space/${spaceId}/data/${resourceId}`
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-chunks-'))
-    ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
-    }))
+    backend = await openTempBackend({ prefix: 'was-chunks-' })
+    ;({ fastify, serverUrl } = await startTestServer({ backend }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
     aliceSpace = await alice.was.createSpace({
@@ -76,7 +74,6 @@ describe('Chunk API (chunked-streams)', () => {
 
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   describe('conditional chunk reads (If-None-Match / 304)', () => {
@@ -124,7 +121,7 @@ describe('Chunk API (chunked-streams)', () => {
       // The parent gate runs before the validator is consulted: an orphan
       // chunk reveals nothing through a 304 either.
       const chunkDir = path.join(
-        dataDir,
+        backend.dataDir,
         'spaces',
         spaceId,
         'data',
@@ -392,7 +389,7 @@ describe('Chunk API (chunked-streams)', () => {
       // that does not exist. The member handlers must gate on the parent, like
       // the listing does, instead of serving the orphan's bytes.
       const chunkDir = path.join(
-        dataDir,
+        backend.dataDir,
         'spaces',
         spaceId,
         'data',
@@ -424,7 +421,7 @@ describe('Chunk API (chunked-streams)', () => {
       // descriptor by the time the parent gate 404s. Every stream the gate
       // discards must be destroyed, or each probe leaks one descriptor.
       const chunkDir = path.join(
-        dataDir,
+        backend.dataDir,
         'spaces',
         spaceId,
         'data',
@@ -591,7 +588,7 @@ describe('Chunk API (chunked-streams)', () => {
       }
 
       const chunkDir = path.join(
-        dataDir,
+        backend.dataDir,
         'spaces',
         spaceId,
         'data',
@@ -842,20 +839,16 @@ describe('Chunk API (chunked-streams)', () => {
   })
 
   describe('per-upload cap (413)', () => {
-    let capFastify: FastifyInstance,
-      capServerUrl: string,
-      capDataDir: string,
-      capAlice: any
+    let capFastify: FastifyInstance, capServerUrl: string, capAlice: any
 
     const capSpaceId = '94f03216-5ab4-4723-853c-cf837c171323'
     const maxUploadBytes = 1024
 
     beforeAll(async () => {
-      capDataDir = await mkdtemp(path.join(tmpdir(), 'was-chunks-cap-'))
       ;({ fastify: capFastify, serverUrl: capServerUrl } =
         await startTestServer({
-          backend: await FileSystemBackend.open({
-            dataDir: capDataDir,
+          backend: await openTempBackend({
+            prefix: 'was-chunks-cap-',
             maxUploadBytes
           })
         }))
@@ -871,7 +864,6 @@ describe('Chunk API (chunked-streams)', () => {
 
     afterAll(async () => {
       await capFastify.close()
-      await rm(capDataDir, { recursive: true, force: true })
     })
 
     it('[signed] a chunk over maxUploadBytes is rejected with 413', async () => {

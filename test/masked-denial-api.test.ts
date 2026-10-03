@@ -14,16 +14,12 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { KmsClient } from '@interop/webkms-client'
 import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 /** One probed response, reduced to what the comparison reads. */
 interface Probe {
@@ -35,7 +31,6 @@ interface Probe {
 describe('Masked denials are indistinguishable', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
     alice: any,
     keystoreId: string
   const spaceId = `masked-space-${crypto.randomUUID()}`
@@ -47,9 +42,8 @@ describe('Masked denials are indistinguishable', () => {
   let rogueSigner: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
@@ -80,7 +74,6 @@ describe('Masked denials are indistinguishable', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   /**

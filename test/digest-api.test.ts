@@ -12,14 +12,11 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
   digestHeaderFor,
+  openTempBackend,
   placeholderAuthHeader,
   rootInvocation,
   startTestServer,
@@ -27,14 +24,13 @@ import {
 } from './helpers.js'
 
 describe('Request Body Integrity (Digest header)', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string, alice: any
+  let fastify: FastifyInstance, serverUrl: string, alice: any
   const spaceId = `digest-space-${crypto.randomUUID()}`
   const collectionId = 'credentials'
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
@@ -50,7 +46,6 @@ describe('Request Body Integrity (Digest header)', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('a correctly signed write (valid Digest) succeeds', async () => {

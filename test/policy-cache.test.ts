@@ -8,29 +8,23 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import type { Space } from '@interop/was-client'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 describe('Access-control policy cache', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string, alice: any
+  let fastify: FastifyInstance, serverUrl: string, alice: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('a policy PUT is visible on the next anonymous read (no TTL wait)', async () => {

@@ -5,22 +5,22 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm, readdir } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { readdir } from 'node:fs/promises'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
+import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 describe('Request validation API', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string, alice: any
+  let fastify: FastifyInstance,
+    serverUrl: string,
+    backend: TempFileSystemBackend,
+    alice: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
-    }))
+    backend = await openTempBackend()
+    ;({ fastify, serverUrl } = await startTestServer({ backend }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
     // Provision a Space for the body/traversal tests to operate against.
@@ -32,7 +32,6 @@ describe('Request validation API', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   describe('Path traversal', () => {
@@ -63,9 +62,9 @@ describe('Request validation API', () => {
 
       // Defense in depth: nothing was written outside the spaces/ root (the
       // store.json layout stamp is the backend's own).
-      const dataEntries = await readdir(dataDir)
+      const dataEntries = await readdir(backend.dataDir)
       assert.deepStrictEqual(dataEntries.sort(), ['spaces', 'store.json'])
-      const parentEntries = await readdir(path.dirname(dataDir))
+      const parentEntries = await readdir(path.dirname(backend.dataDir))
       assert.ok(
         !parentEntries.includes('pwned'),
         'a traversal id must not write outside the data dir'

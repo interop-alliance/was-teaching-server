@@ -8,31 +8,29 @@
  * container. (The write-method redirects run the same shared helpers, but sit
  * behind the auth hooks, so they 401 without signed headers.)
  */
-import { afterAll, beforeAll, describe, it, expect } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
+import { afterAll, describe, it, expect } from 'vitest'
 import { createApp } from '../src/server.js'
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { FastifyInstance } from 'fastify'
+import { openTempBackend } from './helpers.js'
 
 describe('Canonicalization redirects', () => {
-  // A private data dir, so the suite never reads the repo's data/ directory.
-  let dataDir: string
-  beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-redirects-'))
-  })
+  // Every app the suite creates, closed in afterAll so each app's private temp
+  // data dir is removed (the plugin owns its backend).
+  const apps: FastifyInstance[] = []
   afterAll(async () => {
-    await rm(dataDir, { recursive: true, force: true })
+    await Promise.all(apps.splice(0).map(app => app.close()))
   })
 
   /**
-   * A fresh app over the suite's private data dir.
+   * A fresh app over a private temp data dir.
    */
   async function testApp() {
-    return createApp({
+    const app = await createApp({
       serverUrl: 'http://localhost',
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend({ prefix: 'was-redirects-' })
     })
+    apps.push(app)
+    return app
   }
 
   it('adds the trailing slash on GET /spaces (308)', async () => {

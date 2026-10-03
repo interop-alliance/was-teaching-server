@@ -9,31 +9,26 @@
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import { randomBytes } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
-import {
-  createDID,
-  logToJsonlString,
-  signerFromExternalKey
-} from '@interop/did-method-webvh'
+import { createDID, logToJsonlString } from '@interop/did-method-webvh'
 import { readSpaceArchive } from '@interop/space-archive'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import { createServerSigningKey } from '../src/lib/serverIdentity.js'
 import {
+  openTempBackend,
   startTestServer,
   verifyProvenanceOffline,
   wasClient,
-  zcapClients
+  zcapClients,
+  webvhLogSigner
 } from './helpers.js'
 
 describe('Export provenance (wire level)', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
+    backend: TempFileSystemBackend,
     alice: any,
     admin: any,
     adminKeyPair: Ed25519VerificationKey
@@ -57,10 +52,10 @@ describe('Export provenance (wire level)', () => {
   }
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-export-provenance-'))
+    backend = await openTempBackend({ prefix: 'was-export-provenance-' })
     adminKeyPair = await Ed25519VerificationKey.generate()
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir }),
+      backend,
       serverKeySeed: seed,
       adminDid: `did:key:${adminKeyPair.publicKeyMultibase}`,
       logger: {
@@ -89,7 +84,6 @@ describe('Export provenance (wire level)', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('carries neither entry and logs one warn line while the server has no identity', async () => {
@@ -106,14 +100,9 @@ describe('Export provenance (wire level)', () => {
 
   it('signs every object and embeds the served log once the admin publishes one', async () => {
     const signingKey = await createServerSigningKey({ seed })
-    const adminSigner = adminKeyPair.didKeySigner()
     const { did, log } = await createDID({
       address: `${serverUrl}/space/server/id`,
-      signer: signerFromExternalKey({
-        publicKeyMultibase: adminKeyPair.publicKeyMultibase!,
-        sign: async ({ data }: { data: Uint8Array }) =>
-          await adminSigner.sign({ data })
-      }),
+      signer: webvhLogSigner({ keyPair: adminKeyPair }),
       updateKeys: [adminKeyPair.publicKeyMultibase!],
       vmIdFragment: 'multibase',
       portable: true,

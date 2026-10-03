@@ -33,19 +33,17 @@ import {
 import assert from 'node:assert'
 import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 
 import {
   createDID,
   logToJsonlString,
-  signerFromExternalKey,
   updateDID
 } from '@interop/did-method-webvh'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
+import { openTempBackend, webvhLogSigner } from './helpers.js'
 import {
   WEBVH_DOCUMENT_CACHE_TTL,
   WEBVH_DOCUMENT_REVERIFY_AGE
@@ -119,12 +117,7 @@ async function publishDid({
   collectionId: string
 }): Promise<{ did: string; jsonl: string }> {
   const updateKeyPair = await Ed25519VerificationKey.generate()
-  const updateKeySigner = updateKeyPair.didKeySigner()
-  const logSigner = signerFromExternalKey({
-    publicKeyMultibase: updateKeyPair.publicKeyMultibase!,
-    sign: async ({ data }: { data: Uint8Array }) =>
-      await updateKeySigner.sign({ data })
-  })
+  const logSigner = webvhLogSigner({ keyPair: updateKeyPair })
   const clientKeyPair = await Ed25519VerificationKey.generate()
   const created = await createDID({
     address: `${serverUrl}/space/${spaceId}/${collectionId}`,
@@ -160,11 +153,10 @@ async function publishDid({
 }
 
 describe('did:webvh resolution cache invalidation', () => {
-  let dataDir: string, storage: FileSystemBackend, spaceId: string
+  let storage: TempFileSystemBackend, spaceId: string
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    storage = await FileSystemBackend.open({ dataDir })
+    storage = await openTempBackend()
     spaceId = randomUUID()
     await storage.writeSpace({
       spaceId,
@@ -176,7 +168,7 @@ describe('did:webvh resolution cache invalidation', () => {
     })
   })
   afterAll(async () => {
-    await rm(dataDir, { recursive: true, force: true })
+    await storage.close()
   })
 
   /**
@@ -304,12 +296,11 @@ describe('did:webvh resolution cache invalidation', () => {
 })
 
 describe('did:webvh resolution cache revalidation past the TTL', () => {
-  let dataDir: string, storage: FileSystemBackend, spaceId: string
+  let storage: TempFileSystemBackend, spaceId: string
   let published: { did: string; jsonl: string; collectionId: string }
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    storage = await FileSystemBackend.open({ dataDir })
+    storage = await openTempBackend()
     spaceId = randomUUID()
     await storage.writeSpace({
       spaceId,
@@ -329,7 +320,7 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
     }
   })
   afterAll(async () => {
-    await rm(dataDir, { recursive: true, force: true })
+    await storage.close()
   })
 
   // Fake timers are scoped to this describe block only, restored after every
@@ -534,12 +525,11 @@ describe('did:webvh log head continuity', () => {
   // verification alone would accept a truncated log. The resolver records the
   // head it last verified and refuses a log that does not extend it.
   const collectionId = 'id'
-  let dataDir: string, storage: FileSystemBackend, spaceId: string
+  let storage: TempFileSystemBackend, spaceId: string
   let did: string, firstJsonl: string, secondJsonl: string
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    storage = await FileSystemBackend.open({ dataDir })
+    storage = await openTempBackend()
     spaceId = randomUUID()
     await storage.writeSpace({
       spaceId,
@@ -559,12 +549,7 @@ describe('did:webvh log head continuity', () => {
       }
     })
     const updateKeyPair = await Ed25519VerificationKey.generate()
-    const updateKeySigner = updateKeyPair.didKeySigner()
-    const logSigner = signerFromExternalKey({
-      publicKeyMultibase: updateKeyPair.publicKeyMultibase!,
-      sign: async ({ data }: { data: Uint8Array }) =>
-        await updateKeySigner.sign({ data })
-    })
+    const logSigner = webvhLogSigner({ keyPair: updateKeyPair })
     const [firstKey, secondKey] = await Promise.all([
       Ed25519VerificationKey.generate(),
       Ed25519VerificationKey.generate()
@@ -599,7 +584,7 @@ describe('did:webvh log head continuity', () => {
     secondJsonl = logToJsonlString(updated.log)
   })
   afterAll(async () => {
-    await rm(dataDir, { recursive: true, force: true })
+    await storage.close()
   })
 
   /**

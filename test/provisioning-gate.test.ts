@@ -10,15 +10,12 @@
  */
 import { it, describe, afterEach } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import type { AuthorizeProvisioning } from '../src/types.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 describe('Provisioning gate', () => {
   let alice: any
@@ -50,8 +47,7 @@ describe('Provisioning gate', () => {
     onboardingToken?: string
     authorizeProvisioning?: AuthorizeProvisioning
   } = {}): Promise<{ fastify: FastifyInstance; backend: FileSystemBackend }> {
-    const dataDir = await mkdtemp(path.join(tmpdir(), 'was-provisioning-'))
-    const backend = await FileSystemBackend.open({ dataDir })
+    const backend = await openTempBackend({ prefix: 'was-provisioning-' })
     const started = await startTestServer({
       backend,
       ...(onboardingToken !== undefined && { onboardingToken }),
@@ -62,7 +58,6 @@ describe('Provisioning gate', () => {
     ;({ alice } = await zcapClients({ serverUrl }))
     cleanups.push(async () => {
       await fastify.close()
-      await rm(dataDir, { recursive: true, force: true })
     })
     return { fastify, backend }
   }
@@ -488,12 +483,12 @@ describe('Provisioning gate', () => {
   })
 
   it('rejects on ready() when both onboardingToken and authorizeProvisioning are set', async () => {
-    const dataDir = await mkdtemp(path.join(tmpdir(), 'was-provisioning-'))
+    const backend = await openTempBackend({ prefix: 'was-provisioning-' })
     // Never listens -- the rejection happens at `ready()` -- so any valid base
     // URL will do, and this test stays independent of the boots above.
     const fastify = createApp({
       serverUrl: 'http://localhost',
-      backend: await FileSystemBackend.open({ dataDir }),
+      backend,
       onboardingToken: TOKEN,
       authorizeProvisioning: async () => 'grant' as const
     })
@@ -503,15 +498,17 @@ describe('Provisioning gate', () => {
       }, /authorizeProvisioning and onboardingToken are mutually exclusive/)
     } finally {
       await fastify.close()
-      await rm(dataDir, { recursive: true, force: true })
+      // A refused option fails registration before the plugin wires the
+      // backend's close.
+      await backend.close()
     }
   })
 
   it('rejects on ready() when onboardingToken is empty', async () => {
-    const dataDir = await mkdtemp(path.join(tmpdir(), 'was-provisioning-'))
+    const backend = await openTempBackend({ prefix: 'was-provisioning-' })
     const fastify = createApp({
       serverUrl: 'http://localhost',
-      backend: await FileSystemBackend.open({ dataDir }),
+      backend,
       onboardingToken: '  '
     })
     try {
@@ -520,7 +517,9 @@ describe('Provisioning gate', () => {
       }, /onboardingToken must not be empty/)
     } finally {
       await fastify.close()
-      await rm(dataDir, { recursive: true, force: true })
+      // A refused option fails registration before the plugin wires the
+      // backend's close.
+      await backend.close()
     }
   })
 

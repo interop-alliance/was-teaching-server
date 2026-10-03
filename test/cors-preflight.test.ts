@@ -4,30 +4,23 @@
  * custom headers and so preflight nearly every call) can cache the answer
  * rather than re-asking every few seconds.
  */
-import os from 'node:os'
-import path from 'node:path'
-import { mkdtemp, rm } from 'node:fs/promises'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { CORS_PREFLIGHT_MAX_AGE } from '../src/config.default.js'
-import { startTestServer } from './helpers.js'
+import { openTempBackend, startTestServer } from './helpers.js'
 
 describe('CORS preflight', () => {
   let fastify: FastifyInstance
   let serverUrl: string
-  let dataDir: string
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(os.tmpdir(), 'was-cors-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend({ prefix: 'was-cors-' })
     }))
   })
 
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('answers a preflight with a cacheable Access-Control-Max-Age', async () => {

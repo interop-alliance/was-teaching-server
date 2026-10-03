@@ -7,21 +7,21 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import type { Space, Collection } from '@interop/was-client'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { HOSTED_PAGE_SANDBOX_CSP } from '../src/lib/hostedPageSandbox.js'
-import { responseOf, startTestServer, zcapClients } from './helpers.js'
+import {
+  openTempBackend,
+  responseOf,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('Hosted-page sandbox', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
     alice: any,
     aliceSpace: Space,
     pages: Collection
@@ -45,9 +45,8 @@ describe('Hosted-page sandbox', () => {
   }
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-sandbox-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend({ prefix: 'was-sandbox-' })
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
@@ -87,7 +86,6 @@ describe('Hosted-page sandbox', () => {
 
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('the policy is a sandbox that keeps the origin and popups opaque', () => {

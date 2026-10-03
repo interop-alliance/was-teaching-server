@@ -16,12 +16,8 @@
 import { it, describe, expect } from 'vitest'
 import assert from 'node:assert'
 import crypto from 'node:crypto'
-import os from 'node:os'
-import path from 'node:path'
-import { mkdtemp, rm } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import pg from 'pg'
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { PostgresBackend } from '../src/backends/postgres.js'
 import { StoreVersionError } from '../src/errors.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
@@ -29,7 +25,7 @@ import {
   describeStorageBackendContract,
   type BackendHarness
 } from './storage-backend-contract.js'
-import { importArchive } from './helpers.js'
+import { importArchive, openTempBackend } from './helpers.js'
 
 const connectionString = process.env.WAS_TEST_DATABASE_URL
 
@@ -82,12 +78,12 @@ if (!connectionString) {
     async function makeFilesystemHarness(): Promise<
       BackendHarness & { dataDir: string }
     > {
-      const dataDir = await mkdtemp(path.join(os.tmpdir(), 'was-contract-xfs-'))
+      const backend = await openTempBackend({ prefix: 'was-contract-xfs-' })
       return {
-        backend: await FileSystemBackend.open({ dataDir }),
-        dataDir,
+        backend,
+        dataDir: backend.dataDir,
         async cleanup() {
-          await rm(dataDir, { recursive: true, force: true })
+          await backend.close()
         }
       }
     }

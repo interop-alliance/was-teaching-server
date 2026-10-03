@@ -12,20 +12,20 @@
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { Collection, Space } from '@interop/was-client'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { delegate, startTestServer, zcapClients } from './helpers.js'
+import {
+  delegate,
+  openTempBackend,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('Space-rooted session capabilities', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
     alice: any,
     aliceDelegatedApp: any,
     bob: any
@@ -41,9 +41,8 @@ describe('Space-rooted session capabilities', () => {
   let collectionWriteCap: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
 
@@ -83,7 +82,6 @@ describe('Space-rooted session capabilities', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   describe('space-scoped read capability', () => {

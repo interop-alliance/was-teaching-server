@@ -22,18 +22,15 @@ import assert from 'node:assert'
 import http from 'node:http'
 import { Readable } from 'node:stream'
 import { once } from 'node:events'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { DEFAULT_MAX_UPLOAD_BYTES } from '../src/config.default.js'
 import { bufferedBodyLimit } from '../src/lib/bodyLimit.js'
 import { guardWebvhLogWrite } from '../src/lib/webvhLogWrite.js'
 import { handleError } from '../src/errors.js'
 import {
   digestHeaderFor,
+  openTempBackend,
   placeholderAuthHeader,
   rootInvocation,
   startTestServer,
@@ -134,18 +131,14 @@ async function sendChunked({
 }
 
 describe('Buffered body limit', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string
+  let fastify: FastifyInstance, serverUrl: string
   let alice: any
   const spaceId = `body-limit-${crypto.randomUUID()}`
   const collectionId = 'credentials'
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({
-        dataDir,
-        maxUploadBytes: MAX_UPLOAD_BYTES
-      })
+      backend: await openTempBackend({ maxUploadBytes: MAX_UPLOAD_BYTES })
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
@@ -159,7 +152,6 @@ describe('Buffered body limit', () => {
 
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('refuses a chunked over-limit JSON body with 413, unread', async () => {
@@ -248,15 +240,14 @@ describe('Buffered body limit', () => {
 })
 
 describe('Buffered body limit (did.jsonl append)', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string
+  let fastify: FastifyInstance, serverUrl: string
   let alice: any
   const spaceId = `body-limit-log-${crypto.randomUUID()}`
   const collectionId = 'identity'
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
     const space = await alice.was.createSpace({
@@ -279,7 +270,6 @@ describe('Buffered body limit (did.jsonl append)', () => {
 
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('reads a streamed append under the route limit, not unbounded', async () => {
@@ -315,16 +305,15 @@ describe('Buffered body limit (did.jsonl append)', () => {
 })
 
 describe('Buffered body limit (default cap)', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string
+  let fastify: FastifyInstance, serverUrl: string
   let alice: any, aliceCredentials: any
   const spaceId = `body-limit-default-${crypto.randomUUID()}`
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     // No `maxUploadBytes`: the backend applies its default-on 64 MiB cap, and
     // the buffered-body limit follows it rather than Fastify's 1 MiB default.
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
@@ -341,7 +330,6 @@ describe('Buffered body limit (default cap)', () => {
 
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('accepts a 2 MiB JSON Resource write', async () => {
@@ -367,12 +355,9 @@ describe('Buffered body limit (derivation)', () => {
   })
 
   it('an unlimited backend cap still bounds a buffered body', async () => {
-    const dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
+    const backend = await openTempBackend({ maxUploadBytes: Infinity })
     const { fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({
-        dataDir,
-        maxUploadBytes: Infinity
-      })
+      backend
     })
     try {
       assert.equal(fastify.storage.maxUploadBytes, undefined)
@@ -404,7 +389,6 @@ describe('Buffered body limit (derivation)', () => {
       )
     } finally {
       await fastify.close()
-      await rm(dataDir, { recursive: true, force: true })
     }
   })
 })

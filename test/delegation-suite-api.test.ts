@@ -18,9 +18,6 @@
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { ZcapClient } from '@interop/ezcap'
@@ -28,11 +25,11 @@ import { Ed25519Signature2020 } from '@interop/ed25519-signature'
 import { securityLoader } from '@interop/security-document-loader'
 import type { ISigner } from '@interop/data-integrity-core'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { spaceRevocationsPath } from '../src/lib/paths.js'
 import {
   anHourFromNow,
   client as jcsClient,
+  openTempBackend,
   requestError,
   rootZcap as makeRootZcap,
   startTestServer,
@@ -42,7 +39,6 @@ import {
 describe('Delegation-proof cryptosuites', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
     alice: any,
     aliceDelegatedApp: any,
     bob: any
@@ -104,9 +100,8 @@ describe('Delegation-proof cryptosuites', () => {
   }
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
 
@@ -125,7 +120,6 @@ describe('Delegation-proof cryptosuites', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   describe('a single-link chain', () => {

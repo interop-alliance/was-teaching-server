@@ -5,22 +5,17 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 describe('Count quota (Spaces per controller)', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string, alice: any
+  let fastify: FastifyInstance, serverUrl: string, alice: any
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-count-quota-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({
-        dataDir,
+      backend: await openTempBackend({
+        prefix: 'was-count-quota-',
         maxSpacesPerController: 1
       })
     }))
@@ -28,7 +23,6 @@ describe('Count quota (Spaces per controller)', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('accepts the first Space then rejects a second by the same controller with 507', async () => {

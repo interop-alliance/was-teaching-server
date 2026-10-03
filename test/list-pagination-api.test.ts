@@ -10,15 +10,12 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import type { Space } from '@interop/was-client'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import {
+  openTempBackend,
   signedGet as sharedSignedGet,
   startTestServer,
   zcapClients
@@ -27,7 +24,6 @@ import {
 describe('List Collections pagination', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
     alice: any,
     bob: any,
     aliceSpace: Space
@@ -37,9 +33,8 @@ describe('List Collections pagination', () => {
     sharedSignedGet({ identity: alice, serverUrl, url })
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
 
@@ -51,7 +46,6 @@ describe('List Collections pagination', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   /**
@@ -212,11 +206,7 @@ describe('List Collections pagination', () => {
 })
 
 describe('List Spaces pagination', () => {
-  let fastify: FastifyInstance,
-    serverUrl: string,
-    dataDir: string,
-    alice: any,
-    bob: any
+  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
 
   /** GETs an absolute or server-relative URL with the given identity's cap. */
   const signedGet = (identity: any, url: string): Promise<any> =>
@@ -228,9 +218,8 @@ describe('List Spaces pagination', () => {
   const bobIds = ['sp-1-bob', 'sp-3-bob', 'sp-5-bob']
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
 
@@ -243,7 +232,6 @@ describe('List Spaces pagination', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('a complete unpaginated listing includes totalItems and only the caller own Spaces', async () => {

@@ -16,13 +16,9 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
-import { startTestServer, zcapClients } from './helpers.js'
+import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
 
 const JSON_TYPE = 'application/json'
 /** A minimal structurally-valid flattened JWE-JSON envelope (the inner `jwe`). */
@@ -31,19 +27,14 @@ const jwe = { protected: 'eyJhbGciOiJkaXI', ciphertext: 'c1phertext' }
 const envelope = { id: 'z1', sequence: 0, indexed: [], jwe }
 
 describe('Encryption enforcement API', () => {
-  let fastify: FastifyInstance,
-    serverUrl: string,
-    dataDir: string,
-    alice: any,
-    bob: any
+  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
   const spaceId = `enc-enforce-space-${crypto.randomUUID()}`
   const edvCollection = 'vault'
   const plainCollection = 'plain'
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
 
@@ -66,7 +57,6 @@ describe('Encryption enforcement API', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   /** PUTs a raw body with an explicit content type to a Resource by id. */

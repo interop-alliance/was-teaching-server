@@ -3,15 +3,10 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
-import type { AddressInfo } from 'node:net'
 import type { FastifyInstance } from 'fastify'
 
-import { createApp } from '../src/server.js'
-import { FileSystemBackend } from '../src/backends/filesystem.js'
+import { openTempBackend, startTestServer } from './helpers.js'
 
 // The health report's `version` is the package.json version the server was
 // built from (src/config.default.ts reads it at startup); pin the served value
@@ -21,21 +16,15 @@ const { version: packageVersion } = JSON.parse(
 ) as { version: string }
 
 describe('Server', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string
+  let fastify: FastifyInstance, serverUrl: string
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    fastify = createApp({
-      serverUrl: 'http://localhost',
-      backend: await FileSystemBackend.open({ dataDir })
-    })
-    await fastify.listen()
-    serverUrl =
-      'http://localhost:' + (fastify.server.address() as AddressInfo).port
+    ;({ fastify, serverUrl } = await startTestServer({
+      backend: await openTempBackend()
+    }))
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('should GET /', async () => {

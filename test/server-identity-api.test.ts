@@ -19,22 +19,24 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import {
   createDID,
   logToJsonlString,
-  signerFromExternalKey,
   updateDID
 } from '@interop/did-method-webvh'
 import type { DIDLog } from '@interop/did-method-webvh'
 
 import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 import {
   createServerSigningKey,
   signingKeyRelationshipProblem
 } from '../src/lib/serverIdentity.js'
 import {
+  openTempBackend,
   requestError,
   startTestServer,
   wasClient,
-  zcapClients
+  zcapClients,
+  webvhLogSigner
 } from './helpers.js'
 
 /**
@@ -49,10 +51,7 @@ async function adminIdentity({
   serverUrl: string
 }) {
   const signer = keyPair.didKeySigner()
-  const logSigner = signerFromExternalKey({
-    publicKeyMultibase: keyPair.publicKeyMultibase!,
-    sign: async ({ data }: { data: Uint8Array }) => await signer.sign({ data })
-  })
+  const logSigner = webvhLogSigner({ keyPair })
   return {
     did: `did:key:${keyPair.publicKeyMultibase}`,
     keyPair,
@@ -64,7 +63,7 @@ async function adminIdentity({
 describe('Server identity', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
-    dataDir: string,
+    backend: TempFileSystemBackend,
     admin: Awaited<ReturnType<typeof adminIdentity>>,
     alice: any,
     seed: Uint8Array,
@@ -90,13 +89,13 @@ describe('Server identity', () => {
   }
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-server-identity-'))
+    backend = await openTempBackend({ prefix: 'was-server-identity-' })
     seed = randomBytes(32)
     // The admin key must exist before the server boots, since its DID is a
     // boot option, while the client needs the assigned `serverUrl`.
     const adminKeyPair = await Ed25519VerificationKey.generate()
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir }),
+      backend,
       serverKeySeed: seed,
       adminDid: `did:key:${adminKeyPair.publicKeyMultibase}`
     }))
@@ -108,7 +107,6 @@ describe('Server identity', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   describe('the `server` Space', () => {
@@ -389,17 +387,18 @@ describe('signingKeyRelationshipProblem', () => {
 })
 
 describe('Server identity without a seed', () => {
-  let fastify: FastifyInstance, serverUrl: string, dataDir: string
+  let fastify: FastifyInstance,
+    serverUrl: string,
+    backend: TempFileSystemBackend
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-server-identity-'))
+    backend = await openTempBackend({ prefix: 'was-server-identity-' })
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend
     }))
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   it('serves neither identity member', async () => {
@@ -505,16 +504,16 @@ describe('Server identity boot checks', () => {
   })
 
   it('names WAS_ADMIN_DID when the Space count quota refuses the create', async () => {
-    const ownDir = await mkdtemp(path.join(tmpdir(), 'was-server-identity-'))
+    const backend = await openTempBackend({
+      prefix: 'was-server-identity-',
+      maxSpacesPerController: 0
+    })
     try {
       const admin = await Ed25519VerificationKey.generate()
       const app = createApp({
         logger: false,
         serverUrl: 'http://localhost',
-        backend: await FileSystemBackend.open({
-          dataDir: ownDir,
-          maxSpacesPerController: 0
-        }),
+        backend,
         adminDid: `did:key:${admin.publicKeyMultibase}`
       })
       await expect(app.ready()).rejects.toThrow(
@@ -522,7 +521,7 @@ describe('Server identity boot checks', () => {
       )
       await app.close()
     } finally {
-      await rm(ownDir, { recursive: true, force: true })
+      await backend.close()
     }
   })
 

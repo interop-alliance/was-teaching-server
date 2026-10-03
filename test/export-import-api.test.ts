@@ -11,21 +11,18 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import { Buffer } from 'node:buffer'
 import { Readable } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
 
-import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
 import {
   anHourFromNow,
   client,
   delegate,
+  openTempBackend,
   startTestServer,
   zcapClients
 } from './helpers.js'
@@ -69,19 +66,14 @@ function validManifestYaml(): string {
 }
 
 describe('Export/Import Space API (wire level)', () => {
-  let fastify: FastifyInstance,
-    serverUrl: string,
-    dataDir: string,
-    alice: any,
-    bob: any
+  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
   const sourceSpaceId = `export-src-${crypto.randomUUID()}`
   const collectionId = 'notes'
   const resourceId = 'note1'
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: await FileSystemBackend.open({ dataDir })
+      backend: await openTempBackend()
     }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
 
@@ -102,7 +94,6 @@ describe('Export/Import Space API (wire level)', () => {
   })
   afterAll(async () => {
     await fastify.close()
-    await rm(dataDir, { recursive: true, force: true })
   })
 
   describe('Export (POST /space/:spaceId/export)', () => {

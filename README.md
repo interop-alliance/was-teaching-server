@@ -212,7 +212,9 @@ not forward it.
 The WAS protocol surface is also exported as a registerable Fastify plugin,
 `fastifyWas`, so a downstream server can compose it with its own persistence
 backend and security plugins. See
-[Consuming the Server as a Library](docs/consuming-server-as-library.md).
+[Consuming the Server as a Library](docs/consuming-server-as-library.md). A
+consumer's tests can boot the server in-process through the
+`was-teaching-server/testing` entry point.
 
 ### Environment Variables
 
