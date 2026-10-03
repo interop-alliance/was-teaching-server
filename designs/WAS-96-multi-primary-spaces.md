@@ -1,11 +1,23 @@
 # WAS-96: Multi-primary Spaces (design)
 
 - item: WAS-96
-- status: reviewed
-- approved:
+- status: approved
+- approved: 2026-10-02
 - wire-level decisions contained: listed in section 5 and individually signed
-  off
-- decision records extracted: none
+  off on 2026-10-01 and 2026-10-02 (open points in section 5.9, wire items below
+  section 5.12); items 3, 10 and 14 of the wire list were closed by open points
+  9, 11 and WAS-179; item 10 (the read-only-switch problem type) is WAS-179's to
+  sign off
+- decision records extracted: 2026-10-02. Contract-binding, in
+  wallet-attached-storage-spec's decisions: 0009 (origin-stamped write
+  identity), 0010 (the stamp validator and the local container segment), 0011
+  (Collection tombstones, delete wins), 0012 (immutable Collection descriptors
+  are creation-only), 0013 (replication is a pull-only companion spec); the spec
+  roadmap items WASS-47 to WASS-51 carry them into spec text. Server-internal,
+  in this repo's `decisions/`: 0003 (one server key for export and sync), 0004
+  (stamps are minted only by this server), 0005 (the local validator segment and
+  `replicas` on the Space object). Sections 5 and 6 cite them; the records hold
+  the canonical text from here on
 - reviewed: 2026-10-01, adversarial pass (six lenses plus a completeness
   critic); findings folded in place with a `Review 2026-10-01:` prefix, the
   review log is section 9, and the decisions left to the maintainer are the open
@@ -203,10 +215,10 @@ edit that records it.
     Review 2026-10-01: changed in one respect. A position counter restarts when
     its Collection is re-created or its Space restored, and a checkpoint held
     from the previous life then silently skips the new life's first writes. The
-    opaque checkpoint embeds the Collection's and the Space's generation; one
-    from another generation is refused (400) and the reader restarts from the
-    beginning. This goes to WAS-93's spec text and to the matrix row "Changes
-    feed pull by a client".
+    opaque checkpoint embeds the Collection's feed generation (the Space's is
+    redundant, wire item 15); one from another generation is refused (400) and
+    the reader restarts from the beginning. This goes to WAS-93's spec text and
+    to the matrix row "Changes feed pull by a client".
 
 12. `writerId` MUST NOT be an input to any server decision (spec, "Resource data
     model"). Upheld. The order key is `(ms, counter, origin)`; `writerId` is
@@ -569,6 +581,16 @@ tombstone), and Import / C stays a bypass, carried as open question 7.
 
 ## 5. Design
 
+Extracted 2026-10-02. The canonical text of each rule below now lives in a
+decision record, and this section is its working derivation: 5.1 and open point
+4 in spec decision 0012; 5.2, the import and process rules of 5.3 and open
+points 5, 12 and 14 in this repo's decision 0004; the stamp and order key of 5.3
+and open points 2, 6 and 9 in spec decision 0009; the validator of 5.3, open
+point 1 and wire items 11 and 15 in spec decision 0010; 5.4 and wire items 5, 12
+and 16 in spec decision 0011; 5.5, 5.8, 5.10, 5.11, 5.12 and open points 3, 7,
+8, 10 and 15 in spec decision 0013; 5.7 and wire item 8 in this repo's decision
+0003; open point 13 and wire items 7 and 11 in this repo's decision 0005.
+
 ### 5.1 `revisions` descriptor (WAS-173)
 
 `CollectionMetadata.revisions?: { resolution?: 'last-writer-wins', immutable?: boolean, merge?: object }`
@@ -628,12 +650,12 @@ critical section (the per-Space and per-Collection locks in
 `filesystem.ts:2296-2317`, the row locks in Postgres).
 
 Every versioned record stores `updatedAt` (ISO of `ms`), `updatedAtCounter`, and
-`originId` (named `origin` in the draft; renamed at open point 9). `EtagValidator` becomes `{ generation, ms, counter, origin }` and
-`formatEtag` emits `"<generation>.<ms>.<counter>.<origin>"`. `version` and
-`metaVersion` are removed from sidecars, rows, wire objects, and
-`provenanceStatement.ts` claims, which attest the three stamp members instead.
-The order key is `(ms, counter, origin)`, compared numerically then by plain
-string.
+`originId` (named `origin` in the draft; renamed at open point 9).
+`EtagValidator` becomes `{ generation, ms, counter, origin }` and `formatEtag`
+emits `"<generation>.<ms>.<counter>.<origin>"`. `version` and `metaVersion` are
+removed from sidecars, rows, wire objects, and `provenanceStatement.ts` claims,
+which attest the three stamp members instead. The order key is
+`(ms, counter, origin)`, compared numerically then by plain string.
 
 Review 2026-10-01, four amendments:
 
@@ -732,8 +754,10 @@ apply.
 The registration is a controller-only sub-resource of the Space (container rule,
 no exception; `GET` controller-only too), per server, not replicated, not
 exported, stored inside the Space's own directory or row so it dies atomically
-with Delete Space. Members: the peer's Space URL, the delegated pull capability,
-an optional Collection list, a role (`source` in v1). The served Space Metadata
+with Delete Space. Members: the peer's Space URL (`fromSpace`), the local
+Space's URL (`toSpace`), the delegated pull capability, an optional Collection
+list (`[{ id }]`), a role (`source` in v1); wire item 6. Its runtime state is
+served at a `status` sub-resource, not on the record. The served Space Metadata
 object carries a server-derived `replicas` member listing each registered peer's
 Space URL and role, derived in `spaceProjection.ts` beside `backends`.
 
@@ -767,13 +791,14 @@ Metadata object is read through the pull capability and its `controller` must
 equal the local Space's (else a holder of any readable pull capability could
 register another user's Space as their own source and read it through root
 invocations on the copy); its `type` set must equal the local one; its Space id
-must equal the local one (the DID path and the resolver mapping of section 5.8
-depend on it); the capability's chain must root in that peer Space and its
-`allowedAction` lie within `{GET, HEAD}`; the peer's origin id must not be this
-server's; the local Space must not be the `server` Space (its controller is the
-admin and the plugin refuses to boot over a changed one). The record is stored
-only after these pass. The stored capability is served back to its controller
-only.
+need not equal the local one (decided 2026-10-02: the registration itself is the
+mapping section 5.8 reads, so a Space minted with a server-assigned id on one
+host replicates into a differently named Space on another); the capability's
+chain must root in that peer Space and its `allowedAction` lie within
+`{GET, HEAD}`; the peer's origin id must not be this server's; the local Space
+must not be the `server` Space (its controller is the admin and the plugin
+refuses to boot over a changed one). The record is stored only after these pass.
+The stored capability is served back to its controller only.
 
 Loop lifecycle: boot enumerates stored registrations and starts one loop each (a
 crash between the store and the first cycle is healed by the next boot). The
@@ -782,10 +807,9 @@ presence and generation under the Space lock on every batch, so a loop that
 outlives Delete Space, or a registration that survives a re-create under the
 same id, applies nothing. A peer error does not stop the loop: a 404 (which the
 masked denial also answers for an unresolvable key, an expired grant, or a
-transient failure to fetch this server's log) backs off exponentially to a cap
-and is recorded on the registration as the last error with its time, served to
-the controller on `GET`. Nothing stops permanently; the controller deletes the
-registration to stop it.
+transient failure to fetch this server's log) backs off exponentially to a cap,
+which the `status` sub-resource shows as `backing-off` with `nextPullAt`.
+Nothing stops permanently; the controller deletes the registration to stop it.
 
 ### 5.6 Clock bound
 
@@ -800,13 +824,14 @@ so an operator can tell it from a fork.
 
 ### 5.7 Sync key and peer verification (WAS-175)
 
-A second Ed25519 key derived from `WAS_SERVER_KEY_SEED` with its own derivation
-label, held beside the export key in `serverIdentity.ts`. Advertised on
-`/service` `instance` as a `did:key`. The server signs sync invocations as
-`{serverDid}#{key}` when the resolved server document lists the key under
-`capabilityInvocation`, else as the `did:key`. `resolveServerDid` tolerates that
-key under `capabilityInvocation` and still refuses the export key under any
-relationship but `assertionMethod`.
+Decided 2026-10-02 (wire item 8), replacing the draft's second key: the one seed
+key serves both roles. The admin lists it in the server log under
+`assertionMethod` and `capabilityInvocation`; the server signs sync invocations
+as `{serverDid}#{key}`, and a controller delegates the pull capability to
+`serverDid`, never to a bare key. There is no `did:key` signing form and no
+`/service` member for the key. `resolveServerDid` requires `assertionMethod`,
+permits `capabilityInvocation`, and still refuses the other relationships.
+Replication requires the identity; a registration without it is refused.
 
 Verifying a peer: `zcap.ts`'s resolver gains one bounded network path. When the
 invoker's DID is a `did:webvh` with path `space:server:id` and it is the
@@ -850,11 +875,11 @@ Review 2026-10-01: "a registered peer's host" is too wide, and the local
 server (a stranger creating Space `S` here and registering any source on host A
 would squat Alice's `did:webvh:...:A:space:S:id`). The mapping goes through the
 registration: a DID with host `H` and path `space:S:C` resolves here iff some
-registration on local Space `S` names the peer Space URL `https://H/space/S/`
-(same id, section 5.5), and the copy is read from that Space's Collection `C`.
-The parser gains a lookup against the registration set (an async read, cached
-beside the Space Metadata cache), and every caller under invariant 6 gets the
-widened result except `serverIdentity.ts`.
+registration on a local Space `X` names the peer Space URL `https://H/space/S/`
+(`X` need not be `S`, section 5.5), and the copy is read from `X`'s Collection
+`C`. The parser gains a lookup against the registration set (an async read,
+cached beside the Space Metadata cache), and every caller under invariant 6 gets
+the widened result except `serverIdentity.ts`.
 
 ### 5.9 Open points for the maintainer (review 2026-10-01)
 
@@ -878,42 +903,40 @@ fork. The recommendation is first.
    provenance statement. Also: whether a `/meta` write keeps clearing `writerId`
    (spec "declare-or-clear at both levels") now that `writerId` is a
    content-record member; recommended: a `/meta` write no longer touches it.
-   Decided 2026-10-01: the `/meta` record's stamp and generation are one
-   nested object, `meta: { updatedAt, updatedAtCounter, originId, generation }`,
-   on the sidecar, the change document, the provenance statement and the
-   served `/meta` object; the flat `metaGeneration` / `metaVersion` members
-   go (no migration, data wipe assumed). The content record's `updatedAt`
-   stays the top-level member. A `/meta` write no longer touches `writerId`,
-   which belongs to the content record; the spec's "declare-or-clear" rule
-   for Update Resource Metadata is withdrawn.
+   Decided 2026-10-01: the `/meta` record's stamp and generation are one nested
+   object, `meta: { updatedAt, updatedAtCounter, originId, generation }`, on the
+   sidecar, the change document, the provenance statement and the served `/meta`
+   object; the flat `metaGeneration` / `metaVersion` members go (no migration,
+   data wipe assumed). The content record's `updatedAt` stays the top-level
+   member. A `/meta` write no longer touches `writerId`, which belongs to the
+   content record; the spec's "declare-or-clear" rule for Update Resource
+   Metadata is withdrawn.
 3. `controller` is per-server (invariant 20). Recommended as stated. The
    alternative, replicating a promotion with a resolve-before-apply rule and an
    ordering guarantee on the log, is more machinery for the one flow (promote
-   once, pull everywhere) that the per-replica promotion already covers.
-   Decided 2026-10-01: per-server, not replicated; the apply path writes
-   `name` only.
+   once, pull everywhere) that the per-replica promotion already covers. Decided
+   2026-10-01: per-server, not replicated; the apply path writes `name` only.
 4. Forward merge of immutable members (invariant 15). Recommended: absent
    incoming keeps local; differing set values stall as a fork. Alternative:
    stall on any difference. Decided 2026-10-01: (a), plus two prevention rules
    so the fork is unreachable rather than a UX path. First, the immutable
    members (`encryption`, `revisions.resolution`, `revisions.immutable`) are
-   creation-only: declared in the write that creates the Collection (the
-   guarded create, the first `PUT .../meta`, or the governed-log guarded
-   create), and refused on an existing Collection that lacks them; the spec
-   sentence "declaring it on a Collection that lacks one is allowed"
-   (`spec.md:5291`) is withdrawn. Checked 2026-10-01: the App Connect flow
-   creates a private Collection governed and encrypted from birth
-   (freewallet `processZcaps.ts` to `provisionEncryptedCollection`); the late
-   declaration survives only as fallbacks, the `edv` branch of was-client
-   `sync/provisioning.ts` (no wallet caller passes `edv`) and was-react
-   `markCollectionEncrypted` (skipped whenever a descriptor exists), both to
-   be removed, with dcw's sync smoke test checked for the `edv` default.
-   wallet-core and freewallet need no change. Second, a replica registration
-   reads each listed Collection's Metadata object from the peer and is
-   refused when an immutable member differs from the local one, as the Space
-   `type` is checked. `encryption.version` merges by `max`. A differing set
-   value that still arrives is an invariant violation: it stalls the
-   Collection with a `warn`, and is not expected in practice.
+   creation-only: declared in the write that creates the Collection (the guarded
+   create, the first `PUT .../meta`, or the governed-log guarded create), and
+   refused on an existing Collection that lacks them; the spec sentence
+   "declaring it on a Collection that lacks one is allowed" (`spec.md:5291`) is
+   withdrawn. Checked 2026-10-01: the App Connect flow creates a private
+   Collection governed and encrypted from birth (freewallet `processZcaps.ts` to
+   `provisionEncryptedCollection`); the late declaration survives only as
+   fallbacks, the `edv` branch of was-client `sync/provisioning.ts` (no wallet
+   caller passes `edv`) and was-react `markCollectionEncrypted` (skipped
+   whenever a descriptor exists), both to be removed, with dcw's sync smoke test
+   checked for the `edv` default. wallet-core and freewallet need no change.
+   Second, a replica registration reads each listed Collection's Metadata object
+   from the peer and is refused when an immutable member differs from the local
+   one, as the Space `type` is checked. `encryption.version` merges by `max`. A
+   differing set value that still arrives is an invariant violation: it stalls
+   the Collection with a `warn`, and is not expected in practice.
 5. Import stamps. Recommended: re-mint on import, origin the importing server,
    as `updatedAt` is re-stamped today (`space-archive-fixture.test.ts`), and
    `observe` nothing. The draft said "restored verbatim", which is the
@@ -926,36 +949,35 @@ fork. The recommendation is first.
    registrations.
 6. Policy stamps (invariant 21). Recommended: the policy document gains the
    three stamp members and a `deleted` marker, same names as a Resource; the
-   policy `ETag` becomes the four-field validator. The members are wire.
-   Decided 2026-10-01: as recommended. The stored policy gains the three stamp
-   members, a generation and a `deleted` tombstone marker; `GET /policy`
-   serves the four-field `ETag` and the stamp members as server-derived
-   members the write body ignores; `PUT` and `DELETE` take `If-Match` /
-   `If-None-Match: *`; a tombstoned policy reads as absent everywhere except
-   the replication listing and the apply path.
-7. Discovery channel (section 5.10). Recommended: a replication listing.
-   Decided 2026-10-01: against the recommendation, alternative (b). The
-   `changes` profile is widened (WAS-182): every Resource regardless of
-   content type, and the non-Resource kinds (Collection Metadata, policies,
-   governed log) under a `kind` discriminator consumers filter on. Leaving
-   binary Resources out of the feed was an oversight, not a design choice.
-8. Stall granularity and record (section 5.11). Recommended as stated.
-   Decided 2026-10-01: per Collection, as stated.
+   policy `ETag` becomes the four-field validator. The members are wire. Decided
+   2026-10-01: as recommended. The stored policy gains the three stamp members,
+   a generation and a `deleted` tombstone marker; `GET /policy` serves the
+   four-field `ETag` and the stamp members as server-derived members the write
+   body ignores; `PUT` and `DELETE` take `If-Match` / `If-None-Match: *`; a
+   tombstoned policy reads as absent everywhere except the replication listing
+   and the apply path.
+7. Discovery channel (section 5.10). Recommended: a replication listing. Decided
+   2026-10-01: against the recommendation, alternative (b). The `changes`
+   profile is widened (WAS-182): every Resource regardless of content type, and
+   the non-Resource kinds (Collection Metadata, policies, governed log) under a
+   `kind` discriminator consumers filter on. Leaving binary Resources out of the
+   feed was an oversight, not a design choice.
+8. Stall granularity and record (section 5.11). Recommended as stated. Decided
+   2026-10-01: per Collection, as stated.
 9. Names. `replicas` is already used by a spec ednote for per-Collection backend
    replicas (`spec.md:3955-3975`); recommended: keep `replicas` for the
    Space-level registration and rename the ednote's concept when it lands.
    Decided 2026-10-01: confirmed; `backends` is the natural name for the
-   ednote's per-Collection concept.
-   `origin` sits beside `generator.origin` (a Web origin) on the same Collection
-   Metadata object; recommended: keep, since one is nested. Decided
-   2026-10-01: the stamp member is renamed `originId`, on every record, the
-   change document, the provenance statement and the nested `meta` object;
-   the order key is written `(ms, counter, originId)`. `originId` on
-   `instance` is gated on by registration, which the spec forbids
+   ednote's per-Collection concept. `origin` sits beside `generator.origin` (a
+   Web origin) on the same Collection Metadata object; recommended: keep, since
+   one is nested. Decided 2026-10-01: the stamp member is renamed `originId`, on
+   every record, the change document, the provenance statement and the nested
+   `meta` object; the order key is written `(ms, counter, originId)`. `originId`
+   on `instance` is gated on by registration, which the spec forbids
    (`spec.md:1105`); recommended: advertise it on the core
    `https://w3id.org/pws` `specs` entry instead (or a replication profile
-   entry), not on `instance`. Decided 2026-10-01: on the core `specs` entry;
-   the sync key stays on `instance`, since nothing gates on it. `zcaps` and
+   entry), not on `instance`. Decided 2026-10-01: on the core `specs` entry; the
+   sync key stays on `instance`, since nothing gates on it. `zcaps` and
    `replicas` join the reserved registry (invariant 22). Decided 2026-10-01:
    confirmed; `zcaps` is a registry omission independent of this design.
 10. Revocations. Capability targets are host-bound, so a revocation stored on A
@@ -969,10 +991,17 @@ fork. The recommendation is first.
     omit the member from the statement's claims when `origin` is not the
     exporting server; import then strips `createdBy` on that object as it does
     for `unattested`. Alternative: attest it under a distinct member
-    (`replicatedCreatedBy`) that import keeps unverified.
+    (`replicatedCreatedBy`) that import keeps unverified. Decided 2026-10-01:
+    (a) for v1, as a transitional rule. The lasting answer is a write-time
+    creation statement (`createdBy`, `createdAt`, generation, signed once by the
+    creating origin and carried with the record) beside a per-revision
+    statement, filed as WAS-184; once a record carries one, export forwards it
+    instead of omitting the member.
 12. One process per origin (section 5.3). Recommended: document the requirement.
     Alternative: a per-process origin suffix, which makes the origin id no
-    longer a store property.
+    longer a store property. Decided 2026-10-02: document the requirement, in
+    ARCHITECTURE beside the cache entries that already rest on it and in the
+    admin guide; the multi-process question is parked as WAS-185.
 13. Topology disclosure. The served `replicas` member tells any reader of the
     Space Metadata object (an app's read grant, the client-annex third shape's
     `GET /space/<S>/meta` branch) every host holding the user's data, while the
@@ -990,7 +1019,11 @@ fork. The recommendation is first.
     to refuse such a store at boot (a `STORE_MIGRATIONS` entry that fails naming
     the layout) rather than stamp old records; the maintainer may choose a
     stamping step instead. The same applies to a Collection already named
-    `replicas` or `zcaps`, hidden once the segment is reserved.
+    `replicas` or `zcaps`, hidden once the segment is reserved. Decided
+    2026-10-02: refuse at boot. The layout version is bumped and the new step
+    throws `StoreVersionError` over a store holding any Space (both backends);
+    no stamping, no renaming. An empty store is stamped at the new version and
+    boots.
 15. A `features` token for replication on the core `/service` entry, so a
     registration can refuse a peer that does not serve the replication listing
     (a pre-upgrade peer answers 404, which section 5.5 would back off on with no
@@ -998,7 +1031,18 @@ fork. The recommendation is first.
     four-field validator are core requirements for a server that never
     replicates. Recommended: a token beside the origin id (open point 9), and
     the stamp members and validator as core, since a client's dedup rule reads
-    them.
+    them. Decided 2026-10-02: no token. `originId` is core (it feeds export
+    signing as well as replication) and sits on the core `specs` entry, and the
+    stamp members, the four-field validator and the widened feed (WAS-182) are
+    baseline requirements of the core spec version. Replication itself is a
+    separate specification with its own versioning, since it will be learned
+    from and iterated: the server lists a `https://w3id.org/pws/replication`
+    entry (version `0.1`) in `specs`, and listing it is the claim that the
+    `replicas` registration sub-resource, the pull loop and the apply path are
+    served. The registration check reads the peer's entry at a version this
+    server speaks together with its `originId`, and refuses a peer lacking
+    either, with a recorded reason. A change to what the loop accepts is a new
+    version of that entry.
 
 ### 5.10 Discovery channel (review 2026-10-01)
 
@@ -1012,42 +1056,43 @@ unreachable. The listing items of List Collections carry `id`, `url`, `name`
 only (`spec.md:1821-1823`), so a listing walk cannot tell what changed either.
 
 Decided 2026-10-01 (open point 7): the `changes` profile itself is widened
-(WAS-182). Every Resource write and tombstone takes a feed position whatever
-its content type, with a `contentType` member on the change document; a
-Collection Metadata write, a Collection or Resource `/policy` write or
-tombstone, and a governed-log append each take a feed position too, and every
-change document carries a `kind` member that existing consumers (was-sync, dcw,
-was-react) filter on. The feed stays per Collection, so the checkpoint is per
-Collection and matches the stall unit of section 5.11. Space-level state has no
-Collection feed to ride: Space Metadata `name`, the Space policy and Collection
-tombstones are discovered by the tombstone-aware Space listing and conditional
-`GET`s of the Space's `meta` and `policy`; the Space policy's tombstone must be
-readable with its stamp by the pull loop (WAS-183). Chunk bytes stay with
-WAS-14, which decides between a chunk kind in the feed and a per-parent listing
-walk. Declined: a separate replication listing under the Space (a second channel
-and a second checkpoint discipline for the same records), and a per-cycle `GET`
-of each `meta`, `policy` and `meta/log` plus a listing walk (one request per
-record per cycle, and blind to a binary tombstone).
+(WAS-182). Every Resource write and tombstone takes a feed position whatever its
+content type, with a `contentType` member on the change document; a Collection
+Metadata write, a Collection or Resource `/policy` write or tombstone, and a
+governed-log append each take a feed position too, and every change document
+carries a `kind` member that existing consumers (was-sync, dcw, was-react)
+filter on. The feed stays per Collection, so the checkpoint is per Collection
+and matches the stall unit of section 5.11. Space-level state has no Collection
+feed to ride: Space Metadata `name`, the Space policy and Collection tombstones
+are discovered by the tombstone-aware Space listing and conditional `GET`s of
+the Space's `meta` and `policy`; the Space policy's tombstone must be readable
+with its stamp by the pull loop (WAS-183). Chunk bytes stay with WAS-14, which
+decides between a chunk kind in the feed and a per-parent listing walk.
+Declined: a separate replication listing under the Space (a second channel and a
+second checkpoint discipline for the same records), and a per-cycle `GET` of
+each `meta`, `policy` and `meta/log` plus a listing walk (one request per record
+per cycle, and blind to a binary tombstone).
 
 Per-cycle cost is one feed page per Collection that changed plus one `GET` per
-changed record, and nothing for a Collection whose feed is unchanged. Two further
-costs the review sized: the widened
-`parseSelfHostedWebvh` adds one cached registration lookup to every request that
-carries a `did:webvh` key id (section 5.8), and the apply path's registration
-check holds the Space lock once per batch, not per record.
+changed record, and nothing for a Collection whose feed is unchanged. Two
+further costs the review sized: the widened `parseSelfHostedWebvh` adds one
+cached registration lookup to every request that carries a `did:webvh` key id
+(section 5.8), and the apply path's registration check holds the Space lock once
+per batch, not per record.
 
 ### 5.11 Stall rule and checkpoint (review 2026-10-01)
 
 The draft said a fork "stalls that Resource" while the checkpoint is a single
 per-Collection position; one cannot skip one Resource. Rule: a stall is per
 Collection. The checkpoint holds, the reason (clock bound, fork, quota,
-unresolvable backend, container refusal) and the position are recorded on the
-registration durably and served to the controller on `GET`, and the loop retries
-that Collection each cycle while the others continue. A clock-bound stall clears
-itself. A fork, a quota, or a backend stall clears when the controller removes
-the cause (deletes the conflicting record, raises the quota, registers the
-backend) or deletes the registration. A refusal under a Collection tombstone is
-a skip, not a stall (section 5.4).
+unresolvable backend, container refusal) and the position are recorded with the
+registration durably and served to the controller at the registration's `status`
+sub-resource (wire item 6), and the loop retries that Collection each cycle
+while the others continue. A clock-bound stall clears itself. A fork, a quota,
+or a backend stall clears when the controller removes the cause (deletes the
+conflicting record, raises the quota, registers the backend) or deletes the
+registration. A refusal under a Collection tombstone is a skip, not a stall
+(section 5.4).
 
 The per-peer checkpoint is stored on the registration, per Collection, written
 only after every apply it covers is durable, and embeds the peer Collection's
@@ -1075,49 +1120,127 @@ what the replicated controller log buys (alternative 11). DID-relative targets
 
 Agreed with the maintainer on 2026-10-01: the names `revisions`, `resolution`,
 `updatedAtCounter`, `originId` (renamed from `origin` at open point 9); the
-validator
-`"<generation>.<ms>.<counter>.<origin>"` with `ms` the epoch integer;
+validator `"<generation>.<ms>.<counter>.<origin>"` with `ms` the epoch integer;
 `WAS_ORIGIN_ID` used verbatim; the order key `(ms, counter, origin)`. The rest
 are proposals:
 
 1. `revisions.resolution` values: `last-writer-wins`; reserved `keep-conflicts`.
-   `revisions.immutable` boolean. `revisions.merge` object, verbatim.
+   `revisions.immutable` boolean. `revisions.merge` object, verbatim. Decided
+   2026-10-02: as proposed.
 2. The immutable-write refusal: error name and status (proposal:
-   `resource-immutable`, 409).
+   `resource-immutable`, 409). Decided 2026-10-02: `resource-immutable` (409)
+   for a write refused by `revisions.immutable`, and `revisions-immutable` (409)
+   for a change to a set `resolution` or `immutable`, the counterpart of
+   `encryption-immutable`.
 3. The origin-id charset `[A-Za-z0-9_-]{1,64}` and its `/service` member name
    and placement (decided: `originId` on the core `specs` entry, open point 9).
 4. The change-document stamp members: `updatedAtCounter` and `originId` beside
    `updatedAt`, and the `/meta` record's three (open point 2).
 5. The Space listing query flag for tombstoned Collections (proposal:
-   `?include=deleted`).
+   `?include=deleted`). Decided 2026-10-02: as proposed; the same flag reads a
+   policy tombstone (wire item 12).
 6. The registration sub-resource path (proposal: `/space/:spaceId/replicas`,
    `POST` to add, `GET` to list, `DELETE /space/:spaceId/replicas/:id`) and its
    members (`spaceUrl`, `capability`, `collections`, `role`, plus the served
    `lastError`, `stalls` records of section 5.11), and `replicas` and `zcaps` in
-   the reserved registry.
+   the reserved registry. Decided 2026-10-02: path `/space/:spaceId/replicas`
+   (`GET` lists, `POST` adds) and `/space/:spaceId/replicas/:replicaId` (`GET`,
+   `DELETE`; no `PUT` in v1), every method controller-only. The record is a
+   directed edge the controller writes and reads back unchanged under its own
+   `ETag`: `id` (client-supplied, URL-safe, `id-conflict` on a duplicate),
+   `fromSpace` (the peer Space's canonical URL, where data comes from),
+   `toSpace` (the local Space's canonical URL), `capability`, `collections` (an
+   array of `{ id }` objects, absent meaning all, with room for per-Collection
+   conditions later) and `role` (`source`). Runtime state is served at
+   `GET /space/:spaceId/replicas/:replicaId/status`, controller-only and
+   uncacheable: `state` (`idle | pulling | backing-off | stalled`),
+   `lastPullAt`, `lastSuccessAt`, `nextPullAt`, and `collections`, each
+   `{ id, state, lastAppliedAt, stall? }` with `state` from
+   `synced | syncing | stalled | skipped` and `stall` as
+   `{ reason, since, detail }`. No `lastError`; an errors feed can join the
+   status endpoint later. `replicas` and `zcaps` join the reserved registry and
+   `replicas` the Space linkset.
 7. The `replicas` member on the served Space Metadata object
    (`[{ url, role }]`), or its removal from the object in favor of the
-   sub-resource (open point 13).
+   sub-resource (open point 13). Decided 2026-10-02: stays on the object, as
+   `[{ fromSpace, toSpace, role }]`, the registration's own vocabulary, with no
+   registration `id` and nothing dynamic; derived beside `backends` and moving
+   the Space Metadata `ETag`'s local segment on add and delete.
 8. The sync-key HKDF derivation label and its `/service` member name (proposal:
-   `syncInvocationKey`).
+   `syncInvocationKey`). Decided 2026-10-02: neither. There is no second key and
+   no `/service` member. The one seed key is listed in the server log under
+   `assertionMethod` and `capabilityInvocation`; `resolveServerDid` and the
+   import statement check require `assertionMethod` and permit
+   `capabilityInvocation`, still refusing `capabilityDelegation`,
+   `authentication` and `keyAgreement`. The pull capability's `controller` is
+   `serverDid`, so the wallet learns no key and the admin rotates the key in the
+   log without re-delegation. Replication therefore requires a server identity:
+   a registration on a server with no advertised `serverDid`, or whose log does
+   not list the key under `capabilityInvocation`, is refused naming that, and
+   the `did:key` signing fallback of section 5.7 is withdrawn.
 9. The clock-bound setting (proposal: `WAS_REPLICATION_CLOCK_BOUND_MS`, default
-   `60000`).
+   `60000`). Decided 2026-10-02: as proposed, with the default a constant in
+   `config.default.ts`; the replication spec recommends the 60 s default.
 10. The read-only-switch problem type (WAS-179, later).
 11. (review) The local validator segment on container Metadata objects (open
-    point 1).
+    point 1). Decided 2026-10-02: a non-negative integer counter per container
+    record, reset to `0` by a stamped write and incremented by each
+    derived-member change (backend or replica registration and removal on a
+    Space, governed-log append on a Collection); never replicated, never served
+    as a member, outside the replication order.
 12. (review) The policy document's stamp members and `deleted` marker (open
-    point 6).
-13. (review) The change document's `kind` values and `contentType` member
-    (open point 7, WAS-182).
+    point 6). Decided 2026-10-02: `GET /policy` at all three levels serves
+    `updatedAt`, `updatedAtCounter`, `originId` as server-derived members a
+    `PUT` body ignores, the generation inside the `ETag` only; the policy
+    section reserves those names and `deleted`. A `DELETE` stores
+    `{ deleted: true }` plus the stamp, with no `type`; a `PUT` over it mints a
+    new generation; a `DELETE` of an absent policy stays 204 and writes nothing.
+    A tombstone is 404, byte-identical to absent, unless read with
+    `GET /policy?include=deleted` under a capability, which answers it 200 with
+    its `ETag` (the same flag as the Collection listing, wire item 5). `PUT` and
+    `DELETE` take `If-Match` / `If-None-Match: *`.
+13. (review) The change document's `kind` values and `contentType` member (open
+    point 7, WAS-182). Decided 2026-10-02: `kind` is a required closed set,
+    `resource` (a Resource or its tombstone, `data` inline when JSON),
+    `collection-metadata` (the Collection Metadata object or its tombstone),
+    `policy` (a Collection or Resource policy or its tombstone, with a `target`
+    member naming the policy's URL, since a policy has no id of its own) and
+    `log` (the governed log); a consumer skips a `kind` it does not know, so a
+    later chunk kind is additive. `contentType` is always present on
+    `kind: resource`, a tombstone carrying the last-known type. The stamp
+    members `updatedAt`, `updatedAtCounter`, `originId` replace `version` and
+    the nested `meta` object replaces `metaVersion`; `etag` and `metaEtag` stay.
+    `_deleted` is renamed `deleted`, the one name for a tombstone on every
+    object in the design (the feed document, the Collection listing item, the
+    policy); was-sync maps it to RxDB's `_deleted` at its boundary.
 14. (review) The provenance statement's `createdBy` rule for a foreign origin
     (open point 11).
 15. (review) The checkpoint's embedded generation (opaque, so internal, but it
     changes WAS-93's refusal text: a checkpoint from another generation is
-    refused and the reader restarts).
+    refused and the reader restarts). Decided 2026-10-02: the Collection feed
+    generation alone, as WAS-93 already encodes
+    (`{ feed, generation, position }`); the Space generation is redundant, since
+    a re-created Space re-creates its Collections under fresh feed generations.
+    The refusal stays `invalid-request-body` (400) and the reader restarts; no
+    new problem type.
 16. (review) The Collection tombstone's archive form in `@interop/space-archive`
-    (a file-name dialect change).
+    (a file-name dialect change). Decided 2026-10-02: the same
+    `.collection.<id>.json` file, its body the stored tombstone (`deleted: true`
+    plus the stamp, `_generation` embedded) with no `space/<id>/` directory, and
+    `deleted: true` on the manifest's Collection entry. Always exported;
+    imported only when the destination has no record under that id, re-stamped
+    like everything else, so a restored tombstone deletes that Collection on
+    peers at the next pull (point 5's rule applied to deletes; the restore
+    warning covers it). In the same dialect change `_version` leaves every
+    Metadata file and the stamp members are stored bare, `_generation` staying
+    embedded.
 
 ## 6. Alternatives rejected
+
+Extracted 2026-10-02: alternatives 1 to 5 are recorded with revisit criteria in
+spec decision 0009 (3 is the one not marked do-not-reopen); 6 to 12, 14 and 15,
+and the deferral of 13, in spec decision 0013; 8 (no Space tombstones) also in
+spec decision 0011. The list stays as the derivation.
 
 1. `writerId` in the tie-break. Unreachable once the stamp carries a counter and
    origin, and the spec forbids it as a server input. Do-not-reopen.
@@ -1248,11 +1371,11 @@ are proposals:
 ## 8. Open questions
 
 1. WAS-14, three items this design leaves to it: discovery of chunk and binary
-   changes (binary Resources now ride the widened feed of section 5.10; a
-   chunk kind in that feed or a per-parent listing walk is WAS-14's to pick);
-   chunk tombstones (stamped, or cascade-only through the parent);
-   whole-stream consistency (tying a chunk's validity to the parent revision it
-   was written under). Owner: WAS-14.
+   changes (binary Resources now ride the widened feed of section 5.10; a chunk
+   kind in that feed or a per-parent listing walk is WAS-14's to pick); chunk
+   tombstones (stamped, or cascade-only through the parent); whole-stream
+   consistency (tying a chunk's validity to the parent revision it was written
+   under). Owner: WAS-14.
 2. Tombstone retention. Never reaped in v1; a retention rule needs peers to
    report their position back. Owner: WAS-13.
 3. Whether `keep-conflicts` accepts a stale `If-Match` write as a sibling on a
