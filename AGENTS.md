@@ -183,9 +183,16 @@ returns the `serverUrl` the OS actually assigned, so parallel Vitest workers
 can't collide on a port either. Because ZCap `invocationTarget` URLs embed host
 and port, `serverUrl` is unknown until `listen()` resolves -- so build ZCap
 clients (and any URL derived from `serverUrl`) _after_ the `startTestServer`
-call, not before. A suite that tears its server down and boots a replacement
-over the same `dataDir` must pass the returned `port` back in, so ids minted by
-the first server still resolve (see `test/kms-record-encryption.test.ts`).
+call, not before. `startTestServer` also returns `faults`
+(`src/lib/requestFaults.ts`): a record of every request, plus `refuse`,
+`dropResponse`, and `hold` to fail or pause a chosen one. Its hooks are added
+before the protocol plugin is registered, so they run ahead of every route
+group's own hooks. Use it for a torn or interleaved request in place of mocking
+`node:fs/promises`, unless the fault under test is the syscall itself.
+was-client retries a 5xx and a dropped connection, so pass `times` or refuse
+with a 4xx. A suite that tears its server down and boots a replacement over the
+same `dataDir` must pass the returned `port` back in, so ids minted by the first
+server still resolve (see `test/kms-record-encryption.test.ts`).
 
 ### Conformance Test Usage
 

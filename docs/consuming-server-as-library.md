@@ -37,8 +37,9 @@ does not expose deep `dist/...` paths.
 | `ProblemError` subclasses      | The typed protocol errors (`ResourceNotFoundError`, `PreconditionFailedError`, ...) |
 
 The test support helpers (`startTestServer`, `openTempBackend`,
-`provisionWebvhIdentity`) are exported from `was-teaching-server/testing`, not
-from the root. See [Testing against the server](#testing-against-the-server).
+`provisionWebvhIdentity`, the `RequestFaults` seam) are exported from
+`was-teaching-server/testing`, not from the root. See
+[Testing against the server](#testing-against-the-server).
 
 Importing anything from the package also loads its Fastify module augmentation,
 so `FastifyInstance.serverUrl` / `.storage` and `FastifyRequest.zcap` are typed
@@ -269,15 +270,19 @@ own suites use. It imports no test runner, so it works under Vitest,
 `node:test`, or any other runner. It adds nothing to the plugin's options. It is
 test support, not part of a production composition.
 
-| Export                      | What it is                                                                         |
-| --------------------------- | ---------------------------------------------------------------------------------- |
-| `startTestServer`           | Boots `createApp()` on an OS-assigned port; returns `{ fastify, serverUrl, port }` |
-| `openTempBackend`           | Opens a `FileSystemBackend` on a fresh temp dir; its `close()` removes the dir     |
-| `TempFileSystemBackend`     | The type `openTempBackend()` returns (a type-only export)                          |
-| `provisionWebvhIdentity`    | Mints and publishes a self-hosted `did:webvh` with no wallet involved              |
-| `WebvhIdentity`             | The type `provisionWebvhIdentity()` returns                                        |
-| `webvhLogSigner`            | The `did:webvh` history-log signer for a `did:key` key pair                        |
-| `WebvhIdentityPublishError` | Thrown by `provisionWebvhIdentity()` when the log `PUT` is not answered 204        |
+| Export                      | What it is                                                                              |
+| --------------------------- | --------------------------------------------------------------------------------------- |
+| `startTestServer`           | Boots the server on an OS-assigned port; returns `{ fastify, serverUrl, port, faults }` |
+| `RequestFaults`             | The class of `faults`: the request record and the tear and hold controls                |
+| `RequestMatch`              | The type of a fault's `match`: an object of `method` / `path` / `did`, or a function    |
+| `RequestFaultDisarmedError` | Rejects the promise of a fault disarmed before any request took it                      |
+| `RequestRecord`             | The type of one recorded request                                                        |
+| `openTempBackend`           | Opens a `FileSystemBackend` on a fresh temp dir; its `close()` removes the dir          |
+| `TempFileSystemBackend`     | The type `openTempBackend()` returns (a type-only export)                               |
+| `provisionWebvhIdentity`    | Mints and publishes a self-hosted `did:webvh` with no wallet involved                   |
+| `WebvhIdentity`             | The type `provisionWebvhIdentity()` returns                                             |
+| `webvhLogSigner`            | The `did:webvh` history-log signer for a `did:key` key pair                             |
+| `WebvhIdentityPublishError` | Thrown by `provisionWebvhIdentity()` when the log `PUT` is not answered 204             |
 
 `startTestServer()` takes the `createApp()` options except `serverUrl`, plus an
 optional `port` and `logger`. The logger defaults to `false`. The server listens
@@ -406,6 +411,94 @@ returned `ladderKeyPair` and `transientKeyPair` are typed as present when the
 matching flag is the literal `true`. `services` sets the document's service
 entries. The Space stays under the `did:key` owner. Promoting it to the new DID
 is left to the test, since Space creation accepts a `did:key` controller alone.
+
+### Failing and holding a request
+
+`startTestServer()` also returns `faults`, for a test about a run interrupted
+between two requests. Its hooks run ahead of every route group's own hooks, the
+`/kms` routes included, so a fault fires before authorization and before any
+handler.
+
+| Member                                    | What it does                                                                                  |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `faults.requests`                         | Every request so far, in arrival order: `{ method, path, did?, status?, fault? }`             |
+| `faults.refuse({ match, status, times })` | Answers the matching request with `status` (default 503) before any handler runs              |
+| `faults.dropResponse({ match, times })`   | Lets the matching request be applied, then closes the connection in place of the response     |
+| `faults.hold({ match })`                  | Pauses the matching request before any handler runs; returns `{ held, release }`              |
+| `faults.reset()`                          | Disarms every fault not yet taken, releases every held request, and empties `faults.requests` |
+
+The two tears leave different states. A refused request leaves the store
+untouched. A dropped response leaves the write stored while the client sees a
+transport failure. The second is the state a re-run has to detect from what is
+stored.
+
+`match` is an object naming any of `method`, `path`, and `did`, or a function
+over the request's record. `path` is compared with the query string removed, as
+an exact string or a `RegExp`. A string is compared with percent-encoding
+decoded on both sides, so `my doc` matches a request for `my%20doc`. Its
+trailing slash counts: a container URL and its no-slash form are different
+requests. `did` is the DID of the `Authorization` header's `keyId`. It is read
+before any signature is verified, so it names who the request claims to be
+signed by. An object with no `method` never matches an `OPTIONS` request, so a
+browser's CORS preflight does not take a fault meant for the request behind it.
+
+A fault fires on the first matching request and is then disarmed. `refuse()` and
+`dropResponse()` return `{ fired }`, a promise that resolves with the request's
+record when the fault is first taken. `times` is a positive integer or
+`Infinity`, and anything else throws a `RangeError`.
+
+A fault disarmed before any request took it rejects its `fired` or `held`
+promise with a `RequestFaultDisarmedError`. That happens on `reset()`, when the
+server closes, and when a hold's `release()` is called before its request
+arrives. A test awaiting a request that never came then fails with that error
+instead of timing out.
+
+A refusal is sent ahead of the CORS plugin, so it sets
+`Access-Control-Allow-Origin: *` itself on a request that carries an `Origin`
+header. A browser-driven test then reads the refusal's status instead of a CORS
+failure. A record's `status` is read when the response head is written, after
+every `onSend` hook.
+
+`@interop/was-client` retries a request that fails with a 5xx or a dropped
+connection. A fault that fires once is then absorbed by the retry, and the
+caller sees a success. Pass `times` (`Infinity` is allowed) to fail the retries
+too, or refuse with a 4xx status, which is not retried. Under `dropResponse()`
+each retried write is applied again.
+
+`dropResponse()` is meant for writes. A response the server streams may have
+nothing left to lose by the time the connection closes.
+
+```ts
+const { fastify, serverUrl, faults } = await startTestServer({
+  backend: await openTempBackend()
+})
+// ... build clients, provision a Space and a `notes` Collection ...
+const notes = was.space(spaceId).collection('notes')
+const path = `/space/${spaceId}/notes/second`
+
+// A ceremony that writes two Resources, torn at the second write. The write
+// lands, and the client is told it failed.
+faults.dropResponse({ match: { method: 'PUT', path }, times: Infinity })
+await notes.put('first', { step: 1 })
+await assert.rejects(notes.put('second', { step: 2 }))
+
+faults.reset()
+assert.deepEqual(await notes.get('second'), { step: 2 })
+```
+
+A hold interleaves two clients at a chosen request. `held` resolves once the
+request has arrived and is paused. Closing the server releases every held
+request, so a test that fails before `release()` does not hang `close()`.
+
+```ts
+const { held, release } = faults.hold({ match: { method: 'PUT', path } })
+const first = notes.put('second', { writer: 'first' })
+await held
+await notes.put('second', { writer: 'second' })
+release()
+await first
+// The held write was applied last.
+```
 
 ## Verifying your composition
 

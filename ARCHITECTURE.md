@@ -21,7 +21,12 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `SIGINT` so its `onClose` hooks run.
 - **`src/server.ts`** — `createApp({ serverUrl })` builds the Fastify instance,
   registers plugins (cors, static, view, multipart), decorates the instance with
-  `serverUrl`, and registers the four route groups.
+  `serverUrl`, and registers the four route groups. The registration itself is
+  `composeApp({ fastify })`, which `createApp()` calls on the instance
+  `createInstance()` builds. The test boot (`startTestServer` in
+  `src/testing.ts`) calls the same two, adding the request fault hooks to the
+  root instance in between so they run ahead of every route group's hooks.
+  Neither is exported from the package.
 - **`src/routes.ts`** — four `init*Routes(app)` functions map URL patterns to
   handler methods. Every group installs the same hook chain first: the
   `requireAuthHeadersOrPublicRead` then `parseAuthHeaders` `onRequest` hooks,

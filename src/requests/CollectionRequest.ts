@@ -1124,7 +1124,13 @@ export class CollectionRequest {
         generation: result.feedGeneration!,
         position
       })
-    const documents: ChangeDocument[] = result.documents.map(doc => {
+    // The write stamp's `updatedAtCounter` and `originId` are not stored yet,
+    // so the feed still carries the `version` and `metaVersion` counters in
+    // their place.
+    const documents: (Omit<ChangeDocument, 'updatedAtCounter' | 'originId'> & {
+      version: number
+      metaVersion?: number
+    })[] = result.documents.map(doc => {
       const etag = etagOf({ generation: doc.generation, version: doc.version })
       const metaEtag = etagOf({
         generation: doc.metaGeneration,

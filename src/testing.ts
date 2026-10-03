@@ -2,8 +2,9 @@
  * Test support entry point (`was-teaching-server/testing`): the in-process
  * boot the server's own suites use, for a consumer that runs its tests against
  * the real server. Carries `startTestServer`, a temp-dir filesystem backend,
- * and the hand-built `did:webvh` identity provisioner. It imports no test
- * runner, and adds nothing to the production plugin's options.
+ * the request fault seam, and the hand-built `did:webvh` identity provisioner.
+ * It imports no test runner, and adds nothing to the production plugin's
+ * options.
  */
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -21,7 +22,15 @@ import type { DIDLog, ServiceEndpoint, Signer } from '@interop/did-method-webvh'
 
 import { FileSystemBackend } from './backends/filesystem.js'
 import type { FileSystemBackendOptions } from './backends/filesystem.js'
-import { createApp } from './server.js'
+import {
+  RequestFaults,
+  RequestFaultDisarmedError
+} from './lib/requestFaults.js'
+import { composeApp, createInstance } from './server.js'
+import type { createApp } from './server.js'
+
+export { RequestFaults, RequestFaultDisarmedError }
+export type { RequestMatch, RequestRecord } from './lib/requestFaults.js'
 
 /**
  * Boots a test server on an OS-assigned ephemeral port and returns the
@@ -43,6 +52,10 @@ import { createApp } from './server.js'
  * Callers must build their ZCap clients from the returned `serverUrl`, not from
  * a precomputed one.
  *
+ * The returned `faults` records every request and can refuse, drop the
+ * response of, or hold a chosen one. Its hooks are added before the protocol
+ * plugin, so they run ahead of every route group's own hooks.
+ *
  * A suite that tears a server down and boots a replacement over the same
  * `dataDir` must pin the replacement to the returned `port`, so that ids minted
  * by the first server (which embed `serverUrl`) still resolve.
@@ -52,7 +65,7 @@ import { createApp } from './server.js'
  *   OS-assigned ephemeral port
  * @param [options.logger] {boolean|object}   Fastify logger; defaults to
  *   `false` so per-request log lines stay out of the test output
- * @returns {Promise<{ fastify: FastifyInstance, serverUrl: string, port: number }>}
+ * @returns {Promise<{ fastify: FastifyInstance, serverUrl: string, port: number, faults: RequestFaults }>}
  */
 export async function startTestServer({
   port = 0,
@@ -63,15 +76,15 @@ export async function startTestServer({
   fastify: FastifyInstance
   serverUrl: string
   port: number
+  faults: RequestFaults
 }> {
-  const fastify = createApp({
-    logger: false,
-    ...options,
-    serverUrl: 'http://localhost'
-  })
-  // Added before the plugin loads, so it runs ahead of the plugin's own
-  // `onListen` hook. Synchronous, so it has run by the time `listen()` hands
-  // back control: Fastify starts the hooks as it resolves, without awaiting.
+  const { logger = false, ...appOptions } = options
+  const fastify = createInstance({ logger })
+  const faults = new RequestFaults({ fastify })
+  // Added before the plugin is registered, so it runs ahead of the plugin's
+  // own `onListen` hook. Synchronous, so it has run by the time `listen()`
+  // hands back control: Fastify starts the hooks as it resolves, without
+  // awaiting.
   fastify.addHook('onListen', function setServerUrl(done) {
     // `localhost`, not `127.0.0.1`: webkms-client only relaxes its loopback
     // checks for a `localhost` host.
@@ -79,6 +92,7 @@ export async function startTestServer({
     fastify.serverUrl = `http://localhost:${listeningPort}`
     done()
   })
+  composeApp({ fastify, ...appOptions, serverUrl: 'http://localhost' })
   try {
     await fastify.listen({ port })
   } catch (err) {
@@ -86,7 +100,7 @@ export async function startTestServer({
     throw err
   }
   const { serverUrl } = fastify
-  return { fastify, serverUrl, port: Number(new URL(serverUrl).port) }
+  return { fastify, serverUrl, port: Number(new URL(serverUrl).port), faults }
 }
 
 /**

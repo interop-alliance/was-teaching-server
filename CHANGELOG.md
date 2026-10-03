@@ -142,6 +142,16 @@
   new Space. `webvhLogSigner()` builds a history-log signer from a `did:key` key
   pair. The entry point imports no test runner.
 
+- Request fault injection on the `was-teaching-server/testing` entry point.
+  `startTestServer()` also returns `faults`, a `RequestFaults` that records
+  every request (`method`, `path`, invoking `did`, `status`) and arms faults on
+  a matching one. `refuse()` answers it with a chosen status before any handler
+  runs. `dropResponse()` lets it be applied and closes the connection in place
+  of the response. `hold()` pauses it until released. The tears take `times`,
+  for a client that retries. A fault disarmed before a request took it rejects
+  its promise with `RequestFaultDisarmedError`. The hooks run ahead of every
+  route group's own, and the plugin's options are unchanged.
+
 ### Changed
 
 - The startup warning for an export-signing key no server DID lists is logged

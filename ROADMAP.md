@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 189
+nextAvailableId: 191
 
 <!-- roadmap-order:index:start -->
 
@@ -96,7 +96,7 @@ Chains:
 Ready:
 
 - WAS-172 [M] Hybrid-logical-clock write stamp and the four-field validator
-  (blocks 6)
+  (blocks 8)
 - WAS-173 [M] `revisions` descriptor on the Collection Metadata object
   (blocks 2)
 - WAS-175 [M] Server sync key and verification of a peer's invocations
@@ -114,6 +114,8 @@ Chains:
   - WAS-182 [M] Changes feed carries every record kind in the Collection
   - WAS-183 [M] Stamped, tombstoned access-control policies
   - WAS-184 [L] Write-time creation and revision statements
+  - WAS-189 [M] Write responses carry the record's stamp and provenance
+  - WAS-190 [M] A `/meta`-only write leaves the content record's stamp unchanged
 - WAS-173 [M] `revisions` descriptor on the Collection Metadata object
   - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
     model)
@@ -1338,13 +1340,13 @@ The replication program: a Space served by several primaries with a replicated
 write identity and conflict model. WAS-96 is the umbrella and names the design
 doc; the other items are its sub-items in dependency order.
 
-### WAS-172: [M] [blocks 6] Hybrid-logical-clock write stamp and the four-field validator
+### WAS-172: [M] [blocks 8] Hybrid-logical-clock write stamp and the four-field validator
 
 - status: in-progress
 - priority: medium
 - labels: data-model, etag, changes-feed, wire-contract, filesystem-backend,
   postgres-backend
-- blocks: WAS-96, WAS-174, WAS-176, WAS-182, WAS-183, WAS-184
+- blocks: WAS-96, WAS-174, WAS-176, WAS-182, WAS-183, WAS-184, WAS-189, WAS-190
 - touches:
   - wallet-attached-storage-spec: the Resource data model (`updatedAtCounter`
     and `originId` members on Resource metadata and the Metadata objects; the
@@ -1352,10 +1354,9 @@ doc; the other items are its sub-items in dependency order.
     (stamp members on the change document; the `(updatedAt, writerId)` tie-break
     sentence replaced by the stamp order)
   - storage-core: the Resource metadata, `CollectionMetadata`, `SpaceMetadata`,
-    and `ChangeDocument` types
-    (shipped 2026-10-03, unpublished: storage-core 0.28.0 adds `WriteStamp` and
-    `ResourceMetaStamp`, and drops `version` / `metaVersion` from
-    `ChangeDocument`)
+    and `ChangeDocument` types (shipped 2026-10-03, unpublished: storage-core
+    0.28.0 adds `WriteStamp` and `ResourceMetaStamp`, and drops `version` /
+    `metaVersion` from `ChangeDocument`)
   - was-teaching-server: `src/lib/etag.ts`, both backends' sidecar and row
     layouts and every write path that stamps them, `src/lib/preconditions.ts`,
     the `/meta` and Metadata-object projections, `changesSince`
@@ -1882,6 +1883,113 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
 
 ---
 
+### WAS-189: [M] [after WAS-172] Write responses carry the record's stamp and provenance
+
+- status: todo
+- priority: medium
+- labels: wire-contract, data-model, resource-api, filesystem-backend,
+  postgres-backend
+- blocked-by: WAS-172
+- touches:
+  - wallet-attached-storage-spec: the Create/Update Resource and Update Resource
+    Metadata operation bullets and examples (`201` / `200` with a body), the
+    `createdBy` definition's resurrection exception, Version History
+  - storage-core: `ResourceMetadata` JSDoc notes the write response subset
+  - was-client: `WriteAck` gains `updatedAt`, `updatedAtCounter`, `originId`,
+    `createdBy`, and `meta` on a `/meta` write, lifted from a `2xx` body behind
+    a shape guard; `putMeta` returns an ack with no validator
+  - was-sync: WS-17 (the ack write-back stamps the members under WS-23's unit
+    rule)
+  - wallet-core: the engine may adopt the new ack members
+  - conformance-suite: six strict-`204` sites accept `201` / `200` / `204` and
+    check the body shape; ships before the server
+  - was-teaching-server: `src/requests/ResourceRequest.ts`, both backends' write
+    return types (breaking for custom backends), ARCHITECTURE.md, the WAS-96
+    design doc's wire inventory
+- acceptance:
+  - [ ] `PUT /:id` answers `201 Created` when it created the Resource (a
+        re-creation over a tombstone included) and `200 OK` when it updated a
+        live one; `PUT /:id/meta` answers `200 OK` and never creates; both keep
+        the `ETag` header and send `Content-Type: application/json`
+  - [ ] The body holds server-managed members only: `contentType`, `size`, and
+        the record's full stamp (`updatedAt`, `updatedAtCounter`, `originId`)
+        always; `createdAt` and `createdBy` only on a `201`; on a `/meta` write
+        the nested `meta` stamp as well; no `custom` and no `data`
+  - [ ] A Resource re-created over a tombstone records this write's invoker as
+        `createdBy` and this write's time as `createdAt` (fresh provenance; the
+        tombstone's is not preserved), in both backends
+  - [ ] The values come from the write under its lock, so a concurrent writer
+        cannot make the body describe another revision (a Postgres case pins it)
+  - [ ] The WAS-96 design doc's wire inventory gains the write response body as
+        an item, and ARCHITECTURE.md describes the two statuses and the body
+  - [ ] Tests cover `201` / `200` on content writes, `200` on `/meta`, `404` on
+        a `/meta` write to an absent Resource, the body members, and the stamp
+        in the body equal to the stamp the feed then carries
+
+Context (discovered-from: WAS-96, via was-sync WS-17 and WS-23). A replication
+client that pushes a write learns only an `ETag` from today's `204`, so the
+server-assigned members (`createdBy`, the server's `updatedAt`, and under
+WAS-172 the whole stamp) reach its local row only through the feed echo. RxDB
+drops that echo when it is pulled while the push is still settling, and nothing
+on the client can cover the push's own HTTP latency. was-sync's WS-17 design
+(signed off 2026-10-02, body shape revised the same day) therefore has the write
+response carry the server-managed members. WAS-96 then replaced the revision
+counter with the stamp, and on 2026-10-03 the two were reconciled: the body
+carries the full stamp, so the server changes its write response once and a
+pushed row compares equal to its echo without waiting for it. WAS-96's wire
+inventory has no entry for a write response body; this item adds it. The
+statuses and the fresh-provenance rule are as signed off in was-sync's
+`designs/WS-17-ack-carries-server-state.md`; the stamp members are WAS-172's.
+
+---
+
+### WAS-190: [M] [after WAS-172] A `/meta`-only write leaves the content record's stamp unchanged
+
+- status: todo
+- priority: medium
+- labels: data-model, etag, changes-feed, filesystem-backend, postgres-backend
+- blocked-by: WAS-172
+- touches:
+  - wallet-attached-storage-spec: the Update Resource Metadata operation (what
+    it does and does not change), the Resource data model's `updatedAt`
+    definition
+  - was-teaching-server: both backends' `/meta` write path, the sidecar's two
+    stamp sets, `changesSince`, the WAS-96 design doc (an explicit sentence
+    under its decided open point 2), ARCHITECTURE.md
+  - was-sync: WS-23's matrix row for a metadata-only push; freewallet and
+    was-react sort rows by the top-level `updatedAt` and need their own
+    follow-ups
+  - conformance-suite: a case asserting the content `ETag` and `updatedAt`
+    survive a `/meta` write
+- acceptance:
+  - [ ] A `PUT /:id/meta` mints a stamp on the `/meta` record only: the content
+        record's `updatedAt`, `updatedAtCounter`, `originId`, and `ETag` are
+        unchanged by it, in both backends
+  - [ ] The change document a `/meta` write produces carries the unchanged
+        content stamp at the top level and the new stamp under `meta`
+  - [ ] The WAS-96 design doc states the rule in one sentence under open point
+        2, and the spec's Update Resource Metadata text says the operation does
+        not change the content record's `updatedAt` or validator
+  - [ ] Tests in both backends write content, then `/meta`, and assert the
+        content `ETag` and top-level `updatedAt` are byte-equal before and
+        after, while `meta.updatedAt` moved
+
+Context (discovered-from: WAS-96, open point 2; raised by was-sync WS-23's
+review on 2026-10-03). Today the two records share one sidecar with one
+`updatedAt`, and a `/meta` write sets `updatedAt: now` on it. WAS-96's open
+point 2 (decided 2026-10-01) gives the `/meta` record its own nested stamp and
+keeps the content record's `updatedAt` as the top-level member, which implies a
+metadata write no longer moves the content stamp, since otherwise the content
+validator would change on a write that touched no content. The design never
+states it, and a reader of the current server behavior would assume the
+opposite. The consequence for a replication client is visible: an app that bumps
+a row's `updatedAt` on a metadata-only edit and sorts rows by it will see the
+echo put the older content `updatedAt` back. was-sync's WS-23 takes the stamp
+model's answer and points its consumers at the payload's own `updatedAt` for
+sorting; this item makes the server and the spec say it.
+
+---
+
 ### WAS-184: [L] [after WAS-172, WAS-176] Write-time creation and revision statements
 
 - status: todo
@@ -2027,95 +2135,122 @@ items are in-repo.
   - [ ] wallet-core (WC-269: its integration tier boots through this export)
   - [ ] was-sync, was-react, dcw (each copies the boot recipe today and still
         calls `new FileSystemBackend(...)`)
-  - [x] `docs/consuming-server-as-library.md` (shipped: the "Testing against
-        the server" section)
+  - [x] `docs/consuming-server-as-library.md` (shipped: the "Testing against the
+        server" section)
 - acceptance:
   - [x] `package.json` exports `./testing`, built to `dist`, with types
-  - [x] The export carries `startTestServer` (the `localhost` server URL
-        fix-up included) and a helper that opens a `FileSystemBackend` on a
-        fresh temp dir and removes it on close
+  - [x] The export carries `startTestServer` (the `localhost` server URL fix-up
+        included; since WAS-188 it boots through `composeApp()` and also returns
+        `faults`) and a helper that opens a `FileSystemBackend` on a fresh temp
+        dir and removes it on close
   - [x] The export carries the webvh identity provisioner
         (`provisionWebvhIdentity`, with its ladder and transient VM shapes).
         Decided 2026-10-03: it is exported
-  - [x] The export pulls in no test runner: nothing under it imports
-        `vitest`
-  - [x] The server's own suites import the helpers from the same source
-        file the export is built from, so there is one copy
-  - [x] `docs/consuming-server-as-library.md` shows the boot through the
-        export and through the async `open()` backend factory
-  - [ ] The release that carries the export is published to npm, and
-        CHANGELOG.md names the export
+  - [x] The export pulls in no test runner: nothing under it imports `vitest`
+  - [x] The server's own suites import the helpers from the same source file the
+        export is built from, so there is one copy
+  - [x] `docs/consuming-server-as-library.md` shows the boot through the export
+        and through the async `open()` backend factory
 
-The in-process boot lives in `test/helpers.ts`, which is outside `dist`.
-Every consumer that runs tests against the real server copies the recipe:
-`createApp` with `serverUrl: 'http://localhost'`, `listen({ port: 0 })`, read
-the port, then set `fastify.serverUrl`. was-sync, was-react, dcw, and
-freewallet's conformance suite each carry a copy, and wallet-core is about to
-add another. The `localhost` detail matters, since webkms-client relaxes its
-loopback checks for that host alone, and a copy that uses `127.0.0.1` fails in
-the KMS facet only.
+The in-process boot lives in `test/helpers.ts`, which is outside `dist`. Every
+consumer that runs tests against the real server copies the recipe: `createApp`
+with `serverUrl: 'http://localhost'`, `listen({ port: 0 })`, read the port, then
+set `fastify.serverUrl`. was-sync, was-react, dcw, and freewallet's conformance
+suite each carry a copy, and wallet-core is about to add another. The
+`localhost` detail matters, since webkms-client relaxes its loopback checks for
+that host alone, and a copy that uses `127.0.0.1` fails in the KMS facet only.
 
-The same consumers construct the backend with `new FileSystemBackend(...)`.
-The 0.40.0 source makes backends come only from the async `open()` factory, so
-each of them breaks on that release. A shared helper that opens the backend
-gives them one call to move to.
+The same consumers construct the backend with `new FileSystemBackend(...)`. The
+0.40.0 source makes backends come only from the async `open()` factory, so each
+of them breaks on that release. A shared helper that opens the backend gives
+them one call to move to.
 
 `provisionWebvhIdentity` is exported too (decided 2026-10-03). It builds a
 did:webvh identity by hand, in the ladder and transient VM shapes, without
-running a wallet ceremony. That suits a consumer test about a server rule,
-where the identity is setup and the ceremony is not under test. A test about
-the ceremonies themselves builds its account through wallet-core's account
-builder (WC-270) instead.
+running a wallet ceremony. That suits a consumer test about a server rule, where
+the identity is setup and the ceremony is not under test. A test about the
+ceremonies themselves builds its account through wallet-core's account builder
+(WC-270) instead.
 
-The export is test support. It adds nothing to the production plugin's
-options.
+The export is test support. It adds nothing to the production plugin's options.
 
 ### WAS-188: [H] [after WAS-187] A request-level tear and hold seam on the testing export
 
-- status: todo
+- status: in-progress
 - priority: high
 - labels: tests, fault-injection, consumers
 - discovered-from: FW-634 (freewallet's test-infrastructure read, 2026-10-03)
-- blocked-by: WAS-187
+- blocked-by: WAS-187 (DONE)
 - touches:
   - [ ] freewallet (FW-634: ports one torn-ceremony case to the seam)
   - [ ] wallet-core (WC-269: its integration tier tears with the seam)
 - acceptance:
-  - [ ] A first check settles the mechanism. A root Fastify hook added after
-        `createApp()` either reaches every route group, the KMS facet
-        included, or the item records what does
-  - [ ] Tear, grade one: the first request matching a predicate (method,
-        path, invoking DID) is refused before any handler runs, with a
-        chosen status
-  - [ ] Tear, grade two: the first matching request is applied and its
-        response is dropped, so the client sees a transport failure over a
-        write that landed
-  - [ ] Hold: a matching request pauses until the test releases it
-  - [ ] Every request is recorded in order with its method, path, and
-        invoking DID
-  - [ ] Each of the four has a test in this repo's own suite
-  - [ ] The seam is reachable only through `was-teaching-server/testing`,
-        and `FastifyWasOptions` gains no member for it
+  - [x] A first check settles the mechanism. A root Fastify hook added after
+        `createApp()` either reaches every route group, the KMS facet included,
+        or the item records what does. Checked 2026-10-03: it reaches every
+        group but runs behind each group's own hooks, so the hooks go on before
+        the plugin is registered (see below)
+  - [x] Tear, grade one: the first request matching a predicate (method, path,
+        invoking DID) is refused before any handler runs, with a chosen status
+  - [x] Tear, grade two: the first matching request is applied and its response
+        is dropped, so the client sees a transport failure over a write that
+        landed
+  - [x] Hold: a matching request pauses until the test releases it
+  - [x] Every request is recorded in order with its method, path, and invoking
+        DID
+  - [x] Each of the four has a test in this repo's own suite
+        (`test/request-faults.test.ts`)
+  - [x] The seam is reachable only through `was-teaching-server/testing`, and
+        `FastifyWasOptions` gains no member for it
 
 Consumers test ceremonies that write several resources in order, and most of
 their open bugs are about a run interrupted between two of those writes. The
 server has no way to fail a chosen request. Its only fault tests mock
-`node:fs/promises` at the syscall level. So each consumer invents its own
-tear: freewallet's Playwright suite aborts routes in the browser, compiles
-window-flag seams into the app, and simulates a tab death, and wallet-core's
-fakes carry hand-written kill switches.
+`node:fs/promises` at the syscall level. So each consumer invents its own tear:
+freewallet's Playwright suite aborts routes in the browser, compiles window-flag
+seams into the app, and simulates a tab death, and wallet-core's fakes carry
+hand-written kill switches.
 
 The two tear grades are different states. A refused request leaves the store
-untouched. A dropped response leaves the write durable while the client
-believes it failed. The second is the case a consumer's re-run has to detect
-from stored state, and a browser-side route abort cannot produce it.
+untouched. A dropped response leaves the write durable while the client believes
+it failed. The second is the case a consumer's re-run has to detect from stored
+state, and a browser-side route abort cannot produce it.
 
-The hold is for interleaving two clients at a chosen write, such as two
-signups whose existence probes both miss before either one binds.
+The hold is for interleaving two clients at a chosen write, such as two signups
+whose existence probes both miss before either one binds.
 
 A wrapper around the storage backend was the other candidate. It tears after
 authorization and has to cover the whole `StorageBackend` interface, about 50
 members. The hook is tried first for that reason.
+
+Findings, 2026-10-03. A root hook added after `createApp()` reaches every route
+group, `/kms` included, but runs behind each group's own hooks. An unsigned
+write that `requireAuthHeaders` refuses with a 401 never reaches a root
+`onRequest` hook added that late, so the record would miss it. That a signed
+request is seen at all rests on the order Fastify loads plugins in. The seam's
+hooks are therefore added to the root instance before the protocol plugin is
+registered. `createApp()` is split for that: it builds the instance and calls
+`composeApp({ fastify, ...options })`, which `startTestServer()` calls itself
+after adding the hooks. `composeApp` is not exported from the package root.
+
+The seam is `src/lib/requestFaults.ts`, returned by `startTestServer()` as
+`faults`: `refuse`, `dropResponse`, `hold`, `requests`, `reset`.
+
+- The invoking DID is read off the `Authorization` header's `keyId` before any
+  signature is verified, since the seam runs ahead of `parseAuthHeaders`. It
+  names who the request claims to be signed by.
+- An object predicate with no `method` never matches `OPTIONS`, so a browser's
+  CORS preflight does not take a fault meant for the request behind it.
+- The client stack retries. A `PUT` refused with a 5xx, or one whose response is
+  dropped, is sent again by was-client's HTTP layer, and a fault that fires once
+  is absorbed without the caller seeing it. The two tears take a `times` option
+  for that (default 1, `Infinity` allowed), and a refusal with a 4xx status is
+  not retried. Under grade two each retry is applied again.
+- Grade two closes the socket in an `onSend` hook, after the handler has
+  finished. It is meant for writes. A streamed response may have nothing to
+  lose.
+- A held request is an active connection, which `fastify.close()` waits on. A
+  `preClose` hook releases every hold, and `reset()` does too.
 
 ### WAS-46: [H] Un-skip the Postgres and flag-gated storage-contract tests
 

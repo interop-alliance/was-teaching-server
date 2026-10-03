@@ -40,7 +40,48 @@ export function createApp({
 }: FastifyWasOptions & {
   logger?: FastifyServerOptions['logger']
 }): FastifyInstance {
-  const fastify = Fastify({ logger })
+  const fastify = createInstance({ logger })
+  composeApp({ fastify, ...options })
+  return fastify
+}
+
+/**
+ * Builds the bare Fastify instance `createApp()` composes on. The test boot in
+ * `testing.ts` builds its instance here too, so a server option added to this
+ * call reaches the test server as well. Internal: not exported from the
+ * package.
+ * @param options {object}
+ * @param [options.logger] {boolean|object}   Fastify's `logger` option
+ * @returns {import('fastify').FastifyInstance}
+ */
+export function createInstance({
+  logger
+}: {
+  logger?: FastifyServerOptions['logger']
+}): FastifyInstance {
+  return Fastify({ logger })
+}
+
+/**
+ * Registers the community-edition composition on an existing Fastify instance:
+ * the `fastifyWas` protocol plugin, then the teaching-server extras. Split out
+ * of `createApp()` for the test boot in `testing.ts`, which adds root hooks of
+ * its own first. A root hook added before this call runs ahead of every route
+ * group's hooks, and one added after it runs behind them. Internal: not
+ * exported from the package. A downstream composition that needs root hooks
+ * of its own registers `fastifyWas` on its own instance.
+ * @param options {object}   `fastifyWas` plugin options
+ *   ({@link FastifyWasOptions}), plus:
+ * @param options.fastify {import('fastify').FastifyInstance}   the instance to
+ *   compose on
+ * @returns {void}
+ */
+export function composeApp({
+  fastify,
+  ...options
+}: FastifyWasOptions & {
+  fastify: FastifyInstance
+}): void {
   // One switch withholds the version from all three places that publish it:
   // the welcome page, `/health`, and the service description (in the plugin).
   const version = options.discloseVersion === false ? undefined : SERVER_VERSION
@@ -95,6 +136,4 @@ export function createApp({
   })
 
   fastify.register(initApiCorsProxyRoutes)
-
-  return fastify
 }
