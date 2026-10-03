@@ -18,11 +18,9 @@ import type {
   StoredSpaceMetadata,
   WriteStamp
 } from '../types.js'
-import {
-  type EmbeddedMetadataValidator,
-  importedGeneration,
-  withoutStampMembers
-} from './etag.js'
+import { importedGeneration } from './etag.js'
+import type { EmbeddedMetadataValidator } from './metadataValidator.js'
+import { withoutStampMembers } from './hlc.js'
 
 /**
  * Strips the validator-bearing and stamp members an incoming Space or

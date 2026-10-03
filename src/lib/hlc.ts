@@ -68,6 +68,43 @@ export function readingOfStamp(
 }
 
 /**
+ * The write stamp members of a stored record, each left out when absent.
+ * @param record {Partial<WriteStamp> | undefined}
+ * @returns {Partial<WriteStamp>}
+ */
+export function stampOf(
+  record: Partial<WriteStamp> | undefined
+): Partial<WriteStamp> {
+  return {
+    ...(record?.updatedAt !== undefined && { updatedAt: record.updatedAt }),
+    ...(record?.updatedAtCounter !== undefined && {
+      updatedAtCounter: record.updatedAtCounter
+    }),
+    ...(record?.originId !== undefined && { originId: record.originId })
+  }
+}
+
+/**
+ * A record without its write stamp members (`updatedAt`, `updatedAtCounter`,
+ * `originId`). A Space or Collection Metadata body takes this form in the
+ * Postgres `metadata` jsonb, whose stamp lives in its own columns, and an
+ * incoming or archived record takes it before the backend's clock stamps it.
+ * @param record {T}
+ * @returns {Omit<T, keyof WriteStamp>}
+ */
+export function withoutStampMembers<T extends object>(
+  record: T
+): Omit<T, keyof WriteStamp> {
+  const {
+    updatedAt: _updatedAt,
+    updatedAtCounter: _updatedAtCounter,
+    originId: _originId,
+    ...rest
+  } = record as T & Partial<WriteStamp>
+  return rest
+}
+
+/**
  * Orders two write stamps by `(ms, counter, originId)`: negative when `left`
  * sorts first, positive when `right` does, zero when they are the same stamp.
  * The first two compare numerically, `originId` by plain code-unit

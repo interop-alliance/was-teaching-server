@@ -66,13 +66,13 @@ import {
 } from '../lib/paths.js'
 import {
   type EtagValidator,
-  metadataEtagOf,
-  etagOf,
   formatEtag,
-  parseWritePreconditions,
-  stampedValidator,
-  stripMetadataValidator
+  parseWritePreconditions
 } from '../lib/etag.js'
+import {
+  metadataEtagOf,
+  stripMetadataValidator
+} from '../lib/metadataValidator.js'
 import {
   CollectionNotFoundError,
   EncryptionImmutableError,
@@ -689,9 +689,7 @@ export class CollectionRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
-    const etag = formatEtag(
-      stampedValidator({ generation: log.generation, stamp: log })
-    )
+    const etag = formatEtag(log.validator)
     const notModified = notModifiedReply({ request, reply, etag })
     if (notModified) {
       return notModified
@@ -1133,8 +1131,8 @@ export class CollectionRequest {
         position
       })
     const documents: ChangeDocument[] = result.documents.map(doc => {
-      const etag = etagOf(doc)
-      const metaEtag = etagOf(doc.meta ?? {})
+      const etag = doc.validator && formatEtag(doc.validator)
+      const metaEtag = doc.metaValidator && formatEtag(doc.metaValidator)
       return {
         id: doc.resourceId,
         _deleted: doc.deleted,

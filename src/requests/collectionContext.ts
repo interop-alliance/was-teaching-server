@@ -10,7 +10,7 @@
 import type { FastifyRequest } from 'fastify'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import { DEFAULT_BACKEND_ID } from '../lib/backends.js'
-import { stripMetadataValidator } from '../lib/etag.js'
+import { stripMetadataValidator } from '../lib/metadataValidator.js'
 import { getCachedGovernedEncryption } from '../lib/governedEncryptionCache.js'
 import { collectionPath, linksetPath } from '../lib/paths.js'
 import {

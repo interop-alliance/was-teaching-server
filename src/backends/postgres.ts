@@ -73,7 +73,7 @@ import {
   parseSidecarBytes,
   restampImportedSidecar
 } from '../lib/metaSidecar.js'
-import { HybridLogicalClock } from '../lib/hlc.js'
+import { HybridLogicalClock, stampOf, withoutStampMembers } from '../lib/hlc.js'
 import {
   sanitizeBackendRecord,
   serverBackendDescriptor
@@ -98,16 +98,18 @@ import {
 import {
   type EtagValidator,
   type HeldValidators,
-  embedMetadataValidator,
   etagOf,
-  metadataEtagOf,
+  mintValidator,
   newGeneration,
   resolveGeneration,
   stampedValidator,
-  stampOf,
-  stripMetadataValidator,
-  withoutStampMembers
+  validatorOf
 } from '../lib/etag.js'
+import {
+  embedMetadataValidator,
+  metadataEtagOf,
+  stripMetadataValidator
+} from '../lib/metadataValidator.js'
 import {
   clampPageSize,
   nextPageUrl,
@@ -149,7 +151,10 @@ import {
   assertSpaceWritePrecondition,
   assertCollectionLogWritePrecondition
 } from '../lib/preconditions.js'
-import { unchangedLogValidator } from '../lib/governedLog.js'
+import {
+  collectionLogResultOf,
+  unchangedLogValidator
+} from '../lib/governedLog.js'
 import type {
   SpaceMetadata,
   CollectionMetadata,
@@ -172,6 +177,7 @@ import type {
   MetadataValidatorParts,
   StoredSpaceMetadata,
   StoredCollectionMetadata,
+  CollectionLogResult,
   StoredCollectionLog,
   CollectionTransitionContext,
   KeystoreConfig,
@@ -451,6 +457,19 @@ function storedLogFromRow(
     updatedAtCounter: row.log_updated_at_counter,
     originId: row.log_origin_id
   }
+}
+
+/**
+ * A Collection row's governing history log as the backend hands it over (the
+ * body beside its validator), or `undefined` when the row holds none.
+ * @param row {LogRow | undefined}
+ * @returns {CollectionLogResult | undefined}
+ */
+function logResultFromRow(
+  row: LogRow | undefined
+): CollectionLogResult | undefined {
+  const stored = storedLogFromRow(row)
+  return stored && collectionLogResultOf(stored)
 }
 
 /**
@@ -1356,8 +1375,12 @@ export class PostgresBackend implements StorageBackend {
     // a Space deleted and re-created under the same id mints a new one, so
     // the two lives' validators can never coincide. The stamp is minted over
     // the prior one, and resets the local segment.
-    const generation = resolveGeneration(prior?.metaGeneration)
-    const stamp = await this.#clock.mint({ held: stampOf(prior) })
+    const validator = await mintValidator({
+      clock: this.#clock,
+      prior: prior && { generation: prior.metaGeneration, ...stampOf(prior) },
+      local: 0
+    })
+    const { generation, stamp } = validator
     const stamped = stampSpaceMetadata({
       spaceMetadata,
       prior,
@@ -1390,7 +1413,7 @@ export class PostgresBackend implements StorageBackend {
         ...stampValues(stamp)
       ]
     )
-    return stampedValidator({ generation, stamp, local: 0 })
+    return validator
   }
 
   /**
@@ -1553,7 +1576,7 @@ export class PostgresBackend implements StorageBackend {
       // The request layer's state-transition checks (e.g. epoch append-only),
       // re-evaluated here against the row just read under the lock, its
       // history log included.
-      await assertTransition?.({ prior, log: storedLogFromRow(rows[0]) })
+      await assertTransition?.({ prior, log: logResultFromRow(rows[0]) })
       // Count quota (create path only): a create is no row or a placeholder
       // (NULL-metadata) row; writing one must not push the Space past
       // `maxCollectionsPerSpace` (spec "Quotas").
@@ -1577,8 +1600,12 @@ export class PostgresBackend implements StorageBackend {
       // Collection's whole life; a Collection deleted and re-created under
       // the same id mints a new one, so the two lives' validators can never
       // coincide.
-      const generation = resolveGeneration(prior?.metaGeneration)
-      const stamp = await this.#clock.mint({ held: stampOf(prior) })
+      const validator = await mintValidator({
+        clock: this.#clock,
+        prior: prior && { generation: prior.metaGeneration, ...stampOf(prior) },
+        local: 0
+      })
+      const { generation, stamp } = validator
       await this.#upsertCollection({
         queryable: client,
         spaceId,
@@ -1592,7 +1619,7 @@ export class PostgresBackend implements StorageBackend {
         generation,
         stamp
       })
-      return stampedValidator({ generation, stamp, local: 0 })
+      return validator
     })
   }
 
@@ -1689,7 +1716,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @returns {Promise<StoredCollectionLog | undefined>}
+   * @returns {Promise<CollectionLogResult | undefined>}
    */
   async getCollectionLog({
     spaceId,
@@ -1697,14 +1724,14 @@ export class PostgresBackend implements StorageBackend {
   }: {
     spaceId: string
     collectionId: string
-  }): Promise<StoredCollectionLog | undefined> {
+  }): Promise<CollectionLogResult | undefined> {
     const { rows } = await this.#reader().query<LogRow>(
       `SELECT ${LOG_COLUMNS}
          FROM collections
         WHERE space_id = $1 AND collection_id = $2`,
       [spaceId, collectionId]
     )
-    return storedLogFromRow(rows[0])
+    return logResultFromRow(rows[0])
   }
 
   /**
@@ -1740,7 +1767,7 @@ export class PostgresBackend implements StorageBackend {
     ifMatch?: string
     ifNoneMatch?: HeldValidators
     assertTransition?: (context: {
-      prior?: StoredCollectionLog
+      prior?: CollectionLogResult
       collectionMetadata: StoredCollectionMetadata
     }) => void | Promise<void>
   }): Promise<EtagValidator | undefined> {
@@ -1770,9 +1797,12 @@ export class PostgresBackend implements StorageBackend {
       if (unchanged !== undefined) {
         return unchanged
       }
-      await assertTransition?.({ prior, collectionMetadata })
-      const generation = resolveGeneration(prior?.generation)
-      const stamp = await this.#clock.mint({ held: stampOf(prior) })
+      await assertTransition?.({
+        prior: prior && collectionLogResultOf(prior),
+        collectionMetadata
+      })
+      const validator = await mintValidator({ clock: this.#clock, prior })
+      const { generation, stamp } = validator
       // The served Collection Metadata object changed with its derived
       // member, so its local validator segment advances; its generation and
       // stamp are kept.
@@ -1787,7 +1817,7 @@ export class PostgresBackend implements StorageBackend {
          WHERE space_id = $1 AND collection_id = $2`,
         [spaceId, collectionId, body, generation, ...stampValues(stamp)]
       )
-      return stampedValidator({ generation, stamp })
+      return validator
     })
   }
 
@@ -2243,9 +2273,9 @@ export class PostgresBackend implements StorageBackend {
       // successor can never present a validator the previous one already
       // handed out. The stamp is minted over the row's prior one (a
       // tombstone's included), under the row lock, so it sorts above it.
-      const generation = resolveGeneration(prior?.generation)
-      const stamp = await this.#clock.mint({
-        held: prior && stampOfRow(prior)
+      const { generation, stamp } = await mintValidator({
+        clock: this.#clock,
+        prior: prior && { generation: prior.generation, ...stampOfRow(prior) }
       })
       // A content write preserves the independent `/meta` record (its
       // generation and stamp) and the user-writable `custom` of a LIVE
@@ -2799,8 +2829,11 @@ export class PostgresBackend implements StorageBackend {
       // write (a tombstone dropped any earlier one, so a re-created Resource
       // starts afresh here) and kept by every later one. Its stamp is minted
       // over the prior `/meta` stamp, under the row lock.
-      const metaGeneration = resolveGeneration(priorMeta?.generation)
-      const metaStamp = await this.#clock.mint({ held: priorMeta })
+      const metaValidator = await mintValidator({
+        clock: this.#clock,
+        prior: priorMeta
+      })
+      const { generation: metaGeneration, stamp: metaStamp } = metaValidator
       const hasCustom = Object.keys(custom).length > 0
       // The key-epoch stamp describes the CONTENT write, so a supplied `epoch`
       // replaces it but an OMITTED one PRESERVES the stored value (unlike
@@ -2828,7 +2861,7 @@ export class PostgresBackend implements StorageBackend {
           ...stampValues(metaStamp)
         ]
       )
-      return stampedValidator({ generation: metaGeneration, stamp: metaStamp })
+      return metaValidator
     })
   }
 
@@ -2934,9 +2967,9 @@ export class PostgresBackend implements StorageBackend {
       // continue: an overwrite keeps the row's generation, while a write at a
       // freed index mints a new one and cannot reuse the old validators. The
       // stamp is minted over the row's prior one.
-      const generation = resolveGeneration(prior?.generation)
-      const stamp = await this.#clock.mint({
-        held: prior && stampOfRow(prior)
+      const { generation, stamp } = await mintValidator({
+        clock: this.#clock,
+        prior: prior && { generation: prior.generation, ...stampOfRow(prior) }
       })
       const values = [
         spaceId,
@@ -3223,8 +3256,9 @@ export class PostgresBackend implements StorageBackend {
       {
         resourceId: string
         feedPosition: number
-        generation?: string
+        validator?: EtagValidator
         meta?: ResourceMetaStamp
+        metaValidator?: EtagValidator
         createdBy?: IDID
         deleted: boolean
         data?: unknown
@@ -3267,6 +3301,12 @@ export class PostgresBackend implements StorageBackend {
     const documents = rows.map(row => {
       // Selected only when non-null (see the WHERE clause).
       const feedPosition = Number(row.feed_position)
+      // The content validator rides beside the stamp, so the request layer
+      // can format the wire `etag` without a fetch per Resource.
+      const validator = validatorOf({
+        generation: row.generation,
+        ...stampOfRow(row)
+      })
       if (row.deleted) {
         return {
           resourceId: row.resource_id,
@@ -3274,7 +3314,7 @@ export class PostgresBackend implements StorageBackend {
           ...stampOfRow(row),
           // A soft delete dropped the `/meta` record, so a tombstone carries
           // no `meta`.
-          generation: row.generation,
+          ...(validator !== undefined && { validator }),
           // A tombstone keeps its creator, as it keeps its `created_at`.
           ...(row.created_by !== null && { createdBy: row.created_by }),
           deleted: true,
@@ -3292,15 +3332,16 @@ export class PostgresBackend implements StorageBackend {
         data = undefined
       }
       const meta = metaStampOfRow(row)
+      // The `/meta` validator rides beside `meta`, so the request layer can
+      // format the wire `metaEtag` without a fetch per Resource.
+      const metaValidator = meta && validatorOf(meta)
       return {
         resourceId: row.resource_id,
         feedPosition,
         ...stampOfRow(row),
-        // `generation` pairs with the content stamp, and `meta` carries its
-        // own, so the request layer can derive the wire `etag` / `metaEtag`
-        // without a fetch per Resource.
-        generation: row.generation,
+        ...(validator !== undefined && { validator }),
         ...(meta !== undefined && { meta }),
+        ...(metaValidator !== undefined && { metaValidator }),
         // The creator's DID rides the feed so provenance replicates with the
         // document, rather than needing a `/meta` fetch per Resource.
         ...(row.created_by !== null && { createdBy: row.created_by }),

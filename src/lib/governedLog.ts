@@ -12,7 +12,7 @@
  * and compares its result against the derived member.
  */
 import type { CollectionEncryption } from '@interop/storage-core'
-import type { StoredCollectionLog } from '../types.js'
+import type { CollectionLogResult, StoredCollectionLog } from '../types.js'
 import { type EtagValidator, stampedValidator } from './etag.js'
 import {
   InvalidRequestBodyError,
@@ -103,6 +103,24 @@ export function parseGoverningLog({
 }
 
 /**
+ * A stored log as a backend hands it over: the body beside the validator built
+ * from the stored generation and write stamp.
+ * @param stored {StoredCollectionLog}
+ * @returns {CollectionLogResult}
+ */
+export function collectionLogResultOf(
+  stored: StoredCollectionLog
+): CollectionLogResult {
+  return {
+    body: stored.body,
+    validator: stampedValidator({
+      generation: stored.generation,
+      stamp: stored
+    })
+  }
+}
+
+/**
  * The validator a log write answers with when its body equals the stored log
  * byte for byte, or `undefined` when the write changes something. A re-sent
  * log is a no-op once its preconditions pass: the current validator is
@@ -123,7 +141,7 @@ export function unchangedLogValidator({
   if (prior === undefined || prior.body !== body) {
     return undefined
   }
-  return stampedValidator({ generation: prior.generation, stamp: prior })
+  return collectionLogResultOf(prior).validator
 }
 
 /**

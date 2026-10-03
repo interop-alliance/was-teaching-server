@@ -523,16 +523,27 @@ export type StoredCollectionMetadata = CollectionMetadata &
 export type StoredSpaceMetadata = SpaceMetadata & MetadataValidatorParts
 
 /**
- * A Collection's governing history log as read from storage (the
+ * A Collection's governing history log as stored (the
  * `governed-history-logs` feature): the JSON Lines body verbatim, plus its
  * own `ETag` validator parts, the generation minted by the guarded create and
  * the write stamp each write mints, independent of the Collection Metadata
- * object's validator.
+ * object's validator. The filesystem backend's log file and the export
+ * archive's log entry hold this layout.
  */
 export type StoredCollectionLog = {
   body: string
   generation: string
 } & WriteStamp
+
+/**
+ * A Collection's governing history log as a backend hands it over: the JSON
+ * Lines body verbatim beside the log's own validator, so a reader formats the
+ * `ETag` without assembling it from the stored layout.
+ */
+export interface CollectionLogResult {
+  body: string
+  validator: EtagValidator
+}
 
 /**
  * The persistence contract every backend implements. No write creates a
@@ -551,7 +562,7 @@ export type StoredCollectionLog = {
  */
 export interface CollectionTransitionContext {
   prior?: StoredCollectionMetadata
-  log?: StoredCollectionLog
+  log?: CollectionLogResult
 }
 
 export interface StorageBackend {
@@ -1004,7 +1015,7 @@ export interface StorageBackend {
   getCollectionLog(options: {
     spaceId: string
     collectionId: string
-  }): Promise<StoredCollectionLog | undefined>
+  }): Promise<CollectionLogResult | undefined>
   /**
    * Replaces a Collection's governing history log with `body` (the `/log`
    * transport's guarded create under `ifNoneMatch`, or its compare-and-swap
@@ -1036,7 +1047,7 @@ export interface StorageBackend {
      * descriptor-transition checks.
      */
     assertTransition?: (context: {
-      prior?: StoredCollectionLog
+      prior?: CollectionLogResult
       collectionMetadata: StoredCollectionMetadata
     }) => void | Promise<void>
   }): Promise<EtagValidator | undefined>
@@ -1149,9 +1160,10 @@ export interface StorageBackend {
    * replicates and does not have to be fetched per Resource from `/meta`),
    * and -- so metadata replicates alongside content -- the user-writable
    * `custom` object (the opaque encryption envelope on an encrypted
-   * Collection). It also carries the Resource's `generation`, which the
-   * request layer pairs with the content stamp for the wire document's `etag`
-   * (and `meta` for its `metaEtag`) -- the quoted strong validators a replica
+   * Collection). Out of band from those members, it also carries the content
+   * record's `validator` and, once metadata has been written, the `/meta`
+   * record's `metaValidator`. The request layer formats them as the wire
+   * document's `etag` and `metaEtag`, the quoted strong validators a replica
    * can send back as `If-Match` without a GET per Resource. A tombstone keeps
    * its `createdBy`, as it keeps its `createdAt`. A metadata-only edit
    * re-surfaces the Resource at a new feed position, with a new `meta` stamp
@@ -1179,12 +1191,15 @@ export interface StorageBackend {
         resourceId: string
         // The document's position in the Collection's changes feed.
         feedPosition: number
-        // Paired with the content stamp by the request layer to derive the
-        // wire `etag`.
-        generation?: string
+        // The content record's validator, which the request layer formats as
+        // the wire `etag`. Absent when the record has none.
+        validator?: EtagValidator
         // The `/meta` record's stamp and generation, present once metadata has
-        // been written; the request layer derives the wire `metaEtag` from it.
+        // been written.
         meta?: ResourceMetaStamp
+        // The `/meta` record's validator, which the request layer formats as
+        // the wire `metaEtag`. Absent when no metadata has been written.
+        metaValidator?: EtagValidator
         createdBy?: IDID
         deleted: boolean
         data?: unknown

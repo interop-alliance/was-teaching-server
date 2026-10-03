@@ -7,7 +7,8 @@
  * annotation members live in its one Collection Metadata file.
  */
 import { isMetaStamp } from '@interop/storage-core'
-import { importedGeneration, withoutStampMembers } from './etag.js'
+import { importedGeneration } from './etag.js'
+import { withoutStampMembers } from './hlc.js'
 import { isPlainObject } from './isPlainObject.js'
 import type {
   IDID,

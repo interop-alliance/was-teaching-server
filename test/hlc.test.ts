@@ -15,12 +15,12 @@ import {
   HybridLogicalClock,
   compareStamps,
   isoOfMs,
-  readingOfStamp
+  readingOfStamp,
+  stampOf
 } from '../src/lib/hlc.js'
 import type { HlcTimestamp } from '../src/lib/hlc.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { STORE_FILE_NAME } from '../src/backends/filesystemStore.js'
-import { stampOf } from '../src/lib/etag.js'
 import type { WriteStamp } from '../src/types.js'
 import { frozenClock } from './helpers.js'
 

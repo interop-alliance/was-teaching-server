@@ -31,11 +31,8 @@
  */
 import { randomBytes } from 'node:crypto'
 import { base58 } from '@scure/base'
-import type {
-  MetadataValidatorParts,
-  RecordValidatorParts,
-  WriteStamp
-} from '../types.js'
+import type { RecordValidatorParts, WriteStamp } from '../types.js'
+import { type HybridLogicalClock, stampOf } from './hlc.js'
 
 /**
  * The parts of a strong `ETag` validator: the record's `generation`, the
@@ -176,6 +173,35 @@ export function stampedValidator({
 }
 
 /**
+ * Mints the validator of a versioned write: the generation the write
+ * continues under (`resolveGeneration`) and a fresh stamp from the store's
+ * clock. The clock is first raised to the held record's stamp, so the new
+ * stamp sorts above the one it replaces. `prior` is required, and is
+ * `undefined` only on a create, so no write site can drop the held stamp. Call
+ * it inside the write's critical section.
+ * @param options {object}
+ * @param options.clock {HybridLogicalClock}   the store's clock
+ * @param options.prior {RecordValidatorParts | undefined}   the held record's
+ *   generation and stamp; `undefined` when the write creates the record
+ * @param [options.local] {number}   the local segment, on a container
+ *   Metadata object
+ * @returns {Promise<EtagValidator>}
+ */
+export async function mintValidator({
+  clock,
+  prior,
+  local
+}: {
+  clock: HybridLogicalClock
+  prior: RecordValidatorParts | undefined
+  local?: number
+}): Promise<EtagValidator> {
+  const generation = resolveGeneration(prior?.generation)
+  const stamp = await clock.mint({ held: stampOf(prior) })
+  return stampedValidator({ generation, stamp, local })
+}
+
+/**
  * The validator of a stored record, or `undefined` when any part is missing
  * (a Resource Metadata object never written has no `/meta` stamp) or its
  * `updatedAt` does not parse as a date.
@@ -229,165 +255,8 @@ export function validatorPartsOf(
 ): RecordValidatorParts {
   return {
     ...(record?.generation !== undefined && { generation: record.generation }),
-    ...(record?.updatedAt !== undefined && { updatedAt: record.updatedAt }),
-    ...(record?.updatedAtCounter !== undefined && {
-      updatedAtCounter: record.updatedAtCounter
-    }),
-    ...(record?.originId !== undefined && { originId: record.originId })
+    ...stampOf(record)
   }
-}
-
-/**
- * The write stamp members of a stored record, each left out when absent.
- * @param record {Partial<WriteStamp> | undefined}
- * @returns {Partial<WriteStamp>}
- */
-export function stampOf(
-  record: Partial<WriteStamp> | undefined
-): Partial<WriteStamp> {
-  const { generation: _generation, ...stamp } = validatorPartsOf(record)
-  return stamp
-}
-
-/**
- * A record without its write stamp members (`updatedAt`, `updatedAtCounter`,
- * `originId`). A Space or Collection Metadata body takes this form in the
- * Postgres `metadata` jsonb, whose stamp lives in its own columns, and an
- * incoming or archived record takes it before the backend's clock stamps it.
- * @param record {T}
- * @returns {Omit<T, keyof WriteStamp>}
- */
-export function withoutStampMembers<T extends object>(
-  record: T
-): Omit<T, keyof WriteStamp> {
-  const {
-    updatedAt: _updatedAt,
-    updatedAtCounter: _updatedAtCounter,
-    originId: _originId,
-    ...rest
-  } = record as T & Partial<WriteStamp>
-  return rest
-}
-
-/**
- * The five-segment `ETag` of a stored Space or Collection Metadata object:
- * its out-of-band generation and local segment beside the stamp members of
- * its body. `undefined` for an absent object (a create's prior state). A
- * record with no local segment stored reads as local 0.
- * @param [stored] {Partial<WriteStamp> & MetadataValidatorParts}
- * @returns {string | undefined}
- */
-export function metadataEtagOf(
-  stored?: Partial<WriteStamp> & MetadataValidatorParts
-): string | undefined {
-  if (stored === undefined) {
-    return undefined
-  }
-  return etagOf({
-    ...stampOf(stored),
-    generation: stored.metaGeneration,
-    local: stored.metaLocal ?? 0
-  })
-}
-
-/**
- * The reserved members a Space or Collection Metadata file embeds beside its
- * wire body: `_generation`, the record's generation, and `_local`, the local
- * validator segment. The stamp members are wire members and are stored bare.
- */
-export type EmbeddedMetadataValidator = {
-  _generation?: string
-  _local?: number
-}
-
-/**
- * Lifts a metadata file's on-disk layout (the wire body plus the reserved
- * `_generation` / `_local` members, the filesystem backend's convention; the
- * archive interchange shape carries `_generation` alone) into the stored read
- * shape: the two re-surfaced out of band as `metaGeneration` / `metaLocal`.
- * The inverse of `embedMetadataValidator`.
- * @param raw {T & EmbeddedMetadataValidator}
- * @returns {T & MetadataValidatorParts}
- */
-export function storedMetadataFromFile<T extends object>(
-  raw: T & EmbeddedMetadataValidator
-): T & MetadataValidatorParts {
-  const { _generation, _local, ...body } = raw
-  return {
-    ...(body as T),
-    ...(_generation !== undefined && { metaGeneration: _generation }),
-    ...(_local !== undefined && { metaLocal: _local })
-  }
-}
-
-/**
- * Embeds a metadata record's generation and local segment into a wire body as
- * the reserved `_generation` / `_local` members, the layout of a metadata
- * file on disk. A missing part is left out rather than written as
- * `undefined`. An export archive entry passes no `local`, since the local
- * segment is this server's own and never travels.
- * @param options {object}
- * @param options.body {T}   the wire body, stamp members included
- * @param [options.generation] {string}
- * @param [options.local] {number}
- * @returns {T & EmbeddedMetadataValidator}
- */
-export function embedMetadataValidator<T extends object>({
-  body,
-  generation,
-  local
-}: {
-  body: T
-  generation?: string
-  local?: number
-}): T & EmbeddedMetadataValidator {
-  return {
-    ...body,
-    ...(generation !== undefined && { _generation: generation }),
-    ...(local !== undefined && { _local: local })
-  }
-}
-
-/**
- * Drops the out-of-band validator parts from a stored Space or Collection
- * Metadata read result, leaving the wire body (stamp members included). A
- * handler that composes an update from the stored object spreads this, and
- * the backend discards the stamp members it carries.
- * @param stored {T & MetadataValidatorParts}
- * @returns {T}
- */
-export function stripMetadataValidator<T extends object>(
-  stored: T & MetadataValidatorParts
-): T {
-  const { metaGeneration: _generation, metaLocal: _local, ...body } = stored
-  return body as T
-}
-
-/**
- * Removes the local validator segment (`_local`) from a stored metadata
- * file's bytes, for an export archive entry: the segment is this server's
- * own and never travels. Bytes that do not parse as a JSON object, or that
- * carry no such member, are returned unchanged.
- * @param bytes {Buffer}
- * @returns {Buffer}
- */
-export function withoutLocalSegment(bytes: Buffer): Buffer {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(bytes.toString('utf8'))
-  } catch {
-    return bytes
-  }
-  if (
-    parsed === null ||
-    typeof parsed !== 'object' ||
-    Array.isArray(parsed) ||
-    !('_local' in parsed)
-  ) {
-    return bytes
-  }
-  const { _local: _dropped, ...rest } = parsed as Record<string, unknown>
-  return Buffer.from(JSON.stringify(rest))
 }
 
 /**

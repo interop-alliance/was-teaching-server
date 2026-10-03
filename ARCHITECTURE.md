@@ -197,7 +197,9 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   Responses to non-idempotent POSTs are marked `Cache-Control: no-store` by an
   `onSend` hook in `routes.ts`; a slash-variant redirect and a POST route
   registered with `config.safe` (Query and Export, reads that use POST to carry
-  a body) stay cacheable. The spec defers further `Cache-Control` semantics.
+  a body) stay cacheable. The spec defers further `Cache-Control` semantics. The
+  Metadata-object pieces (the five-segment `ETag` and the reserved `_generation`
+  / `_local` file members) live in `src/lib/metadataValidator.ts`.
 - **`src/lib/hlc.ts`** -- the write stamp. Each storage backend holds one hybrid
   logical clock for its store, and a versioned write mints its stamp with it
   inside the write's critical section. The stamp is the clock reading plus the

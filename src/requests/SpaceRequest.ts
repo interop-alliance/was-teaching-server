@@ -50,12 +50,11 @@ import {
   writableSpaceMetadata
 } from '../lib/spaceProjection.js'
 import { buildServiceDescription } from '../serviceDescription.js'
+import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
 import {
   metadataEtagOf,
-  formatEtag,
-  parseWritePreconditions,
   stripMetadataValidator
-} from '../lib/etag.js'
+} from '../lib/metadataValidator.js'
 import {
   stampCollectionMetadata,
   stampSpaceMetadata

@@ -83,7 +83,7 @@ import {
 } from '../lib/collectionListing.js'
 import { revocationFileName } from '../lib/revocations.js'
 import { applyStoreMigrations, writeClockHighWater } from './filesystemStore.js'
-import { HybridLogicalClock } from '../lib/hlc.js'
+import { HybridLogicalClock, stampOf } from '../lib/hlc.js'
 import { policyGrants } from '../policy.js'
 import { KeyedMutex, KeyedReadWriteLock } from '../lib/keyedMutex.js'
 import {
@@ -92,21 +92,23 @@ import {
   stampSpaceMetadata
 } from '../lib/metadataWrite.js'
 import {
-  type EmbeddedMetadataValidator,
   type EtagValidator,
   type HeldValidators,
-  metadataEtagOf,
-  embedMetadataValidator,
   etagOf,
   newGeneration,
+  mintValidator,
   resolveGeneration,
-  stampedValidator,
-  stampOf,
+  validatorOf,
+  validatorPartsOf
+} from '../lib/etag.js'
+import {
+  type EmbeddedMetadataValidator,
+  metadataEtagOf,
+  embedMetadataValidator,
   storedMetadataFromFile,
   stripMetadataValidator,
-  validatorPartsOf,
   withoutLocalSegment
-} from '../lib/etag.js'
+} from '../lib/metadataValidator.js'
 import {
   atomicWriteFile,
   atomicCreateFile,
@@ -149,7 +151,10 @@ import {
   assertSpaceWritePrecondition,
   assertCollectionLogWritePrecondition
 } from '../lib/preconditions.js'
-import { unchangedLogValidator } from '../lib/governedLog.js'
+import {
+  collectionLogResultOf,
+  unchangedLogValidator
+} from '../lib/governedLog.js'
 import type {
   SpaceMetadata,
   CollectionMetadata,
@@ -171,6 +176,7 @@ import type {
   StoredBackendRecord,
   StoredCollectionMetadata,
   StoredSpaceMetadata,
+  CollectionLogResult,
   StoredCollectionLog,
   CollectionTransitionContext,
   KeystoreConfig,
@@ -1413,8 +1419,12 @@ export class FileSystemBackend implements StorageBackend {
     // deleted and re-created under the same id mints a new one, so the two
     // lives' validators can never coincide. The stamp is minted over the
     // prior one, and resets the local segment.
-    const generation = resolveGeneration(prior?.metaGeneration)
-    const stamp = await this.#clock.mint({ held: stampOf(prior) })
+    const validator = await mintValidator({
+      clock: this.#clock,
+      prior: prior && { generation: prior.metaGeneration, ...stampOf(prior) },
+      local: 0
+    })
+    const { generation, stamp } = validator
     const stamped = stampSpaceMetadata({
       spaceMetadata,
       prior,
@@ -1436,7 +1446,7 @@ export class FileSystemBackend implements StorageBackend {
         embedMetadataValidator({ body: stamped, generation, local: 0 })
       )
     })
-    return stampedValidator({ generation, stamp, local: 0 })
+    return validator
   }
 
   /**
@@ -2528,17 +2538,24 @@ export class FileSystemBackend implements StorageBackend {
             // (lib/metadataWrite.ts), which discards the ones the wire input
             // may carry, validator-bearing and stamp members included. The
             // stamp is minted over the prior one.
-            const stamp = await this.#clock.mint({ held: stampOf(prior) })
+            // The object keeps its generation for the Collection's whole life;
+            // a Collection deleted and re-created under the same id mints a new
+            // one, so the two lives' validators can never coincide.
+            const validator = await mintValidator({
+              clock: this.#clock,
+              prior: prior && {
+                generation: prior.metaGeneration,
+                ...stampOf(prior)
+              },
+              local: 0
+            })
+            const { generation, stamp } = validator
             const stamped = stampCollectionMetadata({
               collectionMetadata,
               prior,
               createdBy,
               stamp
             })
-            // The object keeps its generation for the Collection's whole life;
-            // a Collection deleted and re-created under the same id mints a new
-            // one, so the two lives' validators can never coincide.
-            const generation = resolveGeneration(prior?.metaGeneration)
 
             await this.#persistCollection({
               spaceId,
@@ -2547,7 +2564,7 @@ export class FileSystemBackend implements StorageBackend {
               generation,
               local: 0
             })
-            return stampedValidator({ generation, stamp, local: 0 })
+            return validator
           }
         )
     })
@@ -2750,9 +2767,28 @@ export class FileSystemBackend implements StorageBackend {
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @returns {Promise<StoredCollectionLog | undefined>}
+   * @returns {Promise<CollectionLogResult | undefined>}
    */
   async getCollectionLog({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<CollectionLogResult | undefined> {
+    const stored = await this.#readCollectionLog({ spaceId, collectionId })
+    return stored && collectionLogResultOf(stored)
+  }
+
+  /**
+   * Reads a Collection's governing history log file in its stored layout, or
+   * `undefined` when the Collection has no log.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<StoredCollectionLog | undefined>}
+   */
+  async #readCollectionLog({
     spaceId,
     collectionId
   }: {
@@ -2799,7 +2835,7 @@ export class FileSystemBackend implements StorageBackend {
     ifMatch?: string
     ifNoneMatch?: HeldValidators
     assertTransition?: (context: {
-      prior?: StoredCollectionLog
+      prior?: CollectionLogResult
       collectionMetadata: StoredCollectionMetadata
     }) => void | Promise<void>
   }): Promise<EtagValidator | undefined> {
@@ -2819,7 +2855,7 @@ export class FileSystemBackend implements StorageBackend {
                 if (!collectionMetadata) {
                   return undefined
                 }
-                const prior = await this.getCollectionLog({
+                const prior = await this.#readCollectionLog({
                   spaceId,
                   collectionId
                 })
@@ -2833,10 +2869,16 @@ export class FileSystemBackend implements StorageBackend {
                 if (unchanged !== undefined) {
                   return unchanged
                 }
-                await assertTransition?.({ prior, collectionMetadata })
+                await assertTransition?.({
+                  prior: prior && collectionLogResultOf(prior),
+                  collectionMetadata
+                })
 
-                const generation = resolveGeneration(prior?.generation)
-                const stamp = await this.#clock.mint({ held: stampOf(prior) })
+                const validator = await mintValidator({
+                  clock: this.#clock,
+                  prior
+                })
+                const { generation, stamp } = validator
                 await atomicWriteFile({
                   filePath: this.#collectionLogPath({ spaceId, collectionId }),
                   data: JSON.stringify({
@@ -2858,7 +2900,7 @@ export class FileSystemBackend implements StorageBackend {
                   ),
                   local: (collectionMetadata.metaLocal ?? 0) + 1
                 })
-                return stampedValidator({ generation, stamp })
+                return validator
               }
             )
         )
@@ -3492,8 +3534,8 @@ export class FileSystemBackend implements StorageBackend {
     // its whole life -- through a Resource tombstone and its re-create, since
     // the record continues there. A sidecar removed outright (a chunk delete)
     // takes it along, so the next item under that id starts fresh.
-    const generation = resolveGeneration(prior?.generation)
-    const stamp = await this.#clock.mint({ held: stampOf(prior) })
+    const validator = await mintValidator({ clock: this.#clock, prior })
+    const { generation, stamp } = validator
     const sidecar = build({ prior, generation, stamp })
     if (feed) {
       await this.#writeFeedSidecar({
@@ -3505,7 +3547,7 @@ export class FileSystemBackend implements StorageBackend {
     } else {
       await this.#writeMetaSidecar({ collectionDir, resourceId, sidecar })
     }
-    return stampedValidator({ generation, stamp })
+    return validator
   }
 
   /**
@@ -4080,8 +4122,11 @@ export class FileSystemBackend implements StorageBackend {
       // Resource starts afresh here) and kept by every later one. Its stamp
       // is minted over the prior `meta` stamp; the content record's stamp
       // and generation are preserved untouched.
-      const metaGeneration = resolveGeneration(prior?.meta?.generation)
-      const metaStamp = await this.#clock.mint({ held: prior?.meta })
+      const metaValidator = await mintValidator({
+        clock: this.#clock,
+        prior: prior?.meta
+      })
+      const { generation: metaGeneration, stamp: metaStamp } = metaValidator
       // A Resource whose sidecar carries no `createdAt` takes this write's
       // time.
       const createdAt = prior?.createdAt ?? metaStamp.updatedAt
@@ -4117,7 +4162,7 @@ export class FileSystemBackend implements StorageBackend {
           ...(resolvedEpoch !== undefined && { epoch: resolvedEpoch })
         }
       })
-      return stampedValidator({ generation: metaGeneration, stamp: metaStamp })
+      return metaValidator
     }
     // A metadata write can create a plaintext equality unique claim for a
     // `custom`-sourced attribute (the `equality-query` feature). When the
@@ -4746,8 +4791,9 @@ export class FileSystemBackend implements StorageBackend {
       {
         resourceId: string
         feedPosition: number
-        generation?: string
+        validator?: EtagValidator
         meta?: ResourceMetaStamp
+        metaValidator?: EtagValidator
         createdBy?: IDID
         deleted: boolean
         data?: unknown
@@ -4816,8 +4862,9 @@ export class FileSystemBackend implements StorageBackend {
       | {
           resourceId: string
           feedPosition: number
-          generation?: string
+          validator?: EtagValidator
           meta?: ResourceMetaStamp
+          metaValidator?: EtagValidator
           createdBy?: IDID
           deleted: false
           fileName: string
@@ -4828,7 +4875,7 @@ export class FileSystemBackend implements StorageBackend {
       | {
           resourceId: string
           feedPosition: number
-          generation?: string
+          validator?: EtagValidator
           createdBy?: IDID
           deleted: true
           writerId?: string
@@ -4856,15 +4903,21 @@ export class FileSystemBackend implements StorageBackend {
         ) {
           return undefined
         }
+        // The content and `/meta` validators ride beside the stamps, so the
+        // request layer can format the wire `etag` / `metaEtag` without a
+        // fetch per Resource.
+        const validator = validatorOf({
+          generation: sidecar.generation,
+          ...stamp
+        })
+        const metaValidator = sidecar.meta && validatorOf(sidecar.meta)
         return {
           resourceId,
           feedPosition,
           ...stamp,
-          // `generation` pairs with the content stamp, and `meta` carries
-          // its own, so the request layer can derive the wire `etag` /
-          // `metaEtag` without a fetch per Resource.
-          generation: sidecar.generation,
+          ...(validator !== undefined && { validator }),
           ...(sidecar.meta !== undefined && { meta: sidecar.meta }),
+          ...(metaValidator !== undefined && { metaValidator }),
           // The creator's DID rides the feed so provenance replicates with the
           // document, rather than needing a `/meta` fetch per Resource.
           ...(sidecar.createdBy !== undefined && {
@@ -4905,13 +4958,17 @@ export class FileSystemBackend implements StorageBackend {
         ) {
           return undefined
         }
+        const validator = validatorOf({
+          generation: sidecar.generation,
+          ...stamp
+        })
         return {
           resourceId,
           feedPosition: sidecar.feedPosition,
           ...stamp,
           // A soft delete dropped the `/meta` record, so a tombstone carries
           // no `meta`.
-          generation: sidecar.generation,
+          ...(validator !== undefined && { validator }),
           // A tombstone keeps its creator, as it keeps its `createdAt`.
           ...(sidecar.createdBy !== undefined && {
             createdBy: sidecar.createdBy

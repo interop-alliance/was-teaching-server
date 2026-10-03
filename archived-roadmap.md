@@ -4575,3 +4575,87 @@ state rather than guarding it. Decorating the Fastify instance with the id was
 considered and rejected: the id is a store fact and belongs on the backend.
 
 ---
+
+### WAS-172: [M] [blocks 8] Hybrid-logical-clock write stamp and the four-field validator
+
+- status: done
+- done: 2026-10-03
+- priority: medium
+- labels: data-model, etag, changes-feed, wire-contract, filesystem-backend,
+  postgres-backend
+- blocks: WAS-96, WAS-174, WAS-176, WAS-182, WAS-183, WAS-184, WAS-189, WAS-190
+- touches:
+  - wallet-attached-storage-spec: the Resource data model (`updatedAtCounter`
+    and `originId` members on Resource metadata and the Metadata objects; the
+    validator layout; `version`/`metaVersion` retired), the `changes` profile
+    (stamp members on the change document; the `(updatedAt, writerId)` tie-break
+    sentence replaced by the stamp order) (filed as WASS-47 for the data model
+    and the validator layout, and WASS-51 for the change document)
+  - storage-core: the Resource metadata, `CollectionMetadata`, `SpaceMetadata`,
+    and `ChangeDocument` types (shipped 2026-10-03, unpublished: storage-core
+    0.28.0 adds `WriteStamp` and `ResourceMetaStamp`, and drops `version` /
+    `metaVersion` from `ChangeDocument`)
+  - was-teaching-server: `src/lib/etag.ts`, both backends' sidecar and row
+    layouts and every write path that stamps them, `src/lib/preconditions.ts`,
+    the `/meta` and Metadata-object projections, `changesSince` (shipped
+    2026-10-03: both backends, `src/lib/hlc.ts`, provenance claims, import
+    re-stamping, the boot refusal of a pre-stamp store)
+  - was-client: types only (shipped 2026-10-03, unpublished: was-client 0.87.0
+    drops `parseEtag`, `WriteAck.version` and `MasterState.version` /
+    `metaVersion`, and carries the stamp on `WireDoc` and `MasterState`; it
+    consumes storage-core through a `link:` until 0.28.0 is published)
+  - was-sync: the apply comparison (filed as WS-23, which adopts the stamp data
+    model in the replica schema and the push path)
+  - conformance-suite: validator layout and stamp members on every record kind
+    (filed as PWSCS-18: suite 0.27.0 fails 10 cases against this server, seven
+    exact-shape asserts on the Space and Collection Metadata objects and their
+    create echoes, which now carry the stamp members, and three asserting the
+    withdrawn `writerId` rule on Update Resource Metadata; one optional case
+    still reads `metaVersion` off a change document)
+  - space-archive: filed as SAR-6 (retire `_version`, regenerate the fixtures)
+- acceptance:
+  - [x] Each backend holds one HLC per store: `l = max(l, now)`, counter
+        incremented when `l` stood still, reset when it advanced; minted inside
+        the write's critical section; the HLC is advanced by received stamps
+        (WAS-176) under the clock bound
+  - [x] Every versioned record (Resource, chunk, Resource `/meta`, Space and
+        Collection Metadata objects) stores `updatedAt` (ISO, the HLC physical
+        part), `updatedAtCounter`, and `originId` verbatim, and serves the first
+        two on its metadata
+  - [x] `formatEtag` emits `"<generation>.<ms>.<counter>.<origin>"` with `ms`
+        the epoch integer; `If-Match` / `If-None-Match` compare the whole
+        string; the `version` and `metaVersion` counters are removed from the
+        sidecars, rows, and wire objects
+  - [x] Each change document carries `updatedAtCounter` and `originId` beside
+        `updatedAt`
+  - [x] The ARCHITECTURE note that a client "may read the trailing integer as
+        the revision number" is removed
+  - [x] Tests freeze the clock and assert two same-ms writes get counters 0 and
+        1, that a clock step backwards does not lower `updatedAt`, and the
+        validator layout on every record kind
+
+Context (discovered-from: WAS-96, decisions 2 and 3). The research note
+`_spec/research-write-stamps.md` (2026-10-01) surveys CouchDB, Riak, Cassandra,
+CockroachDB, MongoDB, Dynamo, Spanner, Automerge and Yjs: no system serves LWW,
+dedup and a cross-replica validator from one field; time-plus- counter stamps
+serve LWW and, carried verbatim, the validator, while dedup always needs an
+origin-scoped key. The HLC paper's stamp has no node id and no tie-break, so the
+origin is part of the order key and of the validator (two origins can mint the
+same `(ms, counter)` for one Resource). The encoding is two members rather than
+the paper's packed 64-bit integer, which exceeds JavaScript's safe range.
+
+Server part landed 2026-10-03. The second acceptance box used to list the
+Collection tombstone, which does not exist until WAS-174. That clause moved to
+WAS-174's first acceptance box on 2026-10-03, since WAS-174 is blocked by this
+item and the two could not both close otherwise. The receive rule (`observe`) is
+built and tested, and gets its caller with WAS-176. The `/meta` write already
+mints only the `/meta` stamp, which is WAS-190's server behavior; that item
+keeps its spec text and conformance case. Follow-ups filed from this work:
+WAS-191 (the sidecar as commit point), WAS-192 (the `/meta` `ETag` and
+content-record members), WAS-193 (`epoch` on a `/meta` write). Settled with the
+maintainer on 2026-10-03: the Postgres governed-log stamp columns are
+`log_updated_at`, `log_updated_at_counter`, and `log_origin_id`; and an archive
+exported by a pre-stamp release is not a supported import input (greenfield
+only), so import does nothing about the retired members such an archive carries.
+
+---

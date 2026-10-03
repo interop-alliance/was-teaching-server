@@ -99,28 +99,22 @@ Chains:
 
 Ready:
 
-- WAS-172 [M] Hybrid-logical-clock write stamp and the four-field validator
-  (blocks 8)
 - WAS-173 [M] `revisions` descriptor on the Collection Metadata object
   (blocks 2)
+- WAS-174 [M] Collection tombstones (blocks 2)
 - WAS-175 [M] Server sync key and verification of a peer's invocations
   (blocks 2)
 - WAS-178 [M] Read a Space's revocations
 - WAS-180 [M] Delete Space removes revocations before the Space directory
+- WAS-182 [M] Changes feed carries every record kind in the Collection
+  (blocks 2)
+- WAS-183 [M] Stamped, tombstoned access-control policies (blocks 2)
+- WAS-189 [M] Write responses carry the record's stamp and provenance, container
+  writes included
+- WAS-190 [M] A `/meta`-only write leaves the content record's stamp unchanged
 
 Chains:
 
-- WAS-172 [M] Hybrid-logical-clock write stamp and the four-field validator
-  - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
-    model)
-  - WAS-174 [M] Collection tombstones
-  - WAS-176 [M] Replica registration, pull loop, and the apply path
-  - WAS-182 [M] Changes feed carries every record kind in the Collection
-  - WAS-183 [M] Stamped, tombstoned access-control policies
-  - WAS-184 [L] Write-time creation and revision statements
-  - WAS-189 [M] Write responses carry the record's stamp and provenance,
-    container writes included
-  - WAS-190 [M] A `/meta`-only write leaves the content record's stamp unchanged
 - WAS-173 [M] `revisions` descriptor on the Collection Metadata object
   - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
     model)
@@ -1433,84 +1427,6 @@ The replication program: a Space served by several primaries with a replicated
 write identity and conflict model. WAS-96 is the umbrella and names the design
 doc; the other items are its sub-items in dependency order.
 
-### WAS-172: [M] [blocks 8] Hybrid-logical-clock write stamp and the four-field validator
-
-- status: in-progress
-- priority: medium
-- labels: data-model, etag, changes-feed, wire-contract, filesystem-backend,
-  postgres-backend
-- blocks: WAS-96, WAS-174, WAS-176, WAS-182, WAS-183, WAS-184, WAS-189, WAS-190
-- touches:
-  - wallet-attached-storage-spec: the Resource data model (`updatedAtCounter`
-    and `originId` members on Resource metadata and the Metadata objects; the
-    validator layout; `version`/`metaVersion` retired), the `changes` profile
-    (stamp members on the change document; the `(updatedAt, writerId)` tie-break
-    sentence replaced by the stamp order)
-  - storage-core: the Resource metadata, `CollectionMetadata`, `SpaceMetadata`,
-    and `ChangeDocument` types (shipped 2026-10-03, unpublished: storage-core
-    0.28.0 adds `WriteStamp` and `ResourceMetaStamp`, and drops `version` /
-    `metaVersion` from `ChangeDocument`)
-  - was-teaching-server: `src/lib/etag.ts`, both backends' sidecar and row
-    layouts and every write path that stamps them, `src/lib/preconditions.ts`,
-    the `/meta` and Metadata-object projections, `changesSince` (shipped
-    2026-10-03, uncommitted: both backends, `src/lib/hlc.ts`, provenance claims,
-    import re-stamping, the boot refusal of a pre-stamp store)
-  - was-client: types only (shipped 2026-10-03, unpublished: was-client 0.87.0
-    drops `parseEtag`, `WriteAck.version` and `MasterState.version` /
-    `metaVersion`, and carries the stamp on `WireDoc` and `MasterState`; it
-    consumes storage-core through a `link:` until 0.28.0 is published)
-  - was-sync: the apply comparison
-  - conformance-suite: validator layout and stamp members on every record kind
-    (open: suite 0.27.0 fails 10 cases against this server, seven exact-shape
-    asserts on the Space and Collection Metadata objects and their create
-    echoes, which now carry the stamp members, and three asserting the withdrawn
-    `writerId` rule on Update Resource Metadata; one optional case still reads
-    `metaVersion` off a change document)
-  - space-archive: filed as SAR-6 (retire `_version`, regenerate the fixtures)
-- acceptance:
-  - [x] Each backend holds one HLC per store: `l = max(l, now)`, counter
-        incremented when `l` stood still, reset when it advanced; minted inside
-        the write's critical section; the HLC is advanced by received stamps
-        (WAS-176) under the clock bound
-  - [ ] Every versioned record (Resource, chunk, Resource `/meta`, Space and
-        Collection Metadata objects, Collection tombstone) stores `updatedAt`
-        (ISO, the HLC physical part), `updatedAtCounter`, and `originId`
-        verbatim, and serves the first two on its metadata
-  - [x] `formatEtag` emits `"<generation>.<ms>.<counter>.<origin>"` with `ms`
-        the epoch integer; `If-Match` / `If-None-Match` compare the whole
-        string; the `version` and `metaVersion` counters are removed from the
-        sidecars, rows, and wire objects
-  - [x] Each change document carries `updatedAtCounter` and `originId` beside
-        `updatedAt`
-  - [x] The ARCHITECTURE note that a client "may read the trailing integer as
-        the revision number" is removed
-  - [x] Tests freeze the clock and assert two same-ms writes get counters 0 and
-        1, that a clock step backwards does not lower `updatedAt`, and the
-        validator layout on every record kind
-
-Context (discovered-from: WAS-96, decisions 2 and 3). The research note
-`_spec/research-write-stamps.md` (2026-10-01) surveys CouchDB, Riak, Cassandra,
-CockroachDB, MongoDB, Dynamo, Spanner, Automerge and Yjs: no system serves LWW,
-dedup and a cross-replica validator from one field; time-plus- counter stamps
-serve LWW and, carried verbatim, the validator, while dedup always needs an
-origin-scoped key. The HLC paper's stamp has no node id and no tie-break, so the
-origin is part of the order key and of the validator (two origins can mint the
-same `(ms, counter)` for one Resource). The encoding is two members rather than
-the paper's packed 64-bit integer, which exceeds JavaScript's safe range.
-
-Server part landed 2026-10-03. The second acceptance box stays open for the
-Collection tombstone alone, which does not exist until WAS-174. The receive rule
-(`observe`) is built and tested, and gets its caller with WAS-176. The `/meta`
-write already mints only the `/meta` stamp, which is WAS-190's server behavior;
-that item keeps its spec text and conformance case. Follow-ups filed from this
-work: WAS-191 (the sidecar as commit point), WAS-192 (the `/meta` `ETag` and
-content-record members), WAS-193 (`epoch` on a `/meta` write). Settled with the
-maintainer on 2026-10-03: the Postgres governed-log stamp columns are `log_updated_at`,
-`log_updated_at_counter`, and `log_origin_id`; and an archive exported by a
-pre-stamp release is not a supported import input (greenfield only), so import
-does nothing about the retired members such an archive carries.
----
-
 ### WAS-173: [M] [blocks 2] `revisions` descriptor on the Collection Metadata object
 
 - status: todo
@@ -1551,12 +1467,11 @@ pending sign-off.
 
 ---
 
-### WAS-174: [M] [blocks 2] [after WAS-172] Collection tombstones
+### WAS-174: [M] [blocks 2] Collection tombstones
 
 - status: todo
 - priority: medium
 - labels: data-model, replication, filesystem-backend, postgres-backend
-- blocked-by: WAS-172
 - blocks: WAS-96, WAS-176
 - touches:
   - wallet-attached-storage-spec: Delete Collection, the Space listing
@@ -1568,8 +1483,10 @@ pending sign-off.
   - conformance-suite: the listing flag
 - acceptance:
   - [ ] Delete Collection leaves a stamped tombstone (the Collection Metadata
-        record marked deleted, carrying its stamp and generation) in place of
-        the hard delete; Resources and chunks under it are still removed
+        record marked deleted, carrying its generation and storing `updatedAt`,
+        `updatedAtCounter`, and `originId` verbatim like every other versioned
+        record) in place of the hard delete; Resources and chunks under it are
+        still removed
   - [ ] The tombstone exports as the Collection's `.collection.<id>.json` with
         `deleted: true` and no member directory, flagged on the manifest entry;
         import writes it only when the destination holds no record under that id
@@ -1687,13 +1604,12 @@ pull; it is an existing defect independent of replication.
 
 ---
 
-### WAS-182: [M] [blocks 2] [after WAS-172] Changes feed carries every record kind in the Collection
+### WAS-182: [M] [blocks 2] Changes feed carries every record kind in the Collection
 
 - status: todo
 - priority: medium
 - labels: changes-feed, replication, wire-contract, filesystem-backend,
   postgres-backend
-- blocked-by: WAS-172
 - blocks: WAS-96, WAS-176
 - touches:
   - wallet-attached-storage-spec: the `changes` profile (the `kind` member, the
@@ -1736,13 +1652,12 @@ conditional reads.
 
 ---
 
-### WAS-183: [M] [blocks 2] [after WAS-172] Stamped, tombstoned access-control policies
+### WAS-183: [M] [blocks 2] Stamped, tombstoned access-control policies
 
 - status: todo
 - priority: medium
 - labels: data-model, authz, replication, etag, wire-contract,
   filesystem-backend, postgres-backend
-- blocked-by: WAS-172
 - blocks: WAS-96, WAS-176
 - touches:
   - wallet-attached-storage-spec: "Access Control Policies" (the served stamp
@@ -1772,13 +1687,13 @@ still held it, a privacy regression rather than a stale record.
 
 ---
 
-### WAS-176: [M] [blocks 4] [after WAS-172, WAS-173, WAS-174, WAS-175, WAS-182, WAS-183] Replica registration, pull loop, and the apply path
+### WAS-176: [M] [blocks 4] [after WAS-173, WAS-174, WAS-175, WAS-182, WAS-183] Replica registration, pull loop, and the apply path
 
 - status: todo
 - priority: medium
 - labels: replication, routes, filesystem-backend, postgres-backend,
   space-metadata
-- blocked-by: WAS-172, WAS-173, WAS-174, WAS-175, WAS-182, WAS-183
+- blocked-by: WAS-173, WAS-174, WAS-175, WAS-182, WAS-183
 - blocks: WAS-96, WAS-177, WAS-179, WAS-184
 - touches:
   - wallet-attached-storage-spec: the replication specification (registration
@@ -1863,7 +1778,7 @@ alive on the surviving server, where the wallet can keep appending.
 
 ---
 
-### WAS-96: [M] [after WAS-172, WAS-173, WAS-174, WAS-175, WAS-176, WAS-177, WAS-182, WAS-183] Multi-primary Spaces (replicated write identity and conflict model)
+### WAS-96: [M] [after WAS-173, WAS-174, WAS-175, WAS-176, WAS-177, WAS-182, WAS-183] Multi-primary Spaces (replicated write identity and conflict model)
 
 - status: todo
 - priority: medium
@@ -1872,8 +1787,7 @@ alive on the surviving server, where the wallet can keep appending.
 - design-approved: 2026-10-02
 - decisions: wallet-attached-storage-spec decisions 0009 to 0013 (contract);
   this repo's decisions/0003 to 0005 (server-internal)
-- blocked-by: WAS-172, WAS-173, WAS-174, WAS-175, WAS-176, WAS-177, WAS-182,
-  WAS-183
+- blocked-by: WAS-173, WAS-174, WAS-175, WAS-176, WAS-177, WAS-182, WAS-183
 - touches:
   - wallet-attached-storage-spec: the Resource data model (the origin stamp
     members and the validator), the `changes` profile (stamp members on the
@@ -1995,13 +1909,12 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
 
 ---
 
-### WAS-189: [M] [after WAS-172] Write responses carry the record's stamp and provenance, container writes included
+### WAS-189: [M] Write responses carry the record's stamp and provenance, container writes included
 
 - status: todo
 - priority: medium
 - labels: wire-contract, data-model, resource-api, filesystem-backend,
   postgres-backend
-- blocked-by: WAS-172
 - touches:
   - wallet-attached-storage-spec: the Create/Update Resource and Update Resource
     Metadata operation bullets and examples (`201` / `200` with a body), the
@@ -2075,12 +1988,11 @@ is unaffected. The Space create paths were not traced; Update Space pins its
 write to its earlier read and may already be covered.
 ---
 
-### WAS-190: [M] [after WAS-172] A `/meta`-only write leaves the content record's stamp unchanged
+### WAS-190: [M] A `/meta`-only write leaves the content record's stamp unchanged
 
 - status: todo
 - priority: medium
 - labels: data-model, etag, changes-feed, filesystem-backend, postgres-backend
-- blocked-by: WAS-172
 - touches:
   - wallet-attached-storage-spec: the Update Resource Metadata operation (what
     it does and does not change), the Resource data model's `updatedAt`
@@ -2122,12 +2034,12 @@ sorting; this item makes the server and the spec say it.
 
 ---
 
-### WAS-184: [L] [after WAS-172, WAS-176] Write-time creation and revision statements
+### WAS-184: [L] [after WAS-176] Write-time creation and revision statements
 
 - status: todo
 - priority: low
 - labels: security, replication, provenance, wire-contract
-- blocked-by: WAS-172, WAS-176
+- blocked-by: WAS-176
 - touches:
   - wallet-attached-storage-spec: the provenance statement shape (two statements
     per object), the archive's per-origin log snapshots

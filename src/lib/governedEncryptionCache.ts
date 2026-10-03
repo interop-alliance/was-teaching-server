@@ -19,9 +19,9 @@ import {
   GOVERNED_ENCRYPTION_CACHE_MAX,
   GOVERNED_ENCRYPTION_CACHE_TTL
 } from '../config.default.js'
-import type { StorageBackend, StoredCollectionLog } from '../types.js'
+import type { CollectionLogResult, StorageBackend } from '../types.js'
 import { backendScoped, deleteByPrefix } from './backendCache.js'
-import { formatEtag, stampedValidator } from './etag.js'
+import { formatEtag } from './etag.js'
 import { deriveGovernedEncryption } from './governedLog.js'
 import { collectionLogPath } from './paths.js'
 
@@ -126,7 +126,7 @@ export function invalidateSpaceGovernedEncryption({
  * @param options.serverUrl {string}
  * @param options.spaceId {string}
  * @param options.collectionId {string}
- * @param [options.log] {StoredCollectionLog}   the stored log, as read, if any
+ * @param [options.log] {CollectionLogResult}   the stored log, as read, if any
  * @returns {Promise<CollectionEncryption | undefined>}
  */
 export async function getCachedGovernedEncryption({
@@ -140,7 +140,7 @@ export async function getCachedGovernedEncryption({
   serverUrl: string
   spaceId: string
   collectionId: string
-  log?: StoredCollectionLog
+  log?: CollectionLogResult
 }): Promise<CollectionEncryption | undefined> {
   if (!log) {
     return undefined
@@ -148,7 +148,7 @@ export async function getCachedGovernedEncryption({
   return await encryptionCaches.for(storage).memoize<CollectionEncryption>({
     key:
       collectionKeyPrefix({ spaceId, collectionId }) +
-      formatEtag(stampedValidator({ generation: log.generation, stamp: log })),
+      formatEtag(log.validator),
     fn: async () =>
       deriveGovernedEncryption({
         body: log.body,

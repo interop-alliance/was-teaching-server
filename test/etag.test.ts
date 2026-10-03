@@ -7,20 +7,22 @@
 import { it, describe } from 'vitest'
 import assert from 'node:assert'
 import {
-  embedMetadataValidator,
   etagOf,
   formatEtag,
   importedGeneration,
   isMintedGeneration,
-  metadataEtagOf,
   newGeneration,
   isNotModified,
   parseIfNoneMatch,
   stampedValidator,
-  storedMetadataFromFile,
-  validatorOf,
-  withoutLocalSegment
+  validatorOf
 } from '../src/lib/etag.js'
+import {
+  embedMetadataValidator,
+  metadataEtagOf,
+  storedMetadataFromFile,
+  withoutLocalSegment
+} from '../src/lib/metadataValidator.js'
 
 const stamp = {
   updatedAt: '2026-01-01T00:00:00.000Z',

@@ -22,7 +22,10 @@ import type {
   StoredSpaceMetadata
 } from '../types.js'
 import { listRegisteredBackends } from './backends.js'
-import { embedMetadataValidator, stripMetadataValidator } from './etag.js'
+import {
+  embedMetadataValidator,
+  stripMetadataValidator
+} from './metadataValidator.js'
 import { linksetPath, spacePath } from './paths.js'
 
 /**

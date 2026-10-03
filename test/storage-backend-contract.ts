@@ -13,12 +13,8 @@ import * as tar from 'tar-stream'
 import { pino } from 'pino'
 import { createHeaderValue } from '@interop/http-digest-header'
 import { collectBytes, readSpaceArchive } from '@interop/space-archive'
-import {
-  etagOf,
-  formatEtag,
-  isMintedGeneration,
-  metadataEtagOf
-} from '../src/lib/etag.js'
+import { etagOf, formatEtag, isMintedGeneration } from '../src/lib/etag.js'
+import { metadataEtagOf } from '../src/lib/metadataValidator.js'
 import type { EtagValidator } from '../src/lib/etag.js'
 import { compareStamps } from '../src/lib/hlc.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
@@ -55,7 +51,7 @@ import type {
   RevocationRecord,
   ResourceInput,
   CollectionMetadata,
-  StoredCollectionLog,
+  CollectionLogResult,
   StoredCollectionMetadata,
   SpaceMetadata,
   IDID,
@@ -2687,7 +2683,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             name: 'Governed'
           }
         })
-        let seenLog: StoredCollectionLog | undefined
+        let seenLog: CollectionLogResult | undefined
         await backend.writeCollection({
           spaceId,
           collectionId: 'at-log',
@@ -2723,7 +2719,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         // The very next Metadata write sees the log just written, body and
         // validator alike, without a read of its own.
         assert.equal(seenLog?.body, '{"state":{}}\n')
-        assert.equal(etagOf(seenLog!), formatEtag(created!))
+        assert.equal(formatEtag(seenLog!.validator), formatEtag(created!))
       })
 
       it('a throwing assertTransition aborts the write (object and validator unchanged)', async () => {
@@ -3456,7 +3452,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(byId.get('anon')?.createdBy, undefined)
       })
 
-      it("carries the Resource's generation, matching getResourceMetadata", async () => {
+      it("carries the Resource's content validator, matching getResourceMetadata", async () => {
         const { backend } = harness
         const feedSpaceId = 'space-feed-generation'
         await provisionSpace(backend, feedSpaceId)
@@ -3481,8 +3477,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           document => document.resourceId === 'one'
         )
         assert.ok(doc, 'expected the Resource in the feed')
-        assert.equal(doc!.generation, metadata!.generation)
-        assert.equal(typeof doc!.generation, 'string')
+        assert.equal(doc!.validator?.generation, metadata!.generation)
+        assert.equal(typeof doc!.validator?.generation, 'string')
+        assert.equal(formatEtag(doc!.validator!), etagOf(metadata!))
       })
 
       it('reports a feed generation minted with the first position and replaced by a re-create', async () => {
@@ -5779,7 +5776,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           }))!
           assertValidatorSegments({
             validator: logCreated,
-            stored: log,
+            stored: {
+              generation: log.validator.generation,
+              ...log.validator.stamp
+            },
             originId,
             ms: clock.now
           })
@@ -5885,8 +5885,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.ok(created?.generation)
         const stored = await backend.getCollectionLog({ spaceId, collectionId })
         assert.equal(stored?.body, line1)
-        assert.equal(etagOf(stored!), formatEtag(created!))
-        assert.equal(stored?.generation, created?.generation)
+        assert.equal(formatEtag(stored!.validator), formatEtag(created!))
+        assert.equal(stored?.validator.generation, created?.generation)
 
         const appended = await backend.writeCollectionLog({
           spaceId,
@@ -5961,7 +5961,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         ).rejects.toThrow('refused')
         const stored = await backend.getCollectionLog({ spaceId, collectionId })
         assert.equal(stored?.body, line1)
-        assert.equal(etagOf(stored!), formatEtag(created!))
+        assert.equal(formatEtag(stored!.validator), formatEtag(created!))
       })
 
       it('advances the Collection Metadata local segment on each log write, keeping its stamp and generation', async () => {
@@ -6057,8 +6057,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           assert.equal(restored?.body, line1 + line2)
           // The archived generation is kept; the stamp is the importing
           // backend's own.
-          assert.equal(restored?.generation, sourceLog?.generation)
-          assert.equal(restored?.originId, target.backend.originId)
+          assert.equal(restored?.validator.generation, sourceLog?.generation)
+          assert.equal(
+            restored?.validator.stamp.originId,
+            target.backend.originId
+          )
         } finally {
           await source.cleanup()
           await target.cleanup()
@@ -6562,8 +6565,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             spaceId,
             collectionId: 'logged'
           }))!
-          assertFresh(log.generation)
-          parseEtagSegments(etagOf(log))
+          assertFresh(log.validator.generation)
+          parseEtagSegments(formatEtag(log.validator))
         } finally {
           await target.cleanup()
         }
