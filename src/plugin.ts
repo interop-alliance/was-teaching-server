@@ -186,6 +186,12 @@ export interface FastifyWasOptions {
    * controller. `undefined` means the Space is not provisioned.
    */
   adminDid?: IDID
+  /**
+   * The store's origin id (env `WAS_ORIGIN_ID`), applied only to the default
+   * backend (an injected `backend` carries its own). Used verbatim; `undefined`
+   * reads the store's own id, or mints one on first boot.
+   */
+  originId?: string
 }
 
 /**
@@ -217,7 +223,8 @@ async function wasPlugin(
     onboardingToken,
     discloseVersion = true,
     serverKeySeed,
-    adminDid
+    adminDid,
+    originId
   } = options
 
   // Fail fast on a missing or malformed base URL: without one no ZCap
@@ -255,7 +262,8 @@ async function wasPlugin(
       maxUploadBytes,
       maxSpacesPerController,
       maxCollectionsPerSpace,
-      maxResourcesPerSpace
+      maxResourcesPerSpace,
+      originId
     })
   // Route the backend's diagnostics through the Fastify pino logger (the backend
   // defaults to a silent logger until wired here).
@@ -289,6 +297,9 @@ async function wasPlugin(
       })
     }
   }
+  // Read once so a backend injected without its `init()` fails the boot
+  // rather than the first request that needs the id.
+  void storage.originId
 
   // The server's own identity. The `server` Space is provisioned (or checked)
   // once storage is up, and the export-signing key is derived from the seed.

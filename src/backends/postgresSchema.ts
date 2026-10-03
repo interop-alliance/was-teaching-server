@@ -16,7 +16,8 @@
  */
 import type { FastifyBaseLogger } from 'fastify'
 import type pg from 'pg'
-import { StoreVersionError } from '../errors.js'
+import { StoreOriginIdError, StoreVersionError } from '../errors.js'
+import { isValidOriginId, mintOriginId } from '../lib/originId.js'
 
 /**
  * Ordered migration scripts. Version `n` is `MIGRATIONS[n - 1]`; append only,
@@ -333,6 +334,17 @@ const MIGRATIONS: string[] = [
   DROP INDEX resources_changes_idx;
   CREATE INDEX resources_feed_idx
     ON resources (space_id, collection_id, feed_position);
+  `,
+  // v8: the store row, one per schema, carrying the store's own facts. Its
+  // first is the per-store origin id, the origin half of a write's
+  // replicated identity. The migration creates the table only: the runner
+  // fills the row on every boot, from WAS_ORIGIN_ID when set, else minted.
+  // The 'singleton' key admits exactly one row.
+  `
+  CREATE TABLE store (
+    singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+    origin_id text NOT NULL
+  );
   `
 ]
 
@@ -344,22 +356,34 @@ const MIGRATIONS: string[] = [
  * Refuses to start (`StoreVersionError`) when `schema_migrations` records a
  * version newer than `migrations` knows, as after a rollback to an older
  * build, rather than run against a schema this code was not written for.
+ *
+ * Then, in the same transaction, settles the store's origin id from the store
+ * row. A stored id is the answer, and a configured id that differs from it
+ * is refused, as is a malformed stored id (`StoreOriginIdError`). With no
+ * row yet, the configured id is inserted, else a minted one. This runs on
+ * every boot rather than as a migration step, so a store whose table the
+ * migrations created on this boot gets its row in the same transaction.
  * @param options {object}
  * @param options.client {pg.PoolClient}   a dedicated client (not the pool);
  *   the caller is responsible for releasing it
  * @param options.logger {FastifyBaseLogger}
  * @param [options.migrations] {string[]}   defaults to MIGRATIONS
- * @returns {Promise<number>}   the version the schema is at afterwards
+ * @param [options.originId] {string}   the configured origin id
+ *   (`WAS_ORIGIN_ID`); unset mints one on a store that carries none
+ * @returns {Promise<{ version: number, originId: string }>}   the version the
+ *   schema is at afterwards, and the store's origin id
  */
 export async function applyMigrations({
   client,
   logger,
-  migrations = MIGRATIONS
+  migrations = MIGRATIONS,
+  originId
 }: {
   client: pg.PoolClient
   logger: FastifyBaseLogger
   migrations?: string[]
-}): Promise<number> {
+  originId?: string
+}): Promise<{ version: number; originId: string }> {
   await client.query('BEGIN')
   try {
     // Scope the advisory lock to the active schema so parallel test schemas
@@ -398,11 +422,60 @@ export async function applyMigrations({
         [version]
       )
     }
+    const settledOriginId = await settleOriginId({ client, originId })
     await client.query('COMMIT')
-    logger.info({ version: currentVersion }, 'Postgres schema version')
-    return currentVersion
+    logger.info(
+      { version: currentVersion, originId: settledOriginId },
+      'Postgres store ready'
+    )
+    return { version: currentVersion, originId: settledOriginId }
   } catch (err) {
     await client.query('ROLLBACK')
     throw err
   }
+}
+
+/**
+ * Reads the store row's origin id, or inserts one when the row is absent.
+ * Runs inside `applyMigrations`'s transaction, under its advisory lock, so no
+ * other instance can insert between the read and the write.
+ * @param options {object}
+ * @param options.client {pg.PoolClient}
+ * @param [options.originId] {string}   the configured origin id
+ * @returns {Promise<string>}   the store's origin id
+ */
+async function settleOriginId({
+  client,
+  originId
+}: {
+  client: pg.PoolClient
+  originId?: string
+}): Promise<string> {
+  // Refused before anything is written: a malformed id in the store row
+  // would refuse every later boot.
+  if (originId !== undefined && !isValidOriginId(originId)) {
+    throw StoreOriginIdError.malformed({
+      id: originId,
+      where: 'The configured origin id'
+    })
+  }
+  const { rows } = await client.query<{ origin_id: string }>(
+    'SELECT origin_id FROM store'
+  )
+  const stored = rows[0]?.origin_id
+  if (stored === undefined) {
+    const minted = originId ?? mintOriginId()
+    await client.query('INSERT INTO store (origin_id) VALUES ($1)', [minted])
+    return minted
+  }
+  if (!isValidOriginId(stored)) {
+    throw StoreOriginIdError.malformed({
+      id: stored,
+      where: 'The Postgres store table'
+    })
+  }
+  if (originId !== undefined && originId !== stored) {
+    throw StoreOriginIdError.mismatch({ stored, configured: originId })
+  }
+  return stored
 }

@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 186
+nextAvailableId: 187
 
 <!-- roadmap-order:index:start -->
 
@@ -95,7 +95,8 @@ Chains:
 
 Ready:
 
-- WAS-171 [M] Per-store origin id (`WAS_ORIGIN_ID`) (blocks 3)
+- WAS-172 [M] Hybrid-logical-clock write stamp and the four-field validator
+  (blocks 6)
 - WAS-173 [M] `revisions` descriptor on the Collection Metadata object
   (blocks 2)
 - WAS-175 [M] Server sync key and verification of a peer's invocations
@@ -105,11 +106,6 @@ Ready:
 
 Chains:
 
-- WAS-171 [M] Per-store origin id (`WAS_ORIGIN_ID`)
-  - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
-    model)
-  - WAS-172 [M] Hybrid-logical-clock write stamp and the four-field validator
-  - WAS-176 [M] Replica registration, pull loop, and the apply path
 - WAS-172 [M] Hybrid-logical-clock write stamp and the four-field validator
   - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
     model)
@@ -169,6 +165,7 @@ Ready:
   URL by default
 - WAS-168 [L] `SERVER_URL` move runbook for the server DID log (portable domain
   move)
+- WAS-186 [L] Build backends through an async factory so none is half-built
 
 **Someday / Maybe**
 
@@ -1335,60 +1332,14 @@ The replication program: a Space served by several primaries with a replicated
 write identity and conflict model. WAS-96 is the umbrella and names the design
 doc; the other items are its sub-items in dependency order.
 
-### WAS-171: [M] [blocks 3] Per-store origin id (`WAS_ORIGIN_ID`)
-
-- status: todo
-- priority: medium
-- labels: replication, filesystem-backend, postgres-backend, config,
-  service-description
-- blocks: WAS-96, WAS-172, WAS-176
-- touches:
-  - was-teaching-server: `src/backends/filesystemStore.ts` (`store.json`), the
-    Postgres schema (`MIGRATIONS`), `src/config.default.ts`, `start.ts`,
-    `src/serviceDescription.ts`, `docs/admin-guide.md`
-  - wallet-attached-storage-spec: `originId` on the core `https://w3id.org/pws`
-    `specs` entry (not `instance`, which a client must not gate on)
-- acceptance:
-  - [ ] `WAS_ORIGIN_ID`, when set, is used verbatim and must match
-        `[A-Za-z0-9_-]{1,64}`; a value outside that is refused at boot
-  - [ ] In `init()`, under the store lock, on every boot: a `store.json` (or
-        Postgres store row) with no origin id gets `WAS_ORIGIN_ID` when set,
-        else a minted random base58 id; one that carries an id is read from
-        there. Not a migration step: an empty store runs none, and the step
-        runner rewrites the file. `writeStoreVersion` preserves members it does
-        not own
-  - [ ] A set `WAS_ORIGIN_ID` that differs from the stored id refuses to start,
-        naming both
-  - [ ] `StorageBackend` exposes the id; `/service` advertises it as `originId`
-        on the core `specs` entry, and the admin guide says it must be unique
-        among every server a Space may replicate to, so a restored clone that
-        will run beside its source boots with a fresh `WAS_ORIGIN_ID`
-  - [ ] Data-plane backend adapters share the hosting server's origin id and
-        mint no stamps of their own
-  - [ ] Tests cover mint, verbatim use, mismatch refusal, the charset, a fresh
-        dir minting, a kill between the id write and the version stamp keeping
-        the id, and `writeStoreVersion` preserving it
-
-Context (discovered-from: WAS-96, decision 2; the mint and advertisement rules
-are design section 5.2 and open point 9, decision 0004 in `decisions/`). The
-origin half of a write's replicated identity. Not the server DID: most
-deployments have none, it embeds the host, and it changes if the admin re-mints
-the log; the id only has to be stable and unique, since nothing verifies a
-stamp. A human names a peer by URL or DID at registration and the server reads
-the peer's origin id off its `/service`, so the id can be short and opaque; an
-operator who wants a readable one sets it. A data wipe (staging) mints a fresh
-id, which is fine, since there is no data to replicate.
-
----
-
-### WAS-172: [M] [blocks 6] [after WAS-171] Hybrid-logical-clock write stamp and the four-field validator
+### WAS-172: [M] [blocks 6] Hybrid-logical-clock write stamp and the four-field validator
 
 - status: todo
 - priority: medium
 - labels: data-model, etag, changes-feed, wire-contract, filesystem-backend,
   postgres-backend
-- blocked-by: WAS-171
 - blocks: WAS-96, WAS-174, WAS-176, WAS-182, WAS-183, WAS-184
+*- blocks: WAS-96, WAS-174, WAS-176, WAS-182, WAS-183, WAS-184
 - touches:
   - wallet-attached-storage-spec: the Resource data model (`updatedAtCounter`
     and `originId` members on Resource metadata and the Metadata objects; the
@@ -1697,13 +1648,13 @@ still held it, a privacy regression rather than a stale record.
 
 ---
 
-### WAS-176: [M] [blocks 4] [after WAS-171, WAS-172, WAS-173, WAS-174, WAS-175, WAS-182, WAS-183] Replica registration, pull loop, and the apply path
+### WAS-176: [M] [blocks 4] [after WAS-172, WAS-173, WAS-174, WAS-175, WAS-182, WAS-183] Replica registration, pull loop, and the apply path
 
 - status: todo
 - priority: medium
 - labels: replication, routes, filesystem-backend, postgres-backend,
   space-metadata
-- blocked-by: WAS-171, WAS-172, WAS-173, WAS-174, WAS-175, WAS-182, WAS-183
+- blocked-by: WAS-172, WAS-173, WAS-174, WAS-175, WAS-182, WAS-183
 - blocks: WAS-96, WAS-177, WAS-179, WAS-184
 - touches:
   - wallet-attached-storage-spec: the replication specification (registration
@@ -1788,7 +1739,7 @@ alive on the surviving server, where the wallet can keep appending.
 
 ---
 
-### WAS-96: [M] [after WAS-171, WAS-172, WAS-173, WAS-174, WAS-175, WAS-176, WAS-177, WAS-182, WAS-183] Multi-primary Spaces (replicated write identity and conflict model)
+### WAS-96: [M] [after WAS-172, WAS-173, WAS-174, WAS-175, WAS-176, WAS-177, WAS-182, WAS-183] Multi-primary Spaces (replicated write identity and conflict model)
 
 - status: todo
 - priority: medium
@@ -1797,8 +1748,8 @@ alive on the surviving server, where the wallet can keep appending.
 - design-approved: 2026-10-02
 - decisions: wallet-attached-storage-spec decisions 0009 to 0013 (contract);
   this repo's decisions/0003 to 0005 (server-internal)
-- blocked-by: WAS-171, WAS-172, WAS-173, WAS-174, WAS-175, WAS-176, WAS-177,
-  WAS-182, WAS-183
+- blocked-by: WAS-172, WAS-173, WAS-174, WAS-175, WAS-176, WAS-177, WAS-182,
+  WAS-183
 - touches:
   - wallet-attached-storage-spec: the Resource data model (the origin stamp
     members and the validator), the `changes` profile (stamp members on the
@@ -2226,6 +2177,33 @@ the DID string carries the host, so a log written for another host does not
 resolve as this server's and `/service` drops `serverDid` after the move; a
 domain-move entry appended to a portable log re-addresses it under the new host
 with the same SCID. Not scheduled for implementation yet.
+
+### WAS-186: [L] Build backends through an async factory so none is half-built
+
+- status: todo
+- priority: low
+- labels: cleanup, backend
+- discovered-from: simplify pass over the origin id change (2026-10-03)
+- acceptance:
+  - [ ] `FileSystemBackend` and `PostgresBackend` are obtained from an async
+        factory (for example a static `open()`) that runs what `init()` runs
+        today and returns a backend that already carries its origin id
+  - [ ] `StorageBackend.originId` is a plain readonly member with no
+        "read before init()" throw, and the plugin's boot-time read of it is
+        gone
+  - [ ] `start.ts`, `createApp`, `defaultBackend()`, and the test suites build
+        backends through the factory; constructors are no longer public, or
+        stay private to the factory
+  - [ ] The plugin's `ownsBackend` lifecycle keeps `close()` on `onClose` and
+        no longer calls `init()`
+
+`StorageBackend.init()` is optional, so the type admits an object that is
+constructed but not usable: the origin id is settled by `init()`, and both
+backends guard the gap with a getter that throws until then, which the plugin
+reads once at registration so an injected backend that skipped `init()` fails
+the boot instead of the first request. An async factory removes the half-built
+state rather than guarding it. Decorating the Fastify instance with the id was
+considered and rejected: the id is a store fact and belongs on the backend.
 
 ## Someday / Maybe
 

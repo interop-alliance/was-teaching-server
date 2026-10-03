@@ -110,7 +110,10 @@ export async function resolveBackend({
       // primary backend), NOT `request.log`: the adapter is memoized and reused
       // across requests, so capturing the first request's per-request child
       // logger would mis-tag every later log line with that first request's id.
-      return factory(record, { logger: request.server.log })
+      return factory(record, {
+        logger: request.server.log,
+        originId: storage.originId
+      })
     }
   })
 }

@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { decodeSecretKeySeed } from '@interop/bnid'
 import { parseKekMultibase } from './lib/kmsRecordCipher.js'
+import { ORIGIN_ID_PATTERN, isValidOriginId } from './lib/originId.js'
 import { isValidController } from './lib/validateDid.js'
 import type { IDID, KmsRecordKekRegistry, RecordKek } from './types.js'
 
@@ -530,6 +531,11 @@ export interface EnvConfig {
    * identity (`WAS_ADMIN_DID`); unset = the Space is not provisioned.
    */
   adminDid?: IDID
+  /**
+   * The store's origin id (`WAS_ORIGIN_ID`), used verbatim; unset = the store's
+   * own id is read, or minted on first boot.
+   */
+  originId?: string
 }
 
 /**
@@ -572,7 +578,8 @@ export function loadConfigFromEnv(
     onboardingToken: parseOnboardingToken(env.WAS_ONBOARDING_TOKEN),
     discloseVersion: parseDiscloseVersion(env.WAS_DISCLOSE_VERSION),
     serverKeySeed: parseServerKeySeed(env.WAS_SERVER_KEY_SEED),
-    adminDid: parseAdminDid(env.WAS_ADMIN_DID)
+    adminDid: parseAdminDid(env.WAS_ADMIN_DID),
+    originId: parseOriginId(env.WAS_ORIGIN_ID)
   }
 }
 
@@ -1153,6 +1160,28 @@ export function parseAdminDid(raw: string | undefined): IDID | undefined {
     )
   }
   return value
+}
+
+/**
+ * Parses the `WAS_ORIGIN_ID` env value: the store's origin id, used verbatim.
+ * An unset or empty value returns `undefined`, meaning the store's own id is
+ * read, or minted on first boot. A value outside `[A-Za-z0-9_-]{1,64}` throws.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {string|undefined}
+ */
+export function parseOriginId(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === '') {
+    return undefined
+  }
+  // Not trimmed: the id is stored and advertised as set, so surrounding
+  // whitespace is refused rather than silently dropped.
+  if (!isValidOriginId(raw)) {
+    throw new Error(
+      `WAS_ORIGIN_ID must match ${ORIGIN_ID_PATTERN.source} (1 to 64 ` +
+        `ASCII letters, digits, '_' or '-'); got "${raw}".`
+    )
+  }
+  return raw
 }
 
 export const SPEC_URL =

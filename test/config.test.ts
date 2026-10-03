@@ -28,6 +28,7 @@ import {
   parseMaxUploadBytes,
   parsePort,
   parseAdminDid,
+  parseOriginId,
   parseServerKeySeed,
   parseServerUrl,
   parseStorageLimit
@@ -463,6 +464,31 @@ describe('parseAdminDid', () => {
     assert.throws(
       () => parseAdminDid('did:web:example.com'),
       /WAS_ADMIN_DID must be an Ed25519 did:key/
+    )
+  })
+})
+
+describe('parseOriginId', () => {
+  it('returns undefined when unset or empty', () => {
+    assert.equal(parseOriginId(undefined), undefined)
+    assert.equal(parseOriginId(''), undefined)
+  })
+
+  it('returns a well-formed id verbatim', () => {
+    assert.equal(parseOriginId('east-1_A'), 'east-1_A')
+    assert.equal(parseOriginId('a'.repeat(64)), 'a'.repeat(64))
+  })
+
+  it('refuses surrounding whitespace rather than trimming it', () => {
+    assert.throws(() => parseOriginId(' east-1 '), /WAS_ORIGIN_ID must match/)
+    assert.throws(() => parseOriginId('  '), /WAS_ORIGIN_ID must match/)
+  })
+
+  it('refuses a character outside the charset or more than 64 characters', () => {
+    assert.throws(() => parseOriginId('has space'), /WAS_ORIGIN_ID must match/)
+    assert.throws(
+      () => parseOriginId('a'.repeat(65)),
+      /WAS_ORIGIN_ID must match/
     )
   })
 })

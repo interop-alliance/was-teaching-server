@@ -569,7 +569,11 @@ export class SpaceRequest {
     // importer can read which specification versions and feature set the
     // contents were written under.
     const { serverUrl, discloseVersion } = request.server
-    const service = buildServiceDescription({ serverUrl, discloseVersion })
+    const service = buildServiceDescription({
+      serverUrl,
+      originId: storage.originId,
+      discloseVersion
+    })
     // A server with an identity signs one provenance statement per exported
     // object and embeds its DID log snapshot. One without says so once per
     // export, not once per object.

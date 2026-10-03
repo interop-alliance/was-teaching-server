@@ -115,7 +115,8 @@ export async function startServer(): Promise<void> {
           maxUploadBytes: config.maxUploadBytes,
           maxSpacesPerController: config.maxSpacesPerController,
           maxCollectionsPerSpace: config.maxCollectionsPerSpace,
-          maxResourcesPerSpace: config.maxResourcesPerSpace
+          maxResourcesPerSpace: config.maxResourcesPerSpace,
+          originId: config.originId
         })
       : undefined
     fastify = createApp({
@@ -132,7 +133,8 @@ export async function startServer(): Promise<void> {
       onboardingToken: config.onboardingToken,
       discloseVersion: config.discloseVersion,
       serverKeySeed: config.serverKeySeed,
-      adminDid: config.adminDid
+      adminDid: config.adminDid,
+      originId: config.originId
     })
     // Warn (once, at startup, where the Fastify logger now exists) about limits
     // left implicitly unbounded. These warnings live only here so library and

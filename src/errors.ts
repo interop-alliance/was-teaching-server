@@ -524,6 +524,66 @@ export class StoreVersionError extends Error {
 }
 
 /**
+ * Startup refusal about the store's origin id: `WAS_ORIGIN_ID` names an id
+ * other than the one the store already carries (`mismatch`), or the stored id
+ * is malformed. The stored id is permanent for the store's life, so neither
+ * side is taken over the other. Never sent over the wire.
+ * @param options {object}
+ * @param options.detail {string}   names the stored id and what is wrong
+ */
+export class StoreOriginIdError extends Error {
+  constructor({ detail }: { detail: string }) {
+    super(detail)
+    this.name = 'StoreOriginIdError'
+  }
+
+  /**
+   * The refusal for an id, configured or stored, that is not well-formed.
+   * @param options {object}
+   * @param options.id {string}   the offending id
+   * @param options.where {string}   where it came from
+   * @returns {StoreOriginIdError}
+   */
+  static malformed({
+    id,
+    where
+  }: {
+    id: string
+    where: string
+  }): StoreOriginIdError {
+    return new StoreOriginIdError({
+      detail:
+        `${where} names the origin id "${id}", which is not a well-formed ` +
+        `origin id (1 to 64 ASCII letters, digits, '_' or '-').`
+    })
+  }
+
+  /**
+   * The refusal for a configured id that differs from the stored one.
+   * @param options {object}
+   * @param options.stored {string}   the id the store carries
+   * @param options.configured {string}   the id the environment names
+   * @returns {StoreOriginIdError}
+   */
+  static mismatch({
+    stored,
+    configured
+  }: {
+    stored: string
+    configured: string
+  }): StoreOriginIdError {
+    return new StoreOriginIdError({
+      detail:
+        `WAS_ORIGIN_ID is "${configured}", but this store already carries ` +
+        `the origin id "${stored}". The stored id is permanent; unset ` +
+        `WAS_ORIGIN_ID or set it to the stored id. A restored clone that ` +
+        `will run beside its source needs a fresh, empty store under the ` +
+        `new id.`
+    })
+  }
+}
+
+/**
  * Startup refusal: the filesystem backend could not take the migration lock
  * on its data directory before the timeout, because another live process
  * holds it (or a process on another host left it behind). Never sent over the

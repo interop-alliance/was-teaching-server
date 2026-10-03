@@ -474,9 +474,32 @@ export class FileSystemBackend implements StorageBackend {
    */
   #liveCountCache = new Map<string, { used: number; expiresAt: number }>()
 
+  /**
+   * The configured origin id (`WAS_ORIGIN_ID`), handed to the store runner in
+   * `init()`. `undefined` reads the store's own id, or mints one.
+   */
+  #configuredOriginId?: string
+
+  /**
+   * The store's origin id, settled by `init()` (see `filesystemStore.ts`).
+   */
+  #originId?: string
+
+  /**
+   * The store's origin id (see `StorageBackend.originId`).
+   * @returns {string}
+   */
+  get originId(): string {
+    if (this.#originId === undefined) {
+      throw new Error('FileSystemBackend.originId is read before init().')
+    }
+    return this.#originId
+  }
+
   constructor({
     dataDir,
     logger,
+    originId,
     capacityBytes,
     maxUploadBytes,
     maxSpacesPerController,
@@ -485,6 +508,7 @@ export class FileSystemBackend implements StorageBackend {
   }: {
     dataDir: string
     logger?: FastifyBaseLogger
+    originId?: string
     capacityBytes?: number
     maxUploadBytes?: number
     maxSpacesPerController?: number
@@ -499,6 +523,7 @@ export class FileSystemBackend implements StorageBackend {
     // `spaceRevocationsDir` property doc).
     this.spaceRevocationsDir = path.join(dataDir, 'space-revocations')
     this.logger = logger ?? silentLogger
+    this.#configuredOriginId = originId
     this.capacityBytes = normalizeCapacityBytes(capacityBytes)
     // Normalize the per-upload cap so every downstream guard keeps its plain
     // `!== undefined` test: an unset option applies the default-on cap; a
@@ -529,20 +554,22 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Startup hook: brings the data dir to the current storage layout version
-   * (see `filesystemStore.ts`), then removes the staging temp files a killed
-   * process left behind at the data root and under the Space, keystore, and
-   * revocation trees. Only temp files untouched for an hour are removed, since
-   * another process sharing the data directory may still be writing a fresher
-   * one. A failure to read or remove an entry is logged and does not stop
-   * startup.
+   * and settles the store's origin id (see `filesystemStore.ts`), then
+   * removes the staging temp files a killed process left behind at the data
+   * root and under the Space, keystore, and revocation trees. Only temp files
+   * untouched for an hour are removed, since another process sharing the data
+   * directory may still be writing a fresher one. A failure to read or remove
+   * an entry is logged and does not stop startup.
    * @returns {Promise<void>}
    */
   async init(): Promise<void> {
-    const storeVersion = await applyStoreMigrations({
+    const { version: storeVersion, originId } = await applyStoreMigrations({
       dataDir: this.dataDir,
-      logger: this.logger
+      logger: this.logger,
+      originId: this.#configuredOriginId
     })
-    this.logger.info({ storeVersion }, 'Filesystem store version')
+    this.#originId = originId
+    this.logger.info({ storeVersion, originId }, 'Filesystem store ready')
     // The data root's own temp files (a `store.json` rewrite or a lock file's
     // staging), without descending into `lost+found` and the trees below.
     let removed = await sweepTempFiles({

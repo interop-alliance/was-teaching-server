@@ -2,7 +2,8 @@
  * The service description (spec "Service Description"): the server-wide JSON
  * document naming the specification versions this server speaks, its Spaces
  * Repository URL, and the optional sections it implements. It lists four
- * entries: the core specification; the zCap authorization profile, whose entry
+ * entries: the core specification, whose entry also carries the store's origin
+ * id (`lib/originId.ts`); the zCap authorization profile, whose entry
  * carries the signature algorithms and delegation cryptosuites this server
  * verifies; the Encrypted Collections profile, whose entry claims the chunk
  * endpoints and names the two optional affordances of that profile this server
@@ -11,10 +12,12 @@
  * `/service`, and every response the server sends links to it with a
  * `Link: <...>; rel="service"` header, which is how a client finds it from any
  * URL it holds. The document has no auth hooks; it depends on `serverUrl`, the
- * configuration the plugin was registered with, and one storage read: whether
- * the server's own history log lists its export-signing key
- * (`lib/serverIdentity.ts`), which decides the `instance` member's
- * `serverDid`.
+ * configuration the plugin was registered with, the active backend's
+ * `originId`, and one storage read: whether the server's own history log lists
+ * its export-signing key (`lib/serverIdentity.ts`), which decides the
+ * `instance` member's `serverDid`. The origin id sits on the core entry rather
+ * than on `instance` because a replication peer may gate on it, and the spec
+ * forbids a client gating on `instance`.
  */
 import { createHash } from 'node:crypto'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
@@ -102,6 +105,8 @@ export function serviceDescriptionUrl(serverUrl: string): string {
  * absolute, built from `serverUrl`.
  * @param options {object}
  * @param options.serverUrl {string}
+ * @param options.originId {string}   the store's origin id, carried on the
+ *   core specification's entry
  * @param options.discloseVersion {boolean}   include `instance.version`
  * @param [options.identity] {object}   the instance's identity members
  *   (`exportSigningKey`, `serverDid`); absent members are left out
@@ -109,10 +114,12 @@ export function serviceDescriptionUrl(serverUrl: string): string {
  */
 export function buildServiceDescription({
   serverUrl,
+  originId,
   discloseVersion,
   identity = {}
 }: {
   serverUrl: string
+  originId: string
   discloseVersion: boolean
   identity?: Pick<
     NonNullable<ServiceDescription['instance']>,
@@ -126,7 +133,8 @@ export function buildServiceDescription({
         {
           version: SPEC_VERSION,
           spaces: new URL(spacesPath(), serverUrl).toString(),
-          features: SERVICE_FEATURES
+          features: SERVICE_FEATURES,
+          originId
         } satisfies PwsVersionEntry
       ],
       [AUTHZ_PROFILE_IDENTIFIER]: [
@@ -204,9 +212,10 @@ export function addServiceLinkHook(fastify: FastifyInstance): void {
 /**
  * Registers `GET /service` (and Fastify's implicit bodyless `HEAD`). The
  * serialized document and its `ETag` are computed once per `serverUrl` and
- * server DID, since the document changes with nothing else; the DID is read
- * per request through the cached resolver, because the admin writes the
- * server's history log after boot.
+ * server DID, since the document changes with nothing else: the store's origin
+ * id is fixed for the backend's life. The DID is read per request through the
+ * cached resolver, because the admin writes the server's history log after
+ * boot.
  * @param fastify {FastifyInstance}
  * @param options {object}
  * @param options.discloseVersion {boolean}   include `instance.version`
@@ -217,7 +226,12 @@ export async function initServiceDescriptionRoutes(
   { discloseVersion }: { discloseVersion: boolean }
 ): Promise<void> {
   let cached:
-    | { serverUrl: string; did: string | undefined; body: string; etag: string }
+    | {
+        serverUrl: string
+        did: string | undefined
+        body: string
+        etag: string
+      }
     | undefined
 
   fastify.get(
@@ -241,6 +255,7 @@ export async function initServiceDescriptionRoutes(
         const body = JSON.stringify(
           buildServiceDescription({
             serverUrl,
+            originId: storage.originId,
             discloseVersion,
             identity: {
               exportSigningKey: serverSigningKey?.exportSigningKey,

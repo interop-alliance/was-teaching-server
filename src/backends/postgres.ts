@@ -373,6 +373,14 @@ export class PostgresBackend implements StorageBackend {
   #pool: pg.Pool
   #schema?: string
   /**
+   * The configured origin id (`WAS_ORIGIN_ID`), handed to `init()`.
+   */
+  #configuredOriginId?: string
+  /**
+   * The store's origin id, settled by `init()` from the store row.
+   */
+  #originId?: string
+  /**
    * The `PoolClient` of the transaction running on the current async context,
    * when one is. `#withTransaction` installs it for the span of its callback
    * and `#reader()` hands it to any read that runs inside -- so a read invoked
@@ -408,6 +416,9 @@ export class PostgresBackend implements StorageBackend {
    *   Space; `undefined` applies the default-on limit, `Infinity` means no cap
    * @param [options.maxResourcesPerSpace] {number}   max live Resources per
    *   Space; `undefined` applies the default-on limit, `Infinity` means no cap
+   * @param [options.originId] {string}   the configured origin id
+   *   (`WAS_ORIGIN_ID`); `init()` refuses one that differs from the stored id,
+   *   and mints one when unset on a store that carries none
    */
   constructor({
     connectionString,
@@ -417,7 +428,8 @@ export class PostgresBackend implements StorageBackend {
     maxUploadBytes,
     maxSpacesPerController,
     maxCollectionsPerSpace,
-    maxResourcesPerSpace
+    maxResourcesPerSpace,
+    originId
   }: {
     connectionString: string
     schema?: string
@@ -427,11 +439,13 @@ export class PostgresBackend implements StorageBackend {
     maxSpacesPerController?: number
     maxCollectionsPerSpace?: number
     maxResourcesPerSpace?: number
+    originId?: string
   }) {
     if (schema !== undefined && !/^[a-z_][a-z0-9_]*$/i.test(schema)) {
       throw new Error(`Invalid Postgres schema name: "${schema}".`)
     }
     this.#schema = schema
+    this.#configuredOriginId = originId
     this.logger = logger ?? silentLogger
     this.capacityBytes = normalizeCapacityBytes(capacityBytes)
     // This backend buffers each upload in memory as a single `bytea`, so an
@@ -496,12 +510,28 @@ export class PostgresBackend implements StorageBackend {
       // holder's migration takes, and a future slow migration must not be
       // capped at the request-path timeout either.
       await client.query('SET statement_timeout = 0')
-      await applyMigrations({ client, logger: this.logger })
+      const { originId } = await applyMigrations({
+        client,
+        logger: this.logger,
+        originId: this.#configuredOriginId
+      })
+      this.#originId = originId
     } finally {
       // Destroy rather than pool-return the client, so the lifted timeout
       // never leaks into a request-path connection.
       client.release(true)
     }
+  }
+
+  /**
+   * The store's origin id, settled by `init()` from the store row.
+   * @returns {string}
+   */
+  get originId(): string {
+    if (this.#originId === undefined) {
+      throw new Error('PostgresBackend.originId is read before init().')
+    }
+    return this.#originId
   }
 
   /**

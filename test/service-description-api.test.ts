@@ -31,6 +31,7 @@ describe('Service description API', () => {
   let fastify: FastifyInstance,
     serverUrl: string,
     dataDir: string,
+    backend: FileSystemBackend,
     alice: any,
     aliceSpace: Space
 
@@ -38,9 +39,8 @@ describe('Service description API', () => {
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-service-'))
-    ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir })
-    }))
+    backend = new FileSystemBackend({ dataDir })
+    ;({ fastify, serverUrl } = await startTestServer({ backend }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
     aliceSpace = await alice.was.createSpace({
@@ -89,7 +89,10 @@ describe('Service description API', () => {
                 'query',
                 'quotas',
                 'changes-query'
-              ]
+              ],
+              // A replication peer may gate on it, so it sits on the core
+              // entry rather than on `instance`.
+              originId: backend.originId
             }
           ],
           'https://w3id.org/pws/authz-profile': [

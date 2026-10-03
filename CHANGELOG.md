@@ -4,6 +4,13 @@
 
 ### Added
 
+- A per-store origin id, the origin half of a write's replicated identity.
+  `WAS_ORIGIN_ID` sets it verbatim (`[A-Za-z0-9_-]{1,64}`); unset, the store
+  mints a random base58 id on first boot and keeps it. Stored as `originId` in
+  the filesystem data dir's `store.json` and in the Postgres `store` table. A
+  set value that differs from the stored id refuses startup. `/service`
+  advertises it as `originId` on the core `https://w3id.org/pws` entry.
+
 - Writer attribution (spec `#writer-attribution`): an optional `Writer-Id`
   request header on content writes and `DELETE`, and a top-level `writerId`
   member on Update Resource Metadata, stored as the Resource Metadata `writerId`

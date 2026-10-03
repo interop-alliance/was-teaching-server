@@ -25,7 +25,12 @@ import {
   type StoreMigration
 } from '../src/backends/filesystemStore.js'
 import { TEMP_FILE_ORPHAN_AGE_MS } from '../src/lib/atomicFile.js'
-import { StoreLockTimeoutError, StoreVersionError } from '../src/errors.js'
+import { ORIGIN_ID_PATTERN } from '../src/lib/originId.js'
+import {
+  StoreLockTimeoutError,
+  StoreOriginIdError,
+  StoreVersionError
+} from '../src/errors.js'
 
 const logger = pino({ level: 'silent' })
 
@@ -63,20 +68,34 @@ async function writeOtherHostLock(dataDir: string): Promise<string> {
 }
 
 /**
- * The version `store.json` in `dataDir` records.
+ * The whole record `store.json` in `dataDir` holds.
  */
-async function storedVersion(dataDir: string): Promise<number> {
+async function storedRecord(
+  dataDir: string
+): Promise<{ version: number; originId?: string }> {
   const text = await readFile(path.join(dataDir, STORE_FILE_NAME), 'utf8')
-  return JSON.parse(text).version
+  return JSON.parse(text)
 }
 
 /**
- * Writes a `store.json` recording `version` into `dataDir`.
+ * The version `store.json` in `dataDir` records.
  */
-async function stamp(dataDir: string, version: number): Promise<void> {
+async function storedVersion(dataDir: string): Promise<number> {
+  return (await storedRecord(dataDir)).version
+}
+
+/**
+ * Writes a `store.json` recording `version`, and `originId` when given, into
+ * `dataDir`.
+ */
+async function stamp(
+  dataDir: string,
+  version: number,
+  originId?: string
+): Promise<void> {
   await writeFile(
     path.join(dataDir, STORE_FILE_NAME),
-    JSON.stringify({ version })
+    JSON.stringify({ version, originId })
   )
 }
 
@@ -100,7 +119,7 @@ describe('Filesystem store version', () => {
 
   it('stamps a data dir that does not exist yet', async () => {
     const nested = path.join(dataDir, 'not-yet')
-    const version = await applyStoreMigrations({ dataDir: nested, logger })
+    const { version } = await applyStoreMigrations({ dataDir: nested, logger })
     assert.equal(version, STORE_MIGRATIONS.length)
     assert.equal(await storedVersion(nested), STORE_MIGRATIONS.length)
   })
@@ -108,7 +127,7 @@ describe('Filesystem store version', () => {
   it('treats a volume root holding only lost+found as empty', async () => {
     await mkdir(path.join(dataDir, 'lost+found'))
     const counting = countingMigration()
-    const version = await applyStoreMigrations({
+    const { version } = await applyStoreMigrations({
       dataDir,
       logger,
       migrations: [noop, counting.migration]
@@ -123,9 +142,15 @@ describe('Filesystem store version', () => {
     await mkdir(path.join(dataDir, 'spaces'))
     const counting = countingMigration()
     const migrations = [noop, counting.migration]
-    assert.equal(await applyStoreMigrations({ dataDir, logger, migrations }), 2)
+    assert.equal(
+      (await applyStoreMigrations({ dataDir, logger, migrations })).version,
+      2
+    )
     assert.equal(await storedVersion(dataDir), 2)
-    assert.equal(await applyStoreMigrations({ dataDir, logger, migrations }), 2)
+    assert.equal(
+      (await applyStoreMigrations({ dataDir, logger, migrations })).version,
+      2
+    )
     assert.equal(counting.runs(), 1)
   })
 
@@ -147,7 +172,10 @@ describe('Filesystem store version', () => {
     )
     assert.equal(await storedVersion(dataDir), 1)
     fail = false
-    assert.equal(await applyStoreMigrations({ dataDir, logger, migrations }), 2)
+    assert.equal(
+      (await applyStoreMigrations({ dataDir, logger, migrations })).version,
+      2
+    )
     assert.equal(await readFile(marker, 'utf8'), 'migrated')
     assert.equal(await storedVersion(dataDir), 2)
   })
@@ -160,11 +188,15 @@ describe('Filesystem store version', () => {
       await new Promise(resolve => setTimeout(resolve, 200))
     }
     const migrations = [noop, slow]
-    const versions = await Promise.all([
+    const results = await Promise.all([
       applyStoreMigrations({ dataDir, logger, migrations }),
       applyStoreMigrations({ dataDir, logger, migrations })
     ])
-    assert.deepEqual(versions, [2, 2])
+    assert.deepEqual(
+      results.map(result => result.version),
+      [2, 2]
+    )
+    assert.equal(results[0]!.originId, results[1]!.originId)
     assert.equal(ran, 1)
   })
 
@@ -176,7 +208,7 @@ describe('Filesystem store version', () => {
       path.join(dataDir, 'store.lock.left-behind'),
       JSON.stringify({ pid: process.pid, hostname: os.hostname() })
     )
-    const version = await applyStoreMigrations({
+    const { version } = await applyStoreMigrations({
       dataDir,
       logger,
       migrations: [noop, noop],
@@ -191,7 +223,7 @@ describe('Filesystem store version', () => {
     const lockPath = await writeOtherHostLock(dataDir)
     const stale = new Date(Date.now() - 5 * 60 * 1000)
     await utimes(lockPath, stale, stale)
-    const version = await applyStoreMigrations({
+    const { version } = await applyStoreMigrations({
       dataDir,
       logger,
       migrations: [noop, noop],
@@ -217,7 +249,7 @@ describe('Filesystem store version', () => {
       'no step runs while the other host holds the lock'
     )
     await unlink(lockPath)
-    assert.equal(await running, 2)
+    assert.equal((await running).version, 2)
     assert.equal(counting.runs(), 1)
   })
 
@@ -263,7 +295,10 @@ describe('Filesystem store version', () => {
     await mkdir(path.join(dataDir, 'spaces'))
     const counting = countingMigration()
     const migrations = [noop, counting.migration]
-    assert.equal(await applyStoreMigrations({ dataDir, logger, migrations }), 2)
+    assert.equal(
+      (await applyStoreMigrations({ dataDir, logger, migrations })).version,
+      2
+    )
     assert.equal(counting.runs(), 1, 'every step runs over pre-stamp data')
     assert.equal(await storedVersion(dataDir), 2)
     assert.deepEqual((await readdir(dataDir)).sort(), [
@@ -285,5 +320,163 @@ describe('Filesystem store version', () => {
       applyStoreMigrations({ dataDir, logger }),
       StoreVersionError
     )
+  })
+})
+
+describe('Filesystem store origin id', () => {
+  let dataDir: string
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'was-store-origin-'))
+  })
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true })
+  })
+
+  it('mints an id on a fresh dir and reads it back on the next boot', async () => {
+    const first = await applyStoreMigrations({ dataDir, logger })
+    assert.match(first.originId, ORIGIN_ID_PATTERN)
+    assert.deepEqual(await storedRecord(dataDir), {
+      version: STORE_MIGRATIONS.length,
+      originId: first.originId
+    })
+    const second = await applyStoreMigrations({ dataDir, logger })
+    assert.equal(second.originId, first.originId)
+  })
+
+  it('uses a configured id verbatim and reads it back on the next boot', async () => {
+    const first = await applyStoreMigrations({
+      dataDir,
+      logger,
+      originId: 'east-1'
+    })
+    assert.equal(first.originId, 'east-1')
+    assert.equal((await storedRecord(dataDir)).originId, 'east-1')
+    const second = await applyStoreMigrations({ dataDir, logger })
+    assert.equal(second.originId, 'east-1')
+  })
+
+  it('refuses a configured id that differs from the stored one', async () => {
+    await stamp(dataDir, STORE_MIGRATIONS.length, 'stored-id')
+    const before = await readFile(path.join(dataDir, STORE_FILE_NAME), 'utf8')
+    await assert.rejects(
+      applyStoreMigrations({ dataDir, logger, originId: 'other-id' }),
+      (err: Error) =>
+        err instanceof StoreOriginIdError &&
+        err.message.includes('"stored-id"') &&
+        err.message.includes('"other-id"')
+    )
+    assert.equal(
+      await readFile(path.join(dataDir, STORE_FILE_NAME), 'utf8'),
+      before
+    )
+  })
+
+  it('boots with a configured id equal to the stored one', async () => {
+    await stamp(dataDir, STORE_MIGRATIONS.length, 'same-id')
+    const result = await applyStoreMigrations({
+      dataDir,
+      logger,
+      originId: 'same-id'
+    })
+    assert.equal(result.originId, 'same-id')
+  })
+
+  it.each(['has space', 'a'.repeat(65)])(
+    'refuses a malformed stored originId (%s)',
+    async malformed => {
+      await stamp(dataDir, STORE_MIGRATIONS.length, malformed)
+      await assert.rejects(
+        applyStoreMigrations({ dataDir, logger }),
+        StoreOriginIdError
+      )
+    }
+  )
+
+  it('refuses a malformed configured originId before anything is written', async () => {
+    await assert.rejects(
+      new FileSystemBackend({ dataDir, originId: 'bad id!' }).init(),
+      StoreOriginIdError
+    )
+    await assert.rejects(
+      readFile(path.join(dataDir, STORE_FILE_NAME)),
+      (err: NodeJS.ErrnoException) => err.code === 'ENOENT'
+    )
+  })
+
+  it('gives a stamped dir with no originId one, keeping its version', async () => {
+    await stamp(dataDir, 1)
+    await mkdir(path.join(dataDir, 'spaces'))
+    const result = await applyStoreMigrations({
+      dataDir,
+      logger,
+      migrations: [noop]
+    })
+    assert.match(result.originId, ORIGIN_ID_PATTERN)
+    assert.deepEqual(await storedRecord(dataDir), {
+      version: 1,
+      originId: result.originId
+    })
+  })
+
+  it('keeps the id written before a migration step that was interrupted', async () => {
+    await mkdir(path.join(dataDir, 'spaces'))
+    await writeFile(path.join(dataDir, 'spaces', 'entry'), 'data')
+    let fail = true
+    const interruptible: StoreMigration = async () => {
+      if (fail) {
+        throw new Error('interrupted')
+      }
+    }
+    const migrations = [interruptible]
+    await assert.rejects(
+      applyStoreMigrations({ dataDir, logger, migrations }),
+      /interrupted/
+    )
+    const written = await storedRecord(dataDir)
+    assert.equal(written.version, 0)
+    assert.match(written.originId!, ORIGIN_ID_PATTERN)
+    fail = false
+    const result = await applyStoreMigrations({ dataDir, logger, migrations })
+    assert.equal(result.version, 1)
+    assert.equal(result.originId, written.originId)
+    assert.deepEqual(await storedRecord(dataDir), {
+      version: 1,
+      originId: written.originId
+    })
+  })
+
+  it('keeps the id across each version stamp a migration run writes', async () => {
+    await stamp(dataDir, 0, 'kept-id')
+    await mkdir(path.join(dataDir, 'spaces'))
+    const seen: Array<{ version: number; originId?: string }> = []
+    const observe: StoreMigration = async ({ dataDir: root }) => {
+      seen.push(await storedRecord(root))
+    }
+    const result = await applyStoreMigrations({
+      dataDir,
+      logger,
+      migrations: [observe, observe]
+    })
+    assert.deepEqual(seen, [
+      { version: 0, originId: 'kept-id' },
+      { version: 1, originId: 'kept-id' }
+    ])
+    assert.equal(result.originId, 'kept-id')
+    assert.deepEqual(await storedRecord(dataDir), {
+      version: 2,
+      originId: 'kept-id'
+    })
+  })
+
+  it('exposes the id on the backend only after init', async () => {
+    const backend = new FileSystemBackend({ dataDir, originId: 'node-a' })
+    assert.throws(() => backend.originId, /before init/)
+    await backend.init()
+    assert.equal(backend.originId, 'node-a')
+    assert.equal((await storedRecord(dataDir)).originId, 'node-a')
+    const reopened = new FileSystemBackend({ dataDir })
+    await reopened.init()
+    assert.equal(reopened.originId, 'node-a')
   })
 })

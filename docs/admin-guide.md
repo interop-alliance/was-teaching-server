@@ -487,3 +487,43 @@ log was created portable (the CLI default), so a domain-move entry addressing
 is not shipped yet. Until it is, the admin appends that entry with a library
 call and `PUT`s the log under the new host. Re-minting a fresh identity instead
 is also fine, at the cost of provenance continuity.
+
+## Store origin id
+
+**Scope.** Every store carries one origin id: a filesystem data directory, or a
+Postgres schema. It is the origin half of a write's replicated identity, for
+replicating a Space between servers. It is not the server DID. Most deployments
+have no DID, the DID embeds the host, and it changes when the admin re-mints the
+log. The origin id only has to be stable, and unique among every server a Space
+may replicate to. Nothing verifies it, so it can be short and opaque.
+
+### Configuration surface
+
+| variable        | role                                                                                                                                                     |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WAS_ORIGIN_ID` | The store's origin id, 1 to 64 characters from `[A-Za-z0-9_-]`, used verbatim. Unset: the store keeps the id it carries, or mints one on its first boot. |
+
+The id is settled on every boot, under the store lock:
+
+- A store with no id takes `WAS_ORIGIN_ID` when set. Otherwise it mints a random
+  16-byte base58 id. Either way it keeps that id for the store's life.
+- A store that carries an id keeps it. Unsetting `WAS_ORIGIN_ID` later changes
+  nothing.
+- A set `WAS_ORIGIN_ID` that differs from the stored id fails the deploy, and
+  the error names both. So does a value outside the charset or over 64
+  characters.
+
+The filesystem backend stores it as the `originId` member of the data
+directory's `store.json`, beside `version`. The Postgres backend stores it in
+the single row of the `store` table, column `origin_id`. `GET /service`
+advertises it as `originId` on the core `https://w3id.org/pws` specs entry.
+
+### Operator rules
+
+- Keep it unique among every server a Space may replicate to. Two servers with
+  one id could mint the same stamp for two different writes.
+- A cloned data directory or database carries its id with it. A restored clone
+  that will run beside its source must boot with a fresh `WAS_ORIGIN_ID` over an
+  empty store, then take the Space's data by import or replication.
+- A data wipe mints a fresh id. That is fine, since a wiped store has no writes
+  to replicate.

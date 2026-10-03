@@ -298,12 +298,16 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `https://w3id.org/pws` identifier, names the spec version this server speaks
   (`0.5`), the Spaces Repository URL, and the `features` tokens naming the
   optional sections of the core spec this server serves, `changes-query` among
-  them. A Backend descriptor advertises no tokens of its own. Conditional
-  writes, the `epoch` stamp, and the `writerId` writer-attribution label are
-  baseline guarantees of every backend a Collection may be created on, since the
-  server -- not the storage engine -- serializes each write and mints its own
-  opaque validator; a content hash would serve as a strong validator as well as
-  the version counter used here. The entry under
+  them. It also carries `originId`, the active backend's origin id, which a
+  replication peer reads when it registers. It sits on the core entry rather
+  than on `instance` because a peer may gate on it, and the spec forbids a
+  client gating on `instance`. The archive's `service.json` carries it too. A
+  Backend descriptor advertises no tokens of its own. Conditional writes, the
+  `epoch` stamp, and the `writerId` writer-attribution label are baseline
+  guarantees of every backend a Collection may be created on, since the server
+  -- not the storage engine -- serializes each write and mints its own opaque
+  validator; a content hash would serve as a strong validator as well as the
+  version counter used here. The entry under
   `https://w3id.org/pws/authz-profile` names the zCap authorization profile
   version (`0.1`) and its rendered location, and carries the accepted
   `signatureAlgorithms` and `zcapCryptosuites` (profile
@@ -483,7 +487,18 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   private to the backend: it is not exported, not stored in any Space, and not
   served. The Postgres backend's `applyMigrations` refuses the same way, with
   the same `StoreVersionError`, when its `schema_migrations` table records a
-  version newer than `MIGRATIONS` knows.
+  version newer than `MIGRATIONS` knows. `store.json` also carries the store's
+  origin id as its `originId` member (see the Glossary's Origin id). `init()`
+  settles it on every boot, under the same lock, and it is not a migration step.
+  A store with no id takes `WAS_ORIGIN_ID` when set, else a minted one, and
+  writes it before any step runs. A stored id is kept, and a set `WAS_ORIGIN_ID`
+  that differs from it refuses startup with `StoreOriginIdError`, naming both.
+  Every rewrite of `store.json` keeps the id, and any member this code does not
+  know. The Postgres twin is the single row of the `store` table (column
+  `origin_id`), settled by `applyMigrations` in the same transaction, under its
+  advisory lock. Each backend exposes the id as `StorageBackend.originId`, and a
+  data-plane backend adapter carries the hosting server's id, handed to it
+  through the `BackendProvider` options.
 - **`src/backends/{filesystem}.ts`** — interchangeable persistence
   implementation (`implements StorageBackend` from `src/types.ts`). A backend
   offers no precondition primitive of its own to a client: the server serializes
@@ -620,6 +635,17 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   only while the DID is advertised. Distinct from the admin identity, which
   holds the log's update key and authorizes operator actions. Avoid: server DID
   key (ambiguous between the two), server controller.
+- **Origin id** -- the store-level id that is the origin half of a write's
+  replicated identity, for replicating a Space between servers. One per store (a
+  filesystem data dir, a Postgres schema): `WAS_ORIGIN_ID` verbatim when set,
+  else a random 16-byte base58 id minted on first boot, kept for the store's
+  life (`lib/originId.ts`). It need only be stable and unique among every server
+  a Space may replicate to, since nothing verifies it. It is not the server
+  identity, which most deployments lack, which embeds the host, and which
+  changes when the admin re-mints the log. A cloned data dir carries its id, so
+  a clone that runs beside its source boots with a fresh `WAS_ORIGIN_ID` over an
+  empty store. Advertised on `/service` as `originId` on the core specs entry.
+  Avoid: node id, replica id, server id.
 - **Provenance statement** -- one line of an export archive's
   `provenance.jsonl`: a `StorageAttestation` JSON object naming one exported
   object by its absolute URL, its server-managed members, and its content

@@ -2,9 +2,9 @@
  * Storage layout versioning for the `FileSystemBackend`: an ordered list of
  * migration functions plus the runner that applies them on backend `init()`,
  * mirroring `MIGRATIONS` in `postgresSchema.ts`. The data root's `store.json`
- * records the layout version the directory is at. It sits beside `spaces/`,
- * `keystores/` and `space-revocations/`, so no Space or Collection id can
- * collide with it.
+ * records the layout version the directory is at, and the store's origin id
+ * (see `lib/originId.ts`). It sits beside `spaces/`, `keystores/` and
+ * `space-revocations/`, so no Space or Collection id can collide with it.
  *
  * The runner runs inside the server process at startup. It must not run from a
  * Fly `release_command`, since Fly runs that command in a temporary machine
@@ -29,7 +29,12 @@ import {
   atomicWriteFile
 } from '../lib/atomicFile.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
-import { StoreLockTimeoutError, StoreVersionError } from '../errors.js'
+import { isValidOriginId, mintOriginId } from '../lib/originId.js'
+import {
+  StoreLockTimeoutError,
+  StoreOriginIdError,
+  StoreVersionError
+} from '../errors.js'
 
 /**
  * One layout migration. It must be idempotent: a run interrupted before its
@@ -52,9 +57,20 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
 ]
 
 /**
- * The file at the data root that records the layout version.
+ * The file at the data root that records the layout version and the origin id.
  */
 export const STORE_FILE_NAME = 'store.json'
+
+/**
+ * The parsed contents of `store.json`. `originId` is absent from a file
+ * written before the store carried one. Members this code does not know are
+ * kept on every rewrite.
+ */
+type StoreRecord = {
+  version: number
+  originId?: string
+  [member: string]: unknown
+}
 
 /**
  * The name prefix of the lock files a runner creates while it reads and
@@ -106,27 +122,44 @@ const runnerMutex = new KeyedMutex()
  * (`StoreVersionError`) when `store.json` names a version newer than
  * `migrations` knows. Holds a lock file for the whole run, so two processes
  * sharing the data dir cannot both migrate it.
+ *
+ * Also settles the store's origin id on every boot, under the same lock. A
+ * stored id is kept, and a configured one that differs is refused, as is a
+ * malformed stored id (`StoreOriginIdError`). A store with no id takes the
+ * configured one, or a minted one, and writes it before any migration step
+ * runs, so a run killed after that write keeps the id for the next boot.
  * @param options {object}
  * @param options.dataDir {string}   the backend's data root
  * @param options.logger {FastifyBaseLogger}
+ * @param [options.originId] {string}   the configured origin id
+ *   (`WAS_ORIGIN_ID`), already validated
  * @param [options.migrations] {StoreMigration[]}   defaults to STORE_MIGRATIONS
  * @param [options.lockTimeoutMs] {number}   how long to wait on a held lock
- * @returns {Promise<number>}   the version the data dir is at afterwards
+ * @returns {Promise<{ version: number, originId: string }>}   the version the
+ *   data dir is at afterwards, and its origin id
  */
 export async function applyStoreMigrations({
   dataDir,
   logger,
+  originId,
   migrations = STORE_MIGRATIONS,
   lockTimeoutMs = DEFAULT_LOCK_TIMEOUT_MS
 }: {
   dataDir: string
   logger: FastifyBaseLogger
+  originId?: string
   migrations?: StoreMigration[]
   lockTimeoutMs?: number
-}): Promise<number> {
+}): Promise<{ version: number; originId: string }> {
   await mkdir(dataDir, { recursive: true })
   return runnerMutex.run(await realpath(dataDir), () =>
-    migrateUnderLock({ dataDir, logger, migrations, lockTimeoutMs })
+    migrateUnderLock({
+      dataDir,
+      logger,
+      configuredOriginId: originId,
+      migrations,
+      lockTimeoutMs
+    })
   )
 }
 
@@ -135,45 +168,74 @@ export async function applyStoreMigrations({
  * @param options {object}
  * @param options.dataDir {string}
  * @param options.logger {FastifyBaseLogger}
+ * @param [options.configuredOriginId] {string}
  * @param options.migrations {StoreMigration[]}
  * @param options.lockTimeoutMs {number}
- * @returns {Promise<number>}
+ * @returns {Promise<{ version: number, originId: string }>}
  */
 async function migrateUnderLock({
   dataDir,
   logger,
+  configuredOriginId,
   migrations,
   lockTimeoutMs
 }: {
   dataDir: string
   logger: FastifyBaseLogger
+  configuredOriginId?: string
   migrations: StoreMigration[]
   lockTimeoutMs: number
-}): Promise<number> {
+}): Promise<{ version: number; originId: string }> {
   const currentVersion = migrations.length
+  // Refused before anything is written: a malformed id in `store.json` would
+  // refuse every later boot.
+  if (
+    configuredOriginId !== undefined &&
+    !isValidOriginId(configuredOriginId)
+  ) {
+    throw StoreOriginIdError.malformed({
+      id: configuredOriginId,
+      where: 'The configured origin id'
+    })
+  }
   const lock = await acquireLock({ dataDir, lockTimeoutMs, logger })
   try {
-    let stampedVersion = await readStoreVersion({ dataDir })
-    if (stampedVersion === undefined) {
-      if (await isEmptyDataDir({ dataDir })) {
-        await writeStoreVersion({ dataDir, version: currentVersion })
-        return currentVersion
+    let record = await readStoreRecord({ dataDir })
+    if (record === undefined) {
+      // An empty data dir starts at the current version; one that holds data
+      // predates the stamp and is at the baseline layout.
+      const empty = await isEmptyDataDir({ dataDir })
+      if (!empty) {
+        logger.info(
+          { dataDir },
+          `Data directory holds data but no ${STORE_FILE_NAME}; migrating from the baseline layout`
+        )
       }
-      logger.info(
-        { dataDir },
-        `Data directory holds data but no ${STORE_FILE_NAME}; migrating from the baseline layout`
-      )
-      stampedVersion = 0
+      record = { version: empty ? currentVersion : 0 }
     }
-    if (stampedVersion > currentVersion) {
+    if (record.version > currentVersion) {
       throw new StoreVersionError({
         detail:
-          `${path.join(dataDir, STORE_FILE_NAME)} names version ${stampedVersion}; ` +
+          `${path.join(dataDir, STORE_FILE_NAME)} names version ${record.version}; ` +
           `this server knows up to version ${currentVersion}.`
       })
     }
+    const originId = record.originId ?? configuredOriginId ?? mintOriginId()
+    if (record.originId === undefined) {
+      // Written before any step runs, so a run killed mid-migration keeps it.
+      record = { ...record, originId }
+      await writeStoreRecord({ dataDir, record })
+    } else if (
+      configuredOriginId !== undefined &&
+      configuredOriginId !== originId
+    ) {
+      throw StoreOriginIdError.mismatch({
+        stored: originId,
+        configured: configuredOriginId
+      })
+    }
     for (
-      let version = stampedVersion + 1;
+      let version = record.version + 1;
       version <= currentVersion;
       version++
     ) {
@@ -182,27 +244,29 @@ async function migrateUnderLock({
         'Migrating filesystem store'
       )
       await migrations[version - 1]!({ dataDir, logger })
-      await writeStoreVersion({ dataDir, version })
+      record = { ...record, version }
+      await writeStoreRecord({ dataDir, record })
     }
-    return currentVersion
+    return { version: currentVersion, originId }
   } finally {
     await lock.release()
   }
 }
 
 /**
- * Reads the version `store.json` records, or `undefined` when there is none.
- * A `store.json` that is not a JSON object with a non-negative integer
- * `version` is refused rather than treated as absent.
+ * Reads `store.json` as a whole record, or `undefined` when there is none. A
+ * `store.json` that is not a JSON object with a non-negative integer
+ * `version` is refused rather than treated as absent, and so is one whose
+ * `originId` is present but not a well-formed origin id.
  * @param options {object}
  * @param options.dataDir {string}
- * @returns {Promise<number | undefined>}
+ * @returns {Promise<StoreRecord | undefined>}
  */
-async function readStoreVersion({
+async function readStoreRecord({
   dataDir
 }: {
   dataDir: string
-}): Promise<number | undefined> {
+}): Promise<StoreRecord | undefined> {
   const storePath = path.join(dataDir, STORE_FILE_NAME)
   let text: string
   try {
@@ -213,37 +277,50 @@ async function readStoreVersion({
     }
     throw err
   }
-  let version: unknown
+  let parsed: unknown
   try {
-    version = JSON.parse(text)?.version
+    parsed = JSON.parse(text)
   } catch {
     // Reported below with the other malformed shapes.
   }
+  const record =
+    parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {}
+  const { version, originId } = record
   if (!Number.isInteger(version) || (version as number) < 0) {
     throw new StoreVersionError({
       detail: `${storePath} does not name an integer version.`
     })
   }
-  return version as number
+  if (originId !== undefined && !isValidOriginId(originId)) {
+    throw StoreOriginIdError.malformed({
+      id: String(originId),
+      where: storePath
+    })
+  }
+  return record as StoreRecord
 }
 
 /**
- * Rewrites `store.json` with `version` (temp file plus rename).
+ * Rewrites `store.json` with the whole `record` (temp file plus rename). The
+ * caller passes the record it read with its own members changed, so the
+ * members it does not own, the origin id among them, are kept.
  * @param options {object}
  * @param options.dataDir {string}
- * @param options.version {number}
+ * @param options.record {StoreRecord}
  * @returns {Promise<void>}
  */
-async function writeStoreVersion({
+async function writeStoreRecord({
   dataDir,
-  version
+  record
 }: {
   dataDir: string
-  version: number
+  record: StoreRecord
 }): Promise<void> {
   await atomicWriteFile({
     filePath: path.join(dataDir, STORE_FILE_NAME),
-    data: JSON.stringify({ version }) + '\n'
+    data: JSON.stringify(record) + '\n'
   })
 }
 

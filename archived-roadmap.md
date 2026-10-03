@@ -4495,3 +4495,54 @@ too. A cache would follow the per-backend `LruCache` pattern of
 recheck's log read is a second query against the `collections` row whose
 `FOR UPDATE` lock `writeCollection` already holds, so the lock is held across an
 extra round trip.
+
+### WAS-171: Per-store origin id (`WAS_ORIGIN_ID`)
+
+- status: done
+- done: 2026-10-02
+- priority: medium
+- labels: replication, filesystem-backend, postgres-backend, config,
+  service-description
+- blocks: WAS-96, WAS-172, WAS-176
+- touches:
+  - was-teaching-server: `src/backends/filesystemStore.ts` (`store.json`), the
+    Postgres schema (`MIGRATIONS`), `src/config.default.ts`, `start.ts`,
+    `src/serviceDescription.ts`, `docs/admin-guide.md` -- shipped here
+    (`src/lib/originId.ts`, the `store` row migration, `StoreOriginIdError`)
+  - storage-core: `originId` on `PwsVersionEntry` -- shipped in 0.27.0 (publish
+    pending)
+  - wallet-attached-storage-spec: `originId` on the core `https://w3id.org/pws`
+    `specs` entry (not `instance`, which a client must not gate on) -- filed as
+    WASS-47 (its Service Description acceptance line)
+- acceptance:
+  - [x] `WAS_ORIGIN_ID`, when set, is used verbatim and must match
+        `[A-Za-z0-9_-]{1,64}`; a value outside that is refused at boot
+  - [x] In `init()`, under the store lock, on every boot: a `store.json` (or
+        Postgres store row) with no origin id gets `WAS_ORIGIN_ID` when set,
+        else a minted random base58 id; one that carries an id is read from
+        there. Not a migration step: an empty store runs none, and the step
+        runner rewrites the file. `writeStoreVersion` preserves members it does
+        not own
+  - [x] A set `WAS_ORIGIN_ID` that differs from the stored id refuses to start,
+        naming both
+  - [x] `StorageBackend` exposes the id; `/service` advertises it as `originId`
+        on the core `specs` entry, and the admin guide says it must be unique
+        among every server a Space may replicate to, so a restored clone that
+        will run beside its source boots with a fresh `WAS_ORIGIN_ID`
+  - [x] Data-plane backend adapters share the hosting server's origin id and
+        mint no stamps of their own
+  - [x] Tests cover mint, verbatim use, mismatch refusal, the charset, a fresh
+        dir minting, a kill between the id write and the version stamp keeping
+        the id, and `writeStoreVersion` preserving it
+
+Context (discovered-from: WAS-96, decision 2; the mint and advertisement rules
+are design section 5.2 and open point 9, decision 0004 in `decisions/`). The
+origin half of a write's replicated identity. Not the server DID: most
+deployments have none, it embeds the host, and it changes if the admin re-mints
+the log; the id only has to be stable and unique, since nothing verifies a
+stamp. A human names a peer by URL or DID at registration and the server reads
+the peer's origin id off its `/service`, so the id can be short and opaque; an
+operator who wants a readable one sets it. A data wipe (staging) mints a fresh
+id, which is fine, since there is no data to replicate.
+
+---

@@ -46,9 +46,11 @@ export function defaultBackend({
   maxUploadBytes,
   maxSpacesPerController,
   maxCollectionsPerSpace,
-  maxResourcesPerSpace
+  maxResourcesPerSpace,
+  originId
 }: {
   dataDir?: string
+  originId?: string
   capacityBytes?: number
   maxUploadBytes?: number
   maxSpacesPerController?: number
@@ -61,6 +63,7 @@ export function defaultBackend({
     maxUploadBytes,
     maxSpacesPerController,
     maxCollectionsPerSpace,
-    maxResourcesPerSpace
+    maxResourcesPerSpace,
+    originId
   })
 }
