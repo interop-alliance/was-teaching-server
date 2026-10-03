@@ -50,10 +50,10 @@ afterAll(async () => {
 /**
  * A fresh app over the suite's private data dir.
  */
-function testApp() {
+async function testApp() {
   return createApp({
     serverUrl: 'http://localhost',
-    backend: new FileSystemBackend({ dataDir })
+    backend: await FileSystemBackend.open({ dataDir })
   })
 }
 
@@ -67,7 +67,7 @@ describe('CORS proxy API', () => {
   })
 
   it('requires a url query parameter', async () => {
-    const app = testApp()
+    const app = await testApp()
     const response = await app.inject({ method: 'GET', url: '/api/cors' })
 
     expect(response.statusCode).toBe(400)
@@ -75,7 +75,7 @@ describe('CORS proxy API', () => {
   })
 
   it('rejects a non-http(s) scheme', async () => {
-    const app = testApp()
+    const app = await testApp()
     const response = await app.inject({
       method: 'GET',
       url: '/api/cors?url=' + encodeURIComponent('file:///etc/passwd')
@@ -91,7 +91,7 @@ describe('CORS proxy API', () => {
     // e.g. the cloud-metadata endpoint, or an internal service.
     lookupMock.mockResolvedValue([{ address: '169.254.169.254', family: 4 }])
 
-    const app = testApp()
+    const app = await testApp()
     const response = await app.inject({
       method: 'GET',
       url:
@@ -133,7 +133,7 @@ describe('CORS proxy API', () => {
   ])('refuses the IPv6 literal %s (SSRF)', async target => {
     echoLiteral()
 
-    const app = testApp()
+    const app = await testApp()
     const response = await app.inject({
       method: 'GET',
       url: '/api/cors?url=' + encodeURIComponent(target)
@@ -149,7 +149,7 @@ describe('CORS proxy API', () => {
       echoLiteral()
       fetchMock.mockResolvedValueOnce(new Response('ok', { status: 200 }))
 
-      const app = testApp()
+      const app = await testApp()
       const response = await app.inject({
         method: 'GET',
         url: '/api/cors?url=' + encodeURIComponent(target)
@@ -174,7 +174,7 @@ describe('CORS proxy API', () => {
         })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const response = await app.inject({
       method: 'GET',
       url: '/api/cors?url=' + encodeURIComponent('https://public.example/start')
@@ -203,7 +203,7 @@ describe('CORS proxy API', () => {
         })
       )
 
-    const app = testApp()
+    const app = await testApp()
     const response = await app.inject({
       method: 'GET',
       url:
@@ -228,7 +228,7 @@ describe('CORS proxy API', () => {
         })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const response = await app.inject({
       method: 'GET',
       url:
@@ -253,7 +253,7 @@ describe('CORS proxy API', () => {
       })
     })
 
-    const app = testApp()
+    const app = await testApp()
     const response = await app.inject({
       method: 'GET',
       url:
@@ -285,7 +285,7 @@ describe('CORS proxy API', () => {
       async () => new Response('{"ok":true}', { status: 200 })
     )
 
-    const app = testApp()
+    const app = await testApp()
     await app.inject({
       method: 'GET',
       url:
@@ -308,7 +308,7 @@ describe('CORS proxy API', () => {
         })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const response = await app.inject({
       method: 'GET',
       url: '/api/cors?url=' + encodeURIComponent('https://registry.example/big')
@@ -333,7 +333,7 @@ describe('CORS proxy API', () => {
       async () => new Response(stream, { status: 200 })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const response = await app.inject({
       method: 'GET',
       url:
@@ -352,7 +352,7 @@ describe('CORS proxy API', () => {
       throw new Error('network down')
     })
 
-    const app = testApp()
+    const app = await testApp()
     const response = await app.inject({
       method: 'GET',
       url: '/api/cors?url=https%3A%2F%2Fregistry.example%2Fregistry.json'
@@ -381,7 +381,7 @@ describe('CORS proxy response cache', () => {
         })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' + encodeURIComponent('https://registry.example/cached')
 
@@ -414,7 +414,7 @@ describe('CORS proxy response cache', () => {
           })
       )
 
-      const app = testApp()
+      const app = await testApp()
       const url =
         '/api/cors?url=' + encodeURIComponent('https://registry.example/ttl')
 
@@ -441,7 +441,7 @@ describe('CORS proxy response cache', () => {
         async () => new Response('{"a":1}', { status: 200 })
       )
 
-      const app = testApp()
+      const app = await testApp()
       const url =
         '/api/cors?url=' +
         encodeURIComponent('https://registry.example/default-ttl')
@@ -465,7 +465,7 @@ describe('CORS proxy response cache', () => {
       async () => new Response('not found', { status: 404 })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' + encodeURIComponent('https://registry.example/missing')
 
@@ -483,7 +483,7 @@ describe('CORS proxy response cache', () => {
         })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' + encodeURIComponent('https://registry.example/no-store')
 
@@ -501,7 +501,7 @@ describe('CORS proxy response cache', () => {
         })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' +
       encodeURIComponent('https://registry.example/max-age-0')
@@ -517,7 +517,7 @@ describe('CORS proxy response cache', () => {
       async () => new Response(bigBody, { status: 200 })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' +
       encodeURIComponent('https://registry.example/large-body')
@@ -535,7 +535,7 @@ describe('CORS proxy response cache', () => {
       async () => new Response('{"ok":true}', { status: 200 })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' +
       encodeURIComponent('https://registry.example/accept-varies')
@@ -576,7 +576,7 @@ describe('CORS proxy upstream connection reuse', () => {
       async () => new Response('{"ok":true}', { status: 200 })
     )
 
-    const app = testApp()
+    const app = await testApp()
     await app.inject({
       method: 'GET',
       url: '/api/cors?url=' + encodeURIComponent('https://registry.example/one')
@@ -601,7 +601,7 @@ describe('CORS proxy upstream connection reuse', () => {
       .mockResolvedValueOnce([{ address: '93.184.216.34', family: 4 }])
       .mockResolvedValueOnce([{ address: '203.0.113.7', family: 4 }])
 
-    const app = testApp()
+    const app = await testApp()
     await app.inject({
       method: 'GET',
       url:
@@ -623,7 +623,7 @@ describe('CORS proxy upstream connection reuse', () => {
       async () => new Response('{"ok":true}', { status: 200 })
     )
 
-    const app = testApp()
+    const app = await testApp()
     await app.inject({
       method: 'GET',
       url: '/api/cors?url=' + encodeURIComponent('https://registry.example/one')
@@ -646,7 +646,7 @@ describe('CORS proxy upstream connection reuse', () => {
         async () => new Response('{"ok":true}', { status: 200 })
       )
 
-      const app = testApp()
+      const app = await testApp()
       await app.inject({
         method: 'GET',
         url:
@@ -697,7 +697,7 @@ describe('CORS proxy relayed headers and cache directives', () => {
         })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' + encodeURIComponent('https://registry.example/headers')
     const first = await app.inject({ method: 'GET', url })
@@ -743,7 +743,7 @@ describe('CORS proxy relayed headers and cache directives', () => {
         })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' + encodeURIComponent('https://registry.example/cors')
     const first = await app.inject({
@@ -789,7 +789,7 @@ describe('CORS proxy relayed headers and cache directives', () => {
           })
       )
 
-      const app = testApp()
+      const app = await testApp()
       const url =
         '/api/cors?url=' + encodeURIComponent('https://registry.example/age')
 
@@ -826,7 +826,7 @@ describe('CORS proxy relayed headers and cache directives', () => {
           })
       )
 
-      const app = testApp()
+      const app = await testApp()
       const url =
         '/api/cors?url=' + encodeURIComponent('https://registry.example/shared')
 
@@ -851,7 +851,7 @@ describe('CORS proxy relayed headers and cache directives', () => {
         })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' + encodeURIComponent('https://registry.example/s0')
     await app.inject({ method: 'GET', url })
@@ -868,7 +868,7 @@ describe('CORS proxy relayed headers and cache directives', () => {
         })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' + encodeURIComponent('https://registry.example/neg')
     await app.inject({ method: 'GET', url })
@@ -887,7 +887,7 @@ describe('CORS proxy relayed headers and cache directives', () => {
         })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' + encodeURIComponent('https://registry.example/name')
     await app.inject({ method: 'GET', url })
@@ -908,7 +908,7 @@ describe('CORS proxy relayed headers and cache directives', () => {
       })
     })
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' + encodeURIComponent('https://registry.example/flight')
     const pending = [
@@ -962,7 +962,7 @@ describe('CORS proxy response hardening', () => {
         })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' + encodeURIComponent('https://evil.example/page.html')
     const first = await app.inject({ method: 'GET', url })
@@ -978,7 +978,7 @@ describe('CORS proxy response hardening', () => {
   })
 
   it('carries the hardening headers on an error reply too', async () => {
-    const app = testApp()
+    const app = await testApp()
     const response = await app.inject({ method: 'GET', url: '/api/cors' })
 
     expect(response.statusCode).toBe(400)
@@ -994,7 +994,7 @@ describe('CORS proxy response hardening', () => {
         })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const response = await app.inject({
       method: 'GET',
       url: '/api/cors?url=' + encodeURIComponent('https://registry.example/v')
@@ -1008,7 +1008,7 @@ describe('CORS proxy response hardening', () => {
       async () => new Response('{"ok":true}', { status: 200 })
     )
 
-    const app = testApp()
+    const app = await testApp()
     for (const target of [
       'https://registry.example/doc#one',
       'https://registry.example/doc#two',
@@ -1030,7 +1030,7 @@ describe('CORS proxy response hardening', () => {
       async () => new Response('{"ok":true}', { status: 200 })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' + encodeURIComponent('https://registry.example/accept')
     await app.inject({
@@ -1055,7 +1055,7 @@ describe('CORS proxy response hardening', () => {
       async () => new Response('{"ok":true}', { status: 200 })
     )
 
-    const app = testApp()
+    const app = await testApp()
     const url =
       '/api/cors?url=' +
       encodeURIComponent('https://registry.example/accept-params')
@@ -1074,7 +1074,7 @@ describe('CORS proxy response hardening', () => {
   })
 
   it('refuses a target URL carrying credentials', async () => {
-    const app = testApp()
+    const app = await testApp()
     const response = await app.inject({
       method: 'GET',
       url:
@@ -1110,7 +1110,7 @@ describe('CORS proxy Agent lifecycle', () => {
       return new Response('{"ok":true}', { status: 200 })
     })
 
-    const app = testApp()
+    const app = await testApp()
     await app.inject({
       method: 'GET',
       url: '/api/cors?url=' + encodeURIComponent('https://a.example/start')
@@ -1148,7 +1148,7 @@ describe('CORS proxy Agent lifecycle', () => {
           async () => new Response('{"fast":true}', { status: 200 })
         )
 
-      const app = testApp()
+      const app = await testApp()
       // Finish startup first, so the one tick below only has to reach fetch.
       await app.ready()
       const slow = app.inject({
@@ -1197,7 +1197,7 @@ describe('CORS proxy Agent lifecycle', () => {
       async () => new Response('{"ok":true}', { status: 200 })
     )
 
-    const app = testApp()
+    const app = await testApp()
     await app.inject({
       method: 'GET',
       url: '/api/cors?url=' + encodeURIComponent('https://registry.example/one')

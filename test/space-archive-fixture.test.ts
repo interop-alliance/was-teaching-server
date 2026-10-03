@@ -186,7 +186,7 @@ describe('Space archive fixture (@interop/space-archive counterpart)', () => {
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'was-archive-fixture-'))
-    backend = new FileSystemBackend({ dataDir })
+    backend = await FileSystemBackend.open({ dataDir })
     stageFixtureTree(dataDir)
   })
 
@@ -298,7 +298,9 @@ describe('Space archive fixture (@interop/space-archive counterpart)', () => {
     const importDataDir = await mkdtemp(
       path.join(os.tmpdir(), 'was-archive-import-')
     )
-    const importBackend = new FileSystemBackend({ dataDir: importDataDir })
+    const importBackend = await FileSystemBackend.open({
+      dataDir: importDataDir
+    })
     try {
       await importBackend.writeSpace({
         spaceId: SPACE_ID,

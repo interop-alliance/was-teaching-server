@@ -19,7 +19,10 @@ describe('Count quota (Spaces per controller)', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-count-quota-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir, maxSpacesPerController: 1 })
+      backend: await FileSystemBackend.open({
+        dataDir,
+        maxSpacesPerController: 1
+      })
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
   })

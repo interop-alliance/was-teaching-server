@@ -18,7 +18,7 @@ describeStorageBackendContract({
     maxResourcesPerSpace
   } = {}) {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), 'was-contract-fs-'))
-    const backend = new FileSystemBackend({
+    const backend = await FileSystemBackend.open({
       dataDir,
       capacityBytes,
       maxUploadBytes,

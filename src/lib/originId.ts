@@ -9,6 +9,7 @@
  */
 import { randomBytes } from 'node:crypto'
 import { base58 } from '@scure/base'
+import { StoreOriginIdError } from '../errors.js'
 
 /**
  * The charset and length an origin id must match, set or minted.
@@ -32,4 +33,39 @@ export function isValidOriginId(value: unknown): value is string {
  */
 export function mintOriginId(): string {
   return base58.encode(randomBytes(16))
+}
+
+/**
+ * Settles a store's origin id from the id the store carries and the
+ * configured one. A stored id is kept, and a configured id that differs from
+ * it is refused. A store with no id takes the configured one, else a minted
+ * one, which the caller then writes. A malformed configured id is refused
+ * either way, so it can never reach the store.
+ * @param options {object}
+ * @param [options.stored] {string}   the id the store carries, already
+ *   validated by the caller that read it
+ * @param [options.configured] {string}   the configured origin id
+ *   (`WAS_ORIGIN_ID`)
+ * @returns {string}   the store's origin id
+ */
+export function settleOriginId({
+  stored,
+  configured
+}: {
+  stored?: string
+  configured?: string
+}): string {
+  if (configured !== undefined && !isValidOriginId(configured)) {
+    throw StoreOriginIdError.malformed({
+      id: configured,
+      where: 'The configured origin id'
+    })
+  }
+  if (stored === undefined) {
+    return configured ?? mintOriginId()
+  }
+  if (configured !== undefined && configured !== stored) {
+    throw StoreOriginIdError.mismatch({ stored, configured })
+  }
+  return stored
 }

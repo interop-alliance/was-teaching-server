@@ -142,7 +142,7 @@ describe('Buffered body limit', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({
+      backend: await FileSystemBackend.open({
         dataDir,
         maxUploadBytes: MAX_UPLOAD_BYTES
       })
@@ -256,7 +256,7 @@ describe('Buffered body limit (did.jsonl append)', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir })
+      backend: await FileSystemBackend.open({ dataDir })
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
     const space = await alice.was.createSpace({
@@ -324,7 +324,7 @@ describe('Buffered body limit (default cap)', () => {
     // No `maxUploadBytes`: the backend applies its default-on 64 MiB cap, and
     // the buffered-body limit follows it rather than Fastify's 1 MiB default.
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir })
+      backend: await FileSystemBackend.open({ dataDir })
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
@@ -369,7 +369,10 @@ describe('Buffered body limit (derivation)', () => {
   it('an unlimited backend cap still bounds a buffered body', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     const { fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir, maxUploadBytes: Infinity })
+      backend: await FileSystemBackend.open({
+        dataDir,
+        maxUploadBytes: Infinity
+      })
     })
     try {
       assert.equal(fastify.storage.maxUploadBytes, undefined)

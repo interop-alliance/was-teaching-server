@@ -57,7 +57,7 @@ describe('did:webvh delegation and chain depth', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir })
+      backend: await FileSystemBackend.open({ dataDir })
     }))
     ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))
   })

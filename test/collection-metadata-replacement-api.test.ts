@@ -40,14 +40,14 @@ describe('Collection Metadata full replacement', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     providerDir = await mkdtemp(path.join(tmpdir(), 'was-test-provider-'))
-    providerBackend = new FileSystemBackend({ dataDir: providerDir })
+    providerBackend = await FileSystemBackend.open({ dataDir: providerDir })
     // A fake provider whose adapter is a second filesystem backend over its
     // own dir, so a Resource routed to it demonstrably lands elsewhere.
     const providers: BackendProviderRegistry = new Map([
       ['test-provider', () => providerBackend]
     ])
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir }),
+      backend: await FileSystemBackend.open({ dataDir }),
       providers
     }))
     ;({ alice } = await zcapClients({ serverUrl }))

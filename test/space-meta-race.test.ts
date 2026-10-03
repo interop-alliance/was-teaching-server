@@ -80,7 +80,7 @@ describe('Update Space against a concurrently changing Space', () => {
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = new InterleavingBackend({ dataDir })
+    backend = await InterleavingBackend.open({ dataDir })
     ;({ fastify, serverUrl } = await startTestServer({ backend }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
   })

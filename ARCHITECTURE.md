@@ -466,39 +466,48 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   logged at `warn` with different messages, so damaged bytes are not read as a
   bad signature. `createdAt` and the version members keep their import behavior
   whatever the verdict.
-- **`src/storage.ts`** — supplies `defaultBackend()`, the `FileSystemBackend`
-  (rooted at `data/`) that `createApp()` uses when no backend is injected. The
-  active backend is injected via `createApp({ backend })` and decorated onto the
-  instance as `request.server.storage`.
+- **`src/storage.ts`** — supplies `defaultBackend()`, which opens the
+  `FileSystemBackend` (rooted at `data/`) that `createApp()` uses when no
+  backend is injected. The active backend is injected via
+  `createApp({ backend })` and decorated onto the instance as
+  `request.server.storage`.
 - **`src/backends/filesystemStore.ts`** -- the filesystem backend's storage
   layout version. The data root holds `store.json`, whose integer `version`
   names the layout, beside `spaces/`, `keystores/` and `space-revocations/`.
   `STORE_MIGRATIONS` is an ordered, append-only list of migration functions,
   version `n` being entry `n - 1`, like `MIGRATIONS` in `postgresSchema.ts`. The
-  backend's `init()` applies pending steps in order under a lock and rewrites
-  `store.json` after each one, so every step must be idempotent. Each runner
-  creates its own `store.lock.<nonce>` file and withdraws if it then sees
-  another live one. A lock file whose heartbeat stopped, or whose holder is gone
-  from this host, is ignored and removed. An empty data dir is stamped at the
-  current version. A data dir that holds data but no `store.json` predates the
-  stamp and is at the baseline layout, so it is taken as version 0 and every
-  step runs over it, the baseline step stamping it first. Startup is refused
-  when `store.json` names a version newer than the code knows. The version is
-  private to the backend: it is not exported, not stored in any Space, and not
-  served. The Postgres backend's `applyMigrations` refuses the same way, with
-  the same `StoreVersionError`, when its `schema_migrations` table records a
-  version newer than `MIGRATIONS` knows. `store.json` also carries the store's
-  origin id as its `originId` member (see the Glossary's Origin id). `init()`
-  settles it on every boot, under the same lock, and it is not a migration step.
-  A store with no id takes `WAS_ORIGIN_ID` when set, else a minted one, and
-  writes it before any step runs. A stored id is kept, and a set `WAS_ORIGIN_ID`
-  that differs from it refuses startup with `StoreOriginIdError`, naming both.
-  Every rewrite of `store.json` keeps the id, and any member this code does not
-  know. The Postgres twin is the single row of the `store` table (column
-  `origin_id`), settled by `applyMigrations` in the same transaction, under its
-  advisory lock. Each backend exposes the id as `StorageBackend.originId`, and a
-  data-plane backend adapter carries the hosting server's id, handed to it
-  through the `BackendProvider` options.
+  backend's async factory, `FileSystemBackend.open()`, applies pending steps in
+  order under a lock and rewrites `store.json` after each one, so every step
+  must be idempotent. Each runner creates its own `store.lock.<nonce>` file and
+  withdraws if it then sees another live one. A lock file whose heartbeat
+  stopped, or whose holder is gone from this host, is ignored and removed. An
+  empty data dir is stamped at the current version. A data dir that holds data
+  but no `store.json` predates the stamp and is at the baseline layout, so it is
+  taken as version 0 and every step runs over it, the baseline step stamping it
+  first. Startup is refused when `store.json` names a version newer than the
+  code knows. The version is private to the backend: it is not exported, not
+  stored in any Space, and not served. The Postgres backend's `applyMigrations`
+  refuses the same way, with the same `StoreVersionError`, when its
+  `schema_migrations` table records a version newer than `MIGRATIONS` knows.
+  `store.json` also carries the store's origin id as its `originId` member (see
+  the Glossary's Origin id). `open()` settles it on every boot, under the same
+  lock, and it is not a migration step. A store with no id takes `WAS_ORIGIN_ID`
+  when set, else a minted one, and writes it before any step runs. A stored id
+  is kept, and a set `WAS_ORIGIN_ID` that differs from it refuses startup with
+  `StoreOriginIdError`, naming both. Every rewrite of `store.json` keeps the id,
+  and any member this code does not know. The Postgres twin is the single row of
+  the `store` table (column `origin_id`), settled by `applyMigrations` in the
+  same transaction, under its advisory lock. Each backend exposes the id as
+  `StorageBackend.originId`, and a data-plane backend adapter carries the
+  hosting server's id, handed to it through the `BackendProvider` options. Both
+  primary backends are obtained only from a static async `open()` (their
+  constructors are protected), which resolves once the migrations have run and
+  the id is settled, so a backend in hand is never half-built and the id is a
+  plain member with no "not yet" state. The plugin opens the default backend
+  itself and, when it owns the backend, wires only `close()`. `start.ts` passes
+  the Postgres backend as a function, which the plugin calls at registration
+  with the Fastify logger once its other options are validated. The plugin
+  refuses a backend with no origin id, after wiring `close()`.
 - **`src/backends/{filesystem}.ts`** — interchangeable persistence
   implementation (`implements StorageBackend` from `src/types.ts`). A backend
   offers no precondition primitive of its own to a client: the server serializes

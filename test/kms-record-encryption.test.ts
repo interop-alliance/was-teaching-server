@@ -77,7 +77,7 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
     keystoreAgent: KeystoreAgent
     keystoreId: string
   }> {
-    const backend = new FileSystemBackend({ dataDir })
+    const backend = await FileSystemBackend.open({ dataDir })
     const started = await startTestServer({
       backend,
       kmsRecordKek,
@@ -216,7 +216,7 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
     // Phase 2: enable a KEK over the SAME data tree. The old plaintext record is
     // not retroactively encrypted, but it still decrypts (pass-through) and
     // signs.
-    const backend = new FileSystemBackend({ dataDir })
+    const backend = await FileSystemBackend.open({ dataDir })
     const kek = parseKekMultibase(kekMultibase(randomBytes(32)))
     const { fastify } = await startTestServer({
       backend,
@@ -340,7 +340,7 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
     // Phase 2: boot over the SAME data tree with NO KEK configured -- the KEK
     // that wrapped these records is lost (the recovery scenario this endpoint
     // exists for: a frozen did:webvh log whose key id must be rediscovered).
-    const backend = new FileSystemBackend({ dataDir })
+    const backend = await FileSystemBackend.open({ dataDir })
     const { fastify } = await startTestServer({ backend, port: boundPort })
     const rootZcap: IRootZcap = {
       '@context': 'https://w3id.org/zcap/v1',
@@ -414,7 +414,7 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
 
     // Phase 2: rotate -- both KEKs registered, currentKekId repointed to kek2.
     // The record keeps its kek1 wrapping and must still decrypt.
-    const backend = new FileSystemBackend({ dataDir })
+    const backend = await FileSystemBackend.open({ dataDir })
     const rotated: KmsRecordKekRegistry = {
       keks: new Map([
         [kek1.id, kek1],
@@ -482,7 +482,7 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
     assert.equal(rotated!.currentKekId, kek2.id)
     assert.equal(rotated!.keks.size, 2)
 
-    const backend = new FileSystemBackend({ dataDir })
+    const backend = await FileSystemBackend.open({ dataDir })
     const { fastify } = await startTestServer({
       backend,
       kmsRecordKek: rotated,
@@ -543,7 +543,7 @@ describe('WebKMS at-rest key-record encryption (KMS_RECORD_KEK)', () => {
     assert.equal(decryptOnly!.currentKekId, null)
     assert.ok(decryptOnly!.keks.has(kek1.id))
 
-    const backend = new FileSystemBackend({ dataDir })
+    const backend = await FileSystemBackend.open({ dataDir })
     const { fastify } = await startTestServer({
       backend,
       kmsRecordKek: decryptOnly,

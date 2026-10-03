@@ -1,7 +1,7 @@
 /**
  * PostgreSQL schema for the `PostgresBackend`: an ordered list of migration
  * scripts plus the tiny hand-rolled runner that applies them idempotently
- * (inside an advisory-locked transaction) on backend `init()`. The whole
+ * (inside an advisory-locked transaction) on backend `open()`. The whole
  * schema is readable in this one file; there is no external migration tool.
  *
  * Collation note: every identifier or ISO-8601 timestamp column that
@@ -17,7 +17,10 @@
 import type { FastifyBaseLogger } from 'fastify'
 import type pg from 'pg'
 import { StoreOriginIdError, StoreVersionError } from '../errors.js'
-import { isValidOriginId, mintOriginId } from '../lib/originId.js'
+import {
+  isValidOriginId,
+  settleOriginId as settleStoreOriginId
+} from '../lib/originId.js'
 
 /**
  * Ordered migration scripts. Version `n` is `MIGRATIONS[n - 1]`; append only,
@@ -451,31 +454,21 @@ async function settleOriginId({
   client: pg.PoolClient
   originId?: string
 }): Promise<string> {
-  // Refused before anything is written: a malformed id in the store row
-  // would refuse every later boot.
-  if (originId !== undefined && !isValidOriginId(originId)) {
-    throw StoreOriginIdError.malformed({
-      id: originId,
-      where: 'The configured origin id'
-    })
-  }
   const { rows } = await client.query<{ origin_id: string }>(
     'SELECT origin_id FROM store'
   )
   const stored = rows[0]?.origin_id
-  if (stored === undefined) {
-    const minted = originId ?? mintOriginId()
-    await client.query('INSERT INTO store (origin_id) VALUES ($1)', [minted])
-    return minted
-  }
-  if (!isValidOriginId(stored)) {
+  if (stored !== undefined && !isValidOriginId(stored)) {
     throw StoreOriginIdError.malformed({
       id: stored,
       where: 'The Postgres store table'
     })
   }
-  if (originId !== undefined && originId !== stored) {
-    throw StoreOriginIdError.mismatch({ stored, configured: originId })
+  // A malformed configured id is refused here, before anything is written:
+  // in the store row it would refuse every later boot.
+  const settled = settleStoreOriginId({ stored, configured: originId })
+  if (stored === undefined) {
+    await client.query('INSERT INTO store (origin_id) VALUES ($1)', [settled])
   }
-  return stored
+  return settled
 }

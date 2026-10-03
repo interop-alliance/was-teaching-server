@@ -59,7 +59,7 @@ describe('Chunk API (chunked-streams)', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-chunks-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir })
+      backend: await FileSystemBackend.open({ dataDir })
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
@@ -854,7 +854,7 @@ describe('Chunk API (chunked-streams)', () => {
       capDataDir = await mkdtemp(path.join(tmpdir(), 'was-chunks-cap-'))
       ;({ fastify: capFastify, serverUrl: capServerUrl } =
         await startTestServer({
-          backend: new FileSystemBackend({
+          backend: await FileSystemBackend.open({
             dataDir: capDataDir,
             maxUploadBytes
           })

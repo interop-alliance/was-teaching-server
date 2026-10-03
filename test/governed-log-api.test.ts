@@ -93,7 +93,10 @@ describe('Governing history log API (meta/log)', () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
       // A small per-upload cap, so the oversize-log refusal is cheap to hit.
-      backend: new FileSystemBackend({ dataDir, maxUploadBytes: 64 * 1024 })
+      backend: await FileSystemBackend.open({
+        dataDir,
+        maxUploadBytes: 64 * 1024
+      })
     }))
     ;({ alice, aliceDelegatedApp } = await zcapClients({ serverUrl }))
     await alice.was.createSpace({

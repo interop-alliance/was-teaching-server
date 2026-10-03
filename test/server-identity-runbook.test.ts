@@ -106,7 +106,7 @@ describe(
 
     async function boot({ dir }: { dir: string }): Promise<void> {
       ;({ fastify, serverUrl, port } = await startTestServer({
-        backend: new FileSystemBackend({ dataDir: dir }),
+        backend: await FileSystemBackend.open({ dataDir: dir }),
         serverKeySeed: seed,
         adminDid,
         port

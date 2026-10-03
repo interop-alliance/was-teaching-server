@@ -25,26 +25,29 @@ describe('FileSystemBackend upload cap normalization', () => {
     await rm(dataDir, { recursive: true, force: true })
   })
 
-  it('applies DEFAULT_MAX_UPLOAD_BYTES when no cap is configured', () => {
-    const backend = new FileSystemBackend({ dataDir })
+  it('applies DEFAULT_MAX_UPLOAD_BYTES when no cap is configured', async () => {
+    const backend = await FileSystemBackend.open({ dataDir })
     assert.equal(backend.maxUploadBytes, DEFAULT_MAX_UPLOAD_BYTES)
   })
 
-  it('honors a finite configured cap', () => {
-    const backend = new FileSystemBackend({ dataDir, maxUploadBytes: 4096 })
+  it('honors a finite configured cap', async () => {
+    const backend = await FileSystemBackend.open({
+      dataDir,
+      maxUploadBytes: 4096
+    })
     assert.equal(backend.maxUploadBytes, 4096)
   })
 
-  it('normalizes Infinity (explicit unlimited) to undefined (no cap)', () => {
-    const backend = new FileSystemBackend({
+  it('normalizes Infinity (explicit unlimited) to undefined (no cap)', async () => {
+    const backend = await FileSystemBackend.open({
       dataDir,
       maxUploadBytes: Infinity
     })
     assert.equal(backend.maxUploadBytes, undefined)
   })
 
-  it('normalizes an Infinity capacity to undefined (no limit)', () => {
-    const backend = new FileSystemBackend({
+  it('normalizes an Infinity capacity to undefined (no limit)', async () => {
+    const backend = await FileSystemBackend.open({
       dataDir,
       capacityBytes: Infinity
     })
@@ -53,15 +56,14 @@ describe('FileSystemBackend upload cap normalization', () => {
 })
 
 describe('PostgresBackend upload cap normalization', () => {
-  it('rejects an unlimited (Infinity) per-upload cap at construction', () => {
+  it('rejects an unlimited (Infinity) per-upload cap at open', async () => {
     // The throw happens before the connection pool is created, so this needs
     // no reachable database.
-    assert.throws(
-      () =>
-        new PostgresBackend({
-          connectionString: 'postgres://was:was@localhost:5433/was',
-          maxUploadBytes: Infinity
-        }),
+    await assert.rejects(
+      PostgresBackend.open({
+        connectionString: 'postgres://was:was@localhost:5433/was',
+        maxUploadBytes: Infinity
+      }),
       /does not support an unlimited per-upload cap/
     )
   })

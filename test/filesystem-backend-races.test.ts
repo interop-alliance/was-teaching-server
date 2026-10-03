@@ -27,7 +27,7 @@ describe('FileSystemBackend races', () => {
 
   beforeEach(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = new FileSystemBackend({ dataDir })
+    backend = await FileSystemBackend.open({ dataDir })
     await backend.writeSpace({
       spaceId,
       spaceMetadata: { id: spaceId, type: ['Space'], controller }
@@ -240,7 +240,7 @@ describe('FileSystemBackend races', () => {
     // `doc` in flight (holding its lock), an import that also carries `doc`
     // must not be able to write it.
     const sourceDir = await mkdtemp(path.join(tmpdir(), 'was-test-src-'))
-    const sourceBackend = new FileSystemBackend({ dataDir: sourceDir })
+    const sourceBackend = await FileSystemBackend.open({ dataDir: sourceDir })
     try {
       await sourceBackend.writeSpace({
         spaceId,
@@ -312,7 +312,10 @@ describe('FileSystemBackend races', () => {
     // so a concurrent write could re-measure the pre-delete tree and cache that
     // total for a full TTL -- refusing the client's follow-up write over space
     // the delete had just freed.
-    const capped = new FileSystemBackend({ dataDir, capacityBytes: 200_000 })
+    const capped = await FileSystemBackend.open({
+      dataDir,
+      capacityBytes: 200_000
+    })
     const validator = await capped.writeResource({
       spaceId,
       collectionId,

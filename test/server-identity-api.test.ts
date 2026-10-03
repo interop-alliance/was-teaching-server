@@ -96,7 +96,7 @@ describe('Server identity', () => {
     // boot option, while the client needs the assigned `serverUrl`.
     const adminKeyPair = await Ed25519VerificationKey.generate()
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir }),
+      backend: await FileSystemBackend.open({ dataDir }),
       serverKeySeed: seed,
       adminDid: `did:key:${adminKeyPair.publicKeyMultibase}`
     }))
@@ -394,7 +394,7 @@ describe('Server identity without a seed', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-server-identity-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir })
+      backend: await FileSystemBackend.open({ dataDir })
     }))
   })
   afterAll(async () => {
@@ -443,8 +443,7 @@ describe('Server identity boot checks', () => {
   it('refuses to boot over a `server` Space that lacks the subtype', async () => {
     // Written straight into storage: the request layer refuses the id, so
     // such a Space can only predate the reservation.
-    const backend = new FileSystemBackend({ dataDir })
-    await backend.init?.()
+    const backend = await FileSystemBackend.open({ dataDir })
     await backend.writeSpace({
       spaceId: 'server',
       spaceMetadata: {
@@ -458,7 +457,7 @@ describe('Server identity boot checks', () => {
     const app = createApp({
       logger: false,
       serverUrl: 'http://localhost',
-      backend: new FileSystemBackend({ dataDir }),
+      backend: await FileSystemBackend.open({ dataDir }),
       adminDid: `did:key:${admin.publicKeyMultibase}`
     })
     await expect(app.ready()).rejects.toThrow(/not typed "ServerInstanceSpace"/)
@@ -473,7 +472,7 @@ describe('Server identity boot checks', () => {
       const winner = createApp({
         logger: false,
         serverUrl: 'http://localhost',
-        backend: new FileSystemBackend({ dataDir: ownDir }),
+        backend: await FileSystemBackend.open({ dataDir: ownDir }),
         adminDid
       })
       await winner.ready()
@@ -481,7 +480,7 @@ describe('Server identity boot checks', () => {
 
       // The loser's pre-create read saw no Space (the winner had not written
       // yet), so its guarded create loses; it must re-read and pass.
-      const backend = new FileSystemBackend({ dataDir: ownDir })
+      const backend = await FileSystemBackend.open({ dataDir: ownDir })
       const read = backend.getSpaceMetadata.bind(backend)
       let firstRead = true
       backend.getSpaceMetadata = async options => {
@@ -512,7 +511,7 @@ describe('Server identity boot checks', () => {
       const app = createApp({
         logger: false,
         serverUrl: 'http://localhost',
-        backend: new FileSystemBackend({
+        backend: await FileSystemBackend.open({
           dataDir: ownDir,
           maxSpacesPerController: 0
         }),
@@ -534,7 +533,7 @@ describe('Server identity boot checks', () => {
       const app = createApp({
         logger: false,
         serverUrl: 'http://localhost',
-        backend: new FileSystemBackend({ dataDir: ownDir }),
+        backend: await FileSystemBackend.open({ dataDir: ownDir }),
         adminDid: `did:key:${first.publicKeyMultibase}`
       })
       await app.ready()
@@ -544,7 +543,7 @@ describe('Server identity boot checks', () => {
       const again = createApp({
         logger: false,
         serverUrl: 'http://localhost',
-        backend: new FileSystemBackend({ dataDir: ownDir }),
+        backend: await FileSystemBackend.open({ dataDir: ownDir }),
         adminDid: `did:key:${second.publicKeyMultibase}`
       })
       await expect(again.ready()).rejects.toThrow(/WAS_ADMIN_DID/)

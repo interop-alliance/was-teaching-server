@@ -39,7 +39,7 @@ describe('List Collections pagination', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir })
+      backend: await FileSystemBackend.open({ dataDir })
     }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
 
@@ -230,7 +230,7 @@ describe('List Spaces pagination', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir })
+      backend: await FileSystemBackend.open({ dataDir })
     }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
 

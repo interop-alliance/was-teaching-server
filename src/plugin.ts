@@ -14,7 +14,7 @@
  * -- while each route group still creates its own encapsulated context for
  * its hooks.
  */
-import type { FastifyInstance } from 'fastify'
+import type { FastifyBaseLogger, FastifyInstance } from 'fastify'
 import fp from 'fastify-plugin'
 import cors, { type FastifyCorsOptions } from '@fastify/cors'
 import Multipart from '@fastify/multipart'
@@ -62,18 +62,28 @@ export interface FastifyWasOptions {
   /**
    * Persistence backend to use; defaults to a filesystem backend rooted at
    * `dataDir` (the project `data/` directory when that is unset). Tests inject
-   * their own (e.g. a FileSystemBackend over a temp dir).
+   * their own (e.g. a FileSystemBackend over a temp dir). Either an open
+   * backend, or a function that opens one. The plugin calls the function at
+   * registration, after it has validated its other options, and hands it
+   * `fastify.log`, so the backend's startup work (the Postgres migrations)
+   * logs through the app's logger and a refused option leaves the store
+   * untouched. The backend it resolves is the plugin's to close, so the
+   * function form is refused with `ownsBackend: false`.
    */
-  backend?: StorageBackend
+  backend?:
+    | StorageBackend
+    | ((options: { logger: FastifyBaseLogger }) => Promise<StorageBackend>)
   /**
    * Whether the plugin manages the backend's lifecycle. When `true` (the
-   * default), it routes the backend's `logger` to `fastify.log`, awaits its
-   * `init()` during registration (e.g. Postgres migrations, the filesystem
-   * store stamp), and wires its `close()` to Fastify's `onClose`. When
-   * `false`, it does none of these, and the composition initializes, logs,
-   * and closes the backend itself. `false` requires an injected `backend`,
-   * since the composition can only run the lifecycle of a backend it holds a
-   * handle to; passing it without one is refused at registration.
+   * default), it routes the backend's `logger` to `fastify.log` and wires its
+   * `close()` to Fastify's `onClose`. When `false`, it does neither, and the
+   * composition logs and closes the backend itself. A backend is always
+   * obtained from its async factory (which runs the Postgres migrations or
+   * the filesystem store stamp), so neither setting opens one. `false`
+   * requires an injected, already open `backend`, since the composition can
+   * only run the lifecycle of a backend it holds a handle to; passing it
+   * without one, or with a function that opens one, is refused at
+   * registration.
    */
   ownsBackend?: boolean
   /**
@@ -246,29 +256,62 @@ async function wasPlugin(
   }
 
   // A composition that runs the backend lifecycle itself needs the backend in
-  // hand; over the default one it would skip the store stamp check and the
-  // layout migrations `init()` runs, and serve an unchecked data dir.
-  if (!ownsBackend && backend === undefined) {
-    throw new Error('ownsBackend: false requires an injected backend option.')
+  // hand, or there is nothing for it to close.
+  if (!ownsBackend && typeof backend !== 'object') {
+    throw new Error(
+      'ownsBackend: false requires an injected, already open backend option.'
+    )
   }
 
   fastify.decorate('serverUrl', serverUrl)
   fastify.decorate('discloseVersion', discloseVersion)
-  const storage =
+  // Every option check above runs before a backend is opened, so a refused
+  // option leaves the store untouched. A backend the plugin opens logs
+  // through the Fastify pino logger from its first line.
+  // No backend option means the default one, opened like any other opener.
+  const backendOrOpener =
     backend ??
-    defaultBackend({
-      dataDir,
-      capacityBytes: storageLimitPerSpace,
-      maxUploadBytes,
-      maxSpacesPerController,
-      maxCollectionsPerSpace,
-      maxResourcesPerSpace,
-      originId
+    (({ logger }: { logger: FastifyBaseLogger }) =>
+      defaultBackend({
+        dataDir,
+        logger,
+        capacityBytes: storageLimitPerSpace,
+        maxUploadBytes,
+        maxSpacesPerController,
+        maxCollectionsPerSpace,
+        maxResourcesPerSpace,
+        originId
+      }))
+  let storage: StorageBackend
+  if (typeof backendOrOpener === 'function') {
+    storage = await backendOrOpener({ logger: fastify.log })
+  } else {
+    storage = backendOrOpener
+    // Route the backend's diagnostics through the Fastify pino logger (an
+    // injected backend defaults to a silent logger until wired here).
+    if (ownsBackend) {
+      storage.logger = fastify.log
+    }
+  }
+
+  // Backend lifecycle: the backend arrived open (its async factory ran the
+  // startup work), so only the optional shutdown hook (pool drain) is wired,
+  // to Fastify's close. Wired before anything below can throw, so a failed
+  // registration still releases the backend when the app is closed.
+  if (ownsBackend && storage.close) {
+    fastify.addHook('onClose', async () => {
+      await storage.close!()
     })
-  // Route the backend's diagnostics through the Fastify pino logger (the backend
-  // defaults to a silent logger until wired here).
-  if (ownsBackend) {
-    storage.logger = fastify.log
+  }
+
+  // A backend that never ran its async factory has no settled origin id, and
+  // `/service` would advertise none to a replication peer. Refuse it here
+  // rather than on the first request.
+  if (typeof storage.originId !== 'string' || storage.originId === '') {
+    throw new Error(
+      'The storage backend carries no origin id. Obtain the backend from ' +
+        'its async open() factory before injecting it.'
+    )
   }
   fastify.decorate('storage', storage)
 
@@ -283,23 +326,6 @@ async function wasPlugin(
       routeOptions.bodyLimit = bodyLimit
     }
   })
-
-  // Backend lifecycle: run the optional startup hook (e.g. Postgres connect +
-  // migrations) during registration, before the server starts listening, and
-  // wire the optional shutdown hook (pool drain) to Fastify's close.
-  if (ownsBackend) {
-    if (storage.init) {
-      await storage.init()
-    }
-    if (storage.close) {
-      fastify.addHook('onClose', async () => {
-        await storage.close!()
-      })
-    }
-  }
-  // Read once so a backend injected without its `init()` fails the boot
-  // rather than the first request that needs the id.
-  void storage.originId
 
   // The server's own identity. The `server` Space is provisioned (or checked)
   // once storage is up, and the export-signing key is derived from the seed.

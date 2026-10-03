@@ -1,6 +1,6 @@
 /**
  * The `fastifyWas` composition options: `ownsBackend` (whether the plugin
- * wires the backend's logger, `init()` and `close()`), `cors` (skip or
+ * wires the backend's logger and `close()`), `cors` (skip or
  * customize the `@fastify/cors` registration), and a `serverUrl` carrying a
  * trailing slash, which must not double the slash in the URLs the server
  * builds.
@@ -16,19 +16,23 @@ import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { startTestServer, zcapClients } from './helpers.js'
 
 /**
- * A FileSystemBackend that counts the lifecycle calls made on it.
+ * A FileSystemBackend that counts the `close()` calls made on it.
  */
 class LifecycleSpyBackend extends FileSystemBackend {
-  initCalls = 0
   closeCalls = 0
-
-  async init(): Promise<void> {
-    this.initCalls += 1
-    await super.init()
-  }
 
   async close(): Promise<void> {
     this.closeCalls += 1
+  }
+}
+
+/**
+ * A backend whose origin id was never settled, as one that skipped its async
+ * factory would be.
+ */
+class UnsettledBackend extends LifecycleSpyBackend {
+  get originId(): string {
+    return ''
   }
 }
 
@@ -47,15 +51,17 @@ afterAll(async () => {
  *
  * @param name {string}   the sub-directory name
  * @param [options] {object}   further `createApp()` options
- * @returns {FastifyInstance}
+ * @returns {Promise<FastifyInstance>}
  */
-function testApp(
+async function testApp(
   name: string,
   options: Partial<Parameters<typeof createApp>[0]> = {}
-): FastifyInstance {
+): Promise<FastifyInstance> {
   return createApp({
     serverUrl: 'http://localhost',
-    backend: new FileSystemBackend({ dataDir: path.join(dataDir, name) }),
+    backend: await FileSystemBackend.open({
+      dataDir: path.join(dataDir, name)
+    }),
     logger: false,
     ...options
   })
@@ -63,27 +69,23 @@ function testApp(
 
 describe('ownsBackend option', () => {
   it('manages the backend lifecycle by default', async () => {
-    const backend = new LifecycleSpyBackend({
+    const backend = await LifecycleSpyBackend.open({
       dataDir: path.join(dataDir, 'owned')
     })
-    const app = testApp('owned', { backend })
+    const app = await testApp('owned', { backend })
     await app.ready()
-    expect(backend.initCalls).toBe(1)
     expect(backend.logger).toBe(app.log)
     await app.close()
     expect(backend.closeCalls).toBe(1)
   })
 
-  it('ownsBackend: false leaves init, close and the logger to the composition', async () => {
-    const backend = new LifecycleSpyBackend({
+  it('ownsBackend: false leaves close and the logger to the composition', async () => {
+    const backend = await LifecycleSpyBackend.open({
       dataDir: path.join(dataDir, 'composed')
     })
-    // The composition initializes its own backend before registering.
-    await backend.init()
     const ownLogger = backend.logger
-    const app = testApp('composed', { backend, ownsBackend: false })
+    const app = await testApp('composed', { backend, ownsBackend: false })
     await app.ready()
-    expect(backend.initCalls).toBe(1)
     expect(backend.logger).toBe(ownLogger)
     expect(backend.logger).not.toBe(app.log)
     await app.close()
@@ -98,8 +100,87 @@ describe('ownsBackend option', () => {
       logger: false
     })
     await expect(app.ready()).rejects.toThrow(
-      'ownsBackend: false requires an injected backend option.'
+      'ownsBackend: false requires an injected, already open backend option.'
     )
+  })
+
+  it('ownsBackend: false with a backend function is refused, and opens nothing', async () => {
+    let opened = false
+    const app = createApp({
+      serverUrl: 'http://localhost',
+      backend: async () => {
+        opened = true
+        return FileSystemBackend.open({
+          dataDir: path.join(dataDir, 'unowned-function')
+        })
+      },
+      ownsBackend: false,
+      logger: false
+    })
+    await expect(app.ready()).rejects.toThrow(
+      'ownsBackend: false requires an injected, already open backend option.'
+    )
+    expect(opened).toBe(false)
+  })
+})
+
+describe('backend option as a function', () => {
+  it('is opened with the app logger and closed with the app', async () => {
+    let backend: LifecycleSpyBackend | undefined
+    const app = createApp({
+      serverUrl: 'http://localhost',
+      backend: async ({ logger }) => {
+        backend = await LifecycleSpyBackend.open({
+          dataDir: path.join(dataDir, 'function'),
+          logger
+        })
+        return backend
+      },
+      logger: false
+    })
+    await app.ready()
+    expect(backend?.logger).toBe(app.log)
+    expect(app.storage).toBe(backend)
+    await app.close()
+    expect(backend?.closeCalls).toBe(1)
+  })
+
+  it('is not called when another option is refused', async () => {
+    let opened = false
+    const app = createApp({
+      serverUrl: 'http://localhost',
+      backend: async () => {
+        opened = true
+        return FileSystemBackend.open({
+          dataDir: path.join(dataDir, 'refused-option')
+        })
+      },
+      onboardingToken: ' ',
+      logger: false
+    })
+    await expect(app.ready()).rejects.toThrow(
+      'onboardingToken must not be empty.'
+    )
+    expect(opened).toBe(false)
+  })
+})
+
+describe('a backend with no origin id', () => {
+  it('is refused at registration, and still closed with the app', async () => {
+    const backend = await UnsettledBackend.open({
+      dataDir: path.join(dataDir, 'unsettled')
+    })
+    const app = createApp({
+      serverUrl: 'http://localhost',
+      backend,
+      logger: false
+    })
+    await expect(app.ready()).rejects.toThrow(
+      'The storage backend carries no origin id.'
+    )
+    // Closing an app whose boot failed reports the boot error again.
+    await app.close().catch(() => {})
+    expect(backend.closeCalls).toBe(1)
   })
 })
 
@@ -122,7 +203,7 @@ describe('cors option', () => {
   }
 
   it('defaults to any origin, without PATCH', async () => {
-    const app = testApp('cors1')
+    const app = await testApp('cors1')
     const response = await preflight(app)
     expect(response.headers['access-control-allow-origin']).toBe('*')
     const methods = String(response.headers['access-control-allow-methods'])
@@ -132,14 +213,16 @@ describe('cors option', () => {
   })
 
   it('cors: false registers no CORS plugin', async () => {
-    const app = testApp('cors2', { cors: false })
+    const app = await testApp('cors2', { cors: false })
     const response = await preflight(app)
     expect(response.headers['access-control-allow-origin']).toBeUndefined()
     await app.close()
   })
 
   it('a custom origin replaces the wildcard', async () => {
-    const app = testApp('cors3', { cors: { origin: 'https://wallet.example' } })
+    const app = await testApp('cors3', {
+      cors: { origin: 'https://wallet.example' }
+    })
     const response = await preflight(app)
     expect(response.headers['access-control-allow-origin']).toBe(
       'https://wallet.example'
@@ -150,7 +233,7 @@ describe('cors option', () => {
   })
 
   it('a member set to undefined keeps the default', async () => {
-    const app = testApp('cors4', {
+    const app = await testApp('cors4', {
       cors: { origin: 'https://wallet.example', methods: undefined }
     })
     const response = await preflight(app)
@@ -166,7 +249,9 @@ describe('serverUrl with a trailing slash', () => {
 
   beforeAll(async () => {
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir: path.join(dataDir, 'slash') })
+      backend: await FileSystemBackend.open({
+        dataDir: path.join(dataDir, 'slash')
+      })
     }))
     // The decorated base URL carries the trailing slash the validator admits.
     fastify.serverUrl = `${serverUrl}/`

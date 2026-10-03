@@ -496,7 +496,7 @@ describe('parseOriginId', () => {
 describe('fastifyWas serverUrl validation', () => {
   it('rejects a path-bearing serverUrl at registration', async () => {
     const fastify = createApp({
-      backend: new FileSystemBackend({ dataDir }),
+      backend: await FileSystemBackend.open({ dataDir }),
       serverUrl: 'https://example.com/was'
     })
     await assert.rejects(async () => {
@@ -507,7 +507,7 @@ describe('fastifyWas serverUrl validation', () => {
 
   it('refuses a missing serverUrl at registration', async () => {
     const fastify = createApp({
-      backend: new FileSystemBackend({ dataDir }),
+      backend: await FileSystemBackend.open({ dataDir }),
       // A library composition passing an unset env var, unguarded.
       serverUrl: undefined as unknown as string
     })
@@ -541,7 +541,7 @@ describe('createApp logger option', () => {
   it('defaults to an active pino logger, shared with the backend', async () => {
     const fastify = createApp({
       serverUrl: 'http://localhost',
-      backend: new FileSystemBackend({ dataDir })
+      backend: await FileSystemBackend.open({ dataDir })
     })
     await fastify.ready()
     assert.strictEqual(fastify.log.level, 'info')
@@ -552,7 +552,7 @@ describe('createApp logger option', () => {
   it('logger: false silences Fastify and the backend hand-off', async () => {
     const fastify = createApp({
       serverUrl: 'http://localhost',
-      backend: new FileSystemBackend({ dataDir }),
+      backend: await FileSystemBackend.open({ dataDir }),
       logger: false
     })
     await fastify.ready()
@@ -567,7 +567,7 @@ describe('createApp logger option', () => {
   it('accepts a pino options object', async () => {
     const fastify = createApp({
       serverUrl: 'http://localhost',
-      backend: new FileSystemBackend({ dataDir }),
+      backend: await FileSystemBackend.open({ dataDir }),
       logger: { level: 'error' }
     })
     await fastify.ready()

@@ -21,7 +21,7 @@ describe('CORS preflight', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'was-cors-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir })
+      backend: await FileSystemBackend.open({ dataDir })
     }))
   })
 

@@ -27,7 +27,7 @@ describe('Server', () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     fastify = createApp({
       serverUrl: 'http://localhost',
-      backend: new FileSystemBackend({ dataDir })
+      backend: await FileSystemBackend.open({ dataDir })
     })
     await fastify.listen()
     serverUrl =

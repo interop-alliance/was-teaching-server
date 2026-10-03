@@ -78,7 +78,7 @@ describe('Staging temp-file cleanup (filesystem backend)', () => {
     // One another process sharing the data directory is still writing.
     await writeFile(path.join(dataDir, 'keystores', '.tmp-live'), 'partial')
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir })
+      backend: await FileSystemBackend.open({ dataDir })
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
     const space = await alice.was.createSpace({

@@ -36,8 +36,8 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-default-'))
     providerDir = await mkdtemp(path.join(tmpdir(), 'was-test-provider-'))
-    defaultBackend = new FileSystemBackend({ dataDir })
-    providerBackend = new FileSystemBackend({ dataDir: providerDir })
+    defaultBackend = await FileSystemBackend.open({ dataDir })
+    providerBackend = await FileSystemBackend.open({ dataDir: providerDir })
     // A fake `test-provider` whose adapter is a second filesystem backend over
     // its own dir, so a Resource routed to it lands there, not in the default dir.
     const providers: BackendProviderRegistry = new Map([
@@ -230,7 +230,7 @@ describe('Backend registration allowlist (WAS_ENABLED_BACKENDS)', () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-allowlist-'))
     // Only `test-provider` may be registered.
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir }),
+      backend: await FileSystemBackend.open({ dataDir }),
       enabledBackendProviders: ['test-provider']
     }))
     ;({ alice } = await zcapClients({ serverUrl }))

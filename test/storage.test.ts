@@ -43,7 +43,7 @@ describe('Storage API', () => {
     it('should export space tarball with manifest and serialized files', async () => {
       const tempDir = await mkdtemp(path.join(os.tmpdir(), 'was-export-test-'))
       await mkdir(path.join(tempDir, 'spaces'))
-      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const backend = await FileSystemBackend.open({ dataDir: tempDir })
       const spaceId = 'test-space'
       const collectionId = 'credentials'
       const resourceId = 'credential-1'
@@ -149,7 +149,7 @@ describe('Storage API', () => {
     it('is byte-reproducible: entries carry a fixed mtime, not wall-clock', async () => {
       const tempDir = await mkdtemp(path.join(os.tmpdir(), 'was-export-repro-'))
       await mkdir(path.join(tempDir, 'spaces'))
-      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const backend = await FileSystemBackend.open({ dataDir: tempDir })
       const spaceId = 'repro-space'
 
       try {
@@ -226,7 +226,7 @@ describe('Storage API', () => {
         path.join(os.tmpdir(), 'was-policy-roundtrip-')
       )
       await mkdir(path.join(tempDir, 'spaces'))
-      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const backend = await FileSystemBackend.open({ dataDir: tempDir })
       const src = 'source-space'
       const dst = 'target-space'
       const collectionId = 'credentials'
@@ -318,7 +318,7 @@ describe('Storage API', () => {
         path.join(os.tmpdir(), 'was-meta-roundtrip-')
       )
       await mkdir(path.join(tempDir, 'spaces'))
-      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const backend = await FileSystemBackend.open({ dataDir: tempDir })
       const src = 'source-space'
       const dst = 'target-space'
       const collectionId = 'credentials'
@@ -399,7 +399,7 @@ describe('Storage API', () => {
         path.join(os.tmpdir(), 'was-tombstone-roundtrip-')
       )
       await mkdir(path.join(tempDir, 'spaces'))
-      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const backend = await FileSystemBackend.open({ dataDir: tempDir })
       const src = 'source-space'
       const dst = 'target-space'
       const collectionId = 'notes'
@@ -510,7 +510,7 @@ describe('Storage API', () => {
     it('does not match a resourceId that is a prefix of another', async () => {
       const tempDir = await mkdtemp(path.join(os.tmpdir(), 'was-prefix-test-'))
       await mkdir(path.join(tempDir, 'spaces'))
-      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const backend = await FileSystemBackend.open({ dataDir: tempDir })
       const spaceId = 'test-space'
       const collectionId = 'notes'
 
@@ -604,7 +604,7 @@ describe('Storage API', () => {
     async function provisionResource() {
       const tempDir = await mkdtemp(path.join(os.tmpdir(), 'was-tombstone-'))
       await mkdir(path.join(tempDir, 'spaces'))
-      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const backend = await FileSystemBackend.open({ dataDir: tempDir })
       const spaceId = 'test-space'
       const collectionId = 'notes'
       await backend.writeSpace({
@@ -794,7 +794,7 @@ describe('Storage API', () => {
     async function provisionCollection() {
       const tempDir = await mkdtemp(path.join(os.tmpdir(), 'was-changes-'))
       await mkdir(path.join(tempDir, 'spaces'))
-      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const backend = await FileSystemBackend.open({ dataDir: tempDir })
       const spaceId = 'test-space'
       const collectionId = 'notes'
       await backend.writeSpace({
@@ -1221,7 +1221,7 @@ describe('Storage API', () => {
       // Provision unlimited so the writes below are never blocked by quota
       // enforcement, then apply the capacity afterward -- these tests exercise
       // reportUsage()'s state derivation, not the write-path enforcement.
-      const backend = new FileSystemBackend({ dataDir: tempDir })
+      const backend = await FileSystemBackend.open({ dataDir: tempDir })
       const spaceId = 'usage-space'
       const collectionId = 'credentials'
       await backend.writeSpace({

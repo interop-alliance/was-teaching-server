@@ -39,7 +39,10 @@ describe('Quota enforcement (API)', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir, capacityBytes: CAPACITY_BYTES })
+      backend: await FileSystemBackend.open({
+        dataDir,
+        capacityBytes: CAPACITY_BYTES
+      })
     }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
@@ -112,7 +115,7 @@ describe('Quota enforcement (backend)', () => {
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = new FileSystemBackend({ dataDir, capacityBytes })
+    backend = await FileSystemBackend.open({ dataDir, capacityBytes })
     await backend.writeSpace({
       spaceId,
       spaceMetadata: {
@@ -188,7 +191,7 @@ describe('Quota enforcement (backend)', () => {
     // refused with room to spare: `du` measures allocated blocks, so the
     // Space's baseline (its dirs and description files) costs a few filesystem
     // blocks, and how many depends on the filesystem the temp dir lives on.
-    const streamedBackend = new FileSystemBackend({
+    const streamedBackend = await FileSystemBackend.open({
       dataDir: streamedDir,
       capacityBytes: 200_000
     })
@@ -257,9 +260,9 @@ describe('Quota enforcement (backend)', () => {
     // with 507 until the TTL expired.
     const sourceDir = await mkdtemp(path.join(tmpdir(), 'was-test-src-'))
     const targetDir = await mkdtemp(path.join(tmpdir(), 'was-test-dst-'))
-    const sourceBackend = new FileSystemBackend({ dataDir: sourceDir })
+    const sourceBackend = await FileSystemBackend.open({ dataDir: sourceDir })
     // Capacity fits the archive once, but not the archive twice over.
-    const targetBackend = new FileSystemBackend({
+    const targetBackend = await FileSystemBackend.open({
       dataDir: targetDir,
       capacityBytes: 120_000
     })
@@ -332,7 +335,7 @@ describe('Quota enforcement (backend)', () => {
     // Stage an export from an unlimited backend that holds a ~300 KB resource,
     // then import it into a backend whose capacity cannot hold it.
     const sourceDir = await mkdtemp(path.join(tmpdir(), 'was-test-src-'))
-    const source = new FileSystemBackend({ dataDir: sourceDir })
+    const source = await FileSystemBackend.open({ dataDir: sourceDir })
     await source.writeSpace({
       spaceId,
       spaceMetadata: {
@@ -362,7 +365,7 @@ describe('Quota enforcement (backend)', () => {
     })
 
     const smallDir = await mkdtemp(path.join(tmpdir(), 'was-test-dst-'))
-    const small = new FileSystemBackend({
+    const small = await FileSystemBackend.open({
       dataDir: smallDir,
       capacityBytes: 100_000
     })
@@ -394,7 +397,7 @@ describe('Upload cap (maxUploadBytes) (API)', () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
     // A per-upload cap but no cumulative Space quota: isolates 413 from 507.
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({
+      backend: await FileSystemBackend.open({
         dataDir,
         maxUploadBytes: MAX_UPLOAD_BYTES
       })
@@ -477,7 +480,7 @@ describe('Upload cap (maxUploadBytes) (backend)', () => {
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = new FileSystemBackend({
+    backend = await FileSystemBackend.open({
       dataDir,
       maxUploadBytes: MAX_UPLOAD_BYTES
     })

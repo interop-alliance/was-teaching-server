@@ -39,7 +39,7 @@ describe('Service description API', () => {
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-service-'))
-    backend = new FileSystemBackend({ dataDir })
+    backend = await FileSystemBackend.open({ dataDir })
     ;({ fastify, serverUrl } = await startTestServer({ backend }))
     ;({ alice } = await zcapClients({ serverUrl }))
 
@@ -276,7 +276,7 @@ describe('Service description API', () => {
 
     it('appends to a Link header a handler already set', async () => {
       const app = createApp({
-        backend: new FileSystemBackend({ dataDir }),
+        backend: await FileSystemBackend.open({ dataDir }),
         logger: false,
         serverUrl: 'https://was.example'
       })
@@ -330,7 +330,7 @@ describe('Service description with the version withheld', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-service-'))
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir }),
+      backend: await FileSystemBackend.open({ dataDir }),
       discloseVersion: false
     }))
   })

@@ -43,12 +43,11 @@ async function makePostgresHarness(
   } = {}
 ): Promise<BackendHarness & { schema: string }> {
   const schema = `was_test_${crypto.randomBytes(8).toString('hex')}`
-  const backend = new PostgresBackend({
+  const backend = await PostgresBackend.open({
     connectionString: connectionString!,
     schema,
     ...options
   })
-  await backend.init()
   return {
     backend,
     schema,
@@ -85,7 +84,7 @@ if (!connectionString) {
     > {
       const dataDir = await mkdtemp(path.join(os.tmpdir(), 'was-contract-xfs-'))
       return {
-        backend: new FileSystemBackend({ dataDir }),
+        backend: await FileSystemBackend.open({ dataDir }),
         dataDir,
         async cleanup() {
           await rm(dataDir, { recursive: true, force: true })
@@ -331,20 +330,14 @@ if (!connectionString) {
           `INSERT INTO "${schema}".schema_migrations (version) VALUES ($1)`,
           [newerVersion]
         )
-        const newer = new PostgresBackend({
-          connectionString: connectionString!,
-          schema
-        })
-        try {
-          await expect(newer.init()).rejects.toSatisfy(
-            (err: unknown) =>
-              err instanceof StoreVersionError &&
-              err.message.includes(`version ${newerVersion}`) &&
-              err.message.includes(`version ${newerVersion - 1}`)
-          )
-        } finally {
-          await newer.close()
-        }
+        await expect(
+          PostgresBackend.open({ connectionString: connectionString!, schema })
+        ).rejects.toSatisfy(
+          (err: unknown) =>
+            err instanceof StoreVersionError &&
+            err.message.includes(`version ${newerVersion}`) &&
+            err.message.includes(`version ${newerVersion - 1}`)
+        )
       } finally {
         await admin.end()
         await harness.cleanup()

@@ -54,7 +54,7 @@ describe('WebKMS key operations (/kms/keystores/:keystoreId/keys)', () => {
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = new FileSystemBackend({ dataDir })
+    backend = await FileSystemBackend.open({ dataDir })
     ;({ fastify, serverUrl } = await startTestServer({ backend }))
     keystoresUrl = `${serverUrl}/kms/keystores`
     ;({ alice, aliceDelegatedApp, bob } = await zcapClients({ serverUrl }))

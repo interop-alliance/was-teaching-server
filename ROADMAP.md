@@ -165,7 +165,6 @@ Ready:
   URL by default
 - WAS-168 [L] `SERVER_URL` move runbook for the server DID log (portable domain
   move)
-- WAS-186 [L] Build backends through an async factory so none is half-built
 
 **Someday / Maybe**
 
@@ -1339,7 +1338,6 @@ doc; the other items are its sub-items in dependency order.
 - labels: data-model, etag, changes-feed, wire-contract, filesystem-backend,
   postgres-backend
 - blocks: WAS-96, WAS-174, WAS-176, WAS-182, WAS-183, WAS-184
-*- blocks: WAS-96, WAS-174, WAS-176, WAS-182, WAS-183, WAS-184
 - touches:
   - wallet-attached-storage-spec: the Resource data model (`updatedAtCounter`
     and `originId` members on Resource metadata and the Metadata objects; the
@@ -2177,33 +2175,6 @@ the DID string carries the host, so a log written for another host does not
 resolve as this server's and `/service` drops `serverDid` after the move; a
 domain-move entry appended to a portable log re-addresses it under the new host
 with the same SCID. Not scheduled for implementation yet.
-
-### WAS-186: [L] Build backends through an async factory so none is half-built
-
-- status: todo
-- priority: low
-- labels: cleanup, backend
-- discovered-from: simplify pass over the origin id change (2026-10-03)
-- acceptance:
-  - [ ] `FileSystemBackend` and `PostgresBackend` are obtained from an async
-        factory (for example a static `open()`) that runs what `init()` runs
-        today and returns a backend that already carries its origin id
-  - [ ] `StorageBackend.originId` is a plain readonly member with no
-        "read before init()" throw, and the plugin's boot-time read of it is
-        gone
-  - [ ] `start.ts`, `createApp`, `defaultBackend()`, and the test suites build
-        backends through the factory; constructors are no longer public, or
-        stay private to the factory
-  - [ ] The plugin's `ownsBackend` lifecycle keeps `close()` on `onClose` and
-        no longer calls `init()`
-
-`StorageBackend.init()` is optional, so the type admits an object that is
-constructed but not usable: the origin id is settled by `init()`, and both
-backends guard the gap with a getter that throws until then, which the plugin
-reads once at registration so an injected backend that skipped `init()` fails
-the boot instead of the first request. An async factory removes the half-built
-state rather than guarding it. Decorating the Fastify instance with the id was
-considered and rejected: the id is a store fact and belongs on the backend.
 
 ## Someday / Maybe
 

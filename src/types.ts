@@ -571,21 +571,15 @@ export interface StorageBackend {
   logger?: FastifyBaseLogger
 
   /**
-   * OPTIONAL startup hook for backends with a connection lifecycle (e.g. the
-   * Postgres backend connects and applies its schema migrations here).
-   * Awaited once by the plugin composition during registration, before the
-   * server starts listening. Backends without startup work omit it.
-   */
-  init?(): Promise<void>
-
-  /**
    * The store's origin id: the origin half of a write's replicated identity,
    * `[A-Za-z0-9_-]{1,64}`, stable for the store's life and unique among every
-   * server a Space may replicate to. A primary backend reads or mints it in
-   * `init()` (`WAS_ORIGIN_ID` when set, else a minted id, refusing a mismatch
-   * with the stored one), so reading it before `init()` throws. A data-plane
-   * adapter carries the hosting server's id. Advertised on `/service` as
-   * `originId` on the core `https://w3id.org/pws` entry.
+   * server a Space may replicate to. A primary backend is obtained from an
+   * async factory (`FileSystemBackend.open()`, `PostgresBackend.open()`) that
+   * reads or mints the id before it resolves (`WAS_ORIGIN_ID` when set, else
+   * a minted id, refusing a mismatch with the stored one), so a backend in
+   * hand always carries it. A data-plane adapter carries the hosting server's
+   * id. Advertised on `/service` as `originId` on the core
+   * `https://w3id.org/pws` entry.
    */
   readonly originId: string
 

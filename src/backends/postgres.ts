@@ -329,6 +329,21 @@ function storedLogFromRow(
   }
 }
 
+/**
+ * The options `PostgresBackend.open()` takes (documented there).
+ */
+export interface PostgresBackendOptions {
+  connectionString: string
+  schema?: string
+  logger?: FastifyBaseLogger
+  capacityBytes?: number
+  maxUploadBytes?: number
+  maxSpacesPerController?: number
+  maxCollectionsPerSpace?: number
+  maxResourcesPerSpace?: number
+  originId?: string
+}
+
 export class PostgresBackend implements StorageBackend {
   logger: FastifyBaseLogger
   /**
@@ -373,13 +388,10 @@ export class PostgresBackend implements StorageBackend {
   #pool: pg.Pool
   #schema?: string
   /**
-   * The configured origin id (`WAS_ORIGIN_ID`), handed to `init()`.
+   * The store's origin id, settled by `open()` from the store row. Assigned
+   * before the factory returns, so no caller can read it unset.
    */
-  #configuredOriginId?: string
-  /**
-   * The store's origin id, settled by `init()` from the store row.
-   */
-  #originId?: string
+  #originId!: string
   /**
    * The `PoolClient` of the transaction running on the current async context,
    * when one is. `#withTransaction` installs it for the span of its callback
@@ -395,10 +407,15 @@ export class PostgresBackend implements StorageBackend {
   #transactionClient = new AsyncLocalStorage<pg.PoolClient>()
 
   /**
+   * Opens a Postgres backend: builds the connection pool, connects, and
+   * applies the schema migrations (idempotent, advisory-locked; see
+   * `postgresSchema.ts`), which also settle the store's origin id. The
+   * constructor is protected, so this is the only way to obtain a backend,
+   * and the backend it resolves already carries its origin id.
    * @param options {object}
    * @param options.connectionString {string}   a `postgres://` URL
    * @param [options.schema] {string}   Postgres schema to operate in (set as
-   *   the connection `search_path`; created by `init()` if absent). Used for
+   *   the connection `search_path`; created by `open()` if absent). Used for
    *   test isolation; production uses the default `public`.
    * @param [options.logger] {FastifyBaseLogger}
    * @param [options.capacityBytes] {number}   per-Space quota in bytes; a
@@ -417,10 +434,30 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.maxResourcesPerSpace] {number}   max live Resources per
    *   Space; `undefined` applies the default-on limit, `Infinity` means no cap
    * @param [options.originId] {string}   the configured origin id
-   *   (`WAS_ORIGIN_ID`); `init()` refuses one that differs from the stored id,
-   *   and mints one when unset on a store that carries none
+   *   (`WAS_ORIGIN_ID`); refused when it differs from the stored id, and
+   *   written when the store carries none
+   * @returns {Promise<PostgresBackend>}   an instance of the class `open()`
+   *   was called on, so a subclass gets its own type back
    */
-  constructor({
+  static async open<T extends PostgresBackend>(
+    this: { prototype: T },
+    options: PostgresBackendOptions
+  ): Promise<T> {
+    // `this` is the class the call was made on. Its constructor is protected,
+    // so the `this` parameter cannot be typed as a constructor.
+    const backend = new (this as unknown as typeof PostgresBackend)(options)
+    try {
+      await backend.#open({ configuredOriginId: options.originId })
+    } catch (err) {
+      // The open's own failure is the one to report. A pool that never
+      // connected may also fail to end, and that error would replace it.
+      await backend.close().catch(() => {})
+      throw err
+    }
+    return backend as T
+  }
+
+  protected constructor({
     connectionString,
     schema,
     logger,
@@ -428,24 +465,12 @@ export class PostgresBackend implements StorageBackend {
     maxUploadBytes,
     maxSpacesPerController,
     maxCollectionsPerSpace,
-    maxResourcesPerSpace,
-    originId
-  }: {
-    connectionString: string
-    schema?: string
-    logger?: FastifyBaseLogger
-    capacityBytes?: number
-    maxUploadBytes?: number
-    maxSpacesPerController?: number
-    maxCollectionsPerSpace?: number
-    maxResourcesPerSpace?: number
-    originId?: string
-  }) {
+    maxResourcesPerSpace
+  }: PostgresBackendOptions) {
     if (schema !== undefined && !/^[a-z_][a-z0-9_]*$/i.test(schema)) {
       throw new Error(`Invalid Postgres schema name: "${schema}".`)
     }
     this.#schema = schema
-    this.#configuredOriginId = originId
     this.logger = logger ?? silentLogger
     this.capacityBytes = normalizeCapacityBytes(capacityBytes)
     // This backend buffers each upload in memory as a single `bytea`, so an
@@ -493,12 +518,18 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
-   * Connects and applies schema migrations (idempotent, advisory-locked; see
-   * postgresSchema.ts). Called once by the `createApp` composition before the
-   * server starts listening.
+   * The work `open()` runs on a freshly constructed backend: connect, create
+   * the schema when one is named, and apply the migrations.
+   * @param options {object}
+   * @param [options.configuredOriginId] {string}   the configured origin id
+   *   (`WAS_ORIGIN_ID`)
    * @returns {Promise<void>}
    */
-  async init(): Promise<void> {
+  async #open({
+    configuredOriginId
+  }: {
+    configuredOriginId?: string
+  }): Promise<void> {
     const client = await this.#pool.connect()
     try {
       if (this.#schema !== undefined) {
@@ -513,7 +544,7 @@ export class PostgresBackend implements StorageBackend {
       const { originId } = await applyMigrations({
         client,
         logger: this.logger,
-        originId: this.#configuredOriginId
+        originId: configuredOriginId
       })
       this.#originId = originId
     } finally {
@@ -524,13 +555,10 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
-   * The store's origin id, settled by `init()` from the store row.
+   * The store's origin id (see `StorageBackend.originId`).
    * @returns {string}
    */
   get originId(): string {
-    if (this.#originId === undefined) {
-      throw new Error('PostgresBackend.originId is read before init().')
-    }
     return this.#originId
   }
 

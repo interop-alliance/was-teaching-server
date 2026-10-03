@@ -1,6 +1,6 @@
 /**
  * Storage layout versioning for the `FileSystemBackend`: an ordered list of
- * migration functions plus the runner that applies them on backend `init()`,
+ * migration functions plus the runner that applies them on backend `open()`,
  * mirroring `MIGRATIONS` in `postgresSchema.ts`. The data root's `store.json`
  * records the layout version the directory is at, and the store's origin id
  * (see `lib/originId.ts`). It sits beside `spaces/`, `keystores/` and
@@ -29,7 +29,7 @@ import {
   atomicWriteFile
 } from '../lib/atomicFile.js'
 import { KeyedMutex } from '../lib/keyedMutex.js'
-import { isValidOriginId, mintOriginId } from '../lib/originId.js'
+import { isValidOriginId, settleOriginId } from '../lib/originId.js'
 import {
   StoreLockTimeoutError,
   StoreOriginIdError,
@@ -132,7 +132,7 @@ const runnerMutex = new KeyedMutex()
  * @param options.dataDir {string}   the backend's data root
  * @param options.logger {FastifyBaseLogger}
  * @param [options.originId] {string}   the configured origin id
- *   (`WAS_ORIGIN_ID`), already validated
+ *   (`WAS_ORIGIN_ID`)
  * @param [options.migrations] {StoreMigration[]}   defaults to STORE_MIGRATIONS
  * @param [options.lockTimeoutMs] {number}   how long to wait on a held lock
  * @returns {Promise<{ version: number, originId: string }>}   the version the
@@ -187,17 +187,6 @@ async function migrateUnderLock({
   lockTimeoutMs: number
 }): Promise<{ version: number; originId: string }> {
   const currentVersion = migrations.length
-  // Refused before anything is written: a malformed id in `store.json` would
-  // refuse every later boot.
-  if (
-    configuredOriginId !== undefined &&
-    !isValidOriginId(configuredOriginId)
-  ) {
-    throw StoreOriginIdError.malformed({
-      id: configuredOriginId,
-      where: 'The configured origin id'
-    })
-  }
   const lock = await acquireLock({ dataDir, lockTimeoutMs, logger })
   try {
     let record = await readStoreRecord({ dataDir })
@@ -220,19 +209,16 @@ async function migrateUnderLock({
           `this server knows up to version ${currentVersion}.`
       })
     }
-    const originId = record.originId ?? configuredOriginId ?? mintOriginId()
+    // A malformed configured id is refused here, before anything is written:
+    // in `store.json` it would refuse every later boot.
+    const originId = settleOriginId({
+      stored: record.originId,
+      configured: configuredOriginId
+    })
     if (record.originId === undefined) {
       // Written before any step runs, so a run killed mid-migration keeps it.
       record = { ...record, originId }
       await writeStoreRecord({ dataDir, record })
-    } else if (
-      configuredOriginId !== undefined &&
-      configuredOriginId !== originId
-    ) {
-      throw StoreOriginIdError.mismatch({
-        stored: originId,
-        configured: configuredOriginId
-      })
     }
     for (
       let version = record.version + 1;

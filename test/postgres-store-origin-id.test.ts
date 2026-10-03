@@ -1,5 +1,5 @@
 /**
- * The Postgres backend's per-store origin id: settled by `init()` from the
+ * The Postgres backend's per-store origin id: settled by `open()` from the
  * single-row `store` table, minted on a fresh schema or taken from the
  * configured id, and refused when a configured id differs from the stored one.
  *
@@ -30,18 +30,17 @@ if (!connectionString) {
     const backends: PostgresBackend[] = []
 
     /**
-     * Builds and initializes a backend over the test's schema.
+     * Opens a backend over the test's schema.
      * @param [originId] {string}   the configured origin id
      * @returns {Promise<PostgresBackend>}
      */
     async function boot(originId?: string): Promise<PostgresBackend> {
-      const backend = new PostgresBackend({
+      const backend = await PostgresBackend.open({
         connectionString: connectionString!,
         schema,
         originId
       })
       backends.push(backend)
-      await backend.init()
       return backend
     }
 
@@ -118,13 +117,13 @@ if (!connectionString) {
       assert.deepEqual(await storedOriginIds(), [second.originId])
     })
 
-    it('throws when originId is read before init()', () => {
-      const backend = new PostgresBackend({
+    it('carries the id as soon as open() resolves', async () => {
+      const backend = await PostgresBackend.open({
         connectionString: connectionString!,
         schema
       })
       backends.push(backend)
-      assert.throws(() => backend.originId, /before init\(\)/)
+      assert.match(backend.originId, ORIGIN_ID_PATTERN)
     })
   })
 }

@@ -102,9 +102,9 @@ describe('FileSystemBackend I/O faults', () => {
    * A backend over the suite's temp dir, with the given quota options.
    */
   const backendWith = async (
-    options: ConstructorParameters<typeof FileSystemBackend>[0]
+    options: Parameters<typeof FileSystemBackend.open>[0]
   ) => {
-    const backend = new FileSystemBackend(options)
+    const backend = await FileSystemBackend.open(options)
     await backend.writeSpace({
       spaceId,
       spaceMetadata: { id: spaceId, type: ['Space'], controller }

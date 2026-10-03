@@ -60,7 +60,7 @@ describe('Export provenance (wire level)', () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-export-provenance-'))
     adminKeyPair = await Ed25519VerificationKey.generate()
     ;({ fastify, serverUrl } = await startTestServer({
-      backend: new FileSystemBackend({ dataDir }),
+      backend: await FileSystemBackend.open({ dataDir }),
       serverKeySeed: seed,
       adminDid: `did:key:${adminKeyPair.publicKeyMultibase}`,
       logger: {

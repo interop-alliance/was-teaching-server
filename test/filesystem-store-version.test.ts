@@ -109,9 +109,8 @@ describe('Filesystem store version', () => {
     await rm(dataDir, { recursive: true, force: true })
   })
 
-  it('stamps an empty data dir with the current version on backend init', async () => {
-    const backend = new FileSystemBackend({ dataDir })
-    await backend.init()
+  it('stamps an empty data dir with the current version on backend open', async () => {
+    await FileSystemBackend.open({ dataDir })
     assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
     // The lock is released.
     assert.deepEqual(await readdir(dataDir), [STORE_FILE_NAME])
@@ -268,21 +267,20 @@ describe('Filesystem store version', () => {
     assert.equal(await storedVersion(dataDir), 1)
   })
 
-  it('removes stale temp files at the data root on backend init', async () => {
+  it('removes stale temp files at the data root on backend open', async () => {
     await stamp(dataDir, STORE_MIGRATIONS.length)
     const tempPath = path.join(dataDir, '.tmp-left-behind')
     await writeFile(tempPath, '{"version":')
     const stale = new Date(Date.now() - TEMP_FILE_ORPHAN_AGE_MS - 60_000)
     await utimes(tempPath, stale, stale)
-    await new FileSystemBackend({ dataDir }).init()
+    await FileSystemBackend.open({ dataDir })
     assert.deepEqual(await readdir(dataDir), [STORE_FILE_NAME])
   })
 
   it('refuses a version newer than the code knows, naming both', async () => {
     await stamp(dataDir, STORE_MIGRATIONS.length + 1)
-    const backend = new FileSystemBackend({ dataDir })
     await assert.rejects(
-      backend.init(),
+      FileSystemBackend.open({ dataDir }),
       (err: Error) =>
         err instanceof StoreVersionError &&
         err.message.includes(`version ${STORE_MIGRATIONS.length + 1}`) &&
@@ -307,10 +305,9 @@ describe('Filesystem store version', () => {
     ])
   })
 
-  it('stamps an unstamped data dir that holds data on backend init', async () => {
+  it('stamps an unstamped data dir that holds data on backend open', async () => {
     await mkdir(path.join(dataDir, 'spaces'))
-    const backend = new FileSystemBackend({ dataDir })
-    await backend.init()
+    await FileSystemBackend.open({ dataDir })
     assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
   })
 
@@ -395,7 +392,7 @@ describe('Filesystem store origin id', () => {
 
   it('refuses a malformed configured originId before anything is written', async () => {
     await assert.rejects(
-      new FileSystemBackend({ dataDir, originId: 'bad id!' }).init(),
+      FileSystemBackend.open({ dataDir, originId: 'bad id!' }),
       StoreOriginIdError
     )
     await assert.rejects(
@@ -469,14 +466,14 @@ describe('Filesystem store origin id', () => {
     })
   })
 
-  it('exposes the id on the backend only after init', async () => {
-    const backend = new FileSystemBackend({ dataDir, originId: 'node-a' })
-    assert.throws(() => backend.originId, /before init/)
-    await backend.init()
+  it('carries the id as soon as open() resolves', async () => {
+    const backend = await FileSystemBackend.open({
+      dataDir,
+      originId: 'node-a'
+    })
     assert.equal(backend.originId, 'node-a')
     assert.equal((await storedRecord(dataDir)).originId, 'node-a')
-    const reopened = new FileSystemBackend({ dataDir })
-    await reopened.init()
+    const reopened = await FileSystemBackend.open({ dataDir })
     assert.equal(reopened.originId, 'node-a')
   })
 })

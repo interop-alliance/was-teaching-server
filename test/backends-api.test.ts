@@ -56,7 +56,7 @@ describe('Space backend registration (/backends)', () => {
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    backend = new FileSystemBackend({ dataDir })
+    backend = await FileSystemBackend.open({ dataDir })
     ;({ fastify, serverUrl } = await startTestServer({ backend }))
     ;({ alice, bob } = await zcapClients({ serverUrl }))
   })

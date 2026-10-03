@@ -108,33 +108,38 @@ export async function startServer(): Promise<void> {
     // backend (rooted at WAS_DATA_DIR, else data/). An injected backend
     // carries its own quota configuration, so the per-Space/per-upload limits
     // are passed to it directly rather than through the createApp options.
-    const backend = config.databaseUrl
-      ? new PostgresBackend({
-          connectionString: config.databaseUrl,
-          capacityBytes: config.storageLimitPerSpace,
-          maxUploadBytes: config.maxUploadBytes,
-          maxSpacesPerController: config.maxSpacesPerController,
-          maxCollectionsPerSpace: config.maxCollectionsPerSpace,
-          maxResourcesPerSpace: config.maxResourcesPerSpace,
-          originId: config.originId
-        })
-      : undefined
-    fastify = createApp({
-      serverUrl: config.serverUrl,
-      ...(backend && { backend }),
-      ...(config.dataDir !== undefined && { dataDir: config.dataDir }),
-      storageLimitPerSpace: config.storageLimitPerSpace,
+    // The Postgres backend is handed over as a function the plugin calls at
+    // registration, once it has validated its options: the migrations then
+    // log through `fastify.log`, and the plugin closes the pool with the app.
+    const { databaseUrl } = config
+    // The storage options either backend takes under the same names.
+    const storageOptions = {
       maxUploadBytes: config.maxUploadBytes,
       maxSpacesPerController: config.maxSpacesPerController,
       maxCollectionsPerSpace: config.maxCollectionsPerSpace,
       maxResourcesPerSpace: config.maxResourcesPerSpace,
+      originId: config.originId
+    }
+    fastify = createApp({
+      serverUrl: config.serverUrl,
+      ...(databaseUrl !== undefined && {
+        backend: ({ logger }) =>
+          PostgresBackend.open({
+            logger,
+            connectionString: databaseUrl,
+            capacityBytes: config.storageLimitPerSpace,
+            ...storageOptions
+          })
+      }),
+      ...(config.dataDir !== undefined && { dataDir: config.dataDir }),
+      storageLimitPerSpace: config.storageLimitPerSpace,
+      ...storageOptions,
       enabledBackendProviders: config.enabledBackendProviders,
       kmsRecordKek: config.kmsRecordKek,
       onboardingToken: config.onboardingToken,
       discloseVersion: config.discloseVersion,
       serverKeySeed: config.serverKeySeed,
-      adminDid: config.adminDid,
-      originId: config.originId
+      adminDid: config.adminDid
     })
     // Warn (once, at startup, where the Fastify logger now exists) about limits
     // left implicitly unbounded. These warnings live only here so library and

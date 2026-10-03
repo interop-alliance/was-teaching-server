@@ -29,7 +29,7 @@ the package root is importable (the `exports` map does not expose deep
 | `createApp`                    | The teaching server's own composition, as a factory                                 |
 | `FileSystemBackend`            | The reference persistence backend (JSON + blobs on disk)                            |
 | `PostgresBackend`              | The PostgreSQL persistence backend (transactional quotas, multi-process safe)       |
-| `defaultBackend`               | Builds the `FileSystemBackend` the standalone server uses                           |
+| `defaultBackend`               | Opens the `FileSystemBackend` the standalone server uses (async)                    |
 | `onboardingTokenAuthorizer`    | Stock `authorizeProvisioning` callback that checks a shared-secret bearer token     |
 | `StorageBackend` (and friends) | The backend contract plus the rest of the domain types                              |
 | `ProblemError` subclasses      | The typed protocol errors (`ResourceNotFoundError`, `PreconditionFailedError`, ...) |
@@ -51,7 +51,7 @@ const fastify = Fastify({ logger: true })
 
 fastify.register(fastifyWas, {
   serverUrl,
-  backend: new FileSystemBackend({
+  backend: await FileSystemBackend.open({
     dataDir: path.join(import.meta.dirname, 'data')
   })
 })
@@ -90,23 +90,23 @@ Two things to get right:
 
 ## Plugin options (`FastifyWasOptions`)
 
-| Option                    | Meaning                                                                                                                                                                                                                                                                                                    |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `serverUrl`               | Required. Base URL used to build and match zcap `invocationTarget`s (exact-match, see above). Validated at registration: a missing value is refused, and it must be an absolute `http:`/`https:` URL with no userinfo, path, query, or fragment (sub-path deployment is not supported)                     |
-| `backend`                 | The `StorageBackend` to use; defaults to `defaultBackend()` (see the caveat above)                                                                                                                                                                                                                         |
-| `ownsBackend`             | Whether the plugin manages the backend's lifecycle (default `true`): it sets the backend's `logger` to `fastify.log`, awaits `init()` at registration, and calls `close()` on Fastify's `onClose`. `false` does none of these, for a composition that runs them itself, and requires an injected `backend` |
-| `cors`                    | The `@fastify/cors` registration. `false` registers none, so the composition can bring its own. An object overrides `origin` and/or `methods`. Default: `origin: '*'`, the methods the WAS routes serve, and the exposed headers browser clients need                                                      |
-| `dataDir`                 | Filesystem root the default backend stores under; applied only to the default backend (an injected `backend` carries its own root). `undefined` uses the project `data/` directory                                                                                                                         |
-| `storageLimitPerSpace`    | Per-Space byte quota, applied only to the default backend (an injected backend carries its own `capacityBytes`)                                                                                                                                                                                            |
-| `maxUploadBytes`          | Per-upload byte cap, likewise only for the default backend; also bounds the multipart buffer. Default-on: `undefined` applies the 64 MiB default; `Infinity` disables the cap                                                                                                                              |
-| `maxSpacesPerController`  | Max Spaces one controller may create (default-on count quota, default 100), only for the default backend; `Infinity` disables the cap                                                                                                                                                                      |
-| `maxCollectionsPerSpace`  | Max Collections per Space (default-on count quota, default 100), only for the default backend; `Infinity` disables the cap                                                                                                                                                                                 |
-| `maxResourcesPerSpace`    | Max live Resources per Space across all Collections (default-on count quota, default 10000), only for the default backend; `Infinity` disables the cap                                                                                                                                                     |
-| `providers`               | Provider-adapter registry for external (BYOS) Collection backends; defaults to empty                                                                                                                                                                                                                       |
-| `enabledBackendProviders` | Allowlist of registrable backend `provider` names; `undefined` = permissive                                                                                                                                                                                                                                |
-| `kmsRecordKek`            | At-rest WebKMS key-record encryption registry (multi-KEK, for rotation); `undefined` = key records written plaintext (the teaching default)                                                                                                                                                                |
-| `authorizeProvisioning`   | Gate callback for `POST /spaces/` and `POST /kms/keystores`; returns `'verify'` / `'grant'` / `'deny'` (or throws a `ProblemError`). `undefined` = allow (the teaching default)                                                                                                                            |
-| `onboardingToken`         | Shared-secret gate for the same two endpoints: when set, they require `Authorization: Bearer <token>` (which substitutes for zcap verification). Mutually exclusive with `authorizeProvisioning`                                                                                                           |
+| Option                    | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `serverUrl`               | Required. Base URL used to build and match zcap `invocationTarget`s (exact-match, see above). Validated at registration: a missing value is refused, and it must be an absolute `http:`/`https:` URL with no userinfo, path, query, or fragment (sub-path deployment is not supported)                                                                                                                                          |
+| `backend`                 | An open `StorageBackend`, or a function `({ logger }) => Promise<StorageBackend>` the plugin calls at registration, after validating its other options, with `fastify.log` and closes with the app; defaults to `defaultBackend()` (see the caveat above). A backend with no origin id (one not obtained from `open()`) is refused                                                                                              |
+| `ownsBackend`             | Whether the plugin manages the backend's lifecycle (default `true`): it sets the backend's `logger` to `fastify.log` and calls `close()` on Fastify's `onClose`. `false` does neither, for a composition that runs them itself, and requires an injected, already open `backend` (the function form is refused). A backend is obtained from its async `open()` factory, which runs the migrations, so neither setting opens one |
+| `cors`                    | The `@fastify/cors` registration. `false` registers none, so the composition can bring its own. An object overrides `origin` and/or `methods`. Default: `origin: '*'`, the methods the WAS routes serve, and the exposed headers browser clients need                                                                                                                                                                           |
+| `dataDir`                 | Filesystem root the default backend stores under; applied only to the default backend (an injected `backend` carries its own root). `undefined` uses the project `data/` directory                                                                                                                                                                                                                                              |
+| `storageLimitPerSpace`    | Per-Space byte quota, applied only to the default backend (an injected backend carries its own `capacityBytes`)                                                                                                                                                                                                                                                                                                                 |
+| `maxUploadBytes`          | Per-upload byte cap, likewise only for the default backend; also bounds the multipart buffer. Default-on: `undefined` applies the 64 MiB default; `Infinity` disables the cap                                                                                                                                                                                                                                                   |
+| `maxSpacesPerController`  | Max Spaces one controller may create (default-on count quota, default 100), only for the default backend; `Infinity` disables the cap                                                                                                                                                                                                                                                                                           |
+| `maxCollectionsPerSpace`  | Max Collections per Space (default-on count quota, default 100), only for the default backend; `Infinity` disables the cap                                                                                                                                                                                                                                                                                                      |
+| `maxResourcesPerSpace`    | Max live Resources per Space across all Collections (default-on count quota, default 10000), only for the default backend; `Infinity` disables the cap                                                                                                                                                                                                                                                                          |
+| `providers`               | Provider-adapter registry for external (BYOS) Collection backends; defaults to empty                                                                                                                                                                                                                                                                                                                                            |
+| `enabledBackendProviders` | Allowlist of registrable backend `provider` names; `undefined` = permissive                                                                                                                                                                                                                                                                                                                                                     |
+| `kmsRecordKek`            | At-rest WebKMS key-record encryption registry (multi-KEK, for rotation); `undefined` = key records written plaintext (the teaching default)                                                                                                                                                                                                                                                                                     |
+| `authorizeProvisioning`   | Gate callback for `POST /spaces/` and `POST /kms/keystores`; returns `'verify'` / `'grant'` / `'deny'` (or throws a `ProblemError`). `undefined` = allow (the teaching default)                                                                                                                                                                                                                                                 |
+| `onboardingToken`         | Shared-secret gate for the same two endpoints: when set, they require `Authorization: Bearer <token>` (which substitutes for zcap verification). Mutually exclusive with `authorizeProvisioning`                                                                                                                                                                                                                                |
 
 ## What the plugin does (and does not) register
 
@@ -171,12 +171,11 @@ if (serverUrl === undefined) {
 
 const fastify = Fastify({ logger: true })
 
-// The composition owns its backend: it runs the migrations and drains the
-// pool itself, so the plugin is told not to.
-const backend = new PostgresBackend({
+// The composition owns its backend: `open()` ran the migrations, and the
+// composition drains the pool itself, so the plugin is told not to.
+const backend = await PostgresBackend.open({
   connectionString: process.env.DATABASE_URL
 })
-await backend.init()
 fastify.addHook('onClose', async () => {
   await backend.close()
 })
@@ -210,6 +209,17 @@ registers them on the root instance:
   A composition route that expects only JSON checks the content type itself, or
   sits in an encapsulated context that calls `removeAllContentTypeParsers()` and
   adds back the parsers it accepts.
+
+To let the plugin own the backend and log its startup work, pass the function
+form instead:
+
+```ts
+fastify.register(fastifyWas, {
+  serverUrl,
+  backend: ({ logger }) =>
+    PostgresBackend.open({ connectionString: process.env.DATABASE_URL, logger })
+})
+```
 
 With `ownsBackend: false` the plugin does not set the backend's `logger`, so the
 composition wires its own if it wants backend diagnostics in its log.

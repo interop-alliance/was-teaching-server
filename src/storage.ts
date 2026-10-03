@@ -1,9 +1,10 @@
 /**
- * Storage composition helper: builds the default StorageBackend used by the
+ * Storage composition helper: opens the default StorageBackend used by the
  * server when no backend is injected.
  *
  * This module only supplies the default backend for production / `start.ts`,
- * where `createApp()` is called without an explicit backend.
+ * where `createApp()` is called without an explicit backend; the plugin awaits
+ * it during registration.
  * The active backend is injected into the Fastify instance via
  * `createApp({ backend })` (see plugin.ts) and read in handlers as
  * `request.server.storage`.
@@ -13,17 +14,26 @@
  * the interface in src/types.ts.
  */
 import path from 'node:path'
-import { FileSystemBackend } from './backends/filesystem.js'
+import {
+  FileSystemBackend,
+  type FileSystemBackendOptions
+} from './backends/filesystem.js'
 import type { StorageBackend } from './types.js'
 
 /**
- * Builds the default filesystem-backed storage, rooted at `dataDir` (the
- * project `data/` directory when none is given). Used by `createApp()` when no
- * backend is injected (production).
+ * Opens the default filesystem-backed storage, rooted at `dataDir` (the
+ * project `data/` directory when none is given), through
+ * `FileSystemBackend.open()`, so the backend it resolves has run its store
+ * migrations and carries its origin id. Used by the plugin when no backend is
+ * injected (production).
  * @param options {object}
  * @param [options.dataDir] {string}   filesystem root for the stored Spaces,
  *   keystores, and revocations (env `WAS_DATA_DIR`); defaults to the project
  *   `data/` directory.
+ * @param [options.logger] {FastifyBaseLogger}   the logger the backend writes
+ *   through, from the open onward; defaults to a silent one.
+ * @param [options.originId] {string}   the configured origin id
+ *   (`WAS_ORIGIN_ID`).
  * @param [options.capacityBytes] {number}   per-Space storage limit in bytes
  *   (spec "Quotas"); `undefined` (or `Infinity`) means each Space is unlimited.
  * @param [options.maxUploadBytes] {number}   per-upload size cap in bytes (spec
@@ -38,32 +48,16 @@ import type { StorageBackend } from './types.js'
  * @param [options.maxResourcesPerSpace] {number}   max live Resources per Space
  *   (spec "Quotas"); `undefined` applies the backend's default-on limit,
  *   `Infinity` means no cap.
- * @returns {StorageBackend}
+ * @returns {Promise<StorageBackend>}
  */
-export function defaultBackend({
+export async function defaultBackend({
   dataDir,
-  capacityBytes,
-  maxUploadBytes,
-  maxSpacesPerController,
-  maxCollectionsPerSpace,
-  maxResourcesPerSpace,
-  originId
-}: {
+  ...options
+}: Omit<FileSystemBackendOptions, 'dataDir'> & {
   dataDir?: string
-  originId?: string
-  capacityBytes?: number
-  maxUploadBytes?: number
-  maxSpacesPerController?: number
-  maxCollectionsPerSpace?: number
-  maxResourcesPerSpace?: number
-} = {}): StorageBackend {
-  return new FileSystemBackend({
-    dataDir: dataDir ?? path.join(import.meta.dirname, '..', 'data'),
-    capacityBytes,
-    maxUploadBytes,
-    maxSpacesPerController,
-    maxCollectionsPerSpace,
-    maxResourcesPerSpace,
-    originId
+} = {}): Promise<StorageBackend> {
+  return FileSystemBackend.open({
+    ...options,
+    dataDir: dataDir ?? path.join(import.meta.dirname, '..', 'data')
   })
 }

@@ -51,7 +51,7 @@ describe('Provisioning gate', () => {
     authorizeProvisioning?: AuthorizeProvisioning
   } = {}): Promise<{ fastify: FastifyInstance; backend: FileSystemBackend }> {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'was-provisioning-'))
-    const backend = new FileSystemBackend({ dataDir })
+    const backend = await FileSystemBackend.open({ dataDir })
     const started = await startTestServer({
       backend,
       ...(onboardingToken !== undefined && { onboardingToken }),
@@ -493,7 +493,7 @@ describe('Provisioning gate', () => {
     // URL will do, and this test stays independent of the boots above.
     const fastify = createApp({
       serverUrl: 'http://localhost',
-      backend: new FileSystemBackend({ dataDir }),
+      backend: await FileSystemBackend.open({ dataDir }),
       onboardingToken: TOKEN,
       authorizeProvisioning: async () => 'grant' as const
     })
@@ -511,7 +511,7 @@ describe('Provisioning gate', () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'was-provisioning-'))
     const fastify = createApp({
       serverUrl: 'http://localhost',
-      backend: new FileSystemBackend({ dataDir }),
+      backend: await FileSystemBackend.open({ dataDir }),
       onboardingToken: '  '
     })
     try {

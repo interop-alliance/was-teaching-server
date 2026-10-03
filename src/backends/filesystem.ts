@@ -177,9 +177,8 @@ const { Store: MetadataJsonStore } = jsonfs
 const execFileAsync = promisify(execFile)
 
 /**
- * Silent logger used when no logger is injected into the backend, so the backend
- * stays quiet by default (e.g. in `defaultBackend()` before `createApp` wires
- * `fastify.log` in, or in tests).
+ * Silent logger used when no logger is passed to `open()`, so the backend
+ * stays quiet by default (e.g. in tests).
  */
 const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
 
@@ -245,6 +244,20 @@ async function fileExists(filePath: string): Promise<boolean> {
     }
     throw err
   }
+}
+
+/**
+ * The options `FileSystemBackend.open()` takes (documented there).
+ */
+export interface FileSystemBackendOptions {
+  dataDir: string
+  logger?: FastifyBaseLogger
+  originId?: string
+  capacityBytes?: number
+  maxUploadBytes?: number
+  maxSpacesPerController?: number
+  maxCollectionsPerSpace?: number
+  maxResourcesPerSpace?: number
 }
 
 export class FileSystemBackend implements StorageBackend {
@@ -475,46 +488,63 @@ export class FileSystemBackend implements StorageBackend {
   #liveCountCache = new Map<string, { used: number; expiresAt: number }>()
 
   /**
-   * The configured origin id (`WAS_ORIGIN_ID`), handed to the store runner in
-   * `init()`. `undefined` reads the store's own id, or mints one.
+   * The store's origin id, settled by `open()` (see `filesystemStore.ts`).
+   * Assigned before the factory returns, so no caller can read it unset.
    */
-  #configuredOriginId?: string
-
-  /**
-   * The store's origin id, settled by `init()` (see `filesystemStore.ts`).
-   */
-  #originId?: string
+  #originId!: string
 
   /**
    * The store's origin id (see `StorageBackend.originId`).
    * @returns {string}
    */
   get originId(): string {
-    if (this.#originId === undefined) {
-      throw new Error('FileSystemBackend.originId is read before init().')
-    }
     return this.#originId
   }
 
-  constructor({
+  /**
+   * Opens a filesystem backend over `dataDir`: brings the data dir to the
+   * current storage layout version and settles the store's origin id (see
+   * `filesystemStore.ts`), then removes the staging temp files a killed
+   * process left behind at the data root and under the Space, keystore, and
+   * revocation trees. Only temp files untouched for an hour are removed, since
+   * another process sharing the data directory may still be writing a fresher
+   * one. A failure to read or remove an entry is logged and does not stop the
+   * open. The constructor is protected, so this is the only way to obtain a
+   * backend, and the backend it resolves already carries its origin id.
+   * @param options {object}
+   * @param options.dataDir {string}   the data root
+   * @param [options.logger] {FastifyBaseLogger}
+   * @param [options.originId] {string}   the configured origin id
+   *   (`WAS_ORIGIN_ID`); refused when it differs from the stored id, and
+   *   written when the store carries none
+   * @param [options.capacityBytes] {number}
+   * @param [options.maxUploadBytes] {number}
+   * @param [options.maxSpacesPerController] {number}
+   * @param [options.maxCollectionsPerSpace] {number}
+   * @param [options.maxResourcesPerSpace] {number}
+   * @returns {Promise<FileSystemBackend>}   an instance of the class `open()`
+   *   was called on, so a subclass gets its own type back
+   */
+  static async open<T extends FileSystemBackend>(
+    this: { prototype: T },
+    options: FileSystemBackendOptions
+  ): Promise<T> {
+    // `this` is the class the call was made on. Its constructor is protected,
+    // so the `this` parameter cannot be typed as a constructor.
+    const backend = new (this as unknown as typeof FileSystemBackend)(options)
+    await backend.#open({ configuredOriginId: options.originId })
+    return backend as T
+  }
+
+  protected constructor({
     dataDir,
     logger,
-    originId,
     capacityBytes,
     maxUploadBytes,
     maxSpacesPerController,
     maxCollectionsPerSpace,
     maxResourcesPerSpace
-  }: {
-    dataDir: string
-    logger?: FastifyBaseLogger
-    originId?: string
-    capacityBytes?: number
-    maxUploadBytes?: number
-    maxSpacesPerController?: number
-    maxCollectionsPerSpace?: number
-    maxResourcesPerSpace?: number
-  }) {
+  }: FileSystemBackendOptions) {
     this.dataDir = dataDir
     this.spacesDir = path.join(dataDir, 'spaces')
     this.keystoresDir = path.join(dataDir, 'keystores')
@@ -523,7 +553,6 @@ export class FileSystemBackend implements StorageBackend {
     // `spaceRevocationsDir` property doc).
     this.spaceRevocationsDir = path.join(dataDir, 'space-revocations')
     this.logger = logger ?? silentLogger
-    this.#configuredOriginId = originId
     this.capacityBytes = normalizeCapacityBytes(capacityBytes)
     // Normalize the per-upload cap so every downstream guard keeps its plain
     // `!== undefined` test: an unset option applies the default-on cap; a
@@ -553,20 +582,22 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Startup hook: brings the data dir to the current storage layout version
-   * and settles the store's origin id (see `filesystemStore.ts`), then
-   * removes the staging temp files a killed process left behind at the data
-   * root and under the Space, keystore, and revocation trees. Only temp files
-   * untouched for an hour are removed, since another process sharing the data
-   * directory may still be writing a fresher one. A failure to read or remove
-   * an entry is logged and does not stop startup.
+   * The work `open()` runs on a freshly constructed backend: the store
+   * migrations, the origin id, and the temp-file sweep.
+   * @param options {object}
+   * @param [options.configuredOriginId] {string}   the configured origin id
+   *   (`WAS_ORIGIN_ID`); `undefined` reads the store's own id, or mints one
    * @returns {Promise<void>}
    */
-  async init(): Promise<void> {
+  async #open({
+    configuredOriginId
+  }: {
+    configuredOriginId?: string
+  }): Promise<void> {
     const { version: storeVersion, originId } = await applyStoreMigrations({
       dataDir: this.dataDir,
       logger: this.logger,
-      originId: this.#configuredOriginId
+      originId: configuredOriginId
     })
     this.#originId = originId
     this.logger.info({ storeVersion, originId }, 'Filesystem store ready')

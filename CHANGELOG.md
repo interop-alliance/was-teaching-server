@@ -129,12 +129,33 @@
     the metadata and policy cache TTLs, and `allowTargetQuery`.
 
 - `fastifyWas` / `createApp` options `ownsBackend` and `cors`. With
-  `ownsBackend: false` the plugin leaves the backend's `logger`, `init()` and
-  `close()` to the composition; it requires an injected `backend`. `cors: false`
-  skips `@fastify/cors`, and a `cors` object overrides `origin` and/or
-  `methods`; a member set to `undefined` keeps the default.
+  `ownsBackend: false` the plugin leaves the backend's `logger` and `close()` to
+  the composition; it requires an injected, already open `backend`.
+  `cors: false` skips `@fastify/cors`, and a `cors` object overrides `origin`
+  and/or `methods`; a member set to `undefined` keeps the default.
 
 ### Changed
+
+- `FileSystemBackend` and `PostgresBackend` are obtained from a static async
+  `open()` factory, which runs the store migrations and settles the origin id
+  before it resolves; their constructors are protected and
+  `StorageBackend.init()` is gone. `originId` is a plain member, with no "read
+  before init" throw. `defaultBackend()` is async, and the plugin's
+  `ownsBackend` lifecycle wires `close()` only. A composition that constructed a
+  backend and called `init()` now awaits `open()` instead. `open()` returns the
+  type of the class it is called on, and `PostgresBackend.open()` reports the
+  open failure even when ending the pool also fails.
+
+- The `fastifyWas` / `createApp` `backend` option also accepts a function,
+  `({ logger }) => Promise<StorageBackend>`. The plugin calls it at
+  registration, after validating its other options, with `fastify.log`, so the
+  backend's startup work logs through the app logger and a refused option leaves
+  the store untouched. The plugin closes that backend with the app, so the
+  function form is refused with `ownsBackend: false`. The server entry point
+  hands the Postgres backend over this way. The plugin also refuses, at
+  registration, a backend with no origin id (one that did not come from
+  `open()`), after wiring its `close()`, so a failed registration still releases
+  it.
 
 - `serverUrl` is a required `fastifyWas` / `createApp` option, refused at
   registration when missing. `assertValidServerUrl` also rejects a URL carrying

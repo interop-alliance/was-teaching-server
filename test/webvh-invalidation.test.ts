@@ -164,7 +164,7 @@ describe('did:webvh resolution cache invalidation', () => {
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    storage = new FileSystemBackend({ dataDir })
+    storage = await FileSystemBackend.open({ dataDir })
     spaceId = randomUUID()
     await storage.writeSpace({
       spaceId,
@@ -309,7 +309,7 @@ describe('did:webvh resolution cache revalidation past the TTL', () => {
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    storage = new FileSystemBackend({ dataDir })
+    storage = await FileSystemBackend.open({ dataDir })
     spaceId = randomUUID()
     await storage.writeSpace({
       spaceId,
@@ -539,7 +539,7 @@ describe('did:webvh log head continuity', () => {
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-test-'))
-    storage = new FileSystemBackend({ dataDir })
+    storage = await FileSystemBackend.open({ dataDir })
     spaceId = randomUUID()
     await storage.writeSpace({
       spaceId,
