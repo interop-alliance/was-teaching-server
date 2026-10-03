@@ -19,7 +19,8 @@ import type { Space, Collection } from '@interop/was-client'
 
 import type { TempFileSystemBackend } from '../src/testing.js'
 import {
-  assertEtagVersion,
+  assertEtagAdvanced,
+  parseEtagSegments,
   etagGeneration,
   openTempBackend,
   responseOf,
@@ -156,9 +157,9 @@ describe('Chunk API (chunked-streams)', () => {
         body: new Blob([bytes], { type: 'application/octet-stream' })
       })
       assert.equal(putResponse.status, 204)
-      // The chunk carries its own monotonic version (first write => version 1).
+      // The chunk carries its own stamped validator.
       const putEtag = putResponse.headers.get('etag')
-      assertEtagVersion({ etag: putEtag, version: 1 })
+      parseEtagSegments(putEtag)
 
       // GET streams back the exact stored bytes with the stored content-type.
       const getResponse = await alice.was.request({
@@ -273,7 +274,11 @@ describe('Chunk API (chunked-streams)', () => {
       )
       for (const chunk of listing.data.chunks) {
         assert.equal(chunk.contentType, 'application/octet-stream')
-        assert.equal(chunk.version, 1)
+        assert.deepEqual(Object.keys(chunk).sort(), [
+          'contentType',
+          'index',
+          'size'
+        ])
       }
     })
 
@@ -477,7 +482,7 @@ describe('Chunk API (chunked-streams)', () => {
   })
 
   describe('conditional writes', () => {
-    it('[signed] If-Match / If-None-Match gate on the chunk version', async () => {
+    it('[signed] If-Match / If-None-Match gate on the chunk ETag', async () => {
       const resourceId = 'conditional'
       await dataCollection.put(resourceId, { id: resourceId })
 
@@ -489,7 +494,7 @@ describe('Chunk API (chunked-streams)', () => {
         })
       })
       const createdEtag = created.headers.get('etag')
-      assertEtagVersion({ etag: createdEtag, version: 1 })
+      parseEtagSegments(createdEtag)
 
       // A stale If-Match is rejected...
       assert.equal(
@@ -500,13 +505,13 @@ describe('Chunk API (chunked-streams)', () => {
             body: new Blob([new Uint8Array([2])], {
               type: 'application/octet-stream'
             }),
-            headers: { 'if-match': '"999"' }
+            headers: { 'if-match': '"noSuchGen.1.0.x"' }
           })
         ),
         412
       )
 
-      // ...the matching one succeeds and advances the version.
+      // ...the matching one succeeds and advances the stamp.
       const updated = await alice.was.request({
         url: chunkUrl(resourceId, 0),
         method: 'PUT',
@@ -517,7 +522,7 @@ describe('Chunk API (chunked-streams)', () => {
       })
       assert.equal(updated.status, 204)
       const updatedEtag = updated.headers.get('etag')
-      assertEtagVersion({ etag: updatedEtag, version: 2 })
+      assertEtagAdvanced({ before: createdEtag, after: updatedEtag })
       assert.equal(etagGeneration(updatedEtag!), etagGeneration(createdEtag!))
 
       // If-None-Match: * on an existing chunk 412s (create-if-absent fails).
@@ -623,7 +628,7 @@ describe('Chunk API (chunked-streams)', () => {
         })
       })
       const oldEtag = created.headers.get('etag')!
-      assertEtagVersion({ etag: oldEtag, version: 1 })
+      parseEtagSegments(oldEtag)
 
       await alice.was.request({
         url: chunkUrl(resourceId, 0),
@@ -631,7 +636,7 @@ describe('Chunk API (chunked-streams)', () => {
       })
 
       // Unlike a Resource tombstone, a chunk keeps no sidecar across the
-      // delete, so re-creating it mints a fresh generation at version 1.
+      // delete, so re-creating it mints a fresh generation.
       const recreated = await alice.was.request({
         url: chunkUrl(resourceId, 0),
         method: 'PUT',
@@ -640,7 +645,7 @@ describe('Chunk API (chunked-streams)', () => {
         })
       })
       const newEtag = recreated.headers.get('etag')
-      assertEtagVersion({ etag: newEtag, version: 1 })
+      parseEtagSegments(newEtag)
       assert.notEqual(etagGeneration(newEtag!), etagGeneration(oldEtag))
 
       // The old ETag is not the current one: a conditional GET with it is the
@@ -702,7 +707,7 @@ describe('Chunk API (chunked-streams)', () => {
       )
       const checkpoint = initial.data.checkpoint
 
-      // A chunk write and a chunk delete bump only the chunk's own version:
+      // A chunk write and a chunk delete stamp only the chunk's own record:
       // neither touches the parent Resource's feed position.
       for (const index of [0, 1]) {
         await alice.was.request({

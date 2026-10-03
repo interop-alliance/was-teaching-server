@@ -10,7 +10,8 @@ import type { Space } from '@interop/was-client'
 
 import type { TempFileSystemBackend } from '../src/testing.js'
 import {
-  assertEtagVersion,
+  assertEtagAdvanced,
+  parseEtagSegments,
   etagGeneration,
   openTempBackend,
   requestError,
@@ -135,11 +136,19 @@ describe('Collections API', () => {
     assert.equal(collection.id, 'credentials')
     // The merged Collection Metadata object carries its timestamps, and the
     // client surfaces the object's one `ETag` alongside it.
-    const { createdAt, updatedAt, etag, ...description } =
-      (await collection.describe())!
+    const {
+      createdAt,
+      updatedAt,
+      updatedAtCounter,
+      originId,
+      etag,
+      ...description
+    } = (await collection.describe())!
     assert.ok(!Number.isNaN(Date.parse(createdAt!)))
     assert.equal(updatedAt, createdAt)
-    assertEtagVersion({ etag: etag ?? null, version: 1 })
+    assert.equal(updatedAtCounter, 0)
+    assert.equal(typeof originId, 'string')
+    parseEtagSegments(etag ?? null, { container: true })
     assert.deepStrictEqual(description, {
       id: 'credentials',
       name: 'Verifiable Credentials',
@@ -229,12 +238,19 @@ describe('Collections API', () => {
   })
 
   it('[root] get the Collection Metadata object via GET :collectionId/meta', async () => {
-    const { createdAt, updatedAt, etag, ...description } = (await aliceSpace
-      .collection('credentials')
-      .describe())!
+    const {
+      createdAt,
+      updatedAt,
+      updatedAtCounter,
+      originId,
+      etag,
+      ...description
+    } = (await aliceSpace.collection('credentials').describe())!
     assert.ok(!Number.isNaN(Date.parse(createdAt!)))
     assert.ok(!Number.isNaN(Date.parse(updatedAt!)))
-    assertEtagVersion({ etag: etag ?? null, version: 1 })
+    assert.equal(typeof updatedAtCounter, 'number')
+    assert.equal(typeof originId, 'string')
+    parseEtagSegments(etag ?? null, { container: true })
     assert.deepStrictEqual(description, {
       id: 'credentials',
       name: 'Verifiable Credentials',
@@ -337,7 +353,7 @@ describe('Collections API', () => {
       headers: { 'if-none-match': '*' }
     })
     assert.equal(created.status, 201)
-    assertEtagVersion({ etag: created.headers.get('etag'), version: 1 })
+    parseEtagSegments(created.headers.get('etag'), { container: true })
 
     // The loser of a create race: the same guarded PUT against the now-present
     // Collection is refused and the stored Collection Metadata is untouched.
@@ -361,7 +377,11 @@ describe('Collections API', () => {
       json: { id: collectionId, name: 'Replaced' }
     })
     assert.equal(replaced.status, 204)
-    assertEtagVersion({ etag: replaced.headers.get('etag'), version: 2 })
+    assertEtagAdvanced({
+      before: created.headers.get('etag'),
+      after: replaced.headers.get('etag'),
+      container: true
+    })
   })
 
   it('[root] DELETE a never-created collection is idempotent (204, not 500)', async () => {
@@ -561,14 +581,14 @@ describe('Collections API', () => {
       assert.equal(response.status, 200)
       assert.match(response.headers.get('content-type')!, /application\/json/)
       // Creating the Collection wrote its Metadata object, so the one
-      // `metaVersion` validator is already at version 1 before any annotation
-      // write...
-      assertEtagVersion({ etag: response.headers.get('etag'), version: 1 })
+      // validator is already minted before any annotation write...
+      parseEtagSegments(response.headers.get('etag'), { container: true })
       // ...and the server-managed creator shows, with no annotations.
       assert.equal(response.data.createdBy, alice.did)
       assert.equal(response.data.custom, undefined)
       // The validator travels only as the header and stays out of the body.
-      assert.equal(response.data.metaVersion, undefined)
+      assert.equal(response.data.metaGeneration, undefined)
+      assert.equal(response.data._generation, undefined)
     })
 
     it('[signed] GET /meta of a nonexistent collection 404s', async () => {
@@ -618,6 +638,9 @@ describe('Collections API', () => {
 
     it('[signed] PUT /meta sets custom, round-tripped by GET with a matching ETag', async () => {
       const collectionId = await freshCollection()
+      const createdEtag = (
+        await alice.was.request({ url: metaUrl(collectionId), method: 'GET' })
+      ).headers.get('etag')
       const put = await alice.was.request({
         url: metaUrl(collectionId),
         method: 'PUT',
@@ -627,9 +650,13 @@ describe('Collections API', () => {
       })
       assert.equal(put.status, 204)
       const putEtag = put.headers.get('etag')
-      // Version 1 was the create; the annotation write is the next version of
-      // the same Collection Metadata object.
-      assertEtagVersion({ etag: putEtag, version: 2 })
+      // The annotation write is the next stamped write of the same
+      // Collection Metadata object.
+      assertEtagAdvanced({
+        before: createdEtag,
+        after: putEtag,
+        container: true
+      })
 
       const got = await alice.was.request({
         url: metaUrl(collectionId),
@@ -646,19 +673,26 @@ describe('Collections API', () => {
 
     it('[signed] PUT /meta is a full replacement; an empty body clears custom', async () => {
       const collectionId = await freshCollection()
-      await alice.was.request({
-        url: metaUrl(collectionId),
-        method: 'PUT',
-        json: { custom: { name: 'Temporary', tags: { a: 'b' } } }
-      })
+      const annotatedEtag = (
+        await alice.was.request({
+          url: metaUrl(collectionId),
+          method: 'PUT',
+          json: { custom: { name: 'Temporary', tags: { a: 'b' } } }
+        })
+      ).headers.get('etag')
       // A body with no `custom` clears every user-writable property.
       const cleared = await alice.was.request({
         url: metaUrl(collectionId),
         method: 'PUT',
         json: {}
       })
-      // Create (1), annotation write (2), clearing write (3).
-      assertEtagVersion({ etag: cleared.headers.get('etag'), version: 3 })
+      // The clearing write is the third stamped write (create, annotation,
+      // clear).
+      assertEtagAdvanced({
+        before: annotatedEtag,
+        after: cleared.headers.get('etag'),
+        container: true
+      })
 
       const got = await alice.was.request({
         url: metaUrl(collectionId),
@@ -710,7 +744,7 @@ describe('Collections API', () => {
         json: { custom: { name: 'Created by meta' } }
       })
       assert.equal(created.status, 201)
-      assertEtagVersion({ etag: created.headers.get('etag'), version: 1 })
+      parseEtagSegments(created.headers.get('etag'), { container: true })
 
       const got = await alice.was.request({
         url: metaUrl(collectionId),
@@ -785,7 +819,7 @@ describe('Collections API', () => {
         headers: { 'if-none-match': '*' }
       })
       assert.equal(created.status, 201)
-      assertEtagVersion({ etag: created.headers.get('etag'), version: 1 })
+      parseEtagSegments(created.headers.get('etag'), { container: true })
 
       let thrown: any
       try {
@@ -907,7 +941,7 @@ describe('Collections API', () => {
         method: 'GET'
       })
       const createdEtag = described.headers.get('etag')!
-      assertEtagVersion({ etag: createdEtag, version: 1 })
+      parseEtagSegments(createdEtag, { container: true })
 
       // An annotation write advances the validator...
       const annotated = await alice.was.request({
@@ -916,7 +950,11 @@ describe('Collections API', () => {
         json: { name: 'Meta Collection', custom: { name: 'Shared' } }
       })
       const annotatedEtag = annotated.headers.get('etag')!
-      assertEtagVersion({ etag: annotatedEtag, version: 2 })
+      assertEtagAdvanced({
+        before: createdEtag,
+        after: annotatedEtag,
+        container: true
+      })
       assert.equal(etagGeneration(annotatedEtag), etagGeneration(createdEtag))
 
       // ...and so does a configuration write, under the same generation.
@@ -931,7 +969,11 @@ describe('Collections API', () => {
         }
       })
       const configuredEtag = configured.headers.get('etag')!
-      assertEtagVersion({ etag: configuredEtag, version: 3 })
+      assertEtagAdvanced({
+        before: annotatedEtag,
+        after: configuredEtag,
+        container: true
+      })
       assert.equal(etagGeneration(configuredEtag), etagGeneration(createdEtag))
 
       const meta = await alice.was.request({

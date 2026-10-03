@@ -10,15 +10,22 @@
  * (its directory walk, sort order, chunk-directory handling and the sibling
  * revocations directory) -- are pinned to one byte sequence.
  *
+ * The tree has the layout this server writes and exports. The two Metadata
+ * files, the governing history log record and the Resource sidecar each carry
+ * a write stamp (`updatedAt`, `updatedAtCounter`, `originId`), all the epoch
+ * with counter 0 under the origin id `zFixtureOrigin`. The sidecar also
+ * carries its `/meta` record's stamp and generation under `meta`. A Metadata
+ * file embeds its generation as `_generation`; the log record and the sidecar
+ * carry theirs as `generation`.
+ *
  * Why the tree is staged on disk rather than imported through `importSpace`:
- * `.collection.notes.json` and `.space.zFixtureSpace.json` carry no
- * `_generation` / `_version` members. An import mints those validators and
- * re-stamps `updatedAt`, so an imported Collection's Metadata object could
- * never re-export to the fixture's bytes, and its revocation record is a stub
- * the import path refuses. The fixture's governing history log is the server's
- * own stored record (`{ body, generation, version }`); the last case here pins
- * that form from the other side, packing the same tree with a bare JSON Lines
- * log and asserting the import refuses it.
+ * an import re-stamps every record with the importing server's clock, so an
+ * imported record could never re-export to the fixture's bytes, and the
+ * fixture's revocation record is a stub the import path refuses. The
+ * fixture's governing history log is a stored log record
+ * (`{ generation, updatedAt, updatedAtCounter, originId, body }`); the last
+ * case here pins that form from the other side, packing the same tree with a
+ * bare JSON Lines log and asserting the import refuses it.
  *
  * A second fixture carries the two provenance root entries beside the
  * manifest (`provenance.jsonl`, `did.jsonl`). The package packs their bodies
@@ -101,6 +108,15 @@ const PROVENANCE_FIXTURE_SERVER_URL = 'https://was.example'
 const PROVENANCE_FIXTURE_SEED = new Uint8Array(32).fill(1)
 
 /**
+ * The write stamp every stamped record in the fixture carries.
+ */
+const FIXTURE_STAMP = {
+  updatedAt: '1970-01-01T00:00:00.000Z',
+  updatedAtCounter: 0,
+  originId: 'zFixtureOrigin'
+}
+
+/**
  * Writes the fixture's entry tree into a `FileSystemBackend`'s layout: the
  * Space directory with its Metadata dot-file, one Collection directory holding
  * its Metadata, its governing history log, a Resource representation and that
@@ -116,10 +132,14 @@ function stageFixtureTree(dataDir: string): void {
 
   fs.writeFileSync(
     path.join(spaceDir, `.space.${SPACE_ID}.json`),
+    // Stored without `backends`: the export derives that listing and writes
+    // it after the stamp members.
     JSON.stringify({
       id: SPACE_ID,
       controller: 'did:key:z6MkfixtureController',
-      type: ['Space']
+      type: ['Space'],
+      ...FIXTURE_STAMP,
+      _generation: 'zFixtureSpaceGeneration'
     })
   )
   fs.writeFileSync(
@@ -127,14 +147,15 @@ function stageFixtureTree(dataDir: string): void {
     JSON.stringify({
       id: COLLECTION_ID,
       createdAt: '1970-01-01T00:00:00.000Z',
-      updatedAt: '1970-01-01T00:00:00.000Z'
+      ...FIXTURE_STAMP,
+      _generation: 'zFixtureNotesGeneration'
     })
   )
   fs.writeFileSync(
     path.join(collectionDir, `.collectionlog.${COLLECTION_ID}.json`),
     JSON.stringify({
       generation: 'zFixtureLogGeneration',
-      version: 1,
+      ...FIXTURE_STAMP,
       body: `${JSON.stringify({
         state: { type: 'WasEpochConfiguration', scheme: 'edv' }
       })}\n`
@@ -142,7 +163,13 @@ function stageFixtureTree(dataDir: string): void {
   )
   fs.writeFileSync(
     path.join(collectionDir, `.meta.${RESOURCE_ID}.json`),
-    JSON.stringify({ custom: { title: 'A note' } })
+    JSON.stringify({
+      createdAt: '1970-01-01T00:00:00.000Z',
+      ...FIXTURE_STAMP,
+      generation: 'zFixtureNoteGeneration',
+      meta: { ...FIXTURE_STAMP, generation: 'zFixtureNoteMetaGeneration' },
+      custom: { title: 'A note' }
+    })
   )
   fs.writeFileSync(
     path.join(

@@ -29,11 +29,11 @@
  * shape as the Space Metadata cache), keyed by the log's location, and
  * invalidated by writes that could change a log at that location. Past the
  * cache's TTL, a cached entry is cheaply revalidated rather than
- * unconditionally re-verified: the log Resource's stored `version` is compared
- * against the version the entry was verified from, and the (expensive) log
- * read and verification are only repeated when that version has moved, the
- * Resource is gone, the entry predates version tracking, or the entry has
- * reached the hard re-verify age. See {@link resolveWebvhController}.
+ * unconditionally re-verified: the log Resource's content `ETag` is compared
+ * against the one the entry was verified from, and the (expensive) log read
+ * and verification are only repeated when that validator has moved, the
+ * Resource is gone or has no validator, or the entry has reached the hard
+ * re-verify age. See {@link resolveWebvhController}.
  *
  * The resolver also keeps, per DID, the head of the last log it verified (the
  * entry count and the head's `versionId`), and refuses a log that does not
@@ -69,6 +69,7 @@ import { ProblemError, StorageError } from '../errors.js'
 import { backendScoped, deleteByPrefix } from './backendCache.js'
 import { parseSelfHostedWebvh, WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
 import type { StorageBackend } from '../types.js'
+import { etagOf } from './etag.js'
 
 /**
  * What the resolver needs from the request layer: the storage backend the log
@@ -83,19 +84,18 @@ export interface WebvhResolverContext {
 
 /**
  * A cached, verified controller document plus the bookkeeping revalidation
- * needs: `version` is the log Resource's stored `version` as of the read that
- * produced `doc` (`undefined` for a legacy log with no version tracking, in
- * which case the entry is never cheaply revalidated -- see
- * {@link reviseEntry}); `verifiedAt` is the `performance.now()` at which the
+ * needs: `etag` is the log Resource's content `ETag` as of the read that
+ * produced `doc` (`undefined` for a log with no validator, in which case the
+ * entry is never cheaply revalidated -- see {@link reviseEntry}); `verifiedAt` is the `performance.now()` at which the
  * log was last fully verified. It is a monotonic-clock reading rather than a
  * wall-clock timestamp so a backward clock step cannot make a stale entry
  * read as fresh, and it is *not* refreshed by a cheap revalidation, which is
- * what lets {@link WEBVH_DOCUMENT_REVERIFY_AGE} bound how long a version
+ * what lets {@link WEBVH_DOCUMENT_REVERIFY_AGE} bound how long a validator
  * match alone can keep an entry alive.
  */
 interface WebvhCacheEntry {
   doc: DIDDoc
-  version: number | undefined
+  etag: string | undefined
   verifiedAt: number
 }
 
@@ -314,17 +314,16 @@ export function forgetDeletedWebvhLocation({
 
 /**
  * Reads a `<spaceId>/<collectionId>/did.jsonl` history log from storage, along
- * with the Resource's stored `version` as of that same read (absent for a
- * legacy Resource written before versioning). One read yields both, so the
- * version recorded on a cache entry is exactly the version of the log bytes
- * that were verified -- there is no second read for a concurrent rewrite to
+ * with the Resource's content `ETag` as of that same read (absent when it has
+ * no validator). One read yields both, so the validator recorded on a cache
+ * entry is exactly the validator of the log bytes that were verified -- there is no second read for a concurrent rewrite to
  * slip between.
  * @param options {object}
  * @param options.storage {StorageBackend}
  * @param options.spaceId {string}
  * @param options.collectionId {string}
- * @returns {Promise<{ text: string, version: number | undefined }>}   the
- *   raw JSON Lines log and its version
+ * @returns {Promise<{ text: string, etag: string | undefined }>}   the
+ *   raw JSON Lines log and its content `ETag`
  */
 async function readLog({
   storage,
@@ -334,13 +333,13 @@ async function readLog({
   storage: StorageBackend
   spaceId: string
   collectionId: string
-}): Promise<{ text: string; version: number | undefined }> {
-  const { resourceStream, version } = await storage.getResource({
+}): Promise<{ text: string; etag: string | undefined }> {
+  const result = await storage.getResource({
     spaceId,
     collectionId,
     resourceId: WEBVH_LOG_RESOURCE_ID
   })
-  return { text: await text(resourceStream), version }
+  return { text: await text(result.resourceStream), etag: etagOf(result) }
 }
 
 /**
@@ -355,18 +354,16 @@ async function readLog({
  * Caching has three tiers, all measured on the monotonic clock from the
  * entry's last full verification. Within {@link WEBVH_DOCUMENT_CACHE_TTL} a
  * cached entry is returned as-is -- nothing is read at all. Past it, the entry
- * is cheaply revalidated: the log Resource's stored `version` (a metadata read,
- * not a log read) is compared against the version the entry was verified from.
- * An unchanged version returns the same document without re-reading or
- * re-verifying the log; a changed version, an absent Resource, or an entry
- * that predates version tracking (`version` `undefined`) falls back to a full
- * re-verify. Past {@link WEBVH_DOCUMENT_REVERIFY_AGE} the log is fully
- * re-verified regardless of its version: `version` is a change token for this
- * process's own writes and for ordinary writes from a sibling process sharing
- * the backend, but an out-of-band rebuild of the Collection (delete and
- * recreate, or an import carrying its own sidecar) can land the same number on
- * different bytes, and the hard age is what bounds how long that can pass
- * unnoticed. Concurrent callers that observe the same stale entry dedup onto
+ * is cheaply revalidated: the log Resource's content `ETag` (a metadata read,
+ * not a log read) is compared against the one the entry was verified from.
+ * An unchanged validator returns the same document without re-reading or
+ * re-verifying the log; a changed one, an absent Resource, or an entry with
+ * no validator (`etag` `undefined`) falls back to a full re-verify. Past
+ * {@link WEBVH_DOCUMENT_REVERIFY_AGE} the log is fully re-verified regardless
+ * of its validator: the validator is a change token for this process's own
+ * writes and for writes from a sibling process sharing the backend, and the
+ * hard age bounds how long a change that bypasses it (bytes rewritten out of
+ * band) can pass unnoticed. Concurrent callers that observe the same stale entry dedup onto
  * one revalidation (or one full re-verify), the same way a concurrent cache
  * miss dedups onto one verification; the dedup, the stale-entry hand-off, and
  * the drop-on-rejection are `lru-cache`'s own `fetch()` behavior.
@@ -412,10 +409,10 @@ export async function resolveWebvhController({
 
 /**
  * Cheaply revalidates a stale cache entry, as the cache's `fetchMethod` for a
- * slot that already holds one. A legacy entry with no tracked `version`, or
- * one whose last full verification is {@link WEBVH_DOCUMENT_REVERIFY_AGE} or
- * older, is always fully re-verified. Otherwise the log Resource's current
- * `version` is read; a match returns the entry unchanged (same document, same
+ * slot that already holds one. An entry with no tracked `etag`, or one whose
+ * last full verification is {@link WEBVH_DOCUMENT_REVERIFY_AGE} or older, is
+ * always fully re-verified. Otherwise the log Resource's current content
+ * `ETag` is read; a match returns the entry unchanged (same document, same
  * `verifiedAt`, so the hard age keeps counting from the last real
  * verification), while a mismatch (or an absent Resource) falls back to a
  * full re-verify.
@@ -437,13 +434,13 @@ async function reviseEntry({
 }: WebvhFetchContext & { entry: WebvhCacheEntry }): Promise<WebvhCacheEntry> {
   const dueForReverify =
     performance.now() - entry.verifiedAt >= WEBVH_DOCUMENT_REVERIFY_AGE
-  if (entry.version !== undefined && !dueForReverify) {
+  if (entry.etag !== undefined && !dueForReverify) {
     const metadata = await storage.getResourceMetadata({
       spaceId,
       collectionId,
       resourceId: WEBVH_LOG_RESOURCE_ID
     })
-    if (metadata?.version === entry.version) {
+    if (metadata !== undefined && etagOf(metadata) === entry.etag) {
       return entry
     }
   }
@@ -457,7 +454,7 @@ async function reviseEntry({
 
 /**
  * Fully verifies a `did:webvh` controller and pairs the resolved document with
- * the log Resource's `version` as of the very read that was verified, for
+ * the log Resource's content `ETag` as of the very read that was verified, for
  * {@link reviseEntry} to compare against later.
  *
  * @param options {WebvhFetchContext}
@@ -469,41 +466,41 @@ async function resolveVerifiedEntry({
   spaceId,
   collectionId
 }: WebvhFetchContext): Promise<WebvhCacheEntry> {
-  const { doc, version } = await resolveVerifiedDocument({
+  const { doc, etag } = await resolveVerifiedDocument({
     storage,
     did,
     spaceId,
     collectionId
   })
-  return { doc, version, verifiedAt: performance.now() }
+  return { doc, etag, verifiedAt: performance.now() }
 }
 
 /**
  * The uncached half of {@link resolveWebvhController}: read the log, verify it,
  * and check the resolved document against what was asked for. Returns the
- * verified document together with the log Resource's `version` as of the read
- * that was verified.
+ * verified document together with the log Resource's content `ETag` as of the
+ * read that was verified.
  *
  * The verification itself is {@link verifyWebvhLog}; a deactivated DID is
  * refused here, since it can no longer authorize anything.
  *
  * @param options {WebvhFetchContext}
- * @returns {Promise<{ doc: DIDDoc, version: number | undefined }>}
+ * @returns {Promise<{ doc: DIDDoc, etag: string | undefined }>}
  */
 async function resolveVerifiedDocument({
   storage,
   did,
   spaceId,
   collectionId
-}: WebvhFetchContext): Promise<{ doc: DIDDoc; version: number | undefined }> {
+}: WebvhFetchContext): Promise<{ doc: DIDDoc; etag: string | undefined }> {
   const record = logHeads.for(storage)
   // Taken before the read, so a forget that lands while this resolve is
   // reading or verifying keeps it from recording a head below.
   const forgets = record.forgets
   let logText: string
-  let version: number | undefined
+  let etag: string | undefined
   try {
-    ;({ text: logText, version } = await readLog({
+    ;({ text: logText, etag } = await readLog({
       storage,
       spaceId,
       collectionId
@@ -554,7 +551,7 @@ async function resolveVerifiedDocument({
   ) {
     heads.set(key, { count: log.length, versionId: log.at(-1)!.versionId })
   }
-  return { doc, version }
+  return { doc, etag }
 }
 
 /**

@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 191
+nextAvailableId: 194
 
 <!-- roadmap-order:index:start -->
 
@@ -51,9 +51,13 @@ Ready:
 - WAS-144 [M] Ignore a non-`Signature` `Authorization` header on an anonymous
   read
 - WAS-145 [M] Media-type edge cases in `resolveResourceInput`
+- WAS-191 [M] The sidecar is the commit point of a filesystem Resource write
+- WAS-192 [M] The Resource `/meta` `ETag` does not move when a content write
+  changes the served object
 - WAS-181 [L] Import of a sidecar that parses but lacks timestamps differs by
   backend
 - WAS-83 [L] Anonymous Get Policy with a malformed id now returns 401
+- WAS-193 [L] `epoch` moves on a `/meta` write without a content stamp
 
 **Spec and protocol**
 
@@ -114,7 +118,8 @@ Chains:
   - WAS-182 [M] Changes feed carries every record kind in the Collection
   - WAS-183 [M] Stamped, tombstoned access-control policies
   - WAS-184 [L] Write-time creation and revision statements
-  - WAS-189 [M] Write responses carry the record's stamp and provenance
+  - WAS-189 [M] Write responses carry the record's stamp and provenance,
+    container writes included
   - WAS-190 [M] A `/meta`-only write leaves the content record's stamp unchanged
 - WAS-173 [M] `revisions` descriptor on the Collection Metadata object
   - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
@@ -254,8 +259,6 @@ field as `[H]`, `[M]` or `[L]`, and every marker is computed, so none is edited
 by hand. `blocked-by` is the source of truth for ordering (a `WASS-`, `WC-`,
 `FW-`, `DCW-` or `WBU-` id counts as an open external blocker), and `blocks:` is
 derived. `--check` reports without writing.
-
----
 
 ## Security
 
@@ -815,6 +818,10 @@ default. The comment at the re-check claims the opposite.
         `ENOENT` 500
   - [ ] The `writeCollectionLog` two-commit window (log then Metadata version)
         is closed or documented
+  - [ ] The same window on a backend registration or removal (the registration
+        file, then the Space Metadata object's local validator segment) is
+        closed or documented: a reader between the two is served the new
+        `backends` under the old `ETag`
 
 ### WAS-136: [M] Backend registry lifecycle: cache, immutability, in-use checks, data-plane delete
 
@@ -892,6 +899,69 @@ stranded on an external account with no server-side pointer to it.
         request envelope's
   - [ ] `test/` covers each case
 
+---
+
+### WAS-191: [M] The sidecar is the commit point of a filesystem Resource write
+
+- status: todo
+- priority: medium
+- labels: filesystem-backend, consistency, replication
+- discovered-from: WAS-172 (2026-10-03)
+- touches:
+  - `src/backends/filesystem.ts` (`#writeResourceLocked`, the chunk write, the
+    import and later apply paths, `#findFile`), `src/lib/metaSidecar.ts`
+- acceptance:
+  - [ ] A content write lands the representation first, under a name the sidecar
+        then points at (or the sidecar carries a digest a read checks), and the
+        sidecar write, which holds the stamp and the feed position, is the one
+        commit
+  - [ ] A crash between the two serves the prior revision's bytes under the
+        prior validator; the leftover representation is removed or reused by the
+        next write
+  - [ ] Chunk writes and import follow the same order
+  - [ ] A test tears a write between the representation and the sidecar and
+        reads back the prior bytes, `ETag`, and feed position
+
+Context (discovered-from: WAS-172; decision 0004 (stamps are minted only by this
+server), last bullet, and the WAS-96 design section 5.3). The representation
+lands before the sidecar today, so a crash between them serves the new bytes
+under the old stamp. Under the stamp validator a peer holding that validator
+does not pull the Resource again, so the two servers stay different. WAS-172
+shipped the stamp without this layout change. WAS-135 covers the neighbouring
+torn-run cases (delete ordering, a content-type change); this item is the write
+path's own ordering.
+
+---
+
+### WAS-192: [M] The Resource `/meta` `ETag` does not move when a content write changes the served object
+
+- status: todo
+- priority: medium
+- labels: etag, caching, resource-api, wire-contract
+- discovered-from: WAS-172 review (2026-10-03)
+- touches:
+  - wallet-attached-storage-spec: the Resource Metadata data model and the
+    Caching section (which members the `/meta` validator covers)
+  - was-teaching-server: `src/requests/ResourceRequest.ts` (`getMeta`), both
+    backends' `getResourceMetadata`, ARCHITECTURE.md
+  - conformance-suite: a conditional `GET .../meta` after a content write
+- acceptance:
+  - [ ] Decide which it is: the `/meta` `ETag` covers both records (the content
+        stamp and the `/meta` stamp), or the served `/meta` object stops
+        carrying content-record members
+  - [ ] A `GET .../meta` with `If-None-Match` after a content write that changed
+        `size`, `contentType`, or the content stamp is answered 200
+  - [ ] Tests in both backends
+
+Context (discovered-from: WAS-172 review). The served `/meta` object carries the
+content record's `size`, `contentType`, `writerId`, `epoch`, and stamp
+(`updatedAt`, `updatedAtCounter`, `originId`), while its `ETag` is built from
+the nested `meta` stamp alone. A client holding that `ETag` is answered 304
+after a content write and keeps the old members. The gap predates the stamp; the
+two new top-level stamp members widen it. The choice is a wire decision.
+
+---
+
 ### WAS-181: [L] Import of a sidecar that parses but lacks timestamps differs by backend
 
 - status: todo
@@ -936,6 +1006,29 @@ Context: moving the Get Policy auth check from the handler into a route-level
 `onRequest` hook runs `requireAuthHeaders` before `assertValidIds`, so the
 status changed from 400 to 401. Consistent with PUT and DELETE, which already
 behaved this way, but wire-observable and uncovered by any test.
+
+---
+
+### WAS-193: [L] `epoch` moves on a `/meta` write without a content stamp
+
+- status: todo
+- priority: low
+- labels: data-model, replication, encryption
+- discovered-from: WAS-172 review (2026-10-03)
+- touches:
+  - wallet-attached-storage-spec: Update Resource Metadata, the `epoch` member
+  - was-teaching-server: both backends' `/meta` write path, the WAS-96 design
+    doc section 5.3
+- acceptance:
+  - [ ] Decide which record `epoch` belongs to when a `/meta` write sets it: the
+        content record (so the write mints a content stamp or refuses the
+        member) or the `/meta` record (so the design sentence changes)
+  - [ ] Both backends and the design doc agree, with a test
+
+Context (discovered-from: WAS-172 review). The WAS-96 design assigns `epoch` and
+`writerId` to the content record. A `/meta` write no longer touches `writerId`,
+but it still stores `epoch`, and it mints only the `/meta` stamp. A peer that
+orders by content stamps would not see that change as a content revision.
 
 ## Spec and protocol
 
@@ -1359,15 +1452,23 @@ doc; the other items are its sub-items in dependency order.
     `metaVersion` from `ChangeDocument`)
   - was-teaching-server: `src/lib/etag.ts`, both backends' sidecar and row
     layouts and every write path that stamps them, `src/lib/preconditions.ts`,
-    the `/meta` and Metadata-object projections, `changesSince`
+    the `/meta` and Metadata-object projections, `changesSince` (shipped
+    2026-10-03, uncommitted: both backends, `src/lib/hlc.ts`, provenance claims,
+    import re-stamping, the boot refusal of a pre-stamp store)
   - was-client: types only (shipped 2026-10-03, unpublished: was-client 0.87.0
     drops `parseEtag`, `WriteAck.version` and `MasterState.version` /
     `metaVersion`, and carries the stamp on `WireDoc` and `MasterState`; it
     consumes storage-core through a `link:` until 0.28.0 is published)
   - was-sync: the apply comparison
   - conformance-suite: validator layout and stamp members on every record kind
+    (open: suite 0.27.0 fails 10 cases against this server, seven exact-shape
+    asserts on the Space and Collection Metadata objects and their create
+    echoes, which now carry the stamp members, and three asserting the withdrawn
+    `writerId` rule on Update Resource Metadata; one optional case still reads
+    `metaVersion` off a change document)
+  - space-archive: filed as SAR-6 (retire `_version`, regenerate the fixtures)
 - acceptance:
-  - [ ] Each backend holds one HLC per store: `l = max(l, now)`, counter
+  - [x] Each backend holds one HLC per store: `l = max(l, now)`, counter
         incremented when `l` stood still, reset when it advanced; minted inside
         the write's critical section; the HLC is advanced by received stamps
         (WAS-176) under the clock bound
@@ -1375,15 +1476,15 @@ doc; the other items are its sub-items in dependency order.
         Collection Metadata objects, Collection tombstone) stores `updatedAt`
         (ISO, the HLC physical part), `updatedAtCounter`, and `originId`
         verbatim, and serves the first two on its metadata
-  - [ ] `formatEtag` emits `"<generation>.<ms>.<counter>.<origin>"` with `ms`
+  - [x] `formatEtag` emits `"<generation>.<ms>.<counter>.<origin>"` with `ms`
         the epoch integer; `If-Match` / `If-None-Match` compare the whole
         string; the `version` and `metaVersion` counters are removed from the
         sidecars, rows, and wire objects
-  - [ ] Each change document carries `updatedAtCounter` and `originId` beside
+  - [x] Each change document carries `updatedAtCounter` and `originId` beside
         `updatedAt`
-  - [ ] The ARCHITECTURE note that a client "may read the trailing integer as
+  - [x] The ARCHITECTURE note that a client "may read the trailing integer as
         the revision number" is removed
-  - [ ] Tests freeze the clock and assert two same-ms writes get counters 0 and
+  - [x] Tests freeze the clock and assert two same-ms writes get counters 0 and
         1, that a clock step backwards does not lower `updatedAt`, and the
         validator layout on every record kind
 
@@ -1397,6 +1498,17 @@ origin is part of the order key and of the validator (two origins can mint the
 same `(ms, counter)` for one Resource). The encoding is two members rather than
 the paper's packed 64-bit integer, which exceeds JavaScript's safe range.
 
+Server part landed 2026-10-03. The second acceptance box stays open for the
+Collection tombstone alone, which does not exist until WAS-174. The receive rule
+(`observe`) is built and tested, and gets its caller with WAS-176. The `/meta`
+write already mints only the `/meta` stamp, which is WAS-190's server behavior;
+that item keeps its spec text and conformance case. Follow-ups filed from this
+work: WAS-191 (the sidecar as commit point), WAS-192 (the `/meta` `ETag` and
+content-record members), WAS-193 (`epoch` on a `/meta` write). Settled with the
+maintainer on 2026-10-03: the Postgres governed-log stamp columns are `log_updated_at`,
+`log_updated_at_counter`, and `log_origin_id`; and an archive exported by a
+pre-stamp release is not a supported import input (greenfield only), so import
+does nothing about the retired members such an archive carries.
 ---
 
 ### WAS-173: [M] [blocks 2] `revisions` descriptor on the Collection Metadata object
@@ -1883,7 +1995,7 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
 
 ---
 
-### WAS-189: [M] [after WAS-172] Write responses carry the record's stamp and provenance
+### WAS-189: [M] [after WAS-172] Write responses carry the record's stamp and provenance, container writes included
 
 - status: todo
 - priority: medium
@@ -1903,9 +2015,11 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
   - wallet-core: the engine may adopt the new ack members
   - conformance-suite: six strict-`204` sites accept `201` / `200` / `204` and
     check the body shape; ships before the server
-  - was-teaching-server: `src/requests/ResourceRequest.ts`, both backends' write
-    return types (breaking for custom backends), ARCHITECTURE.md, the WAS-96
-    design doc's wire inventory
+  - was-teaching-server: `src/requests/ResourceRequest.ts`,
+    `src/requests/CollectionRequest.ts`, `src/requests/SpaceRequest.ts`,
+    `src/requests/SpacesRepositoryRequest.ts`, both backends' write return
+    types, `writeSpace` and `writeCollection` included (breaking for custom
+    backends), ARCHITECTURE.md, the WAS-96 design doc's wire inventory
 - acceptance:
   - [ ] `PUT /:id` answers `201 Created` when it created the Resource (a
         re-creation over a tombstone included) and `200 OK` when it updated a
@@ -1925,6 +2039,14 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
   - [ ] Tests cover `201` / `200` on content writes, `200` on `/meta`, `404` on
         a `/meta` write to an absent Resource, the body members, and the stamp
         in the body equal to the stamp the feed then carries
+  - [ ] Container writes follow the same rule: `writeSpace` and
+        `writeCollection` return the stored Metadata object and whether the
+        write created it, and Create Space, Create Collection, and the
+        create-by-`PUT` of a container's `meta` send that object and choose
+        `201` or `204` from it, in place of an echo rebuilt from the request
+  - [ ] A test in both backends races two unconditional `PUT`s of one new
+        Collection's `meta` and asserts the second response does not claim the
+        create: its status, `createdAt`, and `createdBy` match a read
 
 Context (discovered-from: WAS-96, via was-sync WS-17 and WS-23). A replication
 client that pushes a write learns only an `ETag` from today's `204`, so the
@@ -1941,6 +2063,16 @@ inventory has no entry for a write response body; this item adds it. The
 statuses and the fresh-provenance rule are as signed off in was-sync's
 `designs/WS-17-ack-carries-server-state.md`; the stamp members are WAS-172's.
 
+Widened 2026-10-03 to container writes (discovered-from: WAS-172). The create
+echo of a container is rebuilt in the handler from the request body, over no
+prior object, with the invoker as `createdBy`. The handler decides create or
+update from a read made before the backend's lock. Two unconditional `PUT`s of
+one new Collection's `meta` can both read it as absent; the second write is then
+an update in the backend, which keeps the first writer's `createdAt` and `createdBy`,
+while its response is a `201` naming the second writer. The `ETag` and the stamp
+members are right, since they come from the write. A guarded create (`If-None-Match: *`)
+is unaffected. The Space create paths were not traced; Update Space pins its
+write to its earlier read and may already be covered.
 ---
 
 ### WAS-190: [M] [after WAS-172] A `/meta`-only write leaves the content record's stamp unchanged
@@ -2037,8 +2169,6 @@ own statement has the same problem. Split in two, the creation statement travels
 with the record and `createdBy` stays verifiable by whoever actually verified
 the creating invocation. Signing costs one Ed25519 operation per write; the cost
 is in the storage, archive and import shapes.
-
----
 
 ## Performance
 
@@ -2743,8 +2873,6 @@ Context (discovered-from: WAS-96, decision 6). A backup-only replica is still
 writable by any grant the controller delegates on it, and such a write never
 reaches the source. For v1 the controller manages this by not delegating write
 grants on the replica; this item enforces it.
-
----
 
 ## Parking
 

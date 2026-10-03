@@ -9,7 +9,10 @@
  */
 import type { FastifyRequest } from 'fastify'
 import { resolveBackend } from '../lib/backendRegistry.js'
+import { DEFAULT_BACKEND_ID } from '../lib/backends.js'
+import { stripMetadataValidator } from '../lib/etag.js'
 import { getCachedGovernedEncryption } from '../lib/governedEncryptionCache.js'
+import { collectionPath, linksetPath } from '../lib/paths.js'
 import {
   CollectionNotFoundError,
   ResourceNotFoundError,
@@ -20,14 +23,49 @@ import type {
   CollectionMetadata,
   ResourceMetadata,
   StorageBackend,
-  StoredCollectionMetadata,
-  VersionedMetadata
+  StoredCollectionMetadata
 } from '../types.js'
+
+/**
+ * Projects a stored Collection Metadata object into the one served: the
+ * stored body without its out-of-band `ETag` validator, `type` sorted
+ * lexically (spec SHOULD), the selected backend default-filled for a
+ * Collection stored without one (spec: an unset backend is `default`), and
+ * the Collection's self `url` (the canonical trailing-slash container form)
+ * and `linkset` (policy discovery), both relative. Read Collection Metadata
+ * and the create echoes (Create Collection, and the create-by-`PUT` of the
+ * Metadata object) all go through it, so a create response and a Read right
+ * after it agree.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.collectionMetadata {CollectionMetadata}   the stored object
+ *   (a validator-bearing read result is accepted; the validator is stripped)
+ * @returns {CollectionMetadata}
+ */
+export function projectCollectionMetadata({
+  spaceId,
+  collectionId,
+  collectionMetadata
+}: {
+  spaceId: string
+  collectionId: string
+  collectionMetadata: CollectionMetadata
+}): CollectionMetadata {
+  const body = stripMetadataValidator(collectionMetadata)
+  return {
+    ...body,
+    type: [...body.type].sort(),
+    backend: body.backend ?? { id: DEFAULT_BACKEND_ID },
+    url: collectionPath({ spaceId, collectionId, trailingSlash: true }),
+    linkset: linksetPath({ spaceId, collectionId })
+  }
+}
 
 /**
  * Fetches a Collection Metadata object as served, or throws
  * CollectionNotFoundError (404) when absent. The out-of-band validator parts
- * (`metaGeneration` / `metaVersion`) ride along. For a Collection governed by
+ * (`metaGeneration` / `metaLocal`) ride along. For a Collection governed by
  * a history log (the `governed-history-logs` feature) the `encryption` member
  * is derived here from the log head, so every handler that reads the object
  * through this prelude -- Read Collection Metadata, the envelope enforcement
@@ -168,7 +206,7 @@ export async function fetchCollectionAndBackend({
  * @param options.resourceId {string}
  * @param options.requestName {string}   human-readable request name, used in
  *   error titles
- * @returns {Promise<ResourceMetadata & VersionedMetadata>}
+ * @returns {Promise<ResourceMetadata & { generation?: string }>}
  */
 export async function getResourceMetadataOrThrow({
   dataBackend,
@@ -182,7 +220,7 @@ export async function getResourceMetadataOrThrow({
   collectionId: string
   resourceId: string
   requestName: string
-}): Promise<ResourceMetadata & VersionedMetadata> {
+}): Promise<ResourceMetadata & { generation?: string }> {
   let metadata
   try {
     metadata = await dataBackend.getResourceMetadata({
@@ -200,11 +238,11 @@ export async function getResourceMetadataOrThrow({
 }
 
 /**
- * Reads a chunk's stored metadata (content-type, size, version) through the
- * parent-Resource existence gate, or throws `ResourceNotFoundError` (404) when
- * the parent or the chunk is absent. Shared by Head Chunk (its payload
+ * Reads a chunk's stored metadata (content-type, size, validator parts)
+ * through the parent-Resource existence gate, or throws
+ * `ResourceNotFoundError` (404) when the parent or the chunk is absent. Shared by Head Chunk (its payload
  * headers) and by Get Chunk's conditional-read check, which needs the chunk's
- * version before deciding whether to open the byte stream.
+ * validator before deciding whether to open the byte stream.
  * @param options {object}
  * @param options.dataBackend {StorageBackend}   the Collection's data-plane
  *   backend

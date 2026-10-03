@@ -8,6 +8,7 @@ import { describeStorageBackendContract } from './storage-backend-contract.js'
 describeStorageBackendContract({
   name: 'FileSystemBackend',
   async makeBackend({
+    physicalClock,
     capacityBytes,
     maxUploadBytes,
     maxSpacesPerController,
@@ -16,6 +17,7 @@ describeStorageBackendContract({
   } = {}) {
     const backend = await openTempBackend({
       prefix: 'was-contract-fs-',
+      physicalClock,
       capacityBytes,
       maxUploadBytes,
       maxSpacesPerController,

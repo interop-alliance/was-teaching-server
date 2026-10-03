@@ -60,6 +60,10 @@ export type { RequestMatch, RequestRecord } from './lib/requestFaults.js'
  * `dataDir` must pin the replacement to the returned `port`, so that ids minted
  * by the first server (which embed `serverUrl`) still resolve.
  *
+ * The physical clock the server's write stamps read can be frozen or stepped:
+ * pass `physicalClock` here when the server opens its own default backend,
+ * or to `openTempBackend()` for an injected one.
+ *
  * @param [options] {object}   `createApp()` options, minus `serverUrl`
  * @param [options.port] {number}   pin the listening port; defaults to an
  *   OS-assigned ephemeral port
@@ -135,7 +139,8 @@ export type { TempFileSystemBackend }
  * its own dir and opens it with `FileSystemBackend.open({ dataDir })` instead.
  *
  * @param [options] {object}   `FileSystemBackend.open()` options, minus
- *   `dataDir`
+ *   `dataDir`; `physicalClock` freezes or steps the clock the backend's
+ *   write stamps read
  * @param [options.prefix] {string}   the temp dir's name prefix
  * @returns {Promise<TempFileSystemBackend>}
  */

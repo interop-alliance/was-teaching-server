@@ -73,9 +73,15 @@ describe('attestArchiveEntries', () => {
         files: [
           failing(collectionMetadataFileName(collectionId), 'ENOENT'),
           present(representation('kept'), 'hello'),
-          present(metaSidecarFileName('kept'), '{"version":3}'),
+          present(
+            metaSidecarFileName('kept'),
+            '{"updatedAt":"2026-01-01T00:00:00.000Z","updatedAtCounter":3,"originId":"o"}'
+          ),
           failing(representation('deleted'), 'ENOENT'),
-          present(metaSidecarFileName('deleted'), '{"version":2}'),
+          present(
+            metaSidecarFileName('deleted'),
+            '{"updatedAt":"2026-01-01T00:00:00.000Z","updatedAtCounter":2,"originId":"o"}'
+          ),
           present(representation('chunked'), ''),
           {
             name: chunkDirName('chunked'),
@@ -91,7 +97,7 @@ describe('attestArchiveEntries', () => {
     assert.deepEqual(statementIds(body), [
       `${serverUrl}/space/${spaceId}/${collectionId}/kept`
     ])
-    assert.equal(JSON.parse(body).version, 3)
+    assert.equal(JSON.parse(body).updatedAtCounter, 3)
   })
 
   it('attests a Resource whose sidecar is gone, without its members', async () => {
@@ -111,7 +117,7 @@ describe('attestArchiveEntries', () => {
       statement.id,
       `${serverUrl}/space/${spaceId}/${collectionId}/kept`
     )
-    assert.equal(statement.version, undefined)
+    assert.equal(statement.updatedAtCounter, undefined)
     assert.match(statement.digest, /^mh=/)
   })
 

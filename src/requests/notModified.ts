@@ -14,6 +14,7 @@ import {
   isNotModified,
   parseIfNoneMatch
 } from '../lib/etag.js'
+import type { RecordValidatorParts } from '../types.js'
 
 /**
  * Answers 304 when the request's `If-None-Match` covers `etag`, else
@@ -66,9 +67,9 @@ export function notModifiedReply({
  * @param options {object}
  * @param options.request {FastifyRequest}
  * @param options.reply {FastifyReply}
- * @param options.readMetadata {() => Promise<{ generation?: string, version?:
- *   number }>}   reads the stored metadata (404 when absent), run only when
- *   the request is conditional
+ * @param options.readMetadata {() => Promise<RecordValidatorParts>}   reads
+ *   the stored metadata (404 when absent), run only when the request is
+ *   conditional
  * @returns {Promise<FastifyReply | undefined>}
  */
 export async function notModifiedBeforeStream({
@@ -78,7 +79,7 @@ export async function notModifiedBeforeStream({
 }: {
   request: FastifyRequest
   reply: FastifyReply
-  readMetadata: () => Promise<{ generation?: string; version?: number }>
+  readMetadata: () => Promise<RecordValidatorParts>
 }): Promise<FastifyReply | undefined> {
   const held = parseIfNoneMatch(request.headers['if-none-match'])
   if (!held) {

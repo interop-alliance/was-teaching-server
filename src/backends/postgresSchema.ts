@@ -1,6 +1,7 @@
 /**
- * PostgreSQL schema for the `PostgresBackend`: an ordered list of migration
- * scripts plus the tiny hand-rolled runner that applies them idempotently
+ * PostgreSQL schema for the `PostgresBackend`: an ordered list of migrations
+ * (SQL scripts, and one step that checks the data before it reshapes the
+ * schema) plus the tiny hand-rolled runner that applies them idempotently
  * (inside an advisory-locked transaction) on backend `open()`. The whole
  * schema is readable in this one file; there is no external migration tool.
  *
@@ -12,7 +13,9 @@
  * supplementary-plane characters -- unreachable here because the request layer
  * validates ids as URL-safe ASCII.) Timestamps are stored as the fixed-width
  * ISO-8601 strings the wire model uses (`new Date().toISOString()`), not
- * `timestamptz`, so they round-trip byte-identically.
+ * `timestamptz`, so they round-trip byte-identically. A write stamp's
+ * `updatedAt` is the ISO string of its hybrid-logical-clock millisecond, so
+ * the text column holds that millisecond exactly.
  */
 import type { FastifyBaseLogger } from 'fastify'
 import type pg from 'pg'
@@ -23,10 +26,19 @@ import {
 } from '../lib/originId.js'
 
 /**
- * Ordered migration scripts. Version `n` is `MIGRATIONS[n - 1]`; append only,
- * never edit an applied entry.
+ * One schema migration: a SQL script, or a function run on the migrating
+ * transaction's client for a step that must decide something before it
+ * changes the schema (it refuses by throwing, which rolls the whole run
+ * back).
  */
-const MIGRATIONS: string[] = [
+export type Migration = string | ((client: pg.PoolClient) => Promise<void>)
+
+/**
+ * Ordered migrations. Version `n` is `MIGRATIONS[n - 1]`; append only, never
+ * edit an applied entry. Exported so a test can build a schema at an earlier
+ * version.
+ */
+export const MIGRATIONS: Migration[] = [
   // v1: the full WAS + WebKMS + chunked-storage surface. (The 'description'
   // columns its comments describe were renamed by v6.)
   `
@@ -348,8 +360,91 @@ const MIGRATIONS: string[] = [
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
     origin_id text NOT NULL
   );
-  `
+  `,
+  // v9: every versioned record carries a write stamp in place of a version
+  // counter. A schema holding any Space is refused, every boot, until it is
+  // wiped or each Space is restored from an export archive (whose records an
+  // import re-stamps): there is no stamping step. An empty schema is reshaped.
+  reshapeForWriteStamps
 ]
+
+/**
+ * The v9 step. Refuses a schema whose `spaces` table holds a row: every
+ * record under it was written before records carried write stamps. Every
+ * other table of the Spaces tree hangs off `spaces` by a cascading foreign
+ * key, so an empty `spaces` table means an empty tree, and the reshape below
+ * can add its columns `NOT NULL` with no default.
+ *
+ * The stamp is three columns per record: `updated_at` (the ISO string of the
+ * stamp's millisecond), `updated_at_counter` (its logical counter) and
+ * `origin_id` (the minting store's origin id). A Resource's `/meta` record
+ * has its own three, `meta_updated_at`, `meta_updated_at_counter` and
+ * `meta_origin_id`, beside the existing `meta_generation`; all four are NULL
+ * until the first metadata write, and a soft delete NULLs them together with
+ * `custom`. The Collection's governing history log has its own three under
+ * the table's `log_` prefix, NULL until the guarded create. A Space or
+ * Collection row keeps its stamp in these columns, out of the stored
+ * `metadata` jsonb, and adds `meta_local`, the local segment of its `ETag`:
+ * reset to 0 by every stamped write of the object and advanced by a change to
+ * a member derived per read (a backend registration on a Space, a
+ * governed-log write on a Collection). `store.clock_high_water` is the
+ * persisted high-water mark of the store's hybrid logical clock, in epoch
+ * milliseconds, NULL until the clock first mints.
+ * @param client {pg.PoolClient}   the migrating transaction's client
+ * @returns {Promise<void>}
+ */
+async function reshapeForWriteStamps(client: pg.PoolClient): Promise<void> {
+  const { rows } = await client.query<{ count: number }>(
+    'SELECT COUNT(*)::int AS count FROM spaces'
+  )
+  const count = rows[0]!.count
+  if (count > 0) {
+    throw new StoreVersionError({
+      detail:
+        `The Postgres schema holds ${count} Space(s) written before records ` +
+        'carried write stamps, and there is no stamping migration. Drop the ' +
+        'schema, or restore each Space from an export archive into an empty ' +
+        'store.'
+    })
+  }
+  await client.query(`
+    ALTER TABLE resources
+      DROP COLUMN version,
+      DROP COLUMN meta_version,
+      ADD COLUMN updated_at_counter      integer NOT NULL,
+      ADD COLUMN origin_id               text NOT NULL,
+      ADD COLUMN meta_updated_at         text COLLATE "C",
+      ADD COLUMN meta_updated_at_counter integer,
+      ADD COLUMN meta_origin_id          text;
+
+    ALTER TABLE chunks
+      DROP COLUMN version,
+      ADD COLUMN updated_at         text COLLATE "C" NOT NULL,
+      ADD COLUMN updated_at_counter integer NOT NULL,
+      ADD COLUMN origin_id          text NOT NULL;
+
+    ALTER TABLE spaces
+      DROP COLUMN meta_version,
+      ADD COLUMN updated_at         text COLLATE "C" NOT NULL,
+      ADD COLUMN updated_at_counter integer NOT NULL,
+      ADD COLUMN origin_id          text NOT NULL,
+      ADD COLUMN meta_local         integer NOT NULL DEFAULT 0;
+
+    ALTER TABLE collections
+      DROP COLUMN meta_version,
+      DROP COLUMN log_version,
+      ADD COLUMN updated_at             text COLLATE "C" NOT NULL,
+      ADD COLUMN updated_at_counter     integer NOT NULL,
+      ADD COLUMN origin_id              text NOT NULL,
+      ADD COLUMN meta_local             integer NOT NULL DEFAULT 0,
+      ADD COLUMN log_updated_at         text COLLATE "C",
+      ADD COLUMN log_updated_at_counter integer,
+      ADD COLUMN log_origin_id          text;
+
+    ALTER TABLE store
+      ADD COLUMN clock_high_water bigint;
+  `)
+}
 
 /**
  * Applies any not-yet-applied migrations, inside a transaction holding a
@@ -365,16 +460,19 @@ const MIGRATIONS: string[] = [
  * is refused, as is a malformed stored id (`StoreOriginIdError`). With no
  * row yet, the configured id is inserted, else a minted one. This runs on
  * every boot rather than as a migration step, so a store whose table the
- * migrations created on this boot gets its row in the same transaction.
+ * migrations created on this boot gets its row in the same transaction. The
+ * store row's persisted high-water mark of the hybrid logical clock is read
+ * back with the id.
  * @param options {object}
  * @param options.client {pg.PoolClient}   a dedicated client (not the pool);
  *   the caller is responsible for releasing it
  * @param options.logger {FastifyBaseLogger}
- * @param [options.migrations] {string[]}   defaults to MIGRATIONS
+ * @param [options.migrations] {Migration[]}   defaults to MIGRATIONS
  * @param [options.originId] {string}   the configured origin id
  *   (`WAS_ORIGIN_ID`); unset mints one on a store that carries none
- * @returns {Promise<{ version: number, originId: string }>}   the version the
- *   schema is at afterwards, and the store's origin id
+ * @returns {Promise<{ version: number, originId: string, clockHighWater?: number }>}
+ *   the version the schema is at afterwards, the store's origin id, and the
+ *   clock's high-water mark when the store has one
  */
 export async function applyMigrations({
   client,
@@ -384,9 +482,9 @@ export async function applyMigrations({
 }: {
   client: pg.PoolClient
   logger: FastifyBaseLogger
-  migrations?: string[]
+  migrations?: Migration[]
   originId?: string
-}): Promise<{ version: number; originId: string }> {
+}): Promise<{ version: number; originId: string; clockHighWater?: number }> {
   await client.query('BEGIN')
   try {
     // Scope the advisory lock to the active schema so parallel test schemas
@@ -419,19 +517,31 @@ export async function applyMigrations({
         continue
       }
       logger.info({ version }, 'Applying Postgres schema migration')
-      await client.query(migrations[index]!)
+      const migration = migrations[index]!
+      if (typeof migration === 'string') {
+        await client.query(migration)
+      } else {
+        await migration(client)
+      }
       await client.query(
         'INSERT INTO schema_migrations (version) VALUES ($1)',
         [version]
       )
     }
-    const settledOriginId = await settleOriginId({ client, originId })
+    const { originId: settledOriginId, clockHighWater } = await settleOriginId({
+      client,
+      originId
+    })
     await client.query('COMMIT')
     logger.info(
       { version: currentVersion, originId: settledOriginId },
       'Postgres store ready'
     )
-    return { version: currentVersion, originId: settledOriginId }
+    return {
+      version: currentVersion,
+      originId: settledOriginId,
+      ...(clockHighWater !== undefined && { clockHighWater })
+    }
   } catch (err) {
     await client.query('ROLLBACK')
     throw err
@@ -441,11 +551,13 @@ export async function applyMigrations({
 /**
  * Reads the store row's origin id, or inserts one when the row is absent.
  * Runs inside `applyMigrations`'s transaction, under its advisory lock, so no
- * other instance can insert between the read and the write.
+ * other instance can insert between the read and the write. Also reads the
+ * row's clock high-water mark, which a freshly inserted row lacks.
  * @param options {object}
  * @param options.client {pg.PoolClient}
  * @param [options.originId] {string}   the configured origin id
- * @returns {Promise<string>}   the store's origin id
+ * @returns {Promise<{ originId: string, clockHighWater?: number }>}   the
+ *   store's origin id, and the clock's high-water mark when it has one
  */
 async function settleOriginId({
   client,
@@ -453,11 +565,14 @@ async function settleOriginId({
 }: {
   client: pg.PoolClient
   originId?: string
-}): Promise<string> {
-  const { rows } = await client.query<{ origin_id: string }>(
-    'SELECT origin_id FROM store'
-  )
+}): Promise<{ originId: string; clockHighWater?: number }> {
+  const { rows } = await client.query<{
+    origin_id: string
+    clock_high_water: string | null
+  }>('SELECT origin_id, clock_high_water FROM store')
   const stored = rows[0]?.origin_id
+  // A `bigint` arrives as a string.
+  const highWater = rows[0]?.clock_high_water ?? null
   if (stored !== undefined && !isValidOriginId(stored)) {
     throw StoreOriginIdError.malformed({
       id: stored,
@@ -470,5 +585,32 @@ async function settleOriginId({
   if (stored === undefined) {
     await client.query('INSERT INTO store (origin_id) VALUES ($1)', [settled])
   }
-  return settled
+  return {
+    originId: settled,
+    ...(highWater !== null && { clockHighWater: Number(highWater) })
+  }
+}
+
+/**
+ * Persists a new high-water mark of the store's hybrid logical clock in the
+ * store row's `clock_high_water` column. A mark is only ever raised: one at
+ * or below the stored mark leaves the row as it is. Run by the backend's
+ * clock on a cadence (see `lib/hlc.ts`), as its own autocommit statement.
+ * @param options {object}
+ * @param options.queryable {pg.Pool | pg.PoolClient}
+ * @param options.clockHighWater {number}   epoch milliseconds
+ * @returns {Promise<void>}
+ */
+export async function writeClockHighWater({
+  queryable,
+  clockHighWater
+}: {
+  queryable: pg.Pool | pg.PoolClient
+  clockHighWater: number
+}): Promise<void> {
+  await queryable.query(
+    `UPDATE store SET clock_high_water = $1
+      WHERE clock_high_water IS NULL OR clock_high_water < $1`,
+    [clockHighWater]
+  )
 }

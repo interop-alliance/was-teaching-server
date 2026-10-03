@@ -2,9 +2,11 @@
  * Storage layout versioning for the `FileSystemBackend`: an ordered list of
  * migration functions plus the runner that applies them on backend `open()`,
  * mirroring `MIGRATIONS` in `postgresSchema.ts`. The data root's `store.json`
- * records the layout version the directory is at, and the store's origin id
- * (see `lib/originId.ts`). It sits beside `spaces/`, `keystores/` and
- * `space-revocations/`, so no Space or Collection id can collide with it.
+ * records the layout version the directory is at, the store's origin id (see
+ * `lib/originId.ts`), and the high-water mark of the store's hybrid logical
+ * clock (`clockHighWater`, epoch milliseconds; see `lib/hlc.ts`). It sits
+ * beside `spaces/`, `keystores/` and `space-revocations/`, so no Space or
+ * Collection id can collide with it.
  *
  * The runner runs inside the server process at startup. It must not run from a
  * Fly `release_command`, since Fly runs that command in a temporary machine
@@ -53,7 +55,13 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
   // v1: the baseline layout, the one every data dir written before `store.json`
   // existed is already in. An unstamped dir that holds data starts at version
   // 0, so this step is what stamps it; it has nothing to convert.
-  async () => {}
+  async () => {},
+  // v2: every versioned record carries a write stamp in place of a version
+  // counter. A record written at an earlier layout carries none, and there is
+  // no stamping step: a store holding any Space is refused, every boot, until
+  // it is wiped or restored from an archive (whose records an import
+  // re-stamps). An empty store passes and is stamped at this version.
+  refuseUnstampedSpaces
 ]
 
 /**
@@ -63,13 +71,50 @@ export const STORE_FILE_NAME = 'store.json'
 
 /**
  * The parsed contents of `store.json`. `originId` is absent from a file
- * written before the store carried one. Members this code does not know are
+ * written before the store carried one, and `clockHighWater` from a store
+ * whose clock has minted nothing yet. Members this code does not know are
  * kept on every rewrite.
  */
 type StoreRecord = {
   version: number
   originId?: string
+  clockHighWater?: number
   [member: string]: unknown
+}
+
+/**
+ * The layout step that refuses a store written before records carried write
+ * stamps: any entry under `spaces/` is a Space whose records carry none.
+ * Staging temp files left there by a killed process are not Spaces.
+ * @param options {object}
+ * @param options.dataDir {string}
+ * @returns {Promise<void>}
+ */
+async function refuseUnstampedSpaces({
+  dataDir
+}: {
+  dataDir: string
+}): Promise<void> {
+  const spacesDir = path.join(dataDir, 'spaces')
+  let entries: string[]
+  try {
+    entries = await readdir(spacesDir)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return
+    }
+    throw err
+  }
+  const spaces = entries.filter(name => !name.startsWith(TEMP_FILE_PREFIX))
+  if (spaces.length > 0) {
+    throw new StoreVersionError({
+      detail:
+        `${spacesDir} holds ${spaces.length} Space(s) written before records ` +
+        'carried write stamps, and there is no stamping migration. Wipe the ' +
+        'data directory, or restore each Space from an export archive into ' +
+        'an empty store.'
+    })
+  }
 }
 
 /**
@@ -135,8 +180,9 @@ const runnerMutex = new KeyedMutex()
  *   (`WAS_ORIGIN_ID`)
  * @param [options.migrations] {StoreMigration[]}   defaults to STORE_MIGRATIONS
  * @param [options.lockTimeoutMs] {number}   how long to wait on a held lock
- * @returns {Promise<{ version: number, originId: string }>}   the version the
- *   data dir is at afterwards, and its origin id
+ * @returns {Promise<{ version: number, originId: string, clockHighWater?: number }>}
+ *   the version the data dir is at afterwards, its origin id, and the clock's
+ *   persisted high-water mark, when the store has one
  */
 export async function applyStoreMigrations({
   dataDir,
@@ -150,7 +196,7 @@ export async function applyStoreMigrations({
   originId?: string
   migrations?: StoreMigration[]
   lockTimeoutMs?: number
-}): Promise<{ version: number; originId: string }> {
+}): Promise<{ version: number; originId: string; clockHighWater?: number }> {
   await mkdir(dataDir, { recursive: true })
   return runnerMutex.run(await realpath(dataDir), () =>
     migrateUnderLock({
@@ -171,7 +217,7 @@ export async function applyStoreMigrations({
  * @param [options.configuredOriginId] {string}
  * @param options.migrations {StoreMigration[]}
  * @param options.lockTimeoutMs {number}
- * @returns {Promise<{ version: number, originId: string }>}
+ * @returns {Promise<{ version: number, originId: string, clockHighWater?: number }>}
  */
 async function migrateUnderLock({
   dataDir,
@@ -185,7 +231,7 @@ async function migrateUnderLock({
   configuredOriginId?: string
   migrations: StoreMigration[]
   lockTimeoutMs: number
-}): Promise<{ version: number; originId: string }> {
+}): Promise<{ version: number; originId: string; clockHighWater?: number }> {
   const currentVersion = migrations.length
   const lock = await acquireLock({ dataDir, lockTimeoutMs, logger })
   try {
@@ -233,7 +279,12 @@ async function migrateUnderLock({
       record = { ...record, version }
       await writeStoreRecord({ dataDir, record })
     }
-    return { version: currentVersion, originId }
+    const { clockHighWater } = record
+    return {
+      version: currentVersion,
+      originId,
+      ...(clockHighWater !== undefined && { clockHighWater })
+    }
   } finally {
     await lock.release()
   }
@@ -243,7 +294,8 @@ async function migrateUnderLock({
  * Reads `store.json` as a whole record, or `undefined` when there is none. A
  * `store.json` that is not a JSON object with a non-negative integer
  * `version` is refused rather than treated as absent, and so is one whose
- * `originId` is present but not a well-formed origin id.
+ * `originId` is present but not a well-formed origin id, or whose
+ * `clockHighWater` is present but not a non-negative integer.
  * @param options {object}
  * @param options.dataDir {string}
  * @returns {Promise<StoreRecord | undefined>}
@@ -273,10 +325,18 @@ async function readStoreRecord({
     parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : {}
-  const { version, originId } = record
+  const { version, originId, clockHighWater } = record
   if (!Number.isInteger(version) || (version as number) < 0) {
     throw new StoreVersionError({
       detail: `${storePath} does not name an integer version.`
+    })
+  }
+  if (
+    clockHighWater !== undefined &&
+    (!Number.isSafeInteger(clockHighWater) || (clockHighWater as number) < 0)
+  ) {
+    throw new StoreVersionError({
+      detail: `${storePath} names a clockHighWater that is not a non-negative integer.`
     })
   }
   if (originId !== undefined && !isValidOriginId(originId)) {
@@ -289,9 +349,43 @@ async function readStoreRecord({
 }
 
 /**
+ * Persists a new high-water mark of the store's hybrid logical clock as
+ * `store.json`'s `clockHighWater` member, keeping every other member. Run by
+ * the backend's clock at runtime, on a cadence (see `lib/hlc.ts`), so it is
+ * serialized with the boot runner and with itself through the in-process
+ * runner mutex. A mark is only ever raised: a lower `clockHighWater` than the
+ * stored one leaves the file as it is.
+ * @param options {object}
+ * @param options.dataDir {string}
+ * @param options.clockHighWater {number}   epoch milliseconds
+ * @returns {Promise<void>}
+ */
+export async function writeClockHighWater({
+  dataDir,
+  clockHighWater
+}: {
+  dataDir: string
+  clockHighWater: number
+}): Promise<void> {
+  await runnerMutex.run(await realpath(dataDir), async () => {
+    const record = await readStoreRecord({ dataDir })
+    if (record === undefined) {
+      throw new StoreVersionError({
+        detail: `${path.join(dataDir, STORE_FILE_NAME)} is missing.`
+      })
+    }
+    if ((record.clockHighWater ?? -1) >= clockHighWater) {
+      return
+    }
+    await writeStoreRecord({ dataDir, record: { ...record, clockHighWater } })
+  })
+}
+
+/**
  * Rewrites `store.json` with the whole `record` (temp file plus rename). The
  * caller passes the record it read with its own members changed, so the
- * members it does not own, the origin id among them, are kept.
+ * members it does not own, the origin id and the clock's high-water mark
+ * among them, are kept.
  * @param options {object}
  * @param options.dataDir {string}
  * @param options.record {StoreRecord}

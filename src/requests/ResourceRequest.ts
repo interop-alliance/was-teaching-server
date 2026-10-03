@@ -25,10 +25,7 @@ import {
   parseWritePreconditions
 } from '../lib/etag.js'
 import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
-import {
-  parseWriterIdHeader,
-  parseMetaWriterId
-} from '../lib/writerAttribution.js'
+import { parseWriterIdHeader } from '../lib/writerAttribution.js'
 import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
 import { guardWebvhLogWrite } from '../lib/webvhLogWrite.js'
 import { WEBVH_LOG_RESOURCE_ID } from '../lib/validateDid.js'
@@ -405,24 +402,15 @@ export class ResourceRequest {
       requestName
     })
 
-    // `generation` with `version` (content) and `metaGeneration` with
-    // `metaVersion` (metadata) are out-of-band ETag validators, not part of
-    // the Resource Metadata wire body, so strip all four before serializing.
-    // The `/meta` sub-resource carries its OWN ETag (V2) so a metadata-only
-    // edit does not disturb the content ETag, and its own generation so the
-    // validator dies with the metadata object on a soft delete; it is present
-    // only once metadata has been written.
-    const {
-      generation: _generation,
-      version: _version,
-      metaGeneration,
-      metaVersion,
-      ...metadataBody
-    } = metadata
-    const metaEtag = etagOf({
-      generation: metaGeneration,
-      version: metaVersion
-    })
+    // The content `generation` is an out-of-band ETag part, not part of the
+    // Resource Metadata wire body, so it is stripped before serializing; the
+    // content record's stamp stays as the top-level members. The `/meta`
+    // sub-resource carries its OWN ETag, from its own stamp and generation
+    // (the nested `meta` member), so a metadata-only edit does not disturb
+    // the content ETag, and the validator dies with the metadata object on a
+    // soft delete; it is present only once metadata has been written.
+    const { generation: _generation, ...metadataBody } = metadata
+    const metaEtag = etagOf(metadata.meta ?? {})
 
     // A conditional read (spec "Caching") against the `/meta` ETag.
     const notModified = notModifiedReply({ request, reply, etag: metaEtag })
@@ -442,12 +430,11 @@ export class ResourceRequest {
    * Request handler for "Update Resource Metadata" request. A full replacement
    * of the Metadata object's user-writable `custom` object (any property omitted
    * is cleared; a body with no `custom` clears them all). The body may also
-   * carry `epoch` (omitted preserves the stored stamp) and `writerId` (omitted
-   * clears the stored label). Server-managed properties are untouched, and any
-   * other top-level property in the body is ignored, so a client may
-   * GET-modify-PUT the whole object. Such a client should replace the
-   * `writerId` it read with its own label, or drop it, rather than echo the
-   * previous writer's label back. Does NOT create: a `PUT` to the `/meta` of a
+   * carry `epoch` (omitted preserves the stored stamp). Server-managed
+   * properties are untouched, and any other top-level property in the body
+   * is ignored, `writerId` included: the label belongs to the content record
+   * and a metadata write leaves it as it is. So a client may GET-modify-PUT
+   * the whole object. Does NOT create: a `PUT` to the `/meta` of a
    * nonexistent Resource is a 404.
    * Authorization is capability-only (the `PUT` action), the same as Put
    * Resource. Returns 204.
@@ -520,17 +507,10 @@ export class ResourceRequest {
     // be a non-empty string (400).
     const { epoch } = parseMetaEpoch({ body, requestName })
 
-    // The writer-attribution label (spec "Writer attribution") MAY also be
-    // declared here as a top-level `writerId` member (a sibling of `custom`
-    // and `epoch`). Unlike `epoch`, an omitted `writerId` CLEARS the stored
-    // label rather than preserving it -- this write is itself a revision. A
-    // present value must be a non-empty string (400).
-    const { writerId } = parseMetaWriterId({ body, requestName })
-
     // Write Metadata to the Collection's selected (data-plane) backend. An
     // `If-Match` / `If-None-Match` precondition (the `conditional-writes`
-    // feature) is evaluated on the `/meta` `metaVersion` atomically with the
-    // write; a mismatch surfaces as 412 `precondition-failed` (rethrown unchanged).
+    // feature) is evaluated on the `/meta` record's own `ETag` atomically
+    // with the write; a mismatch surfaces as 412 `precondition-failed` (rethrown unchanged).
     const dataBackend = await resolveBackend({
       request,
       spaceId,
@@ -551,7 +531,6 @@ export class ResourceRequest {
         resourceId,
         custom,
         epoch,
-        writerId,
         ...(uniqueIndexes.length > 0 && { uniqueIndexes }),
         ...parseWritePreconditions(request.headers)
       })

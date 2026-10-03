@@ -2,20 +2,16 @@
  * Helpers for the client-declared writer-attribution label on a Resource (the
  * spec's "Writer attribution" section: `writerId`). An opaque string the
  * writing agent volunteers about itself, naming which writing agent produced
- * the current revision; the server stores and serves it verbatim and never
- * verifies it, computes it, or uses it as an authorization input.
+ * the current content revision; the server stores and serves it verbatim and
+ * never verifies it, computes it, or uses it as an authorization input.
  *
- * On a **content** write (`POST` / `PUT` that writes a Resource's content)
- * and on `DELETE`, the label is declared via the `Writer-Id` request header --
- * the same mechanism `Key-Epoch` uses. A `PUT .../meta` may also declare
- * `writerId` as a top-level member of the body (a sibling of `custom` and
- * `epoch`).
- *
- * Unlike `epoch`, `writerId` is declare-or-clear at EVERY level, metadata
- * writes included: a write that declares no `writerId` clears any stored
- * value, since attribution to a bygone writer is worse than none. A metadata
- * write does not preserve it on omission the way it preserves `epoch` (see
- * {@link parseMetaWriterId}).
+ * The label belongs to the content record. It is declared via the
+ * `Writer-Id` request header on a **content** write (`POST` / `PUT` that
+ * writes a Resource's content) and on `DELETE` -- the same mechanism
+ * `Key-Epoch` uses -- and is declare-or-clear there: a write that declares no
+ * `writerId` clears any stored value, since attribution to a bygone writer is
+ * worse than none. A metadata write (`PUT .../meta`) leaves it untouched; a
+ * `writerId` member in its body is not read.
  *
  * The only validation is that a present value is a non-empty string (400
  * otherwise); the server never verifies it against anything.
@@ -56,42 +52,6 @@ export function parseWriterIdHeader({
     throw new InvalidRequestBodyError({
       requestName,
       detail: 'The "Writer-Id" header must be a non-empty string.'
-    })
-  }
-  return { writerId: value }
-}
-
-/**
- * Validates and extracts the OPTIONAL top-level `writerId` member of an
- * Update Resource Metadata (`PUT .../meta`) body. A present value must be a
- * non-empty string (400 otherwise); returns `{ writerId: string }` when
- * supplied, or `{}` when the member is absent. Unlike the `epoch` stamp's
- * `parseMetaEpoch`, an absent `writerId` is not a "leave it alone" signal:
- * the caller passes this result's `writerId` straight through to
- * `writeResourceMetadata`, whose backend implementation always sets the
- * stored label from it (clearing when `undefined`) rather than preserving a
- * prior value.
- * @param options {object}
- * @param options.body {object}   the parsed request body (already known to be an object)
- * @param [options.requestName] {string}   request name for the 400 error title
- * @returns {{ writerId?: string }}
- */
-export function parseMetaWriterId({
-  body,
-  requestName
-}: {
-  body: Record<string, unknown>
-  requestName?: string
-}): { writerId?: string } {
-  if (!Object.hasOwn(body, 'writerId')) {
-    return {}
-  }
-  const value = body.writerId
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new InvalidRequestBodyError({
-      requestName,
-      detail: 'The "writerId" property must be a non-empty string.',
-      pointer: '/writerId'
     })
   }
   return { writerId: value }

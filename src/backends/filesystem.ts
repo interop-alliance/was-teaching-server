@@ -38,10 +38,11 @@ import {
 import {
   assertImportBodiesFit,
   metaSidecarFileId,
+  restampImportedLog,
   restoredSpaceMetadata
 } from '../lib/importTar.js'
 import type { ImportPlan } from '../lib/importTar.js'
-import { isJsonContentType } from '@interop/storage-core'
+import { isJsonContentType, isWriteStamp } from '@interop/storage-core'
 import { collectionPath, spacePath } from '../lib/paths.js'
 import {
   encodeFilenameSegment,
@@ -61,7 +62,11 @@ import {
   packSpaceArchive
 } from '@interop/space-archive'
 import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
-import { parseSidecarBytes, withoutSidecarMember } from '../lib/metaSidecar.js'
+import {
+  parseSidecarBytes,
+  restampImportedSidecar,
+  withoutSidecarMember
+} from '../lib/metaSidecar.js'
 import type { MetaSidecar } from '../lib/metaSidecar.js'
 import {
   sanitizeBackendRecord,
@@ -77,15 +82,17 @@ import {
   suppressesItemNames
 } from '../lib/collectionListing.js'
 import { revocationFileName } from '../lib/revocations.js'
-import { applyStoreMigrations } from './filesystemStore.js'
+import { applyStoreMigrations, writeClockHighWater } from './filesystemStore.js'
+import { HybridLogicalClock } from '../lib/hlc.js'
 import { policyGrants } from '../policy.js'
 import { KeyedMutex, KeyedReadWriteLock } from '../lib/keyedMutex.js'
 import {
-  normalizeMetadataWrite,
+  restampImportedMetadata,
   stampCollectionMetadata,
   stampSpaceMetadata
 } from '../lib/metadataWrite.js'
 import {
+  type EmbeddedMetadataValidator,
   type EtagValidator,
   type HeldValidators,
   metadataEtagOf,
@@ -93,8 +100,12 @@ import {
   etagOf,
   newGeneration,
   resolveGeneration,
+  stampedValidator,
+  stampOf,
   storedMetadataFromFile,
-  stripMetadataValidator
+  stripMetadataValidator,
+  validatorPartsOf,
+  withoutLocalSegment
 } from '../lib/etag.js'
 import {
   atomicWriteFile,
@@ -162,14 +173,15 @@ import type {
   StoredSpaceMetadata,
   StoredCollectionLog,
   CollectionTransitionContext,
-  VersionedMetadata,
   KeystoreConfig,
   KmsKeyRecord,
   RevocationRecord,
   RevocationScope,
   CapabilitySummary,
   IDID,
-  ServiceDescription
+  ServiceDescription,
+  ResourceMetaStamp,
+  WriteStamp
 } from '../types.js'
 
 const { Store: MetadataJsonStore } = jsonfs
@@ -253,6 +265,8 @@ export interface FileSystemBackendOptions {
   dataDir: string
   logger?: FastifyBaseLogger
   originId?: string
+  physicalClock?: () => number
+  clockBoundMs?: number
   capacityBytes?: number
   maxUploadBytes?: number
   maxSpacesPerController?: number
@@ -336,9 +350,9 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Per-Resource write serialization (the `conditional-writes` feature). A
    * content write or delete that carries a precondition reads the current
-   * `version`, evaluates `If-Match` / `If-None-Match`, and writes -- all under
+   * stamp, evaluates `If-Match` / `If-None-Match`, and writes -- all under
    * this lock, keyed per Resource -- so two concurrent writers cannot both
-   * observe the same prior version and both succeed. Single-instance only.
+   * observe the same prior stamp and both succeed. Single-instance only.
    *
    * The same mutex holds other key domains, each namespaced by a prefix:
    * `unique:` (a Collection's unique-claim scan), `feed:` (a Collection's
@@ -494,6 +508,22 @@ export class FileSystemBackend implements StorageBackend {
   #originId!: string
 
   /**
+   * The store's hybrid logical clock, which mints the write stamp of every
+   * versioned record inside the write's critical section (see `lib/hlc.ts`).
+   * Built by `open()` once the origin id is settled, and seeded from the
+   * high-water mark `store.json` carries.
+   */
+  #clock!: HybridLogicalClock
+
+  /**
+   * The store's hybrid logical clock (see `#clock`).
+   * @returns {HybridLogicalClock}
+   */
+  get clock(): HybridLogicalClock {
+    return this.#clock
+  }
+
+  /**
    * The store's origin id (see `StorageBackend.originId`).
    * @returns {string}
    */
@@ -517,6 +547,12 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.originId] {string}   the configured origin id
    *   (`WAS_ORIGIN_ID`); refused when it differs from the stored id, and
    *   written when the store carries none
+   * @param [options.physicalClock] {() => number}   the physical clock the
+   *   store's hybrid logical clock reads, epoch milliseconds; defaults to
+   *   `Date.now` (a test freezes or steps it)
+   * @param [options.clockBoundMs] {number}   the clock bound for a received
+   *   stamp (`WAS_REPLICATION_CLOCK_BOUND_MS`); defaults to
+   *   `REPLICATION_CLOCK_BOUND_MS`
    * @param [options.capacityBytes] {number}
    * @param [options.maxUploadBytes] {number}
    * @param [options.maxSpacesPerController] {number}
@@ -532,7 +568,11 @@ export class FileSystemBackend implements StorageBackend {
     // `this` is the class the call was made on. Its constructor is protected,
     // so the `this` parameter cannot be typed as a constructor.
     const backend = new (this as unknown as typeof FileSystemBackend)(options)
-    await backend.#open({ configuredOriginId: options.originId })
+    await backend.#open({
+      configuredOriginId: options.originId,
+      physicalClock: options.physicalClock,
+      clockBoundMs: options.clockBoundMs
+    })
     return backend as T
   }
 
@@ -583,23 +623,44 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * The work `open()` runs on a freshly constructed backend: the store
-   * migrations, the origin id, and the temp-file sweep.
+   * migrations, the origin id, the clock, and the temp-file sweep.
    * @param options {object}
    * @param [options.configuredOriginId] {string}   the configured origin id
    *   (`WAS_ORIGIN_ID`); `undefined` reads the store's own id, or mints one
+   * @param [options.physicalClock] {() => number}
+   * @param [options.clockBoundMs] {number}
    * @returns {Promise<void>}
    */
   async #open({
-    configuredOriginId
+    configuredOriginId,
+    physicalClock,
+    clockBoundMs
   }: {
     configuredOriginId?: string
+    physicalClock?: () => number
+    clockBoundMs?: number
   }): Promise<void> {
-    const { version: storeVersion, originId } = await applyStoreMigrations({
+    const {
+      version: storeVersion,
+      originId,
+      clockHighWater
+    } = await applyStoreMigrations({
       dataDir: this.dataDir,
       logger: this.logger,
       originId: configuredOriginId
     })
     this.#originId = originId
+    // Seeded from the persisted mark, which can trail the last stamp minted
+    // before a crash by up to a second; it persists a new mark as it advances.
+    this.#clock = new HybridLogicalClock({
+      originId,
+      physicalClock,
+      bound: clockBoundMs,
+      highWater: clockHighWater,
+      persistHighWater: ms =>
+        writeClockHighWater({ dataDir: this.dataDir, clockHighWater: ms }),
+      getLogger: () => this.logger
+    })
     this.logger.info({ storeVersion, originId }, 'Filesystem store ready')
     // The data root's own temp files (a `store.json` rewrite or a lock file's
     // staging), without descending into `lost+found` and the trees below.
@@ -624,6 +685,17 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * Persists the clock's high-water mark at shutdown, so the clock seeded
+   * from it at the next boot starts above every stamp this process minted.
+   * Wired to the Fastify `onClose` hook by the plugin composition. A failed
+   * write is logged at `warn` by the clock and not thrown.
+   * @returns {Promise<void>}
+   */
+  async close(): Promise<void> {
+    await this.#clock?.persistCurrentMark()
+  }
+
+  /**
    * Self-description advertised at `GET /space/:spaceId/backends`. The
    * filesystem backend is the single server-configured default: it stores both
    * JSON documents and binary blobs on disk, so its data survives restarts.
@@ -632,7 +704,7 @@ export class FileSystemBackend implements StorageBackend {
    * needs holds here unconditionally, because the server mediates every write:
    * it serializes writes under its own per-record lock and mints its own opaque
    * validator over a filesystem that offers no precondition primitive of its
-   * own (a content hash would serve as well as the version counter used here).
+   * own (a content hash would serve as well as the write stamp used here).
    * @returns {Required<Omit<BackendDescriptor, 'provider' | 'connection'>>}
    */
   describe(): Required<Omit<BackendDescriptor, 'provider' | 'connection'>> {
@@ -1229,7 +1301,8 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *`, the guarded
    *   create; an existing Space throws `PreconditionFailedError` (412)
    * @returns {Promise<EtagValidator>}   the Space Metadata object's new
-   *   validator (its `generation` and bumped `version`, the `ETag`)
+   *   validator (its `generation` and the stamp this write mints, local
+   *   segment 0)
    */
   async writeSpace({
     spaceId,
@@ -1247,8 +1320,8 @@ export class FileSystemBackend implements StorageBackend {
     assertTransition?: (prior?: StoredSpaceMetadata) => void | Promise<void>
   }): Promise<EtagValidator> {
     // Serialize the read-check-write under a per-Space-metadata lock so the
-    // precondition check and the monotonic version bump are atomic with the
-    // write (two clients racing a guarded create cannot both succeed). Its own
+    // precondition check and the stamp are atomic with the write (two
+    // clients racing a guarded create cannot both succeed). Its own
     // lock namespace: a Space Metadata write touches no Collection file.
     // The Space gate goes on the outside, as on every path-creating write:
     // this one creates the Space dir.
@@ -1332,44 +1405,38 @@ export class FileSystemBackend implements StorageBackend {
       }
     }
 
-    // `createdBy` and the validator-bearing members the wire input may
-    // carry are resolved by the shared rules (lib/metadataWrite.ts), so
-    // the stored body never holds a client-supplied `createdBy`,
-    // `_generation` or `_version` on either backend.
+    // `createdBy`, the stamp members, and the validator-bearing members the
+    // wire input may carry are resolved by the shared rules
+    // (lib/metadataWrite.ts), so the stored body never holds a
+    // client-supplied `createdBy`, stamp or `_generation` on either backend.
     // The object keeps its generation for the Space's whole life; a Space
     // deleted and re-created under the same id mints a new one, so the two
-    // lives' validators can never coincide.
-    const validator = {
-      generation: resolveGeneration(prior?.metaGeneration),
-      version: (prior?.metaVersion ?? 0) + 1
-    }
-    const { body } = normalizeMetadataWrite({
-      metadata: spaceMetadata,
-      validator
-    })
+    // lives' validators can never coincide. The stamp is minted over the
+    // prior one, and resets the local segment.
+    const generation = resolveGeneration(prior?.metaGeneration)
+    const stamp = await this.#clock.mint({ held: stampOf(prior) })
     const stamped = stampSpaceMetadata({
-      spaceMetadata: body,
+      spaceMetadata,
       prior,
-      createdBy
+      createdBy,
+      stamp
     })
 
     const spaceDir = await this.#ensureSpaceDir({ spaceId })
     const filename = spaceMetadataFileName(spaceId)
     // Durable full replacement: `MetadataJsonStore.read` parses plain JSON,
     // so an atomically-written JSON string round-trips through the same read
-    // path. The validator is stored under the reserved `_generation` /
-    // `_version` members that `getSpaceMetadata` strips and re-surfaces
-    // out of band, the same layout as a Collection Metadata file.
+    // path. The generation and local segment are stored under the reserved
+    // `_generation` / `_local` members that `getSpaceMetadata` strips and
+    // re-surfaces out of band, the same layout as a Collection Metadata
+    // file; the stamp members are wire members, stored bare.
     await atomicWriteFile({
       filePath: path.join(spaceDir, filename),
       data: JSON.stringify(
-        embedMetadataValidator({
-          body: stamped,
-          ...validator
-        })
+        embedMetadataValidator({ body: stamped, generation, local: 0 })
       )
     })
-    return validator
+    return stampedValidator({ generation, stamp, local: 0 })
   }
 
   /**
@@ -1402,8 +1469,8 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @returns {Promise<StoredSpaceMetadata|undefined>}
    *   Resolves falsy when the Space does not exist (must not throw).
-   *   `metaGeneration` / `metaVersion` are the out-of-band `ETag`
-   *   validator, absent for a legacy Space.
+   *   `metaGeneration` / `metaLocal` are the out-of-band `ETag` validator
+   *   parts; the stamp members ride in the body.
    */
   async getSpaceMetadata({
     spaceId
@@ -1413,7 +1480,7 @@ export class FileSystemBackend implements StorageBackend {
     const spaceDir = this.#spaceDir(spaceId)
     const filename = spaceMetadataFileName(spaceId)
     const raw = await this.#readJsonFile<
-      SpaceMetadata & { _generation?: string; _version?: number }
+      SpaceMetadata & EmbeddedMetadataValidator
     >(path.join(spaceDir, filename))
     return raw && storedMetadataFromFile(raw)
   }
@@ -1702,10 +1769,11 @@ export class FileSystemBackend implements StorageBackend {
         const collectionEntries = await fs.promises.readdir(entryPath, {
           withFileTypes: true
         })
-        // The changes-feed counter and each sidecar's `feedPosition` are
-        // this server's own facts about its feed, so neither travels: the
-        // counter file is left out, and the member is stripped from every
-        // Resource sidecar (an importer assigns its own positions).
+        // The changes-feed counter, each sidecar's `feedPosition` and the
+        // Collection Metadata object's local validator segment are this
+        // server's own facts, so none travels: the counter file is left out,
+        // `feedPosition` is stripped from every Resource sidecar (an importer
+        // assigns its own positions), and `_local` from the Metadata file.
         const files: ArchiveEntry[] = collectionEntries
           .filter(
             child =>
@@ -1714,17 +1782,18 @@ export class FileSystemBackend implements StorageBackend {
           .sort((a, b) => a.name.localeCompare(b.name))
           .map(child => {
             const childPath = path.join(entryPath, child.name)
-            return {
-              name: child.name,
-              read:
-                metaSidecarFileId(child.name) === undefined
-                  ? () => fs.promises.readFile(childPath)
-                  : async () =>
-                      withoutSidecarMember({
-                        bytes: await fs.promises.readFile(childPath),
-                        member: 'feedPosition'
-                      })
+            const readBytes = () => fs.promises.readFile(childPath)
+            let read: () => Promise<Buffer> = readBytes
+            if (metaSidecarFileId(child.name) !== undefined) {
+              read = async () =>
+                withoutSidecarMember({
+                  bytes: await readBytes(),
+                  member: 'feedPosition'
+                })
+            } else if (child.name === collectionMetadataFileName(entry.name)) {
+              read = async () => withoutLocalSegment(await readBytes())
             }
+            return { name: child.name, read }
           })
         // Per-Resource chunk directories (`.chunks.<encId>/`; the
         // `chunked-streams` feature) are subdirectories of a Collection dir, so
@@ -1916,8 +1985,8 @@ export class FileSystemBackend implements StorageBackend {
           // The archived Space Metadata object's user-writable members,
           // applied over the destination's stored object by the same write
           // Update Space Metadata makes (`name` restored, `type` checked
-          // against the destination's), so the object's monotonic version
-          // bumps as an ordinary metadata write does. Only when the caller
+          // against the destination's), so the object takes a new stamp as
+          // an ordinary metadata write does. Only when the caller
           // asked for it (the handler decides that on the invocation's
           // authority). Everything else -- `controller`, `createdBy`, and
           // the members the server derives per read -- stays the
@@ -2006,21 +2075,33 @@ export class FileSystemBackend implements StorageBackend {
                 })
               }
               collectionIds.add(collectionId)
+              // Re-stamped by this store's clock: the archived stamp is read
+              // for provenance only. The archived generation is kept.
+              const { body, generation } = restampImportedMetadata({
+                metadata: collectionMetadata,
+                stamp: await this.#clock.mint()
+              })
               await this.#persistCollection({
                 spaceId,
                 collectionId,
-                collectionMetadata
+                body,
+                generation,
+                local: 0
               })
               stats.collectionsCreated++
             }
 
             // Its governing history log travels with a newly-created Collection
             // (an existing, skipped one keeps its own, as it keeps its policy and
-            // metadata).
+            // metadata), re-stamped like the Collection.
             if (collectionLog && !collectionExisted) {
+              const log = restampImportedLog({
+                bytes: collectionLog,
+                stamp: await this.#clock.mint()
+              })
               await atomicWriteFile({
                 filePath: this.#collectionLogPath({ spaceId, collectionId }),
-                data: collectionLog
+                data: JSON.stringify(log)
               })
               bytesWritten += collectionLog.length
             }
@@ -2045,7 +2126,7 @@ export class FileSystemBackend implements StorageBackend {
             for (const { fileName, resourceId, body } of resources) {
               // Under the Resource's own write lock, as every other write path is:
               // the existence probe, the body write, and the sidecar write are one
-              // atomic step. Without it a concurrent `PUT` of the same id can bump
+              // atomic step. Without it a concurrent `PUT` of the same id can stamp
               // the sidecar (returning that `ETag` to its client) while the archive's
               // bytes land underneath, leaving a stored validator that describes
               // content nobody wrote.
@@ -2093,15 +2174,17 @@ export class FileSystemBackend implements StorageBackend {
                   stats.resourcesCreated++
 
                   // A metadata sidecar travels with a newly-created resource
-                  // (preserving its timestamps, `createdBy`, and user-writable
-                  // `custom`). A feed position is this server's own fact: any
-                  // the archive carries is dropped, and the sidecar takes this
+                  // (preserving its `createdAt`, `createdBy`, generations, and
+                  // user-writable `custom`), re-stamped by this store's clock:
+                  // its archived stamps are read for provenance only. A feed
+                  // position is this server's own fact: any the archive
+                  // carries is dropped, and the sidecar takes this
                   // Collection's next one. An entry with no sidecar, or with
                   // bytes that are not a JSON object, gets a fresh one built
-                  // as a first write builds it (`createdAt` and `updatedAt`
-                  // now, a new generation, version 1, no `createdBy`), so
-                  // every imported Resource is served with a validator and
-                  // appears in the changes feed.
+                  // as a first write builds it (`createdAt` now, a new
+                  // generation and stamp, no `createdBy`), so every imported
+                  // Resource is served with a validator and appears in the
+                  // changes feed.
                   const metadataBytes = resourceMetadata.get(resourceId)
                   const sidecar =
                     metadataBytes && parseSidecarBytes(metadataBytes)
@@ -2111,18 +2194,20 @@ export class FileSystemBackend implements StorageBackend {
                       collectionId,
                       collectionDir,
                       resourceId,
-                      sidecar
+                      sidecar: await restampImportedSidecar({
+                        sidecar,
+                        mint: () => this.#clock.mint()
+                      })
                     })
                   } else {
-                    await this.#bumpSidecarVersion({
+                    await this.#stampSidecar({
                       collectionDir,
                       resourceId,
                       feed: { spaceId, collectionId },
-                      build: ({ generation, version, now }) => ({
-                        createdAt: now,
-                        updatedAt: now,
-                        generation,
-                        version
+                      build: ({ generation, stamp }) => ({
+                        createdAt: stamp.updatedAt,
+                        ...stamp,
+                        generation
                       })
                     })
                   }
@@ -2180,13 +2265,16 @@ export class FileSystemBackend implements StorageBackend {
                     return
                   }
                   // The tombstone takes this Collection's next feed position,
-                  // as the content restore above does.
+                  // and a fresh stamp, as the content restore above does.
                   await this.#writeFeedSidecar({
                     spaceId,
                     collectionId,
                     collectionDir,
                     resourceId,
-                    sidecar
+                    sidecar: await restampImportedSidecar({
+                      sidecar,
+                      mint: () => this.#clock.mint()
+                    })
                   })
                   bytesWritten += metadataBytes.length
                   stats.resourcesCreated++
@@ -2194,16 +2282,42 @@ export class FileSystemBackend implements StorageBackend {
               )
             }
 
-            // Restore chunk files of chunked Resources (the `chunked-streams` feature)
-            // into their per-Resource chunk directories. Skip-not-overwrite, per chunk
-            // file: an existing chunk file is left untouched, so a re-import never
-            // clobbers stored chunk bytes (or their version sidecar). An ORPHAN chunk
-            // file -- one whose parent Resource is absent or a tombstone (no live
-            // representation on the destination after the Resource apply loop above)
-            // -- is skipped rather than resurrected, matching the live write path's
-            // parent-exists rule (and the Postgres import).
+            // Restore chunks of chunked Resources (the `chunked-streams`
+            // feature) into their per-Resource chunk directories.
+            // Skip-not-overwrite, per chunk: an existing chunk representation
+            // is left untouched, with its sidecar, so a re-import never
+            // clobbers stored chunk bytes. Each restored chunk gets a sidecar
+            // re-stamped by this store's clock, as a Resource's is. A chunk
+            // whose archived sidecar is missing, or is not a JSON object, gets
+            // a fresh one built as a first chunk write builds it (`createdAt`
+            // now, a new generation and stamp), so every imported chunk is
+            // served with a validator. A sidecar with no representation beside
+            // it is dropped, since a chunk keeps no tombstone. An ORPHAN chunk
+            // -- one whose parent Resource is absent or a tombstone (no live
+            // representation on the destination after the Resource apply loop
+            // above) -- is skipped rather than resurrected, matching the live
+            // write path's parent-exists rule. The Postgres import applies the
+            // same rules.
+            const archivedChunkSidecars = new Map<string, Buffer>()
+            for (const chunkFile of chunkFiles) {
+              if (chunkFile.contentType === undefined) {
+                archivedChunkSidecars.set(
+                  `${chunkFile.resourceId}/${chunkFile.chunkIndex}`,
+                  chunkFile.body
+                )
+              }
+            }
             const parentIsLive = new Map<string, boolean>()
-            for (const { resourceId, fileName, body } of chunkFiles) {
+            for (const {
+              resourceId,
+              fileName,
+              body,
+              chunkIndex,
+              contentType
+            } of chunkFiles) {
+              if (contentType === undefined) {
+                continue
+              }
               let live = parentIsLive.get(resourceId)
               if (live === undefined) {
                 live = Boolean(
@@ -2238,6 +2352,34 @@ export class FileSystemBackend implements StorageBackend {
                   await mkdir(chunkDir, { recursive: true })
                   await atomicWriteFile({ filePath: target, data: body })
                   bytesWritten += body.length
+
+                  const chunkId = String(chunkIndex)
+                  const sidecarBytes = archivedChunkSidecars.get(
+                    `${resourceId}/${chunkIndex}`
+                  )
+                  const archivedSidecar =
+                    sidecarBytes && parseSidecarBytes(sidecarBytes)
+                  if (archivedSidecar) {
+                    await this.#writeMetaSidecar({
+                      collectionDir: chunkDir,
+                      resourceId: chunkId,
+                      sidecar: await restampImportedSidecar({
+                        sidecar: archivedSidecar,
+                        mint: () => this.#clock.mint()
+                      })
+                    })
+                    bytesWritten += sidecarBytes!.length
+                  } else {
+                    await this.#stampSidecar({
+                      collectionDir: chunkDir,
+                      resourceId: chunkId,
+                      build: ({ generation, stamp }) => ({
+                        createdAt: stamp.updatedAt,
+                        ...stamp,
+                        generation
+                      })
+                    })
+                  }
                 }
               )
             }
@@ -2281,10 +2423,10 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Writes a Collection Metadata object (full replacement of the merged
    * object: the configuration members beside the annotation members `custom`
-   * and `epoch`), under the Collection's one metadata lock, bumping its one
-   * monotonic `metaVersion`. Server-managed members are stamped here:
-   * `createdBy` and `createdAt` by the creating write only, `updatedAt` by
-   * every write.
+   * and `epoch`), under the Collection's one metadata lock, minting its write
+   * stamp and resetting its local validator segment. Server-managed members
+   * are set here: `createdBy` and `createdAt` by the creating write only, the
+   * stamp members by every write.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -2299,7 +2441,8 @@ export class FileSystemBackend implements StorageBackend {
    *   state-transition checks, run atomically with the write against the
    *   prior object and the Collection's history log as of the lock
    * @returns {Promise<EtagValidator>}   the Collection Metadata object's new
-   *   validator (its `generation` and bumped `version`, the `ETag`)
+   *   validator (its `generation` and the stamp this write mints, local
+   *   segment 0)
    */
   async writeCollection({
     spaceId,
@@ -2321,8 +2464,7 @@ export class FileSystemBackend implements StorageBackend {
     ) => void | Promise<void>
   }): Promise<EtagValidator> {
     // Serialize the read-check-write under the per-Collection metadata lock so
-    // the `If-Match` compare-and-swap and the monotonic version bump are atomic
-    // with the write (two concurrent edits cannot clobber one another). A
+    // the `If-Match` compare-and-swap and the stamp are atomic with the write (two concurrent edits cannot clobber one another). A
     // distinct lock namespace from the per-Resource / unique-scan locks: a
     // metadata write and a Resource write touch different files. The Space
     // gate wraps it, as on every path-creating write: this one creates the
@@ -2384,28 +2526,28 @@ export class FileSystemBackend implements StorageBackend {
             // The server-managed members are the backend's, never the body's;
             // both backends resolve them through the same shared rule
             // (lib/metadataWrite.ts), which discards the ones the wire input
-            // may carry (`#persistCollection` strips the validator-bearing
-            // members the same way).
+            // may carry, validator-bearing and stamp members included. The
+            // stamp is minted over the prior one.
+            const stamp = await this.#clock.mint({ held: stampOf(prior) })
             const stamped = stampCollectionMetadata({
               collectionMetadata,
               prior,
-              createdBy
+              createdBy,
+              stamp
             })
             // The object keeps its generation for the Collection's whole life;
             // a Collection deleted and re-created under the same id mints a new
             // one, so the two lives' validators can never coincide.
-            const validator = {
-              generation: resolveGeneration(prior?.metaGeneration),
-              version: (prior?.metaVersion ?? 0) + 1
-            }
+            const generation = resolveGeneration(prior?.metaGeneration)
 
             await this.#persistCollection({
               spaceId,
               collectionId,
-              collectionMetadata: stamped,
-              validator
+              body: stamped,
+              generation,
+              local: 0
             })
-            return validator
+            return stampedValidator({ generation, stamp, local: 0 })
           }
         )
     })
@@ -2413,7 +2555,7 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Lock key serializing a Space's Metadata writes and its delete, so a
-   * precondition check and the version bump are atomic against each other.
+   * precondition check and the stamp are atomic against each other.
    * @param options {object}
    * @param options.spaceId {string}
    * @returns {string}
@@ -2426,7 +2568,7 @@ export class FileSystemBackend implements StorageBackend {
    * Builds the per-Collection metadata serialization key for `#writeMutex`
    * (`cmeta:<spaceId>/<collectionId>`), so a Collection Metadata
    * compare-and-swap serializes with itself (and with the history-log write
-   * that bumps the same validator) while staying disjoint from the
+   * that advances the same validator) while staying disjoint from the
    * per-Resource and unique-scan lock namespaces.
    * @param options {object}
    * @param options.spaceId {string}
@@ -2445,60 +2587,55 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Writes a Collection's metadata file (creating the Collection dir if
-   * needed), with NO count-quota check and no server-managed-member stamping:
-   * the count guard and the stamps live in the public `writeCollection`;
-   * `importSpace` tracks the Space's Collection count itself (measured once up
-   * front) and calls this directly with the archived object verbatim, so it
-   * neither re-enumerates the Space per created Collection nor rewrites the
-   * archived timestamps.
+   * needed), with NO count-quota check and no server-managed-member
+   * resolution: the caller hands over the body to store, its stamp members
+   * already set. The count guard and the member rules live in the public
+   * `writeCollection`; `importSpace` tracks the Space's Collection count
+   * itself (measured once up front) and calls this directly with the
+   * re-stamped archived object, so it does not re-enumerate the Space per
+   * created Collection.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @param options.collectionMetadata {CollectionMetadata}
-   * @param [options.validator] {EtagValidator}   the validator to persist (its
-   *   `generation` and monotonic `version`, the `ETag`). Kept OUT of the wire
-   *   body -- stored under the reserved `_generation` / `_version` members
-   *   that `getCollectionMetadata` strips and re-surfaces as `metaGeneration`
-   *   / `metaVersion`. When omitted (the import path), a `_generation` /
-   *   `_version` pair already on the incoming object is preserved, else a
-   *   fresh generation starts at version 1.
+   * @param options.body {CollectionMetadata}   the wire body to store, stamp
+   *   members included
+   * @param options.generation {string}
+   * @param options.local {number}   the local validator segment
    * @returns {Promise<void>}
    */
   async #persistCollection({
     spaceId,
     collectionId,
-    collectionMetadata,
-    validator
+    body,
+    generation,
+    local
   }: {
     spaceId: string
     collectionId: string
-    collectionMetadata: CollectionMetadata
-    validator?: EtagValidator
+    body: CollectionMetadata
+    generation: string
+    local: number
   }): Promise<void> {
     const collectionDir = await this.#ensureCollectionDir({
       spaceId,
       collectionId
     })
     const filename = collectionMetadataFileName(collectionId)
-    // Shared normalization (lib/metadataWrite.ts): strip the
-    // validator-bearing members from the incoming body and re-stamp -- an
-    // explicit `validator` wins, else the `_generation` / `_version` pair
-    // already on the incoming (imported) object is kept, else a fresh
-    // generation starts at version 1.
-    const { body, validator: stamped } = normalizeMetadataWrite({
-      metadata: collectionMetadata,
-      validator
-    })
+    // The generation and local segment are kept OUT of the wire body, under
+    // the reserved `_generation` / `_local` members that
+    // `getCollectionMetadata` strips and re-surfaces as `metaGeneration` /
+    // `metaLocal`.
     await atomicWriteFile({
       filePath: path.join(collectionDir, filename),
-      data: JSON.stringify(embedMetadataValidator({ body, ...stamped }))
+      data: JSON.stringify(embedMetadataValidator({ body, generation, local }))
     })
   }
 
   /**
    * Reads a Collection Metadata object: the one file holds the configuration
-   * members beside `createdAt`, `updatedAt`, `custom`, and `epoch`, with the
-   * validator re-surfaced out of band as `metaGeneration` / `metaVersion`.
+   * members beside `createdAt`, the stamp members, `custom`, and `epoch`, with
+   * the generation and local segment re-surfaced out of band as
+   * `metaGeneration` / `metaLocal`.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -2515,7 +2652,7 @@ export class FileSystemBackend implements StorageBackend {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
     const filename = collectionMetadataFileName(collectionId)
     const raw = await this.#readJsonFile<
-      CollectionMetadata & { _generation?: string; _version?: number }
+      CollectionMetadata & EmbeddedMetadataValidator
     >(path.join(collectionDir, filename))
     return raw && storedMetadataFromFile(raw)
   }
@@ -2566,7 +2703,7 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Builds the per-Collection history-log serialization key for
    * `#writeMutex`. A log write also takes the `cmeta:` lock first (a log write
-   * bumps the Collection Metadata validator, and the request layer's checks on
+   * advances the Collection Metadata validator, and the request layer's checks on
    * either side read the other record), so the two never interleave.
    * @param options {object}
    * @param options.spaceId {string}
@@ -2632,9 +2769,11 @@ export class FileSystemBackend implements StorageBackend {
    * compare-and-swap append), under the Collection Metadata lock and then the
    * log lock: the precondition is evaluated on the log's current `ETag`, the
    * request layer's `assertTransition` runs against the log and Collection
-   * Metadata object just read, and that object's validator is bumped in the
-   * same critical section, since its served `encryption` member is derived
-   * from this log's head.
+   * Metadata object just read, the log's own stamp is minted, and that
+   * object's local validator segment is advanced in the same critical
+   * section, since its served `encryption` member is derived from this log's
+   * head. The object's stamp is left alone: the change is derived, not a
+   * write of the object.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -2686,10 +2825,7 @@ export class FileSystemBackend implements StorageBackend {
                 })
                 assertCollectionLogWritePrecondition({
                   collectionId,
-                  currentEtag: etagOf({
-                    generation: prior?.generation,
-                    version: prior?.version
-                  }),
+                  currentEtag: prior && etagOf(prior),
                   ifMatch,
                   ifNoneMatch
                 })
@@ -2699,32 +2835,30 @@ export class FileSystemBackend implements StorageBackend {
                 }
                 await assertTransition?.({ prior, collectionMetadata })
 
-                const validator = {
-                  generation: resolveGeneration(prior?.generation),
-                  version: (prior?.version ?? 0) + 1
-                }
+                const generation = resolveGeneration(prior?.generation)
+                const stamp = await this.#clock.mint({ held: stampOf(prior) })
                 await atomicWriteFile({
                   filePath: this.#collectionLogPath({ spaceId, collectionId }),
                   data: JSON.stringify({
-                    ...validator,
+                    generation,
+                    ...stamp,
                     body
                   } satisfies StoredCollectionLog)
                 })
-                // The served Collection Metadata object changed with its derived
-                // member, so its validator advances too (generation kept, version
-                // bumped); the stored body is carried verbatim.
+                // The served Collection Metadata object changed with its
+                // derived member, so its local validator segment advances
+                // (generation and stamp kept); the stored body is carried
+                // verbatim.
                 await this.#persistCollection({
                   spaceId,
                   collectionId,
-                  collectionMetadata,
-                  validator: {
-                    generation: resolveGeneration(
-                      collectionMetadata.metaGeneration
-                    ),
-                    version: (collectionMetadata.metaVersion ?? 0) + 1
-                  }
+                  body: stripMetadataValidator(collectionMetadata),
+                  generation: resolveGeneration(
+                    collectionMetadata.metaGeneration
+                  ),
+                  local: (collectionMetadata.metaLocal ?? 0) + 1
                 })
-                return validator
+                return stampedValidator({ generation, stamp })
               }
             )
         )
@@ -2839,10 +2973,10 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Writes a resource representation (JSON value or byte stream) to disk, under
-   * the per-Resource write lock (the `conditional-writes` feature), and bumps
-   * the Resource's monotonic `version`. The new validator (that `version` under
-   * the Resource's `generation`) is returned so the request layer can surface it
-   * as the response `ETag`.
+   * the per-Resource write lock (the `conditional-writes` feature), and mints
+   * the content record's write stamp over the one it replaces. The new
+   * validator (that stamp under the Resource's `generation`) is returned so
+   * the request layer can surface it as the response `ETag`.
    *
    * When a conditional-write precondition is supplied it is evaluated against
    * the Resource's current state atomically with the write (under the lock),
@@ -2987,8 +3121,8 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * The critical section of `writeResource`, run under the per-Resource lock:
    * evaluates any precondition, writes the representation, prunes a stale
-   * representation under a different content-type, and persists the bumped
-   * validator in the sidecar. See `writeResource` for the parameters.
+   * representation under a different content-type, and persists the new
+   * stamp in the sidecar. See `writeResource` for the parameters.
    * @returns {Promise<EtagValidator>}
    */
   async #writeResourceLocked({
@@ -3020,7 +3154,7 @@ export class FileSystemBackend implements StorageBackend {
 
     // One directory scan and one sidecar read serve every step below. Nothing
     // else mutates this Resource while the lock is held, so the precondition
-    // check, the create-path liveness probe, the prune, and the version bump all
+    // check, the create-path liveness probe, the prune, and the stamp all
     // work from this single pre-write snapshot. The prune is unaffected by the
     // representation written in between: the file it must keep is `keepPath`
     // (excluded either way), and the stale representations to remove are exactly
@@ -3078,12 +3212,11 @@ export class FileSystemBackend implements StorageBackend {
     })
 
     // Maintain the server-managed timestamps and the ETag validator: a content
-    // write sets `createdAt` on first write, bumps `updatedAt`, increments
-    // `version` from its prior value and keeps the Resource's `generation`
-    // (minting one only on the first write), preserving any user-writable
-    // `custom` and the independent `metaGeneration` / `metaVersion` already
-    // stored in the sidecar (a content write does not touch the metadata
-    // sub-resource).
+    // write sets `createdAt` on first write, mints a new content stamp over
+    // the prior one and keeps the Resource's `generation` (minting one only
+    // on the first write), preserving any user-writable `custom` and the
+    // independent `/meta` record (`meta`) already stored in the sidecar (a
+    // content write does not touch the metadata sub-resource).
     //
     // `createdBy` pairs with `createdAt`: taken from this write's invoker only
     // when this write creates the sidecar, so it names the creator rather than
@@ -3095,25 +3228,19 @@ export class FileSystemBackend implements StorageBackend {
     //
     // The sidecar write takes the Collection's next feed position, which
     // moves the Resource to the end of the changes feed.
-    return this.#bumpSidecarVersion({
+    return this.#stampSidecar({
       collectionDir,
       resourceId,
       prior,
       feed: { spaceId, collectionId },
-      build: ({ prior, generation, version, now }) => {
+      build: ({ prior, generation, stamp }) => {
         const creator = prior ? prior.createdBy : createdBy
         return {
-          createdAt: prior?.createdAt ?? now,
-          updatedAt: now,
+          createdAt: prior?.createdAt ?? stamp.updatedAt,
+          ...stamp,
           ...(creator !== undefined && { createdBy: creator }),
           generation,
-          version,
-          ...(prior?.metaGeneration !== undefined && {
-            metaGeneration: prior.metaGeneration
-          }),
-          ...(prior?.metaVersion !== undefined && {
-            metaVersion: prior.metaVersion
-          }),
+          ...(prior?.meta !== undefined && { meta: prior.meta }),
           ...(prior?.custom && { custom: prior.custom }),
           // The key-epoch stamp is set from this write's declaration and CLEARED
           // when absent (the new ciphertext's epoch is unknown -- a stale stamp
@@ -3315,15 +3442,16 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * The bump-write sidecar tail shared by `#writeResourceLocked` and
-   * `#writeChunkLocked`: resolves the item's ETag validator -- the `generation`
-   * it already carries (minted here on a first write) with the next monotonic
-   * `version` (bumped from the prior value, so a first write lands at 1) --
-   * builds the new sidecar via `build`, writes it, and returns the validator.
-   * The two write paths fill in different fields -- a chunk carries no user
-   * Metadata / `createdBy` / epoch stamp -- so `build` supplies the sidecar body
-   * from the shared `{ prior, generation, version, now }` inputs and MUST write
-   * the `generation` it is handed into the sidecar. The caller passes the item's
+   * The stamped sidecar tail shared by `#writeResourceLocked`,
+   * `#writeChunkLocked` and an import's fresh sidecar: resolves the item's
+   * ETag validator -- the `generation` it already carries (minted here on a
+   * first write) with a new stamp from the store's clock, minted over the
+   * prior stamp so it sorts above it -- builds the new sidecar via `build`,
+   * writes it, and returns the validator. The write paths fill in different
+   * fields -- a chunk carries no user Metadata / `createdBy` / epoch stamp --
+   * so `build` supplies the sidecar body from the shared
+   * `{ prior, generation, stamp }` inputs and MUST write the `generation` and
+   * `stamp` it is handed into the sidecar. The caller passes the item's
    * current sidecar in, since it has already read it under the same lock. A
    * Resource write passes `feed`, so the sidecar takes the Collection's next
    * feed position (`#writeFeedSidecar`); a chunk write passes none.
@@ -3335,16 +3463,15 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.prior] {MetaSidecar}   the item's current sidecar, absent
    *   when it has none yet
    * @param options.build {(context: { prior?: MetaSidecar, generation: string,
-   *   version: number, now: string }) => MetaSidecar}   builds the sidecar to
-   *   persist from the prior sidecar, the resolved `generation`, the bumped
-   *   `version`, and the write timestamp
+   *   stamp: WriteStamp }) => MetaSidecar}   builds the sidecar to persist
+   *   from the prior sidecar, the resolved `generation`, and the new stamp
    * @param [options.feed] {object}   the Resource's Collection, whose next
    *   feed position the sidecar takes; absent for a chunk
    * @param options.feed.spaceId {string}
    * @param options.feed.collectionId {string}
    * @returns {Promise<EtagValidator>}
    */
-  async #bumpSidecarVersion({
+  async #stampSidecar({
     collectionDir,
     resourceId,
     prior,
@@ -3358,18 +3485,16 @@ export class FileSystemBackend implements StorageBackend {
     build: (context: {
       prior?: MetaSidecar
       generation: string
-      version: number
-      now: string
+      stamp: WriteStamp
     }) => MetaSidecar
   }): Promise<EtagValidator> {
-    const now = new Date().toISOString()
-    // The generation is minted once, when the counter starts, and kept for the
-    // item's whole life -- through a Resource tombstone and its re-create,
-    // since the counter continues there. A sidecar removed outright (a chunk
-    // delete) takes it along, so the next item under that id starts fresh.
+    // The generation is minted once, at the item's first write, and kept for
+    // its whole life -- through a Resource tombstone and its re-create, since
+    // the record continues there. A sidecar removed outright (a chunk delete)
+    // takes it along, so the next item under that id starts fresh.
     const generation = resolveGeneration(prior?.generation)
-    const version = (prior?.version ?? 0) + 1
-    const sidecar = build({ prior, generation, version, now })
+    const stamp = await this.#clock.mint({ held: stampOf(prior) })
+    const sidecar = build({ prior, generation, stamp })
     if (feed) {
       await this.#writeFeedSidecar({
         ...feed,
@@ -3380,7 +3505,7 @@ export class FileSystemBackend implements StorageBackend {
     } else {
       await this.#writeMetaSidecar({ collectionDir, resourceId, sidecar })
     }
-    return { generation, version }
+    return stampedValidator({ generation, stamp })
   }
 
   /**
@@ -3606,9 +3731,7 @@ export class FileSystemBackend implements StorageBackend {
       // A tombstone's sidecar survives its content, so the validator it carries
       // counts only when the Resource is live -- as it did when the sidecar was
       // read only in that case.
-      currentEtag: exists
-        ? etagOf({ generation: prior?.generation, version: prior?.version })
-        : undefined,
+      currentEtag: exists ? etagOf(prior ?? {}) : undefined,
       ifMatch,
       ifNoneMatch
     })
@@ -3621,8 +3744,8 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.resourceId {string}
    * @param [options.contentType] {string}
    * @returns {Promise<ResourceResult>}   includes the Resource's current
-   *   `generation` / `version` (the ETag validator) when one is recorded in its
-   *   sidecar.
+   *   `generation` and stamp (the ETag validator parts) when its sidecar
+   *   records them.
    */
   async getResource({
     spaceId,
@@ -3651,8 +3774,8 @@ export class FileSystemBackend implements StorageBackend {
    * validator (a `ResourceResult`), shared by `getResource` and `getChunk` -- a
    * chunk is a Resource keyed by its index inside its chunk dir. The
    * content-type is derived from the filename segment (the exact type it was
-   * written under), and the `generation` / `version` ETag validator from the
-   * sidecar (absent only for a legacy item written before versioning). Throws `ResourceNotFoundError` (404) when no
+   * written under), and the `generation` and stamp (the ETag validator parts)
+   * from the sidecar. Throws `ResourceNotFoundError` (404) when no
    * representation file is present. Unlike the metadata getters it does NOT
    * re-`stat` the file: the read stream's own `open` surfaces a concurrent
    * removal, so a stat existence recheck would be redundant.
@@ -3702,10 +3825,7 @@ export class FileSystemBackend implements StorageBackend {
     return {
       resourceStream,
       storedResourceType,
-      ...(sidecar?.generation !== undefined && {
-        generation: sidecar.generation
-      }),
-      ...(sidecar?.version !== undefined && { version: sidecar.version })
+      ...validatorPartsOf(sidecar)
     }
   }
 
@@ -3833,17 +3953,15 @@ export class FileSystemBackend implements StorageBackend {
    * `contentType` and `size`. Resolves `undefined` when the Resource is absent
    * (including a delete race on `stat`).
    *
-   * Also surfaces the two ETag validators when recorded, so the request layer
-   * can set the `ETag` header: HEAD / the resource itself pair the sidecar's
-   * `generation` with the content `version`, while `GET /meta` pairs the
-   * metadata object's own `metaGeneration` with `metaVersion`. All four are
-   * out-of-band fields the request layer reads for the header; none is part of
-   * the Resource Metadata wire body.
+   * Also surfaces the two records' stamps, so the request layer can set the
+   * `ETag` header: HEAD / the resource itself pair the content `generation`
+   * (out of band, not part of the wire body) with the top-level stamp, while
+   * `GET /meta` reads the nested `meta` record's stamp and generation.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
-   * @returns {Promise<(ResourceMetadata & VersionedMetadata) | undefined>}
+   * @returns {Promise<(ResourceMetadata & { generation?: string }) | undefined>}
    */
   async getResourceMetadata({
     spaceId,
@@ -3853,7 +3971,7 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
     resourceId: string
-  }): Promise<(ResourceMetadata & VersionedMetadata) | undefined> {
+  }): Promise<(ResourceMetadata & { generation?: string }) | undefined> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
     const stated = await this.#statRepresentation({ collectionDir, resourceId })
     if (!stated) {
@@ -3871,9 +3989,8 @@ export class FileSystemBackend implements StorageBackend {
       ...(sidecar?.createdAt !== undefined && {
         createdAt: sidecar.createdAt
       }),
-      ...(sidecar?.updatedAt !== undefined && {
-        updatedAt: sidecar.updatedAt
-      }),
+      ...validatorPartsOf(sidecar),
+      ...(sidecar?.meta !== undefined && { meta: sidecar.meta }),
       ...(sidecar?.createdBy !== undefined && { createdBy: sidecar.createdBy }),
       // `custom` is returned verbatim -- `{ name, tags }` on a plaintext
       // Collection, the opaque encryption envelope on an encrypted one.
@@ -3882,29 +3999,20 @@ export class FileSystemBackend implements StorageBackend {
       ...(sidecar?.epoch !== undefined && { epoch: sidecar.epoch }),
       // The client-declared writer-attribution label (spec "Writer
       // attribution"), when stamped.
-      ...(sidecar?.writerId !== undefined && { writerId: sidecar.writerId }),
-      ...(sidecar?.generation !== undefined && {
-        generation: sidecar.generation
-      }),
-      ...(sidecar?.version !== undefined && { version: sidecar.version }),
-      ...(sidecar?.metaGeneration !== undefined && {
-        metaGeneration: sidecar.metaGeneration
-      }),
-      ...(sidecar?.metaVersion !== undefined && {
-        metaVersion: sidecar.metaVersion
-      })
+      ...(sidecar?.writerId !== undefined && { writerId: sidecar.writerId })
     }
   }
 
   /**
    * Replaces the user-writable `custom` object of a Resource's metadata sidecar
-   * (full replacement; `{}` clears it), bumping `updatedAt` and the independent
-   * `metaVersion` (the `/meta` ETag). Does not create a Resource: resolves
-   * `undefined` when the Resource is absent so the handler can 404. The content
-   * `version` and the two REQUIRED server-managed fields are untouched (a
-   * metadata write does not change the stored representation, preserving the
-   * content ETag contract). On an encrypted Collection `custom` is the opaque
-   * encryption envelope, stored verbatim.
+   * (full replacement; `{}` clears it), minting a new stamp on the `/meta`
+   * record (`meta`, the `/meta` ETag) over its prior one. Does not create a
+   * Resource: resolves `undefined` when the Resource is absent so the handler
+   * can 404. The content record's stamp, `generation`, `writerId`, and the two
+   * REQUIRED server-managed fields are untouched (a metadata write does not
+   * change the stored representation, preserving the content ETag contract).
+   * On an encrypted Collection `custom` is the opaque encryption envelope,
+   * stored verbatim.
    *
    * Runs under the per-Resource write lock -- the same lock content writes take
    * -- so an `If-Match` / `If-None-Match` precondition (evaluated on the
@@ -3919,11 +4027,11 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.ifMatch] {string}   `If-Match` on the current metadata
    *   `ETag`
    * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *` -- write only if
-   *   no metadata has been written yet (no `/meta` `ETag`, i.e. `metaGeneration`
-   *   and `metaVersion` unset)
+   *   no metadata has been written yet (no `/meta` `ETag`, i.e. no `meta`
+   *   record)
    * @returns {Promise<EtagValidator | undefined>}   the metadata object's new
-   *   validator (its own `metaGeneration` with the bumped `metaVersion` as
-   *   the `version`), or `undefined` when the Resource does not exist
+   *   validator (its own generation with the stamp this write mints), or
+   *   `undefined` when the Resource does not exist
    */
   async writeResourceMetadata({
     spaceId,
@@ -3931,7 +4039,6 @@ export class FileSystemBackend implements StorageBackend {
     resourceId,
     custom,
     epoch,
-    writerId,
     uniqueIndexes,
     ifMatch,
     ifNoneMatch
@@ -3941,7 +4048,6 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     custom: ResourceMetadataCustom | Record<string, unknown>
     epoch?: string
-    writerId?: string
     uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: HeldValidators
@@ -3964,26 +4070,30 @@ export class FileSystemBackend implements StorageBackend {
       // `/meta` ETag.
       assertMetaWritePrecondition({
         resourceId,
-        currentEtag: etagOf({
-          generation: prior?.metaGeneration,
-          version: prior?.metaVersion
-        }),
+        currentEtag: etagOf(prior?.meta ?? {}),
         ifMatch,
         ifNoneMatch
       })
 
-      const now = new Date().toISOString()
+      // The metadata object's own generation: minted by the first metadata
+      // write (a tombstone dropped any earlier `meta` record, so a re-created
+      // Resource starts afresh here) and kept by every later one. Its stamp
+      // is minted over the prior `meta` stamp; the content record's stamp
+      // and generation are preserved untouched.
+      const metaGeneration = resolveGeneration(prior?.meta?.generation)
+      const metaStamp = await this.#clock.mint({ held: prior?.meta })
       // A Resource whose sidecar carries no `createdAt` takes this write's
       // time.
-      const createdAt = prior?.createdAt ?? now
-      // The metadata object's own generation: minted by the first metadata
-      // write (a tombstone dropped any earlier one with `metaVersion`, so a
-      // re-created Resource starts afresh here) and kept by every later one.
-      // The content `generation` is preserved untouched, absent included (a
-      // legacy Resource stays without a content ETag).
-      const metaGeneration = resolveGeneration(prior?.metaGeneration)
-      const metaVersion = (prior?.metaVersion ?? 0) + 1
+      const createdAt = prior?.createdAt ?? metaStamp.updatedAt
       const hasCustom = Object.keys(custom).length > 0
+      // The sidecar's content-record members, carried over as stored; this
+      // write replaces `custom`, `epoch` and `meta`.
+      const {
+        custom: _priorCustom,
+        epoch: _priorEpoch,
+        meta: _priorMeta,
+        ...contentRecord
+      } = prior ?? {}
       // The key-epoch stamp describes the CONTENT write, not this metadata
       // write, so a supplied `epoch` replaces it but an omitted one PRESERVES
       // the stored value (unlike `custom`, which is full-replace).
@@ -3996,30 +4106,18 @@ export class FileSystemBackend implements StorageBackend {
         collectionDir,
         resourceId,
         sidecar: {
+          // Preserve the content record whole: its stamp and generation (a
+          // metadata write does not change the stored representation), the
+          // server-managed creator (`createdBy` is not user-writable), and
+          // its `writerId`, which names the writer of the content.
+          ...(contentRecord as MetaSidecar),
           createdAt,
-          updatedAt: now,
-          // Preserve the server-managed creator: a metadata write replaces only
-          // `custom`, and `createdBy` is not user-writable.
-          ...(prior?.createdBy !== undefined && {
-            createdBy: prior.createdBy
-          }),
-          // Preserve the content validator (`generation` / `version`) -- a
-          // metadata write does not change the stored representation.
-          ...(prior?.generation !== undefined && {
-            generation: prior.generation
-          }),
-          ...(prior?.version !== undefined && { version: prior.version }),
-          metaGeneration,
-          metaVersion,
+          meta: { ...metaStamp, generation: metaGeneration },
           ...(hasCustom && { custom }),
-          ...(resolvedEpoch !== undefined && { epoch: resolvedEpoch }),
-          // The writer-attribution label is declare-or-clear at THIS level too
-          // (unlike `epoch`): this write is itself a revision, so an omitted
-          // `writerId` clears the stored label rather than preserving `prior`.
-          ...(writerId !== undefined && { writerId })
+          ...(resolvedEpoch !== undefined && { epoch: resolvedEpoch })
         }
       })
-      return { generation: metaGeneration, version: metaVersion }
+      return stampedValidator({ generation: metaGeneration, stamp: metaStamp })
     }
     // A metadata write can create a plaintext equality unique claim for a
     // `custom`-sourced attribute (the `equality-query` feature). When the
@@ -4077,8 +4175,8 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Soft-deletes a Resource: drops its content representation but keeps the
-   * sidecar as a **tombstone** (`deleted: true`, a bumped `version` and
-   * `updatedAt`, the last-known `contentType` retained) so the change feed
+   * sidecar as a **tombstone** (`deleted: true`, a new content stamp, the
+   * last-known `contentType` retained) so the change feed
    * (replication) still surfaces it until clients catch up (GC of tombstones is
    * future work). With no content file left, the tombstone is invisible to
    * every normal read path
@@ -4131,7 +4229,7 @@ export class FileSystemBackend implements StorageBackend {
       if (filesForResource.length === 0) {
         // Already absent (never existed, or already a tombstone): idempotent
         // no-op. Leaving an existing tombstone untouched keeps its change-feed
-        // entry (its `updatedAt` / `version`) stable.
+        // entry (its stamp) stable.
         return
       }
       // Capture the representation's last-known content-type from its filename
@@ -4158,44 +4256,40 @@ export class FileSystemBackend implements StorageBackend {
         recursive: true,
         force: true
       })
-      // Bump `version` / `updatedAt`. The version continues the monotonic
-      // count (a later re-create reads this sidecar and keeps counting up). The
-      // `generation` is kept for the same reason: the counter survives, so the
-      // validator it forms stays continuous across the soft delete. The
-      // metadata object is dropped whole -- `custom` with its validator,
-      // `metaGeneration` / `metaVersion` -- since the user Metadata goes with
-      // the deleted Resource; a re-create's first metadata write then mints a
-      // new generation, so a `/meta` ETag held from before the delete cannot
-      // pass `If-Match` against it. `createdAt` / `createdBy` are kept: they
-      // are the server's record of the Resource's origin, which a re-create
-      // under the same id continues.
+      // Mint a new content stamp over the prior one: the deletion is a
+      // revision of the content record (a later re-create reads this sidecar
+      // and mints above it). The `generation` is kept for the same reason:
+      // the record survives, so the validator it forms stays continuous
+      // across the soft delete. The `/meta` record is dropped whole --
+      // `custom` with its `meta` stamp and generation -- since the user
+      // Metadata goes with the deleted Resource; a re-create's first metadata
+      // write then mints a new generation, so a `/meta` ETag held from before
+      // the delete cannot pass `If-Match` against it. `createdAt` /
+      // `createdBy` are kept: they are the server's record of the Resource's
+      // origin, which a re-create under the same id continues.
       //
       // The tombstone takes the Collection's next feed position, so the
       // delete replicates.
-      const now = new Date().toISOString()
       const prior = await this.readMetaSidecar({ collectionDir, resourceId })
-      await this.#writeFeedSidecar({
-        spaceId,
-        collectionId,
+      await this.#stampSidecar({
         collectionDir,
         resourceId,
-        sidecar: {
-          createdAt: prior?.createdAt ?? now,
-          updatedAt: now,
+        prior,
+        feed: { spaceId, collectionId },
+        build: ({ prior, generation, stamp }) => ({
+          createdAt: prior?.createdAt ?? stamp.updatedAt,
+          ...stamp,
           ...(prior?.createdBy !== undefined && {
             createdBy: prior.createdBy
           }),
-          ...(prior?.generation !== undefined && {
-            generation: prior.generation
-          }),
-          version: (prior?.version ?? 0) + 1,
+          generation,
           deleted: true,
           contentType,
           // A deletion is a revision like any other: the tombstone carries the
           // writer-attribution label THIS delete declared, not the Resource's
           // prior one (declare-or-clear, same as a content write).
           ...(writerId !== undefined && { writerId })
-        }
+        })
       })
     }
     // The soft delete is a read-modify-write on the sidecar, so it always
@@ -4220,7 +4314,7 @@ export class FileSystemBackend implements StorageBackend {
    * listing and the live-Resource count) that holds the Resource's chunk
    * representations; inside it a chunk is stored exactly like a Resource keyed by
    * its index (`r.<index>.<encodedContentType>.<ext>` plus a `.meta.<index>.json`
-   * version sidecar), so the Resource file / sidecar helpers are reused verbatim
+   * stamp sidecar), so the Resource file / sidecar helpers are reused verbatim
    * with the chunk directory as the `collectionDir`.
    * @param options {object}
    * @param options.collectionDir {string}
@@ -4246,8 +4340,8 @@ export class FileSystemBackend implements StorageBackend {
    * per-Resource lock a `deleteResource` cascade takes so a chunk can never be
    * orphaned by a racing delete. The body is stored opaquely (bytes +
    * content-type) through the shared upload-cap / quota guards, and the chunk's
-   * own monotonic `version` (with its `generation`, the chunk's ETag validator,
-   * independent of the parent's) is bumped; any `If-Match` / `If-None-Match`
+   * own stamp is minted (with its `generation`, the chunk's ETag validator,
+   * independent of the parent's); any `If-Match` / `If-None-Match`
    * precondition is evaluated on that validator atomically with the write
    * (`PreconditionFailedError`, 412).
    * @param options {object}
@@ -4369,24 +4463,23 @@ export class FileSystemBackend implements StorageBackend {
       keepPath: filePath
     })
 
-    // Bump the chunk's monotonic `version` under its `generation` (its ETag
-    // validator), preserving its `createdAt`. A chunk keeps no tombstone, so a
-    // delete takes the sidecar with it and the next write at this index mints a
-    // fresh generation. A chunk carries no user Metadata / `createdBy` / epoch
-    // stamp.
+    // Mint the chunk's stamp under its `generation` (its ETag validator),
+    // preserving its `createdAt`. A chunk keeps no tombstone, so a delete
+    // takes the sidecar with it and the next write at this index mints a
+    // fresh generation. A chunk carries no user Metadata / `createdBy` /
+    // epoch.
     const priorChunkSidecar = await this.readMetaSidecar({
       collectionDir: chunkDir,
       resourceId: chunkId
     })
-    return this.#bumpSidecarVersion({
+    return this.#stampSidecar({
       collectionDir: chunkDir,
       resourceId: chunkId,
       prior: priorChunkSidecar,
-      build: ({ prior, generation, version, now }) => ({
-        createdAt: prior?.createdAt ?? now,
-        updatedAt: now,
-        generation,
-        version
+      build: ({ prior, generation, stamp }) => ({
+        createdAt: prior?.createdAt ?? stamp.updatedAt,
+        ...stamp,
+        generation
       })
     })
   }
@@ -4460,10 +4553,7 @@ export class FileSystemBackend implements StorageBackend {
     return {
       contentType,
       size: stats.size,
-      ...(sidecar?.generation !== undefined && {
-        generation: sidecar.generation
-      }),
-      ...(sidecar?.version !== undefined && { version: sidecar.version })
+      ...validatorPartsOf(sidecar)
     }
   }
 
@@ -4600,20 +4690,10 @@ export class FileSystemBackend implements StorageBackend {
               }
               throw err
             }
-            const sidecar = await this.readMetaSidecar({
-              collectionDir: chunkDir,
-              resourceId: indexStr
-            })
             return {
               index: Number(indexStr),
               size: stats.size,
-              contentType,
-              ...(sidecar?.generation !== undefined && {
-                generation: sidecar.generation
-              }),
-              ...(sidecar?.version !== undefined && {
-                version: sidecar.version
-              })
+              contentType
             }
           }
         )
@@ -4662,21 +4742,20 @@ export class FileSystemBackend implements StorageBackend {
     afterPosition?: number
     limit: number
   }): Promise<{
-    documents: Array<{
-      resourceId: string
-      feedPosition: number
-      version: number
-      metaVersion?: number
-      generation?: string
-      metaGeneration?: string
-      createdBy?: IDID
-      updatedAt: string
-      deleted: boolean
-      data?: unknown
-      custom?: ResourceMetadataCustom | Record<string, unknown>
-      epoch?: string
-      writerId?: string
-    }>
+    documents: Array<
+      {
+        resourceId: string
+        feedPosition: number
+        generation?: string
+        meta?: ResourceMetaStamp
+        createdBy?: IDID
+        deleted: boolean
+        data?: unknown
+        custom?: ResourceMetadataCustom | Record<string, unknown>
+        epoch?: string
+        writerId?: string
+      } & WriteStamp
+    >
     checkpoint: number | null
     feedGeneration?: string
   }> {
@@ -4733,16 +4812,13 @@ export class FileSystemBackend implements StorageBackend {
     // an independent file read, so the whole pass runs in parallel. A live
     // descriptor carries the `fileName` to read its body from; a tombstone has
     // none -- the discriminated union ties that to `deleted`.
-    type Descriptor =
+    type Descriptor = (
       | {
           resourceId: string
           feedPosition: number
-          version: number
-          metaVersion?: number
           generation?: string
-          metaGeneration?: string
+          meta?: ResourceMetaStamp
           createdBy?: IDID
-          updatedAt: string
           deleted: false
           fileName: string
           custom?: ResourceMetadataCustom | Record<string, unknown>
@@ -4752,13 +4828,13 @@ export class FileSystemBackend implements StorageBackend {
       | {
           resourceId: string
           feedPosition: number
-          version: number
           generation?: string
           createdBy?: IDID
-          updatedAt: string
           deleted: true
           writerId?: string
         }
+    ) &
+      WriteStamp
     const liveDescriptors = [...liveFileById].map(
       async ([resourceId, live]): Promise<Descriptor | undefined> => {
         if (!isJsonContentType(live.contentType)) {
@@ -4768,45 +4844,41 @@ export class FileSystemBackend implements StorageBackend {
           collectionDir,
           resourceId
         })
-        // The feed position, `updatedAt` and `version` come from the
-        // sidecar. A Resource with no feed position in range, or no
-        // `updatedAt`, is left out.
+        // The feed position and the content stamp come from the sidecar. A
+        // Resource with no feed position in range, or no whole stamp, is
+        // left out.
         const feedPosition = sidecar?.feedPosition
-        const updatedAt = sidecar?.updatedAt
-        if (!inFeed(feedPosition) || !updatedAt) {
+        const stamp = stampOf(sidecar)
+        if (
+          sidecar === undefined ||
+          !inFeed(feedPosition) ||
+          !isWriteStamp(stamp)
+        ) {
           return undefined
         }
         return {
           resourceId,
           feedPosition,
-          version: sidecar?.version ?? 0,
-          ...(sidecar?.metaVersion !== undefined && {
-            metaVersion: sidecar.metaVersion
-          }),
-          // `generation` pairs with `version` and `metaGeneration` with
-          // `metaVersion` so the request layer can derive the wire `etag` /
+          ...stamp,
+          // `generation` pairs with the content stamp, and `meta` carries
+          // its own, so the request layer can derive the wire `etag` /
           // `metaEtag` without a fetch per Resource.
-          ...(sidecar?.generation !== undefined && {
-            generation: sidecar.generation
-          }),
-          ...(sidecar?.metaGeneration !== undefined && {
-            metaGeneration: sidecar.metaGeneration
-          }),
+          generation: sidecar.generation,
+          ...(sidecar.meta !== undefined && { meta: sidecar.meta }),
           // The creator's DID rides the feed so provenance replicates with the
           // document, rather than needing a `/meta` fetch per Resource.
-          ...(sidecar?.createdBy !== undefined && {
+          ...(sidecar.createdBy !== undefined && {
             createdBy: sidecar.createdBy
           }),
-          updatedAt,
           deleted: false,
           fileName: live.fileName,
           // The user-writable `custom` (the opaque encryption envelope on an
           // encrypted Collection) rides the feed so metadata replicates
           // alongside content; read from the sidecar already loaded here.
-          ...(sidecar?.custom !== undefined && { custom: sidecar.custom }),
+          ...(sidecar.custom !== undefined && { custom: sidecar.custom }),
           // The client-declared key epoch (the `key-epochs` feature) rides the
           // feed so a replicating reader picks the right epoch key.
-          ...(sidecar?.epoch !== undefined && { epoch: sidecar.epoch }),
+          ...(sidecar.epoch !== undefined && { epoch: sidecar.epoch }),
           // The writer-attribution label (spec "Writer attribution") rides
           // the feed so a replica recognizes its own writes echoed back.
           ...(sidecar?.writerId !== undefined && {
@@ -4824,27 +4896,26 @@ export class FileSystemBackend implements StorageBackend {
           collectionDir,
           resourceId
         })
+        const stamp = stampOf(sidecar)
         if (
           sidecar?.deleted !== true ||
           !isJsonContentType(sidecar.contentType) ||
-          !inFeed(sidecar.feedPosition)
+          !inFeed(sidecar.feedPosition) ||
+          !isWriteStamp(stamp)
         ) {
           return undefined
         }
         return {
           resourceId,
           feedPosition: sidecar.feedPosition,
-          version: sidecar.version ?? 0,
-          // A soft delete dropped the `/meta` object, so a tombstone carries no
-          // `metaGeneration` / `metaVersion`.
-          ...(sidecar.generation !== undefined && {
-            generation: sidecar.generation
-          }),
+          ...stamp,
+          // A soft delete dropped the `/meta` record, so a tombstone carries
+          // no `meta`.
+          generation: sidecar.generation,
           // A tombstone keeps its creator, as it keeps its `createdAt`.
           ...(sidecar.createdBy !== undefined && {
             createdBy: sidecar.createdBy
           }),
-          updatedAt: sidecar.updatedAt,
           deleted: true,
           // A tombstone carries the label its DELETE declared, if any (spec
           // "Writer attribution").
@@ -5314,25 +5385,32 @@ export class FileSystemBackend implements StorageBackend {
         })
         // The served Space Metadata object lists this record under
         // `backends`, so its validator advances with the registration.
-        await this.#bumpSpaceMetaVersion({ spaceId })
+        await this.#advanceSpaceMetaLocal({ spaceId })
       }
     })
   }
 
   /**
-   * Advances the Space Metadata object's version without changing its stored
-   * body, for a write that changes the served object through a derived member
-   * -- `backends`, read off the registration records -- rather than through
-   * the body itself. The generation is kept, so a client's cached `ETag` for
-   * the object stops matching, as it must for a strong validator. Serialized
-   * with the Metadata writes through the same per-Space lock, so the bump
-   * cannot be lost under a concurrent `writeSpace`. A Space with no Metadata
-   * object yet has no validator to advance.
+   * Advances the Space Metadata object's local validator segment without
+   * changing its stored body or minting a stamp, for a write that changes the
+   * served object through a derived member -- `backends`, read off the
+   * registration records -- rather than through the body itself. A stamp
+   * would replicate as a write of the object; the local segment is this
+   * server's own. The generation and stamp are kept, so a client's cached
+   * `ETag` for the object stops matching through the local segment alone, as
+   * it must for a strong validator. Serialized with the Metadata writes
+   * through the same per-Space lock, so the advance cannot be lost under a
+   * concurrent `writeSpace`. A Space with no Metadata object yet has no
+   * validator to advance.
    * @param options {object}
    * @param options.spaceId {string}
    * @returns {Promise<void>}
    */
-  async #bumpSpaceMetaVersion({ spaceId }: { spaceId: string }): Promise<void> {
+  async #advanceSpaceMetaLocal({
+    spaceId
+  }: {
+    spaceId: string
+  }): Promise<void> {
     await this.#writeMutex.run(
       this.#spaceMetaLockKey({ spaceId }),
       async () => {
@@ -5349,7 +5427,7 @@ export class FileSystemBackend implements StorageBackend {
             embedMetadataValidator({
               body: stripMetadataValidator(prior),
               generation: resolveGeneration(prior.metaGeneration),
-              version: (prior.metaVersion ?? 0) + 1
+              local: (prior.metaLocal ?? 0) + 1
             })
           )
         })
@@ -5409,9 +5487,9 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Removes a registered backend record. Idempotent (no error if absent). A
-   * removal that found the record advances the Space Metadata object's
-   * version, since its `backends` listing changed; one that found nothing
-   * leaves the object as it was.
+   * removal that found the record advances the Space Metadata object's local
+   * validator segment, since its `backends` listing changed; one that found
+   * nothing leaves the object as it was.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.backendId {string}
@@ -5424,8 +5502,9 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     backendId: string
   }): Promise<void> {
-    // Under the Space gate: the version bump rewrites the Space Metadata
-    // file, which a concurrent Delete Space must not remove from under it.
+    // Under the Space gate: the local-segment advance rewrites the Space
+    // Metadata file, which a concurrent Delete Space must not remove from
+    // under it.
     return this.#underSpaceWrite({
       spaceId,
       write: async () => {
@@ -5437,7 +5516,7 @@ export class FileSystemBackend implements StorageBackend {
           }
           throw err
         }
-        await this.#bumpSpaceMetaVersion({ spaceId })
+        await this.#advanceSpaceMetaLocal({ spaceId })
       }
     })
   }

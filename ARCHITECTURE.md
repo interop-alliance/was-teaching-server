@@ -115,62 +115,74 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   still sniffed, and runs sandboxed too.
 - **`src/lib/etag.ts`** and **`src/lib/preconditions.ts`** — the `ETag`
   validators (spec "Caching" and "Conditional Requests"). A Resource, a chunk, a
-  Resource's `/meta` object, and each container's Metadata object (the Space
-  Metadata object, the Collection Metadata object) carries a generation and a
-  monotonic version that `formatEtag` emits together as one strong `ETag`
-  (`"<generation>.<version>"`) on GET/HEAD. One validator covers a container's
-  whole Metadata object: v0.5 merged what used to be a separate Collection
-  description and its `/meta` annotation object into one `CollectionMetadata`
-  record, so `metaVersion` advances on a configuration write (`backend`,
-  `encryption`, `generator`) and an annotation write (`custom`, `epoch`) alike.
-  The Space Metadata object's `metaVersion` also advances when a backend is
-  registered or deregistered on the Space: its served `backends` member changed
-  while its stored body did not, and a strong validator must move with the
-  representation (both backends bump the version only, the generation kept,
-  under the same per-Space lock as a Metadata write). The terms "Space
-  Description" and "Collection Description" are retired; storage exposes one
-  validator pair per container, `metaGeneration` / `metaVersion`, through
+  Resource's `/meta` object, a Collection's governing history log, and each
+  container's Metadata object (the Space Metadata object, the Collection
+  Metadata object) carries a generation and the write stamp of its last write
+  (`lib/hlc.ts`, below). `formatEtag` emits the two together as one strong
+  `ETag` on GET/HEAD, `"<generation>.<ms>.<counter>.<originId>"`, where `ms` is
+  the stamp's `updatedAt` in epoch milliseconds. A container's Metadata object
+  appends a fifth segment, its local segment:
+  `"<generation>.<ms>.<counter>.<originId>.<local>"`. Every write mints a new
+  stamp, so the validator moves with every write. One validator covers a
+  container's whole Metadata object. v0.5 merged what used to be a separate
+  Collection description and its `/meta` annotation object into one
+  `CollectionMetadata` record, so a configuration write (`backend`,
+  `encryption`, `generator`) and an annotation write (`custom`, `epoch`) each
+  mint the object's stamp. Some changes move a Metadata object's served
+  representation without a write of the object. A backend registered or
+  deregistered on a Space changes the Space Metadata object's served `backends`
+  member. A governed-log write changes the Collection Metadata object's derived
+  `encryption` member. A strong validator must move with the representation, so
+  each of these advances the object's local segment and keeps its generation and
+  stamp, under the same lock as a Metadata write. A stamp would replicate as a
+  write of the object, while the local segment is this server's own. The next
+  stamped write resets it to 0. The terms "Space Description" and "Collection
+  Description" are retired. Storage exposes one validator per container through
   `writeSpace` / `getSpaceMetadata` and `writeCollection` /
-  `getCollectionMetadata` -- there is no separate `writeCollectionMetadata` /
-  `getCollectionMetadata` pair. The generation is a random base58 marker minted
-  when the record's counter starts and kept for the record's life. A Resource's
-  content counter continues through a tombstone and its re-create, so its
-  generation does too. The Resource's `/meta` object is a record of its own with
-  its own generation (`metaGeneration` in the sidecar, `meta_generation` in
-  Postgres), and a soft delete drops it together with `custom` and
-  `metaVersion`, so a re-create's first metadata write starts a fresh generation
-  at version 1 and a `/meta` `ETag` held from before the delete cannot pass
-  `If-Match` against it. A hard delete (a chunk, a Collection, a Space) removes
-  the counter with the record, so the next record under the same id mints a new
-  generation and its validators never coincide with the old record's; a client's
-  stale cached `ETag` then matches nothing instead of being answered 304 over
-  different bytes. A client treats the whole quoted value as opaque and may read
-  the trailing integer as the revision number. Writes are gated by `If-Match` /
-  `If-None-Match: *`, which `parseWritePreconditions` normalizes and the
-  backends evaluate atomically with the write through `preconditions.ts`. The
-  Space and Collection Metadata objects take both: the `If-None-Match: *`
-  guarded create is what resolves two clients provisioning the same Space or
-  Collection at once (the loser's replace-semantics `PUT` would otherwise
-  rewrite the winner's `type` array or `backend`), and it refuses whenever the
-  container already has a Metadata object, `ETag` or not. Update Space
-  (`PUT /space/:spaceId/meta`) chooses its authorization from an unlocked read,
-  so its write passes `writeSpace` an `assertTransition` hook that pins it to
-  that read: the Space must still be absent on a create, and carry the same
-  validator on an update. On a mismatch the handler re-reads and re-authorizes
-  on the branch the fresh read selects. A create that lost a race is then
-  authorized as an update against the winner's controller. After three attempts
-  it answers 503 with `Retry-After`. The client's own preconditions go to the
-  backend as sent, so a 412 answers only a header the client sent. The validator
-  is embedded in the stored record as reserved `_generation` / `_version`
-  members -- the filesystem backend keeps one file per container
-  (`.space.<id>.json`, `.collection.<id>.json`) holding the wire body and the
-  validator together -- and as `meta_generation` / `meta_version` columns on the
-  Postgres `spaces` and `collections` rows, kept out of the wire body; it is
-  emitted on Read Space / Read Collection and on the Create/Update responses. A
-  Space Metadata write is serialized per Space (the `spacemeta:` lock in the
-  filesystem backend, an advisory lock plus row lock in Postgres) and a
-  Collection Metadata write per Collection (the `cmeta:` lock), so the check and
-  the version bump are atomic. Reads are conditional the other way round: a
+  `getCollectionMetadata`, as the out-of-band `metaGeneration` / `metaLocal`
+  beside the stamp members of the body. There is no separate
+  `writeCollectionMetadata` / `getCollectionMetadata` pair. The generation is a
+  random base58 marker minted at the record's first write and kept for the
+  record's life. A Resource's content record continues through a tombstone and
+  its re-create, so its generation does too. The Resource's `/meta` object is a
+  record of its own, with its own stamp and generation. The filesystem sidecar
+  nests both under its `meta` member, and Postgres keeps them in `meta_`
+  columns. A soft delete drops that record together with `custom`, so a
+  re-create's first metadata write starts a fresh generation and a `/meta`
+  `ETag` held from before the delete cannot pass `If-Match` against it. A hard
+  delete (a chunk, a Collection, a Space) removes the record, so the next record
+  under the same id mints a new generation and its validators never coincide
+  with the old record's; a client's stale cached `ETag` then matches nothing
+  instead of being answered 304 over different bytes. A client treats the whole
+  quoted value as opaque, and `If-Match` and `If-None-Match` compare the whole
+  string. Writes are gated by `If-Match` / `If-None-Match: *`, which
+  `parseWritePreconditions` normalizes and the backends evaluate atomically with
+  the write through `preconditions.ts`. The Space and Collection Metadata
+  objects take both: the `If-None-Match: *` guarded create is what resolves two
+  clients provisioning the same Space or Collection at once (the loser's
+  replace-semantics `PUT` would otherwise rewrite the winner's `type` array or
+  `backend`), and it refuses whenever the container already has a Metadata
+  object, `ETag` or not. Update Space (`PUT /space/:spaceId/meta`) chooses its
+  authorization from an unlocked read, so its write passes `writeSpace` an
+  `assertTransition` hook that pins it to that read: the Space must still be
+  absent on a create, and carry the same validator on an update. On a mismatch
+  the handler re-reads and re-authorizes on the branch the fresh read selects. A
+  create that lost a race is then authorized as an update against the winner's
+  controller. After three attempts it answers 503 with `Retry-After`. The
+  client's own preconditions go to the backend as sent, so a 412 answers only a
+  header the client sent. The generation and local segment are embedded in the
+  stored record as reserved `_generation` / `_local` members -- the filesystem
+  backend keeps one file per container (`.space.<id>.json`,
+  `.collection.<id>.json`) holding the wire body and the two together -- and as
+  `meta_generation` / `meta_local` columns on the Postgres `spaces` and
+  `collections` rows, kept out of the wire body. The stamp members are wire
+  members and are stored in the body. An export archive's Metadata entry carries
+  `_generation` alone, since the local segment does not leave this server. The
+  `ETag` is emitted on Read Space / Read Collection and on the Create/Update
+  responses. A Space Metadata write is serialized per Space (the `spacemeta:`
+  lock in the filesystem backend, an advisory lock plus row lock in Postgres)
+  and a Collection Metadata write per Collection (the `cmeta:` lock), so the
+  check and the stamp are atomic. Reads are conditional the other way round: a
   GET/HEAD carrying `If-None-Match` is parsed by `parseIfNoneMatch` into the set
   of validators the client holds (RFC 9110 weak comparison, list and `*` forms),
   and a handler answers 304 Not Modified with the `ETag` and no body when that
@@ -179,39 +191,70 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   after authorization, so an under-authorized conditional read still gets the
   404 mask. A Resource or chunk GET consults the stored metadata first when the
   header is present and opens the byte stream only on a miss. A representation
-  with no validator (a legacy Resource, or metadata never written) is matched
-  only by `*`, which RFC 9110 makes true for any current representation; its 304
-  then carries no `ETag`, as its 200 would not. Responses to non-idempotent
-  POSTs are marked `Cache-Control: no-store` by an `onSend` hook in `routes.ts`;
-  a slash-variant redirect and a POST route registered with `config.safe` (Query
-  and Export, reads that use POST to carry a body) stay cacheable. The spec
-  defers further `Cache-Control` semantics.
+  with no validator (a Resource whose sidecar is missing, or a `/meta` object
+  never written) is matched only by `*`, which RFC 9110 makes true for any
+  current representation; its 304 then carries no `ETag`, as its 200 would not.
+  Responses to non-idempotent POSTs are marked `Cache-Control: no-store` by an
+  `onSend` hook in `routes.ts`; a slash-variant redirect and a POST route
+  registered with `config.safe` (Query and Export, reads that use POST to carry
+  a body) stay cacheable. The spec defers further `Cache-Control` semantics.
+- **`src/lib/hlc.ts`** -- the write stamp. Each storage backend holds one hybrid
+  logical clock for its store, and a versioned write mints its stamp with it
+  inside the write's critical section. The stamp is the clock reading plus the
+  store's origin id, carried as `updatedAt` (the ISO string of the reading's
+  milliseconds), `updatedAtCounter`, and `originId`. Stamps are ordered by
+  `(ms, counter, originId)`, the first two numerically and the origin id by
+  plain string comparison. The clock reading never runs below the largest
+  physical time or stamp the clock has seen. Within one millisecond the counter
+  ticks, and it restarts at 0 when the millisecond advances. A write over a
+  stored record first raises the clock to that record's stamp, so the mint is
+  `max(now, held stamp + one counter tick)`. The new stamp therefore sorts above
+  the one it replaces, even when physical time stepped back or the process
+  restarted. The physical clock is injectable (a `physicalClock` option), so a
+  test can freeze or step it. The clock persists a high-water mark of its
+  physical part at most about once a second: `clockHighWater` in the filesystem
+  `store.json`, `store.clock_high_water` in Postgres. A backend's `close()`
+  persists it once more, so a clean restart starts above every stamp minted
+  before it. At boot the clock starts one millisecond past that mark. The mark
+  can trail the last stamp minted before a crash by up to about a second, so it
+  is the held-stamp rule that keeps an overwrite above the stamp it replaces. A
+  failed write of the mark is logged at `warn` and retried at the next mint. It
+  does not fail the write that minted. The clock also has a receive rule for a
+  stamp from a peer, which refuses one dated more than the clock bound ahead of
+  physical time (`WAS_REPLICATION_CLOCK_BOUND_MS`, default 60000 ms). No request
+  path receives a peer's stamp yet. A stamp enters a store only from that
+  store's own clock: an import re-stamps every record it writes. One server
+  process per store is an assumption the stamps rest on. Two processes over one
+  store would share its origin id and could mint the same stamp for two
+  different writes, which would give different bytes one strong validator. The
+  read caches below rest on the same assumption.
 - **`src/lib/changesCheckpoint.ts`** -- the `changes` query profile's wire
   checkpoint. The feed is ordered by a per-Collection feed position, a positive
   integer sequence. Every Resource-level write takes the next one: a content
   write, a metadata write, a soft delete, and a Resource written by an import. A
   chunk write takes none, so it never moves its parent. The position is assigned
   inside the per-Collection critical section that makes the write visible, so no
-  write lands at or before a position a reader was already handed. `updatedAt`
-  has no ordering role: two writes can share a millisecond. The filesystem
-  backend keeps the counter in `.feed.<collectionId>.json` in the Collection dir
-  and stamps the position on the sidecar as `feedPosition`, under a `feed:` key
-  nested inside the per-Resource lock. `changesSince` reads the counter under
-  that key and admits only positions at or below it. The Postgres backend
-  increments `collections.feed_position` with `UPDATE ... RETURNING`, whose row
-  lock is held to commit, so positions are commit-ordered, and stamps
+  write lands at or before a position a reader was already handed. The write
+  stamp each feed document carries orders two revisions of one Resource, not the
+  feed. `updatedAt` alone has no ordering role, since two writes can share a
+  millisecond. The filesystem backend keeps the counter in
+  `.feed.<collectionId>.json` in the Collection dir and stamps the position on
+  the sidecar as `feedPosition`, under a `feed:` key nested inside the
+  per-Resource lock. `changesSince` reads the counter under that key and admits
+  only positions at or below it. The Postgres backend increments
+  `collections.feed_position` with `UPDATE ... RETURNING`, whose row lock is
+  held to commit, so positions are commit-ordered, and stamps
   `resources.feed_position` in the same transaction. A position is one server's
   fact about its own feed: export strips it and import assigns fresh ones. An
   imported Resource with no archived metadata gets fresh metadata, so it takes a
-  position too. A Resource stored before positions existed has none and is
-  absent from the feed until it is rewritten. The counter has a generation,
-  minted with the first position it hands out and kept for the Collection's life
-  (`generation` in the counter file, `collections.feed_generation` in Postgres).
-  It goes with the Collection, so a Collection re-created under the same id, by
-  hand or by an import, restarts at 1 under a fresh one; an import keeps the
-  archived Collection Metadata generation, so that one cannot tell the two lives
-  apart. On the wire the checkpoint is an opaque string, which a client compares
-  by equality only and echoes back verbatim. This server encodes it as
+  position too. The counter has a generation, minted with the first position it
+  hands out and kept for the Collection's life (`generation` in the counter
+  file, `collections.feed_generation` in Postgres). It goes with the Collection,
+  so a Collection re-created under the same id, by hand or by an import,
+  restarts at 1 under a fresh one; an import keeps the archived Collection
+  Metadata generation, so that one cannot tell the two lives apart. On the wire
+  the checkpoint is an opaque string, which a client compares by equality only
+  and echoes back verbatim. This server encodes it as
   `base64urlnopad(JSON.stringify({ feed, generation, position }))`, where `feed`
   is the Collection's absolute trailing-slash URL and `generation` the feed
   counter's, so a checkpoint is scoped to the server, the Collection, and the
@@ -234,43 +277,43 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   The TTLs therefore rest on a single-instance deployment. When several
   instances share one storage backend, a controller retired by an Update Space
   on one instance keeps its authority on another for up to one TTL. A changed or
-  deleted policy likewise keeps granting there for up to one TTL.
+  deleted policy likewise keeps granting there for up to one TTL. The write
+  stamps rest on the same single-instance deployment (see `lib/hlc.ts`).
 - **`src/lib/governedEncryptionCache.ts`** -- a third read cache, one per
   storage backend, memoizing the `encryption` descriptor derived from a
   log-governed Collection's history log. The parse is what it saves, since the
   log is append-only and grows. The log body is still read on each request. An
-  entry is keyed by Collection and by the log's own validator
-  (`<generation>.<version>`), so a log write leaves the old key behind and the
-  next derivation misses on a new one. It therefore carries none of the
-  multi-instance staleness the two caches above carry. Delete Collection, Delete
-  Space, and Import Space still drop entries by prefix, since an import installs
-  an archived log with the archive's own validator, which could coincide with a
-  cached one over different bytes. Entries expire after 600 s and are capped at
-  1000 (`GOVERNED_ENCRYPTION_CACHE_TTL`, `GOVERNED_ENCRYPTION_CACHE_MAX`).
+  entry is keyed by Collection and by the log's own four-segment `ETag`, so a
+  log write leaves the old key behind and the next derivation misses on a new
+  one. It therefore carries none of the multi-instance staleness the two caches
+  above carry. Delete Collection, Delete Space, and Import Space still drop
+  entries by prefix. Entries expire after 600 s and are capped at 1000
+  (`GOVERNED_ENCRYPTION_CACHE_TTL`, `GOVERNED_ENCRYPTION_CACHE_MAX`).
 - **`src/lib/governedLog.ts`** -- the `governed-history-logs` feature: a
   Collection's governing history log, served at its own sub-resource
   (`GET`/`PUT /space/:spaceId/:collectionId/meta/log`,
   `CollectionRequest.getLog` / `putLog`). The log is not a Resource: it is
   absent from listings and the changes feed, exempt from the
   encrypted-Collection envelope rule, and left untouched by a `PUT /meta`. It is
-  served as `text/jsonl` with its own generation/version `ETag`, so a
-  conditional `GET` behaves like any other record; a `PUT` is either a guarded
-  create (`If-None-Match: *`) or a compare-and-swap append (`If-Match` carrying
-  the prior bytes verbatim plus one new line), 412 on a lost race. `GET` is
-  capability-or-policy at the Collection's target; `PUT` is capability-only,
-  like `/meta`, and carries the same container rule as `/meta` (see below): a
-  direct root invocation, or a delegated capability whose tail targets exactly
-  the Space's canonical trailing-slash URL. The guarded create is the
-  declaration that puts the Collection under log governance, and is refused with
-  `encryption-immutable` (409) on a Collection whose Metadata object already
-  carries a client-written `encryption` member. From then on, the Collection's
-  served `encryption` member -- read by Get Collection and by every handler that
-  loads the Collection Metadata object through `getCollectionOrThrow`, so the
-  write-time envelope check sees it too -- is derived from the log's last line's
-  `state`, with a `history: { method, resource }` member always stamped on
-  (`method` from the genesis line's `parameters.method`, `resource` the log's
-  own URL); the stored Collection Metadata object never carries that derived
-  member, a direct `encryption` write against it is refused with
+  served as `text/jsonl` with its own `ETag`, from its generation and write
+  stamp, so a conditional `GET` behaves like any other record; a `PUT` is either
+  a guarded create (`If-None-Match: *`) or a compare-and-swap append (`If-Match`
+  carrying the prior bytes verbatim plus one new line), 412 on a lost race.
+  `GET` is capability-or-policy at the Collection's target; `PUT` is
+  capability-only, like `/meta`, and carries the same container rule as `/meta`
+  (see below): a direct root invocation, or a delegated capability whose tail
+  targets exactly the Space's canonical trailing-slash URL. The guarded create
+  is the declaration that puts the Collection under log governance, and is
+  refused with `encryption-immutable` (409) on a Collection whose Metadata
+  object already carries a client-written `encryption` member. From then on, the
+  Collection's served `encryption` member -- read by Get Collection and by every
+  handler that loads the Collection Metadata object through
+  `getCollectionOrThrow`, so the write-time envelope check sees it too -- is
+  derived from the log's last line's `state`, with a
+  `history: { method, resource }` member always stamped on (`method` from the
+  genesis line's `parameters.method`, `resource` the log's own URL); the stored
+  Collection Metadata object never carries that derived member, a direct
+  `encryption` write against it is refused with
   `encryption-history-log-governed` (409), and its other fields still update
   normally. The derivation is memoized per backend by the log's validator
   (`lib/governedEncryptionCache.ts`, above). Update Collection's recheck under
@@ -286,17 +329,18 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   prefix of is `precondition-failed`, 412, with or without `If-Match`, and one
   adding more than one line is `invalid-request-body`, 400). A body equal to the
   stored log byte for byte is a no-op. Once its preconditions pass, it answers
-  204 with the current `ETag` and writes nothing, so neither the log's version
+  204 with the current `ETag` and writes nothing, so neither the log's `ETag`
   nor the Collection Metadata object's moves. A body that is a strict prefix of
   the stored log would erase lines and stays a 412. On every append the server
   runs the same encryption-descriptor transition checks against the prior head
   that an ordinary Collection Metadata update runs. The fast-forward rule keeps
   the log append-only at the server: a write capability can add history but not
   erase it, while a break inside an appended entry stays the verifying reader's
-  to detect. A log write also bumps the Collection Metadata object's own `ETag`,
-  since its served content changed, but leaves its `updatedAt` untouched -- both
-  backends advance only the version counter -- and is serialized with Collection
-  Metadata writes through the same per-Collection lock.
+  to detect. A log write mints the log's own stamp. It also advances the
+  Collection Metadata object's local segment, since the object's served content
+  changed, and leaves that object's stamp untouched, `updatedAt` included. It is
+  serialized with Collection Metadata writes through the same per-Collection
+  lock.
 - **`src/serviceDescription.ts`** -- the service description (spec "Service
   Description"): `GET /service`, unauthenticated, serving the JSON document that
   lists four entries in its `specs`. The core entry, under the
@@ -312,10 +356,10 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   guarantees of every backend a Collection may be created on, since the server
   -- not the storage engine -- serializes each write and mints its own opaque
   validator; a content hash would serve as a strong validator as well as the
-  version counter used here. The entry under
-  `https://w3id.org/pws/authz-profile` names the zCap authorization profile
-  version (`0.1`) and its rendered location, and carries the accepted
-  `signatureAlgorithms` and `zcapCryptosuites` (profile
+  write stamp used here. The entry under `https://w3id.org/pws/authz-profile`
+  names the zCap authorization profile version (`0.1`) and its rendered
+  location, and carries the accepted `signatureAlgorithms` and
+  `zcapCryptosuites` (profile
   ["Service Description Entry"](https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/#service-description-entry)).
   The document's `instance` member, the operator's disclosure of the deployed
   software, also carries the instance's identity when the server has one
@@ -413,29 +457,31 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `StorageAttestation` statement per exported object in manifest order: the
   Space Metadata object, each Collection Metadata object, and each Resource with
   a representation (a tombstone holds no content and gets none). A statement is
-  `{ id, type, createdBy, createdAt, version, digest, didLogVersionId }`. `id`
-  is the object's absolute URL on this server. The server-managed members are
-  read back off the archived Metadata file or `.meta.<id>.json` sidecar, and a
-  member the record lacks is left out. `digest` is the `Digest` header's `mh=`
+  `{ id, type, createdBy, createdAt, updatedAt, updatedAtCounter, originId, meta, digest, didLogVersionId }`.
+  `id` is the object's absolute URL on this server. The server-managed members
+  are read back off the archived Metadata file or `.meta.<id>.json` sidecar, and
+  a member the record lacks is left out. `digest` is the `Digest` header's `mh=`
   form over the representation's archived bytes. A chunked Resource's `digest`
   is the same form over the JCS serialization of its chunk digests in index
   order, so its parent representation's bytes are not covered. These reading and
-  digest rules live in `lib/provenanceStatement.ts`. A Metadata statement
-  carries `metaVersion` (the file's embedded `_version`) in place of `version`
-  and `digest`. `didLogVersionId` is the snapshot head's `versionId`, since
-  `proof.created` is not trustworthy. Each statement carries one
-  `eddsa-jcs-2022` proof, `proofPurpose` `assertionMethod`, made straight from
-  the suite rather than through `jsigs.sign`, which would add a JSON-LD
-  `@context` the statement does not carry. The proof has no `created`, and
-  Ed25519 is deterministic, so signing the same statement again yields the same
-  bytes. That keeps a later write-time signature interchangeable with an
-  export-time one. The statements go into the archive's `provenance.jsonl` and
-  the snapshot into its `did.jsonl`, both root entries ahead of `space/`, so
-  each Resource is read twice, once to digest it and once to pack it. The export
-  is not one transaction, so a Resource written between the two reads leaves a
-  statement that does not match its archived bytes. One deleted after the
-  backend built the entry tree gets no statement, and the export goes on. Import
-  verifies both entries (`lib/importProvenance.ts`, below).
+  digest rules live in `lib/provenanceStatement.ts`. `updatedAt`,
+  `updatedAtCounter` and `originId` are the object's write stamp as archived. A
+  Resource's `meta` is its `/meta` record's stamp and generation, present once
+  metadata was written. A Metadata statement carries no `meta` and no `digest`.
+  `didLogVersionId` is the snapshot head's `versionId`, since `proof.created` is
+  not trustworthy. Each statement carries one `eddsa-jcs-2022` proof,
+  `proofPurpose` `assertionMethod`, made straight from the suite rather than
+  through `jsigs.sign`, which would add a JSON-LD `@context` the statement does
+  not carry. The proof has no `created`, and Ed25519 is deterministic, so
+  signing the same statement again yields the same bytes. That keeps a later
+  write-time signature interchangeable with an export-time one. The statements
+  go into the archive's `provenance.jsonl` and the snapshot into its
+  `did.jsonl`, both root entries ahead of `space/`, so each Resource is read
+  twice, once to digest it and once to pack it. The export is not one
+  transaction, so a Resource written between the two reads leaves a statement
+  that does not match its archived bytes. One deleted after the backend built
+  the entry tree gets no statement, and the export goes on. Import verifies both
+  entries (`lib/importProvenance.ts`, below).
 - **`src/lib/importProvenance.ts`** -- import provenance, the verifying half.
   The Import Space handler runs it through one call, `prepareImportPlan` in
   `lib/importPlan.ts`, which extracts the archive and builds the plan with
@@ -453,9 +499,10 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `didLogVersionId`, by verifying the log up to that entry, and must list the
   method under `assertionMethod` alone. Then the `eddsa-jcs-2022` proof is
   verified. Last, the statement's claims are compared with the archived object:
-  `createdBy`, `createdAt`, `version` or `metaVersion`, and a Resource's
-  `digest` (the composite chunk digest for a chunked Resource). The archived
-  object's members and digests are computed by the same
+  `createdBy`, `createdAt`, the write stamp (`updatedAt`, `updatedAtCounter`,
+  `originId`), and for a Resource its `meta` and its `digest` (the composite
+  chunk digest for a chunked Resource). `meta` is compared member by member. The
+  archived object's members and digests are computed by the same
   `lib/provenanceStatement.ts` functions export signs with. Each object the
   archive carries an attestable entry for gets one verdict, whether or not the
   destination already holds it: `verified`, `unattested` (no statement, or no
@@ -469,8 +516,10 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   creator. The Space Metadata object's verdict is counted only, since an import
   never restores its `createdBy`. A `proofInvalid` and a `contentMismatch` are
   logged at `warn` with different messages, so damaged bytes are not read as a
-  bad signature. `createdAt` and the version members keep their import behavior
-  whatever the verdict.
+  bad signature. `createdAt` keeps its import behavior whatever the verdict. The
+  archived stamps are read for this comparison only: the importing backend
+  re-stamps every record it writes with its own clock and origin id, and keeps
+  each record's archived generation.
 - **`src/storage.ts`** — supplies `defaultBackend()`, which opens the
   `FileSystemBackend` (rooted at `data/`) that `createApp()` uses when no
   backend is injected. The active backend is injected via
@@ -490,7 +539,12 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   but no `store.json` predates the stamp and is at the baseline layout, so it is
   taken as version 0 and every step runs over it, the baseline step stamping it
   first. Startup is refused when `store.json` names a version newer than the
-  code knows. The version is private to the backend: it is not exported, not
+  code knows. Version 2 is the write-stamp layout. Its step refuses a data dir
+  that holds any Space, with `StoreVersionError`, since a record written before
+  stamps carries none and there is no stamping step. The refusal repeats on
+  every boot until the dir is wiped. An empty data dir passes and is stamped at
+  the new version. The Postgres backend refuses a populated pre-stamp schema the
+  same way. The version is private to the backend: it is not exported, not
   stored in any Space, and not served. The Postgres backend's `applyMigrations`
   refuses the same way, with the same `StoreVersionError`, when its
   `schema_migrations` table records a version newer than `MIGRATIONS` knows.
@@ -499,11 +553,15 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   lock, and it is not a migration step. A store with no id takes `WAS_ORIGIN_ID`
   when set, else a minted one, and writes it before any step runs. A stored id
   is kept, and a set `WAS_ORIGIN_ID` that differs from it refuses startup with
-  `StoreOriginIdError`, naming both. Every rewrite of `store.json` keeps the id,
-  and any member this code does not know. The Postgres twin is the single row of
-  the `store` table (column `origin_id`), settled by `applyMigrations` in the
-  same transaction, under its advisory lock. Each backend exposes the id as
-  `StorageBackend.originId`, and a data-plane backend adapter carries the
+  `StoreOriginIdError`, naming both. `store.json` also carries `clockHighWater`,
+  the high-water mark of the store's hybrid logical clock in epoch milliseconds
+  (see `lib/hlc.ts`). The clock raises it at runtime, and a lower value never
+  replaces a stored higher one. It is not a migration step either. Every rewrite
+  of `store.json` keeps the id, the high-water mark, and any member this code
+  does not know. The Postgres twin is the single row of the `store` table
+  (column `origin_id`, beside `clock_high_water`), settled by `applyMigrations`
+  in the same transaction, under its advisory lock. Each backend exposes the id
+  as `StorageBackend.originId`, and a data-plane backend adapter carries the
   hosting server's id, handed to it through the `BackendProvider` options. Both
   primary backends are obtained only from a static async `open()` (their
   constructors are protected), which resolves once the migrations have run and
@@ -618,17 +676,19 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   trailing slash. The object splits in two: its user-writable members are `type`
   and `name`, and its server-derived members are `createdBy`, `url`, `linkset`
   and `backends` (the same listing `GET /space/:spaceId/backends` serves,
-  carried here so a reader learns it without a second request). A server-derived
-  member supplied in a write body is ignored, and an unknown member is not
-  stored. A `PUT` of the Space Metadata object on an existing Space replaces its
-  user-writable members in full, so an omitted `name` is removed.
-  `src/lib/spaceProjection.ts` holds the two projections from the stored record:
-  the served object, which Read Space and the two create echoes go through, and
-  the export archive's `.space.<id>.json` entry, which keeps the on-disk layout
-  and stamps only `backends`; both derive `backends` there, so no path drifts on
-  it. The create echoes hand it the listing instead of having it read one: a
-  Space that did not exist before the write has no registrations, since
-  registering one needs the Space Metadata object to authorize against.
+  carried here so a reader learns it without a second request). The object also
+  carries the write stamp of its last write (`updatedAt`, `updatedAtCounter`,
+  `originId`), which the server sets. A server-derived or stamp member supplied
+  in a write body is ignored, and an unknown member is not stored. A `PUT` of
+  the Space Metadata object on an existing Space replaces its user-writable
+  members in full, so an omitted `name` is removed. `src/lib/spaceProjection.ts`
+  holds the two projections from the stored record: the served object, which
+  Read Space and the two create echoes go through, and the export archive's
+  `.space.<id>.json` entry, which keeps the on-disk layout and stamps only
+  `backends`; both derive `backends` there, so no path drifts on it. The create
+  echoes hand it the listing instead of having it read one: a Space that did not
+  exist before the write has no registrations, since registering one needs the
+  Space Metadata object to authorize against.
 - **`server` Space** -- the auxiliary Space that hosts this server's own
   identity: its `id` Collection holds the `did.jsonl` history log of the
   server's `did:webvh`. Provisioned at startup under the administrator's
@@ -653,13 +713,14 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   replicated identity, for replicating a Space between servers. One per store (a
   filesystem data dir, a Postgres schema): `WAS_ORIGIN_ID` verbatim when set,
   else a random 16-byte base58 id minted on first boot, kept for the store's
-  life (`lib/originId.ts`). It need only be stable and unique among every server
-  a Space may replicate to, since nothing verifies it. It is not the server
-  identity, which most deployments lack, which embeds the host, and which
-  changes when the admin re-mints the log. A cloned data dir carries its id, so
-  a clone that runs beside its source boots with a fresh `WAS_ORIGIN_ID` over an
-  empty store. Advertised on `/service` as `originId` on the core specs entry.
-  Avoid: node id, replica id, server id.
+  life (`lib/originId.ts`). It is the `originId` member of every write stamp the
+  store mints. It need only be stable and unique among every server a Space may
+  replicate to, since nothing verifies it. It is not the server identity, which
+  most deployments lack, which embeds the host, and which changes when the admin
+  re-mints the log. A cloned data dir carries its id, so a clone that runs
+  beside its source boots with a fresh `WAS_ORIGIN_ID` over an empty store.
+  Advertised on `/service` as `originId` on the core specs entry. Avoid: node
+  id, replica id, server id.
 - **Provenance statement** -- one line of an export archive's
   `provenance.jsonl`: a `StorageAttestation` JSON object naming one exported
   object by its absolute URL, its server-managed members, and its content
@@ -688,6 +749,23 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   generation, which a re-create of the Collection replaces (see
   `lib/changesCheckpoint.ts`). Avoid: keyset, cursor (the listings' pagination
   token), `updatedAt` as an ordering key.
+- **Write stamp** -- the identity of a record's last write: `updatedAt`,
+  `updatedAtCounter`, and `originId`, minted by the store's hybrid logical clock
+  inside the write's critical section (`lib/hlc.ts`). Every versioned record
+  carries one: a Resource's content, a chunk, a Resource's `/meta` record
+  (nested under `meta`, beside its generation), the Space and Collection
+  Metadata objects, and a governing history log. With the record's generation it
+  forms the `ETag`. Stamps order two revisions of one record by
+  `(ms, counter, originId)`. They do not order the `changes` feed, which the
+  feed position does. Avoid: version, `metaVersion`, revision number, timestamp
+  (`updatedAt` alone is one member of the stamp).
+- **Local segment** -- the fifth `ETag` segment of a Space or Collection
+  Metadata object, a per-record counter this server keeps (`_local` in the
+  filesystem Metadata file, `meta_local` in Postgres). It advances when the
+  served object changes through a derived member without a write of the object:
+  a backend registration or removal on the Space, or a governed-log write on the
+  Collection. The next stamped write resets it to 0. It does not leave this
+  server, so export strips it. Avoid: version, version bump.
 - **Controller** — the DID that owns a Space; its Ed25519 key signs capability
   invocations and is checked during ZCap verification. Two shapes are accepted:
   a `did:key` (the only one a Space may be _created_ with), or a **self-hosted

@@ -4,8 +4,9 @@
  * served object (spec "Space Metadata Data Model"): Read Space and the two
  * create responses that echo the object go through it. `archivedSpaceMetadata`
  * is the export archive's `.space.<spaceId>.json` entry, which keeps the
- * filesystem backend's on-disk layout (the validator embedded, no `url` or
- * `linkset`) and stamps only `backends`. Both derive `backends` here, so the
+ * filesystem backend's on-disk layout (the generation embedded and the stamp
+ * members bare, no local validator segment, no `url` or `linkset`) and adds
+ * only `backends`. Both derive `backends` here, so the
  * paths that materialize the object cannot drift on it.
  *
  * The server-derived members are `url`, `linkset` and `backends`; `createdBy`
@@ -95,10 +96,11 @@ export async function projectSpaceMetadata({
 
 /**
  * Serializes a stored Space record as the export archive's
- * `.space.<spaceId>.json` entry: the stored body with its validator embedded
- * under the reserved `_generation` / `_version` members (the filesystem
- * backend's on-disk layout, so archives stay interchangeable between backends)
- * and the server-derived `backends` listing stamped on. The listing is
+ * `.space.<spaceId>.json` entry: the stored body, stamp members included,
+ * with its generation embedded under the reserved `_generation` member (the
+ * filesystem backend's on-disk layout, so archives stay interchangeable
+ * between backends) and the server-derived `backends` listing added. The
+ * local validator segment is this server's own and is left out. The listing is
  * informational in an archive: import restores user-writable members only,
  * never a server-derived one. Both backends' `exportSpace` build the entry
  * here, from the record they already read.
@@ -127,8 +129,7 @@ export async function archivedSpaceMetadata({
           ...stripMetadataValidator(spaceMetadata),
           backends: await listRegisteredBackends({ storage, spaceId })
         },
-        generation: spaceMetadata.metaGeneration,
-        version: spaceMetadata.metaVersion
+        generation: spaceMetadata.metaGeneration
       })
     )
   )

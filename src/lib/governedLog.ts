@@ -13,7 +13,7 @@
  */
 import type { CollectionEncryption } from '@interop/storage-core'
 import type { StoredCollectionLog } from '../types.js'
-import type { EtagValidator } from './etag.js'
+import { type EtagValidator, stampedValidator } from './etag.js'
 import {
   InvalidRequestBodyError,
   PreconditionFailedError,
@@ -123,7 +123,7 @@ export function unchangedLogValidator({
   if (prior === undefined || prior.body !== body) {
     return undefined
   }
-  return { generation: prior.generation, version: prior.version }
+  return stampedValidator({ generation: prior.generation, stamp: prior })
 }
 
 /**

@@ -14,7 +14,8 @@ import type { FastifyInstance } from 'fastify'
 
 import {
   assertEncryptedCollectionsFeature,
-  assertEtagVersion,
+  assertEtagAdvanced,
+  parseEtagSegments,
   openTempBackend,
   responseOf,
   startTestServer,
@@ -184,7 +185,7 @@ describe('Governing history log API (meta/log)', () => {
   describe('declaration and derivation', () => {
     it('[signed] a guarded create governs the Collection: encryption is derived from the head state with history stamped on', async () => {
       const { collectionId, etag } = await governedCollection()
-      assertEtagVersion({ etag, version: 1 })
+      parseEtagSegments(etag)
 
       const described = await alice.was.request({
         url: metaUrl(collectionId),
@@ -262,7 +263,7 @@ describe('Governing history log API (meta/log)', () => {
         headers: { 'if-match': etag }
       })
       assert.equal(appended.status, 204)
-      assertEtagVersion({ etag: appended.etag, version: 2 })
+      assertEtagAdvanced({ before: etag, after: appended.etag })
 
       const described = await alice.was.request({
         url: metaUrl(collectionId),
@@ -341,7 +342,7 @@ describe('Governing history log API (meta/log)', () => {
     it('[signed] a stale If-Match is a 412 and the log is unchanged', async () => {
       const { collectionId, body, etag } = await governedCollection()
       const extended = body + entryLine({ ordinal: 2, state: twoEpochs }) + '\n'
-      await putLog({
+      const first = await putLog({
         collectionId,
         body: extended,
         headers: { 'if-match': etag }
@@ -356,7 +357,7 @@ describe('Governing history log API (meta/log)', () => {
         url: logUrl(collectionId),
         method: 'GET'
       })
-      assertEtagVersion({ etag: read.headers.get('etag'), version: 2 })
+      assert.equal(read.headers.get('etag'), first.etag)
     })
 
     it('[signed] a body the stored log is not a prefix of is a 412 even under a current If-Match, and the log is unchanged', async () => {
@@ -382,7 +383,7 @@ describe('Governing history log API (meta/log)', () => {
         url: logUrl(collectionId),
         method: 'GET'
       })
-      assertEtagVersion({ etag: read.headers.get('etag'), version: 1 })
+      assert.equal(read.headers.get('etag'), etag)
     })
 
     it('[signed] an append of several lines is 400 invalid-request-body', async () => {
@@ -482,11 +483,11 @@ describe('Governing history log API (meta/log)', () => {
     })
 
     it('[signed] a write carrying no precondition is bound by the body: a fast-forward lands, a stale body is a 412', async () => {
-      const { collectionId, body } = await governedCollection()
+      const { collectionId, body, etag } = await governedCollection()
       const extended = body + entryLine({ ordinal: 2, state: twoEpochs }) + '\n'
       const landed = await putLog({ collectionId, body: extended })
       assert.equal(landed.status, 204)
-      assertEtagVersion({ etag: landed.etag, version: 2 })
+      assertEtagAdvanced({ before: etag, after: landed.etag })
       // A lost race: a second line built on the genesis alone, after the
       // append above moved the head, so the stored log is not its prefix.
       const stale = await putLog({
@@ -677,7 +678,7 @@ describe('Governing history log API (meta/log)', () => {
         url: logUrl(collectionId),
         method: 'GET'
       })
-      assertEtagVersion({ etag: read.headers.get('etag'), version: 1 })
+      assert.equal(read.headers.get('etag'), created.etag)
     })
 
     it('[signed] governing a Collection that already carries a client-written descriptor is 409 encryption-immutable', async () => {

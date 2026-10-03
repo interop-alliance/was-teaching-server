@@ -97,7 +97,7 @@ describe('Collection changes query profile', () => {
     return collection
   }
 
-  it('returns changed documents with id/_deleted/updatedAt/version/data + checkpoint', async () => {
+  it('returns changed documents with id/_deleted/stamp/data + checkpoint', async () => {
     await seedCollection('feed', ['c', 'a', 'b'])
     const { data } = await queryChanges(alice, 'feed', { limit: 10 })
 
@@ -108,9 +108,11 @@ describe('Collection changes query profile', () => {
     )
     for (const doc of data.documents) {
       assert.equal(doc._deleted, false)
-      assert.equal(doc.version, 1)
+      assert.equal(doc.version, undefined)
       assert.deepEqual(doc.data, { n: doc.id })
       assert.ok(typeof doc.updatedAt === 'string')
+      assert.equal(typeof doc.updatedAtCounter, 'number')
+      assert.equal(typeof doc.originId, 'string')
       assert.ok(typeof doc.checkpoint === 'string')
     }
     // The page's checkpoint is its last document's, an opaque string.
@@ -133,6 +135,8 @@ describe('Collection changes query profile', () => {
 
   it('surfaces a tombstone as _deleted:true with no data', async () => {
     const collection = await seedCollection('with-delete', ['keep', 'remove'])
+    const before = await queryChanges(alice, 'with-delete', { limit: 10 })
+    const live = before.data.documents.find((doc: any) => doc.id === 'remove')
     await collection.resource('remove').delete()
 
     const { data } = await queryChanges(alice, 'with-delete', { limit: 10 })
@@ -141,7 +145,13 @@ describe('Collection changes query profile', () => {
     const tombstone = byId.get('remove') as any
     assert.equal(tombstone._deleted, true)
     assert.equal(tombstone.data, undefined, 'tombstone carries no data')
-    assert.equal(tombstone.version, 2, 'delete bumped the version')
+    assert.equal(tombstone.version, undefined)
+    // The delete minted a later content stamp.
+    const later =
+      Date.parse(tombstone.updatedAt) > Date.parse(live.updatedAt) ||
+      (tombstone.updatedAt === live.updatedAt &&
+        tombstone.updatedAtCounter > live.updatedAtCounter)
+    assert.ok(later, 'delete minted a later stamp')
   })
 
   it('carries createdBy on live documents and on tombstones so provenance replicates', async () => {
@@ -156,18 +166,28 @@ describe('Collection changes query profile', () => {
     assert.equal(tombstone.createdBy, alice.did)
   })
 
-  it('carries metaVersion and custom so a metadata edit replicates', async () => {
+  it('carries the nested meta stamp and custom so a metadata edit replicates', async () => {
     const collection = await seedCollection('meta-feed', ['a'])
+    const before = await queryChanges(alice, 'meta-feed', { limit: 10 })
     // A metadata-only edit: the resource re-surfaces in the feed carrying its
-    // `custom` and `metaVersion`, with `version`/`data` unchanged (Decision 6).
+    // `custom` and a nested `meta` stamp, with the content stamp and `data`
+    // unchanged.
     await collection.resource('a').setMeta({ custom: { name: 'labeled' } })
 
     const { data } = await queryChanges(alice, 'meta-feed', { limit: 10 })
     const doc = data.documents.find((entry: any) => entry.id === 'a')
     assert.ok(doc, 'expected the edited resource in the feed')
     assert.deepEqual(doc.custom, { name: 'labeled' })
-    assert.equal(typeof doc.metaVersion, 'number')
-    assert.equal(doc.version, 1, 'content version unchanged by a meta edit')
+    assert.equal(doc.metaVersion, undefined)
+    assert.equal(typeof doc.meta.updatedAt, 'string')
+    assert.equal(typeof doc.meta.updatedAtCounter, 'number')
+    assert.equal(typeof doc.meta.originId, 'string')
+    assert.equal(typeof doc.meta.generation, 'string')
+    assert.equal(
+      doc.updatedAt,
+      before.data.documents.find((entry: any) => entry.id === 'a').updatedAt,
+      'content stamp unchanged by a meta edit'
+    )
     assert.deepEqual(doc.data, { n: 'a' })
   })
 

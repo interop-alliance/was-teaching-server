@@ -34,6 +34,10 @@ import type { StorageBackend } from './types.js'
  *   through, from the open onward; defaults to a silent one.
  * @param [options.originId] {string}   the configured origin id
  *   (`WAS_ORIGIN_ID`).
+ * @param [options.physicalClock] {() => number}   the physical clock the
+ *   store's hybrid logical clock reads; defaults to `Date.now`.
+ * @param [options.clockBoundMs] {number}   the clock bound for a received
+ *   write stamp (`WAS_REPLICATION_CLOCK_BOUND_MS`).
  * @param [options.capacityBytes] {number}   per-Space storage limit in bytes
  *   (spec "Quotas"); `undefined` (or `Infinity`) means each Space is unlimited.
  * @param [options.maxUploadBytes] {number}   per-upload size cap in bytes (spec

@@ -18,6 +18,7 @@ import {
 } from '@interop/space-archive'
 import { assertEncryptedWriteConforms } from './encryption.js'
 import { assertGoverningLogAppend } from './governedLog.js'
+import { importedGeneration, isMintedGeneration } from './etag.js'
 import { isPlainObject } from './isPlainObject.js'
 import { spaceTypeChangeProblem, spaceTypeProblem } from './spaceType.js'
 import { InvalidImportError, ProblemError } from '../errors.js'
@@ -25,7 +26,9 @@ import type {
   CollectionMetadata,
   PolicyDocument,
   RevocationRecord,
-  SpaceMetadata
+  SpaceMetadata,
+  StoredCollectionLog,
+  WriteStamp
 } from '../types.js'
 
 /**
@@ -67,8 +70,10 @@ function collectionLogFileId(fileName: string): string | undefined {
 
 /**
  * Checks an archived governing history log before it is carried on the plan:
- * the stored-record shape (`{ body, generation, version }`) and, on `body`,
- * the same line contract and head-descriptor check a guarded create passes.
+ * the stored-record shape (an object with a string `body` and a non-empty
+ * string `generation`; any archived stamp is replaced on import, and so is a
+ * generation this server could not have minted) and, on `body`, the same
+ * line contract and head-descriptor check a guarded create passes.
  * The read path parses a stored log strictly, so an unchecked archive entry
  * would otherwise break every read of the Collection it governs. Fails the
  * import (`InvalidImportError`, 400); the archive is caller-supplied.
@@ -98,14 +103,12 @@ function assertImportedCollectionLog({
     !isPlainObject(record) ||
     typeof record.body !== 'string' ||
     typeof record.generation !== 'string' ||
-    record.generation.length === 0 ||
-    !Number.isInteger(record.version) ||
-    (record.version as number) < 1
+    record.generation.length === 0
   ) {
     throw new InvalidImportError({
       message:
-        `The ${where} must be an object with a string 'body', a string ` +
-        "'generation', and a positive integer 'version'."
+        `The ${where} must be an object with a string 'body' and a ` +
+        "non-empty string 'generation'."
     })
   }
   try {
@@ -119,6 +122,31 @@ function assertImportedCollectionLog({
     }
     throw err
   }
+}
+
+/**
+ * The stored record an import writes for an archived governing history log
+ * (already checked by the plan builder): its `body` and `generation`, with
+ * the stamp freshly minted by the importing store in place of any archived
+ * one. A generation this server could not have minted
+ * (`isMintedGeneration`) is replaced with a fresh one.
+ * @param options {object}
+ * @param options.bytes {Buffer}   the archive entry's bytes
+ * @param options.stamp {WriteStamp}   minted by the importing store's clock
+ * @returns {StoredCollectionLog}
+ */
+export function restampImportedLog({
+  bytes,
+  stamp
+}: {
+  bytes: Buffer
+  stamp: WriteStamp
+}): StoredCollectionLog {
+  const { body, generation } = JSON.parse(bytes.toString('utf8')) as {
+    body: string
+    generation: string
+  }
+  return { body, generation: importedGeneration(generation), ...stamp }
 }
 
 /**
@@ -157,9 +185,10 @@ function chunkEntryName(
  * Parses an archive chunk file's basename into its decoded chunk fields, or
  * undefined when the name is not a canonical chunk file. A representation
  * (`r.<index>.<encType>.<ext>`) yields its `chunkIndex` and decoded
- * `contentType`; a version sidecar (`.meta.<index>.json`) yields its
- * `chunkIndex` and parsed `generation` / `version` (undefined when `body` is
- * absent or not JSON). In both cases the RAW `<index>` segment must pass
+ * `contentType`; a chunk sidecar (`.meta.<index>.json`) yields its
+ * `chunkIndex` and parsed `generation` (undefined when `body` is absent or
+ * not JSON, or when the generation is not one this server could have
+ * minted). In both cases the RAW `<index>` segment must pass
  * {@link parseChunkIndexSegment} -- the same predicate the live route enforces.
  * Validating the raw (undecoded) segment rejects both non-canonical spellings
  * (`r.01.*`, which would alias chunk 1) and percent-encoded ones (`r.%31.*`),
@@ -169,9 +198,9 @@ function chunkEntryName(
  * dropped (undefined).
  * @param chunkFileName {string}   the file's basename inside the chunk dir
  * @param body {Buffer}   the file's bytes (only read for a sidecar's
- *   validator)
- * @returns {{ chunkIndex: number, contentType?: string, generation?: string,
- *   version?: number } | undefined}
+ *   generation)
+ * @returns {{ chunkIndex: number, contentType?: string, generation?: string }
+ *   | undefined}
  */
 function parseChunkFileName(
   chunkFileName: string,
@@ -181,7 +210,6 @@ function parseChunkFileName(
       chunkIndex: number
       contentType?: string
       generation?: string
-      version?: number
     }
   | undefined {
   const metaId = metaSidecarFileId(chunkFileName)
@@ -196,18 +224,16 @@ function parseChunkFileName(
     } catch {
       parsed = undefined
     }
-    // Any JSON value parses; only an object carries the validator members.
-    const sidecar: { generation?: unknown; version?: unknown } = isPlainObject(
-      parsed
-    )
+    // Any JSON value parses; only an object carries the generation, and only
+    // one this server could have minted is kept.
+    const sidecar: { generation?: unknown } = isPlainObject(parsed)
       ? parsed
       : {}
     return {
       chunkIndex,
-      ...(typeof sidecar.generation === 'string' && {
+      ...(isMintedGeneration(sidecar.generation) && {
         generation: sidecar.generation
-      }),
-      ...(typeof sidecar.version === 'number' && { version: sidecar.version })
+      })
     }
   }
   if (isRepresentationFileName(chunkFileName)) {
@@ -243,12 +269,13 @@ export interface ImportPlanResource {
  * feature): the raw bytes carried verbatim, keyed by the parent `resourceId`
  * (decoded from the `.chunks.<encId>/` directory name) and the chunk file's
  * basename inside that directory (`r.<index>...` bytes or its `.meta.<index>.json`
- * version sidecar). The plan also carries the decoded chunk fields so a
+ * sidecar). The plan also carries the decoded chunk fields so a
  * row-oriented backend (Postgres) need not re-parse the file name: a
- * representation carries its `contentType` (and no validator); a version
- * sidecar carries its `generation` / `version` (and no `contentType`). The
- * filesystem backend
- * ignores the decoded fields and writes `fileName`/`body` verbatim.
+ * representation carries its `contentType` (and no generation); a sidecar
+ * carries its `generation` (and no `contentType`). The importing backend
+ * re-stamps a chunk sidecar with its own clock; the archived stamp is not
+ * kept. The filesystem backend writes a representation's `fileName`/`body`
+ * verbatim.
  */
 export interface ImportPlanChunkFile {
   resourceId: string
@@ -259,11 +286,9 @@ export interface ImportPlanChunkFile {
   /** Representation file: its decoded content-type (a sidecar has none). */
   contentType?: string
   /**
-   * Version sidecar: its parsed `generation` / `version` (a representation has
-   * neither).
+   * Sidecar: its parsed `generation` (a representation has none).
    */
   generation?: string
-  version?: number
 }
 
 /** One collection (plus its resources and policies) staged for import. */
@@ -272,9 +297,10 @@ export interface ImportPlanCollection {
   /**
    * The Collection Metadata object parsed from the archive's
    * `.collection.<id>.json` file (the merged object: configuration members
-   * beside `createdAt`, `updatedAt`, `custom`, `epoch`, and `createdBy`),
-   * carrying the archived `_generation` / `_version` validator members when
-   * the file had them. Defaults to a minimal object for a Collection dir the
+   * beside `createdAt`, the stamp members, `custom`, `epoch`, and
+   * `createdBy`), carrying the archived `_generation` member when the file
+   * had one. The importing backend re-stamps it (`restampImportedMetadata`)
+   * and keeps that generation. Defaults to a minimal object for a Collection dir the
    * archive carries no file for.
    */
   collectionMetadata: CollectionMetadata
@@ -544,8 +570,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
           body: entry.body,
           chunkIndex: parsedChunk.chunkIndex,
           contentType: parsedChunk.contentType,
-          generation: parsedChunk.generation,
-          version: parsedChunk.version
+          generation: parsedChunk.generation
         })
         continue
       }

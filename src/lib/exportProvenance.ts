@@ -4,15 +4,18 @@
  * log snapshot it carries as `did.jsonl`, so the statements verify offline.
  *
  * A statement is a plain JSON object,
- * `{ id, type: 'StorageAttestation', createdBy, createdAt, version, digest,
- * didLogVersionId }`, with one `eddsa-jcs-2022` Data Integrity proof
+ * `{ id, type: 'StorageAttestation', createdBy, createdAt, updatedAt,
+ * updatedAtCounter, originId, meta, digest, didLogVersionId }`, with one
+ * `eddsa-jcs-2022` Data Integrity proof
  * (`proofPurpose` `assertionMethod`) by the export-signing key, named as
  * `{serverDid}#{publicKeyMultibase}`. `id` is the object's absolute URL on
  * this server. `digest` is the `Digest` header's multihash form (`mh=` plus a
  * base64url sha-256 multihash) over the Resource's content as archived; for a
  * chunked Resource it is the same form over the JCS serialization of its
- * chunk digests, in chunk index order. A Space or Collection Metadata
- * statement carries `metaVersion` in place of `version` and `digest`.
+ * chunk digests, in chunk index order. `updatedAt`, `updatedAtCounter` and
+ * `originId` are the object's write stamp; a Resource's `meta` is its `/meta`
+ * record's stamp and generation, present once metadata was written. A Space
+ * or Collection Metadata statement carries no `meta` and no `digest`.
  * `didLogVersionId` names the log entry whose document lists the key, since
  * `proof.created` is not trustworthy.
  *
@@ -44,12 +47,14 @@ import type { FastifyBaseLogger } from 'fastify'
 import type { StorageBackend } from '../types.js'
 import { collectionMetaPath, resourcePath, spaceMetaPath } from './paths.js'
 import {
+  CLAIM_MEMBERS,
   chunkedDigest,
   fileBytes,
   fileDigest,
   serverFieldsOf,
   STORAGE_ATTESTATION_TYPE
 } from './provenanceStatement.js'
+import type { Claims } from './provenanceStatement.js'
 import {
   readServerLog,
   resolveServerDid,
@@ -176,27 +181,35 @@ export async function loadExportAttestor({
 
 /**
  * Reads the server-managed members off one archived JSON dot-file: a Space or
- * Collection Metadata object (whose version is its embedded `_version`) or a
- * Resource metadata sidecar (whose version is its `version`). A file that is
+ * Collection Metadata object or a Resource metadata sidecar. A file that is
  * gone yields `undefined`.
  * @param options {object}
  * @param options.file {ArchiveFile}
- * @param options.versionMember {'_version' | 'version'}
- * @returns {Promise<{ createdBy?: string, createdAt?: string, version?: number } | undefined>}
+ * @returns {Promise<Claims | undefined>}
  */
 async function archivedServerFields({
-  file,
-  versionMember
+  file
 }: {
   file: ArchiveFile
-  versionMember: '_version' | 'version'
-}): Promise<
-  { createdBy?: string; createdAt?: string; version?: number } | undefined
-> {
+}): Promise<Claims | undefined> {
   const bytes = await fileBytes(file)
-  return bytes === undefined
-    ? undefined
-    : serverFieldsOf({ bytes, versionMember })
+  return bytes === undefined ? undefined : serverFieldsOf({ bytes })
+}
+
+/**
+ * The claims a statement carries, in `CLAIM_MEMBERS` order, each left out
+ * when the archived object lacks it.
+ * @param fields {Claims}
+ * @returns {Claims}
+ */
+function claimsOf(fields: Claims): Claims {
+  const claims: Record<string, unknown> = {}
+  for (const member of CLAIM_MEMBERS) {
+    if (fields[member] !== undefined) {
+      claims[member] = fields[member]
+    }
+  }
+  return claims as Claims
 }
 
 /**
@@ -284,20 +297,14 @@ export async function attestArchiveEntries({
     id: string
     file: ArchiveFile
   }): Promise<void> {
-    const fields = await archivedServerFields({
-      file,
-      versionMember: '_version'
-    })
+    const fields = await archivedServerFields({ file })
     if (fields === undefined) {
       return
     }
-    const { createdBy, createdAt, version } = fields
     await attest({
       id,
       type: STORAGE_ATTESTATION_TYPE,
-      ...(createdBy !== undefined && { createdBy }),
-      ...(createdAt !== undefined && { createdAt }),
-      ...(version !== undefined && { metaVersion: version })
+      ...claimsOf(fields)
     })
   }
 
@@ -352,17 +359,11 @@ export async function attestArchiveEntries({
       const fields =
         sidecar === undefined
           ? undefined
-          : await archivedServerFields({
-              file: sidecar,
-              versionMember: 'version'
-            })
-      const { createdBy, createdAt, version } = fields ?? {}
+          : await archivedServerFields({ file: sidecar })
       await attest({
         id: urlOf(resourcePath({ spaceId, collectionId, resourceId })),
         type: STORAGE_ATTESTATION_TYPE,
-        ...(createdBy !== undefined && { createdBy }),
-        ...(createdAt !== undefined && { createdAt }),
-        ...(version !== undefined && { version }),
+        ...claimsOf(fields ?? {}),
         digest
       })
     }

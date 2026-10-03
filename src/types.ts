@@ -70,7 +70,9 @@ import type {
   ImportStats,
   PolicyDocument,
   ServiceDescription,
-  ServiceDescriptionVersionEntry
+  ServiceDescriptionVersionEntry,
+  WriteStamp,
+  ResourceMetaStamp
 } from '@interop/storage-core'
 
 // Surface the blinded-index query shapes referenced by the `StorageBackend`
@@ -139,7 +141,9 @@ export type {
   ServiceDescription,
   ServiceDescriptionVersionEntry,
   PwsVersionEntry,
-  AuthzProfileVersionEntry
+  AuthzProfileVersionEntry,
+  WriteStamp,
+  ResourceMetaStamp
 } from '@interop/storage-core'
 
 /**
@@ -155,31 +159,32 @@ export interface EncryptedCollectionsVersionEntry extends ServiceDescriptionVers
   features?: string[]
 }
 
-/** Return shape of `getResource()`. */
-export interface ResourceResult {
+/**
+ * The stored parts of a record's `ETag` validator a read result carries: the
+ * record's `generation` and the write stamp of its last write (see
+ * `lib/etag.ts`). The request layer derives the `ETag` from them
+ * (`etagOf`).
+ */
+export type RecordValidatorParts = { generation?: string } & Partial<WriteStamp>
+
+/**
+ * Return shape of `getResource()`: the byte stream and its content-type,
+ * beside the content record's validator parts.
+ */
+export interface ResourceResult extends RecordValidatorParts {
   resourceStream: Readable
   /** resolved content-type of the stored bytes */
   storedResourceType: string
-  /**
-   * The Resource's current `generation` and monotonic `version` -- the two
-   * parts of its HTTP `ETag` strong validator (`conditional-writes` feature).
-   * Both absent only for a legacy Resource written before versioning.
-   */
-  generation?: string
-  version?: number
 }
 
 /**
  * Return shape of `getChunkMetadata()` (the `chunked-streams` feature): a
- * chunk's stored content-type / size / validator -- the HEAD payload headers.
- * `generation` / `version` are the chunk's own ETag validator, absent for a
- * legacy chunk written before versioning.
+ * chunk's stored content-type / size, beside its own validator parts -- the
+ * HEAD payload headers.
  */
-export interface ChunkMetadata {
+export interface ChunkMetadata extends RecordValidatorParts {
   contentType: string
   size: number
-  generation?: string
-  version?: number
 }
 
 /**
@@ -194,8 +199,6 @@ export interface ChunkListing {
     index: number
     size: number
     contentType: string
-    generation?: string
-    version?: number
   }>
 }
 
@@ -491,15 +494,18 @@ export type BackendProviderRegistry = Map<string, BackendProvider>
 /**
  * The out-of-band `ETag` validator parts a stored Space or Collection Metadata
  * object carries beside its wire body: the generation minted by the record's
- * first write and kept for its life, and the monotonic `metaVersion` every
- * write bumps. One validator covers the whole object -- configuration and
- * annotation writes alike. Both are absent only for a Postgres placeholder row
- * with no metadata written yet. The handler strips them from the wire body and
- * sets the `ETag` header from them.
+ * first write and kept for its life, and the local segment (`metaLocal`), a
+ * counter this server advances when the served object changes through a
+ * derived member and resets to 0 on every stamped write. The rest of the
+ * validator is the write stamp, which the body carries as wire members
+ * (`updatedAt`, `updatedAtCounter`, `originId`). One validator covers the
+ * whole object -- configuration and annotation writes alike. The handler
+ * strips these two from the wire body and sets the `ETag` header from them
+ * and the stamp.
  */
 export interface MetadataValidatorParts {
   metaGeneration?: string
-  metaVersion?: number
+  metaLocal?: number
 }
 
 /**
@@ -517,30 +523,16 @@ export type StoredCollectionMetadata = CollectionMetadata &
 export type StoredSpaceMetadata = SpaceMetadata & MetadataValidatorParts
 
 /**
- * The out-of-band validator parts a Resource Metadata read carries: the
- * sidecar's `generation` with the content `version` (the content validator),
- * and the `/meta` object's own `metaGeneration` with `metaVersion` (the `/meta`
- * validator). `generation` and `version` are absent for a legacy Resource;
- * `metaGeneration` and `metaVersion` until the first metadata write.
- */
-export interface VersionedMetadata {
-  generation?: string
-  version?: number
-  metaGeneration?: string
-  metaVersion?: number
-}
-
-/**
  * A Collection's governing history log as read from storage (the
  * `governed-history-logs` feature): the JSON Lines body verbatim, plus its
- * own `ETag` validator, minted by the guarded create and bumped by each
- * append, independent of the description and `/meta` validators.
+ * own `ETag` validator parts, the generation minted by the guarded create and
+ * the write stamp each write mints, independent of the Collection Metadata
+ * object's validator.
  */
-export interface StoredCollectionLog {
+export type StoredCollectionLog = {
   body: string
   generation: string
-  version: number
-}
+} & WriteStamp
 
 /**
  * The persistence contract every backend implements. No write creates a
@@ -637,9 +629,12 @@ export interface StorageBackend {
   }): Promise<BackendUsage>
 
   /**
-   * Writes a Space Metadata object (full replacement), bumping its monotonic
-   * `metaVersion` (with its generation, the `ETag` validator behind conditional
-   * Space writes) and returning the new validator. The server-managed
+   * Writes a Space Metadata object (full replacement), minting its write
+   * stamp from the backend's clock inside the per-Space lock, resetting its
+   * local validator segment to 0, and returning the new validator (the `ETag`
+   * behind conditional Space writes). The stamp members (`updatedAt`,
+   * `updatedAtCounter`, `originId`) are stored as wire members of the body;
+   * any the supplied document carries are discarded. The server-managed
    * `createdBy` is authoritative, never taken from `spaceMetadata`: the backend
    * drops any value carried in that (client-supplied) document and records
    * `createdBy` from the first write's invoker, preserving it verbatim on every
@@ -648,10 +643,10 @@ export interface StorageBackend {
    * evaluated atomically with the write on the same terms as
    * `writeCollection`'s: `ifNoneMatch` is the guarded create (412
    * `precondition-failed` when the Space exists), `ifMatch` the
-   * compare-and-swap on the current `ETag`. The validator travels only as the
-   * `ETag` header -- it is kept OUT of the wire body, and a backend strips any
-   * validator-bearing member the supplied document carries through
-   * `normalizeMetadataWrite` before storing it.
+   * compare-and-swap on the current `ETag`. The generation and local segment
+   * travel only in the `ETag` header -- they are kept OUT of the wire body,
+   * and a backend strips any validator-bearing member the supplied document
+   * carries through `normalizeMetadataWrite` before storing it.
    */
   writeSpace(options: {
     spaceId: string
@@ -670,8 +665,8 @@ export interface StorageBackend {
   }): Promise<EtagValidator>
   /**
    * Reads a Space Metadata object. Resolves falsy when the Space does not
-   * exist. `metaGeneration` / `metaVersion` are the out-of-band `ETag`
-   * validator, absent only on a placeholder never written.
+   * exist. `metaGeneration` / `metaLocal` are the out-of-band `ETag`
+   * validator parts; the stamp members ride in the body.
    */
   getSpaceMetadata(options: {
     spaceId: string
@@ -759,11 +754,13 @@ export interface StorageBackend {
   /**
    * Writes a Collection Metadata object (full replacement of the merged
    * object: the configuration members beside the annotation members `custom`
-   * and `epoch`), bumping its one monotonic `metaVersion` (with its
-   * generation, the `ETag` validator behind conditional Collection writes) and
-   * returning the new validator. Server-managed members are the backend's:
-   * `createdBy` on the same terms as `writeSpace`'s, `createdAt` stamped by
-   * the creating write and preserved, `updatedAt` by every write. `custom` is
+   * and `epoch`), minting its write stamp inside the per-Collection lock,
+   * resetting its local validator segment to 0, and returning the new
+   * validator (the `ETag` behind conditional Collection writes).
+   * Server-managed members are the backend's: `createdBy` on the same terms as
+   * `writeSpace`'s, `createdAt` set by the creating write and preserved, the
+   * stamp members (`updatedAt`, `updatedAtCounter`, `originId`) by every
+   * write. `custom` is
    * stored verbatim (`{ name, tags }` on a plaintext Collection, the opaque
    * encryption envelope on an encrypted one) and an absent or empty `custom`
    * clears it; an absent `epoch` clears the stored stamp, since it describes
@@ -772,9 +769,9 @@ export interface StorageBackend {
    * update-if-unchanged compare-and-swap), else `precondition-failed` (412).
    * `ifNoneMatch` (`If-None-Match: *`) is the guarded create: the write
    * proceeds only if the Collection does not exist yet, else
-   * `precondition-failed` (412), evaluated under the same lock. The validator
-   * travels only as the `ETag` header -- it is kept OUT of the stored/wire
-   * body.
+   * `precondition-failed` (412), evaluated under the same lock. The
+   * generation and local segment travel only in the `ETag` header -- they are
+   * kept OUT of the wire body.
    */
   writeCollection(options: {
     spaceId: string
@@ -803,9 +800,9 @@ export interface StorageBackend {
   }): Promise<EtagValidator>
   /**
    * Reads a Collection Metadata object. Resolves falsy when the Collection
-   * does not exist. `metaGeneration` / `metaVersion` are the out-of-band
-   * `ETag` validator (the handler strips them from the wire body and sets the
-   * `ETag` header from them).
+   * does not exist. `metaGeneration` / `metaLocal` are the out-of-band `ETag`
+   * validator parts (the handler strips them from the wire body and sets the
+   * `ETag` header from them and the body's stamp members).
    */
   getCollectionMetadata(options: {
     spaceId: string
@@ -840,10 +837,11 @@ export interface StorageBackend {
   }): Promise<CollectionResourcesList>
 
   /**
-   * Writes a Resource representation, bumping its monotonic `version` (with
-   * its `generation`, the ETag validator), and returns the new validator. When
-   * a conditional-write
-   * precondition is supplied (`conditional-writes` feature) it is evaluated
+   * Writes a Resource representation, minting the content record's write
+   * stamp inside the per-Resource lock (over the stamp it replaces, so the new
+   * one sorts above it), and returns the new validator (the stamp under the
+   * Resource's `generation`). When a conditional-write precondition is
+   * supplied (`conditional-writes` feature) it is evaluated
    * atomically with the write: `ifMatch` is an update-if-unchanged (the current
    * ETag must equal it), `ifNoneMatch` is a create-if-absent (`If-None-Match:
    * *`); a mismatch rejects with `precondition-failed` (412).
@@ -944,24 +942,26 @@ export interface StorageBackend {
     writerId?: string
   }): Promise<void>
   /**
-   * Reads a Resource's Metadata object. `generation` with `version` /
-   * `metaVersion` are the out-of-band ETag validators of the content and of the
-   * `/meta` object (the handler strips them from the wire body); the
+   * Reads a Resource's Metadata object. The content record's stamp members
+   * are top-level wire members and the `/meta` record's stamp and generation
+   * the nested `meta` object; `generation` is the content record's
+   * generation, out of band (the handler strips it from the wire body and
+   * derives the content `ETag` from it and the top-level stamp). The
    * Metadata's own `createdBy` rides along in it.
    */
   getResourceMetadata(options: {
     spaceId: string
     collectionId: string
     resourceId: string
-  }): Promise<(ResourceMetadata & VersionedMetadata) | undefined>
+  }): Promise<(ResourceMetadata & { generation?: string }) | undefined>
   /**
    * Replaces the user-writable `custom` object of a Resource's Metadata (full
    * replacement; pass `{}` to clear). Resolves `undefined` when the Resource
    * does not exist (this operation does not create one) so the handler can 404,
-   * else the `/meta` object's new ETag validator: its own `metaGeneration`,
-   * minted by the first metadata write, with `metaVersion` as the `version`,
-   * bumped on each metadata write independently of the content `generation` /
-   * `version`.
+   * else the `/meta` object's new ETag validator: its own generation, minted
+   * by the first metadata write, with the stamp this write mints. The write
+   * moves the nested `meta` record only; the content record's stamp, `ETag`,
+   * and `writerId` are left as they are.
    *
    * On an encrypted Collection `custom` is the opaque encryption envelope (an
    * arbitrary JSON object) rather than a `{ name, tags }` object; the backend
@@ -991,14 +991,6 @@ export interface StorageBackend {
      * the metadata write -- while a supplied value replaces it. Stored opaquely.
      */
     epoch?: string
-    /**
-     * The client-declared writer-attribution label (spec "Writer
-     * attribution"), a sibling of `custom` and `epoch`. Unlike `epoch`, an
-     * OMITTED `writerId` CLEARS the stored value -- a metadata write is
-     * itself a revision, so keeping a previous writer's label would
-     * misattribute it. Stored opaquely.
-     */
-    writerId?: string
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator | undefined>
@@ -1024,9 +1016,10 @@ export interface StorageBackend {
    * precondition passes: the current validator is resolved, `assertTransition`
    * is not invoked, and nothing is written.
    *
-   * The write also bumps the Collection Metadata object's validator: the
-   * served object's `encryption` member is derived from the log head, so its
-   * `ETag` must change with it. The write is serialized with Collection
+   * The write mints the log's own stamp, and also advances the Collection
+   * Metadata object's local validator segment without minting a stamp for it:
+   * the served object's `encryption` member is derived from the log head, so
+   * its `ETag` must change with it. The write is serialized with Collection
    * Metadata writes, so `assertTransition` and a concurrent
    * `writeCollection`'s own callback each see the other's outcome.
    */
@@ -1051,13 +1044,13 @@ export interface StorageBackend {
   /**
    * Writes one chunk of a chunked Resource (the `chunked-streams` feature),
    * keyed by `(spaceId, collectionId, resourceId, chunkIndex)`. Same upload-cap
-   * / quota guards, `generation` + monotonic `version` bump (the ETag
+   * / quota guards, stamp minting under the chunk's `generation` (the ETag
    * validator), and atomic
    * `ifMatch` / `ifNoneMatch` precondition semantics as `writeResource`;
    * differences:
    * - the body is opaque bytes + content-type (the server never parses it), so
    *   no encryption-conformance or unique-index enforcement applies;
-   * - the validator bumped is the chunk's OWN, independent of the parent's;
+   * - the stamp minted is the chunk's OWN, independent of the parent's;
    * - the parent Resource MUST already exist, else `ResourceNotFoundError`
    *   (404), so orphan chunks cannot accumulate;
    * - a chunk carries no server-managed `createdBy` / epoch / user Metadata.
@@ -1082,8 +1075,8 @@ export interface StorageBackend {
     chunkIndex: number
   }): Promise<ResourceResult>
   /**
-   * Reads a chunk's stored content-type / size / version (the HEAD payload
-   * headers). Resolves `undefined` when the chunk is absent.
+   * Reads a chunk's stored content-type / size / validator parts (the HEAD
+   * payload headers). Resolves `undefined` when the chunk is absent.
    */
   getChunkMetadata(options: {
     spaceId: string
@@ -1149,21 +1142,21 @@ export interface StorageBackend {
    * checkpoint that carries another, so a reader holding one from before a
    * re-create restarts rather than skipping the new feed's first positions.
    *
-   * Each document carries its monotonic content `version`, its
-   * `metaGeneration` and `metaVersion` (when a metadata write has occurred),
-   * `updatedAt`, the server-managed `createdBy` (the creator's DID, when one
-   * was recorded -- so provenance replicates and does not have to be fetched
-   * per Resource from `/meta`), and -- so metadata replicates alongside
-   * content -- the user-writable `custom` object (the opaque encryption
-   * envelope on an encrypted Collection). It also carries the Resource's
-   * `generation` (absent for a legacy Resource with no generation), which the
-   * request layer pairs with `version` for the wire document's `etag`, and
-   * `metaGeneration` with `metaVersion` for its `metaEtag` -- the quoted
-   * strong validators a replica can send back as `If-Match` without a GET per
-   * Resource. A tombstone keeps its `createdBy`, as it keeps its `createdAt`.
-   * A metadata-only edit re-surfaces the Resource at a new feed position, with
-   * a bumped `updatedAt` / `metaVersion` but its `version` / `data` unchanged.
-   * `updatedAt` is a plain wall-clock stamp with no ordering role. A tombstone
+   * Each document carries the content record's write stamp (`updatedAt`,
+   * `updatedAtCounter`, `originId`), the `/meta` record's stamp and generation
+   * as `meta` (when a metadata write has occurred), the server-managed
+   * `createdBy` (the creator's DID, when one was recorded -- so provenance
+   * replicates and does not have to be fetched per Resource from `/meta`),
+   * and -- so metadata replicates alongside content -- the user-writable
+   * `custom` object (the opaque encryption envelope on an encrypted
+   * Collection). It also carries the Resource's `generation`, which the
+   * request layer pairs with the content stamp for the wire document's `etag`
+   * (and `meta` for its `metaEtag`) -- the quoted strong validators a replica
+   * can send back as `If-Match` without a GET per Resource. A tombstone keeps
+   * its `createdBy`, as it keeps its `createdAt`. A metadata-only edit
+   * re-surfaces the Resource at a new feed position, with a new `meta` stamp
+   * but its content stamp and `data` unchanged. The stamps have no ordering
+   * role in the feed, which is ordered by feed position. A tombstone
    * (soft-deleted Resource) is surfaced with `deleted: true` and no `data` so
    * the delete replicates until clients catch up. Binary (non-JSON) Resources
    * are excluded -- attachment replication is future work. Each document
@@ -1181,40 +1174,38 @@ export interface StorageBackend {
     afterPosition?: number
     limit: number
   }): Promise<{
-    documents: Array<{
-      resourceId: string
-      // The document's position in the Collection's changes feed.
-      feedPosition: number
-      version: number
-      metaVersion?: number
-      // Absent for a legacy Resource with no generation. Paired with
-      // `version` by the request layer to derive the wire `etag`.
-      generation?: string
-      // The `/meta` object's own generation, present with `metaVersion` once
-      // metadata has been written; paired with it for the wire `metaEtag`.
-      metaGeneration?: string
-      createdBy?: IDID
-      updatedAt: string
-      deleted: boolean
-      data?: unknown
-      // Omitted when unset, never `null`: the handler projects this straight
-      // onto the wire `ChangeDocument.custom`, which admits no null.
-      custom?: ResourceMetadataCustom | Record<string, unknown>
-      /**
-       * The client-declared key epoch the Resource was encrypted under (the
-       * `key-epochs` feature), when one was stamped. Rides the feed so a
-       * replicating reader picks the right epoch key without a `/meta` fetch.
-       */
-      epoch?: string
-      /**
-       * The Resource's writer-attribution label (spec "Writer attribution"),
-       * when one was stamped. Rides the feed so a replica recognizes its own
-       * writes echoed back and breaks same-`updatedAt` ties on a shared
-       * `(updatedAt, writerId)` key. A tombstone carries the label the
-       * deleting write declared, if any.
-       */
-      writerId?: string
-    }>
+    documents: Array<
+      {
+        resourceId: string
+        // The document's position in the Collection's changes feed.
+        feedPosition: number
+        // Paired with the content stamp by the request layer to derive the
+        // wire `etag`.
+        generation?: string
+        // The `/meta` record's stamp and generation, present once metadata has
+        // been written; the request layer derives the wire `metaEtag` from it.
+        meta?: ResourceMetaStamp
+        createdBy?: IDID
+        deleted: boolean
+        data?: unknown
+        // Omitted when unset, never `null`: the handler projects this straight
+        // onto the wire `ChangeDocument.custom`, which admits no null.
+        custom?: ResourceMetadataCustom | Record<string, unknown>
+        /**
+         * The client-declared key epoch the Resource was encrypted under (the
+         * `key-epochs` feature), when one was stamped. Rides the feed so a
+         * replicating reader picks the right epoch key without a `/meta` fetch.
+         */
+        epoch?: string
+        /**
+         * The Resource's writer-attribution label (spec "Writer attribution"),
+         * when one was stamped. Rides the feed so a replica recognizes its own
+         * writes echoed back. A tombstone carries the label the deleting write
+         * declared, if any.
+         */
+        writerId?: string
+      } & WriteStamp
+    >
     checkpoint: number | null
     // The feed counter's generation; absent until the first position.
     feedGeneration?: string

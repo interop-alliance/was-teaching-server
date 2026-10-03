@@ -4,6 +4,29 @@
 
 ### Added
 
+- Write stamps. Each storage backend holds one hybrid logical clock per store.
+  Every versioned write mints its stamp inside its critical section as
+  `max(now, held stamp + one counter tick)`. Every versioned record stores the
+  stamp as `updatedAt`, `updatedAtCounter`, and `originId`: Resource content, a
+  chunk, a Resource's `/meta` record, the Space and Collection Metadata objects,
+  and a governing history log. A Resource's `/meta` record carries its stamp and
+  generation as one nested
+  `meta: { updatedAt, updatedAtCounter, originId, generation }` object. The
+  Space Metadata object now serves `updatedAt`, `updatedAtCounter`, and
+  `originId`.
+
+- The clock's physical part is persisted as `clockHighWater` in the filesystem
+  `store.json` and as `store.clock_high_water` in Postgres, at most about once a
+  second and again on `close()`, and seeds the clock at boot. A failed write of
+  the mark is logged and does not fail the request. `FileSystemBackend` gains a
+  `close()` method.
+
+- `WAS_REPLICATION_CLOCK_BOUND_MS` (default 60000): how far ahead of physical
+  time a write stamp received from a peer may be dated. No request path receives
+  one yet. The plugin takes it as `replicationClockBoundMs`. The plugin,
+  `startTestServer()`, and `openTempBackend()` take a `physicalClock` option, so
+  a test can freeze or step the clock.
+
 - A per-store origin id, the origin half of a write's replicated identity.
   `WAS_ORIGIN_ID` sets it verbatim (`[A-Za-z0-9_-]{1,64}`); unset, the store
   mints a random base58 id on first boot and keeps it. Stored as `originId` in
@@ -12,12 +35,13 @@
   advertises it as `originId` on the core `https://w3id.org/pws` entry.
 
 - Writer attribution (spec `#writer-attribution`): an optional `Writer-Id`
-  request header on content writes and `DELETE`, and a top-level `writerId`
-  member on Update Resource Metadata, stored as the Resource Metadata `writerId`
-  property and echoed on `/meta` reads, listing item summaries, the `changes`
-  feed, and tombstones. Declare-or-clear at every level; a present but empty or
-  non-string value is `invalid-request-body`. The value is never verified,
-  computed, or used in any authorization decision.
+  request header on content writes and `DELETE`, stored as the Resource Metadata
+  `writerId` property and echoed on `/meta` reads, listing item summaries, the
+  `changes` feed, and tombstones. Declare-or-clear on content writes and
+  deletes; a present but empty or non-string value is `invalid-request-body`. A
+  metadata write leaves it untouched, and a `writerId` member in an Update
+  Resource Metadata body is ignored. The value is never verified, computed, or
+  used in any authorization decision.
 
 - Server identity, the first half of authenticated export provenance. The server
   derives an Ed25519 export-signing key from `WAS_SERVER_KEY_SEED` and
@@ -38,10 +62,11 @@
   `StorageAttestation` statement per exported object (the Space Metadata object,
   each Collection Metadata object, each Resource), and `did.jsonl`, the server's
   history log snapshot as served. A statement is
-  `{ id, type, createdBy, createdAt, version, digest, didLogVersionId }`: `id`
-  is the object's URL, `digest` the `mh=` sha-256 multihash of its archived
-  content (a chunked Resource digests the JCS array of its chunk digests), and a
-  Metadata statement carries `metaVersion` in place of `version` and `digest`.
+  `{ id, type, createdBy, createdAt, updatedAt, updatedAtCounter, originId, meta, digest, didLogVersionId }`:
+  `id` is the object's URL, the three stamp members its write stamp, `meta` a
+  Resource's `/meta` record stamp and generation, and `digest` the `mh=` sha-256
+  multihash of its archived content (a chunked Resource digests the JCS array of
+  its chunk digests). A Metadata statement carries no `meta` and no `digest`.
   Each carries one `eddsa-jcs-2022` proof (`assertionMethod`, no `created`) by
   the export-signing key, named `{serverDid}#{publicKeyMultibase}`. Without an
   identity the export carries neither entry and the server logs one `warn` line
@@ -51,10 +76,10 @@
   offline as the history log of the DID its head names; any server DID whose log
   verifies is accepted. Each statement's method is resolved at the log version
   its `didLogVersionId` names and must sit under `assertionMethod` alone. Then
-  its proof is verified and its claims and `digest` are compared with the
-  archived bytes. An object outside `verified` is still imported, with its
-  `createdBy` dropped; a tombstone's `createdBy` is always dropped.
-  `ImportStats` gains `provenance`, counting `verified`, `unattested`,
+  its proof is verified and its claims (stamps included) and `digest` are
+  compared with the archived bytes. An object outside `verified` is still
+  imported, with its `createdBy` dropped; a tombstone's `createdBy` is always
+  dropped. `ImportStats` gains `provenance`, counting `verified`, `unattested`,
   `proofInvalid`, `contentMismatch`, and `unknownSigner` objects. A
   `proofInvalid` and a `contentMismatch` are logged apart at `warn`.
 
@@ -72,8 +97,7 @@
   `store.json` with an integer `version`, and the backend applies pending layout
   migrations at startup, under a lock file, before it serves requests. An empty
   data dir is stamped with the current version. One that holds data but no
-  `store.json` is taken as the baseline layout and migrated forward, so a volume
-  written by an earlier release starts without a wipe.
+  `store.json` is taken as the baseline layout and migrated forward.
 
 - `@digitalcredentials/bnid` is replaced by its maintained fork `@interop/bnid`
   (same API).
@@ -89,8 +113,7 @@
   no identity, imports with no `createdBy` on any object.
 
 - The filesystem backend refuses to start when `store.json` names a newer
-  version than the server knows, or is absent over a data dir that holds data.
-  An existing filesystem data dir must be wiped before deploying this release.
+  version than the server knows.
 - The Postgres backend refuses to start when its `schema_migrations` table
   records a newer version than the server knows, as after a rollback to an older
   build. It logs the schema version at startup.
@@ -154,6 +177,42 @@
 
 ### Changed
 
+- The `ETag` is `"<generation>.<ms>.<counter>.<originId>"`, from the record's
+  generation and write stamp, with `ms` the stamp's `updatedAt` in epoch
+  milliseconds. A Space or Collection Metadata object adds a fifth, local
+  segment, stored as `_local` (Postgres `meta_local`) and left out of exports. A
+  backend registration or removal and a governed-log write advance it and mint
+  no stamp. A stamped write resets it to 0. `If-Match` and `If-None-Match`
+  compare the whole string. This is a wire-contract change.
+
+- A `/meta` write mints only the `/meta` record's stamp. The content stamp, the
+  content `ETag`, and `writerId` are untouched.
+
+- `changes` documents carry `updatedAtCounter`, `originId`, and the nested
+  `meta` beside `updatedAt`.
+
+- Import re-stamps every record it writes with the importing server's clock and
+  origin id. The archived stamps are read for provenance verification only, and
+  the archived generations are kept. An archived generation that is not a base58
+  string is replaced with a fresh one, and a chunk archived without a usable
+  sidecar gets a fresh one on both backends.
+
+- The Create Space and Create Collection responses, and the create-by-`PUT` of a
+  container's `meta`, return the same object a read serves, stamp members
+  included.
+
+- A filesystem data dir or Postgres schema that holds any Space from before
+  write stamps is refused at boot with `StoreVersionError`. There is no
+  migration. To upgrade, wipe the store. The Postgres backend adds the columns
+  `updated_at_counter`, `origin_id`, `meta_updated_at`,
+  `meta_updated_at_counter`, `meta_origin_id`, `meta_local`, `log_updated_at`,
+  `log_updated_at_counter`, and `log_origin_id`, and `store.clock_high_water`,
+  and drops `version`, `meta_version`, and `log_version`.
+
+- One server process per store is now an assumption the write stamps rest on,
+  beside the read caches. Two processes over one store would share its origin id
+  and could mint the same stamp for two different writes.
+
 - The startup warning for an export-signing key no server DID lists is logged
   once the server is listening, and reads `serverUrl` then. An app that never
   listens (`inject()` only) does not log it.
@@ -216,9 +275,9 @@
   Resource takes the Collection's next position, assigned inside the
   per-Collection critical section that makes the write visible. A chunk write
   takes none. A Resource imported with no metadata entry, or with one that is
-  not a JSON object, gets fresh metadata on both backends: `createdAt` and
-  `updatedAt` at import time, a new generation, version 1, and no `createdBy`.
-  This is a wire-contract change:
+  not a JSON object, gets fresh metadata on both backends: `createdAt` and a
+  write stamp at import time, a new generation, and no `createdBy`. This is a
+  wire-contract change:
   - The checkpoint is an opaque string, scoped to this server and Collection and
     to one life of the Collection's feed. A client compares it by equality only
     and echoes it back verbatim. A checkpoint issued before the Collection was
@@ -229,10 +288,8 @@
   - A checkpoint this server did not issue for the Collection, including the
     retired `{ id, updatedAt }` object, is refused with `invalid-request-body`
     (400) at `#/checkpoint`. A replica restarts its pull from the beginning.
-  - `updatedAt` stays on every document as a wall-clock stamp with no ordering
-    role.
-  - Resources stored before this version have no feed position and are absent
-    from the feed until they are rewritten. There is no backfill.
+  - The write stamp on each document orders revisions of one Resource. It does
+    not order the feed.
 
   The filesystem backend keeps the counter and its generation in
   `.feed.<collectionId>.json` in the Collection dir and the position in each
@@ -245,9 +302,9 @@
 
 - A log-governed Collection's served `encryption` member is derived from its
   history log once per log version and memoized per backend, keyed by the log's
-  generation and version. The log body is still read on each request. Only the
-  parse is saved. Delete Collection, Delete Space, and Import Space drop the
-  affected entries. New settings `GOVERNED_ENCRYPTION_CACHE_TTL` (600 s) and
+  `ETag`. The log body is still read on each request. Only the parse is saved.
+  Delete Collection, Delete Space, and Import Space drop the affected entries.
+  New settings `GOVERNED_ENCRYPTION_CACHE_TTL` (600 s) and
   `GOVERNED_ENCRYPTION_CACHE_MAX` (1000) in `config.default.ts`.
 
 - The `assertTransition` callback of `StorageBackend.writeCollection` now
@@ -257,6 +314,13 @@
   reading it again. On Postgres the log columns come from the
   `SELECT ... FOR UPDATE` that already locks the Collection row, so the recheck
   issues no second query. This is a backend contract change.
+
+### Removed
+
+- The `version` and `metaVersion` counters, from sidecars, rows, Metadata files
+  (`_version`, Postgres `meta_version`), and wire objects, the `changes`
+  documents and provenance statements included.
+- The validator members (`generation`, `version`) on chunk listing items.
 
 ### Fixed
 

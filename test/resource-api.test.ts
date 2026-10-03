@@ -10,7 +10,8 @@ import { NotFoundError } from '@interop/was-client'
 import type { Space, Collection } from '@interop/was-client'
 
 import {
-  assertEtagVersion,
+  assertEtagAdvanced,
+  parseEtagSegments,
   etagGeneration,
   openTempBackend,
   responseOf,
@@ -665,7 +666,7 @@ describe('Resource API', () => {
       )
       assert.equal(response.status, 200)
       const newEtag = response.headers.get('etag')
-      assertEtagVersion({ etag: newEtag, version: 2 })
+      assertEtagAdvanced({ before: etag, after: newEtag })
       assert.equal(etagGeneration(newEtag!), etagGeneration(etag))
       assert.equal(await response.text(), 'hello again')
     })
@@ -739,7 +740,7 @@ describe('Resource API', () => {
     })
 
     it('[signed] GET /meta never written: `*` is 304 with no ETag, a listed validator misses', async () => {
-      // No `metaVersion`, so no ETag to compare a listed validator against;
+      // No `/meta` stamp, so no ETag to compare a listed validator against;
       // but the metadata object is a current representation, which is all
       // `*` asks (RFC 9110 section 13.1.2). The 304 carries no ETag, as the
       // 200 would not have.
@@ -817,7 +818,7 @@ describe('Resource API', () => {
       })
       assert.equal(created.status, 204)
       const createdEtag = created.headers.get('etag')
-      assertEtagVersion({ etag: createdEtag, version: 1 })
+      parseEtagSegments(createdEtag)
 
       // GET echoes the same validator.
       const got = await alice.was.request({
@@ -833,7 +834,7 @@ describe('Resource API', () => {
         json: { id: resourceId, n: 2 }
       })
       const updatedEtag = updated.headers.get('etag')
-      assertEtagVersion({ etag: updatedEtag, version: 2 })
+      assertEtagAdvanced({ before: createdEtag, after: updatedEtag })
       assert.equal(etagGeneration(updatedEtag!), etagGeneration(createdEtag!))
     })
 
@@ -873,7 +874,7 @@ describe('Resource API', () => {
       })
       assert.equal(updated.status, 204)
       const updatedEtag = updated.headers.get('etag')
-      assertEtagVersion({ etag: updatedEtag, version: 2 })
+      assertEtagAdvanced({ before: etag, after: updatedEtag })
       assert.equal(etagGeneration(updatedEtag!), etagGeneration(etag))
     })
 
@@ -916,7 +917,7 @@ describe('Resource API', () => {
         headers: { 'if-none-match': '*' }
       })
       assert.equal(created.status, 204)
-      assertEtagVersion({ etag: created.headers.get('etag'), version: 1 })
+      parseEtagSegments(created.headers.get('etag'))
 
       // A second create-if-absent against the now-existing resource fails.
       let thrown: any
@@ -1031,7 +1032,7 @@ describe('Resource API', () => {
       assert.equal(gone, null)
     })
 
-    it('a tombstone keeps the generation: PUT / DELETE / PUT continues the version', async () => {
+    it('a tombstone keeps the generation: PUT / DELETE / PUT continues the stamp', async () => {
       const resourceId = 'cond-tombstone-generation'
       const created = await alice.was.request({
         url: resourceUrl(resourceId),
@@ -1039,23 +1040,23 @@ describe('Resource API', () => {
         json: { id: resourceId, n: 1 }
       })
       const createdEtag = created.headers.get('etag')!
-      assertEtagVersion({ etag: createdEtag, version: 1 })
+      parseEtagSegments(createdEtag)
 
-      // The tombstone sidecar survives the content, continuing the version.
+      // The tombstone sidecar survives the content, continuing the stamp.
       await alice.was.request({
         url: resourceUrl(resourceId),
         method: 'DELETE'
       })
 
-      // Re-creating under the same id keeps the generation and keeps counting
-      // the version up, rather than starting a fresh generation at version 1.
+      // Re-creating under the same id keeps the generation and mints a later
+      // stamp, rather than starting a fresh generation.
       const recreated = await alice.was.request({
         url: resourceUrl(resourceId),
         method: 'PUT',
         json: { id: resourceId, n: 2 }
       })
       const recreatedEtag = recreated.headers.get('etag')
-      assertEtagVersion({ etag: recreatedEtag, version: 3 })
+      assertEtagAdvanced({ before: createdEtag, after: recreatedEtag })
       assert.equal(etagGeneration(recreatedEtag!), etagGeneration(createdEtag))
     })
 
@@ -1074,7 +1075,7 @@ describe('Resource API', () => {
         json: { custom: { name: 'before' } }
       })
       const preDeleteMetaEtag = preDeleteMeta.headers.get('etag')!
-      assertEtagVersion({ etag: preDeleteMetaEtag, version: 1 })
+      parseEtagSegments(preDeleteMetaEtag)
       assert.notEqual(
         etagGeneration(preDeleteMetaEtag),
         etagGeneration(createdEtag),
@@ -1091,7 +1092,10 @@ describe('Resource API', () => {
         json: { id: resourceId, n: 2 }
       })
       // The content validator continues through the tombstone, as before.
-      assertEtagVersion({ etag: recreated.headers.get('etag'), version: 3 })
+      assertEtagAdvanced({
+        before: createdEtag,
+        after: recreated.headers.get('etag')
+      })
       assert.equal(
         etagGeneration(recreated.headers.get('etag')!),
         etagGeneration(createdEtag)
@@ -1108,7 +1112,7 @@ describe('Resource API', () => {
       )
       assert.equal(stale.status, 412)
       // ... while a guarded create of the metadata object succeeds, under a
-      // fresh generation at metaVersion 1 rather than the old `<gen>.1`.
+      // fresh generation rather than the old one.
       const revivedMeta = await alice.was.request({
         url: metaUrl,
         method: 'PUT',
@@ -1116,7 +1120,7 @@ describe('Resource API', () => {
         headers: { 'if-none-match': '*' }
       })
       const revivedMetaEtag = revivedMeta.headers.get('etag')!
-      assertEtagVersion({ etag: revivedMetaEtag, version: 1 })
+      parseEtagSegments(revivedMetaEtag)
       assert.notEqual(revivedMetaEtag, preDeleteMetaEtag)
       assert.notEqual(
         etagGeneration(revivedMetaEtag),

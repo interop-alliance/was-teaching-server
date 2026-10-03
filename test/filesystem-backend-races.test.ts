@@ -14,6 +14,7 @@ import { Readable } from 'node:stream'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import type { TempFileSystemBackend } from '../src/testing.js'
+import { formatEtag } from '../src/lib/etag.js'
 import { ResourceNotFoundError } from '../src/errors.js'
 import { importArchive, openTempBackend } from './helpers.js'
 
@@ -356,7 +357,7 @@ describe('FileSystemBackend races', () => {
       spaceId,
       collectionId,
       resourceId: 'bulky',
-      ifMatch: `"${validator.generation}.${validator.version}"`
+      ifMatch: formatEtag(validator)
     })
     vi.restoreAllMocks()
 

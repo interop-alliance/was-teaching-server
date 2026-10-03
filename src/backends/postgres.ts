@@ -13,8 +13,11 @@
  *   are not counted (a divergence from the filesystem's `du`, which counts
  *   every file).
  * - Conditional writes use row locks (`SELECT ... FOR UPDATE`) and
- *   transactions instead of the single-process `KeyedMutex`, so two server
- *   processes sharing one database get correct conditional writes.
+ *   transactions instead of the single-process `KeyedMutex`. The write stamps
+ *   come from one in-memory hybrid logical clock per backend (see
+ *   `lib/hlc.ts`), so a store is still served by one server process: two
+ *   processes over one schema share its origin id and could mint the same
+ *   stamp twice.
  * - Blobs are buffered single-`bytea` writes bounded by `maxUploadBytes`; an
  *   unset cap defaults to `DEFAULT_MAX_UPLOAD_BYTES` rather than "unbounded"
  *   (unbounded buffering into a `bytea` is a footgun). Chunked-row streaming
@@ -43,9 +46,10 @@ import {
   DuplicateRevocationError
 } from '../errors.js'
 import { isJsonContentType } from '@interop/storage-core'
-import { applyMigrations } from './postgresSchema.js'
+import { applyMigrations, writeClockHighWater } from './postgresSchema.js'
 import {
   assertImportBodiesFit,
+  restampImportedLog,
   restoredSpaceMetadata
 } from '../lib/importTar.js'
 import type { ImportPlan, ImportPlanCollection } from '../lib/importTar.js'
@@ -65,7 +69,11 @@ import {
 } from '@interop/space-archive'
 import type { ArchiveEntry, ArchiveFile } from '@interop/space-archive'
 import type { MetaSidecar } from '../lib/metaSidecar.js'
-import { parseSidecarBytes } from '../lib/metaSidecar.js'
+import {
+  parseSidecarBytes,
+  restampImportedSidecar
+} from '../lib/metaSidecar.js'
+import { HybridLogicalClock } from '../lib/hlc.js'
 import {
   sanitizeBackendRecord,
   serverBackendDescriptor
@@ -83,7 +91,7 @@ import { decodeCursor } from '../lib/cursor.js'
 import { policyGrants } from '../policy.js'
 import { revocationFileName } from '../lib/revocations.js'
 import {
-  normalizeMetadataWrite,
+  restampImportedMetadata,
   stampCollectionMetadata,
   stampSpaceMetadata
 } from '../lib/metadataWrite.js'
@@ -95,7 +103,10 @@ import {
   metadataEtagOf,
   newGeneration,
   resolveGeneration,
-  stripMetadataValidator
+  stampedValidator,
+  stampOf,
+  stripMetadataValidator,
+  withoutStampMembers
 } from '../lib/etag.js'
 import {
   clampPageSize,
@@ -163,14 +174,15 @@ import type {
   StoredCollectionMetadata,
   StoredCollectionLog,
   CollectionTransitionContext,
-  VersionedMetadata,
   KeystoreConfig,
   KmsKeyRecord,
   RevocationRecord,
   RevocationScope,
   CapabilitySummary,
   IDID,
-  ServiceDescription
+  ServiceDescription,
+  ResourceMetaStamp,
+  WriteStamp
 } from '../types.js'
 
 /** Pool sizing and per-connection statement timeout (operational defaults). */
@@ -178,7 +190,7 @@ const POOL_MAX = 10
 const STATEMENT_TIMEOUT_MS = 30_000
 const CONNECTION_TIMEOUT_MS = 30_000
 // The per-Space advisory lock `writeSpace` and `deleteSpace` serialize on
-// (a Space Metadata precondition check and version bump, or a delete, are
+// (a Space Metadata precondition check and stamp, or a delete, are
 // atomic against each other; disjoint from the `spaces` row lock the
 // Collection and Resource writes hold as the usage counter).
 const SPACE_META_LOCK_SQL = `SELECT pg_advisory_xact_lock(hashtext('space-meta:' || $1))`
@@ -211,28 +223,143 @@ type SpaceMetadataWrite = {
 }
 
 /**
- * One `resources` row, as read back from pg. `size_bytes` arrives as a string
- * (node-postgres returns `bigint` columns as strings).
+ * A record's write stamp as its three columns (see `lib/hlc.ts`).
  */
-interface ResourceRow {
+interface StampColumns {
+  updated_at: string
+  updated_at_counter: number
+  origin_id: string
+}
+
+/**
+ * One `resources` row, as read back from pg. `size_bytes` arrives as a string
+ * (node-postgres returns `bigint` columns as strings). `updated_at`,
+ * `updated_at_counter` and `origin_id` are the content record's write stamp;
+ * the four `meta_*` columns are the `/meta` record's stamp and generation,
+ * all NULL until the first metadata write.
+ */
+interface ResourceRow extends StampColumns {
   content_type: string
   content: Buffer | null
   is_json: boolean
   size_bytes: string
   generation: string
-  version: number
   meta_generation: string | null
-  meta_version: number | null
+  meta_updated_at: string | null
+  meta_updated_at_counter: number | null
+  meta_origin_id: string | null
   custom: ResourceMetadataCustom | Record<string, unknown> | null
   deleted: boolean
   created_at: string
-  updated_at: string
   created_by: IDID | null
   epoch: string | null
   writer_id: string | null
-  // Postgres returns a `bigint` as a string; NULL for a row written before
-  // feed positions existed.
+  // Postgres returns a `bigint` as a string.
   feed_position: string | null
+}
+
+/**
+ * A Space or Collection row's Metadata columns: the stored body (stamp
+ * members kept out of it), its generation and local validator segment, and
+ * its write stamp. `metadata` is NULL only on a row no Metadata write made.
+ */
+interface MetadataRow<T> extends StampColumns {
+  metadata: T | null
+  meta_generation: string | null
+  meta_local: number
+}
+
+/**
+ * The column list `MetadataRow` is selected by.
+ */
+const METADATA_COLUMNS = `metadata, meta_generation, meta_local, updated_at,
+       updated_at_counter, origin_id`
+
+/**
+ * A Collection row's governing history log columns, all NULL until the
+ * guarded create.
+ */
+interface LogRow {
+  log_body: string | null
+  log_generation: string | null
+  log_updated_at: string | null
+  log_updated_at_counter: number | null
+  log_origin_id: string | null
+}
+
+/**
+ * The column list `LogRow` is selected by.
+ */
+const LOG_COLUMNS = `log_body, log_generation, log_updated_at,
+       log_updated_at_counter, log_origin_id`
+
+/**
+ * The write stamp a row's three stamp columns hold.
+ * @param row {StampColumns}
+ * @returns {WriteStamp}
+ */
+function stampOfRow(row: StampColumns): WriteStamp {
+  return {
+    updatedAt: row.updated_at,
+    updatedAtCounter: row.updated_at_counter,
+    originId: row.origin_id
+  }
+}
+
+/**
+ * The `ETag` of a row carrying a `generation` column beside its three stamp
+ * columns, or `undefined` when it has no validator.
+ * @param row {StampColumns & { generation: string }}
+ * @returns {string | undefined}
+ */
+function etagOfRow(
+  row: StampColumns & { generation: string }
+): string | undefined {
+  return etagOf({ generation: row.generation, ...stampOfRow(row) })
+}
+
+/**
+ * The stamp parameters of a write: the three column values in column order.
+ * @param stamp {WriteStamp}
+ * @returns {[string, number, string]}
+ */
+function stampValues(stamp: WriteStamp): [string, number, string] {
+  return [stamp.updatedAt, stamp.updatedAtCounter, stamp.originId]
+}
+
+/**
+ * The `/meta` record a `resources` row carries, or `undefined` before the
+ * first metadata write (and after a soft delete dropped it).
+ * @param row {object}
+ * @param row.meta_generation {string | null}
+ * @param row.meta_updated_at {string | null}
+ * @param row.meta_updated_at_counter {number | null}
+ * @param row.meta_origin_id {string | null}
+ * @returns {ResourceMetaStamp | undefined}
+ */
+function metaStampOfRow(
+  row: Pick<
+    ResourceRow,
+    | 'meta_generation'
+    | 'meta_updated_at'
+    | 'meta_updated_at_counter'
+    | 'meta_origin_id'
+  >
+): ResourceMetaStamp | undefined {
+  if (
+    row.meta_generation === null ||
+    row.meta_updated_at === null ||
+    row.meta_updated_at_counter === null ||
+    row.meta_origin_id === null
+  ) {
+    return undefined
+  }
+  return {
+    updatedAt: row.meta_updated_at,
+    updatedAtCounter: row.meta_updated_at_counter,
+    originId: row.meta_origin_id,
+    generation: row.meta_generation
+  }
 }
 
 /**
@@ -270,62 +397,59 @@ async function bufferStreamCapped({
 
 /**
  * The stored form of a Space or Collection Metadata row: the jsonb body with
- * the row's validator columns re-surfaced as the out-of-band `metaGeneration`
- * / `metaVersion` parts. A NULL generation column (a legacy row) contributes
- * no generation, so `metadataEtagOf` reports no validator for it. Resolves
- * `undefined` for a missing row and for a placeholder (NULL-metadata) row,
- * both "no record written yet".
- * @param row {object}   the row, if any
- * @param [row.metadata] {T | null}
- * @param row.meta_generation {string | null}
- * @param row.meta_version {number}
+ * the row's stamp columns merged back in as the wire members `updatedAt`,
+ * `updatedAtCounter` and `originId`, and its generation and local segment
+ * re-surfaced as the out-of-band `metaGeneration` / `metaLocal` parts (the
+ * same read shape the filesystem backend's Metadata file yields). Resolves
+ * `undefined` for a missing row and for a row with no Metadata object, both
+ * "no record written yet".
+ * @param row {MetadataRow<T> | undefined}   the row, if any
  * @returns {(T & MetadataValidatorParts) | undefined}
  */
 function storedMetadataFromRow<T extends object>(
-  row:
-    | {
-        metadata: T | null
-        meta_generation: string | null
-        meta_version: number
-      }
-    | undefined
+  row: MetadataRow<T> | undefined
 ): (T & MetadataValidatorParts) | undefined {
   if (row?.metadata == null) {
     return undefined
   }
   return {
     ...row.metadata,
+    ...stampOfRow(row),
     ...(row.meta_generation !== null && {
       metaGeneration: row.meta_generation
     }),
-    metaVersion: row.meta_version
+    metaLocal: row.meta_local
   }
 }
 
 /**
- * Reads a Collection row's governing history log out of its three log
- * columns, or `undefined` when the row holds none (or does not exist).
- * Shared by every statement that selects the columns, so the shape is
- * decided once.
- * @param row {object | undefined}
+ * Reads a Collection row's governing history log out of its log columns, or
+ * `undefined` when the row holds none (any log column is NULL) or does not
+ * exist. A NULL generation reads as no log rather than minting one on read,
+ * since every log write sets the generation with the body. Shared by every
+ * statement that selects the columns, so the shape is decided once.
+ * @param row {LogRow | undefined}
  * @returns {StoredCollectionLog | undefined}
  */
 function storedLogFromRow(
-  row:
-    | {
-        log_body: string | null
-        log_generation: string | null
-        log_version: number | null
-      }
-    | undefined
+  row: LogRow | undefined
 ): StoredCollectionLog | undefined {
-  if (!row || row.log_body === null || row.log_version === null) {
+  if (
+    !row ||
+    row.log_body === null ||
+    row.log_generation === null ||
+    row.log_updated_at === null ||
+    row.log_updated_at_counter === null ||
+    row.log_origin_id === null
+  ) {
     return undefined
   }
   return {
     body: row.log_body,
-    generation: resolveGeneration(row.log_generation),
-    version: row.log_version
+    generation: row.log_generation,
+    updatedAt: row.log_updated_at,
+    updatedAtCounter: row.log_updated_at_counter,
+    originId: row.log_origin_id
   }
 }
 
@@ -342,6 +466,8 @@ export interface PostgresBackendOptions {
   maxCollectionsPerSpace?: number
   maxResourcesPerSpace?: number
   originId?: string
+  physicalClock?: () => number
+  clockBoundMs?: number
 }
 
 export class PostgresBackend implements StorageBackend {
@@ -386,12 +512,28 @@ export class PostgresBackend implements StorageBackend {
   maxResourcesPerSpace?: number
 
   #pool: pg.Pool
+  /**
+   * A one-connection pool of its own for the clock's high-water writes. The
+   * clock persists a mark from inside a write's transaction, which already
+   * holds a connection of `#pool` and the Space's row lock; drawing a second
+   * connection from `#pool` there could wait forever on transactions queued
+   * behind that very lock.
+   */
+  #clockPool: pg.Pool
   #schema?: string
   /**
    * The store's origin id, settled by `open()` from the store row. Assigned
    * before the factory returns, so no caller can read it unset.
    */
   #originId!: string
+  /**
+   * The store's hybrid logical clock, which mints the write stamp of every
+   * versioned record inside the write's transaction, after the row lock (see
+   * `lib/hlc.ts`). Built by `open()` once the origin id is settled, and
+   * seeded from the high-water mark the store row carries. In memory: one
+   * server process serves one store.
+   */
+  #clock!: HybridLogicalClock
   /**
    * The `PoolClient` of the transaction running on the current async context,
    * when one is. `#withTransaction` installs it for the span of its callback
@@ -436,6 +578,12 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.originId] {string}   the configured origin id
    *   (`WAS_ORIGIN_ID`); refused when it differs from the stored id, and
    *   written when the store carries none
+   * @param [options.physicalClock] {() => number}   the physical clock the
+   *   store's hybrid logical clock reads, epoch milliseconds; defaults to
+   *   `Date.now` (a test freezes or steps it)
+   * @param [options.clockBoundMs] {number}   the clock bound for a received
+   *   stamp (`WAS_REPLICATION_CLOCK_BOUND_MS`); defaults to
+   *   `REPLICATION_CLOCK_BOUND_MS`
    * @returns {Promise<PostgresBackend>}   an instance of the class `open()`
    *   was called on, so a subclass gets its own type back
    */
@@ -447,7 +595,11 @@ export class PostgresBackend implements StorageBackend {
     // so the `this` parameter cannot be typed as a constructor.
     const backend = new (this as unknown as typeof PostgresBackend)(options)
     try {
-      await backend.#open({ configuredOriginId: options.originId })
+      await backend.#open({
+        configuredOriginId: options.originId,
+        physicalClock: options.physicalClock,
+        clockBoundMs: options.clockBoundMs
+      })
     } catch (err) {
       // The open's own failure is the one to report. A pool that never
       // connected may also fail to end, and that error would replace it.
@@ -499,9 +651,8 @@ export class PostgresBackend implements StorageBackend {
       maxResourcesPerSpace,
       DEFAULT_MAX_RESOURCES_PER_SPACE
     )
-    this.#pool = new pg.Pool({
+    const poolOptions = {
       connectionString,
-      max: POOL_MAX,
       statement_timeout: STATEMENT_TIMEOUT_MS,
       // Defence in depth behind `#transactionClient`: if a future read ever
       // does check out a second connection from inside a transaction, the
@@ -511,24 +662,34 @@ export class PostgresBackend implements StorageBackend {
       // `search_path` is a connection-startup parameter, so every pooled
       // connection lands in the right schema with no per-checkout SET race.
       ...(schema !== undefined && { options: `-csearch_path=${schema}` })
-    })
-    this.#pool.on('error', err => {
-      this.logger.error({ err }, 'Postgres pool background error')
-    })
+    }
+    this.#pool = new pg.Pool({ ...poolOptions, max: POOL_MAX })
+    this.#clockPool = new pg.Pool({ ...poolOptions, max: 1 })
+    for (const pool of [this.#pool, this.#clockPool]) {
+      pool.on('error', err => {
+        this.logger.error({ err }, 'Postgres pool background error')
+      })
+    }
   }
 
   /**
    * The work `open()` runs on a freshly constructed backend: connect, create
-   * the schema when one is named, and apply the migrations.
+   * the schema when one is named, apply the migrations, and build the clock.
    * @param options {object}
    * @param [options.configuredOriginId] {string}   the configured origin id
    *   (`WAS_ORIGIN_ID`)
+   * @param [options.physicalClock] {() => number}
+   * @param [options.clockBoundMs] {number}
    * @returns {Promise<void>}
    */
   async #open({
-    configuredOriginId
+    configuredOriginId,
+    physicalClock,
+    clockBoundMs
   }: {
     configuredOriginId?: string
+    physicalClock?: () => number
+    clockBoundMs?: number
   }): Promise<void> {
     const client = await this.#pool.connect()
     try {
@@ -541,12 +702,26 @@ export class PostgresBackend implements StorageBackend {
       // holder's migration takes, and a future slow migration must not be
       // capped at the request-path timeout either.
       await client.query('SET statement_timeout = 0')
-      const { originId } = await applyMigrations({
+      const { originId, clockHighWater } = await applyMigrations({
         client,
         logger: this.logger,
         originId: configuredOriginId
       })
       this.#originId = originId
+      // Seeded from the persisted mark, which can trail the last stamp minted
+      // before a crash by up to a second; it persists a new mark as it advances.
+      this.#clock = new HybridLogicalClock({
+        originId,
+        physicalClock,
+        bound: clockBoundMs,
+        highWater: clockHighWater,
+        persistHighWater: ms =>
+          writeClockHighWater({
+            queryable: this.#clockPool,
+            clockHighWater: ms
+          }),
+        getLogger: () => this.logger
+      })
     } finally {
       // Destroy rather than pool-return the client, so the lifted timeout
       // never leaks into a request-path connection.
@@ -563,12 +738,25 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
-   * Drains the connection pool. Wired to the Fastify `onClose` hook by the
-   * plugin composition.
+   * The store's hybrid logical clock (see `#clock`).
+   * @returns {HybridLogicalClock}
+   */
+  get clock(): HybridLogicalClock {
+    return this.#clock
+  }
+
+  /**
+   * Persists the clock's high-water mark, so the clock seeded from it at the
+   * next boot starts above every stamp this process minted, then drains the
+   * connection pools. Wired to the Fastify `onClose` hook by the plugin
+   * composition. A failed high-water write is logged at `warn` by the clock
+   * and not thrown. A backend whose `open()` failed before its clock was
+   * built has none to persist.
    * @returns {Promise<void>}
    */
   async close(): Promise<void> {
-    await this.#pool.end()
+    await this.#clock?.persistCurrentMark()
+    await Promise.all([this.#pool.end(), this.#clockPool.end()])
   }
 
   /**
@@ -1068,7 +1256,7 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *`, the guarded
    *   create; an existing Space throws `PreconditionFailedError` (412)
    * @returns {Promise<EtagValidator>}   the Space's new validator (its
-   *   `generation` and bumped `version`, the `ETag`)
+   *   `generation` and the stamp this write mints, local segment 0)
    */
   async writeSpace(options: SpaceMetadataWrite): Promise<EtagValidator> {
     return this.#withTransaction(client =>
@@ -1081,7 +1269,7 @@ export class PostgresBackend implements StorageBackend {
    * whole body, so a transaction that already holds the Space (an import
    * restoring the archived object) makes the same write -- the same
    * precondition check, `createdBy` resolution, shared normalization and
-   * version bump -- rather than an inline copy that could drift from it.
+   * stamp -- rather than an inline copy that could drift from it.
    * @param options {object}
    * @param options.client {pg.PoolClient}   the caller's transaction
    * @param options.spaceId {string}
@@ -1128,12 +1316,9 @@ export class PostgresBackend implements StorageBackend {
       )
     }
     // Read the current row (if any) and its validator, so the precondition,
-    // the create detection, `createdBy` resolution, and the monotonic
-    // version bump are all atomic with the write. A missing row and a
-    // placeholder (NULL-metadata) row are both "no Space yet": version 0
-    // and no generation, so the first real write mints a generation at
-    // version 1 (a placeholder's `meta_version` column holds the schema
-    // DEFAULT and must not count).
+    // the create detection, `createdBy` resolution, and the stamp are all
+    // atomic with the write. A missing row is "no Space yet": no generation
+    // and no stamp, so the first write mints both.
     const prior =
       priorRead ?? (await this.#readSpaceRow({ queryable: client, spaceId }))
 
@@ -1163,53 +1348,57 @@ export class PostgresBackend implements StorageBackend {
       }
     }
 
-    // `createdBy` and the validator-bearing members the wire input may carry
-    // are resolved by the shared rules (lib/metadataWrite.ts), the same the
-    // filesystem backend applies, so a client-supplied `createdBy`,
-    // `_generation` or `_version` never lands in the jsonb body.
-    // The object keeps its generation for the Space's whole life; a Space
-    // deleted and re-created under the same id mints a new one, so the two
-    // lives' validators can never coincide.
-    const validator = {
-      generation: resolveGeneration(prior?.metaGeneration),
-      version: (prior?.metaVersion ?? 0) + 1
-    }
-    const { body } = normalizeMetadataWrite({
-      metadata: spaceMetadata,
-      validator
+    // `createdBy`, the stamp members, and the validator-bearing members the
+    // wire input may carry are resolved by the shared rules
+    // (lib/metadataWrite.ts), the same the filesystem backend applies, so a
+    // client-supplied `createdBy`, stamp or `_generation` never lands in the
+    // stored row. The object keeps its generation for the Space's whole life;
+    // a Space deleted and re-created under the same id mints a new one, so
+    // the two lives' validators can never coincide. The stamp is minted over
+    // the prior one, and resets the local segment.
+    const generation = resolveGeneration(prior?.metaGeneration)
+    const stamp = await this.#clock.mint({ held: stampOf(prior) })
+    const stamped = stampSpaceMetadata({
+      spaceMetadata,
+      prior,
+      createdBy,
+      stamp
     })
     // The upsert maintains the denormalized `controller` column on both
     // insert and update -- the controller can change on update, and the
-    // Spaces count quota reads this column (spec "Quotas"). The validator
-    // lives in its own columns and stays out of the jsonb body.
+    // Spaces count quota reads this column (spec "Quotas"). The generation,
+    // the local segment, and the stamp live in their own columns and stay
+    // out of the jsonb body.
     await client.query(
-      `INSERT INTO spaces (space_id, metadata, controller,
-                           meta_generation, meta_version)
-       VALUES ($1, $2::jsonb, $3, $4, $5)
+      `INSERT INTO spaces (space_id, metadata, controller, meta_generation,
+                           meta_local, updated_at, updated_at_counter,
+                           origin_id)
+       VALUES ($1, $2::jsonb, $3, $4, 0, $5, $6, $7)
        ON CONFLICT (space_id) DO UPDATE SET
          metadata = EXCLUDED.metadata,
          controller = EXCLUDED.controller,
          meta_generation = EXCLUDED.meta_generation,
-         meta_version = EXCLUDED.meta_version`,
+         meta_local = 0,
+         updated_at = EXCLUDED.updated_at,
+         updated_at_counter = EXCLUDED.updated_at_counter,
+         origin_id = EXCLUDED.origin_id`,
       [
         spaceId,
-        JSON.stringify(
-          stampSpaceMetadata({ spaceMetadata: body, prior, createdBy })
-        ),
+        JSON.stringify(withoutStampMembers(stamped)),
         controller,
-        validator.generation,
-        validator.version
+        generation,
+        ...stampValues(stamp)
       ]
     )
-    return validator
+    return stampedValidator({ generation, stamp, local: 0 })
   }
 
   /**
    * @param options {object}
    * @param options.spaceId {string}
    * @returns {Promise<StoredSpaceMetadata|undefined>}   falsy when the Space
-   *   does not exist or is a placeholder row without a Metadata object;
-   *   `metaGeneration` / `metaVersion` are the out-of-band `ETag` validator
+   *   does not exist; `metaGeneration` / `metaLocal` are the out-of-band
+   *   `ETag` validator parts, and the stamp members ride in the body
    */
   async getSpaceMetadata({
     spaceId
@@ -1237,13 +1426,8 @@ export class PostgresBackend implements StorageBackend {
     queryable: Queryable
     spaceId: string
   }): Promise<StoredSpaceMetadata | undefined> {
-    const { rows } = await queryable.query<{
-      metadata: SpaceMetadata | null
-      meta_generation: string | null
-      meta_version: number
-    }>(
-      `SELECT metadata, meta_generation, meta_version
-         FROM spaces WHERE space_id = $1`,
+    const { rows } = await queryable.query<MetadataRow<SpaceMetadata>>(
+      `SELECT ${METADATA_COLUMNS} FROM spaces WHERE space_id = $1`,
       [spaceId]
     )
     return storedMetadataFromRow(rows[0])
@@ -1270,19 +1454,18 @@ export class PostgresBackend implements StorageBackend {
 
   /**
    * Every Space with a Metadata object, sorted by id (byte order via
-   * `COLLATE "C"`). Placeholder rows without one are skipped, like a Space
-   * dir without a readable Metadata file.
+   * `COLLATE "C"`), each in the plain wire shape: the body with its stamp
+   * members, and no out-of-band validator parts (a listing carries no
+   * per-item `ETag`).
    * @returns {Promise<SpaceMetadata[]>}
    */
   async listSpaces(): Promise<SpaceMetadata[]> {
-    const { rows } = await this.#reader().query<{
-      metadata: SpaceMetadata
-    }>(
-      `SELECT metadata FROM spaces
+    const { rows } = await this.#reader().query<MetadataRow<SpaceMetadata>>(
+      `SELECT ${METADATA_COLUMNS} FROM spaces
         WHERE metadata IS NOT NULL
         ORDER BY space_id`
     )
-    return rows.map(row => row.metadata)
+    return rows.map(row => stripMetadataValidator(storedMetadataFromRow(row)!))
   }
 
   // Collections
@@ -1292,7 +1475,8 @@ export class PostgresBackend implements StorageBackend {
    * object) in one row-locking transaction: the prior object is read under
    * the lock, the precondition and the request layer's transition checks run
    * against it, the create-path count quota is enforced, the server-managed
-   * members are stamped, and the one validator is bumped.
+   * members are resolved, the write stamp is minted over the prior one, and
+   * the local validator segment is reset.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -1307,7 +1491,7 @@ export class PostgresBackend implements StorageBackend {
    *   state-transition checks, run against the row just read under its lock,
    *   the history log columns included
    * @returns {Promise<EtagValidator>}   the Collection's new validator (its
-   *   `generation` and bumped `version`, the `ETag`)
+   *   `generation` and the stamp this write mints, local segment 0)
    */
   async writeCollection({
     spaceId,
@@ -1333,36 +1517,28 @@ export class PostgresBackend implements StorageBackend {
       // collection-row `FOR UPDATE` below locks nothing when the row does not
       // exist yet, so without this two concurrent creates of *different* new
       // ids could each pass the create-path quota COUNT (overshooting
-      // `maxCollectionsPerSpace`), and two creates of the *same* id could each
-      // compute the same first version. It is also the first lock of the
+      // `maxCollectionsPerSpace`), and two creates of the *same* id could
+      // both pass a guarded create. It is also the first lock of the
       // backend-wide order (`#lockSpaceRow`), and refuses a Space that has no
       // Metadata object.
       await this.#lockLiveContainers({ client, spaceId })
       // Lock the Collection row (if any) and read its current Metadata object
       // and validator, so the `If-Match` compare-and-swap, the transition
       // checks, the create detection, the server-managed member resolution,
-      // and the monotonic version bump are all atomic with the write (two
-      // concurrent recipient edits cannot clobber one another). The history
-      // log columns ride along for the transition checks, so they cost no
-      // second round trip while the row lock is held.
-      const { rows } = await client.query<{
-        metadata: CollectionMetadata | null
-        meta_generation: string | null
-        meta_version: number
-        log_body: string | null
-        log_generation: string | null
-        log_version: number | null
-      }>(
-        `SELECT metadata, meta_generation, meta_version,
-                log_body, log_generation, log_version
+      // and the stamp are all atomic with the write (two concurrent recipient
+      // edits cannot clobber one another). The history log columns ride
+      // along for the transition checks, so they cost no second round trip
+      // while the row lock is held.
+      const { rows } = await client.query<
+        MetadataRow<CollectionMetadata> & LogRow
+      >(
+        `SELECT ${METADATA_COLUMNS}, ${LOG_COLUMNS}
            FROM collections
           WHERE space_id = $1 AND collection_id = $2 FOR UPDATE`,
         [spaceId, collectionId]
       )
-      // A missing row and a placeholder (NULL-metadata) row are both "no
-      // Collection yet": version 0 and no generation, so the first real write
-      // mints a generation at version 1 (a placeholder's `meta_version`
-      // column holds the schema DEFAULT and must not count).
+      // A missing row is "no Collection yet": no generation and no stamp, so
+      // the first write mints both.
       const prior = storedMetadataFromRow(rows[0])
       // Guarded create (`If-None-Match: *`) or compare-and-swap (`If-Match`),
       // both opt-in: an existing Collection or a stale validator throws 412.
@@ -1393,92 +1569,96 @@ export class PostgresBackend implements StorageBackend {
           })
         }
       }
-      // The object keeps its generation for the Collection's whole life; a
-      // Collection deleted and re-created under the same id mints a new one,
-      // so the two lives' validators can never coincide.
-      const validator = {
-        generation: resolveGeneration(prior?.metaGeneration),
-        version: (prior?.metaVersion ?? 0) + 1
-      }
+      // The server-managed members are the backend's, never the body's;
+      // both backends resolve them through the same shared rule
+      // (lib/metadataWrite.ts), which discards the ones the wire input may
+      // carry, validator-bearing and stamp members included. The stamp is
+      // minted over the prior one. The object keeps its generation for the
+      // Collection's whole life; a Collection deleted and re-created under
+      // the same id mints a new one, so the two lives' validators can never
+      // coincide.
+      const generation = resolveGeneration(prior?.metaGeneration)
+      const stamp = await this.#clock.mint({ held: stampOf(prior) })
       await this.#upsertCollection({
         queryable: client,
         spaceId,
         collectionId,
-        collectionMetadata: stampCollectionMetadata({
+        body: stampCollectionMetadata({
           collectionMetadata,
           prior,
-          createdBy
+          createdBy,
+          stamp
         }),
-        validator
+        generation,
+        stamp
       })
-      return validator
+      return stampedValidator({ generation, stamp, local: 0 })
     })
   }
 
   /**
    * The one Collection Metadata upsert statement, shared by `writeCollection`
-   * (which hands it the stamped object) and the import apply loop (which
-   * hands it the archived object verbatim, server-managed members included:
-   * a restored Collection keeps its original creator and timestamps). The
-   * validator-bearing members the object may carry are stripped by the shared
-   * normalization (`lib/metadataWrite.ts`) so none of them lands in the
-   * stored jsonb: the resolved validator becomes the `meta_generation` /
-   * `meta_version` columns and travels only as the `ETag` header.
+   * (which hands it the resolved object) and the import apply loop (which
+   * hands it the archived object, re-stamped by this store's clock). The
+   * caller has already resolved every server-managed member. The stamp goes
+   * to its own columns, and the members of the body that carry it are left
+   * out of the stored jsonb. The local validator segment is reset to 0, as
+   * every stamped write resets it.
    * @param options {object}
    * @param options.queryable {Queryable}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @param options.collectionMetadata {CollectionMetadata}
-   * @param [options.validator] {EtagValidator}   the validator to stamp (the
-   *   write path's monotonic bump). When omitted (the import path), a
-   *   `_generation` / `_version` pair on the incoming archived object is used,
-   *   else a fresh generation at version 1.
+   * @param options.body {CollectionMetadata}   the wire body to store
+   * @param options.generation {string}
+   * @param options.stamp {WriteStamp}   the write's stamp
    * @returns {Promise<void>}
    */
   async #upsertCollection({
     queryable,
     spaceId,
     collectionId,
-    collectionMetadata,
-    validator
+    body,
+    generation,
+    stamp
   }: {
     queryable: Queryable
     spaceId: string
     collectionId: string
-    collectionMetadata: CollectionMetadata
-    validator?: EtagValidator
+    body: CollectionMetadata
+    generation: string
+    stamp: WriteStamp
   }): Promise<void> {
-    const { body, validator: stamped } = normalizeMetadataWrite({
-      metadata: collectionMetadata,
-      validator
-    })
     await queryable.query(
       `INSERT INTO collections (space_id, collection_id, metadata,
-                                meta_generation, meta_version)
-       VALUES ($1, $2, $3::jsonb, $4, $5)
+                                meta_generation, meta_local, updated_at,
+                                updated_at_counter, origin_id)
+       VALUES ($1, $2, $3::jsonb, $4, 0, $5, $6, $7)
        ON CONFLICT (space_id, collection_id) DO UPDATE SET
-         metadata        = EXCLUDED.metadata,
-         meta_generation = EXCLUDED.meta_generation,
-         meta_version    = EXCLUDED.meta_version`,
+         metadata           = EXCLUDED.metadata,
+         meta_generation    = EXCLUDED.meta_generation,
+         meta_local         = 0,
+         updated_at         = EXCLUDED.updated_at,
+         updated_at_counter = EXCLUDED.updated_at_counter,
+         origin_id          = EXCLUDED.origin_id`,
       [
         spaceId,
         collectionId,
-        JSON.stringify(body),
-        stamped.generation,
-        stamped.version
+        JSON.stringify(withoutStampMembers(body)),
+        generation,
+        ...stampValues(stamp)
       ]
     )
   }
 
   /**
    * Reads a Collection Metadata object. Resolves `undefined` when the
-   * Collection does not exist; a placeholder (NULL-metadata) row counts as
-   * absent.
+   * Collection does not exist.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @returns {Promise<StoredCollectionMetadata | undefined>}
-   *   `metaGeneration` / `metaVersion` are the out-of-band `ETag` validator.
+   *   `metaGeneration` / `metaLocal` are the out-of-band `ETag` validator
+   *   parts; the stamp members ride in the body.
    */
   async getCollectionMetadata({
     spaceId,
@@ -1487,19 +1667,18 @@ export class PostgresBackend implements StorageBackend {
     spaceId: string
     collectionId: string
   }): Promise<StoredCollectionMetadata | undefined> {
-    const { rows } = await this.#reader().query<{
-      metadata: CollectionMetadata | null
-      meta_generation: string | null
-      meta_version: number
-    }>(
-      `SELECT metadata, meta_generation, meta_version
+    const { rows } = await this.#reader().query<
+      MetadataRow<CollectionMetadata>
+    >(
+      `SELECT ${METADATA_COLUMNS}
          FROM collections
         WHERE space_id = $1 AND collection_id = $2`,
       [spaceId, collectionId]
     )
-    // Surface the validator out-of-band as `metaGeneration` / `metaVersion`
-    // (the handler sets the `ETag` header from them); both are stored in
-    // their own columns and stay out of the wire body.
+    // Surface the generation and local segment out of band as
+    // `metaGeneration` / `metaLocal` (the handler sets the `ETag` header from
+    // them and the stamp); both are stored in their own columns and stay out
+    // of the wire body.
     return storedMetadataFromRow(rows[0])
   }
 
@@ -1519,12 +1698,8 @@ export class PostgresBackend implements StorageBackend {
     spaceId: string
     collectionId: string
   }): Promise<StoredCollectionLog | undefined> {
-    const { rows } = await this.#reader().query<{
-      log_body: string | null
-      log_generation: string | null
-      log_version: number | null
-    }>(
-      `SELECT log_body, log_generation, log_version
+    const { rows } = await this.#reader().query<LogRow>(
+      `SELECT ${LOG_COLUMNS}
          FROM collections
         WHERE space_id = $1 AND collection_id = $2`,
       [spaceId, collectionId]
@@ -1536,11 +1711,12 @@ export class PostgresBackend implements StorageBackend {
    * Replaces a Collection's governing history log (guarded create or
    * compare-and-swap append) in one row-locked transaction: the precondition
    * is evaluated on the log's current `ETag`, the request layer's
-   * `assertTransition` runs against the row just read, and the Collection
-   * Metadata object's validator is bumped in the same statement, since the
-   * served object's `encryption` member is derived from this log's head.
-   * Resolves `undefined` (no create) for an absent Collection or a
-   * placeholder row.
+   * `assertTransition` runs against the row just read, the log's own stamp is
+   * minted, and the Collection Metadata object's local validator segment is
+   * advanced in the same statement, since the served object's `encryption`
+   * member is derived from this log's head. The object's stamp is left
+   * alone: the change is derived, not a write of the object. Resolves
+   * `undefined` (no create) for an absent Collection.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -1569,16 +1745,10 @@ export class PostgresBackend implements StorageBackend {
     }) => void | Promise<void>
   }): Promise<EtagValidator | undefined> {
     return this.#withTransaction(async client => {
-      const { rows } = await client.query<{
-        metadata: CollectionMetadata | null
-        meta_generation: string | null
-        meta_version: number
-        log_body: string | null
-        log_generation: string | null
-        log_version: number | null
-      }>(
-        `SELECT metadata, meta_generation, meta_version,
-                log_body, log_generation, log_version
+      const { rows } = await client.query<
+        MetadataRow<CollectionMetadata> & LogRow
+      >(
+        `SELECT ${METADATA_COLUMNS}, ${LOG_COLUMNS}
            FROM collections
           WHERE space_id = $1 AND collection_id = $2
           FOR UPDATE`,
@@ -1592,10 +1762,7 @@ export class PostgresBackend implements StorageBackend {
       const prior = storedLogFromRow(row)
       assertCollectionLogWritePrecondition({
         collectionId,
-        currentEtag: etagOf({
-          generation: prior?.generation,
-          version: prior?.version
-        }),
+        currentEtag: prior && etagOf(prior),
         ifMatch,
         ifNoneMatch
       })
@@ -1604,20 +1771,23 @@ export class PostgresBackend implements StorageBackend {
         return unchanged
       }
       await assertTransition?.({ prior, collectionMetadata })
-      const validator = {
-        generation: resolveGeneration(prior?.generation),
-        version: (prior?.version ?? 0) + 1
-      }
+      const generation = resolveGeneration(prior?.generation)
+      const stamp = await this.#clock.mint({ held: stampOf(prior) })
+      // The served Collection Metadata object changed with its derived
+      // member, so its local validator segment advances; its generation and
+      // stamp are kept.
       await client.query(
         `UPDATE collections SET
-           log_body       = $3,
-           log_generation = $4,
-           log_version    = $5,
-           meta_version   = meta_version + 1
+           log_body               = $3,
+           log_generation         = $4,
+           log_updated_at         = $5,
+           log_updated_at_counter = $6,
+           log_origin_id          = $7,
+           meta_local             = meta_local + 1
          WHERE space_id = $1 AND collection_id = $2`,
-        [spaceId, collectionId, body, validator.generation, validator.version]
+        [spaceId, collectionId, body, generation, ...stampValues(stamp)]
       )
-      return validator
+      return stampedValidator({ generation, stamp })
     })
   }
 
@@ -1897,9 +2067,9 @@ export class PostgresBackend implements StorageBackend {
    * Writes a Resource representation as one transaction: row lock, shared
    * precondition evaluation (exact filesystem semantics -- a tombstone counts
    * as "not exists"; `ifMatch` is checked first, then `ifNoneMatch`, and both
-   * must hold, per RFC 9110 section 13.2.2), monotonic
-   * `version` bump continuing through delete/recreate under the row's
-   * preserved `generation`, and the transactional quota delta. JSON is stored
+   * must hold, per RFC 9110 section 13.2.2), a content stamp minted over the
+   * row's prior one (a tombstone's included) under the row's preserved
+   * `generation`, and the transactional quota delta. JSON is stored
    * as its serialized UTF-8 bytes; blobs buffer through the capped
    * accumulator.
    * @param options {object}
@@ -2014,31 +2184,15 @@ export class PostgresBackend implements StorageBackend {
       // yet, so `exists` / `priorSize` below reflect a concurrent creator's
       // committed row). Narrow projection: the lock needs the row, not its
       // (possibly multi-MB) `content` bytea, which this path never reads.
-      const selectPrior = async (): Promise<
-        | Pick<
-            ResourceRow,
-            | 'generation'
-            | 'version'
-            | 'size_bytes'
-            | 'deleted'
-            | 'created_at'
-            | 'created_by'
-          >
-        | undefined
-      > => {
-        const { rows } = await client.query<
-          Pick<
-            ResourceRow,
-            | 'generation'
-            | 'version'
-            | 'size_bytes'
-            | 'deleted'
-            | 'created_at'
-            | 'created_by'
-          >
-        >(
-          `SELECT generation, version, size_bytes, deleted, created_at,
-                  created_by
+      type PriorRow = StampColumns &
+        Pick<
+          ResourceRow,
+          'generation' | 'size_bytes' | 'deleted' | 'created_at' | 'created_by'
+        >
+      const selectPrior = async (): Promise<PriorRow | undefined> => {
+        const { rows } = await client.query<PriorRow>(
+          `SELECT generation, updated_at, updated_at_counter, origin_id,
+                  size_bytes, deleted, created_at, created_by
              FROM resources
             WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
             FOR UPDATE`,
@@ -2059,13 +2213,7 @@ export class PostgresBackend implements StorageBackend {
           exists,
           // A tombstone has no live representation to validate, so it offers
           // no `ETag` for `If-Match` to match.
-          currentEtag:
-            prior && !prior.deleted
-              ? etagOf({
-                  generation: prior.generation,
-                  version: prior.version
-                })
-              : undefined,
+          currentEtag: prior && !prior.deleted ? etagOfRow(prior) : undefined,
           ifMatch,
           ifNoneMatch
         })
@@ -2089,20 +2237,20 @@ export class PostgresBackend implements StorageBackend {
         }
       }
 
-      const now = new Date().toISOString()
       // The row keeps its generation for its whole life -- a soft delete keeps
-      // it and this write continues it across a re-create, exactly as the
-      // `version` counter continues. Only a row that does not exist at all
-      // mints one, so a hard-deleted Resource's successor can never present a
-      // validator the previous one already handed out.
-      const validator = {
-        generation: resolveGeneration(prior?.generation),
-        version: (prior?.version ?? 0) + 1
-      }
-      // A content write preserves the independent `meta_generation` /
-      // `meta_version` and the user-writable `custom` of a LIVE Resource; a
-      // tombstoned row already dropped all three (the metadata went with the
-      // deleted Resource).
+      // it and this write continues it across a re-create. Only a row that
+      // does not exist at all mints one, so a hard-deleted Resource's
+      // successor can never present a validator the previous one already
+      // handed out. The stamp is minted over the row's prior one (a
+      // tombstone's included), under the row lock, so it sorts above it.
+      const generation = resolveGeneration(prior?.generation)
+      const stamp = await this.#clock.mint({
+        held: prior && stampOfRow(prior)
+      })
+      // A content write preserves the independent `/meta` record (its
+      // generation and stamp) and the user-writable `custom` of a LIVE
+      // Resource; a tombstoned row already dropped them (the metadata went
+      // with the deleted Resource).
       //
       // Create-if-absent atomicity: when `If-None-Match: *` found NO prior row
       // (a tombstone is a real row and stays lock-serialized), concurrent
@@ -2128,16 +2276,13 @@ export class PostgresBackend implements StorageBackend {
         content,
         isJsonContentType(input.contentType),
         content.length,
-        validator.generation,
-        validator.version,
+        generation,
         // `created_at` is preserved from the prior row (including across a
-        // tombstone, as the filesystem sidecar does) and minted on a true
-        // create; `updated_at` is ALWAYS this write's clock, on both the
-        // insert and the conflict arm. They are separate parameters because
-        // binding one to both rewinds an overwrite's `updated_at` to the
-        // row's creation time.
-        prior?.created_at ?? now,
-        now,
+        // tombstone, as the filesystem sidecar does) and taken from the stamp
+        // on a true create; the stamp is ALWAYS this write's, on both the
+        // insert and the conflict arm.
+        prior?.created_at ?? stamp.updatedAt,
+        ...stampValues(stamp),
         creator,
         // The client-declared key epoch (the `key-epochs` feature): a content
         // write stores it and CLEARS it when absent (the new ciphertext's epoch
@@ -2153,16 +2298,15 @@ export class PostgresBackend implements StorageBackend {
       const insertSql = `
         INSERT INTO resources (
           space_id, collection_id, resource_id, content_type, content,
-          is_json, size_bytes, generation, version, meta_version, custom,
-          deleted, created_at, updated_at, created_by, epoch, writer_id,
-          feed_position
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL, false, $10, $11, $12, $13, $14, $15)`
+          is_json, size_bytes, generation, custom, deleted, created_at,
+          updated_at, updated_at_counter, origin_id, created_by, epoch,
+          writer_id, feed_position
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, false, $9, $10, $11, $12, $13, $14, $15, $16)`
       /**
-       * `created_at` / `meta_generation` / `meta_version` / `custom` are
-       * deliberately NOT in the conflict update: an overwrite keeps the
-       * original creation time (also
-       * across a tombstone, as the filesystem sidecar does) and the metadata
-       * counters as they stand on the row. `created_by` is likewise NOT
+       * `created_at` / the four `meta_*` columns / `custom` are deliberately
+       * NOT in the conflict update: an overwrite keeps the original creation
+       * time (also across a tombstone, as the filesystem sidecar does) and
+       * the `/meta` record as it stands on the row. `created_by` is likewise NOT
        * backfilled from `EXCLUDED`: the conflict path always means a prior
        * row already existed (including the race where a concurrent creator's
        * INSERT landed between our lock-nothing SELECT and this statement), so
@@ -2186,16 +2330,17 @@ export class PostgresBackend implements StorageBackend {
              is_json = EXCLUDED.is_json,
              size_bytes = EXCLUDED.size_bytes,
              generation = resources.generation,
-             version = resources.version + 1,
              deleted = false,
              updated_at = EXCLUDED.updated_at,
+             updated_at_counter = EXCLUDED.updated_at_counter,
+             origin_id = EXCLUDED.origin_id,
              created_by = resources.created_by,
              epoch = EXCLUDED.epoch,
              writer_id = EXCLUDED.writer_id,
              feed_position = EXCLUDED.feed_position`,
         values,
         createOnly: ifNoneMatch === '*' && prior === undefined,
-        validator,
+        generation,
         conflictDetail: `Resource '${resourceId}' already exists (If-None-Match: *).`
       })
       // Usage delta AFTER the write, from the size the write actually
@@ -2205,7 +2350,7 @@ export class PostgresBackend implements StorageBackend {
       if (delta !== 0) {
         await this.#applyUsageDelta({ client, spaceId, delta })
       }
-      return { generation: written.generation, version: written.version }
+      return stampedValidator({ generation: written.generation, stamp })
     })
   }
 
@@ -2218,21 +2363,19 @@ export class PostgresBackend implements StorageBackend {
    * 23505) maps to the 412 the precondition would have thrown. Otherwise it
    * appends `conflictSql` and RETURNING to the INSERT as an upsert.
    *
-   * The conflict update derives `version` from the row (`<table>.version +
-   * 1`) and keeps the row's own `generation`, neither from the pre-read: if a
-   * concurrent creator slipped in after our lock-nothing SELECT, the counter
-   * still advances monotonically under that creator's generation instead of
-   * two writers both claiming version 1 (an ETag anomaly). RETURNING reports
-   * the validator that actually landed.
+   * The conflict update keeps the row's own `generation` rather than the
+   * pre-read's: if a concurrent creator slipped in after our lock-nothing
+   * SELECT, the write continues under that creator's generation. RETURNING
+   * reports the generation that actually landed.
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.insertSql {string}   the INSERT (no ON CONFLICT clause)
    * @param options.conflictSql {string}   the `ON CONFLICT ... DO UPDATE SET`
-   *   clause appended on the upsert path; must set `version` from the row and
-   *   preserve its `generation`
+   *   clause appended on the upsert path; must preserve the row's
+   *   `generation`
    * @param options.values {unknown[]}   the INSERT's bind values
    * @param options.createOnly {boolean}   run the bare INSERT (see above)
-   * @param options.validator {EtagValidator}   the pre-read-derived validator,
+   * @param options.generation {string}   the pre-read-derived generation,
    *   reported when the bare INSERT lands
    * @param options.priorSizeSql {string}   a `SELECT <size column> AS
    *   prior_size FROM <table> WHERE <primary key>` over the row about to be
@@ -2240,8 +2383,8 @@ export class PostgresBackend implements StorageBackend {
    *   statement so `priorSizeBytes` is the size this statement REPLACES
    * @param options.conflictDetail {string}   `detail` of the 412 a unique
    *   violation on the bare INSERT maps to
-   * @returns {Promise<EtagValidator & { priorSizeBytes: number }>}   the
-   *   validator that landed, plus the stored size the write replaced (0 when
+   * @returns {Promise<{ generation: string, priorSizeBytes: number }>}   the
+   *   generation that landed, plus the stored size the write replaced (0 when
    *   there was no row), for the caller's usage delta
    */
   async #insertOrUpsertVersioned({
@@ -2250,7 +2393,7 @@ export class PostgresBackend implements StorageBackend {
     conflictSql,
     values,
     createOnly,
-    validator,
+    generation,
     priorSizeSql,
     conflictDetail
   }: {
@@ -2259,10 +2402,10 @@ export class PostgresBackend implements StorageBackend {
     conflictSql: string
     values: unknown[]
     createOnly: boolean
-    validator: EtagValidator
+    generation: string
     priorSizeSql: string
     conflictDetail: string
-  }): Promise<EtagValidator & { priorSizeBytes: number }> {
+  }): Promise<{ generation: string; priorSizeBytes: number }> {
     if (createOnly) {
       try {
         await client.query(insertSql, values)
@@ -2273,7 +2416,7 @@ export class PostgresBackend implements StorageBackend {
         throw err
       }
       // The bare INSERT landed, so no row existed: nothing was replaced.
-      return { ...validator, priorSizeBytes: 0 }
+      return { generation, priorSizeBytes: 0 }
     }
     // `prior` is a plain SELECT CTE of this same statement, so it is evaluated
     // on the statement's snapshot -- the state BEFORE the upsert, including
@@ -2283,18 +2426,18 @@ export class PostgresBackend implements StorageBackend {
     // take the same-key create lock -- `importSpace`'s plain INSERTs -- landed
     // a row in between: the upsert replaces that row, and its bytes leave the
     // counter with it.
-    const { rows: written } = await client.query<
-      EtagValidator & { prior_size: string }
-    >(
+    const { rows: written } = await client.query<{
+      generation: string
+      prior_size: string
+    }>(
       `WITH prior AS (${priorSizeSql})
        ${insertSql}${conflictSql}
-           RETURNING generation, version,
+           RETURNING generation,
              COALESCE((SELECT prior_size FROM prior), 0) AS prior_size`,
       values
     )
     return {
       generation: written[0]!.generation,
-      version: written[0]!.version,
       priorSizeBytes: Number(written[0]!.prior_size)
     }
   }
@@ -2318,7 +2461,8 @@ export class PostgresBackend implements StorageBackend {
     contentType?: string
   }): Promise<ResourceResult> {
     const { rows } = await this.#reader().query<ResourceRow>(
-      `SELECT content_type, content, generation, version, deleted
+      `SELECT content_type, content, generation, updated_at,
+              updated_at_counter, origin_id, deleted
          FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
       [spaceId, collectionId, resourceId]
@@ -2331,16 +2475,16 @@ export class PostgresBackend implements StorageBackend {
       resourceStream: Readable.from(row.content),
       storedResourceType: row.content_type,
       generation: row.generation,
-      version: row.version
+      ...stampOfRow(row)
     }
   }
 
   /**
    * Soft-deletes a Resource into a tombstone row: content dropped, `deleted`
-   * set, `version` bumped (so the change feed surfaces it) under the row's
-   * unchanged `generation`, last-known `content_type` retained, the metadata
-   * object dropped whole (`custom` with its `meta_generation` /
-   * `meta_version` validator, so a re-create's first metadata write mints a
+   * set, a new content stamp minted over the prior one (so the change feed
+   * surfaces it) under the row's unchanged `generation`, last-known
+   * `content_type` retained, the `/meta` record dropped whole (`custom` with
+   * its generation and stamp, so a re-create's first metadata write mints a
    * new generation and a pre-delete `/meta` ETag cannot pass `If-Match`
    * against it), and the freed bytes subtracted from the quota counter -- one
    * transaction. Idempotent on an absent Resource or an existing tombstone.
@@ -2382,9 +2526,12 @@ export class PostgresBackend implements StorageBackend {
       // Narrow projection: the lock needs the row, not the `content` bytea
       // that is about to be dropped anyway.
       const { rows } = await client.query<
-        Pick<ResourceRow, 'generation' | 'version' | 'size_bytes' | 'deleted'>
+        StampColumns &
+          Pick<ResourceRow, 'generation' | 'size_bytes' | 'deleted'>
       >(
-        `SELECT generation, version, size_bytes, deleted FROM resources
+        `SELECT generation, updated_at, updated_at_counter, origin_id,
+                size_bytes, deleted
+           FROM resources
           WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
           FOR UPDATE`,
         [spaceId, collectionId, resourceId]
@@ -2395,13 +2542,7 @@ export class PostgresBackend implements StorageBackend {
         assertWritePrecondition({
           resourceId,
           exists,
-          currentEtag:
-            prior && !prior.deleted
-              ? etagOf({
-                  generation: prior.generation,
-                  version: prior.version
-                })
-              : undefined,
+          currentEtag: prior && !prior.deleted ? etagOfRow(prior) : undefined,
           ifMatch
         })
       }
@@ -2430,30 +2571,42 @@ export class PostgresBackend implements StorageBackend {
       if (freedBytes > 0) {
         await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
       }
-      const now = new Date().toISOString()
-      // `generation` is deliberately NOT touched: a tombstone keeps the row's
-      // marker, so a later re-create continues both parts of the content
-      // validator. `meta_generation` goes with `meta_version`: the `/meta`
-      // validator dies with the metadata object.
+      // The deletion is a revision of the content record, so it mints a new
+      // stamp over the prior one (a later re-create reads this row and mints
+      // above it). `generation` is deliberately NOT touched: a tombstone
+      // keeps the row's marker, so a later re-create continues the content
+      // validator under it. The four `meta_*` columns go together: the
+      // `/meta` record dies with the metadata object.
       // `writer_id` is set from THIS delete's own declaration, not preserved
       // from the row -- a deletion is a revision like any other, and the
       // tombstone carries the label the deleting write declared, if any
       // (spec "Writer attribution").
+      const stamp = await this.#clock.mint({ held: stampOfRow(prior) })
       await client.query(
         `UPDATE resources SET
            content = NULL,
            size_bytes = 0,
-           version = version + 1,
            meta_generation = NULL,
-           meta_version = NULL,
+           meta_updated_at = NULL,
+           meta_updated_at_counter = NULL,
+           meta_origin_id = NULL,
            custom = NULL,
            epoch = NULL,
-           writer_id = $5,
+           writer_id = $4,
            deleted = true,
-           updated_at = $4,
-           feed_position = $6
+           updated_at = $5,
+           updated_at_counter = $6,
+           origin_id = $7,
+           feed_position = $8
          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
-        [spaceId, collectionId, resourceId, now, writerId ?? null, feedPosition]
+        [
+          spaceId,
+          collectionId,
+          resourceId,
+          writerId ?? null,
+          ...stampValues(stamp),
+          feedPosition
+        ]
       )
     })
   }
@@ -2461,12 +2614,15 @@ export class PostgresBackend implements StorageBackend {
   /**
    * Reads the metadata of a Resource's current representation. Tombstones and
    * absent Resources resolve `undefined`. `custom` is included only when
-   * non-empty, verbatim (`{ name, tags }` or the opaque envelope).
+   * non-empty, verbatim (`{ name, tags }` or the opaque envelope). The
+   * content record's stamp is top-level and the `/meta` record's stamp and
+   * generation the nested `meta`; `generation` is the content record's, out
+   * of band.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.resourceId {string}
-   * @returns {Promise<(ResourceMetadata & VersionedMetadata) | undefined>}
+   * @returns {Promise<(ResourceMetadata & { generation?: string }) | undefined>}
    */
   async getResourceMetadata({
     spaceId,
@@ -2476,11 +2632,12 @@ export class PostgresBackend implements StorageBackend {
     spaceId: string
     collectionId: string
     resourceId: string
-  }): Promise<(ResourceMetadata & VersionedMetadata) | undefined> {
+  }): Promise<(ResourceMetadata & { generation?: string }) | undefined> {
     const { rows } = await this.#reader().query<ResourceRow>(
-      `SELECT content_type, size_bytes, generation, version, meta_generation,
-              meta_version, custom, epoch, writer_id, deleted, created_at,
-              updated_at, created_by
+      `SELECT content_type, size_bytes, generation, updated_at,
+              updated_at_counter, origin_id, meta_generation, meta_updated_at,
+              meta_updated_at_counter, meta_origin_id, custom, epoch,
+              writer_id, deleted, created_at, created_by
          FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
       [spaceId, collectionId, resourceId]
@@ -2490,39 +2647,37 @@ export class PostgresBackend implements StorageBackend {
       return undefined
     }
     const hasCustom = row.custom !== null && Object.keys(row.custom).length > 0
+    const meta = metaStampOfRow(row)
     return {
       contentType: row.content_type,
       size: Number(row.size_bytes),
       createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      // Absent for a Resource created before `createdBy` was recorded.
+      // The content record's generation (out of band) with its stamp, then
+      // the `/meta` record's own stamp and generation, once written.
+      generation: row.generation,
+      ...stampOfRow(row),
+      ...(meta !== undefined && { meta }),
+      // Absent when the creating write had no invoker.
       ...(row.created_by !== null && { createdBy: row.created_by }),
       ...(hasCustom && { custom: row.custom as ResourceMetadataCustom }),
       // The client-declared key epoch (the `key-epochs` feature), when stamped.
       ...(row.epoch !== null && { epoch: row.epoch }),
       // The client-declared writer-attribution label (spec "Writer
       // attribution"), when stamped.
-      ...(row.writer_id !== null && { writerId: row.writer_id }),
-      // The row's generation pairs with `version` for the content `ETag`; the
-      // metadata object's own `metaGeneration` pairs with `metaVersion` for
-      // the `/meta` one.
-      generation: row.generation,
-      version: row.version,
-      ...(row.meta_generation !== null && {
-        metaGeneration: row.meta_generation
-      }),
-      ...(row.meta_version !== null && { metaVersion: row.meta_version })
+      ...(row.writer_id !== null && { writerId: row.writer_id })
     }
   }
 
   /**
    * Replaces the user-writable `custom` object (full replacement; `{}`
-   * clears), bumping `updatedAt` and the independent `metaVersion` -- one
-   * row-locked transaction, preconditions evaluated on the current metadata
-   * `ETag` via the shared helper. The metadata object keeps its own
+   * clears), minting a new stamp on the `/meta` record over its prior one --
+   * one row-locked transaction, preconditions evaluated on the current
+   * metadata `ETag` via the shared helper. The `/meta` record keeps its own
    * `meta_generation`, minted by the first metadata write (afresh after a
-   * tombstone dropped it); the row's content `generation` is untouched.
-   * Resolves `undefined` (no create) for an absent or tombstoned Resource.
+   * tombstone dropped it). The content record's stamp, `generation` and
+   * `writer_id` are untouched. The write still takes a feed position, so the
+   * edit replicates. Resolves `undefined` (no create) for an absent or
+   * tombstoned Resource.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -2531,7 +2686,7 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.ifMatch] {string}
    * @param [options.ifNoneMatch] {HeldValidators}
    * @returns {Promise<EtagValidator | undefined>}   the `/meta` object's new
-   *   validator (its `meta_generation` with the bumped `metaVersion`)
+   *   validator (its `meta_generation` with the stamp this write mints)
    */
   async writeResourceMetadata({
     spaceId,
@@ -2539,7 +2694,6 @@ export class PostgresBackend implements StorageBackend {
     resourceId,
     custom,
     epoch,
-    writerId,
     uniqueIndexes,
     ifMatch,
     ifNoneMatch
@@ -2549,7 +2703,6 @@ export class PostgresBackend implements StorageBackend {
     resourceId: string
     custom: ResourceMetadataCustom | Record<string, unknown>
     epoch?: string
-    writerId?: string
     uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: HeldValidators
@@ -2581,8 +2734,19 @@ export class PostgresBackend implements StorageBackend {
       if (feedPosition === undefined) {
         return undefined
       }
-      const { rows } = await client.query<ResourceRow>(
-        `SELECT meta_generation, meta_version, deleted FROM resources
+      const { rows } = await client.query<
+        Pick<
+          ResourceRow,
+          | 'meta_generation'
+          | 'meta_updated_at'
+          | 'meta_updated_at_counter'
+          | 'meta_origin_id'
+          | 'deleted'
+        >
+      >(
+        `SELECT meta_generation, meta_updated_at, meta_updated_at_counter,
+                meta_origin_id, deleted
+           FROM resources
           WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
           FOR UPDATE`,
         [spaceId, collectionId, resourceId]
@@ -2591,12 +2755,10 @@ export class PostgresBackend implements StorageBackend {
       if (!prior || prior.deleted) {
         return undefined
       }
+      const priorMeta = metaStampOfRow(prior)
       assertMetaWritePrecondition({
         resourceId,
-        currentEtag: etagOf({
-          generation: prior.meta_generation ?? undefined,
-          version: prior.meta_version ?? undefined
-        }),
+        currentEtag: etagOf(priorMeta ?? {}),
         ifMatch,
         ifNoneMatch
       })
@@ -2633,41 +2795,40 @@ export class PostgresBackend implements StorageBackend {
           })
         })
       }
-      const metaGeneration = resolveGeneration(prior.meta_generation)
-      const metaVersion = (prior.meta_version ?? 0) + 1
+      // The `/meta` record's own generation: minted by the first metadata
+      // write (a tombstone dropped any earlier one, so a re-created Resource
+      // starts afresh here) and kept by every later one. Its stamp is minted
+      // over the prior `/meta` stamp, under the row lock.
+      const metaGeneration = resolveGeneration(priorMeta?.generation)
+      const metaStamp = await this.#clock.mint({ held: priorMeta })
       const hasCustom = Object.keys(custom).length > 0
-      const now = new Date().toISOString()
       // The key-epoch stamp describes the CONTENT write, so a supplied `epoch`
       // replaces it but an OMITTED one PRESERVES the stored value (unlike
-      // `custom`, full-replace): `COALESCE($8, epoch)` keeps the current value
-      // when the parameter is NULL. The writer-attribution label is
-      // declare-or-clear at THIS level too (unlike `epoch`): this write is
-      // itself a revision, so `writer_id` is set straight from `$9` with no
-      // `COALESCE`, clearing it when the parameter is NULL.
+      // `custom`, full-replace): `COALESCE($6, epoch)` keeps the current value
+      // when the parameter is NULL. The content record's stamp and
+      // `writer_id`, which names the writer of the content, are not touched.
       await client.query(
         `UPDATE resources SET
            meta_generation = $4,
-           meta_version = $5,
-           custom = $6::jsonb,
-           updated_at = $7,
-           epoch = COALESCE($8, epoch),
-           writer_id = $9,
-           feed_position = $10
+           custom = $5::jsonb,
+           epoch = COALESCE($6, epoch),
+           feed_position = $7,
+           meta_updated_at = $8,
+           meta_updated_at_counter = $9,
+           meta_origin_id = $10
          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
         [
           spaceId,
           collectionId,
           resourceId,
           metaGeneration,
-          metaVersion,
           hasCustom ? JSON.stringify(custom) : null,
-          now,
           epoch ?? null,
-          writerId ?? null,
-          feedPosition
+          feedPosition,
+          ...stampValues(metaStamp)
         ]
       )
-      return { generation: metaGeneration, version: metaVersion }
+      return stampedValidator({ generation: metaGeneration, stamp: metaStamp })
     })
   }
 
@@ -2678,8 +2839,8 @@ export class PostgresBackend implements StorageBackend {
    * Resource must exist (checked atomically -- a `FOR SHARE` lock on it also
    * blocks a concurrent delete of the parent for the duration of the write, so
    * a chunk can never be orphaned by a racing `deleteResource`), the chunk row
-   * is locked, its precondition evaluated, its validator bumped, and
-   * the transactional quota delta applied. The chunk body is stored opaquely as
+   * is locked, its precondition evaluated, its stamp minted over the prior
+   * one, and the transactional quota delta applied. The chunk body is stored opaquely as
    * a single `bytea`, the buffered-blob path (bounded by `maxUploadBytes`),
    * exactly like a binary Resource representation.
    * @param options {object}
@@ -2737,18 +2898,14 @@ export class PostgresBackend implements StorageBackend {
 
       // Lock the chunk row (if any, re-reading under the create lock when it
       // does not exist yet) and read its current validator/size, so the
-      // precondition, the monotonic bump, and the usage delta are all atomic
-      // with the write.
+      // precondition, the stamp, and the usage delta are all atomic with the
+      // write.
       const chunkLabel = `${resourceId}/chunks/${chunkIndex}`
-      const selectPrior = async (): Promise<
-        { generation: string; version: number; size: string } | undefined
-      > => {
-        const { rows } = await client.query<{
-          generation: string
-          version: number
-          size: string
-        }>(
-          `SELECT generation, version, size FROM chunks
+      type PriorChunk = StampColumns & { generation: string; size: string }
+      const selectPrior = async (): Promise<PriorChunk | undefined> => {
+        const { rows } = await client.query<PriorChunk>(
+          `SELECT generation, updated_at, updated_at_counter, origin_id, size
+             FROM chunks
             WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
               AND chunk_index = $4
             FOR UPDATE`,
@@ -2767,9 +2924,7 @@ export class PostgresBackend implements StorageBackend {
         assertWritePrecondition({
           resourceId: chunkLabel,
           exists,
-          currentEtag: prior
-            ? etagOf({ generation: prior.generation, version: prior.version })
-            : undefined,
+          currentEtag: prior ? etagOfRow(prior) : undefined,
           ifMatch,
           ifNoneMatch
         })
@@ -2777,11 +2932,12 @@ export class PostgresBackend implements StorageBackend {
 
       // A chunk delete removes its row outright, so there is no tombstone to
       // continue: an overwrite keeps the row's generation, while a write at a
-      // freed index mints a new one and cannot reuse the old validators.
-      const validator = {
-        generation: resolveGeneration(prior?.generation),
-        version: (prior?.version ?? 0) + 1
-      }
+      // freed index mints a new one and cannot reuse the old validators. The
+      // stamp is minted over the row's prior one.
+      const generation = resolveGeneration(prior?.generation)
+      const stamp = await this.#clock.mint({
+        held: prior && stampOfRow(prior)
+      })
       const values = [
         spaceId,
         collectionId,
@@ -2790,14 +2946,15 @@ export class PostgresBackend implements StorageBackend {
         input.contentType,
         bytes,
         bytes.length,
-        validator.generation,
-        validator.version
+        generation,
+        ...stampValues(stamp)
       ]
       const insertSql = `
         INSERT INTO chunks (
           space_id, collection_id, resource_id, chunk_index,
-          content_type, bytes, size, generation, version
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+          content_type, bytes, size, generation, updated_at,
+          updated_at_counter, origin_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
       // Create-if-absent atomicity mirrors `writeResource`: concurrent
       // creators through this method are serialized by `#lockSameKeyCreate`
       // above; the race against a writer that does not take that lock is
@@ -2817,10 +2974,12 @@ export class PostgresBackend implements StorageBackend {
            bytes = EXCLUDED.bytes,
            size = EXCLUDED.size,
            generation = chunks.generation,
-           version = chunks.version + 1`,
+           updated_at = EXCLUDED.updated_at,
+           updated_at_counter = EXCLUDED.updated_at_counter,
+           origin_id = EXCLUDED.origin_id`,
         values,
         createOnly: ifNoneMatch === '*' && prior === undefined,
-        validator,
+        generation,
         conflictDetail: `Chunk '${chunkLabel}' already exists (If-None-Match: *).`
       })
       // Usage delta AFTER the write, from the size the write actually
@@ -2829,7 +2988,7 @@ export class PostgresBackend implements StorageBackend {
       if (delta !== 0) {
         await this.#applyUsageDelta({ client, spaceId, delta })
       }
-      return { generation: written.generation, version: written.version }
+      return stampedValidator({ generation: written.generation, stamp })
     })
   }
 
@@ -2854,13 +3013,16 @@ export class PostgresBackend implements StorageBackend {
     resourceId: string
     chunkIndex: number
   }): Promise<ResourceResult> {
-    const { rows } = await this.#reader().query<{
-      content_type: string
-      bytes: Buffer
-      generation: string
-      version: number
-    }>(
-      `SELECT content_type, bytes, generation, version FROM chunks
+    const { rows } = await this.#reader().query<
+      StampColumns & {
+        content_type: string
+        bytes: Buffer
+        generation: string
+      }
+    >(
+      `SELECT content_type, bytes, generation, updated_at, updated_at_counter,
+              origin_id
+         FROM chunks
         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
           AND chunk_index = $4`,
       [spaceId, collectionId, resourceId, chunkIndex]
@@ -2873,7 +3035,7 @@ export class PostgresBackend implements StorageBackend {
       resourceStream: Readable.from(row.bytes),
       storedResourceType: row.content_type,
       generation: row.generation,
-      version: row.version
+      ...stampOfRow(row)
     }
   }
 
@@ -2898,13 +3060,16 @@ export class PostgresBackend implements StorageBackend {
     resourceId: string
     chunkIndex: number
   }): Promise<ChunkMetadata | undefined> {
-    const { rows } = await this.#reader().query<{
-      content_type: string
-      size: string
-      generation: string
-      version: number
-    }>(
-      `SELECT content_type, size, generation, version FROM chunks
+    const { rows } = await this.#reader().query<
+      StampColumns & {
+        content_type: string
+        size: string
+        generation: string
+      }
+    >(
+      `SELECT content_type, size, generation, updated_at, updated_at_counter,
+              origin_id
+         FROM chunks
         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
           AND chunk_index = $4`,
       [spaceId, collectionId, resourceId, chunkIndex]
@@ -2917,7 +3082,7 @@ export class PostgresBackend implements StorageBackend {
       contentType: row.content_type,
       size: Number(row.size),
       generation: row.generation,
-      version: row.version
+      ...stampOfRow(row)
     }
   }
 
@@ -2951,12 +3116,11 @@ export class PostgresBackend implements StorageBackend {
     return this.#withTransaction(async client => {
       // First lock of the backend-wide order (`#lockSpaceRow`).
       await this.#lockSpaceRow({ client, spaceId })
-      const { rows } = await client.query<{
-        generation: string
-        version: number
-        size: string
-      }>(
-        `SELECT generation, version, size FROM chunks
+      const { rows } = await client.query<
+        StampColumns & { generation: string; size: string }
+      >(
+        `SELECT generation, updated_at, updated_at_counter, origin_id, size
+           FROM chunks
           WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
             AND chunk_index = $4
           FOR UPDATE`,
@@ -2970,10 +3134,7 @@ export class PostgresBackend implements StorageBackend {
         assertWritePrecondition({
           resourceId: `${resourceId}/chunks/${chunkIndex}`,
           exists: true,
-          currentEtag: etagOf({
-            generation: prior.generation,
-            version: prior.version
-          }),
+          currentEtag: etagOfRow(prior),
           ifMatch
         })
       }
@@ -3015,10 +3176,8 @@ export class PostgresBackend implements StorageBackend {
       chunk_index: number
       size: string
       content_type: string
-      generation: string
-      version: number
     }>(
-      `SELECT chunk_index, size, content_type, generation, version FROM chunks
+      `SELECT chunk_index, size, content_type FROM chunks
         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
         ORDER BY chunk_index`,
       [spaceId, collectionId, resourceId]
@@ -3028,9 +3187,7 @@ export class PostgresBackend implements StorageBackend {
       chunks: rows.map(row => ({
         index: row.chunk_index,
         size: Number(row.size),
-        contentType: row.content_type,
-        generation: row.generation,
-        version: row.version
+        contentType: row.content_type
       }))
     }
   }
@@ -3040,9 +3197,9 @@ export class PostgresBackend implements StorageBackend {
    * seeking strictly past `afterPosition` on `feed_position`, tombstones
    * included, JSON documents only, bodies parsed for the returned page.
    * Positions are commit-ordered (`#takeFeedPosition`), so the statement's
-   * snapshot never holds a position without every lower one. A row with no
-   * `feed_position` (written before feed positions existed; there is no
-   * backfill) is left out until it is rewritten.
+   * snapshot never holds a position without every lower one. Each document
+   * carries the content record's stamp and, once metadata has been written,
+   * the `/meta` record's stamp and generation as `meta`.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -3062,21 +3219,20 @@ export class PostgresBackend implements StorageBackend {
     afterPosition?: number
     limit: number
   }): Promise<{
-    documents: Array<{
-      resourceId: string
-      feedPosition: number
-      version: number
-      metaVersion?: number
-      generation?: string
-      metaGeneration?: string
-      createdBy?: IDID
-      updatedAt: string
-      deleted: boolean
-      data?: unknown
-      custom?: ResourceMetadataCustom | Record<string, unknown>
-      epoch?: string
-      writerId?: string
-    }>
+    documents: Array<
+      {
+        resourceId: string
+        feedPosition: number
+        generation?: string
+        meta?: ResourceMetaStamp
+        createdBy?: IDID
+        deleted: boolean
+        data?: unknown
+        custom?: ResourceMetadataCustom | Record<string, unknown>
+        epoch?: string
+        writerId?: string
+      } & WriteStamp
+    >
     checkpoint: number | null
     feedGeneration?: string
   }> {
@@ -3096,9 +3252,10 @@ export class PostgresBackend implements StorageBackend {
     const { rows } = await this.#reader().query<
       ResourceRow & { resource_id: string }
     >(
-      `SELECT resource_id, content, version, meta_generation, meta_version,
-              generation, custom, epoch, writer_id, deleted, updated_at,
-              created_by, feed_position
+      `SELECT resource_id, content, generation, updated_at, updated_at_counter,
+              origin_id, meta_generation, meta_updated_at,
+              meta_updated_at_counter, meta_origin_id, custom, epoch,
+              writer_id, deleted, created_by, feed_position
          FROM resources
         WHERE space_id = $1 AND collection_id = $2 AND is_json
           AND feed_position IS NOT NULL AND feed_position > $3
@@ -3114,12 +3271,12 @@ export class PostgresBackend implements StorageBackend {
         return {
           resourceId: row.resource_id,
           feedPosition,
-          version: row.version,
-          ...(row.meta_version !== null && { metaVersion: row.meta_version }),
+          ...stampOfRow(row),
+          // A soft delete dropped the `/meta` record, so a tombstone carries
+          // no `meta`.
           generation: row.generation,
           // A tombstone keeps its creator, as it keeps its `created_at`.
           ...(row.created_by !== null && { createdBy: row.created_by }),
-          updatedAt: row.updated_at,
           deleted: true,
           // A tombstone carries the label its DELETE declared, if any (spec
           // "Writer attribution").
@@ -3134,22 +3291,19 @@ export class PostgresBackend implements StorageBackend {
       } catch {
         data = undefined
       }
+      const meta = metaStampOfRow(row)
       return {
         resourceId: row.resource_id,
         feedPosition,
-        version: row.version,
-        ...(row.meta_version !== null && { metaVersion: row.meta_version }),
-        // The row's generation pairs with `version` and `metaGeneration` with
-        // `metaVersion` so the request layer can derive the wire `etag` /
-        // `metaEtag` without a fetch per Resource.
+        ...stampOfRow(row),
+        // `generation` pairs with the content stamp, and `meta` carries its
+        // own, so the request layer can derive the wire `etag` / `metaEtag`
+        // without a fetch per Resource.
         generation: row.generation,
-        ...(row.meta_generation !== null && {
-          metaGeneration: row.meta_generation
-        }),
+        ...(meta !== undefined && { meta }),
         // The creator's DID rides the feed so provenance replicates with the
         // document, rather than needing a `/meta` fetch per Resource.
         ...(row.created_by !== null && { createdBy: row.created_by }),
-        updatedAt: row.updated_at,
         deleted: false,
         data,
         ...(row.custom !== null && { custom: row.custom }),
@@ -3577,7 +3731,8 @@ export class PostgresBackend implements StorageBackend {
   }): Promise<void> {
     await this.#withTransaction(async client => {
       // The Space Metadata advisory lock ahead of the row lock, as the lock
-      // order requires: the version bump below is a Space Metadata write.
+      // order requires: the local-segment advance below writes the Space's
+      // Metadata row.
       await client.query(SPACE_META_LOCK_SQL, [spaceId])
       await this.#lockLiveContainers({ client, spaceId })
       await client.query(
@@ -3587,26 +3742,28 @@ export class PostgresBackend implements StorageBackend {
          DO UPDATE SET record = EXCLUDED.record`,
         [spaceId, backendId, JSON.stringify(record)]
       )
-      await this.#bumpSpaceMetaVersion({ client, spaceId })
+      await this.#advanceSpaceMetaLocal({ client, spaceId })
     })
   }
 
   /**
-   * Advances the Space Metadata object's version without changing its stored
-   * body, for a write that changes the served object through a derived member
-   * -- `backends`, read off the registration records -- rather than through
-   * the body itself. The generation is kept, so a client's cached `ETag` for
-   * the object stops matching, as it must for a strong validator. The caller
-   * holds `SPACE_META_LOCK_SQL`, so the bump cannot land between a concurrent
-   * `writeSpace`'s plain read and its upsert and be overwritten. A Space with
-   * no Metadata object yet (a NULL-metadata placeholder row) has no validator
-   * to advance.
+   * Advances the Space Metadata object's local validator segment without
+   * changing its stored body or minting a stamp, for a write that changes the
+   * served object through a derived member -- `backends`, read off the
+   * registration records -- rather than through the body itself. A stamp
+   * would replicate as a write of the object; the local segment is this
+   * server's own. The generation and stamp are kept, so a client's cached
+   * `ETag` for the object stops matching through the local segment alone, as
+   * it must for a strong validator. The caller holds `SPACE_META_LOCK_SQL`,
+   * so the advance cannot land between a concurrent `writeSpace`'s plain read
+   * and its upsert and be overwritten. A Space with no Metadata object has no
+   * validator to advance.
    * @param options {object}
    * @param options.client {pg.PoolClient}   the caller's transaction
    * @param options.spaceId {string}
    * @returns {Promise<void>}
    */
-  async #bumpSpaceMetaVersion({
+  async #advanceSpaceMetaLocal({
     client,
     spaceId
   }: {
@@ -3614,7 +3771,7 @@ export class PostgresBackend implements StorageBackend {
     spaceId: string
   }): Promise<void> {
     await client.query(
-      `UPDATE spaces SET meta_version = meta_version + 1
+      `UPDATE spaces SET meta_local = meta_local + 1
         WHERE space_id = $1 AND metadata IS NOT NULL`,
       [spaceId]
     )
@@ -3669,8 +3826,9 @@ export class PostgresBackend implements StorageBackend {
 
   /**
    * Removes a registered backend record. A removal that found the record
-   * advances the Space Metadata object's version, since its `backends`
-   * listing changed; one that found nothing leaves the object as it was.
+   * advances the Space Metadata object's local validator segment, since its
+   * `backends` listing changed; one that found nothing leaves the object as
+   * it was.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.backendId {string}
@@ -3690,7 +3848,7 @@ export class PostgresBackend implements StorageBackend {
         [spaceId, backendId]
       )
       if (rowCount) {
-        await this.#bumpSpaceMetaVersion({ client, spaceId })
+        await this.#advanceSpaceMetaLocal({ client, spaceId })
       }
     })
   }
@@ -4038,10 +4196,9 @@ export class PostgresBackend implements StorageBackend {
     if (row.deleted) {
       return {
         createdAt: row.created_at,
-        updatedAt: row.updated_at,
+        ...stampOfRow(row),
         ...(row.created_by !== null && { createdBy: row.created_by }),
         generation: row.generation,
-        version: row.version,
         deleted: true,
         contentType: row.content_type,
         // A tombstone's writer-attribution label survives the round trip too
@@ -4049,16 +4206,13 @@ export class PostgresBackend implements StorageBackend {
         ...(row.writer_id !== null && { writerId: row.writer_id })
       }
     }
+    const meta = metaStampOfRow(row)
     return {
       createdAt: row.created_at,
-      updatedAt: row.updated_at,
+      ...stampOfRow(row),
       ...(row.created_by !== null && { createdBy: row.created_by }),
       generation: row.generation,
-      version: row.version,
-      ...(row.meta_generation !== null && {
-        metaGeneration: row.meta_generation
-      }),
-      ...(row.meta_version !== null && { metaVersion: row.meta_version }),
+      ...(meta !== undefined && { meta }),
       ...(row.custom !== null && { custom: row.custom }),
       // The client-declared key epoch (the `key-epochs` feature) rides the
       // `.meta.` sidecar so it survives an export/import round trip.
@@ -4113,17 +4267,10 @@ export class PostgresBackend implements StorageBackend {
             WHERE space_id = $1`,
         [spaceId]
       ),
-      this.#reader().query<{
-        collection_id: string
-        metadata: CollectionMetadata | null
-        meta_generation: string | null
-        meta_version: number
-        log_body: string | null
-        log_generation: string | null
-        log_version: number | null
-      }>(
-        `SELECT collection_id, metadata, meta_generation, meta_version,
-                log_body, log_generation, log_version
+      this.#reader().query<
+        MetadataRow<CollectionMetadata> & LogRow & { collection_id: string }
+      >(
+        `SELECT collection_id, ${METADATA_COLUMNS}, ${LOG_COLUMNS}
            FROM collections WHERE space_id = $1`,
         [spaceId]
       ),
@@ -4136,9 +4283,10 @@ export class PostgresBackend implements StorageBackend {
         }
       >(
         `SELECT collection_id, resource_id, content_type, is_json,
-                size_bytes, generation, version, meta_generation,
-                meta_version, custom, epoch, writer_id, deleted, created_at,
-                updated_at, created_by
+                size_bytes, generation, updated_at, updated_at_counter,
+                origin_id, meta_generation, meta_updated_at,
+                meta_updated_at_counter, meta_origin_id, custom, epoch,
+                writer_id, deleted, created_at, created_by
            FROM resources WHERE space_id = $1`,
         [spaceId]
       ),
@@ -4153,16 +4301,17 @@ export class PostgresBackend implements StorageBackend {
       ),
       // Chunk metadata only -- bytes are fetched one chunk at a time while
       // packing, so an export never holds a chunked Resource whole in memory.
-      this.#reader().query<{
-        collection_id: string
-        resource_id: string
-        chunk_index: number
-        content_type: string
-        generation: string
-        version: number
-      }>(
+      this.#reader().query<
+        StampColumns & {
+          collection_id: string
+          resource_id: string
+          chunk_index: number
+          content_type: string
+          generation: string
+        }
+      >(
         `SELECT collection_id, resource_id, chunk_index, content_type,
-                generation, version
+                generation, updated_at, updated_at_counter, origin_id
            FROM chunks WHERE space_id = $1
           ORDER BY collection_id, resource_id, chunk_index`,
         [spaceId]
@@ -4185,9 +4334,10 @@ export class PostgresBackend implements StorageBackend {
     // dir name.
     // Space-level dot-files are always small JSON, carried inline.
     // The Space Metadata entry is the shared `archivedSpaceMetadata`: the
-    // filesystem backend's on-disk `_generation` / `_version` embedding, so
-    // archives stay interchangeable between the two backends, with the
-    // server-derived `backends` listing stamped on.
+    // filesystem backend's on-disk layout (the stamp members bare, the
+    // generation embedded as `_generation`), so archives stay
+    // interchangeable between the two backends, with the server-derived
+    // `backends` listing added.
     const spaceFiles: ArchiveFile[] = [
       {
         name: spaceMetadataFileName(spaceId),
@@ -4216,35 +4366,37 @@ export class PostgresBackend implements StorageBackend {
     }
     for (const row of collectionRows) {
       const files = filesFor(row.collection_id)
-      if (row.metadata !== null) {
+      const stored = storedMetadataFromRow(row)
+      if (stored !== undefined) {
         // The one Collection Metadata file: the whole merged object (the
-        // configuration members beside `createdBy`, the timestamps, `custom`
-        // and `epoch`) with its validator embedded as `_generation` /
-        // `_version` (the filesystem backend's on-disk convention), so the
-        // ETag validator survives an export/import round trip and archives
-        // stay interchangeable between the two backends.
+        // configuration members beside `createdBy`, `createdAt`, the stamp
+        // members, `custom` and `epoch`) with its generation embedded as
+        // `_generation` (the filesystem backend's on-disk convention), so
+        // archives stay interchangeable between the two backends. The local
+        // validator segment is this server's own and does not travel.
         files.push({
           name: collectionMetadataFileName(row.collection_id),
           bytes: Buffer.from(
             JSON.stringify(
               embedMetadataValidator({
-                body: row.metadata,
-                generation: row.meta_generation ?? undefined,
-                version: row.meta_version
+                body: stripMetadataValidator(stored),
+                generation: stored.metaGeneration
               })
             )
           )
         })
       }
       // The governing history log, in the filesystem backend's on-disk shape.
-      if (row.log_body !== null && row.log_version !== null) {
+      const log = storedLogFromRow(row)
+      if (log !== undefined) {
+        const { body, generation, ...stamp } = log
         files.push({
           name: collectionLogFileName(row.collection_id),
           bytes: Buffer.from(
             JSON.stringify({
-              generation: resolveGeneration(row.log_generation),
-              version: row.log_version,
-              body: row.log_body
+              generation,
+              ...stamp,
+              body
             } satisfies StoredCollectionLog)
           )
         })
@@ -4289,7 +4441,7 @@ export class PostgresBackend implements StorageBackend {
     // exact filesystem-backend layout so an archive imports into either backend.
     // A chunk is stored there as a Resource keyed by its stringified index: an
     // `r.<index>.<encContentType>.<ext>` representation file (`fileNameFor`)
-    // plus a `.meta.<index>.json` version sidecar. Files within a chunk dir are
+    // plus a `.meta.<index>.json` sidecar. Files within a chunk dir are
     // sorted by name (the filesystem's readdir sort). Rows arrive ordered by
     // `(collection, resource, index)`.
     const chunkDirsByResource = new Map<string, ArchiveFile[]>()
@@ -4318,18 +4470,17 @@ export class PostgresBackend implements StorageBackend {
         read: () => this.#chunkContent({ spaceId, ...chunk })
       })
       // The chunk-metadata sidecar (`.chunks.<encId>/.meta.<index>.json`) the
-      // filesystem backend writes per chunk. Only the ETag validator
-      // (`generation` / `version`) is carried across export/import; the
-      // filesystem writes `createdAt` / `updatedAt` too, but this backend's
-      // `chunks` table holds no chunk timestamps, so it emits (and on import
-      // reads) only the validator.
+      // filesystem backend writes per chunk: the chunk's write stamp and
+      // generation. The filesystem writes `createdAt` too, but this
+      // backend's `chunks` table holds no creation time, so it emits none. An
+      // import reads only the generation and re-stamps the chunk.
       chunkFiles.push({
         name: metaSidecarFileName(chunkId),
         bytes: Buffer.from(
           JSON.stringify({
-            generation: row.generation,
-            version: row.version
-          } satisfies { generation?: string; version?: number })
+            ...stampOfRow(row),
+            generation: row.generation
+          } satisfies WriteStamp & { generation: string })
         )
       })
     }
@@ -4479,7 +4630,7 @@ export class PostgresBackend implements StorageBackend {
     restoreSpaceMetadata?: boolean
   }): Promise<ImportStats> {
     // Chunk entries (the `chunked-streams` feature): the plan carries each
-    // chunk file (representation + optional version sidecar) with its decoded
+    // chunk file (representation + optional sidecar) with its decoded
     // fields; the `chunks` table stores a chunk as one row, so merge the two
     // files of each chunk into a single row here.
     const chunkEntries = this.#mergeChunkEntries(collections)
@@ -4496,7 +4647,7 @@ export class PostgresBackend implements StorageBackend {
       // Metadata write, and a concurrent `writeSpace` holds this lock while
       // it waits on the row this import is about to take. Without it the two
       // could deadlock, or the restore could land between that write's read
-      // and its upsert and be overwritten at the same version.
+      // and its upsert and be overwritten.
       await client.query(SPACE_META_LOCK_SQL, [spaceId])
       // The destination Space must still have its Metadata object.
       await this.#lockLiveContainers({
@@ -4666,25 +4817,34 @@ export class PostgresBackend implements StorageBackend {
               limit: maxCollectionsPerSpace
             })
           }
-          // Import restores the archived Collection Metadata object verbatim,
-          // server-managed members (`createdBy`, the timestamps) and
-          // annotations (`custom`, `epoch`) included, under the archived
-          // validator: this is only ever a create here (the branch above
-          // skips existing Collections), so there is no prior object to
+          // Import restores the archived Collection Metadata object,
+          // server-managed members (`createdBy`, `createdAt`) and annotations
+          // (`custom`, `epoch`) included, under the archived generation, and
+          // re-stamped by this store's clock: the archived stamp is read for
+          // provenance only. This is only ever a create here (the branch
+          // above skips existing Collections), so there is no prior object to
           // preserve anything from.
+          const stamp = await this.#clock.mint()
+          const { body, generation } = restampImportedMetadata({
+            metadata: collectionMetadata,
+            stamp
+          })
           await this.#upsertCollection({
             queryable: client,
             spaceId,
             collectionId,
-            collectionMetadata
+            body,
+            generation,
+            stamp
           })
           if (isNewRow) {
             collectionRowCount++
           }
           metadataById.set(collectionId, collectionMetadata)
           // Its governing history log travels with a newly-created
-          // Collection; for an existing (skipped) Collection it is left
-          // untouched, exactly as the Metadata object and policy are.
+          // Collection, re-stamped like the Collection; for an existing
+          // (skipped) Collection it is left untouched, exactly as the
+          // Metadata object and policy are.
           if (collectionLog) {
             await this.#applyImportedCollectionLog({
               client,
@@ -4836,20 +4996,21 @@ export class PostgresBackend implements StorageBackend {
         if (!live) {
           continue
         }
-        // The chunk's validator comes from its archived `.meta.<index>.json`
-        // sidecar, carried verbatim so a round trip keeps the exported ETag;
-        // an archive without one (or one written before generations) mints a
-        // fresh generation at version 1, the same fresh-write default as a
-        // Resource restored without a sidecar. `ON CONFLICT DO NOTHING
-        // RETURNING size`
-        // folds the skip-not-overwrite check and the insert into one query: a
-        // row comes back only when this INSERT actually created the chunk, so an
+        // The chunk's generation comes from its archived `.meta.<index>.json`
+        // sidecar; an archive without one mints a fresh generation, the same
+        // fresh-write default as a Resource restored without a sidecar. Its
+        // stamp is minted by this store's clock either way: an archived stamp
+        // is not kept. `ON CONFLICT DO NOTHING RETURNING size` folds the
+        // skip-not-overwrite check and the insert into one query: a row comes
+        // back only when this INSERT actually created the chunk, so an
         // existing chunk adds nothing to the usage delta.
+        const stamp = await this.#clock.mint()
         const { rows: insertedRows } = await client.query<{ size: string }>(
           `INSERT INTO chunks (
              space_id, collection_id, resource_id, chunk_index,
-             content_type, bytes, size, generation, version
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             content_type, bytes, size, generation, updated_at,
+             updated_at_counter, origin_id
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
            ON CONFLICT DO NOTHING
            RETURNING size`,
           [
@@ -4861,7 +5022,7 @@ export class PostgresBackend implements StorageBackend {
             chunk.body,
             chunk.body.length,
             resolveGeneration(chunk.generation),
-            chunk.version ?? 1
+            ...stampValues(stamp)
           ]
         )
         if (insertedRows.length > 0) {
@@ -4913,8 +5074,9 @@ export class PostgresBackend implements StorageBackend {
 
   /**
    * Restores an archived Collection history log (the filesystem backend's
-   * `.collectionlog.<id>.json` shape) into the `log_*` columns. An archive
-   * entry that does not parse to that shape is dropped.
+   * `.collectionlog.<id>.json` shape, already checked by the plan builder)
+   * into the `log_*` columns: its body and generation, under a stamp minted
+   * by this store's clock in place of the archived one.
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
@@ -4933,37 +5095,32 @@ export class PostgresBackend implements StorageBackend {
     collectionId: string
     logBytes: Buffer
   }): Promise<void> {
-    let stored: StoredCollectionLog | undefined
-    try {
-      stored = JSON.parse(logBytes.toString('utf8'))
-    } catch {
-      return
-    }
-    if (typeof stored?.body !== 'string' || !stored.version) {
-      return
-    }
+    const { body, generation, ...stamp } = restampImportedLog({
+      bytes: logBytes,
+      stamp: await this.#clock.mint()
+    })
     await client.query(
       `UPDATE collections SET
-         log_body       = $3,
-         log_generation = $4,
-         log_version    = $5
+         log_body               = $3,
+         log_generation         = $4,
+         log_updated_at         = $5,
+         log_updated_at_counter = $6,
+         log_origin_id          = $7
        WHERE space_id = $1 AND collection_id = $2`,
-      [
-        spaceId,
-        collectionId,
-        stored.body,
-        resolveGeneration(stored.generation),
-        stored.version
-      ]
+      [spaceId, collectionId, body, generation, ...stampValues(stamp)]
     )
   }
 
   /**
    * Inserts one archived resource (or orphan tombstone) row for the import
-   * apply loop. Timestamps, the ETag validator, `createdBy`, and `custom` come
-   * from the archive's sidecar when present; an archive resource without a
-   * sidecar (or one written before generations) is treated as a fresh first
-   * write on this backend (a new generation at version 1, no `createdBy`).
+   * apply loop. `createdAt`, the generations, `createdBy`, `custom`, `epoch`
+   * and `writerId` come from the archive's sidecar when present, and its
+   * stamps (the content record's, and the `/meta` record's when it has one)
+   * are minted afresh by this store's clock, as the filesystem backend
+   * re-stamps an imported sidecar; the archived stamps are read for
+   * provenance only. An archive resource without a sidecar is treated as a
+   * fresh first write on this backend (a new generation and stamp, no
+   * `createdBy`).
    * @param options {object}
    * @param options.client {pg.PoolClient}
    * @param options.spaceId {string}
@@ -4991,7 +5148,6 @@ export class PostgresBackend implements StorageBackend {
     body: Buffer | null
     sidecar: MetaSidecar | undefined
   }): Promise<void> {
-    const now = new Date().toISOString()
     const deleted = body === null
     // A feed position is this server's own fact: any the archived sidecar
     // carries is ignored, and the row takes this Collection's next one. The
@@ -5001,14 +5157,30 @@ export class PostgresBackend implements StorageBackend {
       spaceId,
       collectionId
     })
+    const mint = () => this.#clock.mint()
+    let restamped: MetaSidecar
+    if (sidecar === undefined) {
+      const stamp = await mint()
+      restamped = {
+        createdAt: stamp.updatedAt,
+        ...stamp,
+        generation: newGeneration()
+      }
+    } else {
+      restamped = await restampImportedSidecar({ sidecar, mint })
+    }
+    // A tombstone carries no `/meta` record, even if its archived sidecar
+    // claims one.
+    const meta = deleted ? undefined : restamped.meta
     await client.query(
       `INSERT INTO resources (
          space_id, collection_id, resource_id, content_type, content,
-         is_json, size_bytes, generation, version, meta_generation,
-         meta_version, custom, deleted, created_at, updated_at, created_by,
-         epoch, writer_id, feed_position
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb,
-                 $13, $14, $15, $16, $17, $18, $19)`,
+         is_json, size_bytes, generation, updated_at, updated_at_counter,
+         origin_id, meta_generation, meta_updated_at,
+         meta_updated_at_counter, meta_origin_id, custom, deleted,
+         created_at, created_by, epoch, writer_id, feed_position
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                 $15, $16::jsonb, $17, $18, $19, $20, $21, $22)`,
       [
         spaceId,
         collectionId,
@@ -5017,23 +5189,24 @@ export class PostgresBackend implements StorageBackend {
         body,
         isJsonContentType(contentType),
         body?.length ?? 0,
-        resolveGeneration(sidecar?.generation),
-        sidecar?.version ?? 1,
-        // The `/meta` validator is restored verbatim from the archived sidecar,
-        // as the filesystem backend restores the sidecar bytes themselves.
-        sidecar?.metaGeneration ?? null,
-        sidecar?.metaVersion ?? null,
-        sidecar?.custom !== undefined ? JSON.stringify(sidecar.custom) : null,
+        restamped.generation,
+        ...stampValues(restamped),
+        meta?.generation ?? null,
+        meta?.updatedAt ?? null,
+        meta?.updatedAtCounter ?? null,
+        meta?.originId ?? null,
+        restamped.custom !== undefined
+          ? JSON.stringify(restamped.custom)
+          : null,
         deleted,
-        sidecar?.createdAt ?? now,
-        sidecar?.updatedAt ?? now,
-        sidecar?.createdBy ?? null,
+        restamped.createdAt,
+        restamped.createdBy ?? null,
         // Restore the client-declared key epoch (the `key-epochs` feature) from
         // the archived sidecar; a tombstone or an unstamped Resource has none.
-        sidecar?.epoch ?? null,
+        restamped.epoch ?? null,
         // Restore the client-declared writer-attribution label (spec "Writer
         // attribution") the same way.
-        sidecar?.writerId ?? null,
+        restamped.writerId ?? null,
         feedPosition ?? null
       ]
     )
@@ -5045,15 +5218,14 @@ export class PostgresBackend implements StorageBackend {
    * chunkIndex): the `chunks` table stores a chunk as a single row, whereas the
    * plan (and the filesystem backend's on-disk layout) keeps each chunk as an
    * `r.<index>...` representation paired with an optional `.meta.<index>.json`
-   * version sidecar. `buildImportPlan` already validated the ids and dropped any
+   * sidecar. `buildImportPlan` already validated the ids and dropped any
    * non-canonical index, so this only merges the two files of each chunk; a
    * chunk that carries only a sidecar (no representation) is dropped (a chunk
    * keeps no tombstone). The filesystem backend writes the files verbatim, so
    * this reduction lives here.
    * @param collections {ImportPlanCollection[]}
    * @returns {Array<{ collectionId: string, resourceId: string, chunkIndex:
-   *   number, contentType: string, body: Buffer, generation?: string,
-   *   version?: number }>}
+   *   number, contentType: string, body: Buffer, generation?: string }>}
    */
   #mergeChunkEntries(collections: ImportPlanCollection[]): Array<{
     collectionId: string
@@ -5062,7 +5234,6 @@ export class PostgresBackend implements StorageBackend {
     contentType: string
     body: Buffer
     generation?: string
-    version?: number
   }> {
     // Accumulate the representation and the sidecar of each chunk under one
     // key, then emit only the chunks that carry a representation.
@@ -5075,7 +5246,6 @@ export class PostgresBackend implements StorageBackend {
         contentType?: string
         body?: Buffer
         generation?: string
-        version?: number
       }
     >()
     for (const { collectionId, chunkFiles } of collections) {
@@ -5084,17 +5254,12 @@ export class PostgresBackend implements StorageBackend {
         const key = `${collectionId}/${resourceId}/${chunkIndex}`
         const slot = staged.get(key) ?? { collectionId, resourceId, chunkIndex }
         // A representation file carries a `contentType` (and its bytes); a
-        // version sidecar carries only the validator.
+        // sidecar carries only the generation.
         if (chunkFile.contentType !== undefined) {
           slot.contentType = chunkFile.contentType
           slot.body = chunkFile.body
-        } else {
-          if (chunkFile.generation !== undefined) {
-            slot.generation = chunkFile.generation
-          }
-          if (chunkFile.version !== undefined) {
-            slot.version = chunkFile.version
-          }
+        } else if (chunkFile.generation !== undefined) {
+          slot.generation = chunkFile.generation
         }
         staged.set(key, slot)
       }
@@ -5107,7 +5272,6 @@ export class PostgresBackend implements StorageBackend {
       contentType: string
       body: Buffer
       generation?: string
-      version?: number
     }> = []
     for (const slot of staged.values()) {
       if (slot.body === undefined) {
@@ -5120,8 +5284,7 @@ export class PostgresBackend implements StorageBackend {
         chunkIndex: slot.chunkIndex,
         contentType: slot.contentType ?? 'application/octet-stream',
         body: slot.body,
-        generation: slot.generation,
-        version: slot.version
+        generation: slot.generation
       })
     }
     return merged

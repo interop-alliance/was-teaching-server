@@ -31,6 +31,7 @@ const connectionString = process.env.WAS_TEST_DATABASE_URL
 
 async function makePostgresHarness(
   options: {
+    physicalClock?: () => number
     capacityBytes?: number
     maxUploadBytes?: number
     maxSpacesPerController?: number
@@ -162,6 +163,31 @@ if (!connectionString) {
     }
 
     /**
+     * A parsed archive dot-file without its write stamps: the stamp members
+     * at the top level, and the stamp members of a nested `meta` record,
+     * whose `generation` is kept. An import re-stamps every record with the
+     * importing store's clock and origin, so only the stamps may differ
+     * across a round trip.
+     * @param document {unknown}
+     * @returns {unknown}
+     */
+    function withoutStamps(document: unknown): unknown {
+      if (document === null || typeof document !== 'object') {
+        return document
+      }
+      const {
+        updatedAt: _updatedAt,
+        updatedAtCounter: _updatedAtCounter,
+        originId: _originId,
+        ...rest
+      } = document as Record<string, unknown>
+      const meta = rest.meta as { generation?: string } | undefined
+      return meta === undefined
+        ? rest
+        : { ...rest, meta: { generation: meta.generation } }
+    }
+
+    /**
      * Indexes a Space-export tar: entry names, plus parsed JSON for the
      * dot-files and raw bytes for resource representations. JSON documents
      * are compared parsed (jsonb does not preserve key order), resource
@@ -227,26 +253,32 @@ if (!connectionString) {
           }
           for (const [name, doc] of fsArchive.parsed) {
             // The Space Metadata file is ignored on import (the target
-            // Space was written independently), so its `_generation` /
-            // `_version` validator is that Space's own and cannot match; and
-            // its `backends` listing names the exporting server's own
-            // backend, which differs between the two.
-            const withoutSpaceValidator = (document: unknown) =>
-              name.endsWith(`/.space.${spaceId}.json`)
+            // Space was written independently), so its `_generation` is that
+            // Space's own and cannot match; and its `backends` listing names
+            // the exporting server's own backend, which differs between the
+            // two. Every record's stamps are re-minted by the import.
+            const comparable = (document: unknown) => {
+              const unstamped = withoutStamps(document)
+              return name.endsWith(`/.space.${spaceId}.json`)
                 ? Object.fromEntries(
-                    Object.entries(document as object).filter(
-                      ([key]) =>
-                        key !== '_generation' &&
-                        key !== '_version' &&
-                        key !== 'backends'
+                    Object.entries(unstamped as object).filter(
+                      ([key]) => key !== '_generation' && key !== 'backends'
                     )
                   )
-                : document
+                : unstamped
+            }
             assert.deepEqual(
-              withoutSpaceValidator(pgArchive.parsed.get(name)),
-              withoutSpaceValidator(doc),
+              comparable(pgArchive.parsed.get(name)),
+              comparable(doc),
               `document differs: ${name}`
             )
+            // The re-exported records carry the importing store's stamps.
+            const reexported = pgArchive.parsed.get(name) as {
+              originId?: string
+            }
+            if (reexported.originId !== undefined) {
+              assert.equal(reexported.originId, pgTarget.backend.originId)
+            }
           }
 
           // And back: PG to FS.

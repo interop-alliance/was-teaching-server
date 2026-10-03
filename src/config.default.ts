@@ -115,17 +115,16 @@ export const SPACE_METADATA_WRITE_ATTEMPTS = 3
  * invalidate the entry explicitly (the cache is keyed by that location). The
  * TTL is the freshness window: within it a cached document is served without
  * any read; past it the entry is revalidated by comparing the log Resource's
- * stored version against the one it was verified from, so a write from a
+ * content `ETag` against the one it was verified from, so a write from a
  * sibling process sharing the backend is picked up within one TTL.
  */
 export const WEBVH_DOCUMENT_CACHE_TTL = 5_000 // milliseconds
 /**
- * How long a cached `did:webvh` document may be kept alive by version matches
- * alone before the log is fully re-verified regardless. The version compare
- * is the multi-process backstop for ordinary writes, but an out-of-band
- * rebuild of the log's Collection (delete and recreate, or an import carrying
- * the archive's own sidecar) can land the same version number on different
- * bytes; this age bounds how long such a rebuild can go unnoticed.
+ * How long a cached `did:webvh` document may be kept alive by validator
+ * matches alone before the log is fully re-verified regardless. The validator
+ * compare is the multi-process backstop for ordinary writes; this age bounds
+ * how long a change that bypasses it (bytes rewritten out of band) can go
+ * unnoticed.
  */
 export const WEBVH_DOCUMENT_REVERIFY_AGE = 60_000 // milliseconds
 /** Max number of resolved did:webvh documents held per backend cache. */
@@ -151,6 +150,15 @@ export const POLICY_CACHE_MAX = 1_000
 export const GOVERNED_ENCRYPTION_CACHE_TTL = 600_000 // milliseconds
 /** Max number of derived descriptors held per backend cache (LRU-bounded). */
 export const GOVERNED_ENCRYPTION_CACHE_MAX = 1_000
+
+/**
+ * The clock bound for a write stamp received from a peer (env
+ * `WAS_REPLICATION_CLOCK_BOUND_MS`): how far ahead of this server's physical
+ * clock, in milliseconds, a received stamp may be dated before the hybrid
+ * logical clock refuses it (see src/lib/hlc.ts). A stamp dated further ahead
+ * would carry every later local write ahead of real time with it.
+ */
+export const REPLICATION_CLOCK_BOUND_MS = 60_000
 
 /**
  * `Access-Control-Max-Age` (seconds) on CORS preflight responses. Without it
@@ -536,6 +544,11 @@ export interface EnvConfig {
    * own id is read, or minted on first boot.
    */
   originId?: string
+  /**
+   * The clock bound for a received write stamp, in milliseconds
+   * (`WAS_REPLICATION_CLOCK_BOUND_MS`); unset = {@link REPLICATION_CLOCK_BOUND_MS}.
+   */
+  replicationClockBoundMs?: number
 }
 
 /**
@@ -579,7 +592,10 @@ export function loadConfigFromEnv(
     discloseVersion: parseDiscloseVersion(env.WAS_DISCLOSE_VERSION),
     serverKeySeed: parseServerKeySeed(env.WAS_SERVER_KEY_SEED),
     adminDid: parseAdminDid(env.WAS_ADMIN_DID),
-    originId: parseOriginId(env.WAS_ORIGIN_ID)
+    originId: parseOriginId(env.WAS_ORIGIN_ID),
+    replicationClockBoundMs: parseReplicationClockBound(
+      env.WAS_REPLICATION_CLOCK_BOUND_MS
+    )
   }
 }
 
@@ -1182,6 +1198,29 @@ export function parseOriginId(raw: string | undefined): string | undefined {
     )
   }
   return raw
+}
+
+/**
+ * Parses the `WAS_REPLICATION_CLOCK_BOUND_MS` env value: the clock bound for a
+ * received write stamp, a positive number of milliseconds. An unset or empty
+ * value returns `undefined`, meaning {@link REPLICATION_CLOCK_BOUND_MS}.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {number|undefined}
+ */
+export function parseReplicationClockBound(
+  raw: string | undefined
+): number | undefined {
+  if (raw === undefined || raw.trim() === '') {
+    return undefined
+  }
+  const value = parseDecimalInteger(raw)
+  if (value === undefined || value < 1) {
+    throw new Error(
+      `WAS_REPLICATION_CLOCK_BOUND_MS must be a positive integer number of ` +
+        `milliseconds; got "${raw}".`
+    )
+  }
+  return value
 }
 
 export const SPEC_URL =

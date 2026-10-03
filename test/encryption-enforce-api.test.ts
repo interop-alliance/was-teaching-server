@@ -208,7 +208,7 @@ describe('Encryption enforcement API', () => {
 
   it('PUT .../meta on an edv Collection accepts an envelope custom and versions it', async () => {
     // A conforming envelope custom is accepted (204) and carries its own `/meta`
-    // ETag (`metaVersion`), independent of the content ETag. GET /meta returns
+    // ETag (the `/meta` stamp), independent of the content ETag. GET /meta returns
     // the opaque envelope verbatim (no plaintext name leaked).
     const put1 = await alice.was.request({
       path: `/space/${spaceId}/${edvCollection}/doc-meta/meta`,
@@ -217,7 +217,7 @@ describe('Encryption enforcement API', () => {
     })
     assert.equal(put1.status, 204)
     const metaEtag1 = put1.headers.get('etag')
-    assert.ok(metaEtag1, 'PUT /meta returns a metaVersion ETag')
+    assert.ok(metaEtag1, 'PUT /meta returns a /meta ETag')
 
     const read = await alice.was.request({
       path: `/space/${spaceId}/${edvCollection}/doc-meta/meta`,
@@ -227,7 +227,7 @@ describe('Encryption enforcement API', () => {
     assert.deepEqual(read.data.custom, envelope)
     assert.equal(read.headers.get('etag'), metaEtag1)
 
-    // A second meta write bumps the metaVersion ETag.
+    // A second meta write moves the /meta ETag.
     const put2 = await alice.was.request({
       path: `/space/${spaceId}/${edvCollection}/doc-meta/meta`,
       method: 'PUT',
@@ -237,7 +237,7 @@ describe('Encryption enforcement API', () => {
     assert.notEqual(put2.headers.get('etag'), metaEtag1)
   })
 
-  it('PUT .../meta honors If-Match on the metaVersion (412 on mismatch)', async () => {
+  it('PUT .../meta honors If-Match on the /meta ETag (412 on mismatch)', async () => {
     const err = await rejection(
       alice.was.request({
         path: `/space/${spaceId}/${edvCollection}/doc-meta/meta`,
@@ -291,7 +291,7 @@ describe('Encryption enforcement API', () => {
     })
     assert.equal(put.status, 204)
     const metaEtag = put.headers.get('etag')
-    assert.ok(metaEtag, 'PUT the Collection /meta returns a metaVersion ETag')
+    assert.ok(metaEtag, 'PUT the Collection /meta returns a /meta ETag')
 
     // The envelope is returned verbatim (no plaintext name leaked).
     const read = await alice.was.request({

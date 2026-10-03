@@ -72,7 +72,7 @@ async function writeOtherHostLock(dataDir: string): Promise<string> {
  */
 async function storedRecord(
   dataDir: string
-): Promise<{ version: number; originId?: string }> {
+): Promise<{ version: number; originId?: string; clockHighWater?: number }> {
   const text = await readFile(path.join(dataDir, STORE_FILE_NAME), 'utf8')
   return JSON.parse(text)
 }
@@ -311,6 +311,25 @@ describe('Filesystem store version', () => {
     assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
   })
 
+  it('stamps an empty store at the current version, two, and boots', async () => {
+    assert.equal(STORE_MIGRATIONS.length, 2)
+    const backend = await FileSystemBackend.open({ dataDir })
+    assert.equal(await storedVersion(dataDir), 2)
+    assert.match(backend.originId, ORIGIN_ID_PATTERN)
+  })
+
+  it('refuses a layout-1 store that holds a Space, on every boot', async () => {
+    await stamp(dataDir, 1)
+    await mkdir(path.join(dataDir, 'spaces', 'some-space'), { recursive: true })
+    for (let boot = 0; boot < 2; boot++) {
+      await assert.rejects(
+        FileSystemBackend.open({ dataDir }),
+        StoreVersionError
+      )
+      assert.equal(await storedVersion(dataDir), 1)
+    }
+  })
+
   it('refuses a store.json with no integer version', async () => {
     await writeFile(path.join(dataDir, STORE_FILE_NAME), '{"version":"1"}')
     await assert.rejects(
@@ -463,6 +482,34 @@ describe('Filesystem store origin id', () => {
     assert.deepEqual(await storedRecord(dataDir), {
       version: 2,
       originId: 'kept-id'
+    })
+  })
+
+  it('keeps clockHighWater across each rewrite, as it keeps the id', async () => {
+    await writeFile(
+      path.join(dataDir, STORE_FILE_NAME),
+      JSON.stringify({ version: 0, originId: 'kept-id', clockHighWater: 12345 })
+    )
+    await mkdir(path.join(dataDir, 'spaces'))
+    const seen: Array<{ version: number; clockHighWater?: number }> = []
+    const observe: StoreMigration = async ({ dataDir: root }) => {
+      const { version, clockHighWater } = await storedRecord(root)
+      seen.push({ version, clockHighWater })
+    }
+    const result = await applyStoreMigrations({
+      dataDir,
+      logger,
+      migrations: [observe, observe]
+    })
+    assert.deepEqual(seen, [
+      { version: 0, clockHighWater: 12345 },
+      { version: 1, clockHighWater: 12345 }
+    ])
+    assert.equal(result.clockHighWater, 12345)
+    assert.deepEqual(await storedRecord(dataDir), {
+      version: 2,
+      originId: 'kept-id',
+      clockHighWater: 12345
     })
   })
 

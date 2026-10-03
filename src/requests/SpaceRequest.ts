@@ -56,6 +56,11 @@ import {
   parseWritePreconditions,
   stripMetadataValidator
 } from '../lib/etag.js'
+import {
+  stampCollectionMetadata,
+  stampSpaceMetadata
+} from '../lib/metadataWrite.js'
+import { projectCollectionMetadata } from './collectionContext.js'
 import { notModifiedReply } from './notModified.js'
 import {
   spacePath,
@@ -161,9 +166,9 @@ export class SpaceRequest {
       spaceMetadata
     })
 
-    // `metaGeneration` / `metaVersion` are the out-of-band `ETag` validator,
-    // not part of the wire body: strip them and emit the `ETag` header
-    // instead. A legacy Space written before versioning reports none.
+    // `metaGeneration` / `metaLocal` are out-of-band `ETag` parts, not part
+    // of the wire body: strip them and emit the `ETag` header instead, built
+    // from them and the body's stamp members.
     const storedMetadata = stripMetadataValidator(spaceMetadata)
     const metaEtag = metadataEtagOf(spaceMetadata)
     // A conditional read (`If-None-Match` covering the current validator) is
@@ -339,15 +344,22 @@ export class SpaceRequest {
       return reply.status(204).send()
     }
     // Created: `Location` names the Space (its canonical container URL), not
-    // the Metadata object that was written (spec "Update Space"). A Space
-    // that did not exist before this write has no registered backends, so
-    // the echo stamps the server's own descriptor without a read.
+    // the Metadata object that was written (spec "Update Space"). The echo is
+    // the projection Read Space serves, over the stored object rebuilt by the
+    // same stamping the backend ran (no prior object, the invoker as
+    // `createdBy`, the stamp the returned validator carries). A Space that
+    // did not exist before this write has no registered backends, so the
+    // echo stamps the server's own descriptor without a read.
     reply.header('Location', spaceUrl)
     return reply.status(201).send(
       await projectSpaceMetadata({
         storage,
         spaceId,
-        spaceMetadata,
+        spaceMetadata: stampSpaceMetadata({
+          spaceMetadata,
+          createdBy: invokerDid(request),
+          stamp: written.stamp
+        }),
         backends: [storage.describe()]
       })
     )
@@ -457,15 +469,22 @@ export class SpaceRequest {
     // Surface the new Collection Metadata `ETag` so a client can chain a
     // conditional update (the `key-epochs` conditional-Collection-write feature).
     reply.header('etag', formatEtag(written))
-    // Echo what was persisted, `createdBy` and the container `url` included, so
-    // the create response and a subsequent Read Collection Metadata agree. An
-    // id already in use was rejected as a 409 above, so this write created the
-    // Collection.
-    return reply.status(201).send({
-      ...collectionMetadata,
-      ...(createdBy && { createdBy }),
-      url: collectionPath({ spaceId, collectionId, trailingSlash: true })
-    })
+    // Echo what was persisted, through the projection Read Collection
+    // Metadata serves, so the create response and a subsequent read agree.
+    // The guarded write created the Collection, so the stored object is
+    // rebuilt by the same stamping the backend ran, over no prior object and
+    // with the stamp the returned validator carries.
+    return reply.status(201).send(
+      projectCollectionMetadata({
+        spaceId,
+        collectionId,
+        collectionMetadata: stampCollectionMetadata({
+          collectionMetadata,
+          createdBy,
+          stamp: written.stamp
+        })
+      })
+    )
   }
 
   /**

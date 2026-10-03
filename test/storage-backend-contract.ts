@@ -5,7 +5,7 @@
  * Not a test file itself -- see storage-contract-filesystem.test.ts and
  * storage-contract-postgres.test.ts for the per-backend entry points.
  */
-import { it, describe, beforeAll, afterAll, expect, vi } from 'vitest'
+import { it, describe, beforeAll, afterAll, expect } from 'vitest'
 import assert from 'node:assert'
 import { randomBytes } from 'node:crypto'
 import { Readable } from 'node:stream'
@@ -13,12 +13,22 @@ import * as tar from 'tar-stream'
 import { pino } from 'pino'
 import { createHeaderValue } from '@interop/http-digest-header'
 import { collectBytes, readSpaceArchive } from '@interop/space-archive'
-import { formatEtag } from '../src/lib/etag.js'
+import {
+  etagOf,
+  formatEtag,
+  isMintedGeneration,
+  metadataEtagOf
+} from '../src/lib/etag.js'
+import type { EtagValidator } from '../src/lib/etag.js'
+import { compareStamps } from '../src/lib/hlc.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
 import { loadExportAttestor } from '../src/lib/exportProvenance.js'
 import type { ExportAttestor } from '../src/lib/exportProvenance.js'
 import {
+  assertEtagAdvanced,
+  frozenClock,
   importArchive,
+  parseEtagSegments,
   provisionServerIdentity,
   verifyProvenanceOffline
 } from './helpers.js'
@@ -66,8 +76,11 @@ export interface ContractOptions {
    * Builds a fresh, empty backend. `capacityBytes` / `maxUploadBytes` configure
    * the byte quotas; `maxSpacesPerController` / `maxCollectionsPerSpace` /
    * `maxResourcesPerSpace` configure the count quotas for the count-quota block.
+   * `physicalClock` freezes or steps the clock the backend's write stamps
+   * read.
    */
   makeBackend(options?: {
+    physicalClock?: () => number
     capacityBytes?: number
     maxUploadBytes?: number
     maxSpacesPerController?: number
@@ -95,6 +108,101 @@ async function streamToString(stream: Readable): Promise<string> {
     chunks.push(Buffer.from(chunk))
   }
   return Buffer.concat(chunks).toString('utf8')
+}
+
+/**
+ * Asserts a later validator of one record moved past an earlier one: the same
+ * generation and a strictly later write stamp. A container Metadata validator
+ * (one carrying a `local` segment) also resets that segment to 0.
+ * @param before {EtagValidator}
+ * @param after {EtagValidator}
+ * @returns {void}
+ */
+function assertValidatorAdvanced(
+  before: EtagValidator,
+  after: EtagValidator
+): void {
+  assertEtagAdvanced({
+    before: formatEtag(before),
+    after: formatEtag(after),
+    container: before.local !== undefined
+  })
+}
+
+/**
+ * Asserts a validator a write returned describes the stored record segment by
+ * segment, and that its formatted `ETag` parses into the same segments: the
+ * record's generation, `ms` equal to `Date.parse(updatedAt)`, the counter,
+ * the store's origin id, and on a container Metadata object the local
+ * segment.
+ * @param options {object}
+ * @param options.validator {EtagValidator}   what the write returned
+ * @param options.stored {object}   the record as read back
+ * @param options.stored.generation {string | undefined}
+ * @param options.stored.updatedAt {string | undefined}
+ * @param options.stored.updatedAtCounter {number | undefined}
+ * @param options.stored.originId {string | undefined}
+ * @param [options.stored.local] {number}   a container's local segment
+ * @param options.originId {string}   the backend's origin id
+ * @param [options.ms] {number}   the expected physical part
+ * @returns {void}
+ */
+function assertValidatorSegments({
+  validator,
+  stored,
+  originId,
+  ms
+}: {
+  validator: EtagValidator
+  stored: {
+    generation?: string
+    updatedAt?: string
+    updatedAtCounter?: number
+    originId?: string
+    local?: number
+  }
+  originId: string
+  ms?: number
+}): void {
+  const container = stored.local !== undefined
+  const segments = parseEtagSegments(formatEtag(validator), { container })
+  assert.equal(segments.generation, stored.generation)
+  assert.ok(isMintedGeneration(segments.generation))
+  assert.equal(
+    Date.parse(segments.stamp.updatedAt),
+    Date.parse(stored.updatedAt!)
+  )
+  assert.equal(segments.stamp.updatedAtCounter, stored.updatedAtCounter)
+  assert.equal(segments.stamp.originId, stored.originId)
+  assert.equal(segments.stamp.originId, originId)
+  if (container) {
+    assert.equal(segments.local, stored.local)
+  }
+  if (ms !== undefined) {
+    assert.equal(Date.parse(segments.stamp.updatedAt), ms)
+  }
+}
+
+/**
+ * The `ETag` of a validator whose stamp counter is moved by `by`: well formed,
+ * and carried by no record the test wrote.
+ * @param options {object}
+ * @param options.validator {EtagValidator}
+ * @param options.by {number}
+ * @returns {string}
+ */
+function etagWithCounterBumped({
+  validator,
+  by
+}: {
+  validator: EtagValidator
+  by: number
+}): string {
+  const { stamp } = validator
+  return formatEtag({
+    ...validator,
+    stamp: { ...stamp, updatedAtCounter: stamp.updatedAtCounter + by }
+  })
 }
 
 function jsonInput(data: unknown): ResourceInput {
@@ -435,20 +543,19 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       it('round-trips a JSON document byte-for-byte', async () => {
         const { backend } = harness
         const data = { a: 1, nested: { b: [1, 2, 3] } }
-        const { version } = await backend.writeResource({
+        const written = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'doc',
           input: jsonInput(data)
         })
-        assert.equal(version, 1)
         const result = await backend.getResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'doc'
         })
         assert.equal(result.storedResourceType, 'application/json')
-        assert.equal(result.version, 1)
+        assert.equal(etagOf(result), formatEtag(written))
         assert.equal(
           await streamToString(result.resourceStream),
           JSON.stringify(data)
@@ -495,13 +602,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
       it('a write under a new content-type replaces the single representation', async () => {
         const { backend } = harness
-        await backend.writeResource({
+        const firstWrite = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'swap',
           input: jsonInput({ was: 'json' })
         })
-        await backend.writeResource({
+        const secondWrite = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'swap',
@@ -509,13 +616,14 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             contentType: 'text/plain'
           })
         })
+        assertValidatorAdvanced(firstWrite, secondWrite)
         const result = await backend.getResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'swap'
         })
         assert.equal(result.storedResourceType, 'text/plain')
-        assert.equal(result.version, 2)
+        assert.equal(etagOf(result), formatEtag(secondWrite))
         assert.equal(await streamToString(result.resourceStream), 'now text')
         const metadata = await backend.getResourceMetadata({
           spaceId,
@@ -525,7 +633,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(metadata?.contentType, 'text/plain')
       })
 
-      it('getResourceMetadata reports contentType, size, timestamps, version', async () => {
+      it('getResourceMetadata reports contentType, size, timestamps, write stamp', async () => {
         const { backend } = harness
         const data = { size: 'check' }
         await backend.writeResource({
@@ -544,13 +652,14 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(metadata.size, Buffer.byteLength(JSON.stringify(data)))
         assert.ok(metadata.createdAt)
         assert.ok(metadata.updatedAt)
-        assert.equal(metadata.version, 1)
-        assert.equal(metadata.metaVersion, undefined)
+        assert.equal(typeof metadata.updatedAtCounter, 'number')
+        assert.ok(metadata.originId)
+        assert.equal(metadata.meta, undefined)
         assert.equal(metadata.custom, undefined)
       })
     })
 
-    describe('version / metaVersion independence', () => {
+    describe('content / metadata stamp independence', () => {
       let harness: BackendHarness
       const spaceId = 'space-ver'
       beforeAll(async () => {
@@ -561,9 +670,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await harness.cleanup()
       })
 
-      it('content writes bump version; metadata writes bump only metaVersion', async () => {
+      it('content writes move the content stamp; metadata writes move only the meta stamp', async () => {
         const { backend } = harness
-        await backend.writeResource({
+        const content1 = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'r',
@@ -575,24 +684,31 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           resourceId: 'r',
           custom: { name: 'First' }
         })
-        assert.equal(meta1?.version, 1)
+        assert.ok(meta1)
+        // The metadata write left the content record's validator alone.
+        const afterMeta1 = await backend.getResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'r'
+        })
+        assert.equal(etagOf(afterMeta1), formatEtag(content1))
 
-        const { version } = await backend.writeResource({
+        const content2 = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'r',
           input: jsonInput({ v: 2 })
         })
-        assert.equal(version, 2)
+        assertValidatorAdvanced(content1, content2)
 
         const metadata = await backend.getResourceMetadata({
           spaceId,
           collectionId: 'col',
           resourceId: 'r'
         })
-        // The content write preserved `custom` and the independent metaVersion.
-        assert.equal(metadata?.metaVersion, 1)
-        assert.equal(metadata?.version, 2)
+        // The content write preserved `custom` and the independent meta stamp.
+        assert.equal(etagOf({ ...metadata!.meta }), formatEtag(meta1))
+        assert.equal(metadata!.updatedAt, content2.stamp.updatedAt)
         assert.deepEqual(metadata?.custom, { name: 'First' })
 
         const meta2 = await backend.writeResourceMetadata({
@@ -601,14 +717,14 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           resourceId: 'r',
           custom: { name: 'Second' }
         })
-        assert.equal(meta2?.version, 2)
-        const after = await backend.getResourceMetadata({
+        assertValidatorAdvanced(meta1, meta2!)
+        const after = await backend.getResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'r'
         })
-        // The metadata write did not bump the content version.
-        assert.equal(after?.version, 2)
+        // The metadata write did not move the content validator.
+        assert.equal(etagOf(after), formatEtag(content2))
       })
 
       it('writeResourceMetadata resolves undefined for an absent Resource (no create)', async () => {
@@ -631,25 +747,27 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           resourceId: 'clearable',
           input: jsonInput({})
         })
-        await backend.writeResourceMetadata({
+        const tempWrite = await backend.writeResourceMetadata({
           spaceId,
           collectionId: 'col',
           resourceId: 'clearable',
           custom: { name: 'temp' }
         })
-        await backend.writeResourceMetadata({
+        const clearWrite = await backend.writeResourceMetadata({
           spaceId,
           collectionId: 'col',
           resourceId: 'clearable',
           custom: {}
         })
+        assertValidatorAdvanced(tempWrite!, clearWrite!)
         const metadata = await backend.getResourceMetadata({
           spaceId,
           collectionId: 'col',
           resourceId: 'clearable'
         })
         assert.equal(metadata?.custom, undefined)
-        assert.equal(metadata?.metaVersion, 2)
+        // The clearing write still moved the meta stamp.
+        assert.equal(etagOf({ ...metadata!.meta }), formatEtag(clearWrite!))
       })
     })
 
@@ -685,7 +803,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const { backend } = harness
         const collectionId = await freshCollection()
 
-        // The creating write is version 1 of the one object; the merged read
+        // The creating write stamps the one object; the merged read
         // carries the configuration members, the timestamps, and no `custom`.
         const created = await backend.getCollectionMetadata({
           spaceId,
@@ -695,7 +813,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           created,
           'an existing Collection resolves its Metadata object'
         )
-        assert.equal(created.metaVersion, 1)
+        assert.equal(created.metaLocal, 0)
+        assert.equal(typeof created.updatedAtCounter, 'number')
+        assert.ok(created.originId)
         assert.equal(created.name, collectionId)
         assert.equal(created.custom, undefined)
         assert.ok(!Number.isNaN(Date.parse(created.createdAt!)))
@@ -710,14 +830,18 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             custom: { name: 'First', tags: { a: 'b' } }
           }
         })
-        assert.equal(annotated.version, 2)
+        assertEtagAdvanced({
+          before: metadataEtagOf(created),
+          after: formatEtag(annotated),
+          container: true
+        })
         assert.equal(annotated.generation, created.metaGeneration)
         const stored = await backend.getCollectionMetadata({
           spaceId,
           collectionId
         })
         assert.deepEqual(stored?.custom, { name: 'First', tags: { a: 'b' } })
-        assert.equal(stored?.metaVersion, 2)
+        assert.equal(metadataEtagOf(stored), formatEtag(annotated))
         assert.equal(stored?.name, collectionId)
 
         // A configuration write (rename) bumps it again, carrying `custom`.
@@ -730,7 +854,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             custom: { name: 'First', tags: { a: 'b' } }
           }
         })
-        assert.equal(renamed.version, 3)
+        assertValidatorAdvanced(annotated, renamed)
         assert.equal(renamed.generation, created.metaGeneration)
         const reread = await backend.getCollectionMetadata({
           spaceId,
@@ -738,10 +862,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         })
         assert.equal(reread?.name, 'Renamed')
         assert.deepEqual(reread?.custom, { name: 'First', tags: { a: 'b' } })
-        assert.equal(reread?.metaVersion, 3)
+        assert.equal(metadataEtagOf(reread), formatEtag(renamed))
 
         // A full replacement: the tags of the earlier write are gone.
-        await backend.writeCollection({
+        const replacement = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: {
@@ -754,13 +878,14 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId
         })
         assert.deepEqual(replaced?.custom, { name: 'Second' })
-        assert.equal(replaced?.metaVersion, 4)
+        assertValidatorAdvanced(renamed, replacement)
+        assert.equal(metadataEtagOf(replaced), formatEtag(replacement))
       })
 
       it('an absent or empty custom clears the stored custom', async () => {
         const { backend } = harness
         const collectionId = await freshCollection()
-        await backend.writeCollection({
+        const tempWrite = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: {
@@ -768,19 +893,20 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             custom: { name: 'temp' }
           }
         })
-        // An empty object clears it (and still bumps the version)...
-        await backend.writeCollection({
+        // An empty object clears it (and still moves the stamp)...
+        const clearWrite = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: { ...baseMetadata(collectionId), custom: {} }
         })
+        assertValidatorAdvanced(tempWrite, clearWrite)
         const cleared = await backend.getCollectionMetadata({
           spaceId,
           collectionId
         })
         assert.equal(cleared?.custom, undefined)
         assert.ok(!('custom' in cleared!))
-        assert.equal(cleared?.metaVersion, 3)
+        assert.equal(metadataEtagOf(cleared), formatEtag(clearWrite))
 
         // ...and so does omitting it: the write is a full replacement.
         await backend.writeCollection({
@@ -791,7 +917,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             custom: { name: 'again' }
           }
         })
-        await backend.writeCollection({
+        const omitWrite = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: baseMetadata(collectionId)
@@ -801,13 +927,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId
         })
         assert.equal(omitted?.custom, undefined)
-        assert.equal(omitted?.metaVersion, 5)
+        assert.equal(metadataEtagOf(omitted), formatEtag(omitWrite))
       })
 
       it('a null custom clears the stored custom rather than faulting', async () => {
         const { backend } = harness
         const collectionId = await freshCollection()
-        await backend.writeCollection({
+        const tempWrite = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: {
@@ -827,7 +953,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             custom: null as unknown as CollectionMetadata['custom']
           }
         })
-        assert.equal(cleared.version, 3)
+        assertValidatorAdvanced(tempWrite, cleared)
         const stored = await backend.getCollectionMetadata({
           spaceId,
           collectionId
@@ -917,7 +1043,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionMetadata: baseMetadata(collectionId),
           ifNoneMatch: '*'
         })
-        assert.equal(created.version, 1)
+        assert.equal(created.local, 0)
         // ...and refuses against the existing Collection, for an annotation
         // write as much as for a configuration one: there is no separate
         // "metadata never written" state.
@@ -942,7 +1068,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
               ...baseMetadata(collectionId),
               custom: { name: 'Stale' }
             },
-            ifMatch: formatEtag({ generation: created.generation, version: 99 })
+            ifMatch: etagWithCounterBumped({ validator: created, by: 99 })
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         const fresh = await backend.writeCollection({
@@ -954,7 +1080,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           },
           ifMatch: formatEtag(created)
         })
-        assert.equal(fresh.version, 2)
+        assertValidatorAdvanced(created, fresh)
         assert.equal(
           fresh.generation,
           created.generation,
@@ -1080,7 +1206,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           undefined
         )
         // A Collection re-created under the same id starts a fresh life: no
-        // annotations, version 1 again.
+        // annotations, a fresh generation.
         await backend.writeCollection({
           spaceId,
           collectionId,
@@ -1090,7 +1216,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId,
           collectionId
         })
-        assert.equal(revived?.metaVersion, 1)
+        assert.equal(revived?.metaLocal, 0)
         assert.equal(revived?.custom, undefined)
       })
 
@@ -1103,8 +1229,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         })
         await backend.deleteCollection({ spaceId, collectionId })
         // A Collection delete is a hard delete: the metadata counter goes
-        // with it, so the re-created Collection restarts at version 1 under a
-        // FRESH generation and the old validator matches nothing.
+        // with it, so the re-created Collection starts under a FRESH
+        // generation and the old validator matches nothing.
         const recreated = await backend.writeCollection({
           spaceId,
           collectionId,
@@ -1114,7 +1240,6 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             name: collectionId
           }
         })
-        assert.equal(recreated.version, 1)
         assert.notEqual(recreated.generation, before?.metaGeneration)
         // The pre-delete validator can no longer satisfy an If-Match.
         await expect(
@@ -1126,10 +1251,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
               type: ['Collection'],
               name: 'Clobber'
             },
-            ifMatch: formatEtag({
-              generation: before!.metaGeneration!,
-              version: before!.metaVersion!
-            })
+            ifMatch: metadataEtagOf(before)!
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
       })
@@ -1157,34 +1279,31 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId: 'space-etag',
           spaceMetadata: spaceMetadata('space-etag')
         })
-        assert.equal(created.version, 1)
+        assert.equal(created.local, 0)
         const stored = await backend.getSpaceMetadata({
           spaceId: 'space-etag'
         })
         assert.equal(stored?.metaGeneration, created.generation)
-        assert.equal(stored?.metaVersion, 1)
+        assert.equal(metadataEtagOf(stored), formatEtag(created))
         // A caller spreading the read result back in does not smuggle the
         // validator into the stored body.
         const updated = await backend.writeSpace({
           spaceId: 'space-etag',
           spaceMetadata: { ...stored!, name: 'Renamed' }
         })
-        assert.deepEqual(updated, {
-          generation: created.generation,
-          version: 2
-        })
+        assertValidatorAdvanced(created, updated)
         const reread = await backend.getSpaceMetadata({
           spaceId: 'space-etag'
         })
         assert.equal(reread?.name, 'Renamed')
-        assert.equal(reread?.metaVersion, 2)
+        assert.equal(metadataEtagOf(reread), formatEtag(updated))
         // The listing is the plain wire shape, validator stripped.
         const listed = (await backend.listSpaces()).find(
           space => space.id === 'space-etag'
         )
         assert.ok(listed)
         assert.equal('metaGeneration' in listed!, false)
-        assert.equal('metaVersion' in listed!, false)
+        assert.equal('metaLocal' in listed!, false)
       })
 
       it('writeSpace If-None-Match: * creates when absent, 412s when present', async () => {
@@ -1217,7 +1336,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           backend.writeSpace({
             spaceId: 'space-im',
             spaceMetadata: spaceMetadata('space-im'),
-            ifMatch: formatEtag({ generation: created.generation, version: 9 })
+            ifMatch: etagWithCounterBumped({ validator: created, by: 9 })
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         const second = await backend.writeSpace({
@@ -1225,7 +1344,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceMetadata: spaceMetadata('space-im'),
           ifMatch: formatEtag(created)
         })
-        assert.equal(second.version, 2)
+        assertValidatorAdvanced(created, second)
         // The consumed validator is stale now.
         await expect(
           backend.writeSpace({
@@ -1236,23 +1355,30 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         ).rejects.toBeInstanceOf(PreconditionFailedError)
       })
 
-      it('writeSpace strips a client-supplied _generation / _version from the stored body', async () => {
+      it('writeSpace strips a client-supplied _generation / _local and stamp from the stored body', async () => {
         const { backend } = harness
         const written = await backend.writeSpace({
           spaceId: 'space-smuggle',
           spaceMetadata: {
             ...spaceMetadata('space-smuggle'),
             _generation: 'fake',
-            _version: 999
+            _local: 999,
+            updatedAt: '2000-01-01T00:00:00.000Z',
+            updatedAtCounter: 7,
+            originId: 'forged'
           } as SpaceMetadata
         })
         const stored = await backend.getSpaceMetadata({
           spaceId: 'space-smuggle'
         })
         assert.equal('_generation' in stored!, false)
-        assert.equal('_version' in stored!, false)
+        assert.equal('_local' in stored!, false)
         assert.equal(stored?.metaGeneration, written.generation)
-        assert.equal(stored?.metaVersion, 1)
+        assert.equal(stored?.metaLocal, 0)
+        // The stamp is the backend's, not the body's.
+        assert.notEqual(stored?.updatedAt, '2000-01-01T00:00:00.000Z')
+        assert.notEqual(stored?.originId, 'forged')
+        assert.equal(metadataEtagOf(stored), formatEtag(written))
       })
 
       it('writeSpace If-Match honors the * and list forms', async () => {
@@ -1273,13 +1399,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceMetadata: spaceMetadata('space-im-forms'),
           ifMatch: '*'
         })
-        assert.equal(second.version, 2)
+        assertValidatorAdvanced(created, second)
         const third = await backend.writeSpace({
           spaceId: 'space-im-forms',
           spaceMetadata: spaceMetadata('space-im-forms'),
           ifMatch: `${formatEtag(created)}, ${formatEtag(second)}`
         })
-        assert.equal(third.version, 3)
+        assertValidatorAdvanced(second, third)
         // A weak member never matches under strong comparison.
         await expect(
           backend.writeSpace({
@@ -1307,10 +1433,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId: 'space-inm-list',
           spaceMetadata: spaceMetadata('space-inm-list'),
           ifNoneMatch: new Set([
-            formatEtag({ generation: created.generation, version: 7 })
+            etagWithCounterBumped({ validator: created, by: 7 })
           ])
         })
-        assert.equal(second.version, 2)
+        assertValidatorAdvanced(created, second)
       })
 
       it('writeSpace with both If-Match and If-None-Match: * is 412 whether or not the Space exists', async () => {
@@ -1319,7 +1445,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           backend.writeSpace({
             spaceId: 'space-both',
             spaceMetadata: spaceMetadata('space-both'),
-            ifMatch: formatEtag({ generation: 'noSuchGen', version: 1 }),
+            ifMatch: '"noSuchGen.1.0.x.0"',
             ifNoneMatch: '*'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
@@ -1346,7 +1472,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           harness.backend.writeSpace({
             spaceId: 'space-im-absent',
             spaceMetadata: spaceMetadata('space-im-absent'),
-            ifMatch: formatEtag({ generation: 'noSuchGen', version: 1 })
+            ifMatch: '"noSuchGen.1.0.x.0"'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         assert.equal(
@@ -1368,7 +1494,6 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId: 'space-regen',
           spaceMetadata: spaceMetadata('space-regen')
         })
-        assert.equal(second.version, 1)
         assert.notEqual(second.generation, first.generation)
       })
 
@@ -1388,7 +1513,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           },
           ifNoneMatch: '*'
         })
-        assert.equal(created.version, 1)
+        assert.equal(created.local, 0)
         await expect(
           backend.writeCollection({
             spaceId: 'space-col-inm',
@@ -1812,7 +1937,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             collectionId: 'col',
             resourceId: 'im-absent',
             input: jsonInput({}),
-            ifMatch: formatEtag({ generation: 'noSuchGen', version: 1 })
+            ifMatch: '"noSuchGen.1.0.x.0"'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
       })
@@ -1830,7 +1955,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             spaceId,
             collectionId: 'col',
             resourceId: 'del',
-            ifMatch: formatEtag({ generation: created.generation, version: 9 })
+            ifMatch: etagWithCounterBumped({ validator: created, by: 9 })
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         await backend.deleteResource({
@@ -1848,7 +1973,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         ).rejects.toBeInstanceOf(ResourceNotFoundError)
       })
 
-      it('a tombstone counts as absent; generation and version continue through recreate', async () => {
+      it('a tombstone counts as absent; the generation continues and the stamp advances through recreate', async () => {
         const { backend } = harness
         await backend.writeResource({
           spaceId,
@@ -1878,8 +2003,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         // ... while If-None-Match: * (create-if-absent) succeeds. A tombstone
-        // keeps the record's counter, so the re-create continues the monotonic
-        // version past the tombstone's bump AND keeps the same generation.
+        // keeps the record's generation, and the re-create mints a stamp
+        // above the tombstone's.
         const revived = await backend.writeResource({
           spaceId,
           collectionId: 'col',
@@ -1887,7 +2012,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           input: jsonInput({ v: 3 }),
           ifNoneMatch: '*'
         })
-        assert.equal(revived.version, 4)
+        assertValidatorAdvanced(second, revived)
         assert.equal(
           revived.generation,
           second.generation,
@@ -1899,7 +2024,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           resourceId: 'tomb'
         })
         assert.equal(read.generation, second.generation)
-        assert.equal(read.version, 4)
+        assert.equal(etagOf(read), formatEtag(revived))
       })
 
       it('metadata preconditions gate on the metadata ETag', async () => {
@@ -1933,10 +2058,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             collectionId: 'col',
             resourceId: 'mp',
             custom: { name: 'b' },
-            ifMatch: formatEtag({
-              generation: firstMeta!.generation,
-              version: 2
-            })
+            ifMatch: etagWithCounterBumped({ validator: firstMeta!, by: 2 })
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         const result = await backend.writeResourceMetadata({
@@ -1946,11 +2068,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           custom: { name: 'b' },
           ifMatch: formatEtag(firstMeta!)
         })
-        assert.equal(result?.version, 2)
+        assertValidatorAdvanced(firstMeta!, result!)
         assert.equal(result?.generation, firstMeta!.generation)
       })
 
-      it('a soft delete drops the /meta validator: the re-created Resource starts a new meta generation at 1', async () => {
+      it('a soft delete drops the /meta validator: the re-created Resource starts a new meta generation', async () => {
         const { backend } = harness
         const target = { spaceId, collectionId: 'col', resourceId: 'meta-tomb' }
         const created = await backend.writeResource({
@@ -1961,7 +2083,6 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           ...target,
           custom: { name: 'before' }
         })
-        assert.equal(preDeleteMeta?.version, 1)
         assert.notEqual(
           preDeleteMeta?.generation,
           created.generation,
@@ -1972,10 +2093,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           ...target,
           input: jsonInput({ v: 2 })
         })
-        // The content validator is unchanged by this fix: generation kept,
-        // version continuing through the tombstone.
+        // The content validator keeps its generation through the tombstone
+        // and mints a stamp above it.
         assert.equal(revived.generation, created.generation)
-        assert.equal(revived.version, 3)
+        assertValidatorAdvanced(created, revived)
         // The re-created Resource has no metadata object yet, so the
         // pre-delete /meta ETag matches nothing ...
         await expect(
@@ -1985,14 +2106,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             ifMatch: formatEtag(preDeleteMeta!)
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
-        // ... while a guarded first write succeeds, under a fresh generation at
-        // metaVersion 1 rather than the old generation's `<gen>.1` recurring.
+        // ... while a guarded first write succeeds, under a fresh generation
+        // rather than the old `/meta` validator recurring.
         const revivedMeta = await backend.writeResourceMetadata({
           ...target,
           custom: { name: 'after' },
           ifNoneMatch: '*'
         })
-        assert.equal(revivedMeta?.version, 1)
         assert.notEqual(revivedMeta?.generation, preDeleteMeta?.generation)
         assert.notEqual(
           formatEtag(revivedMeta!),
@@ -2000,8 +2120,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           'a pre-delete /meta ETag never recurs on the re-created Resource'
         )
         const read = await backend.getResourceMetadata(target)
-        assert.equal(read?.metaGeneration, revivedMeta?.generation)
-        assert.equal(read?.metaVersion, 1)
+        assert.equal(read?.meta?.generation, revivedMeta?.generation)
+        assert.equal(etagOf({ ...read!.meta }), formatEtag(revivedMeta!))
         assert.equal(read?.generation, created.generation)
         assert.deepEqual(read?.custom, { name: 'after' })
       })
@@ -2032,13 +2152,14 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         )
         assert.equal(winners.length, 1)
         assert.equal(losers.length, attempts.length - 1)
-        // The surviving representation is the winner's, at version 1.
+        // The surviving representation is the winner's.
         const metadata = await harness.backend.getResourceMetadata({
           spaceId,
           collectionId: 'col',
           resourceId: 'race-create'
         })
-        assert.equal(metadata?.version, 1)
+        const winner = winners[0] as PromiseFulfilledResult<EtagValidator>
+        assert.equal(etagOf(metadata!), formatEtag(winner.value))
       })
 
       it('unconditional delete of a tombstone is a stable no-op', async () => {
@@ -2178,9 +2299,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(metadata?.epoch, 'urn:epoch:2')
       })
 
-      it('writeCollection returns a monotonic metaVersion', async () => {
+      it('writeCollection returns an advancing validator', async () => {
         const { backend } = harness
-        // The Collection was created in `provisionSpace` (version 1); update it.
+        // The Collection was created in `provisionSpace`; update it.
         const first = await backend.writeCollection({
           spaceId,
           collectionId: 'col',
@@ -2199,12 +2320,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             name: 'Renamed twice'
           }
         })
-        assert.equal(second.version, first.version + 1)
+        assertValidatorAdvanced(first, second)
         const metadata = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'col'
         })
-        assert.equal(metadata?.metaVersion, second.version)
+        assert.equal(metadataEtagOf(metadata), formatEtag(second))
       })
 
       it('If-Match on the Collection Metadata object compare-and-swaps (stale validator 412)', async () => {
@@ -2213,11 +2334,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId,
           collectionId: 'col'
         })
-        const currentEtag = formatEtag({
-          generation: current!.metaGeneration!,
-          version: current!.metaVersion!
-        })
-        // A matching If-Match succeeds and bumps the version.
+        const currentEtag = metadataEtagOf(current)!
+        // A matching If-Match succeeds and advances the stamp.
         const ok = await backend.writeCollection({
           spaceId,
           collectionId: 'col',
@@ -2228,7 +2346,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           },
           ifMatch: currentEtag
         })
-        assert.equal(ok.version, current!.metaVersion! + 1)
+        assertEtagAdvanced({
+          before: currentEtag,
+          after: formatEtag(ok),
+          container: true
+        })
         assert.equal(
           ok.generation,
           current!.metaGeneration,
@@ -2264,7 +2386,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             name: 'Unconditional'
           }
         })
-        assert.equal(result.version, before!.metaVersion! + 1)
+        assertEtagAdvanced({
+          before: metadataEtagOf(before),
+          after: formatEtag(result),
+          container: true
+        })
       })
 
       it('the epoch survives an export / import round trip', async () => {
@@ -2366,7 +2492,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(metadata?.writerId, undefined)
       })
 
-      it('a metadata write is declare-or-clear too, UNLIKE `epoch` (which preserves)', async () => {
+      it('a metadata write leaves the content record writerId alone', async () => {
         const { backend } = harness
         await backend.writeResource({
           spaceId,
@@ -2375,34 +2501,20 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           input: jsonInput({ v: 1 }),
           writerId: 'writer-a'
         })
-        // A metadata write supplying `writerId` sets it.
-        await backend.writeResourceMetadata({
-          spaceId,
-          collectionId: 'col',
-          resourceId: 'w2',
-          custom: {},
-          writerId: 'writer-b'
-        })
-        let metadata = await backend.getResourceMetadata({
-          spaceId,
-          collectionId: 'col',
-          resourceId: 'w2'
-        })
-        assert.equal(metadata?.writerId, 'writer-b')
-        // A metadata write OMITTING `writerId` CLEARS it -- unlike `epoch`,
-        // which a metadata write preserves on omission.
+        // A metadata write carries no writer label: the content record's
+        // `writerId` stays as the content write left it.
         await backend.writeResourceMetadata({
           spaceId,
           collectionId: 'col',
           resourceId: 'w2',
           custom: {}
         })
-        metadata = await backend.getResourceMetadata({
+        const metadata = await backend.getResourceMetadata({
           spaceId,
           collectionId: 'col',
           resourceId: 'w2'
         })
-        assert.equal(metadata?.writerId, undefined)
+        assert.equal(metadata?.writerId, 'writer-a')
       })
 
       it('DELETE declares the tombstone label; an unlabeled delete clears it', async () => {
@@ -2557,9 +2669,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           }
         })
         // The callback sees the freshly re-read current object, carrying
-        // the version it is about to supersede.
+        // the stamp it is about to supersede.
         assert.equal(seen?.name, 'First')
-        assert.equal(seen?.metaVersion, 1)
+        assert.equal(seen?.metaLocal, 0)
+        assert.ok(seen?.updatedAt)
         assert.ok(seen?.metaGeneration)
       })
 
@@ -2610,11 +2723,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         // The very next Metadata write sees the log just written, body and
         // validator alike, without a read of its own.
         assert.equal(seenLog?.body, '{"state":{}}\n')
-        assert.equal(seenLog?.version, created?.version)
-        assert.equal(seenLog?.generation, created?.generation)
+        assert.equal(etagOf(seenLog!), formatEtag(created!))
       })
 
-      it('a throwing assertTransition aborts the write (object and version unchanged)', async () => {
+      it('a throwing assertTransition aborts the write (object and validator unchanged)', async () => {
         const { backend } = harness
         await backend.writeCollection({
           spaceId,
@@ -2644,19 +2756,19 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             }
           })
         ).rejects.toBeInstanceOf(TransitionRejected)
-        // The write was aborted inside the lock: nothing changed, no version bump.
+        // The write was aborted inside the lock: nothing changed, no stamp moved.
         const after = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'at-abort'
         })
         assert.equal(after?.name, 'Keep')
-        assert.equal(after?.metaVersion, before?.metaVersion)
+        assert.equal(metadataEtagOf(after), metadataEtagOf(before))
       })
 
-      it('a first metadata write after a refused policy write returns version 1', async () => {
+      it('a first metadata write after a refused policy write is a plain create', async () => {
         const { backend } = harness
         // A policy write with no Collection Metadata object is refused and
-        // leaves nothing behind, so the first real metadata write starts at 1.
+        // leaves nothing behind, so the first real metadata write is a plain create.
         await assert.rejects(
           backend.writePolicy({
             spaceId,
@@ -2665,7 +2777,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           }),
           isNotFound
         )
-        const { version } = await backend.writeCollection({
+        const created = await backend.writeCollection({
           spaceId,
           collectionId: 'ph',
           collectionMetadata: {
@@ -2674,15 +2786,15 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             name: 'Placeholder'
           }
         })
-        assert.equal(version, 1)
+        assert.equal(created.local, 0)
         const metadata = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'ph'
         })
-        assert.equal(metadata?.metaVersion, 1)
+        assert.equal(metadataEtagOf(metadata), formatEtag(created))
       })
 
-      it('does not persist a stale validator member; the archive carries _generation / _version, not metaGeneration / metaVersion', async () => {
+      it('does not persist a stale validator member; the archive carries _generation, not _local, metaGeneration or metaLocal', async () => {
         const { backend } = harness
         await backend.writeCollection({
           spaceId,
@@ -2694,14 +2806,15 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           }
         })
         // Simulate the request handler's read-merge-write: the read attaches
-        // the out-of-band `metaGeneration` / `metaVersion`, which
-        // the handler spreads back into the next write. No validator member may
-        // leak into the stored body.
+        // the out-of-band `metaGeneration` / `metaLocal` (and the stamp
+        // members), which the handler spreads back into the next write. No
+        // validator member may leak into the stored body.
+
         const read = await backend.getCollectionMetadata({
           spaceId,
           collectionId: 'merge'
         })
-        await backend.writeCollection({
+        const second = await backend.writeCollection({
           spaceId,
           collectionId: 'merge',
           collectionMetadata: { ...read!, name: 'V2' }
@@ -2710,14 +2823,19 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId,
           collectionId: 'merge'
         })
-        assert.equal(after?.metaVersion, 2)
+        assertEtagAdvanced({
+          before: metadataEtagOf(read),
+          after: metadataEtagOf(after),
+          container: true
+        })
+        assert.equal(metadataEtagOf(after), formatEtag(second))
         assert.equal(after?.metaGeneration, read?.metaGeneration)
-        assert.ok(!Object.prototype.hasOwnProperty.call(after, '_version'))
+        assert.ok(!Object.prototype.hasOwnProperty.call(after, '_local'))
         assert.ok(!Object.prototype.hasOwnProperty.call(after, '_generation'))
 
-        // The archived `.collection.` body carries the internal `_generation` /
-        // `_version` interchange tokens and never the out-of-band
-        // `metaGeneration` / `metaVersion` -- identical members on
+        // The archived `.collection.` body carries the internal `_generation`
+        // interchange token and never the server-local `_local` segment or the
+        // out-of-band `metaGeneration` / `metaLocal` -- identical members on
         // both backends (the Postgres jsonb-strip fix).
         const entries = await extractTarEntries(
           await backend.exportSpace({ spaceId })
@@ -2727,9 +2845,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         )
         assert.ok(entry, 'expected an archived .collection.merge.json entry')
         const body = JSON.parse(entry![1].body!.toString('utf8'))
-        assert.equal(body._version, 2)
         assert.equal(body._generation, after?.metaGeneration)
-        assert.ok(!Object.prototype.hasOwnProperty.call(body, 'metaVersion'))
+        assert.ok(!Object.prototype.hasOwnProperty.call(body, '_local'))
+        assert.ok(!Object.prototype.hasOwnProperty.call(body, '_version'))
+        assert.ok(!Object.prototype.hasOwnProperty.call(body, 'metaLocal'))
         assert.ok(!Object.prototype.hasOwnProperty.call(body, 'metaGeneration'))
       })
 
@@ -3014,7 +3133,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.deepEqual(live!.data, { n: 2 })
         assert.equal(tombstone!.deleted, true)
         assert.equal(tombstone!.data, undefined)
-        assert.equal(tombstone!.version, 2)
+        // The tombstone carries a content stamp later than the live write's.
+        assert.ok(
+          Date.parse(tombstone!.updatedAt) > Date.parse(live!.updatedAt) ||
+            (tombstone!.updatedAt === live!.updatedAt &&
+              tombstone!.updatedAtCounter > live!.updatedAtCounter),
+          'a tombstone mints a later content stamp'
+        )
         // Positions ascend through the page, and the page's checkpoint is the
         // last document's position.
         assert.ok(live!.feedPosition < tombstone!.feedPosition)
@@ -3049,7 +3174,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(done.checkpoint, null)
       })
 
-      it('a metadata-only edit re-surfaces the Resource with custom, unchanged data/version', async () => {
+      it('a metadata-only edit re-surfaces the Resource with custom, unchanged data/content stamp', async () => {
         const { backend } = harness
         const before = await backend.changesSince!({
           spaceId,
@@ -3073,107 +3198,110 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           ['two']
         )
         const doc = after.documents[0]!
-        assert.equal(doc.version, 1)
-        assert.equal(doc.metaVersion, 1)
+        const priorDoc = before.documents.find(
+          document => document.resourceId === 'two'
+        )!
+        assert.equal(doc.updatedAt, priorDoc.updatedAt)
+        assert.equal(doc.updatedAtCounter, priorDoc.updatedAtCounter)
+        assert.equal(doc.originId, priorDoc.originId)
+        assert.equal(priorDoc.meta, undefined)
+        assert.ok(doc.meta?.updatedAt)
         assert.deepEqual(doc.data, { n: 2 })
         assert.deepEqual(doc.custom, { name: 'Two' })
       })
 
-      it('skips no write that shares a millisecond with the checkpoint (frozen clock)', async () => {
-        const { backend } = harness
-        // Its own Collection, so the shared fixture's feed is untouched.
+      it('skips no write that lands in the checkpoint millisecond', async () => {
+        // Its own backend under a frozen clock, so every write below lands in
+        // one millisecond and only the stamp's counter tells them apart.
+        const clock = frozenClock()
+        const frozen = await makeBackend({ physicalClock: clock.read })
+        const { backend } = frozen
         const collectionId = 'col-same-ms'
-        await backend.writeCollection({
+        await provisionSpace(backend, spaceId, collectionId)
+        // The feed position, not `updatedAt`, is what the checkpoint rides
+        // on.
+        await backend.writeResource({
           spaceId,
           collectionId,
-          collectionMetadata: {
-            id: collectionId,
-            type: ['Collection'],
-            name: collectionId
-          }
+          resourceId: 'm',
+          input: jsonInput({ n: 1 })
         })
-        // Freeze the wall clock, so every write below stamps the same
-        // `updatedAt`: the same-millisecond condition is asserted, not raced.
-        const frozen = '2026-10-01T12:00:00.000Z'
-        vi.useFakeTimers({ toFake: ['Date'] })
-        vi.setSystemTime(new Date(frozen))
-        try {
-          await backend.writeResource({
-            spaceId,
-            collectionId,
-            resourceId: 'm',
-            input: jsonInput({ n: 1 })
-          })
-          const first = await backend.changesSince!({
-            spaceId,
-            collectionId,
-            limit: 10
-          })
-          assert.deepEqual(
-            first.documents.map(document => document.resourceId),
-            ['m']
-          )
+        const first = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          limit: 10
+        })
+        assert.deepEqual(
+          first.documents.map(document => document.resourceId),
+          ['m']
+        )
 
-          // (a) The checkpointed Resource is rewritten in the same
-          // millisecond: the next pull surfaces it.
-          await backend.writeResource({
-            spaceId,
-            collectionId,
-            resourceId: 'm',
-            input: jsonInput({ n: 2 })
-          })
-          const second = await backend.changesSince!({
-            spaceId,
-            collectionId,
-            afterPosition: first.checkpoint!,
-            limit: 10
-          })
-          assert.deepEqual(
-            second.documents.map(document => document.resourceId),
-            ['m']
-          )
-          assert.deepEqual(second.documents[0]!.data, { n: 2 })
+        // (a) The checkpointed Resource is rewritten in the same
+        // millisecond: the next pull surfaces it.
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'm',
+          input: jsonInput({ n: 2 })
+        })
+        const second = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          afterPosition: first.checkpoint!,
+          limit: 10
+        })
+        assert.deepEqual(
+          second.documents.map(document => document.resourceId),
+          ['m']
+        )
+        assert.deepEqual(second.documents[0]!.data, { n: 2 })
 
-          // (b) A Resource whose id sorts below the checkpoint's, written in
-          // the checkpoint's millisecond, is surfaced.
-          await backend.writeResource({
-            spaceId,
-            collectionId,
-            resourceId: 'a',
-            input: jsonInput({ n: 3 })
-          })
-          const third = await backend.changesSince!({
-            spaceId,
-            collectionId,
-            afterPosition: second.checkpoint!,
-            limit: 10
-          })
-          assert.deepEqual(
-            third.documents.map(document => document.resourceId),
-            ['a']
-          )
+        // (b) A Resource whose id sorts below the checkpoint's, written in
+        // the checkpoint's millisecond, is surfaced.
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'a',
+          input: jsonInput({ n: 3 })
+        })
+        const third = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          afterPosition: second.checkpoint!,
+          limit: 10
+        })
+        assert.deepEqual(
+          third.documents.map(document => document.resourceId),
+          ['a']
+        )
 
-          // (c) A checkpoint taken before a write, echoed back after it,
-          // surfaces the write: the first checkpoint now yields both.
-          const replay = await backend.changesSince!({
-            spaceId,
-            collectionId,
-            afterPosition: first.checkpoint!,
-            limit: 10
-          })
-          assert.deepEqual(
-            replay.documents.map(document => document.resourceId),
-            ['m', 'a']
-          )
+        // (c) A checkpoint taken before a write, echoed back after it,
+        // surfaces the write: the first checkpoint now yields both.
+        const replay = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          afterPosition: first.checkpoint!,
+          limit: 10
+        })
+        assert.deepEqual(
+          replay.documents.map(document => document.resourceId),
+          ['m', 'a']
+        )
 
-          // Every document shares one `updatedAt`, so a keyset on it could
-          // not have ordered them.
-          for (const document of replay.documents) {
-            assert.equal(document.updatedAt, frozen)
-          }
-        } finally {
-          vi.useRealTimers()
-        }
+        // The feed position orders the documents, not `updatedAt`: all three
+        // writes shared one millisecond, and the stamp's counter tells them
+        // apart, one tick per write in write order.
+        const [original] = first.documents
+        const [rewritten, below] = replay.documents
+        assert.equal(rewritten!.updatedAt, original!.updatedAt)
+        assert.equal(below!.updatedAt, original!.updatedAt)
+        assert.equal(original!.updatedAt, new Date(clock.now).toISOString())
+        assert.equal(
+          rewritten!.updatedAtCounter,
+          original!.updatedAtCounter + 1
+        )
+        assert.equal(below!.updatedAtCounter, original!.updatedAtCounter + 2)
+        await frozen.cleanup()
       })
 
       it('a chunk write does not move its parent Resource in the feed', async () => {
@@ -3755,11 +3883,19 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       })
 
       it('an update keeping its own unique attribute never self-conflicts', async () => {
-        const { version } = await write(
+        const prior = await harness.backend.getResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'holder'
+        })
+        const rewritten = await write(
           'holder',
           envelope('holder', [{ name: 'n1', value: 'v1', unique: true }])
         )
-        assert.ok(version >= 2, 'expected the overwrite to bump the version')
+        assertEtagAdvanced({
+          before: etagOf(prior),
+          after: formatEtag(rewritten)
+        })
       })
 
       it("an update claiming another live document's unique triple is rejected", async () => {
@@ -3802,7 +3938,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             input: jsonInput(
               envelope('claimant', [{ name: 'n1', value: 'v1', unique: true }])
             ),
-            ifMatch: formatEtag({ generation: 'staleGen', version: 999 })
+            ifMatch: '"staleGen.1.0.x"'
           })
         ).rejects.toBeInstanceOf(UniqueAttributeConflictError)
       })
@@ -4704,10 +4840,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         )
       })
 
-      it('a registration and a removal each advance the Space Metadata version, generation kept', async () => {
+      it('a registration and a removal each advance the Space Metadata local segment, stamp and generation kept', async () => {
         // The served Space Metadata object lists the registrations under
         // `backends`, so its strong validator must move with them; the body
-        // is untouched, so the generation stays.
+        // is untouched, so the generation and the write stamp stay and only
+        // the local segment advances.
         const { backend } = harness
         const before = (await backend.getSpaceMetadata({ spaceId }))!
         const registered = { ...record, id: 'gdrive-2' }
@@ -4717,19 +4854,25 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           record: registered
         })
         const afterWrite = (await backend.getSpaceMetadata({ spaceId }))!
-        assert.equal(afterWrite.metaVersion, before.metaVersion! + 1)
+        assert.equal(afterWrite.metaLocal, before.metaLocal! + 1)
+        assert.equal(afterWrite.updatedAt, before.updatedAt)
+        assert.equal(afterWrite.updatedAtCounter, before.updatedAtCounter)
+        assert.equal(afterWrite.originId, before.originId)
+        assert.notEqual(metadataEtagOf(afterWrite), metadataEtagOf(before))
         assert.equal(afterWrite.metaGeneration, before.metaGeneration)
         assert.equal(afterWrite.name, before.name)
 
         await backend.deleteBackend({ spaceId, backendId: registered.id })
         const afterDelete = (await backend.getSpaceMetadata({ spaceId }))!
-        assert.equal(afterDelete.metaVersion, before.metaVersion! + 2)
+        assert.equal(afterDelete.metaLocal, before.metaLocal! + 2)
+        assert.equal(afterDelete.updatedAt, before.updatedAt)
         assert.equal(afterDelete.metaGeneration, before.metaGeneration)
 
         // Removing an absent record changes the listing not at all.
         await backend.deleteBackend({ spaceId, backendId: registered.id })
         const unchanged = (await backend.getSpaceMetadata({ spaceId }))!
-        assert.equal(unchanged.metaVersion, afterDelete.metaVersion)
+        assert.equal(unchanged.metaLocal, afterDelete.metaLocal)
+        assert.equal(metadataEtagOf(unchanged), metadataEtagOf(afterDelete))
       })
     })
 
@@ -5054,7 +5197,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         ).rejects.toBeInstanceOf(ResourceNotFoundError)
       })
 
-      it('writeChunk is an upsert that bumps the chunk version', async () => {
+      it('writeChunk is an upsert that advances the chunk stamp', async () => {
         const { backend } = harness
         const first = await backend.writeChunk({
           spaceId,
@@ -5063,7 +5206,6 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           chunkIndex: 0,
           input: binaryInput(Buffer.from('v1'))
         })
-        assert.equal(first.version, 1)
         assert.ok(first.generation)
         const second = await backend.writeChunk({
           spaceId,
@@ -5072,7 +5214,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           chunkIndex: 0,
           input: binaryInput(Buffer.from('v2-longer'))
         })
-        assert.equal(second.version, 2)
+        assertValidatorAdvanced(first, second)
         assert.equal(
           second.generation,
           first.generation,
@@ -5080,10 +5222,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         )
       })
 
-      it('getChunk / getChunkMetadata read back bytes, content-type, size, version', async () => {
+      it('getChunk / getChunkMetadata read back bytes, content-type, size, validator', async () => {
         const { backend } = harness
         const bytes = Buffer.from([9, 8, 7, 6])
-        await backend.writeChunk({
+        const written = await backend.writeChunk({
           spaceId,
           collectionId: 'col',
           resourceId: 'parent',
@@ -5097,7 +5239,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           chunkIndex: 1
         })
         assert.equal(result.storedResourceType, 'application/octet-stream')
-        assert.equal(result.version, 1)
+        assert.equal(etagOf(result), formatEtag(written))
         const readChunks: Buffer[] = []
         for await (const part of result.resourceStream) {
           readChunks.push(Buffer.from(part))
@@ -5112,7 +5254,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         })
         assert.equal(metadata?.contentType, 'application/octet-stream')
         assert.equal(metadata?.size, bytes.length)
-        assert.equal(metadata?.version, 1)
+        assert.equal(etagOf(metadata!), formatEtag(written))
       })
 
       it('getChunk throws / getChunkMetadata resolves undefined on an absent chunk', async () => {
@@ -5207,7 +5349,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         )
       })
 
-      it('chunk conditional writes gate on the chunk version', async () => {
+      it('chunk conditional writes gate on the chunk validator', async () => {
         const { backend } = harness
         const created = await backend.writeChunk({
           spaceId,
@@ -5217,7 +5359,6 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           input: binaryInput(Buffer.from('a')),
           ifNoneMatch: '*'
         })
-        assert.equal(created.version, 1)
         // If-None-Match: * on an existing chunk 412s.
         await expect(
           backend.writeChunk({
@@ -5237,7 +5378,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             resourceId: 'parent',
             chunkIndex: 7,
             input: binaryInput(Buffer.from('b')),
-            ifMatch: formatEtag({ generation: created.generation, version: 9 })
+            ifMatch: etagWithCounterBumped({ validator: created, by: 9 })
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         const updated = await backend.writeChunk({
@@ -5248,10 +5389,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           input: binaryInput(Buffer.from('b')),
           ifMatch: formatEtag(created)
         })
-        assert.equal(updated.version, 2)
+        assertValidatorAdvanced(created, updated)
       })
 
-      it('a chunk rewritten at a deleted index starts a new generation at version 1', async () => {
+      it('a chunk rewritten at a deleted index starts a new generation', async () => {
         const { backend } = harness
         const before = await backend.writeChunk({
           spaceId,
@@ -5277,8 +5418,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           true
         )
         // A chunk delete is a hard delete, so the counter goes with it: the
-        // next write at that index restarts at version 1 under a FRESH
-        // generation, and the two lives' ETags can never coincide.
+        // next write at that index starts under a FRESH generation, and the
+        // two lives' ETags can never coincide.
         const after = await backend.writeChunk({
           spaceId,
           collectionId: 'col',
@@ -5286,7 +5427,6 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           chunkIndex: 11,
           input: binaryInput(Buffer.from('after'))
         })
-        assert.equal(after.version, 1)
         assert.notEqual(after.generation, before.generation)
         const metadata = await backend.getChunkMetadata({
           spaceId,
@@ -5295,7 +5435,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           chunkIndex: 11
         })
         assert.equal(metadata?.generation, after.generation)
-        assert.equal(metadata?.version, 1)
+        assert.equal(etagOf(metadata!), formatEtag(after))
       })
 
       it('If-Match carrying a pre-delete chunk ETag 412s against the recreated chunk', async () => {
@@ -5506,6 +5646,201 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       })
     })
 
+    describe('write stamps and validator segments', () => {
+      it('every record kind returns a validator whose segments match its stored stamp, and a backwards clock step lowers no stamp', async () => {
+        const clock = frozenClock()
+        const harness = await makeBackend({ physicalClock: clock.read })
+        try {
+          const { backend } = harness
+          const originId = backend.originId
+          const spaceId = 'space-segments'
+          const collectionId = 'col'
+
+          const spaceWritten = await backend.writeSpace({
+            spaceId,
+            spaceMetadata: {
+              id: spaceId,
+              type: ['Space'],
+              controller: CONTROLLER
+            }
+          })
+          const space = (await backend.getSpaceMetadata({ spaceId }))!
+          assertValidatorSegments({
+            validator: spaceWritten,
+            stored: {
+              ...space,
+              generation: space.metaGeneration,
+              local: space.metaLocal
+            },
+            originId,
+            ms: clock.now
+          })
+          assert.equal(spaceWritten.local, 0)
+          assert.equal(metadataEtagOf(space), formatEtag(spaceWritten))
+
+          const collectionWritten = await backend.writeCollection({
+            spaceId,
+            collectionId,
+            collectionMetadata: { id: collectionId, type: ['Collection'] }
+          })
+          const collection = (await backend.getCollectionMetadata({
+            spaceId,
+            collectionId
+          }))!
+          assertValidatorSegments({
+            validator: collectionWritten,
+            stored: {
+              ...collection,
+              generation: collection.metaGeneration,
+              local: collection.metaLocal
+            },
+            originId,
+            ms: clock.now
+          })
+          // Same millisecond as the Space write: the counter tells them apart.
+          assert.equal(
+            collectionWritten.stamp.updatedAtCounter,
+            spaceWritten.stamp.updatedAtCounter + 1
+          )
+
+          clock.now += 1000
+          const docWritten = await backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId: 'doc',
+            input: jsonInput({ n: 1 })
+          })
+          const doc = (await backend.getResourceMetadata({
+            spaceId,
+            collectionId,
+            resourceId: 'doc'
+          }))!
+          assertValidatorSegments({
+            validator: docWritten,
+            stored: doc,
+            originId,
+            ms: clock.now
+          })
+          assert.equal(docWritten.stamp.updatedAtCounter, 0)
+
+          const metaWritten = (await backend.writeResourceMetadata({
+            spaceId,
+            collectionId,
+            resourceId: 'doc',
+            custom: { name: 'Doc' }
+          }))!
+          const withMeta = (await backend.getResourceMetadata({
+            spaceId,
+            collectionId,
+            resourceId: 'doc'
+          }))!
+          assertValidatorSegments({
+            validator: metaWritten,
+            stored: withMeta.meta!,
+            originId,
+            ms: clock.now
+          })
+          assert.equal(metaWritten.stamp.updatedAtCounter, 1)
+
+          const chunkWritten = await backend.writeChunk({
+            spaceId,
+            collectionId,
+            resourceId: 'doc',
+            chunkIndex: 0,
+            input: binaryInput(Buffer.from('chunk'))
+          })
+          const chunk = (await backend.getChunkMetadata({
+            spaceId,
+            collectionId,
+            resourceId: 'doc',
+            chunkIndex: 0
+          }))!
+          assertValidatorSegments({
+            validator: chunkWritten,
+            stored: chunk,
+            originId,
+            ms: clock.now
+          })
+
+          await backend.writeCollection({
+            spaceId,
+            collectionId: 'logged',
+            collectionMetadata: { id: 'logged', type: ['Collection'] }
+          })
+          const logCreated = (await backend.writeCollectionLog({
+            spaceId,
+            collectionId: 'logged',
+            body: '{"state":{"scheme":"edv"},"parameters":{"method":"x"}}\n',
+            ifNoneMatch: '*'
+          }))!
+          const log = (await backend.getCollectionLog({
+            spaceId,
+            collectionId: 'logged'
+          }))!
+          assertValidatorSegments({
+            validator: logCreated,
+            stored: log,
+            originId,
+            ms: clock.now
+          })
+
+          // The physical clock steps back 30 s. A write to a Resource the
+          // store has never held, so no held stamp lifts it, still lands at
+          // or above every stamp minted before the step.
+          const latest = logCreated.stamp
+          clock.now -= 30_000
+          const otherWritten = await backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId: 'other',
+            input: jsonInput({ n: 2 })
+          })
+          const other = (await backend.getResourceMetadata({
+            spaceId,
+            collectionId,
+            resourceId: 'other'
+          }))!
+          assertValidatorSegments({
+            validator: otherWritten,
+            stored: other,
+            originId
+          })
+          assert.ok(Date.parse(other.updatedAt!) >= Date.parse(doc.updatedAt!))
+          assert.ok(
+            compareStamps(otherWritten.stamp, latest) > 0,
+            'above the last stamp minted before the step'
+          )
+
+          // A container rewrite after the step advances on the same terms.
+          const collectionRewritten = await backend.writeCollection({
+            spaceId,
+            collectionId,
+            collectionMetadata: { id: collectionId, type: ['Collection'] }
+          })
+          assertValidatorAdvanced(collectionWritten, collectionRewritten)
+          assert.ok(
+            Date.parse(collectionRewritten.stamp.updatedAt) >=
+              Date.parse(otherWritten.stamp.updatedAt)
+          )
+          const rewritten = (await backend.getCollectionMetadata({
+            spaceId,
+            collectionId
+          }))!
+          assertValidatorSegments({
+            validator: collectionRewritten,
+            stored: {
+              ...rewritten,
+              generation: rewritten.metaGeneration,
+              local: rewritten.metaLocal
+            },
+            originId
+          })
+        } finally {
+          await harness.cleanup()
+        }
+      })
+    })
+
     describe('governing history log (governed-history-logs)', () => {
       let harness: BackendHarness
       const spaceId = 'space-log'
@@ -5534,7 +5869,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         return collectionId
       }
 
-      it('is absent until created, then round-trips the body verbatim with a validator from 1', async () => {
+      it('is absent until created, then round-trips the body verbatim with a stamped validator', async () => {
         const { backend } = harness
         const collectionId = await freshCollection()
         assert.equal(
@@ -5547,10 +5882,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           body: line1,
           ifNoneMatch: '*'
         })
-        assert.equal(created?.version, 1)
+        assert.ok(created?.generation)
         const stored = await backend.getCollectionLog({ spaceId, collectionId })
         assert.equal(stored?.body, line1)
-        assert.equal(stored?.version, 1)
+        assert.equal(etagOf(stored!), formatEtag(created!))
         assert.equal(stored?.generation, created?.generation)
 
         const appended = await backend.writeCollectionLog({
@@ -5559,7 +5894,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           body: line1 + line2,
           ifMatch: formatEtag(created!)
         })
-        assert.equal(appended?.version, 2)
+        assertValidatorAdvanced(created!, appended!)
         assert.equal(appended?.generation, created?.generation)
         const extended = await backend.getCollectionLog({
           spaceId,
@@ -5608,7 +5943,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             spaceId,
             collectionId,
             body: line1 + line2,
-            ifMatch: '"stale.9"'
+            ifMatch: '"stale.9.0.x"'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         // A throwing assertTransition aborts the write.
@@ -5626,10 +5961,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         ).rejects.toThrow('refused')
         const stored = await backend.getCollectionLog({ spaceId, collectionId })
         assert.equal(stored?.body, line1)
-        assert.equal(stored?.version, 1)
+        assert.equal(etagOf(stored!), formatEtag(created!))
       })
 
-      it('bumps the Collection Metadata validator on each log write, keeping its generation', async () => {
+      it('advances the Collection Metadata local segment on each log write, keeping its stamp and generation', async () => {
         const { backend } = harness
         const collectionId = await freshCollection()
         const before = await backend.getCollectionMetadata({
@@ -5647,7 +5982,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId
         })
         assert.equal(after?.metaGeneration, before?.metaGeneration)
-        assert.equal(after?.metaVersion, before!.metaVersion! + 1)
+        assert.equal(after?.metaLocal, before!.metaLocal! + 1)
+        assert.equal(after?.updatedAt, before?.updatedAt)
+        assert.equal(after?.updatedAtCounter, before?.updatedAtCounter)
+        assert.equal(after?.originId, before?.originId)
+        assert.notEqual(metadataEtagOf(after), metadataEtagOf(before))
         // The stored object itself is untouched (no derived member).
         assert.equal(after?.encryption, undefined)
         assert.equal(after?.name, collectionId)
@@ -5696,7 +6035,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
               name: 'governed'
             }
           })
-          await source.backend.writeCollectionLog({
+          const sourceLog = await source.backend.writeCollectionLog({
             spaceId: exportSpaceId,
             collectionId: 'governed',
             body: line1 + line2,
@@ -5716,7 +6055,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             collectionId: 'governed'
           })
           assert.equal(restored?.body, line1 + line2)
-          assert.equal(restored?.version, 1)
+          // The archived generation is kept; the stamp is the importing
+          // backend's own.
+          assert.equal(restored?.generation, sourceLog?.generation)
+          assert.equal(restored?.originId, target.backend.originId)
         } finally {
           await source.cleanup()
           await target.cleanup()
@@ -5735,7 +6077,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             await source.backend.exportSpace({ spaceId })
 
           // The destination carries its own name; the restore replaces it
-          // through the same write `writeSpace` makes: one version bump,
+          // through the same write `writeSpace` makes: a later stamp,
           // generation kept, `controller` untouched.
           await provisionSpace(target.backend, spaceId)
           await target.backend.writeSpace({
@@ -5758,7 +6100,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           const after = (await target.backend.getSpaceMetadata({ spaceId }))!
           assert.equal(after.name, `Space ${spaceId}`)
           assert.equal(after.controller, CONTROLLER)
-          assert.equal(after.metaVersion, before.metaVersion! + 1)
+          assertEtagAdvanced({
+            before: metadataEtagOf(before),
+            after: metadataEtagOf(after),
+            container: true
+          })
           assert.equal(after.metaGeneration, before.metaGeneration)
 
           // Not under a root invocation (the default, a backend driven outside
@@ -5968,9 +6314,16 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             tags: { kind: 'demo' }
           })
           assert.equal(metadata?.epoch, 'epoch-exp')
-          // The archived validator travels verbatim: version 2 (the create,
-          // then the annotation write), not a fresh count on the destination.
-          assert.equal(metadata?.metaVersion, 2)
+          // The archived generation travels; the stamp is re-minted by the
+          // destination's clock under its own origin, with a fresh local
+          // segment.
+          const sourceMetadata = await source.backend.getCollectionMetadata({
+            spaceId,
+            collectionId: 'col'
+          })
+          assert.equal(metadata?.metaGeneration, sourceMetadata?.metaGeneration)
+          assert.equal(metadata?.originId, target.backend.originId)
+          assert.equal(metadata?.metaLocal, 0)
           assert.ok(!Number.isNaN(Date.parse(metadata!.createdAt!)))
         } finally {
           await source.cleanup()
@@ -6063,6 +6416,154 @@ export function describeStorageBackendContract(options: ContractOptions): void {
               chunkIndex: 0
             })
           ).rejects.toBeInstanceOf(ResourceNotFoundError)
+        } finally {
+          await target.cleanup()
+        }
+      })
+
+      it('import gives a chunk without a usable sidecar a fresh one, and replaces archived generations this server could not have minted', async () => {
+        const target = await makeBackend()
+        try {
+          const spaceId = 'space-imp-generations'
+          const archivedStamp = {
+            updatedAt: '2026-01-01T00:00:00.000Z',
+            updatedAtCounter: 0,
+            originId: 'zArchiveOrigin'
+          }
+          const badGenerations = ['a.b', 'quote"d', 'line\nbreak', '0OIl']
+          const genesis = JSON.stringify({
+            versionId: '1-hash1',
+            parameters: { method: 'resource-log:0.1' },
+            state: { scheme: 'edv' },
+            proof: []
+          })
+          const pack = tar.pack()
+          pack.entry(
+            { name: 'manifest.yml' },
+            [
+              "ubc-version: '0.1'",
+              'contents:',
+              '  space:',
+              '    id: src',
+              ''
+            ].join('\n')
+          )
+          pack.entry(
+            { name: 'space/src/col/.collection.col.json' },
+            JSON.stringify({
+              id: 'col',
+              type: ['Collection'],
+              name: 'col',
+              ...archivedStamp,
+              _generation: badGenerations[2]
+            })
+          )
+          pack.entry(
+            { name: 'space/src/col/r.doc.application%2Fjson.json' },
+            JSON.stringify({ n: 1 })
+          )
+          pack.entry(
+            { name: 'space/src/col/.meta.doc.json' },
+            JSON.stringify({
+              createdAt: archivedStamp.updatedAt,
+              ...archivedStamp,
+              generation: badGenerations[0],
+              meta: { ...archivedStamp, generation: badGenerations[1] }
+            })
+          )
+          // Chunk 0 has no sidecar, chunk 1 a sidecar that is not a JSON
+          // object, chunk 2 one whose generation is not base58.
+          for (const index of [0, 1, 2]) {
+            pack.entry(
+              {
+                name: `space/src/col/.chunks.doc/r.${index}.application%2Foctet-stream.bin`
+              },
+              `chunk ${index}`
+            )
+          }
+          pack.entry({ name: 'space/src/col/.chunks.doc/.meta.1.json' }, 'null')
+          pack.entry(
+            { name: 'space/src/col/.chunks.doc/.meta.2.json' },
+            JSON.stringify({
+              createdAt: archivedStamp.updatedAt,
+              ...archivedStamp,
+              generation: badGenerations[3]
+            })
+          )
+          pack.entry(
+            { name: 'space/src/logged/.collectionlog.logged.json' },
+            JSON.stringify({
+              body: `${genesis}\n`,
+              generation: badGenerations[0],
+              ...archivedStamp
+            })
+          )
+          pack.finalize()
+
+          await target.backend.writeSpace({
+            spaceId,
+            spaceMetadata: {
+              id: spaceId,
+              type: ['Space'],
+              controller: CONTROLLER
+            }
+          })
+          await importArchive({
+            backend: target.backend,
+            spaceId,
+            tarStream: pack as unknown as Readable
+          })
+
+          /**
+           * Asserts a generation is one this server could have minted, and
+           * not one of the archived ones.
+           * @param generation {string | undefined}
+           * @returns {void}
+           */
+          function assertFresh(generation: string | undefined): void {
+            assert.ok(isMintedGeneration(generation), String(generation))
+            assert.ok(!badGenerations.includes(generation!))
+          }
+
+          const collection = (await target.backend.getCollectionMetadata({
+            spaceId,
+            collectionId: 'col'
+          }))!
+          assertFresh(collection.metaGeneration)
+          parseEtagSegments(metadataEtagOf(collection), { container: true })
+
+          const doc = (await target.backend.getResourceMetadata({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'doc'
+          }))!
+          assertFresh(doc.generation)
+          assertFresh(doc.meta?.generation)
+          parseEtagSegments(etagOf(doc))
+
+          for (const chunkIndex of [0, 1, 2]) {
+            const chunk = await target.backend.getChunkMetadata({
+              spaceId,
+              collectionId: 'col',
+              resourceId: 'doc',
+              chunkIndex
+            })
+            assert.ok(chunk, `chunk ${chunkIndex} imported`)
+            assertFresh(chunk.generation)
+            const segments = parseEtagSegments(etagOf(chunk))
+            assert.equal(segments.stamp.originId, target.backend.originId)
+            assert.equal(
+              Date.parse(segments.stamp.updatedAt),
+              Date.parse(chunk.updatedAt!)
+            )
+          }
+
+          const log = (await target.backend.getCollectionLog({
+            spaceId,
+            collectionId: 'logged'
+          }))!
+          assertFresh(log.generation)
+          parseEtagSegments(etagOf(log))
         } finally {
           await target.cleanup()
         }
@@ -6269,17 +6770,28 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const spaceMetadata = await harness.backend.getSpaceMetadata({
           spaceId
         })
-        assert.equal(spaceStatement.metaVersion, spaceMetadata!.metaVersion)
+        assert.equal(spaceStatement.updatedAt, spaceMetadata!.updatedAt)
+        assert.equal(
+          spaceStatement.updatedAtCounter,
+          spaceMetadata!.updatedAtCounter
+        )
+        assert.equal(spaceStatement.originId, spaceMetadata!.originId)
         assert.equal(spaceStatement.digest, undefined)
         assert.equal(spaceStatement.version, undefined)
+        assert.equal(spaceStatement.metaVersion, undefined)
         const collectionMetadata = await harness.backend.getCollectionMetadata({
           spaceId,
           collectionId: 'col'
         })
         assert.equal(
-          collectionStatement.metaVersion,
-          collectionMetadata!.metaVersion
+          collectionStatement.updatedAt,
+          collectionMetadata!.updatedAt
         )
+        assert.equal(
+          collectionStatement.updatedAtCounter,
+          collectionMetadata!.updatedAtCounter
+        )
+        assert.equal(collectionStatement.originId, collectionMetadata!.originId)
         assert.equal(
           collectionStatement.createdAt,
           collectionMetadata!.createdAt
@@ -6293,7 +6805,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         })
         assert.equal(plain.createdBy, CREATOR_ONE)
         assert.equal(plain.createdAt, plainMetadata!.createdAt)
-        assert.equal(plain.version, plainMetadata!.version)
+        assert.equal(plain.updatedAt, plainMetadata!.updatedAt)
+        assert.equal(plain.updatedAtCounter, plainMetadata!.updatedAtCounter)
+        assert.equal(plain.originId, plainMetadata!.originId)
         const prefix = `space/${spaceId}/col/`
         const representation = [...files].find(([name]) =>
           name.startsWith(`${prefix}r.plain.`)
@@ -6793,7 +7307,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(typeof plain.createdAt, 'string')
         assert.equal(plain.updatedAt, plain.createdAt)
         assert.equal(typeof plain.generation, 'string')
-        assert.equal(plain.version, 1)
+        assert.equal(plain.originId, backend.originId)
         assert.equal(plain.createdBy, undefined)
         assert.equal(plain.custom, undefined)
         const served = await backend.getResource({
@@ -6801,7 +7315,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           resourceId: 'plain'
         })
-        assert.equal(served.version, 1)
+        assert.equal(etagOf(served), etagOf(plain))
         assert.equal(
           await streamToString(served.resourceStream),
           JSON.stringify({ hello: 'world' })

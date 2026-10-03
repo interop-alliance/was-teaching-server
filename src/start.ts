@@ -128,6 +128,9 @@ export async function startServer(): Promise<void> {
             logger,
             connectionString: databaseUrl,
             capacityBytes: config.storageLimitPerSpace,
+            ...(config.replicationClockBoundMs !== undefined && {
+              clockBoundMs: config.replicationClockBoundMs
+            }),
             ...storageOptions
           })
       }),
@@ -138,6 +141,7 @@ export async function startServer(): Promise<void> {
       kmsRecordKek: config.kmsRecordKek,
       onboardingToken: config.onboardingToken,
       discloseVersion: config.discloseVersion,
+      replicationClockBoundMs: config.replicationClockBoundMs,
       serverKeySeed: config.serverKeySeed,
       adminDid: config.adminDid
     })

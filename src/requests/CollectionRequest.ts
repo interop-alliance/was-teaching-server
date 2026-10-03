@@ -13,7 +13,8 @@ import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import {
   fetchCollectionAndBackend,
   getCollectionOrThrow,
-  governedEncryptionOf
+  governedEncryptionOf,
+  projectCollectionMetadata
 } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import {
@@ -36,10 +37,8 @@ import {
   parseListFilter,
   uniqueIndexesOf
 } from '../lib/equalityIndex.js'
-import {
-  resolveBackendDescriptor,
-  DEFAULT_BACKEND_ID
-} from '../lib/backends.js'
+import { resolveBackendDescriptor } from '../lib/backends.js'
+import { stampCollectionMetadata } from '../lib/metadataWrite.js'
 import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
 import { parseWriterIdHeader } from '../lib/writerAttribution.js'
@@ -71,6 +70,7 @@ import {
   etagOf,
   formatEtag,
   parseWritePreconditions,
+  stampedValidator,
   stripMetadataValidator
 } from '../lib/etag.js'
 import {
@@ -403,10 +403,9 @@ export class CollectionRequest {
       requestName
     })
 
-    // `metaGeneration` / `metaVersion` are the out-of-band `ETag` validator,
-    // not part of the wire body: strip them and emit the `ETag` header. A
-    // legacy Collection written before versioning reports none.
-    const metadataBody = stripMetadataValidator(collectionMetadata)
+    // `metaGeneration` / `metaLocal` are out-of-band `ETag` parts, not part
+    // of the wire body: the projection below strips them, and the `ETag`
+    // header is built from them and the body's stamp members.
     const metaEtag = metadataEtagOf(collectionMetadata)
 
     // A conditional read (spec "Caching") against the object's `ETag`.
@@ -415,24 +414,20 @@ export class CollectionRequest {
       return notModified
     }
 
-    // Advertise the Collection's self `url` (the canonical trailing-slash
-    // container form) and linkset (policy discovery); both relative,
-    // consistent with the other URL fields the API returns. Report the
-    // selected backend, default-filled for a Collection stored without one
-    // (spec: an unset backend is `default`). `type` is served lexically sorted
-    // (spec SHOULD).
+    // The served projection: the self `url`, the linkset, the default-filled
+    // backend, and `type` sorted (`projectCollectionMetadata`).
     const metaReply = reply.status(200).type('application/json')
     if (metaEtag !== undefined) {
       metaReply.header('etag', metaEtag)
     }
     return metaReply.send(
-      JSON.stringify({
-        ...metadataBody,
-        type: [...collectionMetadata.type].sort(),
-        backend: collectionMetadata.backend ?? { id: DEFAULT_BACKEND_ID },
-        url: collectionPath({ spaceId, collectionId, trailingSlash: true }),
-        linkset: linksetPath({ spaceId, collectionId })
-      } satisfies CollectionMetadata)
+      JSON.stringify(
+        projectCollectionMetadata({
+          spaceId,
+          collectionId,
+          collectionMetadata
+        })
+      )
     )
   }
 
@@ -561,7 +556,7 @@ export class CollectionRequest {
     }
 
     // `If-Match` (the `conditional-writes` feature) makes the write a
-    // compare-and-swap on the object's monotonic version, so two clients
+    // compare-and-swap on the object's current `ETag`, so two clients
     // concurrently editing it (e.g. both adding a recipient) cannot silently
     // clobber one another, and `If-None-Match: *` makes the PUT a guarded
     // create (two clients racing to provision the same Collection cannot both
@@ -629,13 +624,21 @@ export class CollectionRequest {
       trailingSlash: true
     })
     reply.header('Location', new URL(collectionUrl, serverUrl).toString())
-    // Echo what was persisted, `createdBy` and the container `url` included, so
-    // the create response and a subsequent Read Collection Metadata agree.
-    return reply.status(201).send({
-      ...collectionMetadata,
-      ...(createdBy && { createdBy }),
-      url: collectionUrl
-    })
+    // Echo what was persisted, through the projection Read Collection
+    // Metadata serves, so the create response and a subsequent read agree.
+    // The stored object is rebuilt by the same stamping the backend ran,
+    // over no prior object and with the stamp the returned validator carries.
+    return reply.status(201).send(
+      projectCollectionMetadata({
+        spaceId,
+        collectionId,
+        collectionMetadata: stampCollectionMetadata({
+          collectionMetadata,
+          createdBy,
+          stamp: written.stamp
+        })
+      })
+    )
   }
 
   /**
@@ -686,7 +689,9 @@ export class CollectionRequest {
       throw new CollectionNotFoundError({ requestName })
     }
 
-    const etag = formatEtag(log)
+    const etag = formatEtag(
+      stampedValidator({ generation: log.generation, stamp: log })
+    )
     const notModified = notModifiedReply({ request, reply, etag })
     if (notModified) {
       return notModified
@@ -1105,16 +1110,19 @@ export class CollectionRequest {
     // RxDB's `_deleted`, and the document body stays under `data` (kept out of
     // the user JSON so arbitrary bodies -- not only objects -- round-trip). The
     // user-writable `custom` (the opaque encryption envelope on an encrypted
-    // Collection) and its independent `metaVersion` ride along so a metadata-only
-    // edit replicates alongside content, as does the server-managed `createdBy`
+    // Collection) and the `/meta` record's own stamp (`meta`) ride along so a
+    // metadata-only edit replicates alongside content, as does the
+    // server-managed `createdBy`
     // so a replica learns each Resource's creator without a `/meta` fetch per
     // Resource. The content `etag` and `/meta` `metaEtag` -- the quoted strong
     // validators exactly as the server emits them in the `ETag` header -- ride
     // the feed too, so a replica can send `If-Match` from feed state alone
     // without a GET per Resource. Each document carries the opaque checkpoint
     // that resumes right after it, so a client can checkpoint on any prefix
-    // of a page. `updatedAt` is a plain wall-clock stamp with no ordering
-    // role. The RxDB browser adapter does the final reshape into RxDB
+    // of a page. Each document carries the content record's write stamp
+    // (`updatedAt`, `updatedAtCounter`, `originId`), which orders two
+    // revisions of one Resource; the feed itself is ordered by feed
+    // position. The RxDB browser adapter does the final reshape into RxDB
     // documents.
     // `feedGeneration` is set whenever the page has a document: every
     // position on it was handed out under it.
@@ -1124,25 +1132,17 @@ export class CollectionRequest {
         generation: result.feedGeneration!,
         position
       })
-    // The write stamp's `updatedAtCounter` and `originId` are not stored yet,
-    // so the feed still carries the `version` and `metaVersion` counters in
-    // their place.
-    const documents: (Omit<ChangeDocument, 'updatedAtCounter' | 'originId'> & {
-      version: number
-      metaVersion?: number
-    })[] = result.documents.map(doc => {
-      const etag = etagOf({ generation: doc.generation, version: doc.version })
-      const metaEtag = etagOf({
-        generation: doc.metaGeneration,
-        version: doc.metaVersion
-      })
+    const documents: ChangeDocument[] = result.documents.map(doc => {
+      const etag = etagOf(doc)
+      const metaEtag = etagOf(doc.meta ?? {})
       return {
         id: doc.resourceId,
         _deleted: doc.deleted,
         updatedAt: doc.updatedAt,
+        updatedAtCounter: doc.updatedAtCounter,
+        originId: doc.originId,
         checkpoint: issueCheckpoint(doc.feedPosition),
-        version: doc.version,
-        ...(doc.metaVersion !== undefined && { metaVersion: doc.metaVersion }),
+        ...(doc.meta !== undefined && { meta: doc.meta }),
         ...(etag !== undefined && { etag }),
         ...(metaEtag !== undefined && { metaEtag }),
         ...(doc.createdBy !== undefined && { createdBy: doc.createdBy }),
@@ -1153,9 +1153,8 @@ export class CollectionRequest {
         // `/meta` fetch.
         ...(doc.epoch !== undefined && { epoch: doc.epoch }),
         // The writer-attribution label (spec "Writer attribution") rides the
-        // feed so a replica recognizes its own writes echoed back and breaks
-        // same-`updatedAt` ties; a tombstone carries the label its DELETE
-        // declared, if any.
+        // feed so a replica recognizes its own writes echoed back; a
+        // tombstone carries the label its DELETE declared, if any.
         ...(doc.writerId !== undefined && { writerId: doc.writerId })
       }
     })

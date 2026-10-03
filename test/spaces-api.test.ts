@@ -8,7 +8,8 @@ import type { FastifyInstance } from 'fastify'
 import { Space } from '@interop/was-client'
 
 import {
-  assertEtagVersion,
+  assertEtagAdvanced,
+  parseEtagSegments,
   client,
   etagGeneration,
   openTempBackend,
@@ -30,6 +31,21 @@ const SERVED_BACKENDS = [
     persistence: 'durable'
   }
 ]
+
+/**
+ * Asserts a served Space Metadata object carries its write stamp and returns
+ * the rest of the object, so a suite can compare the stable members exactly.
+ *
+ * @param description {any}   the served Space Metadata object
+ * @returns {any}
+ */
+function withoutStamp(description: any): any {
+  const { updatedAt, updatedAtCounter, originId, ...rest } = description
+  assert.ok(!Number.isNaN(Date.parse(updatedAt)))
+  assert.equal(typeof updatedAtCounter, 'number')
+  assert.equal(typeof originId, 'string')
+  return rest
+}
 
 describe('Spaces', () => {
   let fastify: FastifyInstance,
@@ -81,7 +97,7 @@ describe('Spaces', () => {
         controller: alice.did
       })
       assert.equal(space.id, alice.space1.id)
-      assert.deepStrictEqual(await space.describe(), {
+      assert.deepStrictEqual(withoutStamp(await space.describe()), {
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
@@ -295,7 +311,7 @@ describe('Spaces', () => {
 
     it('[root] read space via GET with proper authorization', async () => {
       const spaceDescription = await alice.was.space(alice.space1.id).describe()
-      assert.deepStrictEqual(spaceDescription, {
+      assert.deepStrictEqual(withoutStamp(spaceDescription), {
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
@@ -325,7 +341,7 @@ describe('Spaces', () => {
       // Alice's app rebuilds a handle from the capability and reads the space.
       const handle = aliceDelegatedApp.was.fromCapability(zcap)
       assert.ok(handle instanceof Space)
-      assert.deepStrictEqual(await handle.describe(), {
+      assert.deepStrictEqual(withoutStamp(await handle.describe()), {
         id: alice.space1.id,
         name: "Alice's Space #1 (Home)",
         type: ['Space'],
@@ -381,7 +397,7 @@ describe('Spaces', () => {
         method: 'POST',
         json: spaceMetadata('etag-post', 'Posted')
       })
-      assertEtagVersion({ etag: posted.headers.get('etag'), version: 1 })
+      parseEtagSegments(posted.headers.get('etag'), { container: true })
 
       const put = await alice.was.request({
         url: metaUrl('etag-put'),
@@ -390,7 +406,7 @@ describe('Spaces', () => {
       })
       assert.equal(put.status, 201)
       const createdEtag = put.headers.get('etag')
-      assertEtagVersion({ etag: createdEtag, version: 1 })
+      parseEtagSegments(createdEtag, { container: true })
 
       const read = await alice.was.request({
         url: metaUrl('etag-put'),
@@ -399,11 +415,11 @@ describe('Spaces', () => {
       assert.equal(read.headers.get('etag'), createdEtag)
       // The validator travels only as the header and stays out of the body.
       assert.equal(read.data.metaGeneration, undefined)
-      assert.equal(read.data.metaVersion, undefined)
       assert.equal(read.data._generation, undefined)
-      assert.equal(read.data._version, undefined)
+      assert.equal(read.data._local, undefined)
+      assert.equal(read.data.generation, undefined)
 
-      // An update bumps the version under the same generation.
+      // An update is a later stamped write under the same generation.
       const updated = await alice.was.request({
         url: metaUrl('etag-put'),
         method: 'PUT',
@@ -411,7 +427,11 @@ describe('Spaces', () => {
       })
       assert.equal(updated.status, 204)
       const updatedEtag = updated.headers.get('etag')
-      assertEtagVersion({ etag: updatedEtag, version: 2 })
+      assertEtagAdvanced({
+        before: createdEtag,
+        after: updatedEtag,
+        container: true
+      })
       assert.equal(etagGeneration(updatedEtag!), etagGeneration(createdEtag!))
     })
 
@@ -468,7 +488,7 @@ describe('Spaces', () => {
         headers: { 'if-none-match': '*' }
       })
       assert.equal(created.status, 201)
-      assertEtagVersion({ etag: created.headers.get('etag'), version: 1 })
+      parseEtagSegments(created.headers.get('etag'), { container: true })
 
       // The loser of a create race: same guarded PUT against the now-present
       // Space, refused without touching the stored Space Metadata object.
@@ -486,7 +506,7 @@ describe('Spaces', () => {
       assert.equal(stored.name, 'Winner')
     })
 
-    it('[root] PUT with If-Match is a compare-and-swap on the Space Metadata version', async () => {
+    it('[root] PUT with If-Match is a compare-and-swap on the Space Metadata ETag', async () => {
       const created = await alice.was.request({
         url: metaUrl('cas'),
         method: 'PUT',
@@ -512,7 +532,11 @@ describe('Spaces', () => {
         headers: { 'if-match': current }
       })
       assert.equal(swapped.status, 204)
-      assertEtagVersion({ etag: swapped.headers.get('etag'), version: 2 })
+      assertEtagAdvanced({
+        before: current,
+        after: swapped.headers.get('etag'),
+        container: true
+      })
       assert.equal((await alice.was.space('cas').describe()).name, 'Two')
 
       // The consumed validator no longer matches.
@@ -572,7 +596,7 @@ describe('Spaces', () => {
         json: spaceMetadata('regen', 'Second life')
       })
       const newEtag = second.headers.get('etag')!
-      assertEtagVersion({ etag: newEtag, version: 1 })
+      parseEtagSegments(newEtag, { container: true })
       assert.notEqual(etagGeneration(newEtag), etagGeneration(oldEtag))
       // The old validator matches nothing on the new record.
       const conditional = await responseOf(

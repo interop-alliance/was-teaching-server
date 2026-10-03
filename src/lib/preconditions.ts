@@ -7,8 +7,8 @@
  * Callers MUST invoke them atomically with the write that follows (under the
  * filesystem backend's per-record lock, or inside the Postgres backend's
  * row-locking transaction). The current state arrives as the record's `ETag`
- * (from `etagOf`), `undefined` when the record has none: a legacy Resource
- * written before generations, or a Resource Metadata object never written. An
+ * (from `etagOf`), `undefined` when the record has none: a Resource whose
+ * sidecar is missing, or a Resource Metadata object never written. An
  * `If-Match` can never be satisfied against such a record, since no client
  * holds a validator for it.
  *
@@ -36,7 +36,7 @@ import { ifMatchCovers, isNotModified, type HeldValidators } from './etag.js'
  * @param options.exists {boolean}   whether the Resource currently exists (a
  *   tombstone counts as "does not exist")
  * @param [options.currentEtag] {string}   the Resource's current content
- *   `ETag`; absent for a legacy Resource without one
+ *   `ETag`; absent for a Resource without one
  * @param [options.ifMatch] {string}   the `If-Match` header value
  * @param [options.ifNoneMatch] {HeldValidators}   the parsed `If-None-Match`
  * @returns {void}

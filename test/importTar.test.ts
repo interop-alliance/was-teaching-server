@@ -357,7 +357,7 @@ describe('buildImportPlan', () => {
 
   /** A stored-log record whose single line carries a supported descriptor. */
   function logRecord(body: string): string {
-    return JSON.stringify({ body, generation: 'zgen', version: 1 })
+    return JSON.stringify({ body, generation: 'zgen' })
   }
   const genesis = JSON.stringify({
     versionId: '1-hash1',
@@ -399,7 +399,7 @@ describe('buildImportPlan', () => {
       ['{not json', /not valid JSON/i],
       ['null', /must be an object/i],
       ['{}', /must be an object/i],
-      [JSON.stringify({ body: genesis, generation: 'zgen' }), /version/i],
+      [JSON.stringify({ body: genesis }), /generation/i],
       [logRecord(''), /malformed/i],
       [logRecord('not json\n'), /malformed/i],
       [logRecord(JSON.stringify({ state: { scheme: 'bogus' } })), /malformed/i]
@@ -427,7 +427,6 @@ describe('buildImportPlan', () => {
     assert.equal(sidecars.length, 2)
     for (const sidecar of sidecars) {
       assert.equal(sidecar.generation, undefined)
-      assert.equal(sidecar.version, undefined)
     }
   })
 })

@@ -114,7 +114,7 @@ export class ChunkRequest {
     })
     const input = await resolveResourceInput(request, dataBackend)
     // Surface any `If-Match` / `If-None-Match` write precondition to the
-    // storage layer, which evaluates it against the chunk's own version
+    // storage layer, which evaluates it against the chunk's own validator
     // atomically with the write (412 `precondition-failed` on a mismatch).
     let written: EtagValidator
     try {
@@ -393,7 +393,7 @@ export class ChunkRequest {
    * GET /space/:spaceId/:collectionId/:resourceId/chunks/
    * Request handler for "List Chunks": the discovery/reassembly listing. The
    * server never reassembles a chunked Resource -- a reader learns the chunk
-   * set here (count + per-chunk index/size/contentType/version) and fetches
+   * set here (count + per-chunk index/size/contentType) and fetches
    * `0..count-1` itself. `count` is the number of chunks stored, not their
    * total byte size (sum the per-chunk `size` values for that). It matches
    * the highest index plus one only when no index is missing. Requires the

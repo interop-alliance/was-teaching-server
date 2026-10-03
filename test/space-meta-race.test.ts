@@ -152,7 +152,8 @@ describe('Update Space against a concurrently changing Space', () => {
     // Composed fresh, not from the deleted Space's type.
     const stored = await backend.getSpaceMetadata({ spaceId })
     assert.deepEqual(stored!.type, ['Space'])
-    assert.equal(stored!.metaVersion, 1)
+    assert.equal(stored!.metaLocal, 0)
+    assert.equal(stored!.updatedAtCounter, 0)
   })
 
   it('an update whose controller changes before the write is re-authorized against the new controller', async () => {

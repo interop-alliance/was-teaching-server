@@ -22,6 +22,8 @@ import {
   ENCRYPTED_COLLECTIONS_IDENTIFIER,
   ENCRYPTED_COLLECTIONS_VERSION
 } from '../src/config.default.js'
+import type { EtagValidator } from '../src/lib/etag.js'
+import { compareStamps, isoOfMs } from '../src/lib/hlc.js'
 import { prepareImportPlan } from '../src/lib/importPlan.js'
 import { createServerSigningKey } from '../src/lib/serverIdentity.js'
 import type { ServerSigningKey } from '../src/lib/serverIdentity.js'
@@ -137,50 +139,110 @@ export async function signedGet({
 }
 
 /**
- * Asserts an `ETag` header is a quoted `"<generation>.<version>"` strong
- * validator at the expected `version`, without hardcoding the generation.
- * Suites use it for the common "same generation, bumped version" shape; a
- * generation change is asserted separately with `etagGeneration`.
+ * Parses an `ETag` header this server emits into the validator it formats,
+ * asserting the layout: `"<generation>.<ms>.<counter>.<originId>"` on a
+ * Resource, a chunk, a Resource's `/meta` object and a governed log, plus a
+ * trailing `.<local>` segment with `container` set (a Space or Collection
+ * Metadata object). Test-only: a client treats the whole value as opaque.
  *
- * @param options {object}
- * @param options.etag {string | null}   the `ETag` header value
- * @param options.version {number}   the expected trailing version
+ * @param etag {string | null | undefined}   the `ETag` header value
+ * @param [options] {object}
+ * @param [options.container] {boolean}   expect the five-segment form of a
+ *   Space or Collection Metadata object
+ * @returns {EtagValidator}
  */
-export function assertEtagVersion({
-  etag,
-  version
-}: {
-  etag: string | null
-  version: number
-}): void {
+export function parseEtagSegments(
+  etag: string | null | undefined,
+  { container = false }: { container?: boolean } = {}
+): EtagValidator {
   assert.ok(etag, 'expected an ETag header')
-  const match = /^"([A-Za-z0-9]+)\.(\d+)"$/.exec(etag!)
+  const pattern = container
+    ? /^"([A-Za-z0-9]+)\.(\d+)\.(\d+)\.([A-Za-z0-9_-]{1,64})\.(\d+)"$/
+    : /^"([A-Za-z0-9]+)\.(\d+)\.(\d+)\.([A-Za-z0-9_-]{1,64})"$/
+  const match = pattern.exec(etag!)
   assert.ok(
     match,
-    `expected a quoted "<generation>.<version>" ETag, got ${etag}`
+    container
+      ? `expected a quoted "<generation>.<ms>.<counter>.<origin>.<local>" ETag, got ${etag}`
+      : `expected a quoted "<generation>.<ms>.<counter>.<origin>" ETag, got ${etag}`
   )
-  assert.equal(
-    Number(match![2]),
-    version,
-    `expected ETag version ${version}, got ${etag}`
-  )
+  return {
+    generation: match![1]!,
+    stamp: {
+      updatedAt: isoOfMs(Number(match![2])),
+      updatedAtCounter: Number(match![3]),
+      originId: match![4]!
+    },
+    ...(container && { local: Number(match![5]) })
+  }
 }
 
 /**
- * The generation part of a quoted `"<generation>.<version>"` ETag. Suites use
- * it to compare generations across a hard delete and re-create, where the
- * version alone (e.g. both `1`) would not show the underlying record changed.
+ * Asserts a later `ETag` of the same record moved past an earlier one: the
+ * same generation, and a write stamp that sorts strictly later
+ * (`compareStamps`). With `container`,
+ * both are the five-segment form and a stamped write resets the local
+ * segment to 0.
+ *
+ * @param options {object}
+ * @param options.before {string | null | undefined}
+ * @param options.after {string | null | undefined}
+ * @param [options.container] {boolean}
+ * @returns {void}
+ */
+export function assertEtagAdvanced({
+  before,
+  after,
+  container = false
+}: {
+  before: string | null | undefined
+  after: string | null | undefined
+  container?: boolean
+}): void {
+  const earlier = parseEtagSegments(before, { container })
+  const later = parseEtagSegments(after, { container })
+  assert.equal(later.generation, earlier.generation, 'same generation')
+  assert.ok(
+    compareStamps(later.stamp, earlier.stamp) > 0,
+    `expected ${after} to carry a later stamp than ${before}`
+  )
+  if (container) {
+    assert.equal(later.local, 0, 'a stamped write resets the local segment')
+  }
+}
+
+/**
+ * The generation segment of an `ETag` this server emits (either form).
+ * Suites use it to compare generations across a hard delete and re-create.
  *
  * @param etag {string}   the `ETag` header value
  * @returns {string}
  */
 export function etagGeneration(etag: string): string {
-  const match = /^"([A-Za-z0-9]+)\.\d+"$/.exec(etag)
-  assert.ok(
-    match,
-    `expected a quoted "<generation>.<version>" ETag, got ${etag}`
+  const match = /^"([A-Za-z0-9]+)\.\d+\.\d+\.[A-Za-z0-9_-]+(?:\.\d+)?"$/.exec(
+    etag
   )
+  assert.ok(match, `expected a quoted stamp ETag, got ${etag}`)
   return match![1]!
+}
+
+/**
+ * A frozen, steppable physical clock for a backend's hybrid logical clock
+ * (`physicalClock` on `openTempBackend()` / `startTestServer()`). `now` is the
+ * epoch milliseconds it reads; set it to step the clock, backwards included.
+ *
+ * @param [start] {number}   the initial reading; defaults to a fixed instant
+ * @returns {{ now: number, read: () => number }}
+ */
+export function frozenClock(start = Date.UTC(2026, 9, 1)): {
+  now: number
+  read: () => number
+} {
+  const clock = {
+    now: start,
+    read: () => clock.now
+  }
+  return clock
 }
 
 /**

@@ -202,6 +202,19 @@ export interface FastifyWasOptions {
    * reads the store's own id, or mints one on first boot.
    */
   originId?: string
+  /**
+   * The clock bound for a write stamp received from a peer, in milliseconds
+   * (env `WAS_REPLICATION_CLOCK_BOUND_MS`), applied only to the default
+   * backend. `undefined` means `REPLICATION_CLOCK_BOUND_MS`.
+   */
+  replicationClockBoundMs?: number
+  /**
+   * The physical clock (epoch milliseconds) the default backend's hybrid
+   * logical clock reads, applied only to the default backend (an injected
+   * `backend` carries its own). `undefined` means `Date.now`. A test freezes
+   * or steps it to drive the write stamps.
+   */
+  physicalClock?: () => number
 }
 
 /**
@@ -234,7 +247,9 @@ async function wasPlugin(
     discloseVersion = true,
     serverKeySeed,
     adminDid,
-    originId
+    originId,
+    replicationClockBoundMs,
+    physicalClock
   } = options
 
   // Fail fast on a missing or malformed base URL: without one no ZCap
@@ -280,7 +295,11 @@ async function wasPlugin(
         maxSpacesPerController,
         maxCollectionsPerSpace,
         maxResourcesPerSpace,
-        originId
+        originId,
+        ...(replicationClockBoundMs !== undefined && {
+          clockBoundMs: replicationClockBoundMs
+        }),
+        ...(physicalClock !== undefined && { physicalClock })
       }))
   let storage: StorageBackend
   if (typeof backendOrOpener === 'function') {
@@ -391,7 +410,7 @@ async function wasPlugin(
   // Open CORS by default (`cors: false` leaves it to the composition).
   // `exposedHeaders` is required for browser clients: without it,
   // cross-origin JS cannot read `Location` (space/resource creation), `ETag`
-  // (metaVersion concurrency), `Link` (pagination, policy linksets), or
+  // (conditional writes), `Link` (pagination, policy linksets), or
   // `Allow` -- which RFC 9110 makes the whole point of the `405` a `PUT` at a
   // container URL answers, since it names the methods the container does
   // accept. `maxAge` lets browsers cache the preflight answer instead of

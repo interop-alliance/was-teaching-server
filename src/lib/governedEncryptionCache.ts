@@ -5,14 +5,13 @@
  * Update Collection's checks. Deriving the member means parsing the whole
  * history log, which is append-only and grows without bound, so the result
  * is memoized per storage backend. An entry is keyed by the Collection and
- * by the log's own validator (its generation and version): a log write
+ * by the log's own validator (its generation and write stamp): a log write
  * leaves the stored validator behind, so the next derivation is a miss on a
  * new key rather than a stale hit, and the recheck a Metadata write runs
  * under the backend's lock sees whatever head the lock-time log carries. No
  * write therefore needs to invalidate the cache for correctness. Delete
  * Collection, Delete Space, and Import Space still drop a Collection's
- * entries, since an import installs an archived log with the archive's own
- * validator, which could coincide with a cached one over different bytes.
+ * entries, so a removed or replaced log leaves none behind.
  */
 import type { CollectionEncryption } from '@interop/storage-core'
 import { LruCache } from '@interop/lru-memoize'
@@ -22,7 +21,7 @@ import {
 } from '../config.default.js'
 import type { StorageBackend, StoredCollectionLog } from '../types.js'
 import { backendScoped, deleteByPrefix } from './backendCache.js'
-import { formatEtag } from './etag.js'
+import { formatEtag, stampedValidator } from './etag.js'
 import { deriveGovernedEncryption } from './governedLog.js'
 import { collectionLogPath } from './paths.js'
 
@@ -147,7 +146,9 @@ export async function getCachedGovernedEncryption({
     return undefined
   }
   return await encryptionCaches.for(storage).memoize<CollectionEncryption>({
-    key: collectionKeyPrefix({ spaceId, collectionId }) + formatEtag(log),
+    key:
+      collectionKeyPrefix({ spaceId, collectionId }) +
+      formatEtag(stampedValidator({ generation: log.generation, stamp: log })),
     fn: async () =>
       deriveGovernedEncryption({
         body: log.body,

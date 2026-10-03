@@ -440,9 +440,10 @@ describe('Export/Import Space API (wire level)', () => {
         archived.backends.some((backend: any) => backend.id === 'default'),
         'expected the backends listing in the archived object'
       )
-      // The archived validator members still travel beside it.
+      // The archived generation still travels beside it; the local counter
+      // does not.
       assert.equal(typeof archived._generation, 'string')
-      assert.equal(typeof archived._version, 'number')
+      assert.equal(archived._local, undefined)
     })
 
     it('is ignored when a write body supplies one', async () => {

@@ -14,8 +14,11 @@
  * `versionId` equals the statement's `didLogVersionId`, under
  * `assertionMethod` alone. Then the `eddsa-jcs-2022` proof is verified, and
  * last the statement's claims are compared with the archived object: its
- * `createdBy`, `createdAt`, `version` (or `metaVersion`) and, for a Resource,
- * its `digest`. A chunked Resource's `digest` covers its chunk files alone,
+ * `createdBy`, `createdAt`, its write stamp (`updatedAt`,
+ * `updatedAtCounter`, `originId`) and, for a Resource, its `/meta` record's
+ * stamp (`meta`) and its `digest`. The archived stamps are read here for
+ * this comparison only; the importing backend re-stamps every record it
+ * writes. A chunked Resource's `digest` covers its chunk files alone,
  * so a substituted parent representation of one still verifies; the check
  * binds `createdBy` to the chunks, not to that parent file.
  *
@@ -48,6 +51,7 @@ import { collectionMetaPath, resourcePath, spaceMetaPath } from './paths.js'
 import {
   CLAIM_MEMBERS,
   chunkedDigest,
+  claimMatches,
   fileDigest,
   serverFieldsOf,
   STORAGE_ATTESTATION_TYPE
@@ -246,10 +250,7 @@ export async function applyImportProvenance({
           collectionId,
           resourceId
         }),
-        claims:
-          sidecar === undefined
-            ? {}
-            : serverFieldsOf({ bytes: sidecar, versionMember: 'version' }),
+        claims: sidecar === undefined ? {} : serverFieldsOf({ bytes: sidecar }),
         digest: () =>
           chunkFiles === undefined
             ? fileDigest({ name: resourceId, bytes: body })
@@ -521,7 +522,12 @@ async function judgeStatement({
 
   // A member the object lacks must be absent from the statement too.
   const mismatched = CLAIM_MEMBERS.filter(
-    member => statement[member] !== claims[member]
+    member =>
+      !claimMatches({
+        member,
+        stated: statement[member],
+        claimed: claims[member]
+      })
   )
   if (mismatched.length > 0) {
     return {
@@ -540,17 +546,13 @@ async function judgeStatement({
 
 /**
  * The members a Metadata statement attests, read off an archived
- * `.space.<id>.json` or `.collection.<id>.json` file, whose embedded
- * `_version` the statement carries as `metaVersion`.
+ * `.space.<id>.json` or `.collection.<id>.json` file, whose stamp members are
+ * stored bare.
  * @param bytes {Buffer}
  * @returns {Claims}
  */
 function metadataClaims(bytes: Buffer): Claims {
-  const { version, ...rest } = serverFieldsOf({
-    bytes,
-    versionMember: '_version'
-  })
-  return { ...rest, ...(version !== undefined && { metaVersion: version }) }
+  return serverFieldsOf({ bytes })
 }
 
 /**

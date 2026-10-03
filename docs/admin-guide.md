@@ -349,9 +349,10 @@ the root of the archive, beside `manifest.yml` and `service.json`:
 
 - `provenance.jsonl` -- one signed statement per exported object: the Space
   Metadata object, each Collection Metadata object, and each Resource. A
-  statement names the object's URL, its `createdBy`, `createdAt`, and `version`
-  (`metaVersion` for a Metadata object), a digest of its content, and the
-  `versionId` of the log entry the key was listed in (`didLogVersionId`).
+  statement names the object's URL, its `createdBy`, `createdAt`, and write
+  stamp (`updatedAt`, `updatedAtCounter`, `originId`), a Resource's `/meta`
+  record stamp (`meta`), a digest of a Resource's content, and the `versionId`
+  of the log entry the key was listed in (`didLogVersionId`).
 - `did.jsonl` -- a copy of the server's history log as it stood at export time,
   so an importer verifies the statements offline, with no request to this
   server.
@@ -363,7 +364,8 @@ exports unsigned.
 
 An export made while the server has no identity carries neither entry, and the
 server logs one `warn` line per export, `Exporting without provenance`, with the
-reason. Importing does not check the entries yet.
+reason. Import Space verifies both entries and removes a `createdBy` no
+statement attests.
 
 ### Rotating the seed
 
@@ -527,3 +529,37 @@ advertises it as `originId` on the core `https://w3id.org/pws` specs entry.
   empty store, then take the Space's data by import or replication.
 - A data wipe mints a fresh id. That is fine, since a wiped store has no writes
   to replicate.
+
+## Write stamps
+
+Every versioned record a store writes carries a write stamp: `updatedAt`,
+`updatedAtCounter`, and the store's `originId`. The store's hybrid logical clock
+mints it. The record's `ETag` is built from it and the record's generation, as
+`"<generation>.<ms>.<counter>.<originId>"`. A Space or Collection Metadata
+object appends a fifth, local segment.
+
+### Configuration surface
+
+| variable                         | role                                                                                                                                                                                                                            |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WAS_REPLICATION_CLOCK_BOUND_MS` | How far ahead of this server's physical clock, in milliseconds, a stamp received from a peer may be dated. Default 60000. A value that is not a positive integer fails the deploy. No request path receives a peer's stamp yet. |
+
+The clock persists a high-water mark of its physical part, at most about once a
+second. The filesystem backend keeps it as `clockHighWater` in the data
+directory's `store.json`, beside `version` and `originId`. The Postgres backend
+keeps it in the `store` row, column `clock_high_water`. A clean shutdown writes
+the mark once more. A failed write of the mark logs one `warn` line and does not
+fail the request. At boot the clock starts just past that mark. A server clock
+set back across a restart therefore mints no stamp more than about a second
+below the last one minted before it, and a write over a stored record always
+takes a stamp above the one it replaces.
+
+### Operator rules
+
+- Run one server process per store. Two processes over one data directory or
+  database share its origin id and could mint the same stamp for two different
+  writes, giving two different representations one `ETag`.
+- A store that holds any Space written before write stamps fails the deploy with
+  `StoreVersionError`, on every boot. There is no migration. Wipe the store, or
+  restore each Space from an export archive into an empty store. An import
+  re-stamps every record with this server's clock and origin id.

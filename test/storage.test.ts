@@ -12,6 +12,7 @@ import YAML from 'yaml'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { fileNameFor } from '@interop/space-archive'
 import { formatEtag } from '../src/lib/etag.js'
+import { compareStamps } from '../src/lib/hlc.js'
 import { PreconditionFailedError } from '../src/errors.js'
 import { importArchive } from './helpers.js'
 
@@ -26,6 +27,45 @@ async function streamToString(stream: Readable): Promise<string> {
     chunks.push(Buffer.from(chunk))
   }
   return Buffer.concat(chunks).toString('utf8')
+}
+
+/**
+ * True when the first write stamp is strictly later than the second.
+ * @param later {{ updatedAt?: string, updatedAtCounter?: number }}
+ * @param earlier {{ updatedAt?: string, updatedAtCounter?: number }}
+ * @returns {boolean}
+ */
+function isLaterStamp(
+  later: { updatedAt?: string; updatedAtCounter?: number },
+  earlier: { updatedAt?: string; updatedAtCounter?: number }
+): boolean {
+  return (
+    isLaterOrEqualStamp(later, earlier) &&
+    !(
+      later.updatedAt === earlier.updatedAt &&
+      later.updatedAtCounter === earlier.updatedAtCounter
+    )
+  )
+}
+
+/**
+ * True when the first write stamp is the same as or later than the second: a
+ * later `updatedAt`, or the same one with a counter at least as high.
+ * @param later {{ updatedAt?: string, updatedAtCounter?: number }}
+ * @param earlier {{ updatedAt?: string, updatedAtCounter?: number }}
+ * @returns {boolean}
+ */
+function isLaterOrEqualStamp(
+  later: { updatedAt?: string; updatedAtCounter?: number },
+  earlier: { updatedAt?: string; updatedAtCounter?: number }
+): boolean {
+  const laterMs = Date.parse(later.updatedAt!)
+  const earlierMs = Date.parse(earlier.updatedAt!)
+  return (
+    laterMs > earlierMs ||
+    (laterMs === earlierMs &&
+      (later.updatedAtCounter ?? 0) >= (earlier.updatedAtCounter ?? 0))
+  )
 }
 
 describe('Storage API', () => {
@@ -386,9 +426,12 @@ describe('Storage API', () => {
           name: 'Credential One',
           tags: { status: 'final' }
         })
-        // Timestamps survive the roundtrip unchanged (sidecar carried verbatim).
+        // `createdAt` survives the roundtrip; the write stamps are re-minted
+        // by the importing backend's clock, so they never fall behind.
         assert.equal(after!.createdAt, before!.createdAt)
-        assert.equal(after!.updatedAt, before!.updatedAt)
+        assert.ok(isLaterOrEqualStamp(after!, before!))
+        assert.ok(after!.meta, 'the imported /meta record carries a stamp')
+        assert.equal(after!.originId, backend.originId)
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }
@@ -477,9 +520,26 @@ describe('Storage API', () => {
           collectionDir: dstCollectionDir,
           resourceId: 'gone'
         })
-        const { feedPosition: srcFeedPosition, ...srcRest } = srcTombstone!
-        const { feedPosition: dstFeedPosition, ...dstRest } = dstTombstone!
+        const {
+          feedPosition: srcFeedPosition,
+          updatedAt: srcUpdatedAt,
+          updatedAtCounter: srcCounter,
+          ...srcRest
+        } = srcTombstone!
+        const {
+          feedPosition: dstFeedPosition,
+          updatedAt: dstUpdatedAt,
+          updatedAtCounter: dstCounter,
+          ...dstRest
+        } = dstTombstone!
         assert.deepEqual(dstRest, srcRest, 'tombstone sidecar carried verbatim')
+        // The write stamp is re-minted by the importing backend's clock.
+        assert.ok(
+          isLaterOrEqualStamp(
+            { updatedAt: dstUpdatedAt, updatedAtCounter: dstCounter },
+            { updatedAt: srcUpdatedAt, updatedAtCounter: srcCounter }
+          )
+        )
         assert.equal(srcFeedPosition, 3)
         assert.equal(dstFeedPosition, 2)
         const dstFiles = (await readdir(dstCollectionDir)).filter(name =>
@@ -639,6 +699,10 @@ describe('Storage API', () => {
       const { backend, tempDir, spaceId, collectionId, collectionDir } =
         await provisionResource()
       try {
+        const live = await backend.readMetaSidecar({
+          collectionDir,
+          resourceId: 'note'
+        })
         await backend.deleteResource({
           spaceId,
           collectionId,
@@ -657,7 +721,7 @@ describe('Storage API', () => {
           'sidecar should remain as the tombstone'
         )
 
-        // The tombstone records `deleted`, a bumped `version` under the kept
+        // The tombstone records `deleted`, a later write stamp under the kept
         // `generation`, and the last-known content-type (the content filename
         // no longer carries it).
         const sidecar = await backend.readMetaSidecar({
@@ -665,12 +729,11 @@ describe('Storage API', () => {
           resourceId: 'note'
         })
         assert.equal(sidecar?.deleted, true)
-        assert.equal(
-          sidecar?.version,
-          2,
-          'version bumped from 1 to 2 on delete'
+        assert.ok(
+          isLaterStamp(sidecar!, live!),
+          'the delete mints a later content stamp'
         )
-        assert.ok(sidecar?.generation, 'the tombstone keeps the generation')
+        assert.equal(sidecar?.generation, live?.generation)
         assert.equal(sidecar?.contentType, 'application/json')
       } finally {
         await rm(tempDir, { recursive: true, force: true })
@@ -709,7 +772,7 @@ describe('Storage API', () => {
       }
     })
 
-    it('continues the monotonic version when a tombstoned id is re-created', async () => {
+    it('mints a later stamp under the kept generation when a tombstoned id is re-created', async () => {
       const { backend, tempDir, spaceId, collectionId, collectionDir } =
         await provisionResource()
       try {
@@ -718,7 +781,11 @@ describe('Storage API', () => {
           collectionId,
           resourceId: 'note'
         })
-        const { version } = await backend.writeResource({
+        const tombstone = await backend.readMetaSidecar({
+          collectionDir,
+          resourceId: 'note'
+        })
+        const revived = await backend.writeResource({
           spaceId,
           collectionId,
           resourceId: 'note',
@@ -728,7 +795,15 @@ describe('Storage API', () => {
             data: { v: 2 }
           }
         })
-        assert.equal(version, 3, 're-create continues 1 -> 2 (tombstone) -> 3')
+        assert.equal(
+          revived.generation,
+          tombstone?.generation,
+          'a re-create keeps the generation'
+        )
+        assert.ok(
+          compareStamps(tombstone!, revived.stamp) < 0,
+          're-create mints a stamp above the tombstone'
+        )
 
         // The revived Resource is readable and no longer a tombstone.
         const result = await backend.getResource({
@@ -756,7 +831,7 @@ describe('Storage API', () => {
       }
     })
 
-    it('is idempotent: re-deleting a tombstone does not churn its version', async () => {
+    it('is idempotent: re-deleting a tombstone does not churn its stamp', async () => {
       const { backend, tempDir, spaceId, collectionId, collectionDir } =
         await provisionResource()
       try {
@@ -778,8 +853,12 @@ describe('Storage API', () => {
           collectionDir,
           resourceId: 'note'
         })
-        assert.equal(second?.version, first?.version, 'version unchanged')
         assert.equal(second?.updatedAt, first?.updatedAt, 'updatedAt unchanged')
+        assert.equal(
+          second?.updatedAtCounter,
+          first?.updatedAtCounter,
+          'stamp counter unchanged'
+        )
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }
@@ -818,7 +897,7 @@ describe('Storage API', () => {
       return { backend, tempDir, spaceId, collectionId }
     }
 
-    it('returns JSON documents with data + version, in write order, plus a checkpoint', async () => {
+    it('returns JSON documents with data + write stamp, in write order, plus a checkpoint', async () => {
       const { backend, tempDir, spaceId, collectionId } =
         await provisionCollection()
       try {
@@ -850,7 +929,8 @@ describe('Storage API', () => {
         )
         for (const doc of documents) {
           assert.equal(doc.deleted, false)
-          assert.equal(doc.version, 1)
+          assert.equal(typeof doc.updatedAtCounter, 'number')
+          assert.equal(doc.originId, backend.originId)
           assert.deepEqual(doc.data, { id: doc.resourceId })
         }
         assert.equal(checkpoint, 3, "the last document's feed position")
@@ -951,7 +1031,10 @@ describe('Storage API', () => {
         const tombstone = byId.get('gone')!
         assert.equal(tombstone.deleted, true)
         assert.equal(tombstone.data, undefined, 'tombstone carries no data')
-        assert.equal(tombstone.version, 2, 'delete bumped the version')
+        assert.ok(
+          isLaterStamp(tombstone, byId.get('live')!),
+          'the delete minted a later content stamp'
+        )
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }
@@ -996,7 +1079,7 @@ describe('Storage API', () => {
       }
     })
 
-    it('replicates a metadata-only edit: bumped metaVersion + custom, unchanged version/data', async () => {
+    it('replicates a metadata-only edit: new meta stamp + custom, unchanged content stamp/data', async () => {
       const { backend, tempDir, spaceId, collectionId } =
         await provisionCollection()
       try {
@@ -1010,16 +1093,21 @@ describe('Storage API', () => {
             data: { v: 1 }
           }
         })
-        // A metadata-only edit: content `version` stays 1, `metaVersion` starts
-        // at 1, and the edit re-surfaces the resource in the feed carrying
+        // A metadata-only edit: the content stamp stays, the `meta` stamp is
+        // new, and the edit re-surfaces the resource in the feed carrying
         // `custom` with `data` unchanged.
+        const contentBefore = await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId: 'doc'
+        })
         const written = await backend.writeResourceMetadata({
           spaceId,
           collectionId,
           resourceId: 'doc',
           custom: { name: 'labeled', tags: { s: 'draft' } }
         })
-        assert.equal(written!.version, 1, 'metaVersion starts at 1')
+        assert.ok(written, 'the metadata write returns a validator')
 
         const meta = await backend.getResourceMetadata({
           spaceId,
@@ -1027,11 +1115,16 @@ describe('Storage API', () => {
           resourceId: 'doc'
         })
         assert.equal(
-          meta!.version,
-          1,
-          'content version preserved by a meta write'
+          meta!.updatedAt,
+          contentBefore!.updatedAt,
+          'content stamp preserved by a meta write'
         )
-        assert.equal(meta!.metaVersion, 1)
+        assert.equal(meta!.updatedAtCounter, contentBefore!.updatedAtCounter)
+        assert.equal(meta!.meta?.generation, written!.generation)
+        assert.equal(
+          meta!.meta?.updatedAtCounter,
+          written!.stamp.updatedAtCounter
+        )
 
         const { documents } = await backend.changesSince({
           spaceId,
@@ -1039,8 +1132,9 @@ describe('Storage API', () => {
           limit: 10
         })
         const doc = documents.find(entry => entry.resourceId === 'doc')!
-        assert.equal(doc.version, 1)
-        assert.equal(doc.metaVersion, 1)
+        assert.equal(doc.updatedAt, contentBefore!.updatedAt)
+        assert.equal(doc.updatedAtCounter, contentBefore!.updatedAtCounter)
+        assert.equal(doc.meta?.generation, written!.generation)
         assert.deepEqual(doc.data, { v: 1 })
         assert.deepEqual(doc.custom, { name: 'labeled', tags: { s: 'draft' } })
       } finally {
@@ -1048,7 +1142,7 @@ describe('Storage API', () => {
       }
     })
 
-    it('a content write preserves an existing metaVersion', async () => {
+    it('a content write preserves an existing meta stamp', async () => {
       const { backend, tempDir, spaceId, collectionId } =
         await provisionCollection()
       try {
@@ -1068,7 +1162,13 @@ describe('Storage API', () => {
           resourceId: 'doc',
           custom: { name: 'first' }
         })
-        // A second content write bumps `version` but must not disturb metaVersion.
+        const metaBefore = await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId: 'doc'
+        })
+        // A second content write moves the content stamp but must not disturb
+        // the `meta` stamp.
         await backend.writeResource({
           spaceId,
           collectionId,
@@ -1084,18 +1184,18 @@ describe('Storage API', () => {
           collectionId,
           resourceId: 'doc'
         })
-        assert.equal(meta!.version, 2, 'content version bumped')
-        assert.equal(
-          meta!.metaVersion,
-          1,
-          'metaVersion preserved by a content write'
+        assert.ok(isLaterStamp(meta!, metaBefore!), 'content stamp advanced')
+        assert.deepEqual(
+          meta!.meta,
+          metaBefore!.meta,
+          'meta stamp preserved by a content write'
         )
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }
     })
 
-    it('honors an If-Match / If-None-Match precondition on metaVersion', async () => {
+    it('honors an If-Match / If-None-Match precondition on the meta validator', async () => {
       const { backend, tempDir, spaceId, collectionId } =
         await provisionCollection()
       try {
@@ -1117,7 +1217,7 @@ describe('Storage API', () => {
           custom: { name: 'first' },
           ifNoneMatch: '*'
         })
-        assert.equal(first!.version, 1, 'metaVersion starts at 1')
+        assert.ok(first, 'the first metadata write returns a validator')
         // A second If-None-Match: * now fails (metadata already exists).
         await assert.rejects(
           backend.writeResourceMetadata({

@@ -782,7 +782,7 @@ describe('Encryption descriptor API', () => {
     })
   })
 
-  describe('writer-attribution (Writer-Id header + /meta writerId)', () => {
+  describe('writer-attribution (Writer-Id header)', () => {
     const collectionId = 'writer-id-stamp'
     const resUrl = (rid: string) => `/space/${spaceId}/${collectionId}/${rid}`
     const metaOf = async (rid: string) =>
@@ -834,27 +834,28 @@ describe('Encryption descriptor API', () => {
       assert.equal((await metaOf('r1')).writerId, undefined)
     })
 
-    it('PUT /meta with `writerId` sets it; omitting it CLEARS it (unlike `epoch`)', async () => {
+    it('PUT /meta leaves the writerId untouched, and ignores a `writerId` member in its body', async () => {
       await alice.was.request({
         path: resUrl('r2'),
         method: 'PUT',
-        json: { id: 'r2' }
+        json: { id: 'r2' },
+        headers: { 'writer-id': 'writer-2' }
       })
-      // Supplying `writerId` sets the label.
+      assert.equal((await metaOf('r2')).writerId, 'writer-2')
+      // A body `writerId` is ignored: neither set, validated, nor stored.
       await alice.was.request({
         path: `/space/${spaceId}/${collectionId}/r2/meta`,
         method: 'PUT',
-        json: { custom: {}, writerId: 'writer-2' }
+        json: { custom: {}, writerId: 'writer-other' }
       })
       assert.equal((await metaOf('r2')).writerId, 'writer-2')
-      // Omitting `writerId` CLEARS the stored value -- a metadata write is
-      // itself a revision, unlike `epoch`'s omit-to-preserve.
+      // A metadata write without one leaves the label as well.
       await alice.was.request({
         path: `/space/${spaceId}/${collectionId}/r2/meta`,
         method: 'PUT',
         json: { custom: { name: 'x' } }
       })
-      assert.equal((await metaOf('r2')).writerId, undefined)
+      assert.equal((await metaOf('r2')).writerId, 'writer-2')
     })
 
     it('DELETE with a Writer-Id header labels the tombstone; the label rides the changes feed', async () => {
@@ -899,31 +900,21 @@ describe('Encryption descriptor API', () => {
       assert.equal(err.response.status, 400)
     })
 
-    it('rejects a non-string / empty `writerId` in a /meta body (400)', async () => {
+    it('does not validate a non-string / empty `writerId` in a /meta body', async () => {
       await alice.was.request({
         path: resUrl('r3'),
         method: 'PUT',
         json: { id: 'r3' }
       })
-      const err = await rejection(
-        alice.was.request({
+      for (const writerId of [123, '']) {
+        const response = await alice.was.request({
           path: `/space/${spaceId}/${collectionId}/r3/meta`,
           method: 'PUT',
-          json: { custom: {}, writerId: 123 }
+          json: { custom: {}, writerId }
         })
-      )
-      assert.equal(err.response.status, 400)
-      assert.equal(err.data.errors?.[0]?.pointer, '/writerId')
-
-      const emptyErr = await rejection(
-        alice.was.request({
-          path: `/space/${spaceId}/${collectionId}/r3/meta`,
-          method: 'PUT',
-          json: { custom: {}, writerId: '' }
-        })
-      )
-      assert.equal(emptyErr.response.status, 400)
-      assert.equal(emptyErr.data.errors?.[0]?.pointer, '/writerId')
+        assert.equal(response.status, 204)
+      }
+      assert.equal((await metaOf('r3')).writerId, undefined)
     })
   })
 
