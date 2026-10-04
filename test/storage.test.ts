@@ -1377,8 +1377,7 @@ describe('Storage API', () => {
         )
         const counter = JSON.parse(await readFile(counterPath, 'utf8'))
         assert.equal(counter.position, 3)
-        assert.equal(counter.collectionMetadataPosition, 1)
-        assert.equal(counter.logPosition, 2)
+        assert.deepEqual(counter.records, { 'collection-metadata': 1, log: 2 })
         assert.equal(typeof counter.generation, 'string')
         // Neither stored record carries a position of its own.
         for (const fileName of [
@@ -1437,8 +1436,8 @@ describe('Storage API', () => {
         )
         for (const body of bodies) {
           assert.ok(!body.includes('feedPosition'))
-          assert.ok(!body.includes('collectionMetadataPosition'))
-          assert.ok(!body.includes('logPosition'))
+          assert.ok(!body.includes('FeedPosition'))
+          assert.ok(!body.includes('"records"'))
         }
 
         // Import into a fresh Space: the Collection, its log and its
@@ -1470,8 +1469,7 @@ describe('Storage API', () => {
             'utf8'
           )
         )
-        assert.equal(counter.collectionMetadataPosition, 1)
-        assert.equal(counter.logPosition, 2)
+        assert.deepEqual(counter.records, { 'collection-metadata': 1, log: 2 })
         assert.equal(counter.position, 3)
       } finally {
         await rm(tempDir, { recursive: true, force: true })

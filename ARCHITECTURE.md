@@ -304,25 +304,32 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   millisecond. The filesystem backend keeps the counter in
   `.feed.<collectionId>.json` in the Collection dir and stamps the position on
   the sidecar as `feedPosition`, under a `feed:` key nested inside the
-  per-Resource lock. The counter file also records the latest position of each
-  record that has no sidecar: the Collection Metadata object, the log, the
-  Collection's own policy (`collectionPolicyPosition`) and each Resource policy
-  (`resourcePolicyPositions`, keyed by Resource id). Postgres keeps a policy's
+  per-Resource lock. The counter file is `{ generation, position, records }`.
+  Its `records` map holds the latest position of the Collection Metadata object
+  (key `collection-metadata`) and of the log (key `log`), each absent until that
+  record took one. A Collection's own policy and each Resource policy carry
+  their position in the policy file, as a reserved `_feedPosition` member
+  written last, beside `_generation`, in the same `feed:` section after the
+  counter advances. A Space policy takes none. The counter file's size does not
+  depend on how many policies the Collection holds. Postgres keeps a policy's
   position in `policies.feed_position`. `changesSince` reads the counter under
-  that key and admits only positions at or below it. The Postgres backend
-  increments `collections.feed_position` with `UPDATE ... RETURNING`, whose row
-  lock is held to commit, so positions are commit-ordered, and stamps
-  `resources.feed_position` in the same transaction. A position is one server's
-  fact about its own feed: export strips it and import assigns fresh ones. An
-  imported Resource with no archived metadata gets fresh metadata, so it takes a
-  position too. The counter has a generation, minted with the first position it
-  hands out and kept for the Collection's life (`generation` in the counter
-  file, `collections.feed_generation` in Postgres). It goes with the Collection,
-  so a Collection re-created under the same id, by hand or by an import,
-  restarts at 1 under a fresh one; an import keeps the archived Collection
-  Metadata generation, so that one cannot tell the two lives apart. On the wire
-  the checkpoint is an opaque string, which a client compares by equality only
-  and echoes back verbatim. This server encodes it as
+  that key and admits only positions at or below it. A caught-up poll reads the
+  counter file alone. Any other poll lists the Collection dir and reads every
+  policy file in it outside the key, admitting the positions past the reader's.
+  A policy file that does not parse is logged at `warn` and left out. The
+  Postgres backend increments `collections.feed_position` with
+  `UPDATE ... RETURNING`, whose row lock is held to commit, so positions are
+  commit-ordered, and stamps `resources.feed_position` in the same transaction.
+  A position is one server's fact about its own feed: export strips it and
+  import assigns fresh ones. An imported Resource with no archived metadata gets
+  fresh metadata, so it takes a position too. The counter has a generation,
+  minted with the first position it hands out and kept for the Collection's life
+  (`generation` in the counter file, `collections.feed_generation` in Postgres).
+  It goes with the Collection, so a Collection re-created under the same id, by
+  hand or by an import, restarts at 1 under a fresh one; an import keeps the
+  archived Collection Metadata generation, so that one cannot tell the two lives
+  apart. On the wire the checkpoint is an opaque string, which a client compares
+  by equality only and echoes back verbatim. This server encodes it as
   `base64urlnopad(JSON.stringify({ feed, generation, position }))`, where `feed`
   is the Collection's absolute trailing-slash URL and `generation` the feed
   counter's, so a checkpoint is scoped to the server, the Collection, and the
@@ -442,14 +449,18 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `ETag`, and for the changes feed. A plain Get Policy answers it with the same
   404 as no policy. A `PUT` over a tombstone is a create: 201, a new generation,
   and a stamp above the tombstone's. The filesystem backend stores a policy file
-  as the served body with `_generation` embedded. Postgres keeps the body in
-  `policies.policy` (NULL on a tombstone) and the stamp, generation and
-  `deleted` mark in columns. Export carries live policies only, as stored.
-  Import keeps the archived generation, re-stamps with the importing store's
-  clock, and skips a level where the destination holds any policy record, a
-  tombstone included, so an import does not undo a delete. An archived tombstone
-  refuses the import as `invalid-import` (400). Delete Collection and Delete
-  Space still remove their policies outright. Delete Resource leaves the
+  as the served body with `_generation` embedded, and for a Collection or
+  Resource policy the server-local `_feedPosition` as well. A `PUT` body's
+  `_feedPosition` is not stored, and no read of a policy carries it, `getPolicy`
+  and the policy cache included. Postgres keeps the body in `policies.policy`
+  (NULL on a tombstone) and the stamp, generation and `deleted` mark in columns.
+  Export carries live policies only, as stored, with `_generation` but without
+  `_feedPosition`. Import drops an archived `_feedPosition` and assigns a fresh
+  position. It keeps the archived generation, re-stamps with the importing
+  store's clock, and skips a level where the destination holds any policy
+  record, a tombstone included, so an import does not undo a delete. An archived
+  tombstone refuses the import as `invalid-import` (400). Delete Collection and
+  Delete Space still remove their policies outright. Delete Resource leaves the
   Resource's policy in place.
 - **`src/lib/revisions.ts`** -- the Collection `revisions` descriptor:
   `resolution` (a closed set, `last-writer-wins` only, which is also the
@@ -767,22 +778,27 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   tombstone. Its step refuses a data dir that holds any policy file, on the same
   terms. Postgres schema migration 12 refuses a `policies` table that holds any
   row the same way, then adds the stamp, generation, `deleted` and
-  `feed_position` columns. The version is private to the backend: it is not
-  exported, not stored in any Space, and not served. The Postgres backend's
-  `applyMigrations` refuses the same way, with the same `StoreVersionError`,
-  when its `schema_migrations` table records a version newer than `MIGRATIONS`
-  knows. `store.json` also carries the store's origin id as its `originId`
-  member (see the Glossary's Origin id). `open()` settles it on every boot,
-  under the same lock, and it is not a migration step. A store with no id takes
-  `WAS_ORIGIN_ID` when set, else a minted one, and writes it before any step
-  runs. A stored id is kept, and a set `WAS_ORIGIN_ID` that differs from it
-  refuses startup with `StoreOriginIdError`, naming both. `store.json` also
-  carries `clockHighWater`, the high-water mark of the store's hybrid logical
-  clock in epoch milliseconds (see `lib/hlc.ts`). The clock raises it at
-  runtime, and a lower value never replaces a stored higher one. It is not a
-  migration step either. Every rewrite of `store.json` keeps the id, the
-  high-water mark, and any member this code does not know. The Postgres twin is
-  the single row of the `store` table (column `origin_id`, beside
+  `feed_position` columns. Version 4 is the feed-position layout, in which a
+  policy file carries its own feed position and the feed counter file holds a
+  `records` map. Its step refuses a data dir that holds any feed counter file or
+  any Collection- or Resource-level policy file, with `StoreVersionError`, on
+  every boot and with no conversion step. A Space policy alone passes. An empty
+  data dir is stamped at version 4. Postgres is unchanged. The version is
+  private to the backend: it is not exported, not stored in any Space, and not
+  served. The Postgres backend's `applyMigrations` refuses the same way, with
+  the same `StoreVersionError`, when its `schema_migrations` table records a
+  version newer than `MIGRATIONS` knows. `store.json` also carries the store's
+  origin id as its `originId` member (see the Glossary's Origin id). `open()`
+  settles it on every boot, under the same lock, and it is not a migration step.
+  A store with no id takes `WAS_ORIGIN_ID` when set, else a minted one, and
+  writes it before any step runs. A stored id is kept, and a set `WAS_ORIGIN_ID`
+  that differs from it refuses startup with `StoreOriginIdError`, naming both.
+  `store.json` also carries `clockHighWater`, the high-water mark of the store's
+  hybrid logical clock in epoch milliseconds (see `lib/hlc.ts`). The clock
+  raises it at runtime, and a lower value never replaces a stored higher one. It
+  is not a migration step either. Every rewrite of `store.json` keeps the id,
+  the high-water mark, and any member this code does not know. The Postgres twin
+  is the single row of the `store` table (column `origin_id`, beside
   `clock_high_water`), settled by `applyMigrations` in the same transaction,
   under its advisory lock. Each backend exposes the id as
   `StorageBackend.originId`, and a data-plane backend adapter carries the
@@ -1019,16 +1035,15 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   per-Collection sequence number its latest write took. A Resource keeps it as
   `feedPosition` on the filesystem sidecar and `feed_position` in Postgres. The
   Collection Metadata object and the governing history log keep theirs in the
-  filesystem feed counter file (`collectionMetadataPosition`, `logPosition`) and
-  in the Postgres `collections` columns `metadata_feed_position` and
-  `log_feed_position`. A Collection or Resource policy keeps its position in the
-  counter file too (`collectionPolicyPosition`, `resourcePolicyPositions`), and
-  in the Postgres `policies.feed_position` column. Local to one server and never
-  replicated. The wire **checkpoint** wraps one in an opaque string scoped to
-  the issuing Collection URL and to the feed counter's generation, which a
-  re-create of the Collection replaces (see `lib/changesCheckpoint.ts`). Avoid:
-  keyset, cursor (the listings' pagination token), `updatedAt` as an ordering
-  key.
+  filesystem feed counter file's `records` map (keys `collection-metadata` and
+  `log`) and in the Postgres `collections` columns `metadata_feed_position` and
+  `log_feed_position`. A Collection or Resource policy keeps its position in its
+  own policy file as `_feedPosition`, and in the Postgres
+  `policies.feed_position` column. Local to one server and never replicated. The
+  wire **checkpoint** wraps one in an opaque string scoped to the issuing
+  Collection URL and to the feed counter's generation, which a re-create of the
+  Collection replaces (see `lib/changesCheckpoint.ts`). Avoid: keyset, cursor
+  (the listings' pagination token), `updatedAt` as an ordering key.
 - **Write stamp** -- the identity of a record's last write: `updatedAt`,
   `updatedAtCounter`, and `originId`, minted by the store's hybrid logical clock
   inside the write's critical section (`lib/hlc.ts`). Every versioned record

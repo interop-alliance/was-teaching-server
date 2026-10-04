@@ -135,7 +135,8 @@ describe('Access-control policy validators and tombstones (HTTP)', () => {
             updatedAt: '2001-01-01T00:00:00.000Z',
             updatedAtCounter: 7,
             originId: 'forged',
-            deleted: true
+            deleted: true,
+            _feedPosition: 999
           }
         })
         assert.equal(created.status, 201)
@@ -145,7 +146,8 @@ describe('Access-control policy validators and tombstones (HTTP)', () => {
           created.headers.get('location'),
           new URL(level.path(), serverUrl).toString()
         )
-        // The body's stamp members and `deleted` are ignored.
+        // The body's stamp members, `deleted` and `_feedPosition` are
+        // ignored, and no read serves the stored `_feedPosition`.
         assert.deepEqual(created.data, { type: 'PublicCanRead', ...stamp })
 
         const read = await aliceRequest({ url: level.path() })

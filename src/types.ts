@@ -1532,7 +1532,7 @@ export interface StorageBackend {
   }): Promise<StoredPolicy | undefined>
   /**
    * Creates or replaces the policy at a level. The body's stamp members,
-   * `deleted` and `_generation` are not stored from it. A tombstone counts
+   * `deleted`, `_generation` and `_feedPosition` are not stored from it. A tombstone counts
    * as absent: a write over it is a create, under a new generation and a
    * stamp above the tombstone's. `ifMatch` / `ifNoneMatch` are evaluated
    * atomically with the write, against the live policy (412 otherwise). A

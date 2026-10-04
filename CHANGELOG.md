@@ -30,6 +30,18 @@
   migration 12 refuses a `policies` table holding any row, then adds the stamp,
   `generation`, `deleted` and `feed_position` columns. Wipe the store, or
   restore each Space from an export archive.
+- A Collection or Resource policy file on the filesystem backend carries its own
+  `changes` feed position as a reserved `_feedPosition` member. A `PUT` body's
+  `_feedPosition` is not stored, no policy read serves it, export strips it, and
+  import assigns a fresh position.
+- The filesystem feed counter file is `{ generation, position, records }`, with
+  the Collection Metadata object's and the log's positions under `records`. Its
+  size no longer depends on how many policies the Collection holds. A caught-up
+  `changes` poll reads the counter file alone.
+- **BREAKING**: the filesystem layout moves to version 4, which refuses a data
+  directory holding any feed counter file or any Collection- or Resource-level
+  policy file, with `StoreVersionError` on every boot. A Space policy alone
+  passes. Wipe the store, or restore each Space from an export archive.
 
 ## 0.41.1 - 2026-10-04
 

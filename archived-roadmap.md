@@ -5239,3 +5239,63 @@ Decided 2026-10-04: an export archive carries live policies only, each with its
 stamp members and `_generation`. An import skips a level where the destination
 holds a policy or a tombstone. A store holding policies written before stamps is
 refused at startup (filesystem layout version 3, Postgres migration 12).
+
+### WAS-200: [L] Feed counter file grows with every Resource policy
+
+- status: done
+- done: 2026-10-04
+- priority: low
+- labels: performance, filesystem-backend, changes-feed
+- discovered-from: simplify pass over the stamped-policies change (2026-10-04)
+- acceptance:
+  - [x] A feed-visible write that is not a policy write (a Resource write, a
+        Resource `/meta` write, a soft delete, a Collection Metadata write, a
+        governed-log write) reads and rewrites a counter file whose size does
+        not depend on how many Resource policies the Collection holds
+  - [x] A `changesSince` poll that is caught up reads no per-policy state beyond
+        one bounded file
+  - [x] The feed still carries one `policy` document per policy record at the
+        position of its latest write, tombstones included, and a policy file
+        still matches its recorded position under the `feed:` key
+  - [x] The item decides whether the per-record members
+        (`collectionMetadataPosition`, `logPosition`,
+        `collectionPolicyPosition`) become one map keyed by record, and
+        `FeedRecord` one flat tagged union. If the layout changes, it is a new
+        store version with a refusal step and no conversion step
+  - [x] Tests in `test/`: a Collection holding many Resource policies takes a
+        Resource write without rewriting their positions (observable through the
+        bytes written to the counter file), and the storage contract's policy
+        feed cases pass unchanged
+  - [x] ARCHITECTURE.md (`lib/changesCheckpoint.ts`, the Glossary's Feed
+        position) names where a policy's position is kept
+
+Context: the filesystem backend keeps each Collection's feed counter in
+`.feed.<collectionId>.json`. Every feed-visible write reads the file, takes the
+next position, and rewrites it whole (`#takeFeedPosition`). The file also
+records the latest position of each record that has no sidecar to carry it.
+Since policies became versioned records, that includes
+`resourcePolicyPositions`, a map with one entry per Resource policy ever
+written. A policy delete leaves a tombstone, which keeps its entry, so the map
+only grows. An ordinary Resource `PUT` therefore re-serializes the whole map,
+and so does each `changesSince` poll that parses the file. The cost per write is
+proportional to the number of Resource policies in the Collection, and an import
+of n Resource policies writes O(n^2) bytes. A Collection with few per-Resource
+policies does not notice.
+
+One option keeps the Resource policy positions in their own per-Collection file
+that only a policy write touches, still under the `feed:` key. That leaves the
+existing counter members alone. Another stores the position in the policy file
+itself, as a Resource sidecar stores `feedPosition`. The policy file is what an
+export archives as stored, so export would then have to strip the member.
+
+The counter's shape is a second, smaller cost. Each record kind has its own
+member and its own branch in `advancedFeedCounter`, and `FeedRecord` mixes
+string literals with `{ policy: string | undefined }`, where `undefined` means
+the Collection's own policy. The Postgres backend is unaffected: a policy's
+position is the `policies.feed_position` column.
+
+Decided 2026-10-04: a Collection or Resource policy keeps its feed position in
+its own policy file, as `_feedPosition`. The counter file keeps the Collection
+Metadata object's and the log's positions in one `records` map, and `FeedRecord`
+is a flat tagged union. The layout is filesystem store version 4, a refusal step
+with no conversion.

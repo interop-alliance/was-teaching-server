@@ -182,7 +182,7 @@ describe('FileSystemBackend Collection tombstones', () => {
       )
     )
     assert.equal(counter.position, 1)
-    assert.equal(counter.collectionMetadataPosition, 1)
+    assert.deepEqual(counter.records, { 'collection-metadata': 1 })
   }
 
   it('boot finishes a torn cascade', async () => {
@@ -260,7 +260,7 @@ describe('FileSystemBackend Collection tombstones', () => {
       JSON.stringify({
         generation: 'zCrashedCreate',
         position: 1,
-        collectionMetadataPosition: 1
+        records: { 'collection-metadata': 1 }
       })
     )
     await backend.writeCollection({
@@ -271,7 +271,7 @@ describe('FileSystemBackend Collection tombstones', () => {
     })
     const counter = JSON.parse(await readFile(counterPath, 'utf8'))
     assert.equal(counter.position, 1)
-    assert.equal(counter.collectionMetadataPosition, 1)
+    assert.deepEqual(counter.records, { 'collection-metadata': 1 })
     assert.notEqual(counter.generation, 'zCrashedCreate')
   })
 

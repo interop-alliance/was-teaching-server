@@ -28,6 +28,7 @@ import type { Dirent } from 'node:fs'
 import type { FastifyBaseLogger } from 'fastify'
 import {
   COLLECTION_POLICY_FILE_NAME,
+  JSON_FILE_SUFFIX,
   SPACE_POLICY_FILE_NAME,
   parseResourcePolicyFileName
 } from '@interop/space-archive'
@@ -74,7 +75,17 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
   // step: a store holding any policy file is refused, every boot, until it
   // is wiped or restored from an archive (whose policies an import
   // re-stamps). A store with no policy passes and is stamped at this version.
-  refuseUnstampedPolicies
+  refuseUnstampedPolicies,
+  // v4: a Collection's changes-feed counter holds the positions of its
+  // Collection-level records in one `records` map, and a Collection or
+  // Resource policy carries its own position in its policy file, so the
+  // counter's size does not depend on how many policies the Collection
+  // holds. A counter file or a policy file written at an earlier layout
+  // places those positions elsewhere, and there is no conversion step: a
+  // store holding either is refused, every boot, until it is wiped or
+  // restored from an archive (an import assigns fresh positions). A store
+  // with neither passes and is stamped at this version.
+  refuseFeedCountersWithPolicyPositions
 ]
 
 /**
@@ -131,6 +142,35 @@ async function refuseUnstampedSpaces({
 }
 
 /**
+ * Builds the file name of a Collection's changes-feed counter,
+ * `.feed.<collectionId>.json`, a dot-file in the Collection dir holding the
+ * counter's generation, the last feed position handed out, and the latest
+ * positions of the Collection Metadata object and the governing history log
+ * (see `FeedCounter`). A policy keeps its position in its own file, so the
+ * counter's size does not depend on how many policies the Collection holds.
+ * Local to this backend: it is not an archive entry, and export leaves it
+ * out.
+ * @param collectionId {string}
+ * @returns {string}
+ */
+export function feedCounterFileName(collectionId: string): string {
+  return `.feed.${collectionId}${JSON_FILE_SUFFIX}`
+}
+
+/**
+ * Whether a Collection dir entry is a policy file: the Collection's own
+ * (`.collection.policy.json`) or a Resource's (`.r.<resourceId>.policy.json`).
+ * @param fileName {string}
+ * @returns {boolean}
+ */
+export function isPolicyFileName(fileName: string): boolean {
+  return (
+    fileName === COLLECTION_POLICY_FILE_NAME ||
+    parseResourcePolicyFileName(fileName) !== undefined
+  )
+}
+
+/**
  * The layout step that refuses a store holding a policy file written before
  * policies carried write stamps: a Space's `.space.policy.json`, or a
  * Collection's `.collection.policy.json` or `.r.<resourceId>.policy.json`.
@@ -159,10 +199,7 @@ async function refuseUnstampedPolicies({
           path.join(spaceDir, entry.name)
         )
         count += collectionEntries.filter(
-          child =>
-            child.isFile() &&
-            (child.name === COLLECTION_POLICY_FILE_NAME ||
-              parseResourcePolicyFileName(child.name) !== undefined)
+          child => child.isFile() && isPolicyFileName(child.name)
         ).length
       }
     }
@@ -174,6 +211,60 @@ async function refuseUnstampedPolicies({
         'before policies carried write stamps, and there is no stamping ' +
         'migration. Wipe the data directory, or restore each Space from an ' +
         'export archive into an empty store.'
+    })
+  }
+}
+
+/**
+ * The layout step that refuses a store holding a changes-feed counter file
+ * (`.feed.<collectionId>.json`) or a Collection- or Resource-level policy
+ * file (`.collection.policy.json`, `.r.<resourceId>.policy.json`) in any
+ * Collection dir. A Space policy takes no feed position, so it passes.
+ * Staging temp files left by a killed process are not Spaces.
+ * @param options {object}
+ * @param options.dataDir {string}
+ * @returns {Promise<void>}
+ */
+async function refuseFeedCountersWithPolicyPositions({
+  dataDir
+}: {
+  dataDir: string
+}): Promise<void> {
+  const spacesDir = path.join(dataDir, 'spaces')
+  let counters = 0
+  let policies = 0
+  for (const space of await readDirEntries(spacesDir)) {
+    if (!space.isDirectory() || space.name.startsWith(TEMP_FILE_PREFIX)) {
+      continue
+    }
+    const spaceDir = path.join(spacesDir, space.name)
+    for (const collection of await readDirEntries(spaceDir)) {
+      if (!collection.isDirectory()) {
+        continue
+      }
+      const counterFileName = feedCounterFileName(collection.name)
+      for (const child of await readDirEntries(
+        path.join(spaceDir, collection.name)
+      )) {
+        if (!child.isFile()) {
+          continue
+        }
+        if (child.name === counterFileName) {
+          counters++
+        } else if (isPolicyFileName(child.name)) {
+          policies++
+        }
+      }
+    }
+  }
+  if (counters > 0 || policies > 0) {
+    throw new StoreVersionError({
+      detail:
+        `${spacesDir} holds ${counters} changes-feed counter file(s) and ` +
+        `${policies} Collection or Resource policy file(s) written before ` +
+        'policies carried their own feed position, and there is no ' +
+        'conversion migration. Wipe the data directory, or restore each ' +
+        'Space from an export archive into an empty store.'
     })
   }
 }

@@ -311,10 +311,10 @@ describe('Filesystem store version', () => {
     assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
   })
 
-  it('stamps an empty store at the current version, three, and boots', async () => {
-    assert.equal(STORE_MIGRATIONS.length, 3)
+  it('stamps an empty store at the current version, four, and boots', async () => {
+    assert.equal(STORE_MIGRATIONS.length, 4)
     const backend = await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 3)
+    assert.equal(await storedVersion(dataDir), 4)
     assert.match(backend.originId, ORIGIN_ID_PATTERN)
   })
 
@@ -349,13 +349,72 @@ describe('Filesystem store version', () => {
     }
   })
 
-  it('stamps a layout-2 store holding Spaces but no policy at layout 3', async () => {
+  it('stamps a layout-2 store holding Spaces but no policy at the current layout', async () => {
     await stamp(dataDir, 2)
     await mkdir(path.join(dataDir, 'spaces', 'some-space', 'col'), {
       recursive: true
     })
     await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 3)
+    assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
+  })
+
+  it('refuses a layout-3 store that holds a feed counter file, on every boot', async () => {
+    await stamp(dataDir, 3)
+    const collectionDir = path.join(dataDir, 'spaces', 'some-space', 'col')
+    await mkdir(collectionDir, { recursive: true })
+    await writeFile(
+      path.join(collectionDir, '.feed.col.json'),
+      '{"generation":"z1","position":1,"collectionMetadataPosition":1}'
+    )
+    for (let boot = 0; boot < 2; boot++) {
+      await assert.rejects(
+        FileSystemBackend.open({ dataDir }),
+        (err: Error) =>
+          err instanceof StoreVersionError &&
+          err.message.includes('1 changes-feed counter file(s)')
+      )
+      assert.equal(await storedVersion(dataDir), 3)
+    }
+  })
+
+  it.each(['.collection.policy.json', '.r.doc.policy.json'])(
+    'refuses a layout-3 store that holds a policy file in a Collection (%s)',
+    async fileName => {
+      await stamp(dataDir, 3)
+      const collectionDir = path.join(dataDir, 'spaces', 'some-space', 'col')
+      await mkdir(collectionDir, { recursive: true })
+      await writeFile(
+        path.join(collectionDir, fileName),
+        '{"type":"PublicCanRead","_generation":"z1"}'
+      )
+      await assert.rejects(
+        FileSystemBackend.open({ dataDir }),
+        (err: Error) =>
+          err instanceof StoreVersionError &&
+          err.message.includes('1 Collection or Resource policy file(s)')
+      )
+      assert.equal(await storedVersion(dataDir), 3)
+    }
+  )
+
+  it('stamps a layout-3 store holding Collections and a Space policy at layout 4', async () => {
+    await stamp(dataDir, 3)
+    const spaceDir = path.join(dataDir, 'spaces', 'some-space')
+    await mkdir(path.join(spaceDir, 'col'), { recursive: true })
+    // A Space policy takes no feed position, so it passes.
+    await writeFile(
+      path.join(spaceDir, '.space.policy.json'),
+      '{"type":"PublicCanRead","_generation":"z1"}'
+    )
+    await FileSystemBackend.open({ dataDir })
+    assert.equal(await storedVersion(dataDir), 4)
+  })
+
+  it('stamps an empty layout-3 store at layout 4', async () => {
+    await stamp(dataDir, 3)
+    await mkdir(path.join(dataDir, 'spaces'))
+    await FileSystemBackend.open({ dataDir })
+    assert.equal(await storedVersion(dataDir), 4)
   })
 
   it('refuses a store.json with no integer version', async () => {

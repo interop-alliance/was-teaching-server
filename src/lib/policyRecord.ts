@@ -12,9 +12,13 @@
  * Both backends build and read the stored record through this module. The
  * filesystem backend stores a policy file as the served body with the
  * generation embedded as the reserved `_generation` member, the convention of
- * the Metadata files. The Postgres backend keeps the body in the `policy`
- * jsonb and the stamp, generation and `deleted` mark in their own columns.
- * An export archive carries a live policy's file as stored, and no tombstone.
+ * the Metadata files. A Collection's own policy and a Resource policy also
+ * embed their changes-feed position as the reserved `_feedPosition` member,
+ * written last. A Space policy takes no feed position and carries none. The
+ * Postgres backend keeps the body in the `policy` jsonb and the stamp,
+ * generation, `deleted` mark and feed position in their own columns. An
+ * export archive carries a live policy's file without its `_feedPosition`,
+ * and no tombstone.
  */
 import { isWriteStamp } from '@interop/storage-core'
 import type {
@@ -40,8 +44,8 @@ import { InvalidImportError } from '../errors.js'
 /**
  * The members a policy write body carries that the server does not store
  * from it: the stamp members, which only the backend's clock sets, `deleted`,
- * which only Delete Policy sets, and `_generation`, the stored layout's
- * reserved member.
+ * which only Delete Policy sets, and `_generation` and `_feedPosition`, the
+ * stored layout's reserved members.
  * @param policy {PolicyDocument}   the incoming or archived policy
  * @returns {PolicyDocument}   the body to persist, without a stamp
  */
@@ -49,6 +53,7 @@ export function normalizePolicyWrite(policy: PolicyDocument): PolicyDocument {
   const {
     deleted: _deleted,
     _generation: _embeddedGeneration,
+    _feedPosition: _embeddedFeedPosition,
     ...body
   } = withoutStampMembers(policy) as PolicyDocument
   return body
@@ -86,26 +91,53 @@ export function policyTombstoneBody(stamp: WriteStamp): PolicyTombstone {
 
 /**
  * The serialized policy file of the filesystem backend: the served body (a
- * live policy or a tombstone) with the generation embedded as `_generation`.
+ * live policy or a tombstone) with the generation embedded as `_generation`,
+ * and the feed position as `_feedPosition` when the policy takes one. The
+ * position is written last, so dropping it restores the bytes of a file
+ * written without it.
  * @param options {object}
  * @param options.body {PolicyDocument | PolicyTombstone}
  * @param options.generation {string}
+ * @param [options.feedPosition] {number}   absent for a Space policy
  * @returns {string}
  */
 export function policyFile({
   body,
-  generation
+  generation,
+  feedPosition
 }: {
   body: PolicyDocument | PolicyTombstone
   generation: string
+  feedPosition?: number
 }): string {
-  return JSON.stringify({ ...body, _generation: generation })
+  return JSON.stringify({
+    ...body,
+    _generation: generation,
+    ...(feedPosition !== undefined && { _feedPosition: feedPosition })
+  })
+}
+
+/**
+ * The feed position a stored policy file's parsed contents carry as
+ * `_feedPosition`, or `undefined` when it carries no safe integer there.
+ * @param raw {unknown}   the parsed policy file
+ * @returns {number | undefined}
+ */
+export function policyFileFeedPosition(raw: unknown): number | undefined {
+  if (!isPlainObject(raw)) {
+    return undefined
+  }
+  const { _feedPosition: feedPosition } = raw
+  return Number.isSafeInteger(feedPosition)
+    ? (feedPosition as number)
+    : undefined
 }
 
 /**
  * Reads a stored policy file's parsed contents into the stored record: a live
  * policy or a tombstone, beside its validator. The validator is absent when a
  * part of it is missing. `undefined` for a value that is not a JSON object.
+ * The server-local `_feedPosition` is left out of the record.
  * @param raw {unknown}   the parsed policy file
  * @returns {StoredPolicy | undefined}
  */
@@ -113,12 +145,43 @@ export function storedPolicyFromFile(raw: unknown): StoredPolicy | undefined {
   if (!isPlainObject(raw)) {
     return undefined
   }
-  const { _generation: generation, ...body } = raw as Record<string, unknown>
+  const {
+    _generation: generation,
+    _feedPosition,
+    ...body
+  } = raw as Record<string, unknown>
   return storedPolicy({
     generation: typeof generation === 'string' ? generation : undefined,
     stamp: stampOf(body as Partial<WriteStamp>),
     ...(body.deleted !== true && { policy: body as PolicyDocument })
   })
+}
+
+/**
+ * A stored policy file's bytes as an export archive carries them: the body,
+ * stamp members and `_generation`, without the server-local `_feedPosition`.
+ * `undefined` for a tombstone, which does not travel. The position is written
+ * last, so dropping it restores the bytes a file without it would have. Bytes
+ * that do not parse as a JSON object, or that carry no position, are returned
+ * unchanged.
+ * @param bytes {Buffer}
+ * @returns {Buffer | undefined}
+ */
+export function archivedPolicyFile(bytes: Buffer): Buffer | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(bytes.toString('utf8'))
+  } catch {
+    return bytes
+  }
+  if (storedPolicyFromFile(parsed)?.deleted) {
+    return undefined
+  }
+  if (!isPlainObject(parsed) || !('_feedPosition' in parsed)) {
+    return bytes
+  }
+  const { _feedPosition: _dropped, ...archived } = parsed
+  return Buffer.from(JSON.stringify(archived))
 }
 
 /**
