@@ -596,6 +596,58 @@ export interface CollectionTransitionContext {
   log?: CollectionLogResult
 }
 
+/**
+ * One document of a Collection's changes feed (`StorageBackend.changesSince`),
+ * discriminated on `kind`: a Resource or its tombstone, the Collection
+ * Metadata object, or the Collection's governing history log. Each carries the
+ * record's write stamp, its feed position, and its validator.
+ */
+export type FeedDocument = WriteStamp & {
+  // The document's position in the Collection's changes feed.
+  feedPosition: number
+  // The record's validator, which the request layer formats as the wire
+  // `etag`. Absent when the record has none.
+  validator?: EtagValidator
+} & (
+    | {
+        kind: 'resource'
+        resourceId: string
+        // The stored media type. A tombstone carries the last-known type.
+        contentType: string
+        deleted: boolean
+        // The `/meta` record's stamp and generation, present once metadata has
+        // been written.
+        meta?: ResourceMetaStamp
+        // The `/meta` record's validator, which the request layer formats as
+        // the wire `metaEtag`. Absent when no metadata has been written.
+        metaValidator?: EtagValidator
+        createdBy?: IDID
+        // Present only on a live JSON Resource.
+        data?: unknown
+        // Omitted when unset, never `null`: the handler projects this straight
+        // onto the wire `ChangeDocument.custom`, which admits no null.
+        custom?: ResourceMetadataCustom | Record<string, unknown>
+        /**
+         * The client-declared key epoch the Resource was encrypted under (the
+         * `key-epochs` feature), when one was stamped. Rides the feed so a
+         * replicating reader picks the right epoch key without a `/meta` fetch.
+         */
+        epoch?: string
+        /**
+         * The Resource's writer-attribution label (spec "Writer attribution"),
+         * when one was stamped. Rides the feed so a replica recognizes its own
+         * writes echoed back. A tombstone carries the label the deleting write
+         * declared, if any.
+         */
+        writerId?: string
+      }
+    // The Collection Metadata object. `validator` is the one GET .../meta
+    // serves, local segment included.
+    | { kind: 'collection-metadata' }
+    // The Collection's governing history log. `validator` is the log's own.
+    | { kind: 'log' }
+  )
+
 export interface StorageBackend {
   /**
    * Optional logger the backend writes diagnostics through (Fastify's pino
@@ -1201,25 +1253,40 @@ export interface StorageBackend {
 
   /**
    * OPTIONAL replication change feed (the `changes` query profile). Returns
-   * the Collection's JSON-document Resources and tombstones whose feed
-   * position is strictly after `afterPosition`, in ascending feed position
-   * order, capped at `limit` (a backend MAY clamp an oversized value to its
-   * own maximum). With no `afterPosition`, the feed starts from the
-   * beginning.
+   * the Collection's records whose feed position is strictly after
+   * `afterPosition`, in ascending feed position order, capped at `limit` (a
+   * backend MAY reduce an oversized value to its own maximum). With no
+   * `afterPosition`, the feed starts from the beginning.
+   *
+   * The feed carries every record kind in the Collection, each document
+   * discriminated on `kind` (see `FeedDocument`). A `resource` document is a
+   * Resource or its tombstone, whatever its content type: JSON, binary, and
+   * `text/jsonl` (a `did.jsonl` history log) alike, each with its stored
+   * `contentType`. Only a live JSON Resource carries `data`. A
+   * `collection-metadata` document is the Collection Metadata object, and a
+   * `log` document is the Collection's governing history log. Each appears
+   * once, at the position of its latest write, and reports the record's
+   * current state.
    *
    * The feed position is a per-Collection sequence, a positive integer
    * starting at 1. Every Resource-level write in the Collection takes the
    * next one: a content write, a metadata write, a soft delete, and a
-   * Resource written by an import. A chunk write takes none, so it never
-   * moves its parent Resource. The backend assigns the position inside the
+   * Resource written by an import. So does a Collection Metadata write (a
+   * create, by import too, and an update), and a governed-log write (the
+   * guarded create and each append; a byte-identical log write writes
+   * nothing and takes none). A log write advances the Collection Metadata
+   * object's local validator segment without taking a position for it, so
+   * the `collection-metadata` document can carry a newer local segment than
+   * the one at its position. A chunk write takes none, so it never moves its
+   * parent Resource. The backend assigns the position inside the
    * per-Collection critical section that makes the write visible to this
    * method, so no write can land at or before a position already returned.
-   * Positions are unique within a Collection but need not be contiguous. A
-   * position is one server's fact about its own feed: it is never exported
-   * or replicated, and an import assigns fresh ones. A Resource stored before
-   * feed positions existed has none and is absent from the feed until it is
-   * rewritten. The request layer wraps the position in the opaque wire
-   * checkpoint; a backend never sees that string.
+   * Positions are unique within a Collection, across kinds, but need not be
+   * contiguous. A position is one server's fact about its own feed: it is
+   * never exported or replicated, and an import assigns fresh ones. A record
+   * stored before feed positions existed has none and is absent from the
+   * feed until it is rewritten. The request layer wraps the position in the
+   * opaque wire checkpoint; a backend never sees that string.
    *
    * The counter has a generation, minted with the first position it hands
    * out and kept for the Collection's life. It is removed with the
@@ -1230,27 +1297,27 @@ export interface StorageBackend {
    * checkpoint that carries another, so a reader holding one from before a
    * re-create restarts rather than skipping the new feed's first positions.
    *
-   * Each document carries the content record's write stamp (`updatedAt`,
-   * `updatedAtCounter`, `originId`), the `/meta` record's stamp and generation
-   * as `meta` (when a metadata write has occurred), the server-managed
-   * `createdBy` (the creator's DID, when one was recorded -- so provenance
-   * replicates and does not have to be fetched per Resource from `/meta`),
-   * and -- so metadata replicates alongside content -- the user-writable
-   * `custom` object (the opaque encryption envelope on an encrypted
-   * Collection). Out of band from those members, it also carries the content
-   * record's `validator` and, once metadata has been written, the `/meta`
-   * record's `metaValidator`. The request layer formats them as the wire
-   * document's `etag` and `metaEtag`, the quoted strong validators a replica
-   * can send back as `If-Match` without a GET per Resource. A tombstone keeps
-   * its `createdBy`, as it keeps its `createdAt`. A metadata-only edit
-   * re-surfaces the Resource at a new feed position, with a new `meta` stamp
-   * but its content stamp and `data` unchanged. The stamps have no ordering
-   * role in the feed, which is ordered by feed position. A tombstone
-   * (soft-deleted Resource) is surfaced with `deleted: true` and no `data` so
-   * the delete replicates until clients catch up. Binary (non-JSON) Resources
-   * are excluded -- attachment replication is future work. Each document
-   * carries its `feedPosition`. The result's `checkpoint` is the last returned
-   * document's feed position (what a follow-up call passes as
+   * Each document carries the record's write stamp (`updatedAt`,
+   * `updatedAtCounter`, `originId`) and, out of band, the record's
+   * `validator`, which the request layer formats as the wire `etag`. A
+   * `resource` document's stamp and validator are its content record's. It
+   * also carries the `/meta` record's stamp and generation as `meta` (when a
+   * metadata write has occurred) with its `metaValidator` (the wire
+   * `metaEtag`), the server-managed `createdBy` (the creator's DID, when one
+   * was recorded -- so provenance replicates and does not have to be fetched
+   * per Resource from `/meta`), and -- so metadata replicates alongside
+   * content -- the user-writable `custom` object (the opaque encryption
+   * envelope on an encrypted Collection). The validators are the quoted
+   * strong validators a replica can send back as `If-Match` without a GET
+   * per record. A tombstone keeps its `createdBy`, as it keeps its
+   * `createdAt`. A metadata-only edit re-surfaces the Resource at a new feed
+   * position, with a new `meta` stamp but its content stamp and `data`
+   * unchanged. The stamps have no ordering role in the feed, which is
+   * ordered by feed position. A tombstone (soft-deleted Resource) is
+   * surfaced with `deleted: true`, its last-known `contentType`, and no
+   * `data`, so the delete replicates until clients catch up. Each document
+   * carries its `feedPosition`. The result's `checkpoint` is the last
+   * returned document's feed position (what a follow-up call passes as
    * `afterPosition`), or `null` when nothing changed since `afterPosition`.
    *
    * OPTIONAL: a backend that omits this method does not serve the change feed,
@@ -1263,41 +1330,7 @@ export interface StorageBackend {
     afterPosition?: number
     limit: number
   }): Promise<{
-    documents: Array<
-      {
-        resourceId: string
-        // The document's position in the Collection's changes feed.
-        feedPosition: number
-        // The content record's validator, which the request layer formats as
-        // the wire `etag`. Absent when the record has none.
-        validator?: EtagValidator
-        // The `/meta` record's stamp and generation, present once metadata has
-        // been written.
-        meta?: ResourceMetaStamp
-        // The `/meta` record's validator, which the request layer formats as
-        // the wire `metaEtag`. Absent when no metadata has been written.
-        metaValidator?: EtagValidator
-        createdBy?: IDID
-        deleted: boolean
-        data?: unknown
-        // Omitted when unset, never `null`: the handler projects this straight
-        // onto the wire `ChangeDocument.custom`, which admits no null.
-        custom?: ResourceMetadataCustom | Record<string, unknown>
-        /**
-         * The client-declared key epoch the Resource was encrypted under (the
-         * `key-epochs` feature), when one was stamped. Rides the feed so a
-         * replicating reader picks the right epoch key without a `/meta` fetch.
-         */
-        epoch?: string
-        /**
-         * The Resource's writer-attribution label (spec "Writer attribution"),
-         * when one was stamped. Rides the feed so a replica recognizes its own
-         * writes echoed back. A tombstone carries the label the deleting write
-         * declared, if any.
-         */
-        writerId?: string
-      } & WriteStamp
-    >
+    documents: FeedDocument[]
     checkpoint: number | null
     // The feed counter's generation; absent until the first position.
     feedGeneration?: string

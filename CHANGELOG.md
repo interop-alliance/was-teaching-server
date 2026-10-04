@@ -1,5 +1,25 @@
 # History
 
+## 0.41.0 - TBD
+
+### Changed
+
+- **BREAKING**: the `changes` query profile carries every record of the
+  Collection. Each document has a required `kind`: `resource`,
+  `collection-metadata`, or `log`. A consumer skips a `kind` it does not know.
+- **BREAKING**: the change document's `_deleted` member is renamed `deleted`.
+- The feed carries every Resource and tombstone whatever its content type, each
+  with a `contentType` member. `data` is inline for a live JSON Resource only.
+- A Collection Metadata write and a governed-log write each take a feed
+  position. Their documents carry the record's absolute URL as `id` and no body.
+  A new Collection's feed therefore starts with its `collection-metadata`
+  document.
+- Every change document carries the record's `generation` beside its write stamp
+  and `etag`.
+- Postgres schema migration 11 adds `collections.metadata_feed_position` and
+  `collections.log_feed_position`. The filesystem feed counter file gains
+  `collectionMetadataPosition` and `logPosition`.
+
 ## 0.40.0 - 2026-10-04
 
 ### Added

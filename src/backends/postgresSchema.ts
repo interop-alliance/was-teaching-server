@@ -377,6 +377,21 @@ export const MIGRATIONS: Migration[] = [
   `
   ALTER TABLE collections
     ADD COLUMN deleted boolean NOT NULL DEFAULT false;
+  `,
+  // v11: the changes feed carries every record kind in the Collection, not
+  // Resources alone. A Collection Metadata write and a governing history log
+  // write each take the Collection's next feed position, by the same
+  // 'collections.feed_position' counter a Resource-level write takes, and
+  // record it on the row: 'metadata_feed_position' for the Metadata object
+  // and 'log_feed_position' for the log. Each is the position the record's
+  // latest write took, and is NULL before it. No backfill: a Collection
+  // written before v11 has no Metadata or log document in its feed until its
+  // next write of that record. A tombstoned row has both NULL, like
+  // 'feed_generation'.
+  `
+  ALTER TABLE collections
+    ADD COLUMN metadata_feed_position bigint,
+    ADD COLUMN log_feed_position bigint;
   `
 ]
 

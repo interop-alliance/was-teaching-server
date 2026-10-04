@@ -33,7 +33,11 @@
  */
 import { randomBytes } from 'node:crypto'
 import { base58 } from '@scure/base'
-import type { RecordValidatorParts, WriteStamp } from '../types.js'
+import type {
+  FeedDocument,
+  RecordValidatorParts,
+  WriteStamp
+} from '../types.js'
 import { type HybridLogicalClock, stampOf } from './hlc.js'
 
 /**
@@ -231,6 +235,50 @@ export function validatorOf({
     stamp: { updatedAt, updatedAtCounter, originId },
     local
   })
+}
+
+/**
+ * The changes-feed document of a Collection-level record: the Collection
+ * Metadata object or the governing history log, at the position of its latest
+ * write, with its stamp and the validator its own GET serves. The Metadata
+ * object's validator carries its local segment and the log's carries none.
+ * @param options {object}
+ * @param options.kind {'collection-metadata' | 'log'}
+ * @param options.feedPosition {number}
+ * @param options.stamp {WriteStamp}   the record's write stamp
+ * @param [options.generation] {string}   the record's generation
+ * @param [options.local] {number}   the Metadata object's local segment
+ * @returns {FeedDocument}
+ */
+export function containerFeedDocument({
+  kind,
+  feedPosition,
+  stamp,
+  generation,
+  local
+}: {
+  kind: 'collection-metadata' | 'log'
+  feedPosition: number
+  stamp: WriteStamp
+  generation?: string
+  local?: number
+}): FeedDocument {
+  const { updatedAt, updatedAtCounter, originId } = stamp
+  const validator = validatorOf({
+    generation,
+    updatedAt,
+    updatedAtCounter,
+    originId,
+    local
+  })
+  return {
+    kind,
+    feedPosition,
+    updatedAt,
+    updatedAtCounter,
+    originId,
+    ...(validator !== undefined && { validator })
+  }
 }
 
 /**

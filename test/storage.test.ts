@@ -5,7 +5,7 @@ import { it, describe } from 'vitest'
 import assert from 'node:assert'
 import os from 'node:os'
 import path from 'node:path'
-import { mkdtemp, mkdir, rm, readdir } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, readdir, readFile } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
@@ -14,7 +14,8 @@ import { fileNameFor } from '@interop/space-archive'
 import { formatEtag } from '../src/lib/etag.js'
 import { compareStamps } from '../src/lib/hlc.js'
 import { PreconditionFailedError } from '../src/errors.js'
-import { importArchive } from './helpers.js'
+import { importArchive, resourceDocuments } from './helpers.js'
+import { extractTarEntries } from '../src/lib/importTar.js'
 
 /**
  * Consumes a readable stream into a single string (test helper).
@@ -513,8 +514,8 @@ describe('Storage API', () => {
         // The tombstone survives: no content file, a `deleted` sidecar carried
         // verbatim, and it stays invisible to normal reads on the target. The
         // feed position is the one member that does not travel: the target
-        // Collection assigns its own (the live Resource took 1, the tombstone
-        // 2), whatever the source's was.
+        // Collection assigns its own (the Collection's create took 1, the live
+        // Resource 2, the tombstone 3), whatever the source's was.
         const dstCollectionDir = path.join(tempDir, 'spaces', dst, collectionId)
         const dstTombstone = await backend.readMetaSidecar({
           collectionDir: dstCollectionDir,
@@ -540,8 +541,8 @@ describe('Storage API', () => {
             { updatedAt: srcUpdatedAt, updatedAtCounter: srcCounter }
           )
         )
-        assert.equal(srcFeedPosition, 3)
-        assert.equal(dstFeedPosition, 2)
+        assert.equal(srcFeedPosition, 4)
+        assert.equal(dstFeedPosition, 3)
         const dstFiles = (await readdir(dstCollectionDir)).filter(name =>
           name.startsWith('r.gone.')
         )
@@ -897,7 +898,7 @@ describe('Storage API', () => {
       return { backend, tempDir, spaceId, collectionId }
     }
 
-    it('returns JSON documents with data + write stamp, in write order, plus a checkpoint', async () => {
+    it('returns the Collection create, then JSON documents with data + write stamp, in write order, plus a checkpoint', async () => {
       const { backend, tempDir, spaceId, collectionId } =
         await provisionCollection()
       try {
@@ -913,11 +914,16 @@ describe('Storage API', () => {
             }
           })
         }
-        const { documents, checkpoint } = await backend.changesSince({
+        const page = await backend.changesSince({
           spaceId,
           collectionId,
           limit: 10
         })
+        const { checkpoint } = page
+        // The Collection's create took the first position.
+        assert.equal(page.documents[0]!.kind, 'collection-metadata')
+        assert.equal(page.documents[0]!.feedPosition, 1)
+        const documents = resourceDocuments(page.documents)
         // Ordered by feed position, which is write order, not by id.
         assert.deepEqual(
           documents.map(doc => doc.resourceId),
@@ -925,7 +931,7 @@ describe('Storage API', () => {
         )
         assert.deepEqual(
           documents.map(doc => doc.feedPosition),
-          [1, 2, 3]
+          [2, 3, 4]
         )
         for (const doc of documents) {
           assert.equal(doc.deleted, false)
@@ -933,7 +939,7 @@ describe('Storage API', () => {
           assert.equal(doc.originId, backend.originId)
           assert.deepEqual(doc.data, { id: doc.resourceId })
         }
-        assert.equal(checkpoint, 3, "the last document's feed position")
+        assert.equal(checkpoint, 4, "the last document's feed position")
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }
@@ -965,13 +971,16 @@ describe('Storage API', () => {
             afterPosition,
             limit: 2
           })
-          seen.push(...page.documents.map(doc => doc.resourceId))
+          seen.push(
+            ...resourceDocuments(page.documents).map(doc => doc.resourceId)
+          )
           if (page.documents.length < 2) {
             // Final short page: the next pull is empty with a null checkpoint.
             const tail = await backend.changesSince({
               spaceId,
               collectionId,
-              afterPosition: page.checkpoint ?? undefined,
+              // An empty page leaves the reader where it was.
+              afterPosition: page.checkpoint ?? afterPosition,
               limit: 2
             })
             assert.deepEqual(tail.documents, [])
@@ -1025,7 +1034,9 @@ describe('Storage API', () => {
           collectionId,
           limit: 10
         })
-        const byId = new Map(documents.map(doc => [doc.resourceId, doc]))
+        const byId = new Map(
+          resourceDocuments(documents).map(doc => [doc.resourceId, doc])
+        )
         assert.equal(byId.get('live')!.deleted, false)
         assert.deepEqual(byId.get('live')!.data, { v: 1 })
         const tombstone = byId.get('gone')!
@@ -1040,7 +1051,7 @@ describe('Storage API', () => {
       }
     })
 
-    it('excludes binary (non-JSON) Resources from the feed', async () => {
+    it('carries binary (non-JSON) Resources with their contentType and no data', async () => {
       const { backend, tempDir, spaceId, collectionId } =
         await provisionCollection()
       try {
@@ -1069,11 +1080,16 @@ describe('Storage API', () => {
           collectionId,
           limit: 10
         })
+        const resources = resourceDocuments(documents)
         assert.deepEqual(
-          documents.map(doc => doc.resourceId),
-          ['doc'],
-          'only the JSON document appears'
+          resources.map(doc => [doc.resourceId, doc.contentType]),
+          [
+            ['doc', 'application/json'],
+            ['pic', 'image/png']
+          ]
         )
+        assert.deepEqual(resources[0]!.data, { v: 1 })
+        assert.equal(resources[1]!.data, undefined)
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }
@@ -1131,7 +1147,9 @@ describe('Storage API', () => {
           collectionId,
           limit: 10
         })
-        const doc = documents.find(entry => entry.resourceId === 'doc')!
+        const doc = resourceDocuments(documents).find(
+          entry => entry.resourceId === 'doc'
+        )!
         assert.equal(doc.updatedAt, contentBefore!.updatedAt)
         assert.equal(doc.updatedAtCounter, contentBefore!.updatedAtCounter)
         assert.equal(doc.meta?.generation, written!.generation)
@@ -1304,6 +1322,139 @@ describe('Storage API', () => {
           undefined,
           'no name on encrypted listing'
         )
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it('keeps the Collection-level positions in the feed counter, which Delete Collection removes', async () => {
+      const { backend, tempDir, spaceId, collectionId } =
+        await provisionCollection()
+      try {
+        await backend.writeCollectionLog({
+          spaceId,
+          collectionId,
+          body: '{"state":{"scheme":"edv"},"parameters":{"method":"x"}}\n',
+          ifNoneMatch: '*'
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          input: {
+            kind: 'json',
+            contentType: 'application/json',
+            data: { v: 1 }
+          }
+        })
+        const collectionDir = path.join(
+          tempDir,
+          'spaces',
+          spaceId,
+          collectionId
+        )
+        const counterPath = path.join(
+          collectionDir,
+          `.feed.${collectionId}.json`
+        )
+        const counter = JSON.parse(await readFile(counterPath, 'utf8'))
+        assert.equal(counter.position, 3)
+        assert.equal(counter.collectionMetadataPosition, 1)
+        assert.equal(counter.logPosition, 2)
+        assert.equal(typeof counter.generation, 'string')
+        // Neither stored record carries a position of its own.
+        for (const fileName of [
+          `.collection.${collectionId}.json`,
+          `.collectionlog.${collectionId}.json`
+        ]) {
+          const stored = await readFile(
+            path.join(collectionDir, fileName),
+            'utf8'
+          )
+          assert.ok(!stored.includes('Position'), `${fileName} has a position`)
+        }
+
+        await backend.deleteCollection({ spaceId, collectionId })
+        assert.ok(
+          !(await readdir(collectionDir)).includes(
+            `.feed.${collectionId}.json`
+          ),
+          'the counter goes with the Collection'
+        )
+      } finally {
+        await rm(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it('exports no feed position of any kind, and an import writes a fresh counter', async () => {
+      const { backend, tempDir, spaceId, collectionId } =
+        await provisionCollection()
+      try {
+        await backend.writeCollectionLog({
+          spaceId,
+          collectionId,
+          body: '{"state":{"scheme":"edv"},"parameters":{"method":"x"}}\n',
+          ifNoneMatch: '*'
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'pic',
+          input: {
+            kind: 'binary',
+            contentType: 'image/png',
+            stream: Readable.from(Buffer.from([0x89, 0x50]))
+          }
+        })
+        const entries = await extractTarEntries(
+          await backend.exportSpace({ spaceId })
+        )
+        const names = [...entries.keys()]
+        const bodies = [...entries.values()].flatMap(entry =>
+          entry.body === undefined ? [] : [entry.body.toString('utf8')]
+        )
+        assert.ok(
+          !names.some(name => path.basename(name).startsWith('.feed.')),
+          'no feed counter travels'
+        )
+        for (const body of bodies) {
+          assert.ok(!body.includes('feedPosition'))
+          assert.ok(!body.includes('collectionMetadataPosition'))
+          assert.ok(!body.includes('logPosition'))
+        }
+
+        // Import into a fresh Space: the Collection, its log and its
+        // Resource take positions 1 to 3 in the destination's counter.
+        const targetSpaceId = 'target-space'
+        await backend.writeSpace({
+          spaceId: targetSpaceId,
+          spaceMetadata: {
+            id: targetSpaceId,
+            type: ['Space'],
+            name: 'Target',
+            controller: 'did:key:test-controller'
+          }
+        })
+        await importArchive({
+          backend,
+          spaceId: targetSpaceId,
+          tarStream: await backend.exportSpace({ spaceId })
+        })
+        const counter = JSON.parse(
+          await readFile(
+            path.join(
+              tempDir,
+              'spaces',
+              targetSpaceId,
+              collectionId,
+              `.feed.${collectionId}.json`
+            ),
+            'utf8'
+          )
+        )
+        assert.equal(counter.collectionMetadataPosition, 1)
+        assert.equal(counter.logPosition, 2)
+        assert.equal(counter.position, 3)
       } finally {
         await rm(tempDir, { recursive: true, force: true })
       }

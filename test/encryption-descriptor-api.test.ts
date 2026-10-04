@@ -880,7 +880,9 @@ describe('Encryption descriptor API', () => {
       const tomb = changes.data.documents.find(
         (entry: any) => entry.id === 'r-del'
       )
-      assert.equal(tomb._deleted, true)
+      assert.equal(tomb.kind, 'resource')
+      assert.equal(tomb.deleted, true)
+      assert.equal('_deleted' in tomb, false)
       assert.equal(
         tomb.writerId,
         'writer-deleter',

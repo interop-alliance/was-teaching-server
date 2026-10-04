@@ -18,7 +18,17 @@ import { base64urlnopad } from '@scure/base'
 
 import type { Space } from '@interop/was-client'
 
-import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
+import {
+  entryLine,
+  etagGeneration,
+  genesisLine,
+  oneEpoch,
+  openTempBackend,
+  parseEtagSegments,
+  recipient,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('Collection changes query profile', () => {
   let fastify: FastifyInstance,
@@ -50,6 +60,13 @@ describe('Collection changes query profile', () => {
       `/space/${alice.space1.id}/${collectionId}/`,
       serverUrl
     ).toString()
+  }
+
+  /**
+   * The absolute URL of a Collection's Metadata object.
+   */
+  function metaUrl(collectionId: string): string {
+    return `${feedUrl(collectionId)}meta`
   }
 
   /** POSTs the `changes` query body to a Collection's `/query` with `signer`. */
@@ -85,6 +102,14 @@ describe('Collection changes query profile', () => {
     await fastify.close()
   })
 
+  /**
+   * The `resource` documents of a page, in feed order: what a consumer that
+   * syncs Resources keeps, skipping every other kind.
+   */
+  function resourceDocs(documents: any[]): any[] {
+    return documents.filter((doc: any) => doc.kind === 'resource')
+  }
+
   /** Creates a Collection and PUTs `{ n: <id> }` at each id, in order. */
   async function seedCollection(collectionId: string, ids: string[]) {
     const collection = await aliceSpace.createCollection({
@@ -97,17 +122,24 @@ describe('Collection changes query profile', () => {
     return collection
   }
 
-  it('returns changed documents with id/_deleted/stamp/data + checkpoint', async () => {
+  it('returns changed documents with kind/id/deleted/stamp/data + checkpoint', async () => {
     await seedCollection('feed', ['c', 'a', 'b'])
     const { data } = await queryChanges(alice, 'feed', { limit: 10 })
 
-    // Feed order is write order, not id order.
+    // The Collection's create comes first, then the Resources in write
+    // order, not id order.
     assert.deepEqual(
-      data.documents.map((doc: any) => doc.id),
+      data.documents.map((doc: any) => doc.kind),
+      ['collection-metadata', 'resource', 'resource', 'resource']
+    )
+    assert.deepEqual(
+      resourceDocs(data.documents).map((doc: any) => doc.id),
       ['c', 'a', 'b']
     )
-    for (const doc of data.documents) {
-      assert.equal(doc._deleted, false)
+    for (const doc of resourceDocs(data.documents)) {
+      assert.equal(doc.deleted, false)
+      assert.equal('_deleted' in doc, false)
+      assert.equal(doc.contentType, 'application/json')
       assert.equal(doc.version, undefined)
       assert.deepEqual(doc.data, { n: doc.id })
       assert.ok(typeof doc.updatedAt === 'string')
@@ -123,7 +155,8 @@ describe('Collection changes query profile', () => {
     // counter's generation, and the feed position, base64url-encoded JSON.
     const { generation, ...rest } = readCheckpoint(data.checkpoint) as any
     assert.equal(typeof generation, 'string')
-    assert.deepEqual(rest, { feed: feedUrl('feed'), position: 3 })
+    // The Collection's create took position 1.
+    assert.deepEqual(rest, { feed: feedUrl('feed'), position: 4 })
     // Every checkpoint of one feed carries the same generation.
     for (const doc of data.documents) {
       assert.equal(
@@ -133,7 +166,7 @@ describe('Collection changes query profile', () => {
     }
   })
 
-  it('surfaces a tombstone as _deleted:true with no data', async () => {
+  it('surfaces a tombstone as deleted:true with no data', async () => {
     const collection = await seedCollection('with-delete', ['keep', 'remove'])
     const before = await queryChanges(alice, 'with-delete', { limit: 10 })
     const live = before.data.documents.find((doc: any) => doc.id === 'remove')
@@ -141,9 +174,12 @@ describe('Collection changes query profile', () => {
 
     const { data } = await queryChanges(alice, 'with-delete', { limit: 10 })
     const byId = new Map(data.documents.map((doc: any) => [doc.id, doc]))
-    assert.equal((byId.get('keep') as any)._deleted, false)
+    assert.equal((byId.get('keep') as any).deleted, false)
     const tombstone = byId.get('remove') as any
-    assert.equal(tombstone._deleted, true)
+    assert.equal(tombstone.kind, 'resource')
+    assert.equal(tombstone.deleted, true)
+    assert.equal('_deleted' in tombstone, false)
+    assert.equal(tombstone.contentType, 'application/json')
     assert.equal(tombstone.data, undefined, 'tombstone carries no data')
     assert.equal(tombstone.version, undefined)
     // The delete minted a later content stamp.
@@ -162,7 +198,7 @@ describe('Collection changes query profile', () => {
     const byId = new Map(data.documents.map((doc: any) => [doc.id, doc]))
     assert.equal((byId.get('keep') as any).createdBy, alice.did)
     const tombstone = byId.get('remove') as any
-    assert.equal(tombstone._deleted, true)
+    assert.equal(tombstone.deleted, true)
     assert.equal(tombstone.createdBy, alice.did)
   })
 
@@ -227,7 +263,7 @@ describe('Collection changes query profile', () => {
     })
     const tombstone = data.documents.find((entry: any) => entry.id === 'a')
     assert.ok(tombstone, 'expected the tombstone in the feed')
-    assert.equal(tombstone._deleted, true)
+    assert.equal(tombstone.deleted, true)
     assert.equal(typeof tombstone.etag, 'string')
   })
 
@@ -241,17 +277,13 @@ describe('Collection changes query profile', () => {
         limit: 2,
         ...(checkpoint && { checkpoint })
       })
-      seen.push(...data.documents.map((doc: any) => doc.id))
-      if (data.documents.length < 2) {
-        // Final short page; the next pull is empty with a null checkpoint.
-        const { data: tail } = await queryChanges(alice, 'iter', {
-          limit: 2,
-          ...(data.checkpoint && { checkpoint: data.checkpoint })
-        })
-        assert.deepEqual(tail.documents, [])
-        assert.equal(tail.checkpoint, null)
+      assert.ok(data.documents.length <= 2)
+      // Caught up: the pull is empty with a null checkpoint.
+      if (data.checkpoint === null) {
+        assert.deepEqual(data.documents, [])
         break
       }
+      seen.push(...resourceDocs(data.documents).map((doc: any) => doc.id))
       checkpoint = data.checkpoint
     }
     assert.deepEqual(seen.sort(), ['a', 'b', 'c', 'd', 'e'])
@@ -291,12 +323,13 @@ describe('Collection changes query profile', () => {
     const { data } = await queryChanges(alice, 'prefix-resume', { limit: 10 })
     assert.deepEqual(
       data.documents.map((doc: any) => doc.id),
-      ['a', 'b', 'c', 'd']
+      [metaUrl('prefix-resume'), 'a', 'b', 'c', 'd']
     )
-    // A client that applied only `a` and `b` checkpoints on `b`.
+    // A client that applied only the Collection, `a` and `b` checkpoints on
+    // `b`.
     const { data: rest } = await queryChanges(alice, 'prefix-resume', {
       limit: 10,
-      checkpoint: data.documents[1].checkpoint
+      checkpoint: data.documents[2].checkpoint
     })
     assert.deepEqual(
       rest.documents.map((doc: any) => doc.id),
@@ -370,10 +403,21 @@ describe('Collection changes query profile', () => {
       await aliceSpace.collection('reborn').delete()
       await aliceSpace.createCollection({ id: 'reborn', name: 'reborn' })
       await assertRefused('reborn', before.checkpoint)
-      // The new feed issues checkpoints of its own, which resume it.
+      // The new feed issues checkpoints of its own, starting with the
+      // Collection's create at position 1, which resume it.
       const { data: after } = await queryChanges(alice, 'reborn', { limit: 10 })
-      assert.deepEqual(after.documents, [])
-      assert.equal(after.checkpoint, null)
+      const { generation, position } = readCheckpoint(after.checkpoint) as any
+      assert.equal(position, 1)
+      assert.notEqual(
+        generation,
+        (readCheckpoint(before.checkpoint) as any).generation
+      )
+      const { data: resumed } = await queryChanges(alice, 'reborn', {
+        limit: 10,
+        checkpoint: after.checkpoint
+      })
+      assert.deepEqual(resumed.documents, [])
+      assert.equal(resumed.checkpoint, null)
     })
 
     it('strings that do not decode to this shape', async () => {
@@ -412,5 +456,475 @@ describe('Collection changes query profile', () => {
     }
     assert.ok(thrown, "expected Bob's query to be rejected")
     assert.equal(thrown.response.status, 404)
+  })
+
+  describe('document kinds', () => {
+    /**
+     * The absolute URL of a Collection's governing history log.
+     */
+    function logUrl(collectionId: string): string {
+      return `${metaUrl(collectionId)}/log`
+    }
+
+    /**
+     * The absolute URL of a Resource in one of Alice's Collections.
+     */
+    function resourceUrl(collectionId: string, resourceId: string): string {
+      return `${feedUrl(collectionId)}${resourceId}`
+    }
+
+    /**
+     * The `ETag` header a signed GET of `url` answers with.
+     */
+    async function etagOf(url: string): Promise<string> {
+      const response = await alice.was.request({ url, method: 'GET' })
+      const etag = response.headers.get('etag')
+      assert.ok(etag, `expected an ETag on GET ${url}`)
+      return etag
+    }
+
+    /**
+     * The feed position a checkpoint carries.
+     */
+    function positionOf(checkpoint: string): number {
+      return (readCheckpoint(checkpoint) as any).position
+    }
+
+    /**
+     * Asserts the members every document carries, whatever its kind: the
+     * write stamp, `generation` equal to the `ETag`'s first segment, the
+     * `etag`, a checkpoint, and `deleted` in place of the retired
+     * `_deleted`.
+     */
+    function assertCommonMembers(doc: any) {
+      assert.ok(
+        ['resource', 'collection-metadata', 'log'].includes(doc.kind),
+        `unexpected kind ${doc.kind}`
+      )
+      assert.equal(typeof doc.id, 'string')
+      assert.equal(typeof doc.deleted, 'boolean')
+      assert.equal('_deleted' in doc, false)
+      assert.equal(typeof doc.updatedAt, 'string')
+      assert.equal(typeof doc.updatedAtCounter, 'number')
+      assert.equal(typeof doc.originId, 'string')
+      assert.equal(typeof doc.etag, 'string')
+      assert.equal(doc.generation, etagGeneration(doc.etag))
+      assert.equal(typeof doc.checkpoint, 'string')
+    }
+
+    /**
+     * PUTs bytes with a media type at a Resource or chunk URL.
+     */
+    async function putBytes(
+      url: string,
+      bytes: Uint8Array<ArrayBuffer>,
+      type: string
+    ): Promise<any> {
+      return alice.was.request({
+        url,
+        method: 'PUT',
+        body: new Blob([bytes], { type })
+      })
+    }
+
+    /**
+     * PUTs a governing history log body under the given preconditions and
+     * returns the `ETag` it answers with.
+     */
+    async function putLog(
+      collectionId: string,
+      body: string,
+      headers: Record<string, string>
+    ): Promise<string> {
+      const response = await alice.was.request({
+        url: logUrl(collectionId),
+        method: 'PUT',
+        body: new TextEncoder().encode(body),
+        headers: { 'content-type': 'text/jsonl', ...headers }
+      })
+      assert.equal(response.status, 204)
+      const etag = response.headers.get('etag')
+      assert.ok(etag, 'expected an ETag on the log write')
+      return etag
+    }
+
+    it('a collection-metadata document names the Metadata object by URL and carries its ETag and stamp', async () => {
+      await seedCollection('kinds-meta', [])
+      const { data } = await queryChanges(alice, 'kinds-meta', { limit: 10 })
+      assert.equal(data.documents.length, 1)
+      const [doc] = data.documents
+      assertCommonMembers(doc)
+      assert.deepEqual(Object.keys(doc).sort(), [
+        'checkpoint',
+        'deleted',
+        'etag',
+        'generation',
+        'id',
+        'kind',
+        'originId',
+        'updatedAt',
+        'updatedAtCounter'
+      ])
+      assert.equal(doc.kind, 'collection-metadata')
+      assert.equal(doc.id, metaUrl('kinds-meta'))
+      assert.equal(doc.deleted, false)
+      // The Collection's create took the feed's first position.
+      assert.equal(positionOf(doc.checkpoint), 1)
+      assert.equal(data.checkpoint, doc.checkpoint)
+
+      const read = await alice.was.request({
+        url: metaUrl('kinds-meta'),
+        method: 'GET'
+      })
+      const etag = read.headers.get('etag')
+      assert.equal(doc.etag, etag)
+      const segments = parseEtagSegments(etag, { container: true })
+      assert.equal(doc.generation, segments.generation)
+      assert.equal(doc.updatedAt, read.data.updatedAt)
+      assert.equal(doc.updatedAtCounter, read.data.updatedAtCounter)
+      assert.equal(doc.originId, read.data.originId)
+      assert.equal(doc.updatedAt, segments.stamp.updatedAt)
+      assert.equal(doc.updatedAtCounter, segments.stamp.updatedAtCounter)
+    })
+
+    it('a Collection Metadata update moves the collection-metadata document', async () => {
+      await seedCollection('kinds-meta-update', ['a'])
+      const { data: before } = await queryChanges(alice, 'kinds-meta-update', {
+        limit: 10
+      })
+      const [created] = before.documents
+      assert.equal(created.kind, 'collection-metadata')
+
+      const updated = await alice.was.request({
+        url: metaUrl('kinds-meta-update'),
+        method: 'PUT',
+        json: { id: 'kinds-meta-update', name: 'Renamed' }
+      })
+      assert.equal(updated.status, 204)
+
+      const { data: after } = await queryChanges(alice, 'kinds-meta-update', {
+        limit: 10,
+        checkpoint: before.checkpoint
+      })
+      assert.equal(after.documents.length, 1)
+      const [doc] = after.documents
+      assertCommonMembers(doc)
+      assert.equal(doc.kind, 'collection-metadata')
+      assert.equal(doc.id, metaUrl('kinds-meta-update'))
+      assert.equal(positionOf(doc.checkpoint), 3)
+      assert.equal(doc.etag, await etagOf(metaUrl('kinds-meta-update')))
+      assert.notEqual(doc.etag, created.etag)
+      // The update keeps the object's generation.
+      assert.equal(doc.generation, created.generation)
+
+      // One document per record: from the start, the Metadata object now
+      // follows the Resource written after its create.
+      const { data: full } = await queryChanges(alice, 'kinds-meta-update', {
+        limit: 10
+      })
+      assert.deepEqual(
+        full.documents.map((entry: any) => entry.id),
+        ['a', metaUrl('kinds-meta-update')]
+      )
+    })
+
+    it('a binary Resource and its tombstone carry contentType and no data', async () => {
+      await seedCollection('kinds-binary', [])
+      const pngUrl = resourceUrl('kinds-binary', 'blob')
+      await putBytes(
+        pngUrl,
+        new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+        'image/png'
+      )
+
+      const { data: live } = await queryChanges(alice, 'kinds-binary', {
+        limit: 10
+      })
+      const [liveDoc] = resourceDocs(live.documents)
+      assert.equal(resourceDocs(live.documents).length, 1)
+      assertCommonMembers(liveDoc)
+      assert.equal(liveDoc.id, 'blob')
+      assert.equal(liveDoc.deleted, false)
+      assert.equal(liveDoc.contentType, 'image/png')
+      assert.equal('data' in liveDoc, false)
+      assert.equal(liveDoc.etag, await etagOf(pngUrl))
+      assert.equal(
+        liveDoc.generation,
+        parseEtagSegments(liveDoc.etag).generation
+      )
+
+      await alice.was.request({ url: pngUrl, method: 'DELETE' })
+      const { data: gone } = await queryChanges(alice, 'kinds-binary', {
+        limit: 10,
+        checkpoint: live.checkpoint
+      })
+      assert.equal(gone.documents.length, 1)
+      const [tombstone] = gone.documents
+      assertCommonMembers(tombstone)
+      assert.equal(tombstone.kind, 'resource')
+      assert.equal(tombstone.id, 'blob')
+      assert.equal(tombstone.deleted, true)
+      // A tombstone carries the last-known type, and no bytes.
+      assert.equal(tombstone.contentType, 'image/png')
+      assert.equal('data' in tombstone, false)
+      assert.notEqual(tombstone.etag, liveDoc.etag)
+    })
+
+    it('a text/jsonl Resource rides the feed with no inline data', async () => {
+      await seedCollection('kinds-jsonl', [])
+      const lines = '{"n":1}\n{"n":2}\n'
+      for (const resourceId of ['events', 'did.jsonl']) {
+        await putBytes(
+          resourceUrl('kinds-jsonl', resourceId),
+          new TextEncoder().encode(lines),
+          'text/jsonl'
+        )
+      }
+
+      const { data } = await queryChanges(alice, 'kinds-jsonl', { limit: 10 })
+      const docs = resourceDocs(data.documents)
+      assert.deepEqual(
+        docs.map((doc: any) => doc.id),
+        ['events', 'did.jsonl']
+      )
+      for (const doc of docs) {
+        assertCommonMembers(doc)
+        assert.equal(doc.deleted, false)
+        assert.match(doc.contentType, /^text\/jsonl/)
+        assert.equal('data' in doc, false)
+        assert.equal(doc.etag, await etagOf(resourceUrl('kinds-jsonl', doc.id)))
+      }
+    })
+
+    it('a /meta write on a binary Resource re-surfaces it, content stamp unchanged', async () => {
+      await seedCollection('kinds-binary-meta', [])
+      const picUrl = resourceUrl('kinds-binary-meta', 'pic')
+      await putBytes(
+        picUrl,
+        new Uint8Array([1, 2, 3]),
+        'application/octet-stream'
+      )
+      await alice.was.request({
+        url: resourceUrl('kinds-binary-meta', 'other'),
+        method: 'PUT',
+        json: { n: 'other' }
+      })
+      const { data: before } = await queryChanges(alice, 'kinds-binary-meta', {
+        limit: 10
+      })
+      const original = before.documents.find((doc: any) => doc.id === 'pic')
+
+      await alice.was.request({
+        url: `${picUrl}/meta`,
+        method: 'PUT',
+        json: { custom: { name: 'labeled' } }
+      })
+      const { data: after } = await queryChanges(alice, 'kinds-binary-meta', {
+        limit: 10,
+        checkpoint: before.checkpoint
+      })
+      assert.equal(after.documents.length, 1)
+      const [doc] = after.documents
+      assertCommonMembers(doc)
+      assert.equal(doc.kind, 'resource')
+      assert.equal(doc.id, 'pic')
+      assert.equal(doc.contentType, 'application/octet-stream')
+      assert.equal('data' in doc, false)
+      assert.deepEqual(doc.custom, { name: 'labeled' })
+      assert.equal(typeof doc.meta.generation, 'string')
+      assert.equal(doc.metaEtag, await etagOf(`${picUrl}/meta`))
+      // The content record did not move.
+      assert.equal(doc.etag, original.etag)
+      assert.equal(doc.etag, await etagOf(picUrl))
+    })
+
+    it('a governed log takes a position on its guarded create and each append, and none on a no-op', async () => {
+      await seedCollection('kinds-log', [])
+      const { data: start } = await queryChanges(alice, 'kinds-log', {
+        limit: 10
+      })
+      const [metaDoc] = start.documents
+      assert.equal(metaDoc.kind, 'collection-metadata')
+
+      // The guarded create.
+      const genesis = genesisLine(oneEpoch) + '\n'
+      const createdEtag = await putLog('kinds-log', genesis, {
+        'if-none-match': '*'
+      })
+      const { data: created } = await queryChanges(alice, 'kinds-log', {
+        limit: 10,
+        checkpoint: start.checkpoint
+      })
+      // The log write does not move the collection-metadata document.
+      assert.equal(created.documents.length, 1)
+      const [logDoc] = created.documents
+      assertCommonMembers(logDoc)
+      assert.deepEqual(Object.keys(logDoc).sort(), [
+        'checkpoint',
+        'deleted',
+        'etag',
+        'generation',
+        'id',
+        'kind',
+        'originId',
+        'updatedAt',
+        'updatedAtCounter'
+      ])
+      assert.equal(logDoc.kind, 'log')
+      assert.equal(logDoc.id, logUrl('kinds-log'))
+      assert.equal(logDoc.deleted, false)
+      assert.equal(logDoc.etag, createdEtag)
+      assert.equal(logDoc.etag, await etagOf(logUrl('kinds-log')))
+      const segments = parseEtagSegments(logDoc.etag)
+      assert.equal(logDoc.generation, segments.generation)
+      assert.equal(logDoc.updatedAt, segments.stamp.updatedAt)
+      assert.equal(logDoc.updatedAtCounter, segments.stamp.updatedAtCounter)
+      assert.equal(logDoc.originId, segments.stamp.originId)
+      assert.equal(positionOf(logDoc.checkpoint), 2)
+
+      // The log write advanced the Metadata object's local segment without
+      // a write of the object: its document keeps its position and stamp,
+      // and carries the ETag the object now serves.
+      const { data: whole } = await queryChanges(alice, 'kinds-log', {
+        limit: 10
+      })
+      assert.deepEqual(
+        whole.documents.map((doc: any) => doc.kind),
+        ['collection-metadata', 'log']
+      )
+      const movedMeta = whole.documents[0]
+      assert.equal(movedMeta.checkpoint, metaDoc.checkpoint)
+      assert.equal(movedMeta.updatedAt, metaDoc.updatedAt)
+      assert.equal(movedMeta.updatedAtCounter, metaDoc.updatedAtCounter)
+      const metaEtag = await etagOf(metaUrl('kinds-log'))
+      assert.equal(movedMeta.etag, metaEtag)
+      assert.equal(
+        parseEtagSegments(metaEtag, { container: true }).local,
+        parseEtagSegments(metaDoc.etag, { container: true }).local! + 1
+      )
+
+      // An append.
+      const twoEpochs = {
+        ...oneEpoch,
+        currentEpoch: 'urn:epoch:2',
+        epochs: [
+          { id: 'urn:epoch:2', recipients: [recipient('did:key:zApp2#ka')] },
+          ...oneEpoch.epochs
+        ]
+      }
+      const extended =
+        genesis + entryLine({ ordinal: 2, state: twoEpochs }) + '\n'
+      const appendedEtag = await putLog('kinds-log', extended, {
+        'if-match': createdEtag
+      })
+      const { data: appended } = await queryChanges(alice, 'kinds-log', {
+        limit: 10,
+        checkpoint: created.checkpoint
+      })
+      assert.equal(appended.documents.length, 1)
+      const [appendDoc] = appended.documents
+      assertCommonMembers(appendDoc)
+      assert.equal(appendDoc.kind, 'log')
+      assert.equal(appendDoc.id, logUrl('kinds-log'))
+      assert.equal(appendDoc.etag, appendedEtag)
+      assert.equal(appendDoc.generation, logDoc.generation)
+      assert.equal(positionOf(appendDoc.checkpoint), 3)
+
+      // A byte-identical PUT is a no-op and takes no position.
+      const unchangedEtag = await putLog('kinds-log', extended, {
+        'if-match': appendedEtag
+      })
+      assert.equal(unchangedEtag, appendedEtag)
+      const { data: idle } = await queryChanges(alice, 'kinds-log', {
+        limit: 10,
+        checkpoint: appended.checkpoint
+      })
+      assert.deepEqual(idle.documents, [])
+      assert.equal(idle.checkpoint, null)
+    })
+
+    it('a chunk write moves nothing on the feed', async () => {
+      await seedCollection('kinds-chunks', ['manifest'])
+      const { data: before } = await queryChanges(alice, 'kinds-chunks', {
+        limit: 10
+      })
+      for (const index of [0, 1]) {
+        await putBytes(
+          `${resourceUrl('kinds-chunks', 'manifest')}/chunks/${index}`,
+          new Uint8Array([index]),
+          'application/octet-stream'
+        )
+      }
+      const { data: after } = await queryChanges(alice, 'kinds-chunks', {
+        limit: 10,
+        checkpoint: before.checkpoint
+      })
+      assert.deepEqual(after.documents, [])
+      assert.equal(after.checkpoint, null)
+    })
+
+    it('pages one document at a time across mixed kinds', async () => {
+      await seedCollection('kinds-paging', ['a'])
+      await putBytes(
+        resourceUrl('kinds-paging', 'bin'),
+        new Uint8Array([7]),
+        'application/octet-stream'
+      )
+      await putLog('kinds-paging', genesisLine(oneEpoch) + '\n', {
+        'if-none-match': '*'
+      })
+      await alice.was.request({
+        url: resourceUrl('kinds-paging', 'a'),
+        method: 'DELETE'
+      })
+      await alice.was.request({
+        url: metaUrl('kinds-paging'),
+        method: 'PUT',
+        json: { id: 'kinds-paging', name: 'Renamed' }
+      })
+
+      const pages: any[] = []
+      let checkpoint: string | undefined
+      for (let guard = 0; guard < 10; guard++) {
+        const { data } = await queryChanges(alice, 'kinds-paging', {
+          limit: 1,
+          ...(checkpoint && { checkpoint })
+        })
+        if (data.checkpoint === null) {
+          assert.deepEqual(data.documents, [])
+          break
+        }
+        assert.equal(data.documents.length, 1)
+        // A one-document page's checkpoint is that document's.
+        assert.equal(data.checkpoint, data.documents[0].checkpoint)
+        pages.push(data.documents[0])
+        checkpoint = data.checkpoint
+      }
+
+      // The create (position 1) and `a` (2) were overtaken: `a`'s delete
+      // took 5 and the Metadata update 6. `bin` keeps 3 and the log 4.
+      assert.deepEqual(
+        pages.map((doc: any) => [doc.kind, doc.id, doc.deleted]),
+        [
+          ['resource', 'bin', false],
+          ['log', logUrl('kinds-paging'), false],
+          ['resource', 'a', true],
+          ['collection-metadata', metaUrl('kinds-paging'), false]
+        ]
+      )
+      assert.deepEqual(
+        pages.map((doc: any) => positionOf(doc.checkpoint)),
+        [3, 4, 5, 6]
+      )
+      for (const doc of pages) {
+        assertCommonMembers(doc)
+      }
+
+      // The same documents come back on one page, so paging loses none.
+      const { data: whole } = await queryChanges(alice, 'kinds-paging', {
+        limit: 10
+      })
+      assert.deepEqual(whole.documents, pages)
+    })
   })
 })

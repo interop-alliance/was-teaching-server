@@ -549,8 +549,12 @@ describe('Write stamp and ETag layout', () => {
       method: 'POST',
       json: { profile: 'changes', limit: 10 }
     })
-    assert.equal(data.documents.length, 1)
-    const [doc] = data.documents
+    // The Collection's create comes first, then the one Resource.
+    assert.deepEqual(
+      data.documents.map((entry: any) => entry.kind),
+      ['collection-metadata', 'resource']
+    )
+    const doc = data.documents[1]
     const segments = parseEtagSegments(etag)
     assert.equal(doc.updatedAt, segments.stamp.updatedAt)
     assert.equal(doc.updatedAtCounter, segments.stamp.updatedAtCounter)

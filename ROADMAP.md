@@ -105,8 +105,6 @@ Ready:
 
 - WAS-178 [M] Read a Space's revocations
 - WAS-180 [M] Delete Space removes revocations before the Space directory
-- WAS-182 [M] Changes feed carries every record kind in the Collection
-  (blocks 2)
 - WAS-183 [M] Stamped, tombstoned access-control policies (blocks 2)
 - WAS-189 [M] Write responses carry the record's stamp and provenance, container
   writes included
@@ -116,10 +114,6 @@ Ready:
 
 Chains:
 
-- WAS-182 [M] Changes feed carries every record kind in the Collection
-  - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
-    model)
-  - WAS-176 [M] Replica registration, pull loop, and the apply path
 - WAS-183 [M] Stamped, tombstoned access-control policies
   - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
     model)
@@ -1588,54 +1582,6 @@ pull; it is an existing defect independent of replication.
 
 ---
 
-### WAS-182: [M] [blocks 2] Changes feed carries every record kind in the Collection
-
-- status: todo
-- priority: medium
-- labels: changes-feed, replication, wire-contract, filesystem-backend,
-  postgres-backend
-- blocks: WAS-96, WAS-176
-- touches:
-  - wallet-attached-storage-spec: the `changes` profile (the `kind` member, the
-    `contentType` member, every content type admitted; the "Collection Metadata
-    writes are invisible to replication" sentence revised)
-  - storage-core: `ChangeDocument`
-  - was-teaching-server: `changesSince` in both backends, the feed position
-    assignment on every write kind, ARCHITECTURE.md
-  - was-client: `Collection.changes()` document type
-  - was-sync, dcw, was-react: filter the feed on `kind`
-  - conformance-suite: feed cases for binary Resources and the other kinds
-- acceptance:
-  - [ ] Every Resource write, whatever its content type (binary, `text/jsonl`,
-        JSON), and every Resource tombstone takes a feed position and appears in
-        the feed with a `contentType` member
-  - [ ] A Collection Metadata write, a Collection or Resource `/policy` write or
-        tombstone, and a governed-log append each take a feed position and
-        appear in the feed, each change document carrying a `kind` member
-        (values pending sign-off) that existing consumers filter on; a Resource
-        change carries the Resource kind
-  - [ ] Each change document carries the record's stamp and generation, so a
-        puller can decide apply-or-skip from the feed alone
-  - [ ] The change document's `_deleted` member is renamed `deleted`, the
-        tombstone marker every object in the design uses; was-sync maps it to
-        RxDB's `_deleted` at its boundary; a `kind: policy` document carries a
-        `target` member naming the policy's URL
-  - [ ] Tests cover each kind in both backends, and the client repos' filters
-
-Context (discovered-from: WAS-96, open point 7). The feed carried JSON Resources
-only, so binary Resources, `did.jsonl`, their tombstones, Collection Metadata
-writes, policies and the governed log were invisible to a replica, and the
-controller's log, the one Collection the design always replicates, could not be
-discovered. A separate replication listing was weighed and declined: one channel
-with a `kind` discriminator is one checkpoint and one stamp order per
-Collection, and a client syncing a Collection should see every Resource in it
-regardless of content type. Space-level state (Space Metadata `name`, the Space
-policy, Collection tombstones) has no Collection feed to ride and is discovered
-by the pull loop (WAS-176) through the tombstone-aware Space listing and
-conditional reads.
-
----
-
 ### WAS-183: [M] [blocks 2] Stamped, tombstoned access-control policies
 
 - status: todo
@@ -1661,6 +1607,13 @@ conditional reads.
         everywhere except the changes feed (WAS-182) and the apply path
         (WAS-176); the Space policy's tombstone is readable with its stamp by
         the pull loop (shape pending sign-off)
+  - [ ] A Collection or Resource `/policy` write or tombstone takes a feed
+        position and appears in the `changes` feed as a `kind: policy` document
+        carrying the policy's stamp, generation and URL (moved from WAS-182,
+        2026-10-04). The other non-Resource kinds carry their URL as `id`;
+        whether `policy` does the same or keeps the `target` member decided
+        2026-10-02 needs sign-off. storage-core's `ChangeDocument` gains the
+        kind
   - [ ] Tests cover the validator, the preconditions, the tombstone and the
         fail-closed read at all three levels, in both backends
 
@@ -1671,13 +1624,13 @@ still held it, a privacy regression rather than a stale record.
 
 ---
 
-### WAS-176: [M] [blocks 4] [after WAS-182, WAS-183] Replica registration, pull loop, and the apply path
+### WAS-176: [M] [blocks 4] [after WAS-183] Replica registration, pull loop, and the apply path
 
 - status: todo
 - priority: medium
 - labels: replication, routes, filesystem-backend, postgres-backend,
   space-metadata
-- blocked-by: WAS-182, WAS-183
+- blocked-by: WAS-183
 - blocks: WAS-96, WAS-177, WAS-179, WAS-184
 - touches:
   - wallet-attached-storage-spec: the replication specification (registration
@@ -1766,7 +1719,7 @@ alive on the surviving server, where the wallet can keep appending.
 
 ---
 
-### WAS-96: [M] [after WAS-176, WAS-177, WAS-182, WAS-183] Multi-primary Spaces (replicated write identity and conflict model)
+### WAS-96: [M] [after WAS-176, WAS-177, WAS-183] Multi-primary Spaces (replicated write identity and conflict model)
 
 - status: todo
 - priority: medium
@@ -1775,7 +1728,7 @@ alive on the surviving server, where the wallet can keep appending.
 - design-approved: 2026-10-02
 - decisions: wallet-attached-storage-spec decisions 0009 to 0013 (contract);
   this repo's decisions/0003 to 0005 (server-internal)
-- blocked-by: WAS-176, WAS-177, WAS-182, WAS-183
+- blocked-by: WAS-176, WAS-177, WAS-183
 - touches:
   - wallet-attached-storage-spec: the Resource data model (the origin stamp
     members and the validator), the `changes` profile (stamp members on the

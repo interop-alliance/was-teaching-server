@@ -170,6 +170,21 @@ describe('FileSystemBackend Collection tombstones', () => {
     )
   })
 
+  /**
+   * Asserts the Collection's feed counter belongs to a new life: the create
+   * took position 1, and the torn life's positions are gone.
+   */
+  function assertFreshFeedCounter(): void {
+    const counter = JSON.parse(
+      fs.readFileSync(
+        path.join(collectionDir, `.feed.${collectionId}.json`),
+        'utf8'
+      )
+    )
+    assert.equal(counter.position, 1)
+    assert.equal(counter.collectionMetadataPosition, 1)
+  }
+
   it('boot finishes a torn cascade', async () => {
     await tearCascade()
     await backend.close()
@@ -209,9 +224,13 @@ describe('FileSystemBackend Collection tombstones', () => {
       collectionMetadata: { id: collectionId, type: ['Collection'] },
       ifNoneMatch: '*'
     })
+    // The torn life's members are gone. The new life's create took the
+    // first position of a fresh feed counter.
     assert.deepEqual(await readdir(collectionDir), [
-      `.collection.${collectionId}.json`
+      `.collection.${collectionId}.json`,
+      `.feed.${collectionId}.json`
     ])
+    assertFreshFeedCounter()
     assert.equal(
       await backend.getResourceMetadata({
         spaceId,
@@ -225,6 +244,35 @@ describe('FileSystemBackend Collection tombstones', () => {
       (await backend.listCollectionItems({ spaceId, collectionId })).items,
       []
     )
+  })
+
+  it('a create over a counter a crashed create left starts the feed at position 1', async () => {
+    // A create writes the counter first. Killed before its Metadata file, it
+    // leaves the counter alone in the Collection dir.
+    const torn = 'torn'
+    const tornDir = path.join(dataDir, 'spaces', spaceId, torn)
+    const counterPath = path.join(tornDir, `.feed.${torn}.json`)
+    await backend.close()
+    backend = await FileSystemBackend.open({ dataDir })
+    await mkdir(tornDir)
+    await writeFile(
+      counterPath,
+      JSON.stringify({
+        generation: 'zCrashedCreate',
+        position: 1,
+        collectionMetadataPosition: 1
+      })
+    )
+    await backend.writeCollection({
+      spaceId,
+      collectionId: torn,
+      collectionMetadata: { id: torn, type: ['Collection'] },
+      ifNoneMatch: '*'
+    })
+    const counter = JSON.parse(await readFile(counterPath, 'utf8'))
+    assert.equal(counter.position, 1)
+    assert.equal(counter.collectionMetadataPosition, 1)
+    assert.notEqual(counter.generation, 'zCrashedCreate')
   })
 
   it('an import over a torn tombstone finishes the cascade before the new life', async () => {
@@ -249,8 +297,10 @@ describe('FileSystemBackend Collection tombstones', () => {
     })
     assert.equal(stats.collectionsCreated, 1)
     assert.deepEqual(await readdir(collectionDir), [
-      `.collection.${collectionId}.json`
+      `.collection.${collectionId}.json`,
+      `.feed.${collectionId}.json`
     ])
+    assertFreshFeedCounter()
     assert.equal(
       await backend.getResourceMetadata({
         spaceId,

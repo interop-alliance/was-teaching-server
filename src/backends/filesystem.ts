@@ -108,6 +108,7 @@ import {
   mintValidator,
   resolveGeneration,
   validatorOf,
+  containerFeedDocument,
   validatorPartsOf
 } from '../lib/etag.js'
 import {
@@ -191,6 +192,7 @@ import type {
   ImmutableUnder,
   StoredCollectionLog,
   CollectionTransitionContext,
+  FeedDocument,
   KeystoreConfig,
   KmsKeyRecord,
   RevocationRecord,
@@ -198,7 +200,6 @@ import type {
   CapabilitySummary,
   IDID,
   ServiceDescription,
-  ResourceMetaStamp,
   WriteStamp
 } from '../types.js'
 
@@ -243,15 +244,28 @@ const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
 
 /**
  * Builds the file name of a Collection's changes-feed counter,
- * `.feed.<collectionId>.json`, a dot-file in the Collection dir holding
- * `{ "generation": g, "position": n }`: the counter's generation and the last
- * feed position handed out. Local to this backend: it is not an archive
- * entry, and export leaves it out.
+ * `.feed.<collectionId>.json`, a dot-file in the Collection dir holding the
+ * counter's generation, the last feed position handed out, and the latest
+ * positions of the Collection Metadata object and the governing history log
+ * (see `FeedCounter`). Local to this backend: it is not an archive entry,
+ * and export leaves it out.
  * @param collectionId {string}
  * @returns {string}
  */
 function feedCounterFileName(collectionId: string): string {
   return `.feed.${collectionId}${JSON_FILE_SUFFIX}`
+}
+
+/**
+ * A Collection's changes-feed counter as read from its counter file: the
+ * generation and the last position handed out, plus the latest position the
+ * Collection Metadata object and the governing history log each took.
+ */
+type FeedCounter = {
+  generation?: string
+  position: number
+  collectionMetadataPosition?: number
+  logPosition?: number
 }
 
 /**
@@ -432,10 +446,14 @@ export class FileSystemBackend implements StorageBackend {
    *
    * The same mutex holds other key domains, each namespaced by a prefix:
    * `unique:` (a Collection's unique-claim scan), `feed:` (a Collection's
-   * changes-feed counter, see `#writeFeedSidecar`), `spacemeta:` and `cmeta:`
-   * (the container Metadata objects). Within a Collection the nesting order is
-   * `unique:` key, then the Resource key, then the `feed:` key. The `feed:`
-   * key is innermost: nothing is acquired while it is held.
+   * changes-feed counter, see `#takeFeedPosition`), `spacemeta:` and `cmeta:`
+   * (the container Metadata objects), and `clog:` (a Collection's governing
+   * history log). Within a Collection a Resource write nests `unique:` key,
+   * then the Resource key, then the `feed:` key; a Collection Metadata write
+   * nests `cmeta:` then `feed:`; a log write nests `cmeta:`, then `clog:`,
+   * then `feed:`. No path holds a `cmeta:` or `clog:` key together with a
+   * Resource or `unique:` key. The `feed:` key is innermost: nothing is
+   * acquired while it is held.
    */
   #writeMutex = new KeyedMutex()
 
@@ -2375,12 +2393,15 @@ export class FileSystemBackend implements StorageBackend {
                   metadata: collectionMetadata,
                   stamp: await this.#clock.mint({ held: stampOf(record) })
                 })
+                // A Collection created by an import takes this Collection's
+                // first feed position, as a create does.
                 await this.#persistCollection({
                   spaceId,
                   collectionId,
                   body,
                   generation,
-                  local: 0
+                  local: 0,
+                  feedPosition: 'first'
                 })
                 return false
               }
@@ -2393,15 +2414,29 @@ export class FileSystemBackend implements StorageBackend {
 
             // Its governing history log travels with a newly-created Collection
             // (an existing, skipped one keeps its own, as it keeps its policy and
-            // metadata), re-stamped like the Collection.
+            // metadata), re-stamped like the Collection. It takes this
+            // Collection's next feed position, as a log write does. No other
+            // log write can land here meanwhile: a guarded create needs the
+            // Space gate's exclusive side, which this import's shared hold
+            // excludes, and an append needs a log to exist already.
             if (collectionLog && !collectionExisted) {
               const log = restampImportedLog({
                 bytes: collectionLog,
                 stamp: await this.#clock.mint()
               })
-              await atomicWriteFile({
-                filePath: this.#collectionLogPath({ spaceId, collectionId }),
-                data: JSON.stringify(log)
+              await this.#takeFeedPosition({
+                spaceId,
+                collectionId,
+                collectionDir: this.#collectionDir({ spaceId, collectionId }),
+                record: 'log',
+                write: () =>
+                  atomicWriteFile({
+                    filePath: this.#collectionLogPath({
+                      spaceId,
+                      collectionId
+                    }),
+                    data: JSON.stringify(log)
+                  })
               })
               bytesWritten += collectionLog.length
             }
@@ -2885,12 +2920,15 @@ export class FileSystemBackend implements StorageBackend {
               stamp
             })
 
+            // The write takes the Collection's next feed position, so the
+            // object surfaces in the changes feed.
             await this.#persistCollection({
               spaceId,
               collectionId,
               body: stamped,
               generation,
-              local: 0
+              local: 0,
+              feedPosition: prior ? 'next' : 'first'
             })
             return validator
           }
@@ -2939,6 +2977,14 @@ export class FileSystemBackend implements StorageBackend {
    * itself (measured once up front) and calls this directly with the
    * re-stamped archived object, so it does not re-enumerate the Space per
    * created Collection.
+   *
+   * A stamped write (a create, an update, an import) passes `feedPosition`,
+   * so the file is written inside the critical section that takes a feed
+   * position (`#takeFeedPosition`). The caller holds
+   * the `cmeta:` key, which nests outside the `feed:` key. A log write's
+   * local-segment advance passes none: it is not a write of the object, and
+   * the log write runs it inside its own feed section. A create passes
+   * `'first'`, so a counter left by a create cut short is not continued.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -2946,6 +2992,9 @@ export class FileSystemBackend implements StorageBackend {
    *   members included
    * @param options.generation {string}
    * @param options.local {number}   the local validator segment
+   * @param [options.feedPosition] {'next' | 'first'}   the feed position the
+   *   write takes: the Collection's next one, or the feed's first when the
+   *   write creates the Collection. Omitted, it takes none.
    * @returns {Promise<void>}
    */
   async #persistCollection({
@@ -2953,13 +3002,15 @@ export class FileSystemBackend implements StorageBackend {
     collectionId,
     body,
     generation,
-    local
+    local,
+    feedPosition
   }: {
     spaceId: string
     collectionId: string
     body: CollectionMetadata
     generation: string
     local: number
+    feedPosition?: 'next' | 'first'
   }): Promise<void> {
     const collectionDir = await this.#ensureCollectionDir({
       spaceId,
@@ -2970,9 +3021,24 @@ export class FileSystemBackend implements StorageBackend {
     // the reserved `_generation` / `_local` members that
     // `getCollectionMetadata` strips and re-surfaces as `metaGeneration` /
     // `metaLocal`.
-    await atomicWriteFile({
-      filePath: path.join(collectionDir, filename),
-      data: JSON.stringify(embedMetadataValidator({ body, generation, local }))
+    const writeFile = () =>
+      atomicWriteFile({
+        filePath: path.join(collectionDir, filename),
+        data: JSON.stringify(
+          embedMetadataValidator({ body, generation, local })
+        )
+      })
+    if (feedPosition === undefined) {
+      await writeFile()
+      return
+    }
+    await this.#takeFeedPosition({
+      spaceId,
+      collectionId,
+      collectionDir,
+      record: 'collection-metadata',
+      startsFeed: feedPosition === 'first',
+      write: writeFile
     })
   }
 
@@ -3400,7 +3466,9 @@ export class FileSystemBackend implements StorageBackend {
    * object's local validator segment is advanced in the same critical
    * section, since its served `encryption` member is derived from this log's
    * head. The object's stamp is left alone: the change is derived, not a
-   * write of the object.
+   * write of the object. The log takes the Collection's next feed position
+   * (the `feed:` key nests inside the `clog:` key), and the object takes
+   * none. A byte-identical write writes nothing and takes no position.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -3484,26 +3552,41 @@ export class FileSystemBackend implements StorageBackend {
                 prior
               })
               const { generation, stamp } = validator
-              await atomicWriteFile({
-                filePath: this.#collectionLogPath({ spaceId, collectionId }),
-                data: JSON.stringify({
-                  generation,
-                  ...stamp,
-                  body
-                } satisfies StoredCollectionLog)
-              })
-              // The served Collection Metadata object changed with its
-              // derived member, so its local validator segment advances
-              // (generation and stamp kept); the stored body is carried
-              // verbatim.
-              await this.#persistCollection({
+              // The log takes the Collection's next feed position, and both
+              // files below are written inside that critical section, so a
+              // feed read sees either neither change or both.
+              await this.#takeFeedPosition({
                 spaceId,
                 collectionId,
-                body: stripMetadataValidator(collectionMetadata),
-                generation: resolveGeneration(
-                  collectionMetadata.metaGeneration
-                ),
-                local: (collectionMetadata.metaLocal ?? 0) + 1
+                collectionDir: this.#collectionDir({ spaceId, collectionId }),
+                record: 'log',
+                write: async () => {
+                  await atomicWriteFile({
+                    filePath: this.#collectionLogPath({
+                      spaceId,
+                      collectionId
+                    }),
+                    data: JSON.stringify({
+                      generation,
+                      ...stamp,
+                      body
+                    } satisfies StoredCollectionLog)
+                  })
+                  // The served Collection Metadata object changed with its
+                  // derived member, so its local validator segment advances
+                  // (generation and stamp kept); the stored body is carried
+                  // verbatim. It is not a write of the object, so it takes
+                  // no feed position of its own.
+                  await this.#persistCollection({
+                    spaceId,
+                    collectionId,
+                    body: stripMetadataValidator(collectionMetadata),
+                    generation: resolveGeneration(
+                      collectionMetadata.metaGeneration
+                    ),
+                    local: (collectionMetadata.metaLocal ?? 0) + 1
+                  })
+                }
               })
               return validator
             }
@@ -4369,10 +4452,12 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * The Collection's changes-feed mutex key (`feed:` prefix, distinct from
    * the per-Resource and `unique:` key domains). Held only for the short
-   * critical section that takes the next feed position and writes the sidecar
-   * carrying it (`#writeFeedSidecar`), and by `changesSince` to read the
-   * counter. It is the innermost lock: taken inside a Resource key, and
-   * nothing is acquired while it is held, so it cannot deadlock.
+   * critical section that takes the next feed position and writes the record
+   * that takes it (`#takeFeedPosition`), and by `changesSince` to read the
+   * counter with the Collection Metadata object and the governing log. It is
+   * the innermost lock: taken inside a Resource key or the `cmeta:` and
+   * `clog:` keys, and nothing is acquired while it is held, so it cannot
+   * deadlock.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -4390,8 +4475,8 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * The path of a Collection's changes-feed counter
-   * (`.feed.<collectionId>.json`, holding `{ "generation": g, "position": n }`)
-   * in its Collection dir. A dot-file, so the Resource listings and scans,
+   * (`.feed.<collectionId>.json`, holding a `FeedCounter`) in its Collection
+   * dir. A dot-file, so the Resource listings and scans,
    * which read `r.` files and `.meta.` sidecars only, never see it; export
    * leaves it out. It is removed with the Collection dir, so a Collection
    * re-created under the same id, by hand or by an import, starts its feed at
@@ -4419,11 +4504,13 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Reads a Collection's feed counter: the last feed position handed out, 0
    * when none has been, and the counter's generation, absent until the first
-   * position. Callers hold the Collection's `feed:` key.
+   * position. It also holds the latest position the Collection Metadata
+   * object and the governing history log took, each absent until that record
+   * took one. Callers hold the Collection's `feed:` key.
    * @param options {object}
    * @param options.collectionDir {string}
    * @param options.collectionId {string}
-   * @returns {Promise<{ generation?: string, position: number }>}
+   * @returns {Promise<FeedCounter>}
    */
   async #readFeedCounter({
     collectionDir,
@@ -4431,29 +4518,107 @@ export class FileSystemBackend implements StorageBackend {
   }: {
     collectionDir: string
     collectionId: string
-  }): Promise<{ generation?: string; position: number }> {
+  }): Promise<FeedCounter> {
     const counter = await this.#readJsonFile<{
       generation?: unknown
       position?: unknown
+      collectionMetadataPosition?: unknown
+      logPosition?: unknown
     }>(this.#feedCounterPath({ collectionDir, collectionId }))
-    const { generation, position } = counter ?? {}
+    const { generation, position, collectionMetadataPosition, logPosition } =
+      counter ?? {}
     return {
       ...(typeof generation === 'string' && { generation }),
-      position: Number.isSafeInteger(position) ? (position as number) : 0
+      position: Number.isSafeInteger(position) ? (position as number) : 0,
+      ...(Number.isSafeInteger(collectionMetadataPosition) && {
+        collectionMetadataPosition: collectionMetadataPosition as number
+      }),
+      ...(Number.isSafeInteger(logPosition) && {
+        logPosition: logPosition as number
+      })
     }
   }
 
   /**
+   * Takes the Collection's next feed position and runs the write that makes
+   * a record visible at it, in one critical section on the Collection's
+   * `feed:` key. So no write can land at or before a position `changesSince`
+   * already handed to a reader, and every position at or below the counter's
+   * value is on disk when `changesSince` reads the counter under the same
+   * key. The counter is written first: a crash between the two writes leaves
+   * a gap in the sequence, never a reused position, and at worst surfaces a
+   * record's prior state at the new position. The first position minted in a
+   * Collection mints the counter's generation with it; every later one keeps
+   * it. A write that creates the Collection passes `startsFeed` and takes
+   * position 1 under a fresh generation, whatever counter file the dir holds.
+   * Such a file is left by a create that crashed before its Metadata file was
+   * written, and no reader was handed a position from it.
+   *
+   * A Resource's position is stored on its sidecar by `write`. The
+   * Collection Metadata object's and the governing log's are stored in the
+   * counter file itself, as `collectionMetadataPosition` and `logPosition`,
+   * so neither record's stored form carries a server-local member.
+   *
+   * The `feed:` key is the innermost lock: the caller holds whatever else
+   * the write needs (the Space gate, then `cmeta:` and `clog:` for a
+   * Collection-level record, or the `unique:` and Resource keys for a
+   * Resource), and `write` acquires nothing.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.collectionDir {string}   must already exist
+   * @param options.record {'resource' | 'collection-metadata' | 'log'}   the
+   *   kind of record taking the position
+   * @param [options.startsFeed] {boolean}   whether the write creates the
+   *   Collection, so a stored counter is not continued
+   * @param options.write {(feedPosition: number) => Promise<void>}   the
+   *   write that makes the record visible
+   * @returns {Promise<void>}
+   */
+  async #takeFeedPosition({
+    spaceId,
+    collectionId,
+    collectionDir,
+    record,
+    startsFeed = false,
+    write
+  }: {
+    spaceId: string
+    collectionId: string
+    collectionDir: string
+    record: 'resource' | 'collection-metadata' | 'log'
+    startsFeed?: boolean
+    write: (feedPosition: number) => Promise<void>
+  }): Promise<void> {
+    await this.#writeMutex.run(
+      this.#feedLockKey({ spaceId, collectionId }),
+      async () => {
+        const counter: FeedCounter = startsFeed
+          ? { position: 0 }
+          : await this.#readFeedCounter({ collectionDir, collectionId })
+        const feedPosition = counter.position + 1
+        await atomicWriteFile({
+          filePath: this.#feedCounterPath({ collectionDir, collectionId }),
+          data: JSON.stringify({
+            ...counter,
+            generation: counter.generation ?? newGeneration(),
+            position: feedPosition,
+            ...(record === 'collection-metadata' && {
+              collectionMetadataPosition: feedPosition
+            }),
+            ...(record === 'log' && { logPosition: feedPosition })
+          } satisfies FeedCounter)
+        })
+        await write(feedPosition)
+      }
+    )
+  }
+
+  /**
    * Writes a Resource's sidecar stamped with the Collection's next feed
-   * position. The position is taken and the sidecar written in one critical
-   * section on the Collection's `feed:` key, which is the point the write
-   * becomes visible to the changes feed (which orders on `feedPosition`).
-   * So no write can land at or before a position `changesSince` already
-   * handed to a reader. The counter is written first: a crash between the
-   * two writes leaves a gap in the sequence, never a reused position. The
-   * first position minted in a Collection mints the counter's generation with
-   * it; every later one keeps it. The caller holds the Resource's own key;
-   * this nests inside it.
+   * position (`#takeFeedPosition`), which is the point the write becomes
+   * visible to the changes feed (which orders on `feedPosition`). The caller
+   * holds the Resource's own key; this nests inside it.
    *
    * A chunk sidecar never goes through here: a chunk write does not move its
    * parent Resource in the feed.
@@ -4479,21 +4644,12 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     sidecar: MetaSidecar
   }): Promise<void> {
-    await this.#writeMutex.run(
-      this.#feedLockKey({ spaceId, collectionId }),
-      async () => {
-        const counter = await this.#readFeedCounter({
-          collectionDir,
-          collectionId
-        })
-        const feedPosition = counter.position + 1
-        await atomicWriteFile({
-          filePath: this.#feedCounterPath({ collectionDir, collectionId }),
-          data: JSON.stringify({
-            generation: counter.generation ?? newGeneration(),
-            position: feedPosition
-          })
-        })
+    await this.#takeFeedPosition({
+      spaceId,
+      collectionId,
+      collectionDir,
+      record: 'resource',
+      write: async feedPosition => {
         // Written last, so `withoutFeedPosition` restores the bytes a sidecar
         // without it would have.
         const { feedPosition: _prior, ...rest } = sidecar
@@ -4503,7 +4659,7 @@ export class FileSystemBackend implements StorageBackend {
           sidecar: { ...rest, feedPosition }
         })
       }
-    )
+    })
   }
 
   /**
@@ -5562,30 +5718,38 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Replication change feed (the `changes` query profile; see the
    * `StorageBackend.changesSince` contract).
-   * Reads the Collection's feed counter under its `feed:` key, enumerates the
-   * Collection once, builds a lightweight descriptor for every JSON-document
-   * Resource (live) and JSON tombstone, orders them by `feedPosition`, seeks
-   * strictly past `afterPosition`, takes a page of `limit`, and reads JSON
-   * bodies ONLY for that page. O(n) over the Collection per call (it must
-   * read every sidecar to order by position) -- acceptable for this teaching
-   * backend; an indexed backend would answer it from a position index.
+   * Reads the Collection's feed counter under the Collection's `feed:` key,
+   * and with it the Collection Metadata object and the governing history log
+   * when the counter puts either past `afterPosition`, enumerates
+   * the Collection once, builds a lightweight descriptor for every Resource
+   * (live) and Resource tombstone of any content type, adds the Collection
+   * Metadata object and the log at the positions the counter records for
+   * them, orders everything by feed position, seeks strictly past
+   * `afterPosition`, takes a page of `limit`, and reads JSON bodies ONLY for
+   * the live JSON Resources on that page. O(n) over the Collection per call
+   * (it must read every sidecar to order by position) -- acceptable for this
+   * teaching backend; an indexed backend would answer it from a position
+   * index.
    *
-   * The counter read is the snapshot: a position is taken and its sidecar
-   * written in one `feed:` critical section, so every position up to the
-   * counter's value is on disk when it is read. The scan runs outside the
-   * lock and admits only positions at or below that value. A Resource
-   * rewritten during the scan moves past it, is left out of this page, and
-   * is served by the next pull, so no position a reader is handed can later
-   * gain a write behind it. A sidecar with no `feedPosition` (one written
-   * before feed positions existed) is left out until the Resource is
-   * rewritten.
+   * The counter read is the snapshot: a position is taken and the record
+   * carrying it written in one `feed:` critical section
+   * (`#takeFeedPosition`), so every position up to the counter's value is on
+   * disk when it is read. The Collection Metadata object and the log are
+   * read in the same section, so each matches the position the counter
+   * records for it. The Resource scan runs outside the lock and admits only
+   * positions at or below the counter's value. A Resource rewritten during
+   * the scan moves past it, is left out of this page, and is served by the
+   * next pull, so no position a reader is handed can later gain a write
+   * behind it. A sidecar with no `feedPosition` (one written before feed
+   * positions existed), and a Collection Metadata object or log with no
+   * recorded position, is left out until its next write.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param [options.afterPosition] {number}   resume strictly after this
    *   feed position
-   * @param options.limit {number}   page cap (clamped to the backend maximum)
-   * @returns {Promise<{ documents: Array<object>, checkpoint: number | null }>}
+   * @param options.limit {number}   page cap (reduced to the backend maximum)
+   * @returns {Promise<{ documents: FeedDocument[], checkpoint: number | null, feedGeneration?: string }>}
    */
   async changesSince({
     spaceId,
@@ -5598,33 +5762,45 @@ export class FileSystemBackend implements StorageBackend {
     afterPosition?: number
     limit: number
   }): Promise<{
-    documents: Array<
-      {
-        resourceId: string
-        feedPosition: number
-        validator?: EtagValidator
-        meta?: ResourceMetaStamp
-        metaValidator?: EtagValidator
-        createdBy?: IDID
-        deleted: boolean
-        data?: unknown
-        custom?: ResourceMetadataCustom | Record<string, unknown>
-        epoch?: string
-        writerId?: string
-      } & WriteStamp
-    >
+    documents: FeedDocument[]
     checkpoint: number | null
     feedGeneration?: string
   }> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
 
-    // The highest position whose sidecar is already on disk (see above), and
-    // the generation the counter hands positions out under.
-    const { generation: feedGeneration, position: highWater } =
-      await this.#writeMutex.run(
-        this.#feedLockKey({ spaceId, collectionId }),
-        () => this.#readFeedCounter({ collectionDir, collectionId })
-      )
+    // The highest position whose record is already on disk (see above), the
+    // generation the counter hands positions out under, and the
+    // Collection-level records as of the same snapshot.
+    const {
+      counter: {
+        generation: feedGeneration,
+        position: highWater,
+        collectionMetadataPosition,
+        logPosition
+      },
+      collectionMetadata,
+      log
+    } = await this.#writeMutex.run(
+      this.#feedLockKey({ spaceId, collectionId }),
+      async () => {
+        const counter = await this.#readFeedCounter({
+          collectionDir,
+          collectionId
+        })
+        // A Collection-level record is read only when its position is past
+        // the reader's, so a caught-up poll reads the counter alone.
+        const after = afterPosition ?? 0
+        const [collectionMetadata, log] = await Promise.all([
+          (counter.collectionMetadataPosition ?? 0) > after
+            ? this.#readLiveCollection({ spaceId, collectionId })
+            : undefined,
+          (counter.logPosition ?? 0) > after
+            ? this.#readCollectionLog({ spaceId, collectionId })
+            : undefined
+        ])
+        return { counter, collectionMetadata, log }
+      }
+    )
     // A caught-up reader (the steady-state poll of a replica) is answered
     // off the counter alone, with no directory scan.
     if ((afterPosition ?? 0) >= highWater) {
@@ -5638,6 +5814,38 @@ export class FileSystemBackend implements StorageBackend {
       Number.isSafeInteger(feedPosition) &&
       (feedPosition as number) > (afterPosition ?? 0) &&
       (feedPosition as number) <= highWater
+
+    // The Collection-level documents: the Collection Metadata object and the
+    // governing log, each at the position of its latest write, with its
+    // stamp and the validator its own GET serves.
+    const collectionDocuments: FeedDocument[] = []
+    const metadataStamp = stampOf(collectionMetadata)
+    if (
+      collectionMetadata !== undefined &&
+      inFeed(collectionMetadataPosition) &&
+      isWriteStamp(metadataStamp)
+    ) {
+      collectionDocuments.push(
+        containerFeedDocument({
+          kind: 'collection-metadata',
+          feedPosition: collectionMetadataPosition,
+          stamp: metadataStamp,
+          generation: collectionMetadata.metaGeneration,
+          local: collectionMetadata.metaLocal ?? 0
+        })
+      )
+    }
+    const logStamp = stampOf(log)
+    if (log !== undefined && inFeed(logPosition) && isWriteStamp(logStamp)) {
+      collectionDocuments.push(
+        containerFeedDocument({
+          kind: 'log',
+          feedPosition: logPosition,
+          stamp: logStamp,
+          generation: log.generation
+        })
+      )
+    }
 
     const entries = await this.#readDirEntries(collectionDir)
 
@@ -5663,41 +5871,18 @@ export class FileSystemBackend implements StorageBackend {
       }
     }
 
-    // Build descriptors (no body reads yet): one per JSON-document Resource
-    // (live) or JSON tombstone. Binary Resources and anomalous orphan sidecars
-    // (sidecar present but not a tombstone) are excluded. Each sidecar read is
-    // an independent file read, so the whole pass runs in parallel. A live
-    // descriptor carries the `fileName` to read its body from; a tombstone has
-    // none -- the discriminated union ties that to `deleted`.
-    type Descriptor = (
-      | {
-          resourceId: string
-          feedPosition: number
-          validator?: EtagValidator
-          meta?: ResourceMetaStamp
-          metaValidator?: EtagValidator
-          createdBy?: IDID
-          deleted: false
-          fileName: string
-          custom?: ResourceMetadataCustom | Record<string, unknown>
-          epoch?: string
-          writerId?: string
-        }
-      | {
-          resourceId: string
-          feedPosition: number
-          validator?: EtagValidator
-          createdBy?: IDID
-          deleted: true
-          writerId?: string
-        }
-    ) &
-      WriteStamp
+    // Build descriptors (no body reads yet): one per live Resource or
+    // Resource tombstone, whatever its content type. Anomalous orphan
+    // sidecars (sidecar present but not a tombstone) are excluded. Each
+    // sidecar read is an independent file read, so the whole pass runs in
+    // parallel. A live JSON descriptor carries the `bodyFile` to read its
+    // `data` from; any other descriptor already IS its feed document.
+    type Descriptor = {
+      document: FeedDocument
+      bodyFile?: string
+    }
     const liveDescriptors = [...liveFileById].map(
       async ([resourceId, live]): Promise<Descriptor | undefined> => {
-        if (!isJsonContentType(live.contentType)) {
-          return undefined
-        }
         const sidecar = await this.readMetaSidecar({
           collectionDir,
           resourceId
@@ -5723,36 +5908,44 @@ export class FileSystemBackend implements StorageBackend {
         })
         const metaValidator = sidecar.meta && validatorOf(sidecar.meta)
         return {
-          resourceId,
-          feedPosition,
-          ...stamp,
-          ...(validator !== undefined && { validator }),
-          ...(sidecar.meta !== undefined && { meta: sidecar.meta }),
-          ...(metaValidator !== undefined && { metaValidator }),
-          // The creator's DID rides the feed so provenance replicates with the
-          // document, rather than needing a `/meta` fetch per Resource.
-          ...(sidecar.createdBy !== undefined && {
-            createdBy: sidecar.createdBy
-          }),
-          deleted: false,
-          fileName: live.fileName,
-          // The user-writable `custom` (the opaque encryption envelope on an
-          // encrypted Collection) rides the feed so metadata replicates
-          // alongside content; read from the sidecar already loaded here.
-          ...(sidecar.custom !== undefined && { custom: sidecar.custom }),
-          // The client-declared key epoch (the `key-epochs` feature) rides the
-          // feed so a replicating reader picks the right epoch key.
-          ...(sidecar.epoch !== undefined && { epoch: sidecar.epoch }),
-          // The writer-attribution label (spec "Writer attribution") rides
-          // the feed so a replica recognizes its own writes echoed back.
-          ...(sidecar?.writerId !== undefined && {
-            writerId: sidecar.writerId
+          document: {
+            kind: 'resource',
+            resourceId,
+            contentType: live.contentType,
+            feedPosition,
+            ...stamp,
+            ...(validator !== undefined && { validator }),
+            ...(sidecar.meta !== undefined && { meta: sidecar.meta }),
+            ...(metaValidator !== undefined && { metaValidator }),
+            // The creator's DID rides the feed so provenance replicates with
+            // the document, rather than needing a `/meta` fetch per Resource.
+            ...(sidecar.createdBy !== undefined && {
+              createdBy: sidecar.createdBy
+            }),
+            deleted: false,
+            // The user-writable `custom` (the opaque encryption envelope on
+            // an encrypted Collection) rides the feed so metadata replicates
+            // alongside content; read from the sidecar already loaded here.
+            ...(sidecar.custom !== undefined && { custom: sidecar.custom }),
+            // The client-declared key epoch (the `key-epochs` feature) rides
+            // the feed so a replicating reader picks the right epoch key.
+            ...(sidecar.epoch !== undefined && { epoch: sidecar.epoch }),
+            // The writer-attribution label (spec "Writer attribution") rides
+            // the feed so a replica recognizes its own writes echoed back.
+            ...(sidecar.writerId !== undefined && {
+              writerId: sidecar.writerId
+            })
+          },
+          // Only a live JSON Resource carries `data`; a binary or
+          // `text/jsonl` one is fetched by its own GET.
+          ...(isJsonContentType(live.contentType) && {
+            bodyFile: live.fileName
           })
         }
       }
     )
     // A sidecar with no live file is a tombstone candidate; keep only the ones
-    // that are actually tombstones (`deleted: true`) and JSON.
+    // that are actually tombstones (`deleted: true`).
     const tombstoneDescriptors = [...sidecarIds]
       .filter(resourceId => !liveFileById.has(resourceId))
       .map(async (resourceId): Promise<Descriptor | undefined> => {
@@ -5763,7 +5956,7 @@ export class FileSystemBackend implements StorageBackend {
         const stamp = stampOf(sidecar)
         if (
           sidecar?.deleted !== true ||
-          !isJsonContentType(sidecar.contentType) ||
+          typeof sidecar.contentType !== 'string' ||
           !inFeed(sidecar.feedPosition) ||
           !isWriteStamp(stamp)
         ) {
@@ -5774,60 +5967,66 @@ export class FileSystemBackend implements StorageBackend {
           ...stamp
         })
         return {
-          resourceId,
-          feedPosition: sidecar.feedPosition,
-          ...stamp,
-          // A soft delete dropped the `/meta` record, so a tombstone carries
-          // no `meta`.
-          ...(validator !== undefined && { validator }),
-          // A tombstone keeps its creator, as it keeps its `createdAt`.
-          ...(sidecar.createdBy !== undefined && {
-            createdBy: sidecar.createdBy
-          }),
-          deleted: true,
-          // A tombstone carries the label its DELETE declared, if any (spec
-          // "Writer attribution").
-          ...(sidecar.writerId !== undefined && { writerId: sidecar.writerId })
+          document: {
+            kind: 'resource',
+            resourceId,
+            // The last-known media type, kept on the tombstone by the delete.
+            contentType: sidecar.contentType,
+            feedPosition: sidecar.feedPosition,
+            ...stamp,
+            // A soft delete dropped the `/meta` record, so a tombstone
+            // carries no `meta`.
+            ...(validator !== undefined && { validator }),
+            // A tombstone keeps its creator, as it keeps its `createdAt`.
+            ...(sidecar.createdBy !== undefined && {
+              createdBy: sidecar.createdBy
+            }),
+            deleted: true,
+            // A tombstone carries the label its DELETE declared, if any (spec
+            // "Writer attribution").
+            ...(sidecar.writerId !== undefined && {
+              writerId: sidecar.writerId
+            })
+          }
         }
       })
-    const descriptors = (
-      await Promise.all([...liveDescriptors, ...tombstoneDescriptors])
-    ).filter((desc): desc is Descriptor => desc !== undefined)
+    const descriptors = [
+      ...collectionDocuments.map((document): Descriptor => ({ document })),
+      ...(
+        await Promise.all([...liveDescriptors, ...tombstoneDescriptors])
+      ).filter((desc): desc is Descriptor => desc !== undefined)
+    ]
 
     // Order by feed position ascending. Positions are unique within the
-    // Collection, so this is a total order, and the seek past `afterPosition`
-    // already happened in `inFeed`.
-    descriptors.sort((left, right) => left.feedPosition - right.feedPosition)
+    // Collection, across kinds, so this is a total order, and the seek past
+    // `afterPosition` already happened in `inFeed`.
+    descriptors.sort(
+      (left, right) => left.document.feedPosition - right.document.feedPosition
+    )
 
     const pageSize = clampPageSize(limit)
     const pageDescriptors = descriptors.slice(0, pageSize)
 
     // Read JSON bodies only for this page. A tombstone carries no `data` (the
-    // delete replicates on `deleted: true` alone), and no `fileName` either, so
-    // it already IS its feed document. A live descriptor is its feed document
-    // plus the `fileName` its body was read from -- including the `custom`
-    // (opaque envelope on an encrypted Collection) that replicates a
-    // metadata-only edit and the client-declared key epoch (the `key-epochs`
-    // feature) -- so the document is the descriptor minus `fileName`, plus
-    // `data`.
+    // delete replicates on `deleted: true` alone), and neither does a binary
+    // or `text/jsonl` Resource or a Collection-level record.
     const documents = await Promise.all(
-      pageDescriptors.map(async desc => {
-        if (desc.deleted) {
-          return desc
+      pageDescriptors.map(async ({ document, bodyFile }) => {
+        if (bodyFile === undefined) {
+          return document
         }
         let data: unknown
         try {
           data = JSON.parse(
             await fs.promises.readFile(
-              path.join(collectionDir, desc.fileName),
+              path.join(collectionDir, bodyFile),
               'utf8'
             )
           )
         } catch {
           data = undefined
         }
-        const { fileName: _fileName, ...rest } = desc
-        return { ...rest, data }
+        return { ...document, data }
       })
     )
 

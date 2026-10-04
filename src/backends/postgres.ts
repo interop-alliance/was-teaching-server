@@ -110,7 +110,8 @@ import {
   newGeneration,
   resolveGeneration,
   stampedValidator,
-  validatorOf
+  validatorOf,
+  containerFeedDocument
 } from '../lib/etag.js'
 import {
   embedMetadataValidator,
@@ -197,7 +198,8 @@ import type {
   IDID,
   ServiceDescription,
   ResourceMetaStamp,
-  WriteStamp
+  WriteStamp,
+  FeedDocument
 } from '../types.js'
 
 /** Pool sizing and per-connection statement timeout (operational defaults). */
@@ -236,6 +238,17 @@ type SpaceMetadataWrite = {
   ifNoneMatch?: HeldValidators
   assertTransition?: (prior?: StoredSpaceMetadata) => void | Promise<void>
 }
+
+/**
+ * The `SET` assignments by which a governing history log write takes the
+ * Collection's next changes-feed position and records it as the log's own,
+ * minting the feed generation when the Collection has none yet. The right-hand
+ * sides read the row as it was before the statement, so both positions are
+ * the same new value. `$8` is a fresh generation.
+ */
+const TAKE_LOG_FEED_POSITION_SQL = `feed_position          = feed_position + 1,
+           log_feed_position      = feed_position + 1,
+           feed_generation        = COALESCE(feed_generation, $8)`
 
 /**
  * A record's write stamp as its three columns (see `lib/hlc.ts`).
@@ -479,6 +492,81 @@ function logResultFromRow(
 ): CollectionLogResult | undefined {
   const stored = storedLogFromRow(row)
   return stored && collectionLogResultOf(stored)
+}
+
+/**
+ * A feed position as node-postgres hands a `bigint` column over (a string),
+ * or `undefined` for NULL.
+ * @param value {string | null | undefined}
+ * @returns {number | undefined}
+ */
+function positionOf(value: string | null | undefined): number | undefined {
+  return value === null || value === undefined ? undefined : Number(value)
+}
+
+/**
+ * The changes-feed document of one `resources` row with a feed position: a
+ * live Resource or a tombstone, whatever its content type. The body is
+ * parsed only for a live JSON Resource, the one kind whose `data` rides the
+ * feed. A tombstone carries its last-known content type.
+ * @param row {ResourceRow & { resource_id: string }}
+ * @returns {FeedDocument}
+ */
+function resourceFeedDocument(
+  row: ResourceRow & { resource_id: string }
+): FeedDocument {
+  // Selected only when non-null (see `changesSince`).
+  const feedPosition = Number(row.feed_position)
+  // The content validator rides beside the stamp, so the request layer can
+  // format the wire `etag` without a fetch per Resource.
+  const validator = validatorOf({
+    generation: row.generation,
+    ...stampOfRow(row)
+  })
+  const common = {
+    kind: 'resource' as const,
+    resourceId: row.resource_id,
+    feedPosition,
+    contentType: row.content_type,
+    ...stampOfRow(row),
+    ...(validator !== undefined && { validator }),
+    // A tombstone keeps its creator, as it keeps its `created_at`. The
+    // creator's DID rides the feed so provenance replicates with the
+    // document, rather than needing a `/meta` fetch per Resource.
+    ...(row.created_by !== null && { createdBy: row.created_by }),
+    // The writer-attribution label (spec "Writer attribution") rides the feed
+    // so a replica recognizes its own writes echoed back. A tombstone carries
+    // the label its DELETE declared, if any.
+    ...(row.writer_id !== null && { writerId: row.writer_id })
+  }
+  if (row.deleted) {
+    // A soft delete dropped the `/meta` record, so a tombstone carries no
+    // `meta`.
+    return { ...common, deleted: true }
+  }
+  let data: unknown
+  if (row.is_json && row.content) {
+    try {
+      data = JSON.parse(row.content.toString('utf8'))
+    } catch {
+      data = undefined
+    }
+  }
+  const meta = metaStampOfRow(row)
+  // The `/meta` validator rides beside `meta`, so the request layer can
+  // format the wire `metaEtag` without a fetch per Resource.
+  const metaValidator = meta && validatorOf(meta)
+  return {
+    ...common,
+    ...(meta !== undefined && { meta }),
+    ...(metaValidator !== undefined && { metaValidator }),
+    deleted: false,
+    ...(data !== undefined && { data }),
+    ...(row.custom !== null && { custom: row.custom }),
+    // The client-declared key epoch (the `key-epochs` feature) rides the feed
+    // so a replicating reader picks the right epoch key.
+    ...(row.epoch !== null && { epoch: row.epoch })
+  }
 }
 
 /**
@@ -958,7 +1046,11 @@ export class PostgresBackend implements StorageBackend {
    * which locks the `collections` row) after `#lockCollectionUniqueness` and
    * before it locks the `resources` row, the `collections` before `resources`
    * step of the order above. Every Resource-level write, `writeResourceMetadata`
-   * included, takes this Space row first.
+   * included, takes this Space row first. A Collection Metadata write and a
+   * governing history log write take their position on the `collections` row
+   * they already hold locked, so they add no lock: the Metadata write holds
+   * the Space row first, as above, and a log write locks only the
+   * `collections` row, which keeps it ahead of the `resources` rows too.
    *
    * A write into an existing Space takes this same lock through
    * `#lockLiveContainers`, which also refuses a Space or Collection with no
@@ -1136,7 +1228,10 @@ export class PostgresBackend implements StorageBackend {
    * position also sees every lower one (a plain sequence, whose `nextval` is
    * not commit-ordered, would let a write land behind a checkpoint already
    * served). A rolled-back write returns its position with it. Every
-   * Resource-level write takes one; a chunk write does not. The first
+   * Resource-level write takes one here; a chunk write does not. A Collection
+   * Metadata write (`#upsertCollection`) and a governing history log write
+   * take theirs in their own `collections` statement, which increments the
+   * same counter under the same row lock. The first
    * position taken in a Collection mints `collections.feed_generation` with
    * it, and every later one keeps it; the column goes with the row, so a
    * Collection re-created under the same id starts under a fresh generation
@@ -1689,6 +1784,13 @@ export class PostgresBackend implements StorageBackend {
    * out of the stored jsonb. The local validator segment is reset to 0, as
    * every stamped write resets it. Over a tombstoned row it is a create, and
    * clears the `deleted` mark.
+   *
+   * The write takes the Collection's next changes-feed position in the same
+   * statement and records it as the Metadata object's own position. It cannot
+   * go through `#takeFeedPosition`, since a create has no row to increment
+   * yet. A create starts the counter at 1 under a fresh feed generation, a
+   * create over a tombstone included. The statement locks the row to commit,
+   * as `#takeFeedPosition`'s `UPDATE` does, so positions stay commit-ordered.
    * @param options {object}
    * @param options.queryable {Queryable}
    * @param options.spaceId {string}
@@ -1716,16 +1818,26 @@ export class PostgresBackend implements StorageBackend {
     await queryable.query(
       `INSERT INTO collections (space_id, collection_id, metadata,
                                 meta_generation, meta_local, updated_at,
-                                updated_at_counter, origin_id)
-       VALUES ($1, $2, $3::jsonb, $4, 0, $5, $6, $7)
+                                updated_at_counter, origin_id, feed_position,
+                                metadata_feed_position, feed_generation)
+       VALUES ($1, $2, $3::jsonb, $4, 0, $5, $6, $7, 1, 1, $8)
        ON CONFLICT (space_id, collection_id) DO UPDATE SET
          -- Over a tombstone this is a create: the old life's feed counter
          -- and log columns do not carry into the new one, even if a write
-         -- that raced the delete left them set.
-         feed_position          = CASE WHEN collections.deleted THEN 0
-                                       ELSE collections.feed_position END,
-         feed_generation        = CASE WHEN collections.deleted THEN NULL
-                                       ELSE collections.feed_generation END,
+         -- that raced the delete left them set. The write takes the next
+         -- feed position, 1 on a create, and records it as the Metadata
+         -- object's.
+         feed_position          = CASE WHEN collections.deleted THEN 1
+                                       ELSE collections.feed_position + 1 END,
+         metadata_feed_position = CASE WHEN collections.deleted THEN 1
+                                       ELSE collections.feed_position + 1 END,
+         feed_generation        = CASE WHEN collections.deleted
+                                       THEN EXCLUDED.feed_generation
+                                       ELSE COALESCE(collections.feed_generation,
+                                                     EXCLUDED.feed_generation)
+                                  END,
+         log_feed_position      = CASE WHEN collections.deleted THEN NULL
+                                       ELSE collections.log_feed_position END,
          log_body               = CASE WHEN collections.deleted THEN NULL
                                        ELSE collections.log_body END,
          log_generation         = CASE WHEN collections.deleted THEN NULL
@@ -1748,7 +1860,8 @@ export class PostgresBackend implements StorageBackend {
         collectionId,
         JSON.stringify(withoutStampMembers(body)),
         generation,
-        ...stampValues(stamp)
+        ...stampValues(stamp),
+        newGeneration()
       ]
     )
   }
@@ -1881,7 +1994,10 @@ export class PostgresBackend implements StorageBackend {
       const { generation, stamp } = validator
       // The served Collection Metadata object changed with its derived
       // member, so its local validator segment advances; its generation and
-      // stamp are kept.
+      // stamp are kept. The log write takes the Collection's next feed
+      // position, recorded as the log's own; the Metadata object keeps its
+      // position, since its local segment is not a write of the object. The
+      // row is already locked above, so this takes no new lock.
       await client.query(
         `UPDATE collections SET
            log_body               = $3,
@@ -1889,9 +2005,17 @@ export class PostgresBackend implements StorageBackend {
            log_updated_at         = $5,
            log_updated_at_counter = $6,
            log_origin_id          = $7,
-           meta_local             = meta_local + 1
+           meta_local             = meta_local + 1,
+           ${TAKE_LOG_FEED_POSITION_SQL}
          WHERE space_id = $1 AND collection_id = $2`,
-        [spaceId, collectionId, body, generation, ...stampValues(stamp)]
+        [
+          spaceId,
+          collectionId,
+          body,
+          generation,
+          ...stampValues(stamp),
+          newGeneration()
+        ]
       )
       return validator
     })
@@ -2007,7 +2131,9 @@ export class PostgresBackend implements StorageBackend {
            log_updated_at_counter = NULL,
            log_origin_id          = NULL,
            feed_position          = 0,
-           feed_generation        = NULL
+           feed_generation        = NULL,
+           metadata_feed_position = NULL,
+           log_feed_position      = NULL
          WHERE space_id = $1 AND collection_id = $2`,
         [spaceId, collectionId, generation, ...stampValues(stamp)]
       )
@@ -3479,20 +3605,29 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
-   * Replication change feed (the `changes` query profile): one indexed query
-   * seeking strictly past `afterPosition` on `feed_position`, tombstones
-   * included, JSON documents only, bodies parsed for the returned page.
-   * Positions are commit-ordered (`#takeFeedPosition`), so the statement's
-   * snapshot never holds a position without every lower one. Each document
-   * carries the content record's stamp and, once metadata has been written,
-   * the `/meta` record's stamp and generation as `meta`.
+   * Replication change feed (the `changes` query profile): every record kind
+   * in the Collection, ordered by feed position and seeking strictly past
+   * `afterPosition`. A Resource of any content type, tombstones included, is
+   * a `resource` document, with the body parsed only for a live JSON
+   * Resource. The Collection Metadata object is one `collection-metadata`
+   * document at the position of its latest write, and the governing history
+   * log one `log` document at the position of its latest write. One
+   * statement reads the Collection row, its feed generation included, beside
+   * the first `limit` Resource rows past `afterPosition`, so all of it comes
+   * from one snapshot. Positions are commit-ordered (`#takeFeedPosition`), so
+   * that snapshot never holds a position without every lower one. The at most
+   * two container documents are merged in by position, and the page is cut at
+   * `limit` across all kinds. Each `resource` document carries the content
+   * record's stamp and, once metadata has been written, the `/meta` record's
+   * stamp and generation as `meta`.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param [options.afterPosition] {number}   resume strictly after this
    *   feed position
    * @param options.limit {number}
-   * @returns {Promise<{ documents: Array<object>, checkpoint: number | null }>}
+   * @returns {Promise<{ documents: FeedDocument[], checkpoint: number | null,
+   *   feedGeneration?: string }>}
    */
   async changesSince({
     spaceId,
@@ -3505,110 +3640,125 @@ export class PostgresBackend implements StorageBackend {
     afterPosition?: number
     limit: number
   }): Promise<{
-    documents: Array<
-      {
-        resourceId: string
-        feedPosition: number
-        validator?: EtagValidator
-        meta?: ResourceMetaStamp
-        metaValidator?: EtagValidator
-        createdBy?: IDID
-        deleted: boolean
-        data?: unknown
-        custom?: ResourceMetadataCustom | Record<string, unknown>
-        epoch?: string
-        writerId?: string
-      } & WriteStamp
-    >
+    documents: FeedDocument[]
     checkpoint: number | null
     feedGeneration?: string
   }> {
     const pageSize = clampPageSize(limit)
-    // The generation the Collection's positions were handed out under, NULL
-    // until the first one (`#takeFeedPosition`). Read first: a re-create
-    // between the two statements replaces the rows as well as the column, and
-    // a stale generation then refuses the checkpoint the page is issued under.
-    const { rows: counterRows } = await this.#reader().query<{
-      feed_generation: string | null
-    }>(
-      `SELECT feed_generation FROM collections
-        WHERE space_id = $1 AND collection_id = $2`,
-      [spaceId, collectionId]
-    )
-    const feedGeneration = counterRows[0]?.feed_generation ?? undefined
+    const after = afterPosition ?? 0
+    // The Collection row's columns are prefixed `c_` so they cannot collide
+    // with the Resource row's. A Collection with no Resource past the
+    // position still yields its one row, with every Resource column NULL.
+    // Only a live JSON Resource's body is read; a binary body stays in the
+    // table.
     const { rows } = await this.#reader().query<
-      ResourceRow & { resource_id: string }
+      Partial<ResourceRow & { resource_id: string }> & {
+        c_feed_generation: string | null
+        c_metadata_feed_position: string | null
+        c_meta_generation: string | null
+        c_meta_local: number
+        c_updated_at: string
+        c_updated_at_counter: number
+        c_origin_id: string
+        c_log_feed_position: string | null
+        c_log_generation: string | null
+        c_log_updated_at: string | null
+        c_log_updated_at_counter: number | null
+        c_log_origin_id: string | null
+      }
     >(
-      `SELECT resource_id, content, generation, updated_at, updated_at_counter,
-              origin_id, meta_generation, meta_updated_at,
-              meta_updated_at_counter, meta_origin_id, custom, epoch,
-              writer_id, deleted, created_by, feed_position
-         FROM resources
-        WHERE space_id = $1 AND collection_id = $2 AND is_json
-          AND feed_position IS NOT NULL AND feed_position > $3
-        ORDER BY feed_position
-        LIMIT $4`,
-      [spaceId, collectionId, afterPosition ?? 0, pageSize]
+      `SELECT c.feed_generation        AS c_feed_generation,
+              c.metadata_feed_position AS c_metadata_feed_position,
+              c.meta_generation        AS c_meta_generation,
+              c.meta_local             AS c_meta_local,
+              c.updated_at             AS c_updated_at,
+              c.updated_at_counter     AS c_updated_at_counter,
+              c.origin_id              AS c_origin_id,
+              c.log_feed_position      AS c_log_feed_position,
+              c.log_generation         AS c_log_generation,
+              c.log_updated_at         AS c_log_updated_at,
+              c.log_updated_at_counter AS c_log_updated_at_counter,
+              c.log_origin_id          AS c_log_origin_id,
+              r.*
+         FROM collections c
+         LEFT JOIN LATERAL (
+           SELECT resource_id, content_type,
+                  CASE WHEN is_json AND NOT deleted THEN content END AS content,
+                  is_json, generation, updated_at, updated_at_counter,
+                  origin_id, meta_generation, meta_updated_at,
+                  meta_updated_at_counter, meta_origin_id, custom, epoch,
+                  writer_id, deleted, created_by, feed_position
+             FROM resources
+            WHERE space_id = c.space_id AND collection_id = c.collection_id
+              AND feed_position IS NOT NULL AND feed_position > $3
+            ORDER BY feed_position
+            LIMIT $4
+         ) r ON true
+        WHERE c.space_id = $1 AND c.collection_id = $2
+        ORDER BY r.feed_position`,
+      [spaceId, collectionId, after, pageSize]
     )
+    const collectionRow = rows[0]
+    // The generation the Collection's positions were handed out under, NULL
+    // until the first one.
+    const feedGeneration = collectionRow?.c_feed_generation ?? undefined
 
-    const documents = rows.map(row => {
-      // Selected only when non-null (see the WHERE clause).
-      const feedPosition = Number(row.feed_position)
-      // The content validator rides beside the stamp, so the request layer
-      // can format the wire `etag` without a fetch per Resource.
-      const validator = validatorOf({
-        generation: row.generation,
-        ...stampOfRow(row)
-      })
-      if (row.deleted) {
-        return {
-          resourceId: row.resource_id,
-          feedPosition,
-          ...stampOfRow(row),
-          // A soft delete dropped the `/meta` record, so a tombstone carries
-          // no `meta`.
-          ...(validator !== undefined && { validator }),
-          // A tombstone keeps its creator, as it keeps its `created_at`.
-          ...(row.created_by !== null && { createdBy: row.created_by }),
-          deleted: true,
-          // A tombstone carries the label its DELETE declared, if any (spec
-          // "Writer attribution").
-          ...(row.writer_id !== null && { writerId: row.writer_id })
-        }
+    // The Collection row alone, with no Resource past the position, carries
+    // no `resource_id`.
+    const documents: FeedDocument[] = rows.flatMap(row =>
+      row.resource_id == null
+        ? []
+        : [resourceFeedDocument(row as ResourceRow & { resource_id: string })]
+    )
+    if (collectionRow !== undefined) {
+      const metadataPosition = positionOf(
+        collectionRow.c_metadata_feed_position
+      )
+      if (metadataPosition !== undefined && metadataPosition > after) {
+        // The validator `getCollectionMetadata` reports, local segment
+        // included, so a log write since the object's own write shows in it.
+        documents.push(
+          containerFeedDocument({
+            kind: 'collection-metadata',
+            feedPosition: metadataPosition,
+            stamp: {
+              updatedAt: collectionRow.c_updated_at,
+              updatedAtCounter: collectionRow.c_updated_at_counter,
+              originId: collectionRow.c_origin_id
+            },
+            generation: collectionRow.c_meta_generation ?? undefined,
+            local: collectionRow.c_meta_local
+          })
+        )
       }
-      let data: unknown
-      try {
-        data = row.content
-          ? JSON.parse(row.content.toString('utf8'))
-          : undefined
-      } catch {
-        data = undefined
+      const logPosition = positionOf(collectionRow.c_log_feed_position)
+      if (
+        logPosition !== undefined &&
+        logPosition > after &&
+        collectionRow.c_log_updated_at !== null &&
+        collectionRow.c_log_updated_at_counter !== null &&
+        collectionRow.c_log_origin_id !== null
+      ) {
+        // The log's own validator, as `getCollectionLog` reports it.
+        documents.push(
+          containerFeedDocument({
+            kind: 'log',
+            feedPosition: logPosition,
+            stamp: {
+              updatedAt: collectionRow.c_log_updated_at,
+              updatedAtCounter: collectionRow.c_log_updated_at_counter,
+              originId: collectionRow.c_log_origin_id
+            },
+            generation: collectionRow.c_log_generation ?? undefined
+          })
+        )
       }
-      const meta = metaStampOfRow(row)
-      // The `/meta` validator rides beside `meta`, so the request layer can
-      // format the wire `metaEtag` without a fetch per Resource.
-      const metaValidator = meta && validatorOf(meta)
-      return {
-        resourceId: row.resource_id,
-        feedPosition,
-        ...stampOfRow(row),
-        ...(validator !== undefined && { validator }),
-        ...(meta !== undefined && { meta }),
-        ...(metaValidator !== undefined && { metaValidator }),
-        // The creator's DID rides the feed so provenance replicates with the
-        // document, rather than needing a `/meta` fetch per Resource.
-        ...(row.created_by !== null && { createdBy: row.created_by }),
-        deleted: false,
-        data,
-        ...(row.custom !== null && { custom: row.custom }),
-        // The client-declared key epoch (the `key-epochs` feature) rides the
-        // feed so a replicating reader picks the right epoch key.
-        ...(row.epoch !== null && { epoch: row.epoch }),
-        // The writer-attribution label (spec "Writer attribution") rides the
-        // feed so a replica recognizes its own writes echoed back.
-        ...(row.writer_id !== null && { writerId: row.writer_id })
-      }
-    })
+    }
+    // The Resource rows are the first `pageSize` past the position, so after
+    // the container documents are merged in by position, the first
+    // `pageSize` documents of the merge are the page.
+    documents.sort((left, right) => left.feedPosition - right.feedPosition)
+    documents.length = Math.min(documents.length, pageSize)
 
     const last = documents[documents.length - 1]
     return {
@@ -5449,15 +5599,25 @@ export class PostgresBackend implements StorageBackend {
       bytes: logBytes,
       stamp: await this.#clock.mint()
     })
+    // The imported log takes this Collection's next feed position, as a log
+    // write does: an archive carries no positions.
     await client.query(
       `UPDATE collections SET
          log_body               = $3,
          log_generation         = $4,
          log_updated_at         = $5,
          log_updated_at_counter = $6,
-         log_origin_id          = $7
+         log_origin_id          = $7,
+         ${TAKE_LOG_FEED_POSITION_SQL}
        WHERE space_id = $1 AND collection_id = $2`,
-      [spaceId, collectionId, body, generation, ...stampValues(stamp)]
+      [
+        spaceId,
+        collectionId,
+        body,
+        generation,
+        ...stampValues(stamp),
+        newGeneration()
+      ]
     )
   }
 

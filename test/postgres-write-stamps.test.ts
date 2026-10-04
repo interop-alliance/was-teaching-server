@@ -3,8 +3,10 @@
  * high-water mark in the store row (persisted on a cadence and seeded at the
  * next boot), a restarted clock minting above a stamp the store already
  * holds, and the boot refusal of a schema that holds Spaces written before
- * records carried stamps. The stamp behavior every backend shares runs in the
- * storage contract suite.
+ * records carried stamps. Also the `collections` columns that record the
+ * changes-feed positions of a Collection's Metadata object and governing
+ * log. The stamp and feed behavior every backend shares runs in the storage
+ * contract suite.
  *
  * OPT-IN like the Postgres contract suite: requires a disposable Postgres
  * reachable via `WAS_TEST_DATABASE_URL`, and skipped with a visible notice
@@ -32,6 +34,11 @@ const CONTROLLER = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK'
  * The schema version before records carried write stamps.
  */
 const PRE_STAMP_VERSION = 8
+
+/**
+ * The schema version that added the Metadata object and log feed positions.
+ */
+const FEED_KINDS_VERSION = 11
 
 if (!connectionString) {
   describe('PostgresBackend write stamps', () => {
@@ -377,6 +384,110 @@ if (!connectionString) {
         [schema]
       )
       assert.equal(rows.length, 1)
+    })
+
+    /**
+     * Reads the test Collection's feed columns.
+     * @returns {Promise<Record<string, string | null>>}
+     */
+    async function feedColumns(): Promise<Record<string, string | null>> {
+      const { rows } = await adminQuery(
+        `SELECT feed_position::text, metadata_feed_position::text,
+                log_feed_position::text, feed_generation
+           FROM "${schema}".collections
+          WHERE space_id = 'space1' AND collection_id = 'notes'`
+      )
+      return rows[0] as Record<string, string | null>
+    }
+
+    it('records the Metadata object and log positions, and a Collection delete clears them', async () => {
+      const backend = await boot()
+      await provision(backend)
+      const created = await feedColumns()
+      assert.equal(created.feed_position, '1')
+      assert.equal(created.metadata_feed_position, '1')
+      assert.equal(created.log_feed_position, null)
+      assert.ok(created.feed_generation)
+
+      await backend.writeCollectionLog({
+        spaceId: 'space1',
+        collectionId: 'notes',
+        body: '{"state":{},"parameters":{"method":"test"}}\n',
+        ifNoneMatch: '*'
+      })
+      // The log write takes one position, and leaves the Metadata object's.
+      const logged = await feedColumns()
+      assert.equal(logged.feed_position, '2')
+      assert.equal(logged.metadata_feed_position, '1')
+      assert.equal(logged.log_feed_position, '2')
+      assert.equal(logged.feed_generation, created.feed_generation)
+
+      await backend.deleteCollection({
+        spaceId: 'space1',
+        collectionId: 'notes'
+      })
+      assert.deepEqual(await feedColumns(), {
+        feed_position: '0',
+        metadata_feed_position: null,
+        log_feed_position: null,
+        feed_generation: null
+      })
+
+      // A create over the tombstone restarts the counter under a new
+      // generation.
+      await backend.writeCollection({
+        spaceId: 'space1',
+        collectionId: 'notes',
+        collectionMetadata: { id: 'notes', type: ['Collection'] }
+      })
+      const recreated = await feedColumns()
+      assert.equal(recreated.feed_position, '1')
+      assert.equal(recreated.metadata_feed_position, '1')
+      assert.equal(recreated.log_feed_position, null)
+      assert.ok(recreated.feed_generation)
+      assert.notEqual(recreated.feed_generation, created.feed_generation)
+    })
+
+    it('leaves a Collection written before the Metadata feed position out of the feed until its next write', async () => {
+      const backend = await boot()
+      await provision(backend)
+      await backend.close()
+      backends.splice(backends.indexOf(backend), 1)
+      // Roll the schema back to the version before the two columns, with
+      // the Collection in it, so the next boot applies the migration.
+      await adminQuery(
+        `ALTER TABLE "${schema}".collections
+           DROP COLUMN metadata_feed_position,
+           DROP COLUMN log_feed_position`
+      )
+      await adminQuery(
+        `DELETE FROM "${schema}".schema_migrations WHERE version = $1`,
+        [FEED_KINDS_VERSION]
+      )
+
+      const rebooted = await boot()
+      assert.equal(await storedSchemaVersion(), MIGRATIONS.length)
+      const before = await rebooted.changesSince!({
+        spaceId: 'space1',
+        collectionId: 'notes',
+        limit: 10
+      })
+      assert.deepEqual(before.documents, [])
+
+      await rebooted.writeCollection({
+        spaceId: 'space1',
+        collectionId: 'notes',
+        collectionMetadata: { id: 'notes', type: ['Collection'], name: 'N' }
+      })
+      const after = await rebooted.changesSince!({
+        spaceId: 'space1',
+        collectionId: 'notes',
+        limit: 10
+      })
+      assert.deepEqual(
+        after.documents.map(document => [document.kind, document.feedPosition]),
+        [['collection-metadata', 2]]
+      )
     })
   })
 }

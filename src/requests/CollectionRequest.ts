@@ -891,9 +891,11 @@ export class CollectionRequest {
    * endpoints"). This server serves two profiles, selected by the body's
    * `profile`:
    *
-   * - `changes` -- the replication change feed: the Collection's JSON
-   *   documents and tombstones changed strictly after the opaque
-   *   `checkpoint`, in feed position order, capped at `limit`.
+   * - `changes` -- the replication change feed: every record of the
+   *   Collection (each Resource and tombstone whatever its content type, the
+   *   Collection Metadata object, the governing history log) changed
+   *   strictly after the opaque `checkpoint`, in feed position order, capped
+   *   at `limit`.
    * - `blinded-index` -- the EDV blinded-attribute query (the
    *   `blinded-index-query` backend feature): `{index, equals | has, count,
    *   limit, cursor}` evaluated against the HMAC-blinded `indexed` entries of
@@ -1134,24 +1136,27 @@ export class CollectionRequest {
       throw refusedCheckpoint()
     }
 
-    // Project the change feed to the wire shape: a tombstone's `deleted` becomes
-    // RxDB's `_deleted`, and the document body stays under `data` (kept out of
-    // the user JSON so arbitrary bodies -- not only objects -- round-trip). The
+    // Project the change feed to the wire shape, one document per record,
+    // discriminated on `kind`. Every document carries the record's write
+    // stamp (`updatedAt`, `updatedAtCounter`, `originId`) and `generation`,
+    // so a puller can decide whether to apply a change from the feed alone,
+    // and the record's `etag`, quoted exactly as the `ETag` header carries
+    // it, so a replica can send `If-Match` without a GET per record. The
+    // stamp orders two revisions of one record; the feed itself is ordered
+    // by feed position. Each document carries the opaque checkpoint that
+    // resumes right after it, so a client can checkpoint on any prefix of a
+    // page.
+    //
+    // A `resource` document's `id` is the Resource id. Its body stays under
+    // `data` (kept out of the user JSON so arbitrary bodies -- not only
+    // objects -- round-trip), inline for a JSON Resource only. The
     // user-writable `custom` (the opaque encryption envelope on an encrypted
-    // Collection) and the `/meta` record's own stamp (`meta`) ride along so a
-    // metadata-only edit replicates alongside content, as does the
-    // server-managed `createdBy`
-    // so a replica learns each Resource's creator without a `/meta` fetch per
-    // Resource. The content `etag` and `/meta` `metaEtag` -- the quoted strong
-    // validators exactly as the server emits them in the `ETag` header -- ride
-    // the feed too, so a replica can send `If-Match` from feed state alone
-    // without a GET per Resource. Each document carries the opaque checkpoint
-    // that resumes right after it, so a client can checkpoint on any prefix
-    // of a page. Each document carries the content record's write stamp
-    // (`updatedAt`, `updatedAtCounter`, `originId`), which orders two
-    // revisions of one Resource; the feed itself is ordered by feed
-    // position. The RxDB browser adapter does the final reshape into RxDB
-    // documents.
+    // Collection), the `/meta` record's own stamp (`meta`) and `metaEtag`
+    // ride along so a metadata-only edit replicates alongside content, as
+    // does the server-managed `createdBy`.
+    //
+    // A `collection-metadata` or `log` document has no id of its own, so its
+    // `id` is the record's absolute URL. It carries no body.
     // `feedGeneration` is set whenever the page has a document: every
     // position on it was handed out under it.
     const issueCheckpoint = (position: number): ChangesCheckpoint =>
@@ -1160,18 +1165,41 @@ export class CollectionRequest {
         generation: result.feedGeneration!,
         position
       })
+    const containerRecordUrls = {
+      'collection-metadata': `${serverUrl}${collectionMetaPath({
+        spaceId,
+        collectionId
+      })}`,
+      log: `${serverUrl}${collectionLogPath({ spaceId, collectionId })}`
+    }
     const documents: ChangeDocument[] = result.documents.map(doc => {
       const etag = doc.validator && formatEtag(doc.validator)
-      const metaEtag = doc.metaValidator && formatEtag(doc.metaValidator)
-      return {
-        id: doc.resourceId,
-        _deleted: doc.deleted,
+      const base = {
         updatedAt: doc.updatedAt,
         updatedAtCounter: doc.updatedAtCounter,
         originId: doc.originId,
+        ...(doc.validator !== undefined && {
+          generation: doc.validator.generation
+        }),
         checkpoint: issueCheckpoint(doc.feedPosition),
+        ...(etag !== undefined && { etag })
+      }
+      if (doc.kind !== 'resource') {
+        return {
+          kind: doc.kind,
+          id: containerRecordUrls[doc.kind],
+          deleted: false,
+          ...base
+        }
+      }
+      const metaEtag = doc.metaValidator && formatEtag(doc.metaValidator)
+      return {
+        kind: doc.kind,
+        id: doc.resourceId,
+        contentType: doc.contentType,
+        deleted: doc.deleted,
+        ...base,
         ...(doc.meta !== undefined && { meta: doc.meta }),
-        ...(etag !== undefined && { etag }),
         ...(metaEtag !== undefined && { metaEtag }),
         ...(doc.createdBy !== undefined && { createdBy: doc.createdBy }),
         ...(doc.data !== undefined && { data: doc.data }),

@@ -664,7 +664,7 @@ describe('Governing history log API (meta/log)', () => {
   })
 
   describe('a sub-resource, not a Resource', () => {
-    it('[signed] the log is absent from the listing and the changes feed, and the envelope rule applies to Resources but not to it', async () => {
+    it('[signed] the log is absent from the listing, is no Resource on the changes feed, and the envelope rule applies to Resources but not to it', async () => {
       const { collectionId } = await governedCollection()
 
       // The governed Collection is encrypted: a plaintext Resource write is
@@ -700,7 +700,14 @@ describe('Governing history log API (meta/log)', () => {
         method: 'POST',
         json: { profile: 'changes' }
       })
-      assert.equal(feed.data.documents.length, 1)
+      // The log rides the feed as a `log` document at its own URL, never as a
+      // `resource` one.
+      assert.deepEqual(
+        feed.data.documents.map((doc: any) => doc.kind),
+        ['collection-metadata', 'log', 'resource']
+      )
+      assert.equal(feed.data.documents[1].id, logUrl(collectionId))
+      assert.equal(feed.data.documents[2].id, created.data.id)
     })
 
     it('[signed] a PUT /meta does not touch the log', async () => {

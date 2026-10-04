@@ -4857,3 +4857,68 @@ fetch window. Review findings left open: WAS-197 (the witness fetch in
 bounds that outlive a restart or an eviction).
 
 ---
+
+### WAS-182: [M] [blocks 2] Changes feed carries every record kind in the Collection
+
+- status: done
+- done: 2026-10-04
+- priority: medium
+- labels: changes-feed, replication, wire-contract, filesystem-backend,
+  postgres-backend
+- blocks: WAS-96, WAS-176
+- touches:
+  - wallet-attached-storage-spec: the `changes` profile (the `kind` member, the
+    `contentType` member, every content type admitted; the "Collection Metadata
+    writes are invisible to replication" sentence revised) -- filed: WASS-51
+  - storage-core: `ChangeDocument` -- shipped: 0.32.0 (the `kind` union,
+    `isResourceChange`, `deleted`, `generation`), publish pending
+  - was-teaching-server: `changesSince` in both backends, the feed position
+    assignment on every write kind, ARCHITECTURE.md -- shipped with this item
+  - was-client: `Collection.changes()` document type -- shipped: WCL-122
+    (0.89.0, publish pending); the sync port filters to JSON `resource`
+    documents and maps `deleted` to `_deleted`
+  - was-sync, dcw, was-react: filter the feed on `kind` -- was-sync: WS-24
+    (reads the port's documents only, no source change); was-react: WR-55
+    (`SharedCollectionReader` filters on `kind`); unaffected: dcw (reads the
+    feed only through the sync port)
+  - conformance-suite: feed cases for binary Resources and the other kinds --
+    shipped: PWSCS-20 (0.29.0, publish pending)
+- acceptance:
+  - [x] Every Resource write, whatever its content type (binary, `text/jsonl`,
+        JSON), and every Resource tombstone takes a feed position and appears in
+        the feed with a `contentType` member
+  - [x] A Collection Metadata write and a governed-log append each take a feed
+        position and appear in the feed, each change document carrying a `kind`
+        member (`resource`, `collection-metadata`, `log`) that existing
+        consumers filter on; a Resource change carries the Resource kind. The
+        `policy` kind moved to WAS-183 (2026-10-04), since a policy has no stamp
+        or tombstone until then
+  - [x] Each change document carries the record's stamp and generation (a
+        top-level `generation` member), so a puller can decide apply-or-skip
+        from the feed alone
+  - [x] The change document's `_deleted` member is renamed `deleted`, the
+        tombstone marker every object in the design uses; was-sync maps it to
+        RxDB's `_deleted` at its boundary; a `collection-metadata` or `log`
+        document carries the record's absolute URL as its `id`
+  - [x] Tests cover each kind in both backends, and the client repos' filters
+
+Context (discovered-from: WAS-96, open point 7). The feed carried JSON Resources
+only, so binary Resources, `did.jsonl`, their tombstones, Collection Metadata
+writes, policies and the governed log were invisible to a replica, and the
+controller's log, the one Collection the design always replicates, could not be
+discovered. A separate replication listing was weighed and declined: one channel
+with a `kind` discriminator is one checkpoint and one stamp order per
+Collection, and a client syncing a Collection should see every Resource in it
+regardless of content type. Space-level state (Space Metadata `name`, the Space
+policy, Collection tombstones) has no Collection feed to ride and is discovered
+by the pull loop (WAS-176) through the tombstone-aware Space listing and
+conditional reads.
+
+Shipped 2026-10-04. Sign-off the same day settled two wire details the
+2026-10-02 decision left open: a `collection-metadata` or `log` document carries
+the record's absolute URL as its `id`, and every document carries a top-level
+`generation`. The `policy` kind moved to WAS-183. The Collection's own tombstone
+is not in the feed, since Delete Collection removes the feed with the
+Collection; the pull loop finds it through the Space listing.
+
+---

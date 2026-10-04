@@ -96,7 +96,9 @@ describe('FileSystemBackend: Resource with no metadata sidecar', () => {
       json: { profile: 'changes', limit: 10 }
     })
     assert.deepEqual(
-      data.documents.map((doc: any) => doc.id),
+      data.documents
+        .filter((doc: any) => doc.kind === 'resource')
+        .map((doc: any) => doc.id),
       ['normal']
     )
   })

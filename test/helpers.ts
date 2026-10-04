@@ -29,6 +29,7 @@ import { createServerSigningKey } from '../src/lib/serverIdentity.js'
 import type { ServerSigningKey } from '../src/lib/serverIdentity.js'
 import { webvhLogSigner } from '../src/testing.js'
 import type {
+  FeedDocument,
   IDID,
   IRootZcap,
   ImportStats,
@@ -837,4 +838,22 @@ export function genesisLine(state: Record<string, unknown>): string {
     state,
     parameters: { method: 'resource-log:0.1', scid: 'zScid' }
   })
+}
+
+/**
+ * A changes-feed document of the `resource` kind.
+ */
+export type ResourceFeedDocument = Extract<FeedDocument, { kind: 'resource' }>
+
+/**
+ * The `resource` documents of a changes-feed page, in feed order.
+ * @param documents {FeedDocument[]}
+ * @returns {ResourceFeedDocument[]}
+ */
+export function resourceDocuments(
+  documents: FeedDocument[]
+): ResourceFeedDocument[] {
+  return documents.filter(
+    (document): document is ResourceFeedDocument => document.kind === 'resource'
+  )
 }

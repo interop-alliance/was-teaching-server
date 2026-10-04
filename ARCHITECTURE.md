@@ -235,13 +235,28 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
 - **`src/lib/changesCheckpoint.ts`** -- the `changes` query profile's wire
   checkpoint. The feed is ordered by a per-Collection feed position, a positive
   integer sequence. Every Resource-level write takes the next one: a content
-  write, a metadata write, a soft delete, and a Resource written by an import. A
-  chunk write takes none, so it never moves its parent. The position is assigned
-  inside the per-Collection critical section that makes the write visible, so no
-  write lands at or before a position a reader was already handed. The write
-  stamp each feed document carries orders two revisions of one Resource, not the
-  feed. `updatedAt` alone has no ordering role, since two writes can share a
-  millisecond. The filesystem backend keeps the counter in
+  write, a metadata write, a soft delete, and a Resource written by an import.
+  It does so whatever the Resource's content type. A Collection Metadata write
+  takes one too, the create included, and so does a governed-log write (the
+  guarded create and each append). A log write takes no position for the
+  Metadata object, whose local segment it advances. A byte-identical log write
+  takes none. A chunk write takes none, so it never moves its parent. The feed
+  holds one document per record, at the position of its latest write, and each
+  document carries a `kind`. A `resource` document is a Resource or its
+  tombstone, with its `contentType`, and its body inline as `data` when it is a
+  live JSON Resource. A `collection-metadata` document is the Collection
+  Metadata object and a `log` document its governing history log. Neither has an
+  id of its own, so its `id` is the record's absolute URL, and it carries no
+  body. Every document carries the record's write stamp, its `generation`, and
+  its `etag`, so a puller can decide whether to apply a change from the feed
+  alone. A tombstone is marked `deleted: true`. A consumer skips a `kind` it
+  does not know. A policy write is not in the feed yet. A Collection's own
+  tombstone is not either, since the feed goes with the Collection. The position
+  is assigned inside the per-Collection critical section that makes the write
+  visible, so no write lands at or before a position a reader was already
+  handed. The write stamp each feed document carries orders two revisions of one
+  Resource, not the feed. `updatedAt` alone has no ordering role, since two
+  writes can share a millisecond. The filesystem backend keeps the counter in
   `.feed.<collectionId>.json` in the Collection dir and stamps the position on
   the sidecar as `feedPosition`, under a `feed:` key nested inside the
   per-Resource lock. `changesSince` reads the counter under that key and admits
@@ -298,23 +313,23 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   Collection's governing history log, served at its own sub-resource
   (`GET`/`PUT /space/:spaceId/:collectionId/meta/log`,
   `CollectionRequest.getLog` / `putLog`). The log is not a Resource: it is
-  absent from listings and the changes feed, exempt from the
-  encrypted-Collection envelope rule, and left untouched by a `PUT /meta`. It is
-  served as `text/jsonl` with its own `ETag`, from its generation and write
-  stamp, so a conditional `GET` behaves like any other record; a `PUT` is either
-  a guarded create (`If-None-Match: *`) or a compare-and-swap append (`If-Match`
-  carrying the prior bytes verbatim plus one new line), 412 on a lost race.
-  `GET` is capability-or-policy at the Collection's target; `PUT` is
-  capability-only, like `/meta`, and carries the same container rule as `/meta`
-  (see below): a direct root invocation, or a delegated capability whose tail
-  targets exactly the Space's canonical trailing-slash URL. The guarded create
-  is the declaration that puts the Collection under log governance, and is
-  refused with `encryption-immutable` (409) on a Collection whose Metadata
-  object already carries a client-written `encryption` member. From then on, the
-  Collection's served `encryption` member -- read by Get Collection and by every
-  handler that loads the Collection Metadata object through
-  `getCollectionOrThrow`, so the write-time envelope check sees it too -- is
-  derived from the log's last line's `state`, with a
+  absent from listings, exempt from the encrypted-Collection envelope rule, and
+  left untouched by a `PUT /meta`. The changes feed carries it as its own `log`
+  document, apart from the Resources. It is served as `text/jsonl` with its own
+  `ETag`, from its generation and write stamp, so a conditional `GET` behaves
+  like any other record; a `PUT` is either a guarded create (`If-None-Match: *`)
+  or a compare-and-swap append (`If-Match` carrying the prior bytes verbatim
+  plus one new line), 412 on a lost race. `GET` is capability-or-policy at the
+  Collection's target; `PUT` is capability-only, like `/meta`, and carries the
+  same container rule as `/meta` (see below): a direct root invocation, or a
+  delegated capability whose tail targets exactly the Space's canonical
+  trailing-slash URL. The guarded create is the declaration that puts the
+  Collection under log governance, and is refused with `encryption-immutable`
+  (409) on a Collection whose Metadata object already carries a client-written
+  `encryption` member. From then on, the Collection's served `encryption` member
+  -- read by Get Collection and by every handler that loads the Collection
+  Metadata object through `getCollectionOrThrow`, so the write-time envelope
+  check sees it too -- is derived from the log's last line's `state`, with a
   `history: { method, resource }` member always stamped on (`method` from the
   genesis line's `parameters.method`, `resource` the log's own URL); the stored
   Collection Metadata object never carries that derived member, a direct
@@ -913,14 +928,17 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   Collection, deleted marker, placeholder row.
 - **Resource** — an individual stored item, JSON object or binary blob, within a
   Collection (`/space/:spaceId/:collectionId/:resourceId`).
-- **Feed position** -- a Resource's place in its Collection's `changes` feed:
-  the per-Collection sequence number its latest Resource-level write took
-  (`feedPosition` on the filesystem sidecar, `feed_position` in Postgres). Local
-  to one server and never replicated. The wire **checkpoint** wraps one in an
-  opaque string scoped to the issuing Collection URL and to the feed counter's
-  generation, which a re-create of the Collection replaces (see
-  `lib/changesCheckpoint.ts`). Avoid: keyset, cursor (the listings' pagination
-  token), `updatedAt` as an ordering key.
+- **Feed position** -- a record's place in its Collection's `changes` feed: the
+  per-Collection sequence number its latest write took. A Resource keeps it as
+  `feedPosition` on the filesystem sidecar and `feed_position` in Postgres. The
+  Collection Metadata object and the governing history log keep theirs in the
+  filesystem feed counter file (`collectionMetadataPosition`, `logPosition`) and
+  in the Postgres `collections` columns `metadata_feed_position` and
+  `log_feed_position`. Local to one server and never replicated. The wire
+  **checkpoint** wraps one in an opaque string scoped to the issuing Collection
+  URL and to the feed counter's generation, which a re-create of the Collection
+  replaces (see `lib/changesCheckpoint.ts`). Avoid: keyset, cursor (the
+  listings' pagination token), `updatedAt` as an ordering key.
 - **Write stamp** -- the identity of a record's last write: `updatedAt`,
   `updatedAtCounter`, and `originId`, minted by the store's hybrid logical clock
   inside the write's critical section (`lib/hlc.ts`). Every versioned record

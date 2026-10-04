@@ -27,6 +27,7 @@ import {
   importArchive,
   parseEtagSegments,
   provisionServerIdentity,
+  resourceDocuments,
   verifyProvenanceOffline
 } from './helpers.js'
 import {
@@ -60,7 +61,8 @@ import type {
   SpaceMetadata,
   IDID,
   ImportStats,
-  WriteStamp
+  WriteStamp,
+  FeedDocument
 } from '../src/types.js'
 
 /** A backend instance plus its teardown, as produced by the suite factory. */
@@ -1554,8 +1556,14 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.ok(old.feedGeneration)
         assert.notEqual(fresh.feedGeneration, old.feedGeneration)
         assert.deepEqual(
-          fresh.documents.map(doc => [doc.resourceId, doc.feedPosition]),
-          [['fresh', 1]]
+          fresh.documents.map(doc => [
+            doc.kind === 'resource' ? doc.resourceId : doc.kind,
+            doc.feedPosition
+          ]),
+          [
+            ['collection-metadata', 1],
+            ['fresh', 2]
+          ]
         )
       })
 
@@ -2827,7 +2835,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           limit: 100
         })
-        const tomb1 = feed1.documents.find(
+        const tomb1 = resourceDocuments(feed1.documents).find(
           document => document.resourceId === 'redelete'
         )
         await backend.deleteResource({
@@ -2840,7 +2848,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           limit: 100
         })
-        const tomb2 = feed2.documents.find(
+        const tomb2 = resourceDocuments(feed2.documents).find(
           document => document.resourceId === 'redelete'
         )
         assert.deepEqual(tomb2, tomb1)
@@ -2888,7 +2896,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           limit: 100
         })
-        const doc = feed.documents.find(entry => entry.resourceId === 'e1')
+        const doc = resourceDocuments(feed.documents).find(
+          entry => entry.resourceId === 'e1'
+        )
         assert.equal((doc as { epoch?: string }).epoch, 'urn:epoch:1')
       })
 
@@ -3119,7 +3129,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           limit: 100
         })
-        const doc = feed.documents.find(entry => entry.resourceId === 'w1')
+        const doc = resourceDocuments(feed.documents).find(
+          entry => entry.resourceId === 'w1'
+        )
         assert.equal((doc as { writerId?: string }).writerId, 'writer-1')
       })
 
@@ -3184,7 +3196,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           limit: 100
         })
-        const tomb = feed.documents.find(
+        const tomb = resourceDocuments(feed.documents).find(
           document => document.resourceId === 'w-del'
         )
         assert.equal(tomb?.deleted, true)
@@ -3213,7 +3225,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           limit: 100
         })
-        const tomb2 = feed2.documents.find(
+        const tomb2 = resourceDocuments(feed2.documents).find(
           document => document.resourceId === 'w-del'
         )
         assert.equal(
@@ -3734,7 +3746,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           limit: 50
         })
         assert.ok(
-          feed.documents.some(doc => doc.resourceId === resourceId),
+          resourceDocuments(feed.documents).some(
+            doc => doc.resourceId === resourceId
+          ),
           'an overwrite must surface in the change feed'
         )
       })
@@ -3753,7 +3767,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           resourceId: 'two',
           input: jsonInput({ n: 2 })
         })
-        // Binary resources are excluded from the feed.
+        // A binary Resource is in the feed too, without `data`.
         await backend.writeResource({
           spaceId,
           collectionId: 'col',
@@ -3771,14 +3785,23 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           limit: 100
         })
+        // The Collection's create comes first, then the Resources in write
+        // order.
         assert.deepEqual(
-          full.documents.map(document => document.resourceId),
-          ['two', 'one']
+          full.documents.map(document =>
+            document.kind === 'resource' ? document.resourceId : document.kind
+          ),
+          ['collection-metadata', 'two', 'bin', 'one']
         )
-        const [live, tombstone] = full.documents
+        const [live, bin, tombstone] = resourceDocuments(full.documents)
         assert.equal(live!.deleted, false)
+        assert.equal(live!.contentType, 'application/json')
         assert.deepEqual(live!.data, { n: 2 })
+        assert.equal(bin!.deleted, false)
+        assert.equal(bin!.contentType, 'application/octet-stream')
+        assert.equal(bin!.data, undefined)
         assert.equal(tombstone!.deleted, true)
+        assert.equal(tombstone!.contentType, 'application/json')
         assert.equal(tombstone!.data, undefined)
         // The tombstone carries a content stamp later than the live write's.
         assert.ok(
@@ -3799,6 +3822,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           limit: 1
         })
         assert.equal(page1.documents.length, 1)
+        assert.equal(page1.documents[0]!.kind, 'collection-metadata')
         const page2 = await backend.changesSince!({
           spaceId,
           collectionId: 'col',
@@ -3806,8 +3830,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           limit: 10
         })
         assert.deepEqual(
-          page2.documents.map(document => document.resourceId),
-          ['one']
+          resourceDocuments(page2.documents).map(
+            document => document.resourceId
+          ),
+          ['two', 'bin', 'one']
         )
 
         // Nothing after the final checkpoint.
@@ -3841,11 +3867,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           limit: 100
         })
         assert.deepEqual(
-          after.documents.map(document => document.resourceId),
+          resourceDocuments(after.documents).map(
+            document => document.resourceId
+          ),
           ['two']
         )
-        const doc = after.documents[0]!
-        const priorDoc = before.documents.find(
+        const doc = resourceDocuments(after.documents)[0]!
+        const priorDoc = resourceDocuments(before.documents).find(
           document => document.resourceId === 'two'
         )!
         assert.equal(doc.updatedAt, priorDoc.updatedAt)
@@ -3879,7 +3907,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           limit: 10
         })
         assert.deepEqual(
-          first.documents.map(document => document.resourceId),
+          resourceDocuments(first.documents).map(
+            document => document.resourceId
+          ),
           ['m']
         )
 
@@ -3898,10 +3928,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           limit: 10
         })
         assert.deepEqual(
-          second.documents.map(document => document.resourceId),
+          resourceDocuments(second.documents).map(
+            document => document.resourceId
+          ),
           ['m']
         )
-        assert.deepEqual(second.documents[0]!.data, { n: 2 })
+        assert.deepEqual(resourceDocuments(second.documents)[0]!.data, { n: 2 })
 
         // (b) A Resource whose id sorts below the checkpoint's, written in
         // the checkpoint's millisecond, is surfaced.
@@ -3918,7 +3950,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           limit: 10
         })
         assert.deepEqual(
-          third.documents.map(document => document.resourceId),
+          resourceDocuments(third.documents).map(
+            document => document.resourceId
+          ),
           ['a']
         )
 
@@ -3931,15 +3965,17 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           limit: 10
         })
         assert.deepEqual(
-          replay.documents.map(document => document.resourceId),
+          resourceDocuments(replay.documents).map(
+            document => document.resourceId
+          ),
           ['m', 'a']
         )
 
         // The feed position orders the documents, not `updatedAt`: all three
         // writes shared one millisecond, and the stamp's counter tells them
         // apart, one tick per write in write order.
-        const [original] = first.documents
-        const [rewritten, below] = replay.documents
+        const [original] = resourceDocuments(first.documents)
+        const [rewritten, below] = resourceDocuments(replay.documents)
         assert.equal(rewritten!.updatedAt, original!.updatedAt)
         assert.equal(below!.updatedAt, original!.updatedAt)
         assert.equal(original!.updatedAt, new Date(clock.now).toISOString())
@@ -4031,7 +4067,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           limit: 100
         })
         assert.deepEqual(
-          after.documents.map(document => document.resourceId).sort(),
+          resourceDocuments(after.documents)
+            .map(document => document.resourceId)
+            .sort(),
           ['s1', 's2']
         )
         for (const document of after.documents) {
@@ -4093,7 +4131,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           limit: 100
         })
         const byId = new Map(
-          feed.documents.map(document => [document.resourceId, document])
+          resourceDocuments(feed.documents).map(document => [
+            document.resourceId,
+            document
+          ])
         )
         assert.equal(byId.get('live')?.createdBy, CREATOR_ONE)
         assert.equal(byId.get('live')?.deleted, false)
@@ -4124,7 +4165,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           limit: 100
         })
-        const doc = feed.documents.find(
+        const doc = resourceDocuments(feed.documents).find(
           document => document.resourceId === 'one'
         )
         assert.ok(doc, 'expected the Resource in the feed')
@@ -4146,13 +4187,21 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId,
           collectionMetadata
         })
-        // No position handed out yet: no generation.
-        const empty = await backend.changesSince!({
+        // The Collection's create took the first position, and minted the
+        // generation with it.
+        const created = await backend.changesSince!({
           spaceId,
           collectionId,
           limit: 10
         })
-        assert.equal(empty.feedGeneration, undefined)
+        assert.equal(typeof created.feedGeneration, 'string')
+        assert.deepEqual(
+          created.documents.map(document => [
+            document.kind,
+            document.feedPosition
+          ]),
+          [['collection-metadata', 1]]
+        )
 
         await backend.writeResource({
           spaceId,
@@ -4165,7 +4214,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId,
           limit: 10
         })
-        assert.equal(typeof first.feedGeneration, 'string')
+        assert.equal(first.feedGeneration, created.feedGeneration)
         // Kept across later positions, and across an empty page.
         await backend.writeResource({
           spaceId,
@@ -4202,7 +4251,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId,
           limit: 10
         })
-        assert.equal(reborn.feedGeneration, undefined)
+        assert.equal(typeof reborn.feedGeneration, 'string')
+        assert.notEqual(reborn.feedGeneration, first.feedGeneration)
         await backend.writeResource({
           spaceId,
           collectionId,
@@ -4214,9 +4264,489 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId,
           limit: 10
         })
-        assert.equal(typeof restarted.feedGeneration, 'string')
-        assert.notEqual(restarted.feedGeneration, first.feedGeneration)
-        assert.equal(restarted.documents[0]!.feedPosition, 1)
+        assert.equal(restarted.feedGeneration, reborn.feedGeneration)
+        assert.deepEqual(
+          restarted.documents.map(document => [
+            document.kind,
+            document.feedPosition
+          ]),
+          [
+            ['collection-metadata', 1],
+            ['resource', 2]
+          ]
+        )
+      })
+    })
+
+    describe('changes feed: every record kind', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-feed-kinds'
+      const logLine1 =
+        '{"state":{"scheme":"edv"},"parameters":{"method":"x"}}\n'
+      const logLine2 =
+        '{"state":{"scheme":"edv","version":1},"parameters":{}}\n'
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId)
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      /**
+       * Creates a fresh Collection in this suite's Space and returns its id.
+       */
+      async function freshCollection(): Promise<string> {
+        const collectionId = `col-${crypto.randomUUID()}`
+        await harness.backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: {
+            id: collectionId,
+            type: ['Collection'],
+            name: collectionId
+          }
+        })
+        return collectionId
+      }
+
+      /**
+       * The whole feed of a Collection, or the part after `afterPosition`.
+       */
+      async function feedOf({
+        collectionId,
+        afterPosition
+      }: {
+        collectionId: string
+        afterPosition?: number
+      }) {
+        return harness.backend.changesSince!({
+          spaceId,
+          collectionId,
+          ...(afterPosition !== undefined && { afterPosition }),
+          limit: 100
+        })
+      }
+
+      /**
+       * The one document of a kind in a page, asserting there is at most one.
+       */
+      function onlyOfKind<Kind extends FeedDocument['kind']>(
+        page: { documents: FeedDocument[] },
+        kind: Kind
+      ): Extract<FeedDocument, { kind: Kind }> | undefined {
+        const matches = page.documents.filter(
+          (document): document is Extract<FeedDocument, { kind: Kind }> =>
+            document.kind === kind
+        )
+        assert.ok(matches.length <= 1, `more than one ${kind} document`)
+        return matches[0]
+      }
+
+      it('carries a binary Resource and its tombstone with contentType and no data', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'photo',
+          input: binaryInput(Buffer.from('png bytes'), {
+            contentType: 'image/png'
+          })
+        })
+        const live = resourceDocuments(
+          (await feedOf({ collectionId })).documents
+        )
+        assert.equal(live.length, 1)
+        assert.equal(live[0]!.resourceId, 'photo')
+        assert.equal(live[0]!.contentType, 'image/png')
+        assert.equal(live[0]!.deleted, false)
+        assert.equal(live[0]!.data, undefined)
+        const metadata = await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId: 'photo'
+        })
+        assert.equal(formatEtag(live[0]!.validator!), etagOf(metadata!))
+
+        await backend.deleteResource({
+          spaceId,
+          collectionId,
+          resourceId: 'photo'
+        })
+        const after = resourceDocuments(
+          (await feedOf({ collectionId, afterPosition: live[0]!.feedPosition }))
+            .documents
+        )
+        assert.equal(after.length, 1)
+        assert.equal(after[0]!.resourceId, 'photo')
+        assert.equal(after[0]!.deleted, true)
+        // The tombstone keeps the last-known media type.
+        assert.equal(after[0]!.contentType, 'image/png')
+        assert.equal(after[0]!.data, undefined)
+        assert.ok(after[0]!.feedPosition > live[0]!.feedPosition)
+      })
+
+      it('carries a text/jsonl Resource without data', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'did.jsonl',
+          input: binaryInput(Buffer.from('{"a":1}\n'), {
+            contentType: 'text/jsonl'
+          })
+        })
+        const [document] = resourceDocuments(
+          (await feedOf({ collectionId })).documents
+        )
+        assert.equal(document?.resourceId, 'did.jsonl')
+        assert.equal(document?.contentType, 'text/jsonl')
+        assert.equal(document?.deleted, false)
+        assert.equal(document?.data, undefined)
+      })
+
+      it('a /meta write on a binary Resource re-surfaces it', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'blob',
+          input: binaryInput(Buffer.from('blob'))
+        })
+        const before = await feedOf({ collectionId })
+        const [prior] = resourceDocuments(before.documents)
+        await backend.writeResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId: 'blob',
+          custom: { name: 'Blob' }
+        })
+        const after = resourceDocuments(
+          (await feedOf({ collectionId, afterPosition: before.checkpoint! }))
+            .documents
+        )
+        assert.equal(after.length, 1)
+        assert.equal(after[0]!.resourceId, 'blob')
+        assert.equal(after[0]!.contentType, 'application/octet-stream')
+        assert.deepEqual(after[0]!.custom, { name: 'Blob' })
+        assert.ok(after[0]!.meta)
+        assert.ok(after[0]!.metaValidator)
+        // The content stamp is unchanged by a metadata write.
+        assert.equal(after[0]!.updatedAtCounter, prior!.updatedAtCounter)
+        assert.equal(after[0]!.updatedAt, prior!.updatedAt)
+      })
+
+      it('a Collection create yields one collection-metadata document with its stamp and validator', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        const page = await feedOf({ collectionId })
+        assert.equal(page.documents.length, 1)
+        const document = onlyOfKind(page, 'collection-metadata')
+        assert.ok(document)
+        assert.equal(document.feedPosition, 1)
+        const stored = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        assert.deepEqual(stampOf(document), stampOf(stored))
+        assert.equal(formatEtag(document.validator!), metadataEtagOf(stored))
+        assert.equal(page.checkpoint, 1)
+      })
+
+      it('a Collection Metadata update moves its document to a new position with the new stamp and validator', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          input: jsonInput({ n: 1 })
+        })
+        const before = await feedOf({ collectionId })
+        const prior = onlyOfKind(before, 'collection-metadata')!
+        const validator = await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: {
+            id: collectionId,
+            type: ['Collection'],
+            name: 'renamed'
+          }
+        })
+        const after = await feedOf({ collectionId })
+        assert.deepEqual(
+          after.documents.map(document => document.kind),
+          ['resource', 'collection-metadata']
+        )
+        const moved = onlyOfKind(after, 'collection-metadata')!
+        assert.ok(moved.feedPosition > prior.feedPosition)
+        assert.equal(formatEtag(moved.validator!), formatEtag(validator))
+        assert.deepEqual(stampOf(moved), validator.stamp)
+        assert.ok(compareStamps(moved, prior) > 0)
+        // A reader resuming after the old position sees only the move.
+        const resumed = await feedOf({
+          collectionId,
+          afterPosition: before.checkpoint!
+        })
+        assert.deepEqual(
+          resumed.documents.map(document => document.kind),
+          ['collection-metadata']
+        )
+      })
+
+      it('a governed-log create and an append each move one log document and leave the collection-metadata position', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        const created = await feedOf({ collectionId })
+        const metadataPosition = onlyOfKind(
+          created,
+          'collection-metadata'
+        )!.feedPosition
+
+        const logCreated = await backend.writeCollectionLog({
+          spaceId,
+          collectionId,
+          body: logLine1,
+          ifNoneMatch: '*'
+        })
+        const afterCreate = await feedOf({ collectionId })
+        assert.deepEqual(
+          afterCreate.documents.map(document => document.kind),
+          ['collection-metadata', 'log']
+        )
+        const firstLog = onlyOfKind(afterCreate, 'log')!
+        assert.ok(firstLog.feedPosition > metadataPosition)
+        assert.equal(formatEtag(firstLog.validator!), formatEtag(logCreated!))
+        assert.deepEqual(stampOf(firstLog), logCreated!.stamp)
+        // The log write advanced the object's local segment, which the
+        // feed reports at the object's unmoved position.
+        const metadataDocument = onlyOfKind(afterCreate, 'collection-metadata')!
+        assert.equal(metadataDocument.feedPosition, metadataPosition)
+        assert.equal(
+          formatEtag(metadataDocument.validator!),
+          metadataEtagOf(
+            await backend.getCollectionMetadata({ spaceId, collectionId })
+          )
+        )
+        assert.equal(metadataDocument.validator!.local, 1)
+
+        const appended = await backend.writeCollectionLog({
+          spaceId,
+          collectionId,
+          body: logLine1 + logLine2,
+          ifMatch: formatEtag(logCreated!)
+        })
+        const afterAppend = await feedOf({ collectionId })
+        const secondLog = onlyOfKind(afterAppend, 'log')!
+        assert.ok(secondLog.feedPosition > firstLog.feedPosition)
+        assert.equal(formatEtag(secondLog.validator!), formatEtag(appended!))
+        assert.equal(
+          onlyOfKind(afterAppend, 'collection-metadata')!.feedPosition,
+          metadataPosition
+        )
+        const resumed = await feedOf({
+          collectionId,
+          afterPosition: afterCreate.checkpoint!
+        })
+        assert.deepEqual(
+          resumed.documents.map(document => document.kind),
+          ['log']
+        )
+
+        // A byte-identical log write writes nothing and moves nothing.
+        await backend.writeCollectionLog({
+          spaceId,
+          collectionId,
+          body: logLine1 + logLine2,
+          ifMatch: formatEtag(appended!)
+        })
+        const afterNoop = await feedOf({
+          collectionId,
+          afterPosition: afterAppend.checkpoint!
+        })
+        assert.deepEqual(afterNoop.documents, [])
+        assert.equal(afterNoop.checkpoint, null)
+      })
+
+      it('a chunk write of a binary parent moves nothing', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'parent',
+          input: binaryInput(Buffer.from('manifest'))
+        })
+        const before = await feedOf({ collectionId })
+        await backend.writeChunk({
+          spaceId,
+          collectionId,
+          resourceId: 'parent',
+          chunkIndex: 0,
+          input: binaryInput(Buffer.from('chunk'))
+        })
+        const after = await feedOf({
+          collectionId,
+          afterPosition: before.checkpoint!
+        })
+        assert.deepEqual(after.documents, [])
+      })
+
+      it('gives unique, strictly ascending positions across kinds, and pages across them', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'json',
+          input: jsonInput({ n: 1 })
+        })
+        await backend.writeCollectionLog({
+          spaceId,
+          collectionId,
+          body: logLine1,
+          ifNoneMatch: '*'
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'bin',
+          input: binaryInput(Buffer.from('b'))
+        })
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: {
+            id: collectionId,
+            type: ['Collection'],
+            name: 'updated'
+          }
+        })
+        await backend.deleteResource({
+          spaceId,
+          collectionId,
+          resourceId: 'json'
+        })
+        const full = await feedOf({ collectionId })
+        const labels = full.documents.map(document =>
+          document.kind === 'resource' ? document.resourceId : document.kind
+        )
+        assert.deepEqual(labels, ['log', 'bin', 'collection-metadata', 'json'])
+        const positions = full.documents.map(document => document.feedPosition)
+        for (let index = 1; index < positions.length; index++) {
+          assert.ok(positions[index]! > positions[index - 1]!)
+        }
+        assert.equal(new Set(positions).size, positions.length)
+
+        // Two documents a page, resuming from each page's checkpoint.
+        const paged: string[] = []
+        let afterPosition: number | undefined
+        for (;;) {
+          const page = await backend.changesSince!({
+            spaceId,
+            collectionId,
+            ...(afterPosition !== undefined && { afterPosition }),
+            limit: 2
+          })
+          if (page.checkpoint === null) {
+            break
+          }
+          assert.ok(page.documents.length <= 2)
+          paged.push(
+            ...page.documents.map(document =>
+              document.kind === 'resource' ? document.resourceId : document.kind
+            )
+          )
+          afterPosition = page.checkpoint
+        }
+        assert.deepEqual(paged, labels)
+      })
+
+      it('an imported Collection takes fresh positions for its metadata, its log and its Resources', async () => {
+        const source = await makeBackend()
+        const target = await makeBackend()
+        try {
+          const sourceSpaceId = 'space-feed-kinds-src'
+          await provisionSpace(source.backend, sourceSpaceId)
+          await source.backend.writeCollection({
+            spaceId: sourceSpaceId,
+            collectionId: 'governed',
+            collectionMetadata: {
+              id: 'governed',
+              type: ['Collection'],
+              name: 'governed'
+            }
+          })
+          await source.backend.writeCollectionLog({
+            spaceId: sourceSpaceId,
+            collectionId: 'governed',
+            body: logLine1,
+            ifNoneMatch: '*'
+          })
+          await source.backend.writeResource({
+            spaceId: sourceSpaceId,
+            collectionId: 'governed',
+            resourceId: 'bin',
+            input: binaryInput(Buffer.from('bin'))
+          })
+          // Move the source's positions well past the ones the import will
+          // assign, so a carried position would show.
+          for (let index = 0; index < 3; index++) {
+            await source.backend.writeResourceMetadata({
+              spaceId: sourceSpaceId,
+              collectionId: 'governed',
+              resourceId: 'bin',
+              custom: { index }
+            })
+          }
+
+          await provisionSpace(target.backend, sourceSpaceId)
+          await importArchive({
+            backend: target.backend,
+            spaceId: sourceSpaceId,
+            tarStream: await source.backend.exportSpace({
+              spaceId: sourceSpaceId
+            })
+          })
+          const feed = await target.backend.changesSince!({
+            spaceId: sourceSpaceId,
+            collectionId: 'governed',
+            limit: 100
+          })
+          assert.deepEqual(
+            feed.documents.map(document => [
+              document.kind,
+              document.feedPosition
+            ]),
+            [
+              ['collection-metadata', 1],
+              ['log', 2],
+              ['resource', 3]
+            ]
+          )
+          const stored = await target.backend.getCollectionMetadata({
+            spaceId: sourceSpaceId,
+            collectionId: 'governed'
+          })
+          assert.equal(
+            formatEtag(onlyOfKind(feed, 'collection-metadata')!.validator!),
+            metadataEtagOf(stored)
+          )
+          const log = await target.backend.getCollectionLog({
+            spaceId: sourceSpaceId,
+            collectionId: 'governed'
+          })
+          assert.equal(
+            formatEtag(onlyOfKind(feed, 'log')!.validator!),
+            formatEtag(log!.validator)
+          )
+        } finally {
+          await source.cleanup()
+          await target.cleanup()
+        }
       })
     })
 
@@ -7076,7 +7606,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(after?.name, collectionId)
       })
 
-      it('goes away with its Collection, and stays out of the listing and the feed', async () => {
+      it('goes away with its Collection, and is no Resource in the listing or the feed', async () => {
         const { backend } = harness
         const collectionId = await freshCollection()
         await backend.writeCollectionLog({
@@ -7095,7 +7625,11 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId,
           limit: 100
         })
-        assert.equal(feed.documents.length, 0)
+        assert.equal(resourceDocuments(feed.documents).length, 0)
+        assert.deepEqual(
+          feed.documents.map(document => document.kind),
+          ['collection-metadata', 'log']
+        )
 
         await backend.deleteCollection({ spaceId, collectionId })
         assert.equal(
@@ -7351,7 +7885,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             collectionId: 'col',
             limit: 100
           })
-          const tombstone = feed.documents.find(
+          const tombstone = resourceDocuments(feed.documents).find(
             document => document.resourceId === 'gone'
           )
           assert.equal(tombstone?.deleted, true)
@@ -8377,7 +8911,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           limit: 100
         })
-        assert.equal(before.documents.length, 2)
+        assert.equal(resourceDocuments(before.documents).length, 2)
 
         await importArchive({
           backend,
@@ -8415,7 +8949,9 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           limit: 100
         })
         assert.deepEqual(
-          after.documents.map(document => document.resourceId).sort(),
+          resourceDocuments(after.documents)
+            .map(document => document.resourceId)
+            .sort(),
           ['big', 'gone', 'plain']
         )
         for (const document of after.documents) {
