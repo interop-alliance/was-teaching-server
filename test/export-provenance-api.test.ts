@@ -121,7 +121,7 @@ describe('Export provenance (wire level)', () => {
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([logToJsonlString(log)], { type: 'text/jsonl' })
     })
-    assert.equal(published.status, 204)
+    assert.equal(published.status, 201)
 
     const before = provenanceWarnings().length
     const archive = await exportArchive()

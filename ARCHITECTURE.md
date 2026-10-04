@@ -67,6 +67,40 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   storage method. Handlers read both `serverUrl` and `storage` from
   `request.server` (the `FastifyInstance` decorated in `server.ts`), not via a
   `this` binding.
+
+  A write answers from what the backend returns, not from a read made after it.
+  `writeResource` and `writeResourceMetadata` return the validator beside the
+  server-managed members as the write left them. The filesystem backend reads
+  them under the per-Resource lock, and Postgres takes them from the writing
+  statement's `RETURNING`. Create or Update Resource (`PUT /space/:s/:c/:id`)
+  answers `201` when the write created the Resource, a write over a tombstone
+  included, and `200` when it updated a live one. A write-once repeat updates
+  nothing, but the Resource is live, so it answers `200` with the stored
+  members. Update Resource Metadata (`PUT .../:id/meta`) answers `200` and never
+  creates. A `/meta` write to an absent Resource is a 404. Both keep the `ETag`
+  header and send a JSON body that holds only server-managed members:
+  `contentType`, `size`, and the content record's write stamp (`updatedAt`,
+  `updatedAtCounter`, `originId`). A `201` adds `createdAt` and `createdBy`, so
+  a writer learns no provenance it did not record. A `/meta` write adds the
+  nested `meta` stamp and generation. The body never carries `custom`, `epoch`,
+  or `writerId`. A Resource created over a tombstone records fresh provenance:
+  this write's invoker as `createdBy` and its stamp's time as `createdAt`. The
+  tombstone's values stay with the deleted Resource. Create Resource (`POST`), a
+  chunk `PUT`, Delete Resource, and the governing log `PUT` keep their answers.
+  The `did.jsonl` write shares the Resource `PUT` handler and answers the same
+  way.
+
+  Container writes follow the same rule. `writeSpace` and `writeCollection`
+  return the validator, whether the write created the container, and the stored
+  object as the write stamped it. Create Space, Create Collection, and the
+  create-by-`PUT` of a container's `meta` send that object through the read
+  projection, and choose `201` or `204` from the backend's answer. The handler's
+  own read happens before the lock. Two unconditional `PUT`s of one new
+  Collection's `meta` can both see it absent, but only the first write creates
+  it, and the second answers `204`. Update Space pins its write to its pre-read
+  (`assertTransition`), and Create Space is a guarded create, so their create
+  decision already matched the backend's.
+
 - **`src/auth-header-hooks.ts`** — `requireAuthHeaders` (401 if missing) and
   `parseAuthHeaders` (parses `Authorization` / `Capability-Invocation` /
   `Digest` into `request.zcap`).
@@ -654,16 +688,16 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `capabilityInvocation`). The counts are the `provenance` member of the
   returned `ImportStats`. Outside `verified` the object is still imported, with
   its `createdBy` removed. A tombstone carries no statement and is not counted,
-  and its sidecar loses `createdBy` too, since a re-create over a tombstone
-  keeps the tombstone's creator. A Collection tombstone travels on the plan
-  apart from the live Collections (`collectionTombstones`), so it is never
-  judged or counted. The Space Metadata object's verdict is counted only, since
-  an import never restores its `createdBy`. A `proofInvalid` and a
-  `contentMismatch` are logged at `warn` with different messages, so damaged
-  bytes are not read as a bad signature. `createdAt` keeps its import behavior
-  whatever the verdict. The archived stamps are read for this comparison only:
-  the importing backend re-stamps every record it writes with its own clock and
-  origin id, and keeps each record's archived generation.
+  and its sidecar loses `createdBy` too, since the tombstone's change document
+  carries it. A Collection tombstone travels on the plan apart from the live
+  Collections (`collectionTombstones`), so it is never judged or counted. The
+  Space Metadata object's verdict is counted only, since an import never
+  restores its `createdBy`. A `proofInvalid` and a `contentMismatch` are logged
+  at `warn` with different messages, so damaged bytes are not read as a bad
+  signature. `createdAt` keeps its import behavior whatever the verdict. The
+  archived stamps are read for this comparison only: the importing backend
+  re-stamps every record it writes with its own clock and origin id, and keeps
+  each record's archived generation.
 - **`src/storage.ts`** — supplies `defaultBackend()`, which opens the
   `FileSystemBackend` (rooted at `data/`) that `createApp()` uses when no
   backend is injected. The active backend is injected via
@@ -862,12 +896,13 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   the Space Metadata object on an existing Space replaces its user-writable
   members in full, so an omitted `name` is removed. `src/lib/spaceProjection.ts`
   holds the two projections from the stored record: the served object, which
-  Read Space and the two create echoes go through, and the export archive's
+  Read Space and the two create responses go through, and the export archive's
   `.space.<id>.json` entry, which keeps the on-disk layout and stamps only
-  `backends`; both derive `backends` there, so no path drifts on it. The create
-  echoes hand it the listing instead of having it read one: a Space that did not
-  exist before the write has no registrations, since registering one needs the
-  Space Metadata object to authorize against.
+  `backends`; both derive `backends` there, so no path drifts on it. A create
+  response projects the object `writeSpace` returns, as the write stored it. It
+  hands the projection the listing instead of having it read one: a Space that
+  did not exist before the write has no registrations, since registering one
+  needs the Space Metadata object to authorize against.
 - **`server` Space** -- the auxiliary Space that hosts this server's own
   identity: its `id` Collection holds the `did.jsonl` history log of the
   server's `did:webvh`. Provisioned at startup under the administrator's

@@ -185,6 +185,10 @@ import type {
   StoredBackendRecord,
   MetadataValidatorParts,
   StoredSpaceMetadata,
+  MetadataWriteResult,
+  ResourceWriteMembers,
+  ResourceMetadataWriteResult,
+  ResourceWriteResult,
   StoredCollectionMetadata,
   CollectionLogResult,
   ImmutableUnder,
@@ -387,6 +391,50 @@ function metaStampOfRow(
     updatedAtCounter: row.meta_updated_at_counter,
     originId: row.meta_origin_id,
     generation: row.meta_generation
+  }
+}
+
+/**
+ * The `resources` columns a Resource write answers from: the server-managed
+ * members of the Resource Metadata object, as the writing statement returns
+ * them or the write reads them under its row lock.
+ */
+const WRITTEN_MEMBER_COLUMNS = `content_type, size_bytes, created_at,
+  created_by, updated_at, updated_at_counter, origin_id, meta_generation,
+  meta_updated_at, meta_updated_at_counter, meta_origin_id`
+
+/**
+ * A `resources` row narrowed to `WRITTEN_MEMBER_COLUMNS`.
+ */
+type WrittenMemberRow = StampColumns &
+  Pick<
+    ResourceRow,
+    | 'content_type'
+    | 'size_bytes'
+    | 'created_at'
+    | 'created_by'
+    | 'meta_generation'
+    | 'meta_updated_at'
+    | 'meta_updated_at_counter'
+    | 'meta_origin_id'
+  >
+
+/**
+ * The server-managed members of a Resource Metadata object from a row a
+ * write returned or read under its lock.
+ * @param row {WrittenMemberRow}
+ * @returns {ResourceWriteMembers}
+ */
+function writtenMembersOfRow(row: WrittenMemberRow): ResourceWriteMembers {
+  const meta = metaStampOfRow(row)
+  return {
+    contentType: row.content_type,
+    size: Number(row.size_bytes),
+    createdAt: row.created_at,
+    ...stampOfRow(row),
+    ...(meta !== undefined && { meta }),
+    // Absent when the creating write had no invoker.
+    ...(row.created_by !== null && { createdBy: row.created_by })
   }
 }
 
@@ -1420,10 +1468,13 @@ export class PostgresBackend implements StorageBackend {
    *   current `ETag`; a stale validator throws `PreconditionFailedError` (412)
    * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *`, the guarded
    *   create; an existing Space throws `PreconditionFailedError` (412)
-   * @returns {Promise<EtagValidator>}   the Space's new validator (its
-   *   `generation` and the stamp this write mints, local segment 0)
+   * @returns {Promise<MetadataWriteResult<SpaceMetadata>>}   the Space's
+   *   new validator (its `generation` and the stamp this write mints, local
+   *   segment 0), whether the write created the Space, and the stored object
    */
-  async writeSpace(options: SpaceMetadataWrite): Promise<EtagValidator> {
+  async writeSpace(
+    options: SpaceMetadataWrite
+  ): Promise<MetadataWriteResult<SpaceMetadata>> {
     return this.#withTransaction(client =>
       this.#writeSpaceRow({ client, ...options })
     )
@@ -1447,7 +1498,7 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.prior] {StoredSpaceMetadata}   the current row as the
    *   caller already read it under `SPACE_META_LOCK_SQL`, so the write does
    *   not read it again; read here otherwise
-   * @returns {Promise<EtagValidator>}   the Space's new validator
+   * @returns {Promise<MetadataWriteResult<SpaceMetadata>>}
    */
   async #writeSpaceRow({
     client,
@@ -1461,7 +1512,7 @@ export class PostgresBackend implements StorageBackend {
   }: SpaceMetadataWrite & {
     client: pg.PoolClient
     prior?: StoredSpaceMetadata
-  }): Promise<EtagValidator> {
+  }): Promise<MetadataWriteResult<SpaceMetadata>> {
     const { controller } = spaceMetadata
     // Serialize concurrent Metadata writes (and Delete Space) for the same
     // Space id on an advisory lock: a `FOR UPDATE` on the row locks nothing
@@ -1559,7 +1610,7 @@ export class PostgresBackend implements StorageBackend {
         ...stampValues(stamp)
       ]
     )
-    return validator
+    return { validator, created: prior === undefined, metadata: stamped }
   }
 
   /**
@@ -1659,8 +1710,10 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.assertTransition] {Function}   the request layer's
    *   state-transition checks, run against the row just read under its lock,
    *   the history log columns included
-   * @returns {Promise<EtagValidator>}   the Collection's new validator (its
-   *   `generation` and the stamp this write mints, local segment 0)
+   * @returns {Promise<MetadataWriteResult<CollectionMetadata>>}   the
+   *   Collection's new validator (its `generation` and the stamp this write
+   *   mints, local segment 0), whether the write created the Collection (a
+   *   create over a tombstone included), and the stored object
    */
   async writeCollection({
     spaceId,
@@ -1680,7 +1733,7 @@ export class PostgresBackend implements StorageBackend {
     assertTransition?: (
       context: CollectionTransitionContext
     ) => void | Promise<void>
-  }): Promise<EtagValidator> {
+  }): Promise<MetadataWriteResult<CollectionMetadata>> {
     return this.#withTransaction(async client => {
       // Serialize all Collection writes within the Space on its space row: the
       // collection-row `FOR UPDATE` below locks nothing when the row does not
@@ -1758,20 +1811,21 @@ export class PostgresBackend implements StorageBackend {
         local: 0
       })
       const { generation, stamp } = validator
+      const stamped = stampCollectionMetadata({
+        collectionMetadata,
+        prior,
+        createdBy,
+        stamp
+      })
       await this.#upsertCollection({
         queryable: client,
         spaceId,
         collectionId,
-        body: stampCollectionMetadata({
-          collectionMetadata,
-          prior,
-          createdBy,
-          stamp
-        }),
+        body: stamped,
         generation,
         stamp
       })
-      return validator
+      return { validator, created: prior === undefined, metadata: stamped }
     })
   }
 
@@ -2387,10 +2441,13 @@ export class PostgresBackend implements StorageBackend {
    * @param options.resourceId {string}
    * @param options.input {ResourceInput}
    * @param [options.createdBy] {string}   DID of the invoker, recorded as the
-   *   Resource's `createdBy` on first write only
+   *   Resource's `createdBy` by the write that creates it (over a tombstone
+   *   included)
    * @param [options.ifMatch] {string}
    * @param [options.ifNoneMatch] {HeldValidators}
-   * @returns {Promise<EtagValidator>}   the Resource's new content validator
+   * @returns {Promise<ResourceWriteResult>}   the Resource's new content
+   *   validator, whether the write created it, and the members the writing
+   *   statement returned
    */
   async writeResource({
     spaceId,
@@ -2416,7 +2473,7 @@ export class PostgresBackend implements StorageBackend {
     immutable?: true | ImmutableUnder
     ifMatch?: string
     ifNoneMatch?: HeldValidators
-  }): Promise<EtagValidator> {
+  }): Promise<ResourceWriteResult> {
     const content = await this.#bufferInputCapped(input)
 
     return this.#withTransaction(async client => {
@@ -2440,14 +2497,9 @@ export class PostgresBackend implements StorageBackend {
       // write over one is an ordinary create.
       if (immutable !== undefined) {
         const { rows: storedRows } = await client.query<
-          StampColumns & {
-            generation: string
-            deleted: boolean
-            content_type: string
-          }
+          WrittenMemberRow & { generation: string; deleted: boolean }
         >(
-          `SELECT generation, updated_at, updated_at_counter, origin_id,
-                  deleted, content_type
+          `SELECT generation, deleted, ${WRITTEN_MEMBER_COLUMNS}
              FROM resources
             WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
           [spaceId, collectionId, resourceId]
@@ -2484,10 +2536,16 @@ export class PostgresBackend implements StorageBackend {
           ) {
             throw new ResourceImmutableError({ requestName: 'Write Resource' })
           }
-          return stampedValidator({
-            generation: stored.generation,
-            stamp: stampOfRow(stored)
-          })
+          // A repeat writes nothing, so it answers the stored row as read
+          // under the Space row lock.
+          return {
+            validator: stampedValidator({
+              generation: stored.generation,
+              stamp: stampOfRow(stored)
+            }),
+            created: false,
+            members: writtenMembersOfRow(stored)
+          }
         }
       }
 
@@ -2553,18 +2611,14 @@ export class PostgresBackend implements StorageBackend {
       }))!
 
       // Lock the row (re-reading under the create lock when it does not exist
-      // yet, so `exists` / `priorSize` below reflect a concurrent creator's
-      // committed row). Narrow projection: the lock needs the row, not its
-      // (possibly multi-MB) `content` bytea, which this path never reads.
-      type PriorRow = StampColumns &
-        Pick<
-          ResourceRow,
-          'generation' | 'size_bytes' | 'deleted' | 'created_at' | 'created_by'
-        >
+      // yet, so `exists` below reflects a concurrent creator's committed
+      // row). Narrow projection: the lock needs the row, not its (possibly
+      // multi-MB) `content` bytea, which this path never reads.
+      type PriorRow = StampColumns & Pick<ResourceRow, 'generation' | 'deleted'>
       const selectPrior = async (): Promise<PriorRow | undefined> => {
         const { rows } = await client.query<PriorRow>(
           `SELECT generation, updated_at, updated_at_counter, origin_id,
-                  size_bytes, deleted, created_at, created_by
+                  deleted
              FROM resources
             WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
             FOR UPDATE`,
@@ -2631,15 +2685,12 @@ export class PostgresBackend implements StorageBackend {
       // lock (`importSpace`'s plain INSERTs) can still race. A plain INSERT
       // (no ON CONFLICT) keeps the primary key as the arbiter: the loser's
       // unique violation maps to the 412 the precondition would have thrown.
-      // `createdBy` names the Resource's creator, not its last writer: taken
-      // from this write's invoker only when there is no prior row at all
-      // (`prior === undefined`), then preserved EXACTLY as the prior row has
-      // it -- including preserved-as-absent -- by every later write,
-      // regardless of who invokes it. A tombstone IS a prior row, so a
-      // re-create over one keeps the tombstone's `createdBy` (or its
-      // absence), exactly as `created_at` is preserved across it.
-      const creator =
-        prior !== undefined ? prior.created_by : (createdBy ?? null)
+      // `createdBy` and `created_at` name the Resource's creator and creation
+      // time, not its last writer: the INSERT takes them from this write, and
+      // the conflict arm keeps a live row's own -- preserved-as-absent
+      // included -- whoever invokes the update. A write over a tombstone is
+      // a create, and the conflict arm takes this write's provenance there:
+      // the tombstone's belongs to the deleted Resource.
       const values = [
         spaceId,
         collectionId,
@@ -2649,13 +2700,12 @@ export class PostgresBackend implements StorageBackend {
         isJsonContentType(input.contentType),
         content.length,
         generation,
-        // `created_at` is preserved from the prior row (including across a
-        // tombstone, as the filesystem sidecar does) and taken from the stamp
-        // on a true create; the stamp is ALWAYS this write's, on both the
-        // insert and the conflict arm.
-        prior?.created_at ?? stamp.updatedAt,
+        // This write's provenance, which the conflict arm keeps only over a
+        // tombstone. The stamp is ALWAYS this write's, on both the insert
+        // and the conflict arm.
+        stamp.updatedAt,
         ...stampValues(stamp),
-        creator,
+        createdBy ?? null,
         // The client-declared key epoch (the `key-epochs` feature): a content
         // write stores it and CLEARS it when absent (the new ciphertext's epoch
         // is unknown), so both the INSERT and the conflict update set it from
@@ -2675,25 +2725,26 @@ export class PostgresBackend implements StorageBackend {
           writer_id, feed_position
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, false, $9, $10, $11, $12, $13, $14, $15, $16)`
       /**
-       * `created_at` / the four `meta_*` columns / `custom` are deliberately
-       * NOT in the conflict update: an overwrite keeps the original creation
-       * time (also across a tombstone, as the filesystem sidecar does) and
-       * the `/meta` record as it stands on the row. `created_by` is likewise NOT
-       * backfilled from `EXCLUDED`: the conflict path always means a prior
-       * row already existed (including the race where a concurrent creator's
-       * INSERT landed between our lock-nothing SELECT and this statement), so
-       * `resources.created_by` -- the prior row's own value, absent or not --
-       * is authoritative and this write's `createdBy` is ignored entirely.
+       * The four `meta_*` columns and `custom` are deliberately NOT in the
+       * conflict update: an overwrite keeps the `/meta` record as it stands
+       * on the row (a tombstone already dropped it). `created_at` and
+       * `created_by` come from `EXCLUDED` only over a tombstone, and are the
+       * row's own over a live Resource, read on the statement itself. So a
+       * concurrent creator's INSERT that landed between our lock-nothing
+       * SELECT and this statement keeps its provenance, absent or not.
        * `generation` is preserved from the row for the same reason: the
        * conflict path always means a prior row (live or tombstoned) already
-       * had one, and a generation is minted only where none exists.
+       * had one, and a generation is minted only where none exists. The
+       * statement returns the members the write answers with, so they
+       * describe the row this write left.
        */
-      const written = await this.#insertOrUpsertVersioned({
+      const written = await this.#insertOrUpsertVersioned<WrittenMemberRow>({
         client,
         insertSql,
         // The size this write replaces, read on the writing statement's own
         // snapshot. A tombstone already stores 0, so it contributes nothing.
-        priorSizeSql: `SELECT size_bytes AS prior_size FROM resources
+        priorSizeSql: `SELECT size_bytes AS prior_size, deleted AS prior_deleted
+             FROM resources
             WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
         conflictSql: `
            ON CONFLICT (space_id, collection_id, resource_id) DO UPDATE SET
@@ -2706,14 +2757,20 @@ export class PostgresBackend implements StorageBackend {
              updated_at = EXCLUDED.updated_at,
              updated_at_counter = EXCLUDED.updated_at_counter,
              origin_id = EXCLUDED.origin_id,
-             created_by = resources.created_by,
+             created_at = CASE WHEN resources.deleted
+                               THEN EXCLUDED.created_at
+                               ELSE resources.created_at END,
+             created_by = CASE WHEN resources.deleted
+                               THEN EXCLUDED.created_by
+                               ELSE resources.created_by END,
              epoch = EXCLUDED.epoch,
              writer_id = EXCLUDED.writer_id,
              feed_position = EXCLUDED.feed_position`,
         values,
         createOnly: ifNoneMatch === '*' && prior === undefined,
         generation,
-        conflictDetail: `Resource '${resourceId}' already exists (If-None-Match: *).`
+        conflictDetail: `Resource '${resourceId}' already exists (If-None-Match: *).`,
+        returning: WRITTEN_MEMBER_COLUMNS
       })
       // Usage delta AFTER the write, from the size the write actually
       // replaced: a `QuotaExceededError` here still rolls the whole
@@ -2722,7 +2779,11 @@ export class PostgresBackend implements StorageBackend {
       if (delta !== 0) {
         await this.#applyUsageDelta({ client, spaceId, delta })
       }
-      return stampedValidator({ generation: written.generation, stamp })
+      return {
+        validator: stampedValidator({ generation: written.generation, stamp }),
+        created: written.created,
+        members: writtenMembersOfRow(written.row)
+      }
     })
   }
 
@@ -2750,16 +2811,23 @@ export class PostgresBackend implements StorageBackend {
    * @param options.generation {string}   the pre-read-derived generation,
    *   reported when the bare INSERT lands
    * @param options.priorSizeSql {string}   a `SELECT <size column> AS
-   *   prior_size FROM <table> WHERE <primary key>` over the row about to be
-   *   written, using the same bind values; run as a CTE of the writing
-   *   statement so `priorSizeBytes` is the size this statement REPLACES
+   *   prior_size, <deleted mark> AS prior_deleted FROM <table> WHERE
+   *   <primary key>` over the row about to be written, using the same bind
+   *   values; run as a CTE of the writing statement so `priorSizeBytes` is
+   *   the size this statement REPLACES and `priorDeleted` whether that row
+   *   was a tombstone
    * @param options.conflictDetail {string}   `detail` of the 412 a unique
    *   violation on the bare INSERT maps to
-   * @returns {Promise<{ generation: string, priorSizeBytes: number }>}   the
-   *   generation that landed, plus the stored size the write replaced (0 when
-   *   there was no row), for the caller's usage delta
+   * @param [options.returning] {string}   further columns the writing
+   *   statement returns, handed back as `row`
+   * @returns {Promise<{ generation: string, priorSizeBytes: number,
+   *   created: boolean, row: Row }>}   the generation that landed, the
+   *   stored size the write replaced (0 when there was no row) for the
+   *   caller's usage delta, whether the write created the record (it
+   *   inserted the row, or the row it replaced was a tombstone), and the
+   *   `returning` columns
    */
-  async #insertOrUpsertVersioned({
+  async #insertOrUpsertVersioned<Row extends object = object>({
     client,
     insertSql,
     conflictSql,
@@ -2767,7 +2835,8 @@ export class PostgresBackend implements StorageBackend {
     createOnly,
     generation,
     priorSizeSql,
-    conflictDetail
+    conflictDetail,
+    returning
   }: {
     client: pg.PoolClient
     insertSql: string
@@ -2777,10 +2846,22 @@ export class PostgresBackend implements StorageBackend {
     generation: string
     priorSizeSql: string
     conflictDetail: string
-  }): Promise<{ generation: string; priorSizeBytes: number }> {
+    returning?: string
+  }): Promise<{
+    generation: string
+    priorSizeBytes: number
+    created: boolean
+    row: Row
+  }> {
     if (createOnly) {
+      let rows: Row[]
       try {
-        await client.query(insertSql, values)
+        ;({ rows } = await client.query<Row>(
+          returning === undefined
+            ? insertSql
+            : `${insertSql} RETURNING ${returning}`,
+          values
+        ))
       } catch (err) {
         if ((err as { code?: string }).code === '23505') {
           throw new PreconditionFailedError({ detail: conflictDetail })
@@ -2788,7 +2869,12 @@ export class PostgresBackend implements StorageBackend {
         throw err
       }
       // The bare INSERT landed, so no row existed: nothing was replaced.
-      return { generation, priorSizeBytes: 0 }
+      return {
+        generation,
+        priorSizeBytes: 0,
+        created: true,
+        row: rows[0] ?? ({} as Row)
+      }
     }
     // `prior` is a plain SELECT CTE of this same statement, so it is evaluated
     // on the statement's snapshot -- the state BEFORE the upsert, including
@@ -2798,19 +2884,26 @@ export class PostgresBackend implements StorageBackend {
     // take the same-key create lock -- `importSpace`'s plain INSERTs -- landed
     // a row in between: the upsert replaces that row, and its bytes leave the
     // counter with it.
-    const { rows: written } = await client.query<{
-      generation: string
-      prior_size: string
-    }>(
+    // `xmax = 0` holds on a row this statement inserted, and not on one its
+    // conflict arm updated. The write also created the record when the row it
+    // replaced was a tombstone.
+    const { rows: written } = await client.query<
+      Row & { generation: string; prior_size: string; created: boolean }
+    >(
       `WITH prior AS (${priorSizeSql})
        ${insertSql}${conflictSql}
            RETURNING generation,
-             COALESCE((SELECT prior_size FROM prior), 0) AS prior_size`,
+             COALESCE((SELECT prior_size FROM prior), 0) AS prior_size,
+             (xmax = 0 OR COALESCE((SELECT prior_deleted FROM prior), false))
+               AS created${returning === undefined ? '' : `, ${returning}`}`,
       values
     )
+    const row = written[0]!
     return {
-      generation: written[0]!.generation,
-      priorSizeBytes: Number(written[0]!.prior_size)
+      generation: row.generation,
+      priorSizeBytes: Number(row.prior_size),
+      created: row.created,
+      row
     }
   }
 
@@ -3019,18 +3112,12 @@ export class PostgresBackend implements StorageBackend {
       return undefined
     }
     const hasCustom = row.custom !== null && Object.keys(row.custom).length > 0
-    const meta = metaStampOfRow(row)
     return {
-      contentType: row.content_type,
-      size: Number(row.size_bytes),
-      createdAt: row.created_at,
-      // The content record's generation (out of band) with its stamp, then
-      // the `/meta` record's own stamp and generation, once written.
+      // The content record's stamp, then the `/meta` record's own stamp and
+      // generation, once written.
+      ...writtenMembersOfRow(row),
+      // The content record's generation (out of band).
       generation: row.generation,
-      ...stampOfRow(row),
-      ...(meta !== undefined && { meta }),
-      // Absent when the creating write had no invoker.
-      ...(row.created_by !== null && { createdBy: row.created_by }),
       ...(hasCustom && { custom: row.custom as ResourceMetadataCustom }),
       // The client-declared key epoch (the `key-epochs` feature), when stamped.
       ...(row.epoch !== null && { epoch: row.epoch }),
@@ -3057,8 +3144,10 @@ export class PostgresBackend implements StorageBackend {
    * @param options.custom {ResourceMetadataCustom | Record<string, unknown>}
    * @param [options.ifMatch] {string}
    * @param [options.ifNoneMatch] {HeldValidators}
-   * @returns {Promise<EtagValidator | undefined>}   the `/meta` object's new
-   *   validator (its `meta_generation` with the stamp this write mints)
+   * @returns {Promise<ResourceMetadataWriteResult | undefined>}
+   *   the `/meta` object's new validator (its `meta_generation` with the
+   *   stamp this write mints) beside the members the writing statement
+   *   returned
    */
   async writeResourceMetadata({
     spaceId,
@@ -3078,7 +3167,7 @@ export class PostgresBackend implements StorageBackend {
     uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: HeldValidators
-  }): Promise<EtagValidator | undefined> {
+  }): Promise<ResourceMetadataWriteResult | undefined> {
     return this.#withTransaction(async client => {
       // First lock of the backend-wide order (`#lockSpaceRow`). Without it
       // the `collections` row taken below and the `resources` row taken after
@@ -3182,7 +3271,8 @@ export class PostgresBackend implements StorageBackend {
       // `custom`, full-replace): `COALESCE($6, epoch)` keeps the current value
       // when the parameter is NULL. The content record's stamp and
       // `writer_id`, which names the writer of the content, are not touched.
-      await client.query(
+      // The statement returns the members the write answers with.
+      const { rows: written } = await client.query<WrittenMemberRow>(
         `UPDATE resources SET
            meta_generation = $4,
            custom = $5::jsonb,
@@ -3191,7 +3281,8 @@ export class PostgresBackend implements StorageBackend {
            meta_updated_at = $8,
            meta_updated_at_counter = $9,
            meta_origin_id = $10
-         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
+         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+         RETURNING ${WRITTEN_MEMBER_COLUMNS}`,
         [
           spaceId,
           collectionId,
@@ -3203,7 +3294,10 @@ export class PostgresBackend implements StorageBackend {
           ...stampValues(metaStamp)
         ]
       )
-      return metaValidator
+      return {
+        validator: metaValidator,
+        members: writtenMembersOfRow(written[0]!)
+      }
     })
   }
 
@@ -3376,7 +3470,8 @@ export class PostgresBackend implements StorageBackend {
         insertSql,
         // The size this write replaces, read on the writing statement's own
         // snapshot (see `writeResource`).
-        priorSizeSql: `SELECT size AS prior_size FROM chunks
+        priorSizeSql: `SELECT size AS prior_size, false AS prior_deleted
+             FROM chunks
             WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
               AND chunk_index = $4`,
         conflictSql: `

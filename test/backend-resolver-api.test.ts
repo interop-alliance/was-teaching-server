@@ -103,7 +103,7 @@ describe('Per-Collection backend resolver (selectable registered backends)', () 
       method: 'PUT',
       json: { hello: 'world' }
     })
-    assert.equal(putRes.status, 204)
+    assert.equal(putRes.status, 201)
 
     // The bytes landed in the provider backend, NOT the default backend.
     const fromProvider = await providerBackend.getResource({

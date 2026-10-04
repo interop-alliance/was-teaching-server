@@ -170,7 +170,7 @@ describe('root-invocation relation scoping (did:webvh controller)', () => {
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([logToJsonlString(created.log)], { type: 'text/jsonl' })
     })
-    assert.equal(published.status, 204)
+    assert.equal(published.status, 201)
 
     // Promotion by ordering: created under Alice's `did:key`, handed to the
     // `did:webvh` by a PUT the stored `did:key` still authorizes.

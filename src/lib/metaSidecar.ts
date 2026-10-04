@@ -75,9 +75,10 @@ export interface MetaSidecar {
   updatedAt: string
   updatedAtCounter: number
   originId: string
-  // DID of the Resource's creator, set from the invoker of the first content
-  // write and thereafter preserved verbatim (as `createdAt` is), including
-  // across a tombstone. Server-managed: never sourced from the request body,
+  // DID of the Resource's creator, set from the invoker of the content write
+  // that created it and thereafter preserved verbatim (as `createdAt` is). A
+  // tombstone keeps it, and a re-create over the tombstone records its own.
+  // Server-managed: never sourced from the request body,
   // and not reachable from the user-writable `custom`. Absent when the
   // caller had no invoker.
   createdBy?: IDID

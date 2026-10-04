@@ -55,10 +55,6 @@ import {
   metadataEtagOf,
   stripMetadataValidator
 } from '../lib/metadataValidator.js'
-import {
-  stampCollectionMetadata,
-  stampSpaceMetadata
-} from '../lib/metadataWrite.js'
 import { projectCollectionMetadata } from './collectionContext.js'
 import { notModifiedReply } from './notModified.js'
 import {
@@ -86,10 +82,11 @@ import {
   ServiceUnavailableError,
   StaleSpaceMetadataError
 } from '../errors.js'
-import type { EtagValidator, HeldValidators } from '../lib/etag.js'
+import type { HeldValidators } from '../lib/etag.js'
 import type {
   IDID,
   CollectionsList,
+  MetadataWriteResult,
   SpaceMetadata,
   SpaceQuotaReport,
   StoredSpaceMetadata
@@ -301,11 +298,7 @@ export class SpaceRequest {
 
     // Check to see if space already exists (if yes, this will be an Update).
     // A Space that changes before the write is re-read and re-authorized.
-    let outcome: {
-      written: EtagValidator
-      spaceMetadata: SpaceMetadata
-      created: boolean
-    }
+    let outcome: MetadataWriteResult<SpaceMetadata>
     for (let attempt = 1; ; attempt++) {
       const existingSpaceMetadata = await storage.getSpaceMetadata({ spaceId })
       try {
@@ -332,33 +325,31 @@ export class SpaceRequest {
         }
       }
     }
-    const { written, spaceMetadata, created } = outcome
+    const { validator, metadata, created } = outcome
     // Bust any cached (now-stale) object so the next read sees this write.
     invalidateSpaceMetadata({ storage, spaceId })
 
     // Surface the new `ETag` so a client can chain a conditional update
     // (read-modify-CAS on the Space Metadata object).
-    reply.header('etag', formatEtag(written))
+    reply.header('etag', formatEtag(validator))
+    // Create or update is the backend's answer, decided under its lock. The
+    // write is pinned to the pre-read it was authorized against, so the two
+    // agree.
     if (!created) {
       return reply.status(204).send()
     }
     // Created: `Location` names the Space (its canonical container URL), not
-    // the Metadata object that was written (spec "Update Space"). The echo is
-    // the projection Read Space serves, over the stored object rebuilt by the
-    // same stamping the backend ran (no prior object, the invoker as
-    // `createdBy`, the stamp the returned validator carries). A Space that
-    // did not exist before this write has no registered backends, so the
-    // echo stamps the server's own descriptor without a read.
+    // the Metadata object that was written (spec "Update Space"). The body is
+    // the stored object as the write left it, through the projection Read
+    // Space serves. A Space that did not exist before this write has no
+    // registered backends, so the projection lists the server's own
+    // descriptor without a read.
     reply.header('Location', spaceUrl)
     return reply.status(201).send(
       await projectSpaceMetadata({
         storage,
         spaceId,
-        spaceMetadata: stampSpaceMetadata({
-          spaceMetadata,
-          createdBy: invokerDid(request),
-          stamp: written.stamp
-        }),
+        spaceMetadata: metadata,
         backends: [storage.describe()]
       })
     )
@@ -438,14 +429,13 @@ export class SpaceRequest {
       requestName
     })
 
-    const createdBy = invokerDid(request)
     let written
     try {
       written = await storage.writeCollection({
         spaceId,
         collectionId,
         collectionMetadata,
-        createdBy,
+        createdBy: invokerDid(request),
         // Two creates racing on one client-supplied id both pass the check
         // above; the guarded write lets exactly one through, and the loser's
         // 412 is served as the spec's `id-conflict`, as for Create Space.
@@ -467,21 +457,15 @@ export class SpaceRequest {
     reply.header('Location', createdUrl)
     // Surface the new Collection Metadata `ETag` so a client can chain a
     // conditional update (the `key-epochs` conditional-Collection-write feature).
-    reply.header('etag', formatEtag(written))
-    // Echo what was persisted, through the projection Read Collection
-    // Metadata serves, so the create response and a subsequent read agree.
-    // The guarded write created the Collection, so the stored object is
-    // rebuilt by the same stamping the backend ran, over no prior object and
-    // with the stamp the returned validator carries.
+    reply.header('etag', formatEtag(written.validator))
+    // The stored object as the guarded write left it, through the projection
+    // Read Collection Metadata serves, so the create response and a
+    // subsequent read agree.
     return reply.status(201).send(
       projectCollectionMetadata({
         spaceId,
         collectionId,
-        collectionMetadata: stampCollectionMetadata({
-          collectionMetadata,
-          createdBy,
-          stamp: written.stamp
-        })
+        collectionMetadata: written.metadata
       })
     )
   }
@@ -903,9 +887,8 @@ export class SpaceRequest {
  * @param options.spaceUrl {string}   the Space's canonical container URL
  * @param [options.ifMatch] {string}   the client's `If-Match`
  * @param [options.ifNoneMatch] {HeldValidators}   the client's `If-None-Match`
- * @returns {Promise<{ written: EtagValidator, spaceMetadata: SpaceMetadata, created: boolean }>}
- *   the new validator, the object handed to storage, and whether the write
- *   created the Space
+ * @returns {Promise<MetadataWriteResult<SpaceMetadata>>}   the new
+ *   validator, whether the write created the Space, and the stored object
  */
 async function authorizeAndWriteSpaceMetadata({
   request,
@@ -923,11 +906,7 @@ async function authorizeAndWriteSpaceMetadata({
   spaceUrl: string
   ifMatch?: string
   ifNoneMatch?: HeldValidators
-}): Promise<{
-  written: EtagValidator
-  spaceMetadata: SpaceMetadata
-  created: boolean
-}> {
+}): Promise<MetadataWriteResult<SpaceMetadata>> {
   const {
     params: { spaceId },
     url,
@@ -1063,7 +1042,7 @@ async function authorizeAndWriteSpaceMetadata({
 
   // zCap checks out, continue. The client's own preconditions are evaluated
   // as sent, atomically with the write.
-  const written = await storage.writeSpace({
+  return storage.writeSpace({
     spaceId,
     spaceMetadata,
     createdBy: invokerDid(request),
@@ -1080,9 +1059,4 @@ async function authorizeAndWriteSpaceMetadata({
       }
     }
   })
-  return {
-    written,
-    spaceMetadata,
-    created: existingSpaceMetadata === undefined
-  }
 }

@@ -33,6 +33,9 @@ import {
 import type {
   CollectionDeleteOutcome,
   CollectionMetadata,
+  MetadataWriteResult,
+  NormalizedIndexDeclaration,
+  ResourceWriteResult,
   StorageBackend
 } from '../types.js'
 import { parseBlindedIndexQueryBody } from '../lib/blindedIndex.js'
@@ -43,7 +46,6 @@ import {
   uniqueIndexesOf
 } from '../lib/equalityIndex.js'
 import { resolveBackendDescriptor } from '../lib/backends.js'
-import { stampCollectionMetadata } from '../lib/metadataWrite.js'
 import { assertEncryptedWriteConforms } from '../lib/encryption.js'
 import { assertRevisionsTransition } from '../lib/revisions.js'
 import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
@@ -70,11 +72,7 @@ import {
   quotaPath,
   queryPath
 } from '../lib/paths.js'
-import {
-  type EtagValidator,
-  formatEtag,
-  parseWritePreconditions
-} from '../lib/etag.js'
+import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
 import {
   metadataEtagOf,
   stripMetadataValidator
@@ -88,7 +86,6 @@ import {
   UniqueAttributeConflictError,
   rethrowOrWrapStorageError
 } from '../errors.js'
-import type { NormalizedIndexDeclaration } from '../types.js'
 import { notModifiedReply } from './notModified.js'
 
 /**
@@ -188,7 +185,7 @@ export class CollectionRequest {
     // zCap checks out, continue
     const resourceId = uuidv4()
     let response: { id: string; 'content-type'?: string; url?: string }
-    let written: EtagValidator
+    let written: ResourceWriteResult
 
     // Route resource bytes to the Collection's selected (data-plane) backend.
     const dataBackend = await resolveBackend({
@@ -250,7 +247,7 @@ export class CollectionRequest {
     reply.header('Location', createdUrl)
     // Surface the created Resource's ETag so a client can chain a conditional
     // write (the conditional-writes feature).
-    reply.header('etag', formatEtag(written))
+    reply.header('etag', formatEtag(written.validator))
     response.url = createdUrl
 
     return reply.status(201).send(response)
@@ -578,14 +575,13 @@ export class CollectionRequest {
     // the write inside the backend; a stale validator or a present object
     // surfaces as 412 `precondition-failed` (rethrown unchanged).
     const { ifMatch, ifNoneMatch } = parseWritePreconditions(request.headers)
-    const createdBy = invokerDid(request)
-    let written: EtagValidator
+    let written: MetadataWriteResult<CollectionMetadata>
     try {
       written = await storage.writeCollection({
         spaceId,
         collectionId,
         collectionMetadata,
-        createdBy,
+        createdBy: invokerDid(request),
         ...(ifMatch !== undefined && { ifMatch }),
         ...(ifNoneMatch !== undefined && { ifNoneMatch }),
         // Re-evaluate the descriptor checks (`encryption`, `revisions`) and the
@@ -626,8 +622,11 @@ export class CollectionRequest {
 
     // Surface the new `ETag` so a client can chain a conditional update
     // (read-modify-CAS on the object).
-    reply.header('etag', formatEtag(written))
-    if (existingCollection) {
+    reply.header('etag', formatEtag(written.validator))
+    // Create or update is the backend's answer, decided under its lock: two
+    // unconditional creates that both read the Collection as absent above
+    // land as one create and one update.
+    if (!written.created) {
       return reply.status(204).send()
     }
     // Created: `Location` names the Collection (its canonical container URL),
@@ -638,19 +637,15 @@ export class CollectionRequest {
       trailingSlash: true
     })
     reply.header('Location', new URL(collectionUrl, serverUrl).toString())
-    // Echo what was persisted, through the projection Read Collection
-    // Metadata serves, so the create response and a subsequent read agree.
-    // The stored object is rebuilt by the same stamping the backend ran,
-    // over no prior object and with the stamp the returned validator carries.
+    // The stored object as the write left it, through the projection Read
+    // Collection Metadata serves, so the create response and a subsequent
+    // read agree. A created Collection has no governing log yet, so no
+    // member is derived from one.
     return reply.status(201).send(
       projectCollectionMetadata({
         spaceId,
         collectionId,
-        collectionMetadata: stampCollectionMetadata({
-          collectionMetadata,
-          createdBy,
-          stamp: written.stamp
-        })
+        collectionMetadata: written.metadata
       })
     )
   }

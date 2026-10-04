@@ -105,7 +105,7 @@ describe('Encryption enforcement API', () => {
       body: envelope,
       contentType: JSON_TYPE
     })
-    assert.equal(response.status, 204)
+    assert.equal(response.status, 201)
   })
 
   it('rejects a plaintext JSON body into an edv Collection (422 scheme-mismatch)', async () => {
@@ -167,7 +167,7 @@ describe('Encryption enforcement API', () => {
       method: 'PUT',
       json: { hello: 'world' }
     })
-    assert.equal(response.status, 204)
+    assert.equal(response.status, 201)
   })
 
   it('ordering: an under-authorized writer into an edv Collection gets 404, not 422', async () => {
@@ -215,7 +215,7 @@ describe('Encryption enforcement API', () => {
       method: 'PUT',
       json: { custom: envelope }
     })
-    assert.equal(put1.status, 204)
+    assert.equal(put1.status, 200)
     const metaEtag1 = put1.headers.get('etag')
     assert.ok(metaEtag1, 'PUT /meta returns a /meta ETag')
 
@@ -233,7 +233,7 @@ describe('Encryption enforcement API', () => {
       method: 'PUT',
       json: { custom: envelope }
     })
-    assert.equal(put2.status, 204)
+    assert.equal(put2.status, 200)
     assert.notEqual(put2.headers.get('etag'), metaEtag1)
   })
 
@@ -260,7 +260,7 @@ describe('Encryption enforcement API', () => {
       method: 'PUT',
       json: { custom: { name: 'labeled' } }
     })
-    assert.equal(response.status, 204)
+    assert.equal(response.status, 200)
   })
 
   it('PUT the Collection /meta of an edv Collection rejects a plaintext custom (422)', async () => {

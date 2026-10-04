@@ -786,7 +786,7 @@ describe('Storage API', () => {
           collectionDir,
           resourceId: 'note'
         })
-        const revived = await backend.writeResource({
+        const { validator: revived } = await backend.writeResource({
           spaceId,
           collectionId,
           resourceId: 'note',
@@ -1117,12 +1117,14 @@ describe('Storage API', () => {
           collectionId,
           resourceId: 'doc'
         })
-        const written = await backend.writeResourceMetadata({
-          spaceId,
-          collectionId,
-          resourceId: 'doc',
-          custom: { name: 'labeled', tags: { s: 'draft' } }
-        })
+        const written = (
+          await backend.writeResourceMetadata({
+            spaceId,
+            collectionId,
+            resourceId: 'doc',
+            custom: { name: 'labeled', tags: { s: 'draft' } }
+          })
+        )?.validator
         assert.ok(written, 'the metadata write returns a validator')
 
         const meta = await backend.getResourceMetadata({
@@ -1228,13 +1230,15 @@ describe('Storage API', () => {
           }
         })
         // If-None-Match: * succeeds on the first metadata write (none exists yet).
-        const first = await backend.writeResourceMetadata({
-          spaceId,
-          collectionId,
-          resourceId: 'doc',
-          custom: { name: 'first' },
-          ifNoneMatch: '*'
-        })
+        const first = (
+          await backend.writeResourceMetadata({
+            spaceId,
+            collectionId,
+            resourceId: 'doc',
+            custom: { name: 'first' },
+            ifNoneMatch: '*'
+          })
+        )?.validator
         assert.ok(first, 'the first metadata write returns a validator')
         // A second If-None-Match: * now fails (metadata already exists).
         await assert.rejects(

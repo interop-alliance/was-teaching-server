@@ -263,20 +263,11 @@ export function containerFeedDocument({
   generation?: string
   local?: number
 }): FeedDocument {
-  const { updatedAt, updatedAtCounter, originId } = stamp
-  const validator = validatorOf({
-    generation,
-    updatedAt,
-    updatedAtCounter,
-    originId,
-    local
-  })
+  const validator = validatorOf({ generation, ...stamp, local })
   return {
     kind,
     feedPosition,
-    updatedAt,
-    updatedAtCounter,
-    originId,
+    ...stamp,
     ...(validator !== undefined && { validator })
   }
 }

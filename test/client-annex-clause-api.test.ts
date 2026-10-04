@@ -275,7 +275,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         capability: delegated,
         json: { minted: 'under-generation-delegation' }
       })
-      assert.equal(written.status, 204)
+      assert.equal(written.status, 201)
 
       const readBack = await annex.request({
         url: `${credentialsUrl}/doc-generation`,
@@ -729,7 +729,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         signer: bob.signer,
         capability: delegated
       })
-      assert.equal(response.status, 204)
+      assert.equal(response.status, 200)
     })
 
     it('the same target granted GET is not the bridge, but predicate (iv) admits it (200)', async () => {
@@ -856,7 +856,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         url: keysLogUrl,
         log: keysAccount.log
       })
-      assert.equal(response.status, 204)
+      assert.equal(response.status, 200)
     })
   })
 
@@ -916,7 +916,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         capability: delegated,
         json: { clientId: 'client-1' }
       })
-      assert.equal(written.status, 204)
+      assert.equal(written.status, 201)
 
       const read = await client({ signer: bob.signer }).request({
         url: recordUrl,
@@ -1410,7 +1410,7 @@ describe('client-annex clause (ladder-VM delegation bounds)', () => {
         headers: { 'content-type': 'text/jsonl' },
         body: new Blob([logToJsonlString(removed.log)], { type: 'text/jsonl' })
       })
-      assert.equal(published.status, 204)
+      assert.equal(published.status, 200)
 
       const err = await requestError(
         client({ signer: ladder.signer }).request({

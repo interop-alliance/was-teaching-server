@@ -15,8 +15,7 @@ import {
   projectSpaceMetadata,
   writableSpaceMetadata
 } from '../lib/spaceProjection.js'
-import { type EtagValidator, formatEtag } from '../lib/etag.js'
-import { stampSpaceMetadata } from '../lib/metadataWrite.js'
+import { formatEtag } from '../lib/etag.js'
 import {
   assertBodyController,
   verifyBodyControllerConsent
@@ -43,7 +42,13 @@ import {
   PreconditionFailedError,
   ProblemError
 } from '../errors.js'
-import type { IDID, SpaceSummary, SpaceListing } from '../types.js'
+import type {
+  IDID,
+  MetadataWriteResult,
+  SpaceMetadata,
+  SpaceSummary,
+  SpaceListing
+} from '../types.js'
 
 export class SpacesRepositoryRequest {
   /**
@@ -314,21 +319,21 @@ export class SpacesRepositoryRequest {
       }
     }
 
-    // zCap checks out, continue. A token-provisioned create carries no
-    // invocation, so it records no `createdBy`.
-    const createdBy = invokerDid(request)
+    // zCap checks out, continue.
     // The write is the guarded create (`If-None-Match: *` semantics),
     // evaluated atomically inside the backend: two concurrent creates of the
     // same id both pass the existence check above, and without the guard the
     // later full-replacement write would overwrite the winner's `controller`
     // and `type`. The loser's 412 is served as the spec's `id-conflict`
     // (409), since no client header was involved.
-    let written: EtagValidator
+    let written: MetadataWriteResult<SpaceMetadata>
     try {
       written = await storage.writeSpace({
         spaceId,
         spaceMetadata,
-        createdBy,
+        // A token-provisioned create carries no invocation, so it records
+        // no `createdBy`.
+        createdBy: invokerDid(request),
         ifNoneMatch: '*'
       })
     } catch (err) {
@@ -350,24 +355,18 @@ export class SpacesRepositoryRequest {
     reply.header('Location', createdSpaceUrl)
     // Surface the Metadata object's ETag so a client can chain a conditional
     // Update Space (read-modify-CAS on the Space Metadata object).
-    reply.header('etag', formatEtag(written))
-    // Echo what was persisted, through the projection Read Space serves, so
-    // the create response and a subsequent read agree. An id already in use
-    // was rejected as a 409 by the guarded write, so it created the Space:
-    // the stored object is rebuilt by the same stamping the backend ran (no
-    // prior object, this invoker as `createdBy`, the stamp the returned
-    // validator carries). A Space that did not exist has no registered
-    // backends, so the echo stamps the server's own descriptor without a
-    // read.
+    reply.header('etag', formatEtag(written.validator))
+    // The stored object as the write left it, through the projection Read
+    // Space serves, so the create response and a subsequent read agree. An
+    // id already in use was refused as a 409 by the guarded write, so it
+    // created the Space. A Space that did not exist has no registered
+    // backends, so the projection lists the server's own descriptor without
+    // a read.
     return reply.status(201).send(
       await projectSpaceMetadata({
         storage,
         spaceId,
-        spaceMetadata: stampSpaceMetadata({
-          spaceMetadata,
-          createdBy,
-          stamp: written.stamp
-        }),
+        spaceMetadata: written.metadata,
         backends: [storage.describe()]
       })
     )

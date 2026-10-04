@@ -30,8 +30,8 @@
  * whether or not the destination already holds it, so the counts describe the
  * archive. Outside `verified`, the object's archived `createdBy` is removed
  * from the plan, so both backends import it without one. A tombstone's
- * sidecar is never attested, so its `createdBy` is removed too: a later
- * re-create over the tombstone would otherwise keep it.
+ * sidecar is never attested, so its `createdBy` is removed too: the
+ * tombstone's change document would otherwise carry it.
  */
 import { readLogFromString } from '@interop/did-method-webvh'
 import type { DIDDoc, DIDLog } from '@interop/did-method-webvh'

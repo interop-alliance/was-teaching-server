@@ -93,7 +93,7 @@ describe('Write stamp and ETag layout', () => {
       json,
       headers
     })
-    assert.equal(response.status, 204)
+    assert.ok(response.status === 201 || response.status === 200)
     return response.headers.get('etag')!
   }
 
@@ -269,7 +269,7 @@ describe('Write stamp and ETag layout', () => {
       method: 'PUT',
       json: { custom: { name: 'Doc' }, writerId: 'ignored-writer' }
     })
-    assert.equal(written.status, 204)
+    assert.equal(written.status, 200)
     const metaEtag = parseEtagSegments(written.headers.get('etag'))
     assert.equal(Date.parse(metaEtag.stamp.updatedAt), clock.now)
 
@@ -305,7 +305,7 @@ describe('Write stamp and ETag layout', () => {
       method: 'PUT',
       json: { custom: { name: 'Doc again' } }
     })
-    assert.equal(rewritten.status, 204)
+    assert.equal(rewritten.status, 200)
     const secondEtag = parseEtagSegments(rewritten.headers.get('etag'))
     assert.equal(secondEtag.generation, metaEtag.generation)
     assert.equal(secondEtag.stamp.updatedAt, metaEtag.stamp.updatedAt)

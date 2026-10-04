@@ -734,11 +734,11 @@ describe('Collection equality query profile', () => {
 
       // The holder re-asserting its own value is not a self-conflict.
       const reassert = await putDoc('uq-content', 'holder', { slug: 'hello' })
-      assert.equal(reassert.status, 204)
+      assert.equal(reassert.status, 200)
 
       // A Resource whose unique attribute is absent makes no claim.
       const noClaim = await putDoc('uq-content', 'noclaim', { other: 'x' })
-      assert.equal(noClaim.status, 204)
+      assert.equal(noClaim.status, 201)
 
       // A multi-valued unique value claims each element: a second array sharing
       // one element conflicts.
@@ -758,14 +758,14 @@ describe('Collection equality query profile', () => {
       await putDoc('uq-custom', 'r2', {})
 
       const first = await putMeta('uq-custom', 'r1', { name: 'dup' })
-      assert.equal(first.status, 204)
+      assert.equal(first.status, 200)
       const conflict = await rejection(
         putMeta('uq-custom', 'r2', { name: 'dup' })
       )
       assert.equal(conflict.response.status, 409)
       // The same Resource re-asserting its own value is not a conflict.
       const reassert = await putMeta('uq-custom', 'r1', { name: 'dup' })
-      assert.equal(reassert.status, 204)
+      assert.equal(reassert.status, 200)
 
       // A claim on an absent Resource is the masked 404, not the 409: the
       // existence check runs before the uniqueness scan.

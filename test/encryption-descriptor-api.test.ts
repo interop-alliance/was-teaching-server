@@ -706,7 +706,7 @@ describe('Encryption descriptor API', () => {
         json: { id: 'r1', hello: 'world' },
         headers: { 'key-epoch': 'urn:epoch:1' }
       })
-      assert.equal(put.status, 204)
+      assert.equal(put.status, 201)
 
       assert.equal((await metaOf('r1')).epoch, 'urn:epoch:1')
 
@@ -805,7 +805,7 @@ describe('Encryption descriptor API', () => {
         json: { id: 'r1', hello: 'world' },
         headers: { 'writer-id': 'writer-1' }
       })
-      assert.equal(put.status, 204)
+      assert.equal(put.status, 201)
 
       assert.equal((await metaOf('r1')).writerId, 'writer-1')
 
@@ -914,7 +914,7 @@ describe('Encryption descriptor API', () => {
           method: 'PUT',
           json: { custom: {}, writerId }
         })
-        assert.equal(response.status, 204)
+        assert.equal(response.status, 200)
       }
       assert.equal((await metaOf('r3')).writerId, undefined)
     })

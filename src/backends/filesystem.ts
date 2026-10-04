@@ -188,6 +188,10 @@ import type {
   StoredCollectionMetadata,
   StoredCollectionTombstone,
   StoredSpaceMetadata,
+  MetadataWriteResult,
+  ResourceWriteMembers,
+  ResourceMetadataWriteResult,
+  ResourceWriteResult,
   CollectionLogResult,
   ImmutableUnder,
   StoredCollectionLog,
@@ -1459,9 +1463,10 @@ export class FileSystemBackend implements StorageBackend {
    *   current `ETag`; a stale validator throws `PreconditionFailedError` (412)
    * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *`, the guarded
    *   create; an existing Space throws `PreconditionFailedError` (412)
-   * @returns {Promise<EtagValidator>}   the Space Metadata object's new
-   *   validator (its `generation` and the stamp this write mints, local
-   *   segment 0)
+   * @returns {Promise<MetadataWriteResult<SpaceMetadata>>}   the Space
+   *   Metadata object's new validator (its `generation` and the stamp this
+   *   write mints, local segment 0), whether the write created the Space,
+   *   and the stored object
    */
   async writeSpace({
     spaceId,
@@ -1477,7 +1482,7 @@ export class FileSystemBackend implements StorageBackend {
     ifMatch?: string
     ifNoneMatch?: HeldValidators
     assertTransition?: (prior?: StoredSpaceMetadata) => void | Promise<void>
-  }): Promise<EtagValidator> {
+  }): Promise<MetadataWriteResult<SpaceMetadata>> {
     // Serialize the read-check-write under a per-Space-metadata lock so the
     // precondition check and the stamp are atomic with the write (two
     // clients racing a guarded create cannot both succeed). Its own
@@ -1516,7 +1521,7 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.prior] {StoredSpaceMetadata}   the current object, read
    *   under the lock; reused for the precondition, the create-path quota
    *   check (a brand-new Space has none yet), and to resolve `createdBy`
-   * @returns {Promise<EtagValidator>}
+   * @returns {Promise<MetadataWriteResult<SpaceMetadata>>}
    */
   async #writeSpaceLocked({
     spaceId,
@@ -1534,7 +1539,7 @@ export class FileSystemBackend implements StorageBackend {
     ifNoneMatch?: HeldValidators
     assertTransition?: (prior?: StoredSpaceMetadata) => void | Promise<void>
     prior?: StoredSpaceMetadata
-  }): Promise<EtagValidator> {
+  }): Promise<MetadataWriteResult<SpaceMetadata>> {
     assertSpaceWritePrecondition({
       spaceId,
       exists: prior !== undefined,
@@ -1599,7 +1604,7 @@ export class FileSystemBackend implements StorageBackend {
         embedMetadataValidator({ body: stamped, generation, local: 0 })
       )
     })
-    return validator
+    return { validator, created: prior === undefined, metadata: stamped }
   }
 
   /**
@@ -2804,9 +2809,10 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.assertTransition] {Function}   the request layer's
    *   state-transition checks, run atomically with the write against the
    *   prior object and the Collection's history log as of the lock
-   * @returns {Promise<EtagValidator>}   the Collection Metadata object's new
-   *   validator (its `generation` and the stamp this write mints, local
-   *   segment 0)
+   * @returns {Promise<MetadataWriteResult<CollectionMetadata>>}   the
+   *   Collection Metadata object's new validator (its `generation` and the
+   *   stamp this write mints, local segment 0), whether the write created the
+   *   Collection (a create over a tombstone included), and the stored object
    */
   async writeCollection({
     spaceId,
@@ -2826,7 +2832,7 @@ export class FileSystemBackend implements StorageBackend {
     assertTransition?: (
       context: CollectionTransitionContext
     ) => void | Promise<void>
-  }): Promise<EtagValidator> {
+  }): Promise<MetadataWriteResult<CollectionMetadata>> {
     // Serialize the read-check-write under the per-Collection metadata lock so
     // the `If-Match` compare-and-swap and the stamp are atomic with the write (two concurrent edits cannot clobber one another). A
     // distinct lock namespace from the per-Resource / unique-scan locks: a
@@ -2930,7 +2936,11 @@ export class FileSystemBackend implements StorageBackend {
               local: 0,
               feedPosition: prior ? 'next' : 'first'
             })
-            return validator
+            return {
+              validator,
+              created: prior === undefined,
+              metadata: stamped
+            }
           }
         )
     })
@@ -3754,7 +3764,7 @@ export class FileSystemBackend implements StorageBackend {
     immutable?: true | ImmutableUnder
     ifMatch?: string
     ifNoneMatch?: HeldValidators
-  }): Promise<EtagValidator> {
+  }): Promise<ResourceWriteResult> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
     const lockKey = this.#resourceLockKey({
       spaceId,
@@ -3863,7 +3873,7 @@ export class FileSystemBackend implements StorageBackend {
    * rule, writes the representation, prunes a stale
    * representation under a different content-type, and persists the new
    * stamp in the sidecar. See `writeResource` for the parameters.
-   * @returns {Promise<EtagValidator>}
+   * @returns {Promise<ResourceWriteResult>}
    */
   async #writeResourceLocked({
     spaceId,
@@ -3891,7 +3901,7 @@ export class FileSystemBackend implements StorageBackend {
     assertUnique?: () => Promise<void>
     ifMatch?: string
     ifNoneMatch?: HeldValidators
-  }): Promise<EtagValidator> {
+  }): Promise<ResourceWriteResult> {
     const filename = fileNameFor({ resourceId, contentType: input.contentType })
     const filePath = path.join(collectionDir, filename)
     this.#assertContained(filePath)
@@ -3911,6 +3921,14 @@ export class FileSystemBackend implements StorageBackend {
     })
     const isLive = livePath !== undefined
     const prior = await this.readMetaSidecar({ collectionDir, resourceId })
+    // A live representation beside a tombstone sidecar is a re-create torn
+    // between its bytes and its sidecar. The tombstone belongs to the deleted
+    // Resource, so this write completes the create.
+    const overTombstone = prior?.deleted === true
+    // The write creates the Resource unless a live one stands, and the
+    // sidecar of that live Resource is the only prior provenance it keeps.
+    const creates = !isLive || overTombstone
+    const livePrior = creates ? undefined : prior
 
     // The write-once rule binds a write over a live Resource only. A
     // tombstone keeps no bytes, so a write over one is an ordinary create.
@@ -3944,12 +3962,19 @@ export class FileSystemBackend implements StorageBackend {
     if (writeOnce) {
       const stored = await this.#answerImmutableRepeat({
         filePath: livePath,
-        sidecar: prior,
+        sidecar: livePrior,
         input,
         requestName: 'Write Resource'
       })
       if (stored !== undefined) {
-        return stored
+        return {
+          validator: stored,
+          created: false,
+          members: await this.#writtenMembers({
+            filePath: livePath,
+            sidecar: prior!
+          })
+        }
       }
     }
 
@@ -3996,25 +4021,25 @@ export class FileSystemBackend implements StorageBackend {
     // independent `/meta` record (`meta`) already stored in the sidecar (a
     // content write does not touch the metadata sub-resource).
     //
-    // `createdBy` pairs with `createdAt`: taken from this write's invoker only
-    // when this write creates the sidecar, so it names the creator rather than
-    // the last writer, and is preserved verbatim afterward -- including
+    // `createdBy` pairs with `createdAt`: both are taken from this write when
+    // it creates the Resource, so they name the creator rather than the last
+    // writer, and are preserved verbatim by every update -- including
     // preserved-as-absent, so a Resource created with no invoker never has a
-    // later writer backfilled into it. A tombstone keeps both, so re-creating a
-    // deleted id under a different invoker preserves the original creator, as
-    // it does the original `createdAt`.
+    // later writer backfilled into it. A write over a tombstone is a create
+    // and records fresh provenance: the tombstone's creator and creation time
+    // belong to the deleted Resource.
     //
     // The sidecar write takes the Collection's next feed position, which
     // moves the Resource to the end of the changes feed.
-    return this.#stampSidecar({
+    const { validator, sidecar } = await this.#stampSidecar({
       collectionDir,
       resourceId,
       prior,
       feed: { spaceId, collectionId },
       build: ({ prior, generation, stamp }) => {
-        const creator = prior ? prior.createdBy : createdBy
+        const creator = livePrior ? livePrior.createdBy : createdBy
         return {
-          createdAt: prior?.createdAt ?? stamp.updatedAt,
+          createdAt: livePrior?.createdAt ?? stamp.updatedAt,
           ...stamp,
           ...(creator !== undefined && { createdBy: creator }),
           generation,
@@ -4032,6 +4057,45 @@ export class FileSystemBackend implements StorageBackend {
         }
       }
     })
+    return {
+      validator,
+      created: creates,
+      // A write-once repeat wrote no bytes, so the stored file is the live
+      // one, whose name may carry other media type parameters.
+      members: await this.#writtenMembers({
+        filePath: writeOnce ? livePath : filePath,
+        sidecar
+      })
+    }
+  }
+
+  /**
+   * The server-managed members of a Resource Metadata object as a write
+   * left them, read under the write's lock: the media type the stored file
+   * name carries, the stored file's size, and the sidecar's provenance and
+   * stamps.
+   * @param options {object}
+   * @param options.filePath {string}   the live representation file
+   * @param options.sidecar {MetaSidecar}   its sidecar as the write left it
+   * @returns {Promise<ResourceWriteMembers>}
+   */
+  async #writtenMembers({
+    filePath,
+    sidecar
+  }: {
+    filePath: string
+    sidecar: MetaSidecar
+  }): Promise<ResourceWriteMembers> {
+    const { contentType } = parseResourceFileName(path.basename(filePath))
+    const { size } = await fsStat(filePath)
+    return {
+      contentType,
+      size,
+      ...(sidecar.createdAt !== undefined && { createdAt: sidecar.createdAt }),
+      ...stampOf(sidecar),
+      ...(sidecar.createdBy !== undefined && { createdBy: sidecar.createdBy }),
+      ...(sidecar.meta !== undefined && { meta: sidecar.meta })
+    }
   }
 
   /**
@@ -4354,7 +4418,8 @@ export class FileSystemBackend implements StorageBackend {
    * `stamp` it is handed into the sidecar. The caller passes the item's
    * current sidecar in, since it has already read it under the same lock. A
    * Resource write passes `feed`, so the sidecar takes the Collection's next
-   * feed position (`#writeFeedSidecar`); a chunk write passes none.
+   * feed position (`#writeFeedSidecar`); a chunk write passes none. Resolves
+   * the validator beside the sidecar as written.
    * @param options {object}
    * @param options.collectionDir {string}   the dir the sidecar lives in (a
    *   Collection dir, or a chunk dir for a chunk)
@@ -4369,7 +4434,7 @@ export class FileSystemBackend implements StorageBackend {
    *   feed position the sidecar takes; absent for a chunk
    * @param options.feed.spaceId {string}
    * @param options.feed.collectionId {string}
-   * @returns {Promise<EtagValidator>}
+   * @returns {Promise<{ validator: EtagValidator, sidecar: MetaSidecar }>}
    */
   async #stampSidecar({
     collectionDir,
@@ -4387,7 +4452,7 @@ export class FileSystemBackend implements StorageBackend {
       generation: string
       stamp: WriteStamp
     }) => MetaSidecar
-  }): Promise<EtagValidator> {
+  }): Promise<{ validator: EtagValidator; sidecar: MetaSidecar }> {
     // The generation is minted once, at the item's first write, and kept for
     // its whole life -- through a Resource tombstone and its re-create, since
     // the record continues there. A sidecar removed outright (a chunk delete)
@@ -4405,7 +4470,7 @@ export class FileSystemBackend implements StorageBackend {
     } else {
       await this.#writeMetaSidecar({ collectionDir, resourceId, sidecar })
     }
-    return validator
+    return { validator, sidecar }
   }
 
   /**
@@ -5002,9 +5067,10 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *` -- write only if
    *   no metadata has been written yet (no `/meta` `ETag`, i.e. no `meta`
    *   record)
-   * @returns {Promise<EtagValidator | undefined>}   the metadata object's new
-   *   validator (its own generation with the stamp this write mints), or
-   *   `undefined` when the Resource does not exist
+   * @returns {Promise<ResourceMetadataWriteResult | undefined>}
+   *   the metadata object's new validator (its own generation with the stamp
+   *   this write mints) beside the server-managed members as the write left
+   *   them, or `undefined` when the Resource does not exist
    */
   async writeResourceMetadata({
     spaceId,
@@ -5024,13 +5090,13 @@ export class FileSystemBackend implements StorageBackend {
     uniqueIndexes?: NormalizedIndexDeclaration[]
     ifMatch?: string
     ifNoneMatch?: HeldValidators
-  }): Promise<EtagValidator | undefined> {
+  }): Promise<ResourceMetadataWriteResult | undefined> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
     // `located` is the Resource file a caller already found, so the
     // unique-index path does not look it up twice.
     const writeMeta = async (
       located?: string
-    ): Promise<EtagValidator | undefined> => {
+    ): Promise<ResourceMetadataWriteResult | undefined> => {
       const filePath =
         located ?? (await this.#findFile({ collectionDir, resourceId }))
       if (!filePath) {
@@ -5076,24 +5142,28 @@ export class FileSystemBackend implements StorageBackend {
       const resolvedEpoch = epoch ?? prior?.epoch
       // A metadata write re-surfaces the Resource in the changes feed, so the
       // sidecar takes the Collection's next feed position.
+      const sidecar: MetaSidecar = {
+        // Preserve the content record whole: its stamp and generation (a
+        // metadata write does not change the stored representation), the
+        // server-managed creator (`createdBy` is not user-writable), and
+        // its `writerId`, which names the writer of the content.
+        ...(contentRecord as MetaSidecar),
+        createdAt,
+        meta: { ...metaStamp, generation: metaGeneration },
+        ...(hasCustom && { custom }),
+        ...(resolvedEpoch !== undefined && { epoch: resolvedEpoch })
+      }
       await this.#writeFeedSidecar({
         spaceId,
         collectionId,
         collectionDir,
         resourceId,
-        sidecar: {
-          // Preserve the content record whole: its stamp and generation (a
-          // metadata write does not change the stored representation), the
-          // server-managed creator (`createdBy` is not user-writable), and
-          // its `writerId`, which names the writer of the content.
-          ...(contentRecord as MetaSidecar),
-          createdAt,
-          meta: { ...metaStamp, generation: metaGeneration },
-          ...(hasCustom && { custom }),
-          ...(resolvedEpoch !== undefined && { epoch: resolvedEpoch })
-        }
+        sidecar
       })
-      return metaValidator
+      return {
+        validator: metaValidator,
+        members: await this.#writtenMembers({ filePath, sidecar })
+      }
     }
     // A metadata write can create a plaintext equality unique claim for a
     // `custom`-sourced attribute (the `equality-query` feature). When the
@@ -5240,8 +5310,8 @@ export class FileSystemBackend implements StorageBackend {
       // Metadata goes with the deleted Resource; a re-create's first metadata
       // write then mints a new generation, so a `/meta` ETag held from before
       // the delete cannot pass `If-Match` against it. `createdAt` /
-      // `createdBy` are kept: they are the server's record of the Resource's
-      // origin, which a re-create under the same id continues.
+      // `createdBy` are kept as the record of the deleted Resource's origin.
+      // A re-create over the tombstone records its own.
       //
       // The tombstone takes the Collection's next feed position, so the
       // delete replicates.
@@ -5484,7 +5554,7 @@ export class FileSystemBackend implements StorageBackend {
     // takes the sidecar with it and the next write at this index mints a
     // fresh generation. A chunk carries no user Metadata / `createdBy` /
     // epoch.
-    return this.#stampSidecar({
+    const { validator } = await this.#stampSidecar({
       collectionDir: chunkDir,
       resourceId: chunkId,
       prior: priorChunkSidecar,
@@ -5494,6 +5564,7 @@ export class FileSystemBackend implements StorageBackend {
         generation
       })
     })
+    return validator
   }
 
   /**

@@ -402,7 +402,7 @@ describe('FileSystemBackend races', () => {
       dataDir: backend.dataDir,
       capacityBytes: 200_000
     })
-    const validator = await capped.writeResource({
+    const { validator } = await capped.writeResource({
       spaceId,
       collectionId,
       resourceId: 'bulky',

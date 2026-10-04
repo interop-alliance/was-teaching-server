@@ -282,7 +282,7 @@ test support, not part of a production composition.
 | `provisionWebvhIdentity`    | Mints and publishes a self-hosted `did:webvh` with no wallet involved                   |
 | `WebvhIdentity`             | The type `provisionWebvhIdentity()` returns                                             |
 | `webvhLogSigner`            | The `did:webvh` history-log signer for a `did:key` key pair                             |
-| `WebvhIdentityPublishError` | Thrown by `provisionWebvhIdentity()` when the log `PUT` is not answered 204             |
+| `WebvhIdentityPublishError` | Thrown by `provisionWebvhIdentity()` when the log `PUT` is not answered 201             |
 
 `startTestServer()` takes the `createApp()` options except `serverUrl`, plus an
 optional `port` and `logger`. The logger defaults to `false`. The server listens

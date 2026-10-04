@@ -118,7 +118,7 @@ describe('did:webvh delegation and chain depth', () => {
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([logToJsonlString(minted.log)], { type: 'text/jsonl' })
     })
-    assert.equal(published.status, 204)
+    assert.equal(published.status, 201)
 
     return { spaceId, ...minted }
   }

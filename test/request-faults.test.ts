@@ -58,7 +58,7 @@ describe('request faults', () => {
         method: 'PUT',
         path: `${collectionPath}recorded`,
         did: alice.did,
-        status: 204
+        status: 201
       },
       {
         method: 'GET',
@@ -193,7 +193,7 @@ describe('request faults', () => {
     // The client saw a transport failure, and the write is durable.
     const [record] = faults.requests.filter(request => request.path === path)
     assert.equal(record!.fault, 'dropped')
-    assert.equal(record!.status, 204)
+    assert.equal(record!.status, 201)
     faults.reset()
     assert.deepStrictEqual(await notes().get('dropped'), { n: 1 })
   })

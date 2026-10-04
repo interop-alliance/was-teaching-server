@@ -10,13 +10,13 @@
  */
 import { it, describe, beforeAll, afterAll } from 'vitest'
 import assert from 'node:assert'
-import { rm } from 'node:fs/promises'
+import { readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { chunkDirName, metaSidecarFileName } from '@interop/space-archive'
 
-import type { TempFileSystemBackend } from '../src/testing.js'
+import type { RequestFaults, TempFileSystemBackend } from '../src/testing.js'
 
 import {
   entryLine,
@@ -50,10 +50,11 @@ describe('revisions descriptor API', () => {
   const spaceId = `revisions-space-${crypto.randomUUID()}`
 
   let backend: TempFileSystemBackend
+  let faults: RequestFaults
 
   beforeAll(async () => {
     backend = await openTempBackend()
-    ;({ fastify, serverUrl } = await startTestServer({ backend }))
+    ;({ fastify, serverUrl, faults } = await startTestServer({ backend }))
     ;({ alice } = await zcapClients({ serverUrl }))
     await alice.was.createSpace({
       id: spaceId,
@@ -167,7 +168,7 @@ describe('revisions descriptor API', () => {
       const path = `/space/${spaceId}/${collectionId}/doc`
       await putRaw(path, '{"v":1}')
       const updated = await putRaw(path, '{"v":2}')
-      assert.equal(updated.status, 204)
+      assert.equal(updated.status, 200)
     })
 
     it('serves a declared descriptor verbatim, `merge` included', async () => {
@@ -532,11 +533,11 @@ describe('revisions descriptor API', () => {
         })
         const path = `/space/${spaceId}/${collectionId}/doc`
         const created = await putRaw(path, first)
-        assert.equal(created.status, 204)
+        assert.equal(created.status, 201)
         const etag = created.headers.get('etag')
 
         const repeated = await putRaw(path, first)
-        assert.equal(repeated.status, 204)
+        assert.equal(repeated.status, 200)
         assert.equal(repeated.headers.get('etag'), etag)
 
         assertProblem(await requestError(putRaw(path, second)), {
@@ -567,7 +568,7 @@ describe('revisions descriptor API', () => {
         const deleted = await alice.was.request({ path, method: 'DELETE' })
         assert.equal(deleted.status, 204)
         const recreated = await putRaw(path, second)
-        assert.equal(recreated.status, 204)
+        assert.equal(recreated.status, 201)
         assert.notEqual(
           recreated.headers.get('etag'),
           created.headers.get('etag')
@@ -615,7 +616,7 @@ describe('revisions descriptor API', () => {
         '{"v":1}',
         'application/json; charset=utf-8'
       )
-      assert.equal(repeated.status, 204)
+      assert.equal(repeated.status, 200)
       assert.equal(repeated.headers.get('etag'), created.headers.get('etag'))
     })
 
@@ -639,7 +640,7 @@ describe('revisions descriptor API', () => {
         type: 'resource-immutable'
       })
       const healed = await putRaw(docPath, '{"v":1}')
-      assert.equal(healed.status, 204)
+      assert.equal(healed.status, 200)
       const etag = healed.headers.get('etag')
       assert.ok(etag, 'expected the repeat to answer a validator')
       const read = await alice.was.request({ path: docPath, method: 'GET' })
@@ -663,6 +664,64 @@ describe('revisions descriptor API', () => {
       assert.equal(again.headers.get('etag'), chunkEtag)
     })
 
+    it('a repeat with a media type parameter stamps a Resource whose sidecar is missing', async () => {
+      const collectionId = await createCollection({
+        revisions: { immutable: true }
+      })
+      const collectionDir = path.join(backend.spacesDir, spaceId, collectionId)
+      const docPath = `/space/${spaceId}/${collectionId}/doc`
+      await putRaw(docPath, 'plain text', 'text/plain')
+      await rm(path.join(collectionDir, metaSidecarFileName('doc')))
+
+      const healed = await putRaw(
+        docPath,
+        'plain text',
+        'text/plain; charset=utf-8'
+      )
+      assert.equal(healed.status, 200)
+      // The client retries a 5xx, so check the server answered no request
+      // with one.
+      assert.deepEqual(
+        faults.requests
+          .filter(record => record.path === docPath)
+          .map(record => record.status),
+        [201, 200]
+      )
+      assert.equal(healed.data.contentType, 'text/plain')
+      assert.equal(healed.data.size, 'plain text'.length)
+      const read = await alice.was.request({ path: docPath, method: 'GET' })
+      assert.equal(read.headers.get('etag'), healed.headers.get('etag'))
+    })
+
+    it('a repeat over a re-create torn before its sidecar answers 201 with fresh provenance', async () => {
+      for (const immutable of [false, true]) {
+        const collectionId = await createCollection({
+          revisions: { immutable }
+        })
+        const collectionDir = path.join(
+          backend.spacesDir,
+          spaceId,
+          collectionId
+        )
+        const sidecarPath = path.join(collectionDir, metaSidecarFileName('doc'))
+        const docPath = `/space/${spaceId}/${collectionId}/doc`
+        await putRaw(docPath, '{"v":1}')
+        await alice.was.request({ path: docPath, method: 'DELETE' })
+        const tombstone = await readFile(sidecarPath)
+        await putRaw(docPath, '{"v":2}')
+        // The re-create's bytes landed and its sidecar did not.
+        await writeFile(sidecarPath, tombstone)
+
+        const healed = await putRaw(docPath, '{"v":2}')
+        assert.equal(healed.status, 201)
+        assert.equal(healed.data.createdBy, alice.did)
+        assert.equal(healed.data.createdAt, healed.data.updatedAt)
+        const read = await alice.was.request({ path: docPath, method: 'GET' })
+        assert.deepEqual(read.data, { v: 2 })
+        assert.equal(read.headers.get('etag'), healed.headers.get('etag'))
+      }
+    })
+
     it('a Resource metadata write is not refused', async () => {
       const collectionId = await createCollection({
         revisions: { immutable: true }
@@ -674,7 +733,7 @@ describe('revisions descriptor API', () => {
         method: 'PUT',
         json: { custom: { name: 'annotated' } }
       })
-      assert.equal(meta.status, 204)
+      assert.equal(meta.status, 200)
     })
   })
 

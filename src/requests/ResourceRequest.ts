@@ -19,12 +19,7 @@ import { resolveMetadataCustom } from '../lib/customMetadata.js'
 import { assertJsonObjectBody } from '../lib/requestBody.js'
 import { declaredIndexesOf, uniqueIndexesOf } from '../lib/equalityIndex.js'
 import { resourcePath, metaPath } from '../lib/paths.js'
-import {
-  type EtagValidator,
-  etagOf,
-  formatEtag,
-  parseWritePreconditions
-} from '../lib/etag.js'
+import { etagOf, formatEtag, parseWritePreconditions } from '../lib/etag.js'
 import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
 import { parseWriterIdHeader } from '../lib/writerAttribution.js'
 import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
@@ -36,6 +31,43 @@ import {
   rethrowOrWrapStorageError
 } from '../errors.js'
 import { notModifiedBeforeStream, notModifiedReply } from './notModified.js'
+import type {
+  ResourceMetadata,
+  ResourceWriteMembers,
+  ResourceWriteResult
+} from '../types.js'
+
+/**
+ * The body of a Resource write response: the server-managed members of the
+ * Resource Metadata object as the write left them. `contentType`, `size` and
+ * the content record's stamp always. `createdAt` and `createdBy` only when
+ * the write recorded them (`provenance`), so a writer learns no provenance
+ * it did not cause. The `/meta` record's stamp only on a metadata write
+ * (`metaStamp`). No `custom`, `epoch`, or `writerId`.
+ * @param options {object}
+ * @param options.members {ResourceWriteMembers}
+ * @param [options.provenance] {boolean}   the write created the Resource
+ * @param [options.metaStamp] {boolean}   the write was a metadata write
+ * @returns {Partial<ResourceMetadata>}
+ */
+function writeResponseBody({
+  members: { contentType, size, createdAt, createdBy, meta, ...stamp },
+  provenance = false,
+  metaStamp = false
+}: {
+  members: ResourceWriteMembers
+  provenance?: boolean
+  metaStamp?: boolean
+}): Partial<ResourceMetadata> {
+  return {
+    contentType,
+    size,
+    ...(provenance && createdAt !== undefined && { createdAt }),
+    ...stamp,
+    ...(provenance && createdBy !== undefined && { createdBy }),
+    ...(metaStamp && meta !== undefined && { meta })
+  }
+}
 
 export class ResourceRequest {
   /**
@@ -147,7 +179,7 @@ export class ResourceRequest {
     // Surface any `If-Match` / `If-None-Match` write precondition to the storage
     // layer, which evaluates it atomically with the write (returning 412
     // `precondition-failed` on a mismatch -- rethrown unchanged below).
-    let written: EtagValidator
+    let written: ResourceWriteResult
     try {
       written = await dataBackend.writeResource({
         spaceId,
@@ -176,8 +208,23 @@ export class ResourceRequest {
     // self-hosted did:webvh controller resolves from, so any document cached
     // from the previous log is stale as of this write.
     invalidateResolvedWebvhDid({ storage, spaceId, collectionId, resourceId })
-    // Return the new ETag so a client can chain a subsequent conditional write.
-    return reply.status(204).header('etag', formatEtag(written)).send()
+    // `201` when the write created the Resource (over a tombstone included),
+    // `200` when it updated a live one. A write the write-once rule answered
+    // as a repeat updated nothing, but the Resource is live: `200`. The body
+    // is the server-managed members as the write left them, and the new
+    // `ETag` lets a client chain a subsequent conditional write.
+    return reply
+      .status(written.created ? 201 : 200)
+      .header('etag', formatEtag(written.validator))
+      .type('application/json')
+      .send(
+        JSON.stringify(
+          writeResponseBody({
+            members: written.members,
+            provenance: written.created
+          })
+        )
+      )
   }
 
   /**
@@ -447,7 +494,8 @@ export class ResourceRequest {
    * the whole object. Does NOT create: a `PUT` to the `/meta` of a
    * nonexistent Resource is a 404.
    * Authorization is capability-only (the `PUT` action), the same as Put
-   * Resource. Returns 204.
+   * Resource. Returns 200 with the server-managed members as the write left
+   * them, the `/meta` record's stamp included.
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
@@ -554,8 +602,18 @@ export class ResourceRequest {
     }
 
     // Return the new `/meta` ETag so a client can chain a subsequent
-    // conditional metadata write.
-    return reply.status(204).header('etag', formatEtag(written)).send()
+    // conditional metadata write, and the server-managed members as the
+    // write left them. A metadata write never creates, so the body carries
+    // no provenance.
+    return reply
+      .status(200)
+      .header('etag', formatEtag(written.validator))
+      .type('application/json')
+      .send(
+        JSON.stringify(
+          writeResponseBody({ members: written.members, metaStamp: true })
+        )
+      )
   }
 
   /**

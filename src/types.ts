@@ -477,8 +477,9 @@ export type BackendProviderRegistry = Map<string, BackendProvider>
  * Invariants:
  * - The getters resolve to a falsy value (not throw) when the target is absent;
  *   callers test `if (!description)` and translate that into a 404.
- * - Write methods are upserts (create if absent, overwrite if present); their
- *   resolved value is implementation-defined and ignored.
+ * - Write methods are upserts (create if absent, overwrite if present). The
+ *   Resource and Metadata writes resolve what the write left, read inside its
+ *   critical section, and the request layer answers from it.
  * - Delete methods are idempotent and resolve once the target is gone.
  * - Resources are identified by `resourceId` alone within a Collection; a
  *   Resource has exactly one current representation. `writeResource` replaces
@@ -542,6 +543,55 @@ export type CollectionDeleteOutcome = 'deleted' | 'already-deleted' | 'absent'
  * plus the out-of-band validator parts.
  */
 export type StoredSpaceMetadata = SpaceMetadata & MetadataValidatorParts
+
+/**
+ * What a Space or Collection Metadata write left, read inside the write's
+ * critical section: the object's new validator, whether this write created
+ * the container (a create over a Collection tombstone included), and the
+ * stored wire body with its server-managed members as this write set them.
+ */
+export interface MetadataWriteResult<T> {
+  validator: EtagValidator
+  created: boolean
+  metadata: T
+}
+
+/**
+ * The server-managed members of a Resource Metadata object as a Resource
+ * write left them. The stamp members are the content record's, and `meta`
+ * is the `/meta` record's stamp and generation once metadata was written.
+ */
+export type ResourceWriteMembers = Pick<
+  ResourceMetadata,
+  | 'contentType'
+  | 'size'
+  | 'createdAt'
+  | 'createdBy'
+  | 'updatedAt'
+  | 'updatedAtCounter'
+  | 'originId'
+  | 'meta'
+>
+
+/**
+ * What a Resource `/meta` write left, read inside the write's critical
+ * section: the `/meta` record's validator and the server-managed members as
+ * this write left them.
+ */
+export interface ResourceMetadataWriteResult {
+  validator: EtagValidator
+  members: ResourceWriteMembers
+}
+
+/**
+ * What a Resource content write left, read inside the write's critical
+ * section: the content record's validator, whether this write created the
+ * Resource (a re-create over a tombstone included), and the server-managed
+ * members as this write left them.
+ */
+export interface ResourceWriteResult extends ResourceMetadataWriteResult {
+  created: boolean
+}
 
 /**
  * A Collection's governing history log as stored (the
@@ -726,7 +776,8 @@ export interface StorageBackend {
    * Writes a Space Metadata object (full replacement), minting its write
    * stamp from the backend's clock inside the per-Space lock, resetting its
    * local validator segment to 0, and returning the new validator (the `ETag`
-   * behind conditional Space writes). The stamp members (`updatedAt`,
+   * behind conditional Space writes), whether the write created the Space,
+   * and the stored object as written. The stamp members (`updatedAt`,
    * `updatedAtCounter`, `originId`) are stored as wire members of the body;
    * any the supplied document carries are discarded. The server-managed
    * `createdBy` is authoritative, never taken from `spaceMetadata`: the backend
@@ -756,7 +807,7 @@ export interface StorageBackend {
      * write authorized against an unlocked read pin itself to that read.
      */
     assertTransition?: (prior?: StoredSpaceMetadata) => void | Promise<void>
-  }): Promise<EtagValidator>
+  }): Promise<MetadataWriteResult<SpaceMetadata>>
   /**
    * Reads a Space Metadata object. Resolves falsy when the Space does not
    * exist. `metaGeneration` / `metaLocal` are the out-of-band `ETag`
@@ -857,7 +908,8 @@ export interface StorageBackend {
    * object: the configuration members beside the annotation members `custom`
    * and `epoch`), minting its write stamp inside the per-Collection lock,
    * resetting its local validator segment to 0, and returning the new
-   * validator (the `ETag` behind conditional Collection writes).
+   * validator (the `ETag` behind conditional Collection writes), whether the
+   * write created the Collection, and the stored object as written.
    * Server-managed members are the backend's: `createdBy` on the same terms as
    * `writeSpace`'s, `createdAt` set by the creating write and preserved, the
    * stamp members (`updatedAt`, `updatedAtCounter`, `originId`) by every
@@ -901,7 +953,7 @@ export interface StorageBackend {
     assertTransition?: (
       context: CollectionTransitionContext
     ) => void | Promise<void>
-  }): Promise<EtagValidator>
+  }): Promise<MetadataWriteResult<CollectionMetadata>>
   /**
    * Reads a Collection Metadata object. Resolves falsy when the Collection
    * does not exist, a tombstoned Collection included. `metaGeneration` /
@@ -956,8 +1008,12 @@ export interface StorageBackend {
   /**
    * Writes a Resource representation, minting the content record's write
    * stamp inside the per-Resource lock (over the stamp it replaces, so the new
-   * one sorts above it), and returns the new validator (the stamp under the
-   * Resource's `generation`). When a conditional-write precondition is
+   * one sorts above it). Resolves the new validator (the stamp under the
+   * Resource's `generation`), whether the write created the Resource, and
+   * the server-managed members as the write left them, read inside the same
+   * critical section. A write to an absent id or over a tombstone creates
+   * the Resource and records fresh provenance: this write's `createdBy` and
+   * its stamp's time as `createdAt`. When a conditional-write precondition is
    * supplied (`conditional-writes` feature) it is evaluated
    * atomically with the write: `ifMatch` is an update-if-unchanged (the current
    * ETag must equal it), `ifNoneMatch` is a create-if-absent (`If-None-Match:
@@ -998,10 +1054,11 @@ export interface StorageBackend {
     /**
      * DID of the party whose capability invocation authorized this write (the
      * signing key's DID, fragment stripped). Recorded as the Resource's
-     * server-managed `createdBy` on the FIRST write and preserved verbatim by
-     * every later write, exactly as `createdAt` is -- so it names the creator,
-     * not the last writer. Omitted by callers with no resolved invoker (a
-     * direct backend call), in which case no `createdBy` is recorded.
+     * server-managed `createdBy` by the write that creates the Resource (a
+     * re-create over a tombstone included) and preserved verbatim by every
+     * update, exactly as `createdAt` is -- so it names the creator, not the
+     * last writer. Omitted by callers with no resolved invoker (a direct
+     * backend call), in which case no `createdBy` is recorded.
      */
     createdBy?: IDID
     /**
@@ -1026,7 +1083,8 @@ export interface StorageBackend {
      * descriptor sets `immutable`). Evaluated inside the write's critical
      * section, after the preconditions: over a live Resource, a write whose
      * content type and bytes equal the stored representation is a no-op that
-     * returns the current validator (no new stamp, no feed position), and any
+     * resolves the stored validator and members (no new stamp, no feed
+     * position, `created` false), and any
      * other write is refused with `ResourceImmutableError` (409). A write to
      * an absent id or over a tombstone is an ordinary create. The media type
      * is compared without its parameters.
@@ -1041,7 +1099,7 @@ export interface StorageBackend {
     immutable?: true | ImmutableUnder
     ifMatch?: string
     ifNoneMatch?: HeldValidators
-  }): Promise<EtagValidator>
+  }): Promise<ResourceWriteResult>
   /**
    * Reads a Resource's current representation. Throws `ResourceNotFoundError`
    * (404) when no Resource is stored under the id, or only its tombstone.
@@ -1093,10 +1151,11 @@ export interface StorageBackend {
    * Replaces the user-writable `custom` object of a Resource's Metadata (full
    * replacement; pass `{}` to clear). Resolves `undefined` when the Resource
    * does not exist (this operation does not create one) so the handler can 404,
-   * else the `/meta` object's new ETag validator: its own generation, minted
-   * by the first metadata write, with the stamp this write mints. The write
-   * moves the nested `meta` record only; the content record's stamp, `ETag`,
-   * and `writerId` are left as they are.
+   * else the `/meta` object's new ETag validator (its own generation, minted
+   * by the first metadata write, with the stamp this write mints) beside the
+   * server-managed members as the write left them, read inside the same
+   * critical section. The write moves the nested `meta` record only; the
+   * content record's stamp, `ETag`, and `writerId` are left as they are.
    *
    * On an encrypted Collection `custom` is the opaque encryption envelope (an
    * arbitrary JSON object) rather than a `{ name, tags }` object; the backend
@@ -1128,7 +1187,7 @@ export interface StorageBackend {
     epoch?: string
     ifMatch?: string
     ifNoneMatch?: HeldValidators
-  }): Promise<EtagValidator | undefined>
+  }): Promise<ResourceMetadataWriteResult | undefined>
 
   /**
    * Reads a Collection's governing history log (the `governed-history-logs`

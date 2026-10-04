@@ -55,7 +55,7 @@ describe('Request Body Integrity (Digest header)', () => {
       method: 'PUT',
       json: { id: 'happy', name: 'Happy Path' }
     })
-    assert.equal(response.status, 204)
+    assert.equal(response.status, 201)
   })
 
   it('rejects a body write whose signature does not cover `digest` (400)', async () => {

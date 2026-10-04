@@ -190,7 +190,7 @@ export interface WebvhIdentity {
 
 /**
  * `provisionWebvhIdentity()` could not publish the history log: the server
- * answered the `PUT` of `did.jsonl` with something other than 204. Never sent
+ * answered the `PUT` of `did.jsonl` with something other than 201. Never sent
  * over the wire.
  * @param options {object}
  * @param options.url {string}   the log URL the `PUT` targeted
@@ -198,7 +198,7 @@ export interface WebvhIdentity {
  */
 export class WebvhIdentityPublishError extends Error {
   constructor({ url, status }: { url: string; status: number }) {
-    super(`PUT ${url} answered ${status}, expected 204.`)
+    super(`PUT ${url} answered ${status}, expected 201.`)
     this.name = 'WebvhIdentityPublishError'
   }
 }
@@ -363,7 +363,7 @@ export async function provisionWebvhIdentity<
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([logToJsonlString(created.log)], { type: 'text/jsonl' })
     })
-    if (published.status !== 204) {
+    if (published.status !== 201) {
       throw new WebvhIdentityPublishError({
         url: new URL(logPath, serverUrl).toString(),
         status: published.status

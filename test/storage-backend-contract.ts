@@ -62,7 +62,8 @@ import type {
   IDID,
   ImportStats,
   WriteStamp,
-  FeedDocument
+  FeedDocument,
+  ResourceWriteResult
 } from '../src/types.js'
 
 /** A backend instance plus its teardown, as produced by the suite factory. */
@@ -555,7 +556,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       it('round-trips a JSON document byte-for-byte', async () => {
         const { backend } = harness
         const data = { a: 1, nested: { b: [1, 2, 3] } }
-        const written = await backend.writeResource({
+        const { validator: written } = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'doc',
@@ -614,13 +615,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
       it('a write under a new content-type replaces the single representation', async () => {
         const { backend } = harness
-        const firstWrite = await backend.writeResource({
+        const { validator: firstWrite } = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'swap',
           input: jsonInput({ was: 'json' })
         })
-        const secondWrite = await backend.writeResource({
+        const { validator: secondWrite } = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'swap',
@@ -684,18 +685,20 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
       it('content writes move the content stamp; metadata writes move only the meta stamp', async () => {
         const { backend } = harness
-        const content1 = await backend.writeResource({
+        const { validator: content1 } = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'r',
           input: jsonInput({ v: 1 })
         })
-        const meta1 = await backend.writeResourceMetadata({
-          spaceId,
-          collectionId: 'col',
-          resourceId: 'r',
-          custom: { name: 'First' }
-        })
+        const meta1 = (
+          await backend.writeResourceMetadata({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'r',
+            custom: { name: 'First' }
+          })
+        )?.validator
         assert.ok(meta1)
         // The metadata write left the content record's validator alone.
         const afterMeta1 = await backend.getResource({
@@ -705,7 +708,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         })
         assert.equal(etagOf(afterMeta1), formatEtag(content1))
 
-        const content2 = await backend.writeResource({
+        const { validator: content2 } = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'r',
@@ -723,12 +726,14 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(metadata!.updatedAt, content2.stamp.updatedAt)
         assert.deepEqual(metadata?.custom, { name: 'First' })
 
-        const meta2 = await backend.writeResourceMetadata({
-          spaceId,
-          collectionId: 'col',
-          resourceId: 'r',
-          custom: { name: 'Second' }
-        })
+        const meta2 = (
+          await backend.writeResourceMetadata({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'r',
+            custom: { name: 'Second' }
+          })
+        )?.validator
         assertValidatorAdvanced(meta1, meta2!)
         const after = await backend.getResource({
           spaceId,
@@ -759,18 +764,22 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           resourceId: 'clearable',
           input: jsonInput({})
         })
-        const tempWrite = await backend.writeResourceMetadata({
-          spaceId,
-          collectionId: 'col',
-          resourceId: 'clearable',
-          custom: { name: 'temp' }
-        })
-        const clearWrite = await backend.writeResourceMetadata({
-          spaceId,
-          collectionId: 'col',
-          resourceId: 'clearable',
-          custom: {}
-        })
+        const tempWrite = (
+          await backend.writeResourceMetadata({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'clearable',
+            custom: { name: 'temp' }
+          })
+        )?.validator
+        const clearWrite = (
+          await backend.writeResourceMetadata({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'clearable',
+            custom: {}
+          })
+        )?.validator
         assertValidatorAdvanced(tempWrite!, clearWrite!)
         const metadata = await backend.getResourceMetadata({
           spaceId,
@@ -793,7 +802,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           const { backend } = stepped
           await provisionSpace(backend, spaceId)
           const target = { spaceId, collectionId: 'col', resourceId: 'stamped' }
-          const content = await backend.writeResource({
+          const { validator: content } = await backend.writeResource({
             ...target,
             input: jsonInput({ v: 1 })
           })
@@ -805,10 +814,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           assert.equal(contentEtag, formatEtag(content))
 
           clock.now += 1000
-          const meta1 = await backend.writeResourceMetadata({
-            ...target,
-            custom: { name: 'First' }
-          })
+          const meta1 = (
+            await backend.writeResourceMetadata({
+              ...target,
+              custom: { name: 'First' }
+            })
+          )?.validator
           assert.ok(meta1)
           assert.equal(Date.parse(meta1.stamp.updatedAt), clock.now)
           const afterMeta1 = await backend.getResourceMetadata(target)
@@ -824,10 +835,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           })
           assert.equal(etagOf({ ...afterMeta1.meta }), formatEtag(meta1))
 
-          const meta2 = await backend.writeResourceMetadata({
-            ...target,
-            custom: { name: 'Second' }
-          })
+          const meta2 = (
+            await backend.writeResourceMetadata({
+              ...target,
+              custom: { name: 'Second' }
+            })
+          )?.validator
           assert.ok(meta2)
           assert.equal(meta2.generation, meta1.generation)
           assert.equal(meta2.stamp.updatedAt, meta1.stamp.updatedAt)
@@ -902,7 +915,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.ok(!Number.isNaN(Date.parse(created.updatedAt!)))
 
         // An annotation write (custom only) bumps the same validator.
-        const annotated = await backend.writeCollection({
+        const { validator: annotated } = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: {
@@ -925,7 +938,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(stored?.name, collectionId)
 
         // A configuration write (rename) bumps it again, carrying `custom`.
-        const renamed = await backend.writeCollection({
+        const { validator: renamed } = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: {
@@ -945,7 +958,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(metadataEtagOf(reread), formatEtag(renamed))
 
         // A full replacement: the tags of the earlier write are gone.
-        const replacement = await backend.writeCollection({
+        const { validator: replacement } = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: {
@@ -965,7 +978,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       it('an absent or empty custom clears the stored custom', async () => {
         const { backend } = harness
         const collectionId = await freshCollection()
-        const tempWrite = await backend.writeCollection({
+        const { validator: tempWrite } = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: {
@@ -974,7 +987,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           }
         })
         // An empty object clears it (and still moves the stamp)...
-        const clearWrite = await backend.writeCollection({
+        const { validator: clearWrite } = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: { ...baseMetadata(collectionId), custom: {} }
@@ -997,7 +1010,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             custom: { name: 'again' }
           }
         })
-        const omitWrite = await backend.writeCollection({
+        const { validator: omitWrite } = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: baseMetadata(collectionId)
@@ -1013,7 +1026,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       it('a null custom clears the stored custom rather than faulting', async () => {
         const { backend } = harness
         const collectionId = await freshCollection()
-        const tempWrite = await backend.writeCollection({
+        const { validator: tempWrite } = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: {
@@ -1025,7 +1038,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         // published interface: a `custom` that is not a non-empty object
         // clears the stored one on every backend, rather than faulting on one
         // and succeeding on another.
-        const cleared = await backend.writeCollection({
+        const { validator: cleared } = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: {
@@ -1117,7 +1130,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const collectionId = `col-${crypto.randomUUID()}`
 
         // `If-None-Match: *` creates the Collection once...
-        const created = await backend.writeCollection({
+        const { validator: created } = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: baseMetadata(collectionId),
@@ -1151,7 +1164,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             ifMatch: etagWithCounterBumped({ validator: created, by: 99 })
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
-        const fresh = await backend.writeCollection({
+        const { validator: fresh } = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: {
@@ -1310,7 +1323,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         await backend.deleteCollection({ spaceId, collectionId })
         // A Collection delete leaves a tombstone, and a create over it starts
         // under a FRESH generation, so the old validator matches nothing.
-        const recreated = await backend.writeCollection({
+        const { validator: recreated } = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: {
@@ -1354,7 +1367,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       async function deletedCollection(createdBy?: IDID) {
         const { backend } = harness
         const collectionId = `gone-${crypto.randomUUID()}`
-        const live = await backend.writeCollection({
+        const { validator: live } = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: {
@@ -1538,7 +1551,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         // The guarded create succeeds over the tombstone.
-        const recreated = await backend.writeCollection({
+        const { validator: recreated } = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: { id: collectionId, type: ['Collection'] },
@@ -1998,7 +2011,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
       it('writeSpace returns a validator that getSpaceMetadata surfaces and bumps per write', async () => {
         const { backend } = harness
-        const created = await backend.writeSpace({
+        const { validator: created } = await backend.writeSpace({
           spaceId: 'space-etag',
           spaceMetadata: spaceMetadata('space-etag')
         })
@@ -2010,7 +2023,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(metadataEtagOf(stored), formatEtag(created))
         // A caller spreading the read result back in does not smuggle the
         // validator into the stored body.
-        const updated = await backend.writeSpace({
+        const { validator: updated } = await backend.writeSpace({
           spaceId: 'space-etag',
           spaceMetadata: { ...stored!, name: 'Renamed' }
         })
@@ -2051,7 +2064,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
       it('writeSpace If-Match matches the current ETag or 412s', async () => {
         const { backend } = harness
-        const created = await backend.writeSpace({
+        const { validator: created } = await backend.writeSpace({
           spaceId: 'space-im',
           spaceMetadata: spaceMetadata('space-im')
         })
@@ -2062,7 +2075,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             ifMatch: etagWithCounterBumped({ validator: created, by: 9 })
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
-        const second = await backend.writeSpace({
+        const { validator: second } = await backend.writeSpace({
           spaceId: 'space-im',
           spaceMetadata: spaceMetadata('space-im'),
           ifMatch: formatEtag(created)
@@ -2080,7 +2093,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
       it('writeSpace strips a client-supplied _generation / _local and stamp from the stored body', async () => {
         const { backend } = harness
-        const written = await backend.writeSpace({
+        const { validator: written } = await backend.writeSpace({
           spaceId: 'space-smuggle',
           spaceMetadata: {
             ...spaceMetadata('space-smuggle'),
@@ -2113,17 +2126,17 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             ifMatch: '*'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
-        const created = await backend.writeSpace({
+        const { validator: created } = await backend.writeSpace({
           spaceId: 'space-im-forms',
           spaceMetadata: spaceMetadata('space-im-forms')
         })
-        const second = await backend.writeSpace({
+        const { validator: second } = await backend.writeSpace({
           spaceId: 'space-im-forms',
           spaceMetadata: spaceMetadata('space-im-forms'),
           ifMatch: '*'
         })
         assertValidatorAdvanced(created, second)
-        const third = await backend.writeSpace({
+        const { validator: third } = await backend.writeSpace({
           spaceId: 'space-im-forms',
           spaceMetadata: spaceMetadata('space-im-forms'),
           ifMatch: `${formatEtag(created)}, ${formatEtag(second)}`
@@ -2141,7 +2154,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
       it('writeSpace If-None-Match with a listed validator refuses the named current ETag', async () => {
         const { backend } = harness
-        const created = await backend.writeSpace({
+        const { validator: created } = await backend.writeSpace({
           spaceId: 'space-inm-list',
           spaceMetadata: spaceMetadata('space-inm-list')
         })
@@ -2152,7 +2165,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             ifNoneMatch: new Set([formatEtag(created)])
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
-        const second = await backend.writeSpace({
+        const { validator: second } = await backend.writeSpace({
           spaceId: 'space-inm-list',
           spaceMetadata: spaceMetadata('space-inm-list'),
           ifNoneMatch: new Set([
@@ -2176,7 +2189,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           await backend.getSpaceMetadata({ spaceId: 'space-both' }),
           undefined
         )
-        const created = await backend.writeSpace({
+        const { validator: created } = await backend.writeSpace({
           spaceId: 'space-both',
           spaceMetadata: spaceMetadata('space-both')
         })
@@ -2208,12 +2221,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
       it('a Space deleted and re-created under the same id mints a new generation', async () => {
         const { backend } = harness
-        const first = await backend.writeSpace({
+        const { validator: first } = await backend.writeSpace({
           spaceId: 'space-regen',
           spaceMetadata: spaceMetadata('space-regen')
         })
         await backend.deleteSpace({ spaceId: 'space-regen' })
-        const second = await backend.writeSpace({
+        const { validator: second } = await backend.writeSpace({
           spaceId: 'space-regen',
           spaceMetadata: spaceMetadata('space-regen')
         })
@@ -2226,7 +2239,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId: 'space-col-inm',
           spaceMetadata: spaceMetadata('space-col-inm')
         })
-        const created = await backend.writeCollection({
+        const { validator: created } = await backend.writeCollection({
           spaceId: 'space-col-inm',
           collectionId: 'guarded',
           collectionMetadata: {
@@ -2433,7 +2446,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.deepEqual(metadata?.custom, { createdBy: CREATOR_TWO })
       })
 
-      it('soft-delete then re-create under a different createdBy keeps the original creator', async () => {
+      it('soft-delete then re-create under a different createdBy records fresh provenance', async () => {
         const { backend } = harness
         await backend.writeResource({
           spaceId,
@@ -2447,19 +2460,28 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           resourceId: 'cb-recreate'
         })
-        await backend.writeResource({
+        const recreated = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'cb-recreate',
           input: jsonInput({ v: 2 }),
           createdBy: CREATOR_TWO
         })
+        // A write over a tombstone is a create: this write's invoker and
+        // time, not the deleted Resource's.
+        assert.equal(recreated.created, true)
+        assert.equal(recreated.members.createdBy, CREATOR_TWO)
+        assert.equal(
+          recreated.members.createdAt,
+          recreated.validator.stamp.updatedAt
+        )
         const metadata = await backend.getResourceMetadata({
           spaceId,
           collectionId: 'col',
           resourceId: 'cb-recreate'
         })
-        assert.equal(metadata?.createdBy, CREATOR_ONE)
+        assert.equal(metadata?.createdBy, CREATOR_TWO)
+        assert.equal(metadata?.createdAt, recreated.validator.stamp.updatedAt)
       })
 
       it('writeSpace records the first invoker as createdBy and preserves it on overwrite', async () => {
@@ -2596,6 +2618,273 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       })
     })
 
+    describe('write results', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-write-results'
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId)
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('writeResource reports a create, then an update, with the members it left', async () => {
+        const { backend } = harness
+        const created = await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'members',
+          input: binaryInput(Buffer.from('abc')),
+          createdBy: CREATOR_ONE
+        })
+        assert.equal(created.created, true)
+        assert.deepEqual(created.members, {
+          contentType: 'application/octet-stream',
+          size: 3,
+          createdAt: created.validator.stamp.updatedAt,
+          ...created.validator.stamp,
+          createdBy: CREATOR_ONE
+        })
+
+        const updated = await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'members',
+          input: jsonInput({ longer: true }),
+          createdBy: CREATOR_TWO
+        })
+        assert.equal(updated.created, false)
+        assert.deepEqual(updated.members, {
+          contentType: 'application/json',
+          size: JSON.stringify({ longer: true }).length,
+          createdAt: created.members.createdAt,
+          ...updated.validator.stamp,
+          createdBy: CREATOR_ONE
+        })
+      })
+
+      it('writeResourceMetadata reports the content stamp and the /meta stamp it minted', async () => {
+        const { backend } = harness
+        const content = await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'meta-members',
+          input: jsonInput({ v: 1 }),
+          createdBy: CREATOR_ONE
+        })
+        const written = (await backend.writeResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'meta-members',
+          custom: { name: 'Named' }
+        }))!
+        assert.deepEqual(written.members, {
+          ...content.members,
+          meta: {
+            ...written.validator.stamp,
+            generation: written.validator.generation
+          }
+        })
+      })
+
+      it('concurrent writes of one new id each report their own revision', async () => {
+        const { backend } = harness
+        const creators = Array.from(
+          { length: 6 },
+          (_, index) => `did:key:z6MkContractSuiteRacer${index}` as IDID
+        )
+        const results = await Promise.all(
+          creators.map((createdBy, index) =>
+            backend.writeResource({
+              spaceId,
+              collectionId: 'col',
+              resourceId: 'raced',
+              input: jsonInput({ racer: 'x'.repeat(index) }),
+              createdBy
+            })
+          )
+        )
+        const creates = results.filter(result => result.created)
+        assert.equal(creates.length, 1)
+        const creator = creators[results.indexOf(creates[0]!)]
+        for (const [index, result] of results.entries()) {
+          // Each result describes its own write: its stamp, its bytes, and
+          // the creator the row carried once it landed.
+          assert.deepEqual(
+            {
+              updatedAt: result.members.updatedAt,
+              updatedAtCounter: result.members.updatedAtCounter,
+              originId: result.members.originId
+            },
+            result.validator.stamp
+          )
+          assert.equal(
+            result.members.size,
+            JSON.stringify({ racer: 'x'.repeat(index) }).length
+          )
+          assert.equal(result.members.createdBy, creator)
+          assert.equal(result.members.createdAt, creates[0]!.members.createdAt)
+        }
+        // The feed carries the stamp of the write that landed last.
+        const { documents } = await backend.changesSince!({
+          spaceId,
+          collectionId: 'col',
+          limit: 1000
+        })
+        const doc = documents.find(
+          document =>
+            document.kind === 'resource' && document.resourceId === 'raced'
+        )!
+        const last = results.find(
+          result =>
+            result.validator.stamp.updatedAt === doc.updatedAt &&
+            result.validator.stamp.updatedAtCounter === doc.updatedAtCounter
+        )
+        assert.ok(last, 'the feed stamp is one write result')
+      })
+
+      it('a write over a tombstone is a create with fresh provenance', async () => {
+        const { backend } = harness
+        const first = await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'tombstoned',
+          input: jsonInput({ v: 1 }),
+          createdBy: CREATOR_ONE
+        })
+        await backend.deleteResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'tombstoned'
+        })
+        const revived = await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'tombstoned',
+          input: jsonInput({ v: 2 }),
+          createdBy: CREATOR_TWO
+        })
+        assert.equal(revived.created, true)
+        assert.equal(revived.members.createdBy, CREATOR_TWO)
+        assert.equal(
+          revived.members.createdAt,
+          revived.validator.stamp.updatedAt
+        )
+        assert.notEqual(revived.members.createdAt, first.members.createdAt)
+        // The generation continues across the tombstone.
+        assert.equal(revived.validator.generation, first.validator.generation)
+      })
+
+      it('a write-once repeat reports no create and the stored members', async () => {
+        const { backend } = harness
+        const stored = await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'once',
+          input: jsonInput({ v: 1 }),
+          createdBy: CREATOR_ONE,
+          immutable: true
+        })
+        const repeated = await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'once',
+          input: jsonInput({ v: 1 }),
+          createdBy: CREATOR_TWO,
+          immutable: true
+        })
+        assert.equal(repeated.created, false)
+        assert.deepEqual(repeated.validator, stored.validator)
+        assert.deepEqual(repeated.members, stored.members)
+      })
+
+      it('writeSpace and writeCollection report a create, then an update, with the stored object', async () => {
+        const { backend } = harness
+        const createdSpace = await backend.writeSpace({
+          spaceId: 'space-write-results-new',
+          spaceMetadata: {
+            id: 'space-write-results-new',
+            type: ['Space'],
+            controller: CONTROLLER
+          },
+          createdBy: CREATOR_ONE
+        })
+        assert.equal(createdSpace.created, true)
+        assert.equal(createdSpace.metadata.createdBy, CREATOR_ONE)
+        assert.equal(
+          createdSpace.metadata.updatedAt,
+          createdSpace.validator.stamp.updatedAt
+        )
+        const storedSpace = await backend.getSpaceMetadata({
+          spaceId: 'space-write-results-new'
+        })
+        const {
+          metaGeneration: _generation,
+          metaLocal: _local,
+          ...storedSpaceBody
+        } = storedSpace!
+        assert.deepEqual(createdSpace.metadata, storedSpaceBody)
+        const updatedSpace = await backend.writeSpace({
+          spaceId: 'space-write-results-new',
+          spaceMetadata: {
+            id: 'space-write-results-new',
+            type: ['Space'],
+            name: 'Renamed',
+            controller: CONTROLLER
+          },
+          createdBy: CREATOR_TWO
+        })
+        assert.equal(updatedSpace.created, false)
+        assert.equal(updatedSpace.metadata.createdBy, CREATOR_ONE)
+        assert.equal(updatedSpace.metadata.name, 'Renamed')
+
+        const createdCollection = await backend.writeCollection({
+          spaceId,
+          collectionId: 'col-new',
+          collectionMetadata: { id: 'col-new', type: ['Collection'] },
+          createdBy: CREATOR_ONE
+        })
+        assert.equal(createdCollection.created, true)
+        const storedCollection = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId: 'col-new'
+        })
+        const {
+          metaGeneration: _collectionGeneration,
+          metaLocal: _collectionLocal,
+          ...storedCollectionBody
+        } = storedCollection!
+        assert.deepEqual(createdCollection.metadata, storedCollectionBody)
+        const updatedCollection = await backend.writeCollection({
+          spaceId,
+          collectionId: 'col-new',
+          collectionMetadata: {
+            id: 'col-new',
+            type: ['Collection'],
+            name: 'Named'
+          },
+          createdBy: CREATOR_TWO
+        })
+        assert.equal(updatedCollection.created, false)
+        assert.equal(updatedCollection.metadata.createdBy, CREATOR_ONE)
+        assert.equal(
+          updatedCollection.metadata.createdAt,
+          createdCollection.metadata.createdAt
+        )
+
+        await backend.deleteCollection({ spaceId, collectionId: 'col-new' })
+        const recreated = await backend.writeCollection({
+          spaceId,
+          collectionId: 'col-new',
+          collectionMetadata: { id: 'col-new', type: ['Collection'] },
+          createdBy: CREATOR_TWO
+        })
+        assert.equal(recreated.created, true)
+        assert.equal(recreated.metadata.createdBy, CREATOR_TWO)
+      })
+    })
+
     describe('conditional-write preconditions', () => {
       let harness: BackendHarness
       const spaceId = 'space-cond'
@@ -2629,7 +2918,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
       it('If-Match matches the current ETag or 412s', async () => {
         const { backend } = harness
-        const created = await backend.writeResource({
+        const { validator: created } = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'im',
@@ -2667,7 +2956,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
       it('conditional delete honors If-Match', async () => {
         const { backend } = harness
-        const created = await backend.writeResource({
+        const { validator: created } = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'del',
@@ -2704,7 +2993,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           resourceId: 'tomb',
           input: jsonInput({ v: 1 })
         })
-        const second = await backend.writeResource({
+        const { validator: second } = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'tomb',
@@ -2728,7 +3017,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         // ... while If-None-Match: * (create-if-absent) succeeds. A tombstone
         // keeps the record's generation, and the re-create mints a stamp
         // above the tombstone's.
-        const revived = await backend.writeResource({
+        const { validator: revived } = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'tomb',
@@ -2759,13 +3048,15 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           input: jsonInput({})
         })
         // If-None-Match: * -- only when no metadata has been written yet.
-        const firstMeta = await backend.writeResourceMetadata({
-          spaceId,
-          collectionId: 'col',
-          resourceId: 'mp',
-          custom: { name: 'a' },
-          ifNoneMatch: '*'
-        })
+        const firstMeta = (
+          await backend.writeResourceMetadata({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'mp',
+            custom: { name: 'a' },
+            ifNoneMatch: '*'
+          })
+        )?.validator
         await expect(
           backend.writeResourceMetadata({
             spaceId,
@@ -2784,13 +3075,15 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             ifMatch: etagWithCounterBumped({ validator: firstMeta!, by: 2 })
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
-        const result = await backend.writeResourceMetadata({
-          spaceId,
-          collectionId: 'col',
-          resourceId: 'mp',
-          custom: { name: 'b' },
-          ifMatch: formatEtag(firstMeta!)
-        })
+        const result = (
+          await backend.writeResourceMetadata({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'mp',
+            custom: { name: 'b' },
+            ifMatch: formatEtag(firstMeta!)
+          })
+        )?.validator
         assertValidatorAdvanced(firstMeta!, result!)
         assert.equal(result?.generation, firstMeta!.generation)
       })
@@ -2798,21 +3091,23 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       it('a soft delete drops the /meta validator: the re-created Resource starts a new meta generation', async () => {
         const { backend } = harness
         const target = { spaceId, collectionId: 'col', resourceId: 'meta-tomb' }
-        const created = await backend.writeResource({
+        const { validator: created } = await backend.writeResource({
           ...target,
           input: jsonInput({ v: 1 })
         })
-        const preDeleteMeta = await backend.writeResourceMetadata({
-          ...target,
-          custom: { name: 'before' }
-        })
+        const preDeleteMeta = (
+          await backend.writeResourceMetadata({
+            ...target,
+            custom: { name: 'before' }
+          })
+        )?.validator
         assert.notEqual(
           preDeleteMeta?.generation,
           created.generation,
           'the /meta validator has a generation of its own'
         )
         await backend.deleteResource(target)
-        const revived = await backend.writeResource({
+        const { validator: revived } = await backend.writeResource({
           ...target,
           input: jsonInput({ v: 2 })
         })
@@ -2831,11 +3126,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         // ... while a guarded first write succeeds, under a fresh generation
         // rather than the old `/meta` validator recurring.
-        const revivedMeta = await backend.writeResourceMetadata({
-          ...target,
-          custom: { name: 'after' },
-          ifNoneMatch: '*'
-        })
+        const revivedMeta = (
+          await backend.writeResourceMetadata({
+            ...target,
+            custom: { name: 'after' },
+            ifNoneMatch: '*'
+          })
+        )?.validator
         assert.notEqual(revivedMeta?.generation, preDeleteMeta?.generation)
         assert.notEqual(
           formatEtag(revivedMeta!),
@@ -2881,8 +3178,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId: 'col',
           resourceId: 'race-create'
         })
-        const winner = winners[0] as PromiseFulfilledResult<EtagValidator>
-        assert.equal(etagOf(metadata!), formatEtag(winner.value))
+        const winner = winners[0] as PromiseFulfilledResult<ResourceWriteResult>
+        assert.equal(etagOf(metadata!), formatEtag(winner.value.validator))
       })
 
       it('unconditional delete of a tombstone is a stable no-op', async () => {
@@ -3027,7 +3324,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       it('writeCollection returns an advancing validator', async () => {
         const { backend } = harness
         // The Collection was created in `provisionSpace`; update it.
-        const first = await backend.writeCollection({
+        const { validator: first } = await backend.writeCollection({
           spaceId,
           collectionId: 'col',
           collectionMetadata: {
@@ -3036,7 +3333,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             name: 'Renamed once'
           }
         })
-        const second = await backend.writeCollection({
+        const { validator: second } = await backend.writeCollection({
           spaceId,
           collectionId: 'col',
           collectionMetadata: {
@@ -3061,7 +3358,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         })
         const currentEtag = metadataEtagOf(current)!
         // A matching If-Match succeeds and advances the stamp.
-        const ok = await backend.writeCollection({
+        const { validator: ok } = await backend.writeCollection({
           spaceId,
           collectionId: 'col',
           collectionMetadata: {
@@ -3102,7 +3399,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId,
           collectionId: 'col'
         })
-        const result = await backend.writeCollection({
+        const { validator: result } = await backend.writeCollection({
           spaceId,
           collectionId: 'col',
           collectionMetadata: {
@@ -3504,7 +3801,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           }),
           isNotFound
         )
-        const created = await backend.writeCollection({
+        const { validator: created } = await backend.writeCollection({
           spaceId,
           collectionId: 'ph',
           collectionMetadata: {
@@ -3541,7 +3838,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           spaceId,
           collectionId: 'merge'
         })
-        const second = await backend.writeCollection({
+        const { validator: second } = await backend.writeCollection({
           spaceId,
           collectionId: 'merge',
           collectionMetadata: { ...read!, name: 'V2' }
@@ -3977,10 +4274,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           assert.equal(formatEtag(prior.validator!), contentEtag)
 
           clock.now += 1000
-          const meta1 = await backend.writeResourceMetadata({
-            ...target,
-            custom: { name: 'First' }
-          })
+          const meta1 = (
+            await backend.writeResourceMetadata({
+              ...target,
+              custom: { name: 'First' }
+            })
+          )?.validator
           assert.ok(meta1)
           const first = await backend.changesSince!({
             spaceId,
@@ -4008,10 +4307,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           assert.deepEqual(moved.custom, { name: 'First' })
 
           // A second /meta write, in the same millisecond, moves it again.
-          const meta2 = await backend.writeResourceMetadata({
-            ...target,
-            custom: { name: 'Second' }
-          })
+          const meta2 = (
+            await backend.writeResourceMetadata({
+              ...target,
+              custom: { name: 'Second' }
+            })
+          )?.validator
           assert.ok(meta2)
           const second = await backend.changesSince!({
             spaceId,
@@ -4633,7 +4934,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         })
         const before = await feedOf({ collectionId })
         const prior = onlyOfKind(before, 'collection-metadata')!
-        const validator = await backend.writeCollection({
+        const { validator } = await backend.writeCollection({
           spaceId,
           collectionId,
           collectionMetadata: {
@@ -5238,7 +5539,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         )
         assertEtagAdvanced({
           before: etagOf(prior),
-          after: formatEtag(rewritten)
+          after: formatEtag(rewritten.validator)
         })
       })
 
@@ -6538,7 +6839,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
       it('a repeat of the stored bytes answers the stored validator and takes no feed position', async () => {
         const { backend } = harness
-        const created = await backend.writeResource({
+        const { validator: created } = await backend.writeResource({
           spaceId,
           collectionId,
           resourceId: 'repeat',
@@ -6546,7 +6847,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           immutable: true
         })
         const before = await feedCheckpoint()
-        const repeated = await backend.writeResource({
+        const { validator: repeated } = await backend.writeResource({
           spaceId,
           collectionId,
           resourceId: 'repeat',
@@ -6614,14 +6915,14 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       it('compares a binary body byte for byte', async () => {
         const { backend } = harness
         const bytes = randomBytes(4096)
-        const created = await backend.writeResource({
+        const { validator: created } = await backend.writeResource({
           spaceId,
           collectionId,
           resourceId: 'blob',
           input: binaryInput(bytes),
           immutable: true
         })
-        const repeated = await backend.writeResource({
+        const { validator: repeated } = await backend.writeResource({
           spaceId,
           collectionId,
           resourceId: 'blob',
@@ -6665,7 +6966,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
       it('a write over a tombstone is an ordinary create', async () => {
         const { backend } = harness
-        const created = await backend.writeResource({
+        const { validator: created } = await backend.writeResource({
           spaceId,
           collectionId,
           resourceId: 'tombstoned',
@@ -6678,7 +6979,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           resourceId: 'tombstoned'
         })
         const before = await feedCheckpoint()
-        const recreated = await backend.writeResource({
+        const { validator: recreated } = await backend.writeResource({
           spaceId,
           collectionId,
           resourceId: 'tombstoned',
@@ -6798,7 +7099,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       it('applies the rule when the log read under the lock declares it', async () => {
         const { backend } = harness
         const collectionId = 'governed'
-        const created = await backend.writeResource({
+        const { validator: created } = await backend.writeResource({
           spaceId,
           collectionId,
           resourceId: 'doc',
@@ -6845,7 +7146,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         ).rejects.toBeInstanceOf(ResourceImmutableError)
         assert.equal(seenLog?.body, body)
         assert.deepEqual(seenLog?.validator, logValidator)
-        const repeated = await backend.writeResource({
+        const { validator: repeated } = await backend.writeResource({
           spaceId,
           collectionId,
           resourceId: 'doc',
@@ -6877,7 +7178,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
 
       it('a repeat ignores media type parameters and case', async () => {
         const { backend } = harness
-        const created = await backend.writeResource({
+        const { validator: created } = await backend.writeResource({
           spaceId,
           collectionId: 'plain',
           resourceId: 'typed',
@@ -6886,7 +7187,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           }),
           immutable: true
         })
-        const repeated = await backend.writeResource({
+        const { validator: repeated } = await backend.writeResource({
           spaceId,
           collectionId: 'plain',
           resourceId: 'typed',
@@ -6935,8 +7236,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         )
         // A repeat claims nothing new and is still the no-op.
         assert.equal(
-          formatEtag(await write('other', 'v2')),
-          formatEtag(created)
+          formatEtag((await write('other', 'v2')).validator),
+          formatEtag(created.validator)
         )
         // A create still pays for the scan.
         await expect(write('claimant', 'v1')).rejects.toBeInstanceOf(
@@ -7433,7 +7734,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           const spaceId = 'space-segments'
           const collectionId = 'col'
 
-          const spaceWritten = await backend.writeSpace({
+          const { validator: spaceWritten } = await backend.writeSpace({
             spaceId,
             spaceMetadata: {
               id: spaceId,
@@ -7455,11 +7756,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           assert.equal(spaceWritten.local, 0)
           assert.equal(metadataEtagOf(space), formatEtag(spaceWritten))
 
-          const collectionWritten = await backend.writeCollection({
-            spaceId,
-            collectionId,
-            collectionMetadata: { id: collectionId, type: ['Collection'] }
-          })
+          const { validator: collectionWritten } =
+            await backend.writeCollection({
+              spaceId,
+              collectionId,
+              collectionMetadata: { id: collectionId, type: ['Collection'] }
+            })
           const collection = (await backend.getCollectionMetadata({
             spaceId,
             collectionId
@@ -7481,7 +7783,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           )
 
           clock.now += 1000
-          const docWritten = await backend.writeResource({
+          const { validator: docWritten } = await backend.writeResource({
             spaceId,
             collectionId,
             resourceId: 'doc',
@@ -7505,7 +7807,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             collectionId,
             resourceId: 'doc',
             custom: { name: 'Doc' }
-          }))!
+          }))!.validator
           const withMeta = (await backend.getResourceMetadata({
             spaceId,
             collectionId,
@@ -7569,7 +7871,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           // or above every stamp minted before the step.
           const latest = logCreated.stamp
           clock.now -= 30_000
-          const otherWritten = await backend.writeResource({
+          const { validator: otherWritten } = await backend.writeResource({
             spaceId,
             collectionId,
             resourceId: 'other',
@@ -7592,11 +7894,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           )
 
           // A container rewrite after the step advances on the same terms.
-          const collectionRewritten = await backend.writeCollection({
-            spaceId,
-            collectionId,
-            collectionMetadata: { id: collectionId, type: ['Collection'] }
-          })
+          const { validator: collectionRewritten } =
+            await backend.writeCollection({
+              spaceId,
+              collectionId,
+              collectionMetadata: { id: collectionId, type: ['Collection'] }
+            })
           assertValidatorAdvanced(collectionWritten, collectionRewritten)
           assert.ok(
             Date.parse(collectionRewritten.stamp.updatedAt) >=

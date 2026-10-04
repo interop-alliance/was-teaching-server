@@ -233,14 +233,14 @@ describe('Wire-contract smoke (status codes)', () => {
     )
   })
 
-  it('PUT a resource by id returns 204, then DELETE returns 204', async () => {
+  it('PUT a resource by id returns 201, then DELETE returns 204', async () => {
     const resourcePath = `/space/${spaceId}/${collectionId}/smoke-put`
     const putResponse = await alice.was.request({
       path: resourcePath,
       method: 'PUT',
       json: { id: 'smoke-put', name: 'PUT Smoke' }
     })
-    assert.equal(putResponse.status, 204)
+    assert.equal(putResponse.status, 201)
 
     const deleteResponse = await alice.was.request({
       path: resourcePath,
@@ -295,7 +295,7 @@ describe('Wire-contract smoke (status codes)', () => {
         body: new TextEncoder().encode(raw),
         headers: { 'content-type': 'application/json' }
       })
-      assert.equal(putResponse.status, 204)
+      assert.equal(putResponse.status, 201)
       const getResponse = await alice.was.request({
         path: resourcePath,
         method: 'GET'

@@ -339,11 +339,10 @@ Entries added by the review (2026-10-01):
     `src/lib/validateId.ts:67`, storage-core `common.ts:334`, was-client
     `internal/reserved.ts`, drift-guarded). Changed: `replicas` joins the
     Space-level registry, and `zcaps` must too (the existing
-    `/space/:spaceId/zcaps/revocations/:id` route and WAS-178's read collide
-    with a Collection named `zcaps`). Without the reservation, the client-annex
-    clause's fourth shape (`clientAnnexClause.ts:616-617`) admits a
-    ladder-signed `GET` of a registration record. Open point 9 covers the name
-    itself.
+    `/space/:spaceId/zcaps/revocations/:id` route collides with a Collection
+    named `zcaps`). Without the reservation, the client-annex clause's fourth
+    shape (`clientAnnexClause.ts:616-617`) admits a ladder-signed `GET` of a
+    registration record. Open point 9 covers the name itself.
 
 23. The per-Collection uniqueness of `plaintext.indexes[].unique` and of unique
     blinded attributes is enforced atomically at write time
@@ -987,7 +986,8 @@ fork. The recommendation is first.
     Recommended: drop the union from v1 (WAS-178 then stands alone as a read, or
     is withdrawn); key retirement through the log is the cross-replica revoke.
     Decided 2026-10-01: dropped from v1; revocations are per replica, like
-    grants. WAS-178 stays as a plain read for the wallet.
+    grants. WAS-178 stays as a plain read for the wallet. Amended 2026-10-04:
+    WAS-178 withdrawn, since no wallet needs the read and the spec defines none.
 11. Provenance `createdBy` for a foreign origin (invariant 14). Recommended:
     omit the member from the statement's claims when `origin` is not the
     exporting server; import then strips `createdBy` on that object as it does
@@ -1241,6 +1241,20 @@ are proposals:
     warning covers it). In the same dialect change `_version` leaves every
     Metadata file and the stamp members are stored bare, `_generation` staying
     embedded.
+17. The Resource write response body. Decided 2026-10-03, with was-sync's design
+    for acks that carry server state: `PUT /:id` answers `201` when it created
+    the Resource (over a tombstone included) and `200` when it updated a live
+    one. `PUT /:id/meta` answers `200` and never creates. Both keep the `ETag`
+    header and send `application/json`. The body holds the server-managed
+    members of the Resource Metadata object: `contentType`, `size`, and the
+    content record's full stamp (`updatedAt`, `updatedAtCounter`, `originId`). A
+    `201` adds `createdAt` and `createdBy`, and a `/meta` write adds the nested
+    `meta` stamp and generation. No `custom`, `epoch` or `writerId`. The values
+    come from the write under its lock, so a pushed row compares equal to its
+    feed echo without waiting for it. A Resource re-created over a tombstone
+    records fresh provenance, the re-creating invoker and time. Container
+    creates answer from the stored object the write returns, and choose `201` or
+    `204` from the backend's create-or-update decision.
 
 ## 6. Alternatives rejected
 

@@ -250,7 +250,7 @@ describe('Server identity', () => {
       assert.match(did, /^did:webvh:[^:]+:localhost%3A\d+:space:server:id$/)
 
       const published = await publishLog(logToJsonlString(log))
-      assert.equal(published.status, 204)
+      assert.equal(published.status, 201)
 
       const { entry, etag } = await serviceEntry()
       assert.equal(entry.serverDid, did)
@@ -272,7 +272,7 @@ describe('Server identity', () => {
         ] as any
       })
       const published = await publishLog(logToJsonlString(updated.log))
-      assert.equal(published.status, 204)
+      assert.equal(published.status, 200)
       log = updated.log
 
       const { entry } = await serviceEntry()
@@ -297,7 +297,7 @@ describe('Server identity', () => {
         ] as any
       })
       const published = await publishLog(logToJsonlString(updated.log))
-      assert.equal(published.status, 204)
+      assert.equal(published.status, 200)
       log = updated.log
 
       const { entry } = await serviceEntry()
@@ -319,7 +319,7 @@ describe('Server identity', () => {
         ] as any
       })
       const published = await publishLog(logToJsonlString(updated.log))
-      assert.equal(published.status, 204)
+      assert.equal(published.status, 200)
       log = updated.log
 
       const { entry } = await serviceEntry()
@@ -341,7 +341,7 @@ describe('Server identity', () => {
         ] as any
       })
       const published = await publishLog(logToJsonlString(updated.log))
-      assert.equal(published.status, 204)
+      assert.equal(published.status, 200)
       log = updated.log
 
       const { entry } = await serviceEntry()

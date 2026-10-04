@@ -286,7 +286,7 @@ if (!connectionString) {
       // Stored half a second past the persisted mark: within the cadence, so
       // the mark stays behind this stamp.
       physical.now = start + 500
-      const stored = await backend.writeResource({
+      const { validator: stored } = await backend.writeResource({
         spaceId: 'space1',
         collectionId: 'notes',
         resourceId: 'doc',
@@ -298,7 +298,7 @@ if (!connectionString) {
       // the stored stamp, and its physical clock stands further back still.
       const behind = frozenClock(start - 60_000)
       const rebooted = await boot(behind.read)
-      const rewritten = await rebooted.writeResource({
+      const { validator: rewritten } = await rebooted.writeResource({
         spaceId: 'space1',
         collectionId: 'notes',
         resourceId: 'doc',
@@ -330,7 +330,7 @@ if (!connectionString) {
 
       // The same holds for a container Metadata object, whose stored stamp
       // the seeded clock already stands above.
-      const collection = await rebooted.writeCollection({
+      const { validator: collection } = await rebooted.writeCollection({
         spaceId: 'space1',
         collectionId: 'notes',
         collectionMetadata: { id: 'notes', type: ['Collection'] }

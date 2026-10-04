@@ -285,7 +285,8 @@ describe('Sync signer', () => {
       headers: { 'content-type': 'text/jsonl' },
       body: new Blob([logToJsonlString(next)], { type: 'text/jsonl' })
     })
-    assert.equal(response.status, 204)
+    // The first publish creates the log; each later one appends to it.
+    assert.ok(response.status === 201 || response.status === 200)
     log = next
   }
 

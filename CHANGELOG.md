@@ -19,6 +19,26 @@
 - Postgres schema migration 11 adds `collections.metadata_feed_position` and
   `collections.log_feed_position`. The filesystem feed counter file gains
   `collectionMetadataPosition` and `logPosition`.
+- **BREAKING**: Create or Update Resource (`PUT /space/:s/:c/:id`) answers `201`
+  when it created the Resource and `200` when it updated it, in place of `204`.
+  Update Resource Metadata (`PUT .../:id/meta`) answers `200`. Both send a JSON
+  body of server-managed members: `contentType`, `size`, and the content
+  record's write stamp. A `201` adds `createdAt` and `createdBy`, and a `/meta`
+  write adds the nested `meta` stamp. A write-once repeat answers `200`.
+- **BREAKING**: a Resource re-created over a tombstone records this write's
+  invoker as `createdBy` and its time as `createdAt`. Both backends used to keep
+  the tombstone's values.
+- Create Space, Create Collection, and a create by `PUT` of a container's `meta`
+  answer with the stored object the write returns. The `201` or `204` of a `PUT`
+  comes from the backend's create-or-update decision under its lock, so of two
+  racing unconditional creates of one Collection only one answers `201`.
+- **BREAKING** for custom backends: `StorageBackend.writeResource` returns
+  `ResourceWriteResult` (`validator`, `created`, `members`) and
+  `writeResourceMetadata` returns `validator` and `members`, or `undefined`.
+  `writeSpace` and `writeCollection` return `MetadataWriteResult` (`validator`,
+  `created`, `metadata`). Each used to return the validator alone.
+- `provisionWebvhIdentity()` in `was-teaching-server/testing` expects `201` from
+  the log `PUT`.
 
 ## 0.40.0 - 2026-10-04
 

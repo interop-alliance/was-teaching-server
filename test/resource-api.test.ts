@@ -465,7 +465,7 @@ describe('Resource API', () => {
           }
         }
       })
-      assert.equal(putResponse.status, 204)
+      assert.equal(putResponse.status, 200)
 
       // GET /meta reflects the new custom object (server-managed fields intact).
       const { data: meta } = await alice.was.request({
@@ -527,7 +527,7 @@ describe('Resource API', () => {
           custom: { name: 'Roundtripped' }
         }
       })
-      assert.equal(putResponse.status, 204)
+      assert.equal(putResponse.status, 200)
 
       const { data: after } = await alice.was.request({
         url: metaUrl(resourceId),
@@ -548,7 +548,7 @@ describe('Resource API', () => {
         method: 'PUT',
         json: { custom: { name: 'Some Custom Data' } }
       })
-      assert.equal(putResponse.status, 204)
+      assert.equal(putResponse.status, 200)
 
       const { data: meta } = await alice.was.request({
         url: metaUrl(resourceId),
@@ -816,7 +816,7 @@ describe('Resource API', () => {
         method: 'PUT',
         json: { id: resourceId, n: 1 }
       })
-      assert.equal(created.status, 204)
+      assert.equal(created.status, 201)
       const createdEtag = created.headers.get('etag')
       parseEtagSegments(createdEtag)
 
@@ -872,7 +872,7 @@ describe('Resource API', () => {
         json: { id: resourceId, n: 2 },
         headers: { 'if-match': etag }
       })
-      assert.equal(updated.status, 204)
+      assert.equal(updated.status, 200)
       const updatedEtag = updated.headers.get('etag')
       assertEtagAdvanced({ before: etag, after: updatedEtag })
       assert.equal(etagGeneration(updatedEtag!), etagGeneration(etag))
@@ -916,7 +916,7 @@ describe('Resource API', () => {
         json: { id: resourceId, n: 1 },
         headers: { 'if-none-match': '*' }
       })
-      assert.equal(created.status, 204)
+      assert.equal(created.status, 201)
       parseEtagSegments(created.headers.get('etag'))
 
       // A second create-if-absent against the now-existing resource fails.

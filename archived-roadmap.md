@@ -4968,3 +4968,94 @@ a row's `updatedAt` on a metadata-only edit and sorts rows by it will see the
 echo put the older content `updatedAt` back. was-sync's WS-23 takes the stamp
 model's answer and points its consumers at the payload's own `updatedAt` for
 sorting; this item makes the server and the spec say it.
+
+---
+
+### WAS-189: [M] Write responses carry the record's stamp and provenance, container writes included
+
+- status: done
+- done: 2026-10-04
+- priority: medium
+- labels: wire-contract, data-model, resource-api, filesystem-backend,
+  postgres-backend
+- touches:
+  - wallet-attached-storage-spec: the Create/Update Resource and Update Resource
+    Metadata operation bullets and examples (`201` / `200` with a body), the
+    `createdBy` definition's resurrection exception, Version History
+  - storage-core: `ResourceMetadata` JSDoc notes the write response subset
+  - was-client: `WriteAck` gains `updatedAt`, `updatedAtCounter`, `originId`,
+    `createdBy`, and `meta` on a `/meta` write, lifted from a `2xx` body behind
+    a shape guard; `putMeta` returns an ack with no validator
+  - was-sync: WS-17 (the ack write-back stamps the members under WS-23's unit
+    rule)
+  - wallet-core: the engine may adopt the new ack members
+  - conformance-suite: six strict-`204` sites accept `201` / `200` / `204` and
+    check the body shape; ships before the server; landed in the suite working
+    tree 2026-10-04 (seven sites, through one `assertResourceWriteResponse`
+    helper), publish pending
+  - was-teaching-server: `src/requests/ResourceRequest.ts`,
+    `src/requests/CollectionRequest.ts`, `src/requests/SpaceRequest.ts`,
+    `src/requests/SpacesRepositoryRequest.ts`, both backends' write return
+    types, `writeSpace` and `writeCollection` included (breaking for custom
+    backends), ARCHITECTURE.md, the WAS-96 design doc's wire inventory; shipped
+    here 2026-10-04
+- acceptance:
+  - [x] `PUT /:id` answers `201 Created` when it created the Resource (a
+        re-creation over a tombstone included) and `200 OK` when it updated a
+        live one; `PUT /:id/meta` answers `200 OK` and never creates; both keep
+        the `ETag` header and send `Content-Type: application/json`
+  - [x] The body holds server-managed members only: `contentType`, `size`, and
+        the record's full stamp (`updatedAt`, `updatedAtCounter`, `originId`)
+        always; `createdAt` and `createdBy` only on a `201`; on a `/meta` write
+        the nested `meta` stamp as well; no `custom` and no `data`
+  - [x] A Resource re-created over a tombstone records this write's invoker as
+        `createdBy` and this write's time as `createdAt` (fresh provenance; the
+        tombstone's is not preserved), in both backends
+  - [x] The values come from the write under its lock, so a concurrent writer
+        cannot make the body describe another revision (a Postgres case pins it)
+  - [x] The WAS-96 design doc's wire inventory gains the write response body as
+        an item, and ARCHITECTURE.md describes the two statuses and the body
+  - [x] Tests cover `201` / `200` on content writes, `200` on `/meta`, `404` on
+        a `/meta` write to an absent Resource, the body members, and the stamp
+        in the body equal to the stamp the feed then carries
+  - [x] Container writes follow the same rule: `writeSpace` and
+        `writeCollection` return the stored Metadata object and whether the
+        write created it, and Create Space, Create Collection, and the
+        create-by-`PUT` of a container's `meta` send that object and choose
+        `201` or `204` from it, in place of an echo rebuilt from the request
+  - [x] A test in both backends races two unconditional `PUT`s of one new
+        Collection's `meta` and asserts the second response does not claim the
+        create: its status, `createdAt`, and `createdBy` match a read
+
+Context (discovered-from: WAS-96, via was-sync WS-17 and WS-23). A replication
+client that pushes a write learns only an `ETag` from today's `204`, so the
+server-assigned members (`createdBy`, the server's `updatedAt`, and under
+WAS-172 the whole stamp) reach its local row only through the feed echo. RxDB
+drops that echo when it is pulled while the push is still settling, and nothing
+on the client can cover the push's own HTTP latency. was-sync's WS-17 design
+(signed off 2026-10-02, body shape revised the same day) therefore has the write
+response carry the server-managed members. WAS-96 then replaced the revision
+counter with the stamp, and on 2026-10-03 the two were reconciled: the body
+carries the full stamp, so the server changes its write response once and a
+pushed row compares equal to its echo without waiting for it. WAS-96's wire
+inventory has no entry for a write response body; this item adds it. The
+statuses and the fresh-provenance rule are as signed off in was-sync's
+`designs/WS-17-ack-carries-server-state.md`; the stamp members are WAS-172's.
+
+Widened 2026-10-03 to container writes (discovered-from: WAS-172). The create
+echo of a container is rebuilt in the handler from the request body, over no
+prior object, with the invoker as `createdBy`. The handler decides create or
+update from a read made before the backend's lock. Two unconditional `PUT`s of
+one new Collection's `meta` can both read it as absent; the second write is then
+an update in the backend, which keeps the first writer's `createdAt` and
+`createdBy`, while its response is a `201` naming the second writer. The `ETag`
+and the stamp members are right, since they come from the write. A guarded
+create (`If-None-Match: *`) is unaffected. The Space create paths were not
+traced; Update Space pins its write to its earlier read and may already be
+covered.
+
+Shipped 2026-10-04. A write-once repeat answers `200` with the stored members. A
+content write's body carries no `meta`. The Space create paths were traced and
+had no race: Create Space is always a guarded create, and Update Space pins its
+write to its read. The Collection `PUT .../meta` race was real and is pinned by
+a test.

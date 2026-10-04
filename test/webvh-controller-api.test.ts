@@ -203,7 +203,7 @@ describe('did:webvh Space controller', () => {
       collectionId: logCollectionId,
       jsonl: logToJsonlString(minted.log)
     })
-    assert.equal(published.status, 204)
+    assert.equal(published.status, 201)
 
     return {
       spaceId,
@@ -375,7 +375,7 @@ describe('did:webvh Space controller', () => {
         spaceId: space.spaceId,
         jsonl: logToJsonlString(updated.log)
       })
-      assert.equal(published.status, 204)
+      assert.equal(published.status, 200)
 
       const err = await requestError(
         client({ signer: bob.signer }).request({
@@ -490,7 +490,7 @@ describe('did:webvh Space controller', () => {
         spaceId,
         jsonl: logToJsonlString(tampered)
       })
-      assert.equal(published.status, 204)
+      assert.equal(published.status, 201)
 
       const err = await requestError(
         promote({ signerClient: alice.was, spaceId, controller: minted.did })
@@ -710,7 +710,7 @@ describe('did:webvh Space controller', () => {
         collectionId: 'clientAnnex-0',
         jsonl: logToJsonlString(updated.log)
       })
-      assert.equal(published.status, 204)
+      assert.equal(published.status, 200)
 
       // The rotated-in key is the one that verifies now...
       replacementKey.id = `${space.did}#${replacementKey.publicKeyMultibase}`
@@ -871,7 +871,7 @@ describe('did:webvh Space controller', () => {
         spaceId: space.spaceId,
         jsonl: logToJsonlString(currentLog)
       })
-      assert.equal(rotated.status, 204)
+      assert.equal(rotated.status, 200)
       currentKeyPair.id = `${space.did}#${currentKeyPair.publicKeyMultibase}`
       currentKeyPair.controller = space.did
 
@@ -1000,7 +1000,7 @@ describe('did:webvh Space controller', () => {
     it('accepts an append, and the appended log resolves', async () => {
       const appended = await appendServiceEntry()
       const response = await putUnderGrant(logToJsonlString(appended.log))
-      assert.equal(response.status, 204)
+      assert.equal(response.status, 200)
 
       await assertCurrentKeyReads()
     })
