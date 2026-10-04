@@ -297,6 +297,32 @@ describe('Write stamp and ETag layout', () => {
       'if-none-match': written.headers.get('etag')!
     })
     assert.equal(notModified.status, 304)
+
+    // A second /meta write in the same millisecond moves the /meta validator
+    // by its counter, and the content record still does not move.
+    const rewritten = await alice.was.request({
+      url: metaUrl,
+      method: 'PUT',
+      json: { custom: { name: 'Doc again' } }
+    })
+    assert.equal(rewritten.status, 204)
+    const secondEtag = parseEtagSegments(rewritten.headers.get('etag'))
+    assert.equal(secondEtag.generation, metaEtag.generation)
+    assert.equal(secondEtag.stamp.updatedAt, metaEtag.stamp.updatedAt)
+    assert.equal(
+      secondEtag.stamp.updatedAtCounter,
+      metaEtag.stamp.updatedAtCounter + 1
+    )
+    const afterSecond = await get(metaUrl)
+    assert.equal(afterSecond.headers.get('etag'), rewritten.headers.get('etag'))
+    assert.equal(afterSecond.data.updatedAt, before.data.updatedAt)
+    assert.equal(
+      afterSecond.data.updatedAtCounter,
+      before.data.updatedAtCounter
+    )
+    assert.equal(afterSecond.data.originId, before.data.originId)
+    const contentAgain = await get(resourceUrl(collectionId, 'doc'))
+    assert.equal(contentAgain.headers.get('etag'), contentEtag)
   })
 
   it('the Space and Collection Metadata objects carry the five-field validator, local segment 0 after a write', async () => {

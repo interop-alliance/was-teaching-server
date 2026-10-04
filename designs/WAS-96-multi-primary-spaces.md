@@ -908,9 +908,10 @@ fork. The recommendation is first.
    sidecar, the change document, the provenance statement and the served `/meta`
    object; the flat `metaGeneration` / `metaVersion` members go (no migration,
    data wipe assumed). The content record's `updatedAt` stays the top-level
-   member. A `/meta` write no longer touches `writerId`, which belongs to the
-   content record; the spec's "declare-or-clear" rule for Update Resource
-   Metadata is withdrawn.
+   member. A `/meta`-only write mints a stamp on the `/meta` record alone, so
+   the content record's stamp and `ETag` do not change. A `/meta` write no
+   longer touches `writerId`, which belongs to the content record; the spec's
+   "declare-or-clear" rule for Update Resource Metadata is withdrawn.
 3. `controller` is per-server (invariant 20). Recommended as stated. The
    alternative, replicating a promotion with a resolve-before-apply rule and an
    ordering guarantee on the log, is more machinery for the one flow (promote

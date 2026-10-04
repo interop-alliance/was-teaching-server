@@ -4922,3 +4922,49 @@ is not in the feed, since Delete Collection removes the feed with the
 Collection; the pull loop finds it through the Space listing.
 
 ---
+
+### WAS-190: [M] A `/meta`-only write leaves the content record's stamp unchanged
+
+- status: done
+- done: 2026-10-04
+- priority: medium
+- labels: data-model, etag, changes-feed, filesystem-backend, postgres-backend
+- touches:
+  - wallet-attached-storage-spec: the Update Resource Metadata operation (what
+    it does and does not change), the Resource data model's `updatedAt`
+    definition, and the `changes` profile's metadata-only sentence; text landed
+    in the spec working tree 2026-10-04
+  - was-teaching-server: both backends' `/meta` write path already kept the
+    content stamp (shipped with WAS-172); the contract tests, the WAS-96 design
+    doc sentence, and ARCHITECTURE.md landed here
+  - was-sync: WS-23's design matrix row for a metadata-only push now reads as
+    decided (2026-10-04); freewallet FW-639 and was-react WR-56 filed for the
+    row sorting
+  - conformance-suite: PWSCS-21 filed (a case asserting the content `ETag` and
+    `updatedAt` survive a `/meta` write)
+- acceptance:
+  - [x] A `PUT /:id/meta` mints a stamp on the `/meta` record only: the content
+        record's `updatedAt`, `updatedAtCounter`, `originId`, and `ETag` are
+        unchanged by it, in both backends
+  - [x] The change document a `/meta` write produces carries the unchanged
+        content stamp at the top level and the new stamp under `meta`
+  - [x] The WAS-96 design doc states the rule in one sentence under open point
+        2, and the spec's Update Resource Metadata text says the operation does
+        not change the content record's `updatedAt` or validator
+  - [x] Tests in both backends write content, then `/meta`, and assert the
+        content `ETag` and top-level `updatedAt` are byte-equal before and
+        after, while `meta.updatedAt` moved
+
+Context (discovered-from: WAS-96, open point 2; raised by was-sync WS-23's
+review on 2026-10-03). Today the two records share one sidecar with one
+`updatedAt`, and a `/meta` write sets `updatedAt: now` on it. WAS-96's open
+point 2 (decided 2026-10-01) gives the `/meta` record its own nested stamp and
+keeps the content record's `updatedAt` as the top-level member, which implies a
+metadata write no longer moves the content stamp, since otherwise the content
+validator would change on a write that touched no content. The design never
+states it, and a reader of the current server behavior would assume the
+opposite. The consequence for a replication client is visible: an app that bumps
+a row's `updatedAt` on a metadata-only edit and sorts rows by it will see the
+echo put the older content `updatedAt` back. was-sync's WS-23 takes the stamp
+model's answer and points its consumers at the payload's own `updatedAt` for
+sorting; this item makes the server and the spec say it.

@@ -145,50 +145,53 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   random base58 marker minted at the record's first write and kept for the
   record's life. A Resource's content record continues through a tombstone and
   its re-create, so its generation does too. The Resource's `/meta` object is a
-  record of its own, with its own stamp and generation. The filesystem sidecar
-  nests both under its `meta` member, and Postgres keeps them in `meta_`
-  columns. A soft delete drops that record together with `custom`, so a
-  re-create's first metadata write starts a fresh generation and a `/meta`
-  `ETag` held from before the delete cannot pass `If-Match` against it. A hard
-  delete (a chunk, a Space) removes the record, so the next record under the
-  same id mints a new generation and its validators never coincide with the old
-  record's; a client's stale cached `ETag` then matches nothing instead of being
-  answered 304 over different bytes. Delete Collection leaves a tombstone (see
-  the Glossary's Collection tombstone), which keeps the generation and takes the
-  delete's stamp. A create over the tombstone mints a new generation, with the
-  same effect on held validators. A client treats the whole quoted value as
-  opaque, and `If-Match` and `If-None-Match` compare the whole string. Writes
-  are gated by `If-Match` / `If-None-Match: *`, which `parseWritePreconditions`
-  normalizes and the backends evaluate atomically with the write through
-  `preconditions.ts`. The Space and Collection Metadata objects take both: the
-  `If-None-Match: *` guarded create is what resolves two clients provisioning
-  the same Space or Collection at once (the loser's replace-semantics `PUT`
-  would otherwise rewrite the winner's `type` array or `backend`), and it
-  refuses whenever the container already has a Metadata object, `ETag` or not.
-  Update Space (`PUT /space/:spaceId/meta`) chooses its authorization from an
-  unlocked read, so its write passes `writeSpace` an `assertTransition` hook
-  that pins it to that read: the Space must still be absent on a create, and
-  carry the same validator on an update. On a mismatch the handler re-reads and
-  re-authorizes on the branch the fresh read selects. A create that lost a race
-  is then authorized as an update against the winner's controller. After three
-  attempts it answers 503 with `Retry-After`. The client's own preconditions go
-  to the backend as sent, so a 412 answers only a header the client sent. The
-  generation and local segment are embedded in the stored record as reserved
-  `_generation` / `_local` members -- the filesystem backend keeps one file per
-  container (`.space.<id>.json`, `.collection.<id>.json`) holding the wire body
-  and the two together -- and as `meta_generation` / `meta_local` columns on the
-  Postgres `spaces` and `collections` rows, kept out of the wire body. The stamp
-  members are wire members and are stored in the body. An export archive's
-  Metadata entry carries `_generation` alone, since the local segment does not
-  leave this server. The `ETag` is emitted on Read Space / Read Collection and
-  on the Create/Update responses. A Space Metadata write is serialized per Space
-  (the `spacemeta:` lock in the filesystem backend, an advisory lock plus row
-  lock in Postgres) and a Collection Metadata write per Collection (the `cmeta:`
-  lock), so the check and the stamp are atomic. Reads are conditional the other
-  way round: a GET/HEAD carrying `If-None-Match` is parsed by `parseIfNoneMatch`
-  into the set of validators the client holds (RFC 9110 weak comparison, list
-  and `*` forms), and a handler answers 304 Not Modified with the `ETag` and no
-  body when that set covers the current one (`isNotModified`, sent by the shared
+  record of its own, with its own stamp and generation. A `/meta` write mints a
+  stamp on that record only. The content record's stamp and `ETag` do not
+  change, so the Resource's top-level `updatedAt` is the time of its last
+  content write. The filesystem sidecar nests both under its `meta` member, and
+  Postgres keeps them in `meta_` columns. A soft delete drops that record
+  together with `custom`, so a re-create's first metadata write starts a fresh
+  generation and a `/meta` `ETag` held from before the delete cannot pass
+  `If-Match` against it. A hard delete (a chunk, a Space) removes the record, so
+  the next record under the same id mints a new generation and its validators
+  never coincide with the old record's; a client's stale cached `ETag` then
+  matches nothing instead of being answered 304 over different bytes. Delete
+  Collection leaves a tombstone (see the Glossary's Collection tombstone), which
+  keeps the generation and takes the delete's stamp. A create over the tombstone
+  mints a new generation, with the same effect on held validators. A client
+  treats the whole quoted value as opaque, and `If-Match` and `If-None-Match`
+  compare the whole string. Writes are gated by `If-Match` / `If-None-Match: *`,
+  which `parseWritePreconditions` normalizes and the backends evaluate
+  atomically with the write through `preconditions.ts`. The Space and Collection
+  Metadata objects take both: the `If-None-Match: *` guarded create is what
+  resolves two clients provisioning the same Space or Collection at once (the
+  loser's replace-semantics `PUT` would otherwise rewrite the winner's `type`
+  array or `backend`), and it refuses whenever the container already has a
+  Metadata object, `ETag` or not. Update Space (`PUT /space/:spaceId/meta`)
+  chooses its authorization from an unlocked read, so its write passes
+  `writeSpace` an `assertTransition` hook that pins it to that read: the Space
+  must still be absent on a create, and carry the same validator on an update.
+  On a mismatch the handler re-reads and re-authorizes on the branch the fresh
+  read selects. A create that lost a race is then authorized as an update
+  against the winner's controller. After three attempts it answers 503 with
+  `Retry-After`. The client's own preconditions go to the backend as sent, so a
+  412 answers only a header the client sent. The generation and local segment
+  are embedded in the stored record as reserved `_generation` / `_local` members
+  -- the filesystem backend keeps one file per container (`.space.<id>.json`,
+  `.collection.<id>.json`) holding the wire body and the two together -- and as
+  `meta_generation` / `meta_local` columns on the Postgres `spaces` and
+  `collections` rows, kept out of the wire body. The stamp members are wire
+  members and are stored in the body. An export archive's Metadata entry carries
+  `_generation` alone, since the local segment does not leave this server. The
+  `ETag` is emitted on Read Space / Read Collection and on the Create/Update
+  responses. A Space Metadata write is serialized per Space (the `spacemeta:`
+  lock in the filesystem backend, an advisory lock plus row lock in Postgres)
+  and a Collection Metadata write per Collection (the `cmeta:` lock), so the
+  check and the stamp are atomic. Reads are conditional the other way round: a
+  GET/HEAD carrying `If-None-Match` is parsed by `parseIfNoneMatch` into the set
+  of validators the client holds (RFC 9110 weak comparison, list and `*` forms),
+  and a handler answers 304 Not Modified with the `ETag` and no body when that
+  set covers the current one (`isNotModified`, sent by the shared
   `requests/notModified.ts` helper). The decision sits in each read handler,
   after authorization, so an under-authorized conditional read still gets the
   404 mask. A Resource or chunk GET consults the stored metadata first when the
@@ -249,20 +252,23 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   id of its own, so its `id` is the record's absolute URL, and it carries no
   body. Every document carries the record's write stamp, its `generation`, and
   its `etag`, so a puller can decide whether to apply a change from the feed
-  alone. A tombstone is marked `deleted: true`. A consumer skips a `kind` it
-  does not know. A policy write is not in the feed yet. A Collection's own
-  tombstone is not either, since the feed goes with the Collection. The position
-  is assigned inside the per-Collection critical section that makes the write
-  visible, so no write lands at or before a position a reader was already
-  handed. The write stamp each feed document carries orders two revisions of one
-  Resource, not the feed. `updatedAt` alone has no ordering role, since two
-  writes can share a millisecond. The filesystem backend keeps the counter in
-  `.feed.<collectionId>.json` in the Collection dir and stamps the position on
-  the sidecar as `feedPosition`, under a `feed:` key nested inside the
-  per-Resource lock. `changesSince` reads the counter under that key and admits
-  only positions at or below it. The Postgres backend increments
-  `collections.feed_position` with `UPDATE ... RETURNING`, whose row lock is
-  held to commit, so positions are commit-ordered, and stamps
+  alone. A `resource` document also carries the `/meta` record's stamp and
+  generation under `meta`, once metadata was written. A `/meta` write moves the
+  document to a new position with a new `meta` stamp, and its top-level stamp
+  and `etag` stay the content record's. A tombstone is marked `deleted: true`. A
+  consumer skips a `kind` it does not know. A policy write is not in the feed
+  yet. A Collection's own tombstone is not either, since the feed goes with the
+  Collection. The position is assigned inside the per-Collection critical
+  section that makes the write visible, so no write lands at or before a
+  position a reader was already handed. The write stamp each feed document
+  carries orders two revisions of one Resource, not the feed. `updatedAt` alone
+  has no ordering role, since two writes can share a millisecond. The filesystem
+  backend keeps the counter in `.feed.<collectionId>.json` in the Collection dir
+  and stamps the position on the sidecar as `feedPosition`, under a `feed:` key
+  nested inside the per-Resource lock. `changesSince` reads the counter under
+  that key and admits only positions at or below it. The Postgres backend
+  increments `collections.feed_position` with `UPDATE ... RETURNING`, whose row
+  lock is held to commit, so positions are commit-ordered, and stamps
   `resources.feed_position` in the same transaction. A position is one server's
   fact about its own feed: export strips it and import assigns fresh ones. An
   imported Resource with no archived metadata gets fresh metadata, so it takes a

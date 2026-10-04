@@ -108,7 +108,6 @@ Ready:
 - WAS-183 [M] Stamped, tombstoned access-control policies (blocks 2)
 - WAS-189 [M] Write responses carry the record's stamp and provenance, container
   writes included
-- WAS-190 [M] A `/meta`-only write leaves the content record's stamp unchanged
 - WAS-198 [L] Keep peer did:webvh head records and fetch bounds across eviction
   and restart
 
@@ -1927,52 +1926,6 @@ while its response is a `201` naming the second writer. The `ETag` and the stamp
 members are right, since they come from the write. A guarded create (`If-None-Match: *`)
 is unaffected. The Space create paths were not traced; Update Space pins its
 write to its earlier read and may already be covered.
----
-
-### WAS-190: [M] A `/meta`-only write leaves the content record's stamp unchanged
-
-- status: todo
-- priority: medium
-- labels: data-model, etag, changes-feed, filesystem-backend, postgres-backend
-- touches:
-  - wallet-attached-storage-spec: the Update Resource Metadata operation (what
-    it does and does not change), the Resource data model's `updatedAt`
-    definition
-  - was-teaching-server: both backends' `/meta` write path, the sidecar's two
-    stamp sets, `changesSince`, the WAS-96 design doc (an explicit sentence
-    under its decided open point 2), ARCHITECTURE.md
-  - was-sync: WS-23's matrix row for a metadata-only push; freewallet and
-    was-react sort rows by the top-level `updatedAt` and need their own
-    follow-ups
-  - conformance-suite: a case asserting the content `ETag` and `updatedAt`
-    survive a `/meta` write
-- acceptance:
-  - [ ] A `PUT /:id/meta` mints a stamp on the `/meta` record only: the content
-        record's `updatedAt`, `updatedAtCounter`, `originId`, and `ETag` are
-        unchanged by it, in both backends
-  - [ ] The change document a `/meta` write produces carries the unchanged
-        content stamp at the top level and the new stamp under `meta`
-  - [ ] The WAS-96 design doc states the rule in one sentence under open point
-        2, and the spec's Update Resource Metadata text says the operation does
-        not change the content record's `updatedAt` or validator
-  - [ ] Tests in both backends write content, then `/meta`, and assert the
-        content `ETag` and top-level `updatedAt` are byte-equal before and
-        after, while `meta.updatedAt` moved
-
-Context (discovered-from: WAS-96, open point 2; raised by was-sync WS-23's
-review on 2026-10-03). Today the two records share one sidecar with one
-`updatedAt`, and a `/meta` write sets `updatedAt: now` on it. WAS-96's open
-point 2 (decided 2026-10-01) gives the `/meta` record its own nested stamp and
-keeps the content record's `updatedAt` as the top-level member, which implies a
-metadata write no longer moves the content stamp, since otherwise the content
-validator would change on a write that touched no content. The design never
-states it, and a reader of the current server behavior would assume the
-opposite. The consequence for a replication client is visible: an app that bumps
-a row's `updatedAt` on a metadata-only edit and sorts rows by it will see the
-echo put the older content `updatedAt` back. was-sync's WS-23 takes the stamp
-model's answer and points its consumers at the payload's own `updatedAt` for
-sorting; this item makes the server and the spec say it.
-
 ---
 
 ### WAS-198: [L] Keep peer did:webvh head records and fetch bounds across eviction and restart

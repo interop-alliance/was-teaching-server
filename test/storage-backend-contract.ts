@@ -781,6 +781,74 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         // The clearing write still moved the meta stamp.
         assert.equal(etagOf({ ...metadata!.meta }), formatEtag(clearWrite!))
       })
+
+      it('a /meta write leaves the content stamp and ETag byte-equal under a stepped clock', async () => {
+        // Its own backend under a controlled clock. The first /meta write
+        // lands a second after the content write, so a content re-stamp would
+        // show in `updatedAt`. The two /meta writes share one millisecond, so
+        // only the counter tells them apart.
+        const clock = frozenClock()
+        const stepped = await makeBackend({ physicalClock: clock.read })
+        try {
+          const { backend } = stepped
+          await provisionSpace(backend, spaceId)
+          const target = { spaceId, collectionId: 'col', resourceId: 'stamped' }
+          const content = await backend.writeResource({
+            ...target,
+            input: jsonInput({ v: 1 })
+          })
+          const before = await backend.getResourceMetadata(target)
+          assert.ok(before)
+          assert.equal(before.meta, undefined, 'no /meta record yet')
+          assert.equal(Date.parse(before.updatedAt!), clock.now)
+          const contentEtag = etagOf(await backend.getResource(target))
+          assert.equal(contentEtag, formatEtag(content))
+
+          clock.now += 1000
+          const meta1 = await backend.writeResourceMetadata({
+            ...target,
+            custom: { name: 'First' }
+          })
+          assert.ok(meta1)
+          assert.equal(Date.parse(meta1.stamp.updatedAt), clock.now)
+          const afterMeta1 = await backend.getResourceMetadata(target)
+          assert.ok(afterMeta1)
+          // The content record's stamp and generation are untouched.
+          assert.deepEqual(stampOf(afterMeta1), stampOf(before))
+          assert.equal(afterMeta1.generation, before.generation)
+          assert.equal(etagOf(await backend.getResource(target)), contentEtag)
+          // The nested /meta record carries the stamp this write minted.
+          assert.deepEqual(afterMeta1.meta, {
+            generation: meta1.generation,
+            ...meta1.stamp
+          })
+          assert.equal(etagOf({ ...afterMeta1.meta }), formatEtag(meta1))
+
+          const meta2 = await backend.writeResourceMetadata({
+            ...target,
+            custom: { name: 'Second' }
+          })
+          assert.ok(meta2)
+          assert.equal(meta2.generation, meta1.generation)
+          assert.equal(meta2.stamp.updatedAt, meta1.stamp.updatedAt)
+          assert.equal(
+            meta2.stamp.updatedAtCounter,
+            meta1.stamp.updatedAtCounter + 1
+          )
+          assert.notEqual(formatEtag(meta2), formatEtag(meta1))
+          const afterMeta2 = await backend.getResourceMetadata(target)
+          assert.ok(afterMeta2)
+          assert.deepEqual(stampOf(afterMeta2), stampOf(before))
+          assert.equal(afterMeta2.generation, before.generation)
+          assert.equal(etagOf(await backend.getResource(target)), contentEtag)
+          assert.deepEqual(afterMeta2.meta, {
+            generation: meta2.generation,
+            ...meta2.stamp
+          })
+        } finally {
+          await stepped.cleanup()
+        }
+      })
     })
 
     describe('Collection Metadata', () => {
@@ -3883,6 +3951,104 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.ok(doc.meta?.updatedAt)
         assert.deepEqual(doc.data, { n: 2 })
         assert.deepEqual(doc.custom, { name: 'Two' })
+      })
+
+      it('a /meta write moves the Resource to a new position with its content stamp and validator unchanged', async () => {
+        // Its own backend under a controlled clock, so a content re-stamp by
+        // the /meta write would show in `updatedAt`.
+        const clock = frozenClock()
+        const stepped = await makeBackend({ physicalClock: clock.read })
+        try {
+          const { backend } = stepped
+          const collectionId = 'col-meta-feed'
+          await provisionSpace(backend, spaceId, collectionId)
+          const target = { spaceId, collectionId, resourceId: 'r' }
+          await backend.writeResource({ ...target, input: jsonInput({ n: 1 }) })
+          const before = await backend.changesSince!({
+            spaceId,
+            collectionId,
+            limit: 10
+          })
+          const [prior] = resourceDocuments(before.documents)
+          assert.ok(prior)
+          assert.equal(prior.meta, undefined)
+          assert.equal(prior.metaValidator, undefined)
+          const contentEtag = etagOf(await backend.getResource(target))
+          assert.equal(formatEtag(prior.validator!), contentEtag)
+
+          clock.now += 1000
+          const meta1 = await backend.writeResourceMetadata({
+            ...target,
+            custom: { name: 'First' }
+          })
+          assert.ok(meta1)
+          const first = await backend.changesSince!({
+            spaceId,
+            collectionId,
+            afterPosition: before.checkpoint!,
+            limit: 10
+          })
+          assert.equal(first.documents.length, 1)
+          const [moved] = resourceDocuments(first.documents)
+          assert.ok(moved)
+          assert.equal(moved.resourceId, 'r')
+          assert.ok(moved.feedPosition > prior.feedPosition)
+          assert.equal(first.checkpoint, moved.feedPosition)
+          // The top level is the content record, as before the /meta write.
+          assert.deepEqual(stampOf(moved), stampOf(prior))
+          assert.deepEqual(moved.validator, prior.validator)
+          assert.equal(formatEtag(moved.validator!), contentEtag)
+          assert.deepEqual(moved.data, { n: 1 })
+          // The /meta record's new stamp rides under `meta`.
+          assert.deepEqual(moved.meta, {
+            generation: meta1.generation,
+            ...meta1.stamp
+          })
+          assert.equal(formatEtag(moved.metaValidator!), formatEtag(meta1))
+          assert.deepEqual(moved.custom, { name: 'First' })
+
+          // A second /meta write, in the same millisecond, moves it again.
+          const meta2 = await backend.writeResourceMetadata({
+            ...target,
+            custom: { name: 'Second' }
+          })
+          assert.ok(meta2)
+          const second = await backend.changesSince!({
+            spaceId,
+            collectionId,
+            afterPosition: first.checkpoint!,
+            limit: 10
+          })
+          assert.equal(second.documents.length, 1)
+          const [movedAgain] = resourceDocuments(second.documents)
+          assert.ok(movedAgain)
+          assert.ok(movedAgain.feedPosition > moved.feedPosition)
+          assert.deepEqual(stampOf(movedAgain), stampOf(prior))
+          assert.deepEqual(movedAgain.validator, prior.validator)
+          assert.deepEqual(movedAgain.meta, {
+            generation: meta2.generation,
+            ...meta2.stamp
+          })
+          assert.ok(compareStamps(meta2.stamp, meta1.stamp) > 0)
+          assert.equal(formatEtag(movedAgain.metaValidator!), formatEtag(meta2))
+          assert.equal(etagOf(await backend.getResource(target)), contentEtag)
+
+          // One document per record: the full feed holds the Resource once.
+          const full = await backend.changesSince!({
+            spaceId,
+            collectionId,
+            limit: 10
+          })
+          assert.deepEqual(
+            resourceDocuments(full.documents).map(document => [
+              document.resourceId,
+              document.feedPosition
+            ]),
+            [['r', movedAgain.feedPosition]]
+          )
+        } finally {
+          await stepped.cleanup()
+        }
       })
 
       it('skips no write that lands in the checkpoint millisecond', async () => {
