@@ -63,6 +63,17 @@ export class ProblemError extends Error {
 }
 
 /**
+ * Whether an error is a server-side fault: a 5xx `ProblemError`, such as a
+ * storage error. A caller that turns other failures into a denial or a
+ * refusal rethrows one of these, so it keeps its 5xx.
+ * @param err {unknown}
+ * @returns {boolean}
+ */
+export function isServerFault(err: unknown): err is ProblemError {
+  return err instanceof ProblemError && err.statusCode >= 500
+}
+
+/**
  * The one `detail` every masked 404 carries -- the absent-target family below
  * and the authorization-denial family further down alike. It names no entity,
  * so the body of "there is nothing here" and the body of "you may not see what
@@ -648,6 +659,58 @@ export class StoreLockTimeoutError extends Error {
         'Remove it if no other server process uses this data directory.'
     )
     this.name = 'StoreLockTimeoutError'
+  }
+}
+
+/**
+ * Internal signal, never sent: the fetch of a peer server's history log was
+ * refused or failed. The URL was not `https` on the default port, the host
+ * resolved to a non-public address, the host answered a redirect or a status
+ * other than 200, the body crossed the size limit, or the fetch timed out.
+ * The peer resolver records it as the cause of its own refusal.
+ * @param options {object}
+ * @param options.url {string}   the log URL
+ * @param options.detail {string}   what went wrong
+ * @param [options.cause] {unknown}   the underlying failure
+ */
+export class PeerLogFetchError extends Error {
+  constructor({
+    url,
+    detail,
+    cause
+  }: {
+    url: string
+    detail: string
+    cause?: unknown
+  }) {
+    super(`Could not fetch the peer log at "${url}": ${detail}`, { cause })
+    this.name = 'PeerLogFetchError'
+  }
+}
+
+/**
+ * Internal signal, never sent: a peer server's `did:webvh` could not be
+ * resolved over the network. The fetch was refused or failed, the log did not
+ * verify, or the document does not list the requested key. The capability
+ * verifier wraps it as a key it cannot resolve, which answers the masked
+ * `not-found`.
+ * @param options {object}
+ * @param options.did {string}   the peer DID
+ * @param options.detail {string}   what went wrong
+ * @param [options.cause] {unknown}   the underlying failure
+ */
+export class PeerWebvhResolutionError extends Error {
+  constructor({
+    did,
+    detail,
+    cause
+  }: {
+    did: string
+    detail: string
+    cause?: unknown
+  }) {
+    super(`Could not resolve the peer DID "${did}": ${detail}`, { cause })
+    this.name = 'PeerWebvhResolutionError'
   }
 }
 

@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 197
+nextAvailableId: 200
 
 <!-- roadmap-order:index:start -->
 
@@ -14,6 +14,8 @@ item others wait on with its dependents beneath it.
 
 Ready:
 
+- WAS-197 [H] verifyWebvhLog fetches a log's witness file from any host the log
+  names
 - WAS-59 [H] Enforce the reserved-path authorization classes (bounded target
   attenuation)
 - WAS-61 [H] Separate `/policy` control from data writes (exposure test +
@@ -101,8 +103,6 @@ Chains:
 
 Ready:
 
-- WAS-175 [M] Server sync key and verification of a peer's invocations
-  (blocks 2)
 - WAS-178 [M] Read a Space's revocations
 - WAS-180 [M] Delete Space removes revocations before the Space directory
 - WAS-182 [M] Changes feed carries every record kind in the Collection
@@ -111,13 +111,11 @@ Ready:
 - WAS-189 [M] Write responses carry the record's stamp and provenance, container
   writes included
 - WAS-190 [M] A `/meta`-only write leaves the content record's stamp unchanged
+- WAS-198 [L] Keep peer did:webvh head records and fetch bounds across eviction
+  and restart
 
 Chains:
 
-- WAS-175 [M] Server sync key and verification of a peer's invocations
-  - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
-    model)
-  - WAS-176 [M] Replica registration, pull loop, and the apply path
 - WAS-182 [M] Changes feed carries every record kind in the Collection
   - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
     model)
@@ -143,6 +141,7 @@ Chains:
 Ready:
 
 - WAS-196 [M] Bound the cost of accumulated Collection tombstones
+- WAS-199 [L] Verify a peer invoker's delegation chain once
 - WAS-77 [L] Per-Collection filename cache on the filesystem backend
 - WAS-86 [L] Backend-evaluated `If-None-Match` on Resource and chunk reads
 
@@ -251,6 +250,38 @@ derived. `--check` reports without writing.
 An authorization or integrity bound that is weaker than ARCHITECTURE.md or the
 spec claims: a grant that reaches more than it should, an input the server
 trusts without checking, or a configuration that fails open.
+
+### WAS-197: [H] verifyWebvhLog fetches a log's witness file from any host the log names
+
+- status: todo
+- priority: high
+- labels: security, webvh, ssrf, import
+- discovered-from: WAS-175 (adversarial review, 2026-10-03)
+- touches:
+  - was-teaching-server: `src/lib/webvhController.ts` (`verifyWebvhLog`),
+    `src/lib/importProvenance.ts`, `src/lib/webvhLogWrite.ts`, ARCHITECTURE.md
+  - did-method-webvh: filed WEBVH-29 (a no-network setting and bounds on the
+    default witness fetch). The library already takes `fetch` and
+    `witnessProofs`, so this item does not wait on it
+- acceptance:
+  - [ ] `verifyWebvhLog` makes no network request on any path: a log that
+        declares witnesses is verified against proofs the caller supplies, or
+        refused
+  - [ ] The three callers that pass no proofs are covered by a regression test
+        each: the import statement check, the `did.jsonl` append check, and the
+        local controller path
+  - [ ] ARCHITECTURE.md says what a witnessed log does at this server
+
+Context: when `witnessProofs` is omitted, `@interop/did-method-webvh` fetches
+`did-witness.json` with the global `fetch` for a log whose parameters declare a
+witness. That request has no address check, no timeout and no size bound, and it
+follows redirects. The host comes from the DID the log names. An Import Space
+archive carries its own `did.jsonl`, and a `did.jsonl` create is not verified,
+so a Space controller chooses that host in both cases. The peer server path
+already passes an empty proof list, which fails closed. Whether a witnessed
+self-hosted log should verify at all is the decision this item needs.
+
+---
 
 ### WAS-59: [H] Enforce the reserved-path authorization classes (bounded target attenuation)
 
@@ -1507,53 +1538,6 @@ The replication program: a Space served by several primaries with a replicated
 write identity and conflict model. WAS-96 is the umbrella and names the design
 doc; the other items are its sub-items in dependency order.
 
-### WAS-175: [M] [blocks 2] Server sync key and verification of a peer's invocations
-
-- status: todo
-- priority: medium
-- labels: replication, security, zcap, webvh, service-description
-- blocks: WAS-96, WAS-176
-- touches:
-  - was-teaching-server: `src/lib/serverIdentity.ts`, `src/zcap.ts`,
-    `src/lib/webvhController.ts`, `src/serviceDescription.ts`,
-    `docs/admin-guide.md` (a `di` runbook step)
-  - wallet-attached-storage-spec: the service description's `instance` member;
-    the authz profile (a server-identity invoker)
-  - freewallet: delegating the pull capability to a server identity
-- acceptance:
-  - [ ] The one seed key serves export signing and sync invocation; no second
-        key is derived and no `/service` member names it. `resolveServerDid` and
-        the import statement check require the key under `assertionMethod`,
-        permit `capabilityInvocation`, and still refuse `capabilityDelegation`,
-        `authentication` and `keyAgreement`
-  - [ ] The admin guide shows adding `capabilityInvocation` to the key's log
-        entry; that relationship is the switch that enables replication
-  - [ ] The server signs sync invocations with the `did:webvh` method
-        `{serverDid}#{key}`; a controller delegates the pull capability to
-        `serverDid`; a registration on a server with no advertised `serverDid`,
-        or whose log lacks the key under `capabilityInvocation`, is refused
-        naming that
-  - [ ] A foreign `did:webvh` is resolved over the network only when it is the
-        invoker named by a delegated capability whose chain already verified to
-        the Space controller and its path is `space:server:id`; the log is
-        fetched from that host, verified like any log, cached per DID,
-        re-fetched once when a signature names a key the cached document lacks,
-        with a size bound and timeout; any other foreign `did:webvh` stays
-        refused
-  - [ ] Tests cover both signing forms, the bounded fetch, the re-fetch on a key
-        miss, and the refusals
-
-Context (discovered-from: WAS-96, decision 6c). The pulling server's own
-`did:webvh` lives in its `server` Space, which no user controller replicates, so
-the serving server cannot resolve it from storage. The fetch is the first
-network resolution in this server and is bounded by shape and by the
-controller's delegation. WAS-162's findings note covers the general question and
-applies here; this item takes the bounded form only. The `did:key` form is the
-same key, so promoting a peer to its `did:webvh` is a re-delegation, not a
-rotation.
-
----
-
 ### WAS-178: [M] Read a Space's revocations
 
 - status: todo
@@ -1687,13 +1671,13 @@ still held it, a privacy regression rather than a stale record.
 
 ---
 
-### WAS-176: [M] [blocks 4] [after WAS-175, WAS-182, WAS-183] Replica registration, pull loop, and the apply path
+### WAS-176: [M] [blocks 4] [after WAS-182, WAS-183] Replica registration, pull loop, and the apply path
 
 - status: todo
 - priority: medium
 - labels: replication, routes, filesystem-backend, postgres-backend,
   space-metadata
-- blocked-by: WAS-175, WAS-182, WAS-183
+- blocked-by: WAS-182, WAS-183
 - blocks: WAS-96, WAS-177, WAS-179, WAS-184
 - touches:
   - wallet-attached-storage-spec: the replication specification (registration
@@ -1782,7 +1766,7 @@ alive on the surviving server, where the wallet can keep appending.
 
 ---
 
-### WAS-96: [M] [after WAS-175, WAS-176, WAS-177, WAS-182, WAS-183] Multi-primary Spaces (replicated write identity and conflict model)
+### WAS-96: [M] [after WAS-176, WAS-177, WAS-182, WAS-183] Multi-primary Spaces (replicated write identity and conflict model)
 
 - status: todo
 - priority: medium
@@ -1791,7 +1775,7 @@ alive on the surviving server, where the wallet can keep appending.
 - design-approved: 2026-10-02
 - decisions: wallet-attached-storage-spec decisions 0009 to 0013 (contract);
   this repo's decisions/0003 to 0005 (server-internal)
-- blocked-by: WAS-175, WAS-176, WAS-177, WAS-182, WAS-183
+- blocked-by: WAS-176, WAS-177, WAS-182, WAS-183
 - touches:
   - wallet-attached-storage-spec: the Resource data model (the origin stamp
     members and the validator), the `changes` profile (stamp members on the
@@ -2038,6 +2022,49 @@ sorting; this item makes the server and the spec say it.
 
 ---
 
+### WAS-198: [L] Keep peer did:webvh head records and fetch bounds across eviction and restart
+
+- status: todo
+- priority: low
+- labels: security, replication, webvh
+- discovered-from: WAS-175 (adversarial review, 2026-10-03; code review,
+  2026-10-03)
+- acceptance:
+  - [ ] Head records live in their own store with their own limit, well above
+        `PEER_WEBVH_CACHE_MAX`, and each records when it last verified
+  - [ ] A full head store gives a first-contact DID only the slot of a head idle
+        past a set period (about a day); with no idle head the fetch is refused
+        before any request, with a `warn` line, so a peer that keeps pulling is
+        never displaced
+  - [ ] One Space can sponsor only a small number of distinct peer DIDs into the
+        head store, the peer grant carrying the Space id to the resolver
+  - [ ] The last verified head of a peer server DID survives a restart, so an
+        older prefix log stays refused
+  - [ ] The per-host fetch counter cannot be reset by cycling other hosts
+        through its cache
+  - [ ] The peer fetch's DNS lookup has its own timeout and does not hold a
+        libuv threadpool thread past it
+  - [ ] The default fetcher has a test through the pinned agent, covering a
+        mixed-family DNS answer
+
+Context: `src/lib/peerWebvh.ts` keeps heads and per-host counters in LRU caches
+bounded by `PEER_WEBVH_CACHE_MAX`. A Space owner with many hostnames can fill
+either cache and evict a legitimate peer's entry. A hijacked peer host could
+then serve an older log that still lists a retired key. The local resolver's
+head record is in memory too, and a registered peer (WAS-176) is the natural
+place to persist one. The DNS lookup is shared with the CORS proxy, which has
+the same threadpool exposure.
+
+The first three criteria are an in-memory step that can land ahead of
+persistence. Today a full table silently drops the least recently used head.
+Idle reclaim turns that into a logged refusal of new peers, which recovers as
+the junk entries age out. The per-host window does not slow the fill, since each
+subdomain of one wildcard domain counts as a host, which is what the per-Space
+sponsor limit is for. Persistence needs a stored record layout in both backends
+and is the part to design first.
+
+---
+
 ### WAS-184: [L] [after WAS-176] Write-time creation and revision statements
 
 - status: todo
@@ -2133,6 +2160,63 @@ naming the tombstoned ids), so a live listing skips them without opening each
 Metadata file. Another is moving a tombstone out of the Collection directory
 namespace. The Postgres backend filters on the `deleted` column in SQL, so its
 per-request cost is an index question, but its row count grows the same way.
+
+### WAS-199: [L] Verify a peer invoker's delegation chain once
+
+- status: todo
+- priority: low
+- labels: performance, zcap, replication
+- discovered-from: simplify pass over the peer `did:webvh` resolution change
+  (2026-10-04)
+- touches:
+  - zcap (`@interop/zcap`): the invocation purpose accepts a chain the caller
+    already verified and skips its own delegation walk for it. Follow-up item
+    not filed there yet
+  - http-signature-zcap-verify (`@interop/http-signature-zcap-verify`):
+    `verifyCapabilityInvocation` passes that option through. Follow-up item not
+    filed there yet
+  - was-teaching-server: `src/zcap.ts` (`peerInvokerGrant`, `verifyZcap`),
+    ARCHITECTURE.md
+- acceptance:
+  - [ ] `@interop/zcap` takes an already verified chain for the invoked
+        capability and does not verify its delegation proofs or run the chain
+        inspectors a second time. The option is bound to the exact capability
+        that was verified, so a different embedded capability is still verified
+        in full
+  - [ ] `@interop/http-signature-zcap-verify` exposes the option and the server
+        consumes both published versions from npm
+  - [ ] `peerInvokerGrant` hands its verified chain to the verification that
+        follows. A peer request verifies each delegation proof once, makes one
+        revocation lookup per capability, and decodes the embedded capability
+        once
+  - [ ] The roots, attenuation, chain length, delegation TTL, and inspectors are
+        assembled in one place and feed both the pre-pass and the invocation, so
+        a constraint added to one cannot be missed in the other
+  - [ ] A request that is not from a peer DID is verified exactly as before
+  - [ ] Tests in `test/`: a peer invocation runs the revocation lookup once
+        (observable through a counter on `isRevoked`), and a header whose
+        embedded capability differs from the pre-verified one is refused
+
+Context: a peer server DID may invoke a delegated capability on the WAS routes.
+The HTTP-signature verifier resolves the signing key before it reads the
+capability, so `handleZcapVerify` runs a pre-pass first (`peerInvokerGrant`). It
+verifies the embedded delegation chain with local-only resolution, and only then
+lets the verification that follows fetch the peer's log. That verification
+verifies the same chain again, because the zcap library has no way to take a
+chain as already verified. A peer request therefore pays for every delegation
+proof signature, every chain inspector, the revocation storage read, the
+`did:webvh` resolutions, and the gunzip of the embedded capability twice. The
+two runs are serial. Requests from any other invoker are unaffected.
+
+The pre-pass also assembles its own `CapabilityDelegation` purpose by hand,
+beside the one `verifyZcap` builds. A chain constraint added to `verifyZcap`
+alone would let the pre-pass admit a chain, and fetch from the host it names,
+that the invocation then refuses. Sharing one policy object closes that gap and
+is worth doing with or without the library change.
+
+The library option must not weaken verification. It should carry the verified
+chain result itself, keyed to the capability it was computed for, and the
+invocation proof and the invoker-is-controller check still run in full.
 
 ### WAS-77: [L] Per-Collection filename cache on the filesystem backend
 

@@ -131,6 +131,58 @@ export const WEBVH_DOCUMENT_REVERIFY_AGE = 60_000 // milliseconds
 export const WEBVH_DOCUMENT_CACHE_MAX = 1_000
 
 /**
+ * Peer server `did:webvh` resolution (see src/lib/peerWebvh.ts). A peer
+ * server's history log is fetched over the network from its own host, but only
+ * for the invoker of a delegated capability whose chain already verified to the
+ * Space controller. These bound what such a fetch can cost. The fetch timeout
+ * covers the connection and the whole body.
+ */
+export const PEER_WEBVH_FETCH_TIMEOUT_MS = 5_000 // milliseconds
+/**
+ * Max size of a fetched peer history log. The body is read as a stream and the
+ * fetch is aborted at the byte that crosses this size.
+ */
+export const PEER_WEBVH_LOG_MAX_BYTES = 1024 * 1024 // 1 MiB
+/**
+ * How long a verified peer document is served from the cache. Past it the log
+ * is fetched and verified again, so a key the peer's admin retires stops
+ * verifying here within one TTL.
+ */
+export const PEER_WEBVH_CACHE_TTL = 300_000 // milliseconds
+/**
+ * Max number of verified peer documents held at once (LRU-bounded). The
+ * per-DID log heads, the failure records and the per-host fetch records are
+ * bounded by the same number.
+ */
+export const PEER_WEBVH_CACHE_MAX = 256
+/**
+ * The least time between two fetches of one peer log forced by a signature
+ * that names a key the cached document lacks.
+ */
+export const PEER_WEBVH_KEY_MISS_REFETCH_INTERVAL = 60_000 // milliseconds
+/**
+ * How long a failed peer log fetch or verification is remembered. Within it
+ * the DID is refused without another fetch, so a failing host is not asked
+ * again on every request.
+ */
+export const PEER_WEBVH_FAILURE_TTL = 30_000 // milliseconds
+/**
+ * Max number of first-contact peer log fetches to one host within
+ * {@link PEER_WEBVH_HOST_FETCH_WINDOW}: fetches for a DID with no verified
+ * head here. A fetch past it is refused. A DID already verified is refreshed
+ * outside this window, so DIDs nobody verified cannot use it up.
+ */
+export const PEER_WEBVH_HOST_FETCH_LIMIT = 10
+/** The window {@link PEER_WEBVH_HOST_FETCH_LIMIT} counts fetches over. */
+export const PEER_WEBVH_HOST_FETCH_WINDOW = 60_000 // milliseconds
+/**
+ * Max number of peer log fetches running at once, across every host. First
+ * contact fetches and refreshes of already verified DIDs each have this
+ * budget, counted apart. A fetch past it is refused, not queued.
+ */
+export const PEER_WEBVH_MAX_CONCURRENT_FETCHES = 8
+
+/**
  * Access-control policy cache (see src/lib/policyCache.ts). `resolveEffectivePolicy`
  * reads up to three levels (Space, Collection, Resource) on every anonymous
  * read, so each level is memoized per storage backend. Writes invalidate the

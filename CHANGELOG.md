@@ -235,6 +235,23 @@
 - Requires `@interop/storage-core` 0.31.0 (`CollectionTombstoneSummary`) and
   `@interop/space-archive` 0.7.0 (the tombstone archive form).
 
+- A server resolves a peer server's `did:webvh`
+  (`did:webvh:<scid>:<host>:space:server:id`) over the network, only as the
+  invoker of a delegated capability on the WAS routes. The embedded delegation
+  chain must first verify to the Space controller with local resolution, and the
+  invoked capability's sole `controller` must be that DID. The log is fetched
+  from `https://<host>/space/server/id/did.jsonl` and verified. It must extend
+  the last verified head, and a witnessed log is refused. Documents are cached
+  per DID with a TTL. Fetches are bounded by size, timeout, a per-host window,
+  an in-flight limit, and a short failure memory. The default fetcher uses
+  `https` on the default port, follows no redirect, and connects only to public
+  addresses. The `peerLogFetcher` plugin and `createApp` option replaces it in
+  tests. The `PEER_WEBVH_*` constants in `config.default.ts` set the bounds.
+
+- `loadSyncSigner` returns a signer for the server's sync invocations, the seed
+  key as `{serverDid}#{publicKeyMultibase}`, when the server's log lists the key
+  under `capabilityInvocation`. Otherwise it returns a refusal with a reason.
+
 ### Changed
 
 - Delete Collection of an already deleted Collection answers the masked
@@ -381,6 +398,12 @@
   `SELECT ... FOR UPDATE` that already locks the Collection row, so the recheck
   issues no second query. This is a backend contract change.
 
+- The server's seed key may be listed under `capabilityInvocation` as well as
+  `assertionMethod`. `capabilityDelegation`, `authentication` and `keyAgreement`
+  are still refused. This applies to `/service`, export signing and the import
+  statement check. The admin guide gains an "Enabling replication" section and a
+  changed `--purpose` step.
+
 ### Removed
 
 - The `version` and `metaVersion` counters, from sidecars, rows, Metadata files
@@ -394,6 +417,9 @@
   record that the next Space under the same id inherits. Both backends re-check
   the Space Metadata object under the lock Delete Space takes. An insert under a
   Space with no Metadata object is now the masked 404, not a 500.
+- A storage fault met while verifying a delegated chain now answers 5xx. A
+  failed revocation lookup, or a failed read of a delegator's `did:webvh` log,
+  used to answer the masked 404, which a client read as a denial.
 
 ## 0.39.0 - 2026-09-28
 

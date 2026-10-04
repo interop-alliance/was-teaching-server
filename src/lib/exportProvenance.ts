@@ -87,7 +87,9 @@ export interface ExportAttestor {
  * check `/service` makes for `serverDid`). The log snapshot the archive will
  * embed is then read and checked on its own: its head names the same DID, it
  * verifies as that DID's log, and its document lists the export-signing key
- * under `assertionMethod` alone, as the method `{serverDid}#{publicKeyMultibase}`.
+ * as the method `{serverDid}#{publicKeyMultibase}`, under the relationships
+ * `signingKeyRelationshipProblem` allows (`assertionMethod`, and optionally
+ * `capabilityInvocation`).
  * The snapshot is what an importer verifies against, so a log appended between
  * the two reads is judged by the bytes that travel.
  *

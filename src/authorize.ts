@@ -90,7 +90,8 @@ export async function authorize({
         logger: request.log,
         allowTargetQuery,
         attenuatedRootTarget,
-        revocation: { storage, scope: { spaceId } }
+        revocation: { storage, scope: { spaceId } },
+        peerWebvh: request.server.peerWebvh
       })
       return 'capability'
     } catch (err) {

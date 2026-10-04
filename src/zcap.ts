@@ -18,6 +18,16 @@
  * is engaged per verification (never module-global), on every verification
  * the request layer supplies a resolver context to, since a delegated link may
  * be signed by a `did:webvh` method on a `did:key`-controlled Space.
+ *
+ * One foreign `did:webvh` is resolved over the network: a peer server's own
+ * DID (`did:webvh:<scid>:<host>:space:server:id`), as the invoker of a
+ * delegated capability on the WAS routes. The HTTP-signature verifier resolves
+ * the invoker's key before it reads the capability, so `handleZcapVerify`
+ * first verifies the embedded delegation chain without that key
+ * ({@link peerInvokerGrant}). Only a chain that verifies to the Space
+ * controller, and whose invoked capability names the DID as its controller,
+ * lets the verification that follows fetch that one DID's log
+ * (`lib/peerWebvh.ts`).
  */
 import type { IncomingHttpHeaders } from 'node:http'
 import {
@@ -53,7 +63,8 @@ import {
   CapabilityRevokedError,
   InvalidRevocationError,
   ProblemError,
-  UnauthorizedError
+  UnauthorizedError,
+  isServerFault
 } from './errors.js'
 import {
   CAPABILITY_REVOKED_ERROR_NAME,
@@ -70,6 +81,8 @@ import {
   webvhDidResolverDriver,
   type WebvhResolverContext
 } from './lib/webvhController.js'
+import type { PeerWebvhResolver } from './lib/peerWebvh.js'
+import { parsePeerServerWebvh } from './lib/validateDid.js'
 import {
   containerRuleInspector,
   type ContainerRule
@@ -272,21 +285,39 @@ const didResolvers = backendScoped(
  * @returns {ReturnType<typeof createDefaultDidResolver>}
  */
 function didResolverWithWebvh(webvh: WebvhResolverContext) {
+  // A peer grant belongs to one verification. The cached resolver's driver
+  // closes over the context it was built with, so a grant gets a resolver of
+  // its own and is never cached.
+  if (webvh.peer !== undefined) {
+    return buildDidResolver(webvh)
+  }
   const byServerUrl = didResolvers.for(webvh.storage)
   let didResolver = byServerUrl.get(webvh.serverUrl)
   if (!didResolver) {
-    didResolver = createDefaultDidResolver({
-      cache: { memoize: bypassMemoize as LruCache['memoize'] }
-    })
-    // The local driver is the did-io `{ method, get }` shape, minus the key
-    // *generation* half of the interface (this server only ever resolves).
-    didResolver.use(
-      webvhDidResolverDriver(webvh) as unknown as Parameters<
-        typeof didResolver.use
-      >[0]
-    )
+    didResolver = buildDidResolver(webvh)
     byServerUrl.set(webvh.serverUrl, didResolver)
   }
+  return didResolver
+}
+
+/**
+ * Builds a did:key + did:web resolver extended with the local `did:webvh`
+ * driver over `webvh`. See {@link didResolverWithWebvh}.
+ *
+ * @param webvh {WebvhResolverContext}
+ * @returns {ReturnType<typeof createDefaultDidResolver>}
+ */
+function buildDidResolver(webvh: WebvhResolverContext) {
+  const didResolver = createDefaultDidResolver({
+    cache: { memoize: bypassMemoize as LruCache['memoize'] }
+  })
+  // The local driver is the did-io `{ method, get }` shape, minus the key
+  // *generation* half of the interface (this server only ever resolves).
+  didResolver.use(
+    webvhDidResolverDriver(webvh) as unknown as Parameters<
+      typeof didResolver.use
+    >[0]
+  )
   return didResolver
 }
 
@@ -309,8 +340,10 @@ async function webvhVerifier({
   webvh: WebvhResolverContext
   keyId: string
 }) {
-  const [did] = keyId.split('#')
-  const doc = await resolveWebvhController({ ...webvh, did: did! })
+  const [did = ''] = keyId.split('#')
+  // A peer DID's resolver may fetch its log once more when the cached
+  // document lacks the key; a local log is re-read on every write instead.
+  const doc = await resolveWebvhController({ ...webvh, did, keyId })
   const method = (doc.verificationMethod ?? []).find(
     entry => entry.id === keyId
   )
@@ -376,7 +409,7 @@ function createGetVerifier({ webvh }: { webvh?: WebvhResolverContext } = {}) {
     } catch (err) {
       // A server-side fault met while resolving (a storage error under the
       // did:webvh log read) is not the client's doing and keeps its 5xx.
-      if (err instanceof ProblemError && err.statusCode >= 500) {
+      if (isServerFault(err)) {
         throw err
       }
       throw keyResolutionError({ keyId, cause: err as Error })
@@ -580,6 +613,12 @@ export function verifiedRootInvocation({
  *   root included (see `verifyZcap`)
  * @param [options.maxDelegationTtl] {number}   max delegated-zcap TTL in
  *   milliseconds (see `verifyZcap`)
+ * @param [options.peerWebvh] {PeerWebvhResolver}   lets a peer server's
+ *   `did:webvh` invoke a delegated capability here: when the request is
+ *   signed by one, its delegation chain is verified first
+ *   ({@link peerInvokerGrant}), and only a chain that verifies lets this
+ *   resolver fetch the DID's log. Passed by the WAS route families; requires
+ *   `webvh`.
  * @returns {Promise<VerifyCapabilityInvocationResult>}   the successful
  *   verification result (callers needing the dereferenced chain, e.g. the
  *   per-key `maxCapabilityChainLength` gate, read it from here)
@@ -601,7 +640,8 @@ export async function handleZcapVerify({
   revocation,
   maxChainLength,
   maxDelegationTtl,
-  containerRule
+  containerRule,
+  peerWebvh
 }: {
   url: string
   allowedTarget: string
@@ -621,6 +661,7 @@ export async function handleZcapVerify({
   maxChainLength?: number
   maxDelegationTtl?: number
   containerRule?: ContainerRule
+  peerWebvh?: PeerWebvhResolver
 }): Promise<VerifyCapabilityInvocationResult> {
   // The `controller-only` container rule turns on nothing but whether the
   // `Capability-Invocation` header embeds a delegated capability, so it is
@@ -681,6 +722,29 @@ export async function handleZcapVerify({
   ]
   const inspectCapabilityChain =
     inspectors.length > 0 ? composeChainInspectors(inspectors) : undefined
+  // The peer pre-pass. Without a grant a foreign did:webvh invoker stays
+  // unresolvable, and the verification below answers the masked `not-found`.
+  const peerDid =
+    peerWebvh !== undefined && webvh !== undefined
+      ? await peerInvokerGrant({
+          headers,
+          serverUrl,
+          spaceController,
+          webvh,
+          rootsFor: () =>
+            expectedRoots({
+              allowedTarget,
+              fullRequestUrl: new URL(url, serverUrl).toString(),
+              allowTargetQuery,
+              allowTargetAttenuation,
+              attenuatedRootTarget
+            }),
+          inspectCapabilityChain,
+          maxChainLength,
+          maxDelegationTtl,
+          logger
+        })
+      : undefined
   return verifiedOrThrow({
     verify: () =>
       verifyZcap({
@@ -691,7 +755,10 @@ export async function handleZcapVerify({
         headers,
         serverUrl,
         spaceController,
-        webvh,
+        webvh:
+          peerDid !== undefined
+            ? { ...webvh!, peer: { did: peerDid, resolver: peerWebvh! } }
+            : webvh,
         allowTargetQuery,
         allowTargetAttenuation,
         attenuatedRootTarget,
@@ -806,6 +873,7 @@ function denialError({
  * key (see {@link KEY_RESOLUTION_ERROR_NAME}), which is the masked
  * `UnauthorizedError` (404) instead, or is a 5xx `ProblemError` from a
  * storage fault, which is rethrown as is -- and a result that did not verify becomes
+ * the same 5xx when a storage fault is behind it ({@link serverFaultIn}), or
  * the 404 denial `denialError` picks (`capability-revoked`,
  * `capability-expired`, or the masked `UnauthorizedError`). Shared by
  * `handleZcapVerify` and
@@ -849,16 +917,249 @@ async function verifiedOrThrow({
     // A server-side fault (a storage error under a did:webvh log read) is
     // neither a client error nor a denial: it keeps its 5xx, which
     // `handleError` logs with its cause.
-    if (err instanceof ProblemError && err.statusCode >= 500) {
+    if (isServerFault(err)) {
       throw err
     }
     logger.error({ err }, failureMessage)
     throw new AuthVerificationError({ requestName, cause: err as Error })
   }
   if (!zcapVerifyResult.verified) {
+    // The verifier catches a fault raised under a document loader or a chain
+    // inspector and hands it back here. It keeps its 5xx too.
+    const fault = serverFaultIn({ error: zcapVerifyResult.error })
+    if (fault !== undefined) {
+      throw fault
+    }
     throw denialError({ error: zcapVerifyResult.error, headers, requestName })
   }
   return zcapVerifyResult
+}
+
+/**
+ * The server-side fault behind a verification that did not verify, when there
+ * is one: a 5xx `ProblemError` such as a storage error under a `did:webvh`
+ * log read or a revocation lookup. The verifier does not throw for a fault
+ * raised by a document loader or a chain inspector. It returns the fault as
+ * the result's `error`, bare, among a `VerificationError`'s `errors`, or as a
+ * `cause`, so all three are read.
+ * @param options {object}
+ * @param [options.error] {unknown}   the verify result's `error`
+ * @param [options.depth] {number}   how deep this call is in the walk
+ * @returns {ProblemError | undefined}
+ */
+function serverFaultIn({
+  error,
+  depth = 0
+}: {
+  error?: unknown
+  depth?: number
+}): ProblemError | undefined {
+  if (!(error instanceof Error) || depth > 4) {
+    return undefined
+  }
+  if (isServerFault(error)) {
+    return error
+  }
+  const { errors } = error as { errors?: unknown }
+  const nested = [...(Array.isArray(errors) ? errors : []), error.cause]
+  for (const inner of nested) {
+    const fault = serverFaultIn({ error: inner, depth: depth + 1 })
+    if (fault !== undefined) {
+      return fault
+    }
+  }
+  return undefined
+}
+
+/**
+ * The root capabilities an invocation may root in, and whether its target may
+ * attenuate. Shared by {@link verifyZcap} and the peer pre-pass, so the chain
+ * the pre-pass admits roots where the invocation's own verification requires.
+ *
+ * With any of the attenuation options set, the acceptable roots are the
+ * ancestor's root capability (a delegated chain rooted at e.g. the Space URL,
+ * narrowing to the request URL), the `allowedTarget`'s own (a root invocation,
+ * or a delegated chain for the exact target), and, under `allowTargetQuery`,
+ * the query-bearing request URL's own (a controller invoking the query URL
+ * directly). Under `allowTargetAttenuation` alone that leaves
+ * `allowedTarget`'s own as the only acceptable root: a path-extended request
+ * URL is never itself one. A one-element list is matched exactly as the bare
+ * string form the option also accepts. With none set, `allowedTarget`'s own
+ * root is the only one.
+ *
+ * @param options {object}
+ * @param options.allowedTarget {string}
+ * @param options.fullRequestUrl {string}   the absolute request URL
+ * @param options.allowTargetQuery {boolean}
+ * @param options.allowTargetAttenuation {boolean}
+ * @param [options.attenuatedRootTarget] {string}
+ * @returns {{ rootCapabilities: string[], attenuates: boolean }}
+ */
+function expectedRoots({
+  allowedTarget,
+  fullRequestUrl,
+  allowTargetQuery,
+  allowTargetAttenuation,
+  attenuatedRootTarget
+}: {
+  allowedTarget: string
+  fullRequestUrl: string
+  allowTargetQuery: boolean
+  allowTargetAttenuation: boolean
+  attenuatedRootTarget?: string
+}): { rootCapabilities: string[]; attenuates: boolean } {
+  const attenuates = Boolean(
+    allowTargetQuery || attenuatedRootTarget || allowTargetAttenuation
+  )
+  if (!attenuates) {
+    return { rootCapabilities: [rootCapabilityId(allowedTarget)], attenuates }
+  }
+  const rootTargets = [
+    ...(attenuatedRootTarget ? [attenuatedRootTarget] : []),
+    allowedTarget,
+    ...(allowTargetQuery ? [fullRequestUrl] : [])
+  ]
+  return {
+    rootCapabilities: [...new Set(rootTargets.map(rootCapabilityId))],
+    attenuates
+  }
+}
+
+/**
+ * The peer pre-pass: decides whether this verification may resolve the
+ * request's signing DID over the network, before anything resolves it. The
+ * HTTP-signature verifier resolves the signing key before it reads the
+ * capability, so a fetch made there would be an unauthenticated request to
+ * any host a request names. This runs first, and issues a grant only when:
+ *
+ * - the signing keyId's DID is a peer server DID on another host
+ *   (`parsePeerServerWebvh`);
+ * - the invocation embeds a delegated capability (a root invocation by a
+ *   foreign DID never fetches, nor does a header that also carries an `id`)
+ *   whose `controller` is exactly that DID;
+ * - that capability's delegation chain verifies to the Space controller,
+ *   through the same roots and chain inspectors (revocation, client-annex
+ *   clause, container rule) the invocation's own verification applies.
+ *
+ * The chain is verified here with the local resolver alone, so every
+ * delegation link must be signed by a key this server resolves without a
+ * fetch. A peer DID may invoke, and may not delegate. The invocation's own
+ * verification decodes the same header, so it sees the same chain.
+ *
+ * A request that fails any check gets no grant and causes no fetch. Its
+ * signing key then stays unresolvable, which the verification answers with
+ * the masked `not-found`.
+ *
+ * @param options {object}
+ * @param options.headers {IncomingHttpHeaders}   the request headers
+ * @param options.serverUrl {string}   this server's base URL
+ * @param options.spaceController {IDID}   the controller of the root
+ * @param options.webvh {WebvhResolverContext}   the local resolver context
+ * @param options.rootsFor {Function}   computes the roots the invocation may
+ *   root in ({@link expectedRoots}), called only once a chain is to be
+ *   verified
+ * @param [options.inspectCapabilityChain] {InspectCapabilityChain}   the
+ *   invocation's chain inspectors
+ * @param [options.maxChainLength] {number}   max chain length, root included
+ * @param [options.maxDelegationTtl] {number}   max delegated-zcap TTL (ms)
+ * @param options.logger {ZcapLogger}   logs a refused chain at debug
+ * @returns {Promise<string | undefined>}   the DID the grant names, or
+ *   `undefined` when the request earns none
+ */
+async function peerInvokerGrant({
+  headers,
+  serverUrl,
+  spaceController,
+  webvh,
+  rootsFor,
+  inspectCapabilityChain,
+  maxChainLength,
+  maxDelegationTtl,
+  logger
+}: {
+  headers: IncomingHttpHeaders
+  serverUrl: string
+  spaceController: IDID
+  webvh: WebvhResolverContext
+  rootsFor: () => { rootCapabilities: string[]; attenuates: boolean }
+  inspectCapabilityChain?: InspectCapabilityChain
+  maxChainLength?: number
+  maxDelegationTtl?: number
+  logger: ZcapLogger
+}): Promise<string | undefined> {
+  let did: string
+  let capability: { controller?: unknown }
+  try {
+    const { keyId } = parseSignatureHeader(headers.authorization ?? '').params
+    if (typeof keyId !== 'string') {
+      return undefined
+    }
+    did = keyId.split('#')[0] ?? ''
+    if (parsePeerServerWebvh(did, { serverUrl }) === undefined) {
+      return undefined
+    }
+    const invocation = capabilityInvocationHeader({ headers })
+    if (isRootInvocation({ invocation })) {
+      return undefined
+    }
+    const { params } = parseSignatureHeader(invocation)
+    // The verifier reads `id` first and runs a header carrying both as a
+    // root invocation, so the chain verified here would not be the one it
+    // checks.
+    if (params.id !== undefined) {
+      return undefined
+    }
+    const encoded = params.capability
+    if (typeof encoded !== 'string') {
+      return undefined
+    }
+    capability = decodeEmbeddedCapability({ encoded }) as {
+      controller?: unknown
+    }
+  } catch {
+    return undefined
+  }
+  const controllers = [capability.controller].flat()
+  if (controllers.length !== 1 || controllers[0] !== did) {
+    return undefined
+  }
+  const documentLoader = rootCapabilityLoader({
+    controllerFor: () => spaceController,
+    webvh
+  })
+  const suite = delegationProofSuites()
+  const expected = rootsFor()
+  let result: { verified: boolean; error?: Error }
+  try {
+    result = (await jsigs.verify(capability, {
+      documentLoader,
+      suite,
+      purpose: new CapabilityDelegation({
+        suite,
+        expectedRootCapability: expected.rootCapabilities,
+        allowTargetAttenuation: expected.attenuates,
+        maxChainLength,
+        maxDelegationTtl,
+        inspectCapabilityChain
+      })
+    })) as { verified: boolean; error?: Error }
+  } catch (err) {
+    result = { verified: false, error: err as Error }
+  }
+  if (!result.verified) {
+    // A storage fault keeps its 5xx, as on the invocation's own path. The
+    // verifier hands a loader or inspector fault back in the result.
+    const fault = serverFaultIn({ error: result.error })
+    if (fault !== undefined) {
+      throw fault
+    }
+    logger.debug(
+      { err: result.error, did },
+      'A peer invoker chain did not verify; the peer log is not fetched.'
+    )
+    return undefined
+  }
+  return did
 }
 
 /**
@@ -961,26 +1262,19 @@ export async function verifyZcap({
   maxDelegationTtl?: number
 }): Promise<VerifyCapabilityInvocationResult> {
   const fullRequestUrl = new URL(url, serverUrl).toString()
+  const roots = expectedRoots({
+    allowedTarget,
+    fullRequestUrl,
+    allowTargetQuery,
+    allowTargetAttenuation,
+    attenuatedRootTarget
+  })
   let expected
-  if (allowTargetQuery || attenuatedRootTarget || allowTargetAttenuation) {
-    // The acceptable roots: the ancestor's root capability (a delegated chain
-    // rooted at e.g. the Space URL, narrowing to the request URL), the
-    // `allowedTarget`'s own (a root invocation, or a delegated chain for the
-    // exact target -- the pre-existing shapes, unchanged), and, under
-    // `allowTargetQuery`, the query-bearing request URL's own (a controller
-    // invoking the query URL directly). Under `allowTargetAttenuation` alone
-    // that leaves `allowedTarget`'s own as the only acceptable root: a
-    // path-extended request URL is never itself one. A one-element list is
-    // matched exactly as the bare string form the option also accepts.
-    const rootTargets = [
-      ...(attenuatedRootTarget ? [attenuatedRootTarget] : []),
-      allowedTarget,
-      ...(allowTargetQuery ? [fullRequestUrl] : [])
-    ]
+  if (roots.attenuates) {
     expected = {
       expectedAction: allowedAction,
       expectedHost: new URL(serverUrl).host,
-      expectedRootCapability: [...new Set(rootTargets.map(rootCapabilityId))],
+      expectedRootCapability: roots.rootCapabilities,
       // The proof's invocationTarget is the invoked URL: `allowedTarget`
       // itself, a path under it (accepted as a RESTful attenuation), or
       // (under `allowTargetQuery`) the query-bearing request URL.

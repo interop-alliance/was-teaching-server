@@ -210,7 +210,8 @@ controller: a `did:webvh` DID whose document lists the key the server will sign
 export archives with. Both are published on `GET /service` under `instance`
 (`exportSigningKey`, `serverDid`). Once the identity is provisioned, every Space
 export carries signed provenance (see Signed exports below). Until then exports
-are unsigned.
+are unsigned. The same key signs the server's invocations when it replicates a
+Space from a peer, once the log allows it (see Enabling replication below).
 
 **Three secrets, two holders.** The server holds one secret, the seed its
 signing key is derived from (`WAS_SERVER_KEY_SEED`). The administrator holds the
@@ -324,9 +325,12 @@ wallet handles `admin` (the admin `did:key`), `server` (the `server` Space) and
      --vm-id-fragment multibase --save --handle server-id
    ```
 
-   Pass `--purpose assertionMethod` alone. Any other relationship on the server
-   key withdraws `serverDid`, because the server refuses to advertise a key that
-   could invoke or delegate.
+   `assertionMethod` is required. The one other relationship the server key may
+   hold is `capabilityInvocation`, which enables replication. To enable it from
+   the start, pass `--purpose assertionMethod capabilityInvocation` instead. Any
+   other relationship (`capabilityDelegation`, `authentication`, `keyAgreement`)
+   withdraws `serverDid`, because the server refuses to advertise a key that
+   could delegate.
 
 7. Store the log. Always pass `--content-type text/jsonl`:
 
@@ -381,7 +385,7 @@ one, so the SCID and the DID stay the same.
    di did webvh replace-key server-id --verification-key <new multibase> -y
    ```
 
-   This appends one entry. It lists the new key under the same relationship and
+   This appends one entry. It lists the new key under the same relationships and
    drops the old method. The update key advances as part of the same entry. The
    fast-forward check runs first, so the server must be reachable.
 
@@ -390,6 +394,36 @@ one, so the SCID and the DID stay the same.
 
 Archives signed under the old key keep verifying against the log epoch their
 envelope names.
+
+### Enabling replication
+
+A server replicates a Space from a peer by invoking a capability the Space's
+controller delegated to its `serverDid`. It signs that invocation with the seed
+key, as the same method `{serverDid}#{publicKeyMultibase}` it signs exports
+with. The peer checks the signature against this server's log, so the key must
+be listed there under `capabilityInvocation`, beside `assertionMethod`. That
+relationship is the switch that enables replication. Without it, or without an
+advertised `serverDid`, the server has no sync signer, and a replica
+registration is refused naming which of the two is missing. There is no second
+key, and `/service` names none. The DID is the advertisement.
+
+To add the relationship to an identity provisioned without it, append an entry
+that lists the key under both relationships. `di` has no command that changes
+the relationships of a listed key in place: `replace-key` refuses the key the
+document already lists. So the entry is appended as part of a seed rotation.
+Follow "Rotating the seed", and at its step 3 pass both relationships:
+
+```bash
+di did webvh replace-key server-id --verification-key <new multibase> \
+  --purpose assertionMethod capabilityInvocation -y
+```
+
+Then store the log and check `serverDid` as in steps 4 and 5. A later
+`replace-key` without `--purpose` keeps both relationships.
+
+A controller delegates to `serverDid`, not to the key. Rotating the seed
+therefore needs no re-delegation: existing grants verify against the new key
+once the log lists it.
 
 ### Rotating the update key
 
@@ -440,6 +474,15 @@ di did show server-id --meta --json | jq -r .versionId
 
 Archives whose envelope names an earlier epoch were signed by a key the attacker
 may have held. Treat the ones made from the time of the leak onward as suspect.
+
+When replication is enabled, the same key signs sync invocations, so the
+attacker can also invoke every capability delegated to `serverDid`. Retiring a
+stolen sync key means rotating the seed, which rotates the export key too. There
+is no way to retire one role and keep the other. `replace-key` keeps the key's
+relationships, so replication stays enabled under the new key. To disable it in
+the same step, pass `--purpose assertionMethod`. Peers cache the server's
+document, so the old key can keep verifying there for a while after the
+rotation.
 
 #### Leaked update key
 

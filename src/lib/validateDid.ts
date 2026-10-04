@@ -10,7 +10,12 @@
  *   whose embedded host is this server. Its history log lives at
  *   `<host>/space/<spaceId>/<collectionId>/did.jsonl`, so it resolves from
  *   local storage and never over the network. A cross-host `did:webvh`, a
- *   `did:web`, and every other DID method stay refused.
+ *   `did:web`, and every other DID method stay refused as controllers.
+ *
+ * A third parser, {@link parsePeerServerWebvh}, recognizes a peer server's own
+ * `did:webvh` on another host. It is never a controller shape. The capability
+ * verifier uses it to decide whether a delegated invocation's signer is a peer
+ * whose log it may fetch.
  *
  * Both are syntactic checks at the request layer, so a malformed or
  * unsupported controller is rejected on the way in, rather than being stored
@@ -124,6 +129,79 @@ export function parseSelfHostedWebvh(
     return undefined
   }
   return { scid, spaceId, collectionId }
+}
+
+/**
+ * The method-specific path of a peer server's own `did:webvh`: the `id`
+ * Collection of its `server` Space, where the server publishes its history log.
+ */
+const PEER_SERVER_DID_PATH = 'space:server:id'
+
+/**
+ * A DNS host name of two or more labels, in lower case, with no port. Each
+ * label is letters, digits and inner hyphens. The last label must start with a
+ * letter, so an IPv4 literal does not match. A `%` cannot occur, so the
+ * percent-encoded port (`%3A`) a `did:webvh` domain component can carry is
+ * refused.
+ */
+const PEER_HOST_PATTERN =
+  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+
+/**
+ * Parses a peer server's own `did:webvh`, or returns `undefined` when `value`
+ * is not one. The only accepted form is
+ * `did:webvh:<scid>:<host>:space:server:id`, where `<host>` is a DNS name with
+ * no port, and is not this server's own host. A DID on this server's host
+ * resolves through the local resolver ({@link parseSelfHostedWebvh}), and
+ * every other foreign `did:webvh` is refused.
+ *
+ * This shape alone grants nothing. The capability verifier fetches such a DID's
+ * log only for the invoker of a delegated capability whose chain it already
+ * verified to the Space controller.
+ *
+ * @param value {unknown}   the candidate DID
+ * @param options {object}
+ * @param options.serverUrl {string}   this server's base URL
+ * @returns {{ scid: string, host: string } | undefined}
+ */
+export function parsePeerServerWebvh(
+  value: unknown,
+  { serverUrl }: { serverUrl: string }
+): { scid: string; host: string } | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  // `did`, `webvh`, scid, host, then the three path segments.
+  const segments = value.split(':')
+  if (segments.length !== 7) {
+    return undefined
+  }
+  const [scheme, method, scid, host] = segments as [
+    string,
+    string,
+    string,
+    string
+  ]
+  if (scheme !== 'did' || method !== 'webvh') {
+    return undefined
+  }
+  if (segments.slice(4).join(':') !== PEER_SERVER_DID_PATH) {
+    return undefined
+  }
+  if (!SCID_PATTERN.test(scid)) {
+    return undefined
+  }
+  if (host.length > 253 || !PEER_HOST_PATTERN.test(host)) {
+    return undefined
+  }
+  const ownUrl = new URL(serverUrl)
+  if (
+    host === ownUrl.hostname.toLowerCase() ||
+    host === ownUrl.host.toLowerCase()
+  ) {
+    return undefined
+  }
+  return { scid, host }
 }
 
 /**

@@ -1,0 +1,1042 @@
+/**
+ * Network resolution of a peer server's `did:webvh` (Vitest).
+ *
+ * A Space controller delegates a capability to a peer server's own DID,
+ * `did:webvh:<scid>:<host>:space:server:id`, and the peer invokes it signing
+ * as `{peerDid}#{key}`. The serving server fetches the peer's log from
+ * `https://<host>/space/server/id/did.jsonl`, but only once the delegation
+ * chain naming that DID as invoker has verified to the Space controller.
+ *
+ * The peer log fetch goes through the injected `peerLogFetcher`, which serves
+ * minted logs from memory and counts every fetch, so the suite can assert
+ * both what verifies and what never causes a fetch. The tunables are lowered
+ * through a mock of the config module, so the TTL and timeout cases run in
+ * well under a few seconds. The default fetcher's own bounds (scheme, port,
+ * address ranges, redirects, size, timeout) are unit-tested at the end.
+ */
+import { it, describe, beforeAll, afterAll, vi } from 'vitest'
+import assert from 'node:assert'
+import { randomUUID } from 'node:crypto'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import type { FastifyInstance } from 'fastify'
+import { Agent } from 'undici'
+import {
+  createDID,
+  logToJsonlString,
+  updateDID
+} from '@interop/did-method-webvh'
+import type { DIDLog, Signer } from '@interop/did-method-webvh'
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
+import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
+import { ProblemTypes } from '@interop/storage-core'
+
+import { spaceRevocationsPath } from '../src/lib/paths.js'
+import { parsePeerServerWebvh } from '../src/lib/validateDid.js'
+import {
+  assertPublicAddresses,
+  checkPeerLogUrl,
+  fetchPeerLog,
+  readBoundedResponse,
+  type PeerLogFetcher
+} from '../src/lib/peerWebvh.js'
+import {
+  client,
+  delegate,
+  openTempBackend,
+  requestError,
+  rootZcap,
+  startTestServer,
+  webvhLogSigner,
+  zcapClients
+} from './helpers.js'
+
+vi.mock('../src/config.default.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../src/config.default.js')>()),
+  PEER_WEBVH_CACHE_TTL: 1_500,
+  PEER_WEBVH_FAILURE_TTL: 60_000,
+  PEER_WEBVH_FETCH_TIMEOUT_MS: 1_000,
+  PEER_WEBVH_LOG_MAX_BYTES: 32 * 1024,
+  PEER_WEBVH_HOST_FETCH_LIMIT: 3,
+  PEER_WEBVH_MAX_CONCURRENT_FETCHES: 2
+}))
+
+/**
+ * A minted peer server identity on a fake host, with the log the injected
+ * fetcher currently serves for it.
+ */
+interface Peer {
+  host: string
+  did: string
+  log: DIDLog
+  logSigner: Signer
+  keyPair: Ed25519VerificationKey
+}
+
+/**
+ * Sleeps for `ms` milliseconds.
+ * @param ms {number}
+ * @returns {Promise<void>}
+ */
+async function sleep(ms: number): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/**
+ * A promise the test settles by hand, to hold an injected fetch open.
+ * @returns {{ promise: Promise<void>, open: () => void }}
+ */
+function gate(): { promise: Promise<void>; open: () => void } {
+  let open = () => {}
+  const promise = new Promise<void>(resolve => {
+    open = resolve
+  })
+  return { promise, open }
+}
+
+/**
+ * Waits until `check` holds, polling, for at most two seconds.
+ * @param check {() => boolean}
+ * @returns {Promise<void>}
+ */
+async function until(check: () => boolean): Promise<void> {
+  const deadline = performance.now() + 2_000
+  while (!check()) {
+    assert.ok(performance.now() < deadline, 'the condition never held')
+    await sleep(10)
+  }
+}
+
+/**
+ * Lists `keyPair` in a log entry under `purpose`, in the shape `createDID`
+ * and `updateDID` take.
+ * @param keyPair {Ed25519VerificationKey}
+ * @param purpose {string[]}
+ * @returns {object}
+ */
+function methodOf(keyPair: Ed25519VerificationKey, purpose: string[]) {
+  return {
+    type: 'Multikey',
+    publicKeyMultibase: keyPair.publicKeyMultibase!,
+    purpose
+  }
+}
+
+/**
+ * Sets a key pair's id and controller to a method of `did`.
+ * @param keyPair {Ed25519VerificationKey}
+ * @param did {string}
+ * @returns {Ed25519VerificationKey}
+ */
+function bindKey(
+  keyPair: Ed25519VerificationKey,
+  did: string
+): Ed25519VerificationKey {
+  keyPair.id = `${did}#${keyPair.publicKeyMultibase}`
+  keyPair.controller = did
+  return keyPair
+}
+
+describe('peer server did:webvh resolution', () => {
+  let fastify: FastifyInstance, serverUrl: string, alice: any, bob: any
+
+  /**
+   * What the injected fetcher serves, by URL. A function value lets a case
+   * stall or misbehave.
+   */
+  const served = new Map<
+    string,
+    | Uint8Array
+    | ((options: { maxBytes: number; signal: AbortSignal }) => Promise<any>)
+  >()
+  /**
+   * Every URL the injected fetcher was asked for, in order.
+   */
+  const fetched: string[] = []
+  const peerLogFetcher: PeerLogFetcher = async ({ url, maxBytes, signal }) => {
+    fetched.push(url)
+    const answer = served.get(url)
+    if (answer === undefined) {
+      throw new Error(`No peer log is served at ${url}.`)
+    }
+    if (typeof answer === 'function') {
+      return await answer({ maxBytes, signal })
+    }
+    return answer
+  }
+
+  const spaceId = randomUUID()
+  let spaceUrl: string, docUrl: string
+
+  beforeAll(async () => {
+    ;({ fastify, serverUrl } = await startTestServer({
+      backend: await openTempBackend(),
+      peerLogFetcher
+    }))
+    ;({ alice, bob } = await zcapClients({ serverUrl }))
+    spaceUrl = new URL(`/space/${spaceId}/`, serverUrl).toString()
+    docUrl = new URL(
+      `/space/${spaceId}/credentials/doc-1`,
+      serverUrl
+    ).toString()
+    const space = alice.was.space(spaceId)
+    await space.configure({ name: 'Replicated Space', controller: alice.did })
+    await space.collection('credentials').configure({ force: true })
+    await space.collection('credentials').put('doc-1', { hello: 'world' })
+  })
+  afterAll(async () => {
+    await fastify.close()
+  })
+
+  /**
+   * The number of fetches made for one URL.
+   * @param url {string}
+   * @returns {number}
+   */
+  function fetchesOf(url: string): number {
+    return fetched.filter(entry => entry === url).length
+  }
+
+  /**
+   * The peer log URL the server fetches for a host.
+   * @param host {string}
+   * @returns {string}
+   */
+  function logUrlOf(host: string): string {
+    return `https://${host}/space/server/id/did.jsonl`
+  }
+
+  /**
+   * Serves a peer's current log through the injected fetcher.
+   * @param peer {Peer}
+   * @returns {void}
+   */
+  function publish(peer: Peer): void {
+    served.set(
+      logUrlOf(peer.host),
+      new TextEncoder().encode(logToJsonlString(peer.log))
+    )
+  }
+
+  /**
+   * Mints a peer server identity at `address` and serves its log.
+   * @param options {object}
+   * @param options.host {string}   the fake host the log is served for
+   * @param [options.path] {string}   the DID path, `space/server/id` by default
+   * @param [options.purpose] {string[]}   the relationships the key is under
+   * @param [options.address] {string}   overrides the address the DID is minted at
+   * @param [options.witness] {object}   the log's `witness` parameter
+   * @returns {Promise<Peer>}
+   */
+  async function mintPeer({
+    host,
+    path = 'space/server/id',
+    purpose = ['assertionMethod', 'capabilityInvocation'],
+    address = `https://${host}/${path}`,
+    witness
+  }: {
+    host: string
+    path?: string
+    purpose?: string[]
+    address?: string
+    witness?: { threshold: number; witnesses: { id: string }[] }
+  }): Promise<Peer> {
+    const updateKeyPair = await Ed25519VerificationKey.generate()
+    const logSigner = webvhLogSigner({ keyPair: updateKeyPair })
+    const keyPair = await Ed25519VerificationKey.generate()
+    const created = await createDID({
+      address,
+      signer: logSigner,
+      updateKeys: [updateKeyPair.publicKeyMultibase!],
+      vmIdFragment: 'multibase',
+      verificationMethods: [methodOf(keyPair, purpose)] as any,
+      ...(witness !== undefined && { witness })
+    })
+    const peer = {
+      host,
+      did: created.did,
+      log: created.log,
+      logSigner,
+      keyPair: bindKey(keyPair, created.did)
+    }
+    publish(peer)
+    return peer
+  }
+
+  /**
+   * Appends a log entry listing exactly `keyPairs` under the peer key's
+   * relationships, and serves the longer log.
+   * @param peer {Peer}
+   * @param keyPairs {Ed25519VerificationKey[]}
+   * @returns {Promise<void>}
+   */
+  async function rotate(
+    peer: Peer,
+    keyPairs: Ed25519VerificationKey[]
+  ): Promise<void> {
+    const updated = await updateDID({
+      log: peer.log,
+      signer: peer.logSigner,
+      vmIdFragment: 'multibase',
+      verificationMethods: keyPairs.map(keyPair =>
+        methodOf(keyPair, ['assertionMethod', 'capabilityInvocation'])
+      ) as any
+    })
+    peer.log = updated.log
+    for (const keyPair of keyPairs) {
+      bindKey(keyPair, peer.did)
+    }
+    publish(peer)
+  }
+
+  /**
+   * Alice delegates a read of her Space to `controller`.
+   * @param controller {string}
+   * @returns {Promise<any>}
+   */
+  async function grantTo(controller: string): Promise<any> {
+    return delegate({
+      signer: alice.signer,
+      capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
+      invocationTarget: spaceUrl,
+      controller,
+      allowedActions: ['GET']
+    })
+  }
+
+  /**
+   * Reads the Resource under `capability`, signing with `keyPair`.
+   * @param options {object}
+   * @param options.keyPair {Ed25519VerificationKey}
+   * @param options.capability {any}
+   * @returns {Promise<any>}
+   */
+  async function read({
+    keyPair,
+    capability
+  }: {
+    keyPair: Ed25519VerificationKey
+    capability: any
+  }): Promise<any> {
+    return client({ signer: keyPair.signer() as any }).request({
+      url: docUrl,
+      method: 'GET',
+      action: 'GET',
+      capability
+    })
+  }
+
+  /**
+   * Asserts a request was refused with the masked `not-found`.
+   * @param promise {Promise<unknown>}
+   * @returns {Promise<void>}
+   */
+  async function assertMasked(promise: Promise<unknown>): Promise<void> {
+    const err = await requestError(promise)
+    assert.equal(err.status, 404)
+    assert.equal(err.data.type, ProblemTypes.NOT_FOUND)
+  }
+
+  describe('a verified chain', () => {
+    it('lets a peer DID invoke, and fetches its log once', async () => {
+      const peer = await mintPeer({ host: 'peer-ok.example' })
+      assert.match(
+        peer.did,
+        /^did:webvh:[^:]+:peer-ok\.example:space:server:id$/
+      )
+      const zcap = await grantTo(peer.did)
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const response = await read({ keyPair: peer.keyPair, capability: zcap })
+        assert.equal(response.status, 200)
+        assert.deepStrictEqual(response.data, { hello: 'world' })
+      }
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 1)
+    })
+
+    it('fetches once more on a key miss, and not again within the interval', async () => {
+      const peer = await mintPeer({ host: 'peer-miss.example' })
+      const zcap = await grantTo(peer.did)
+      assert.equal(
+        (await read({ keyPair: peer.keyPair, capability: zcap })).status,
+        200
+      )
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 1)
+
+      // The admin adds a key; a signature with it misses the cached document.
+      const added = await Ed25519VerificationKey.generate()
+      await rotate(peer, [peer.keyPair, added])
+      assert.equal(
+        (await read({ keyPair: added, capability: zcap })).status,
+        200
+      )
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 2)
+
+      // A key the log never lists misses again, inside the interval.
+      const unknown = bindKey(await Ed25519VerificationKey.generate(), peer.did)
+      await assertMasked(read({ keyPair: unknown, capability: zcap }))
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 2)
+    })
+
+    it('drops a retired key once the cached document expires', async () => {
+      const peer = await mintPeer({ host: 'peer-ttl.example' })
+      const zcap = await grantTo(peer.did)
+      assert.equal(
+        (await read({ keyPair: peer.keyPair, capability: zcap })).status,
+        200
+      )
+      const retired = peer.keyPair
+      const replacement = await Ed25519VerificationKey.generate()
+      await rotate(peer, [replacement])
+
+      // Within the TTL the cached document still lists the retired key.
+      assert.equal(
+        (await read({ keyPair: retired, capability: zcap })).status,
+        200
+      )
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 1)
+
+      await sleep(1_600)
+      await assertMasked(read({ keyPair: retired, capability: zcap }))
+      // The TTL fetch is the only one: a miss right after a fetch forces none.
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 2)
+      assert.equal(
+        (await read({ keyPair: replacement, capability: zcap })).status,
+        200
+      )
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 2)
+    })
+
+    it('refuses an older prefix of a log it already verified', async () => {
+      const peer = await mintPeer({ host: 'peer-prefix.example' })
+      const genesis = peer.log
+      const original = peer.keyPair
+      const replacement = await Ed25519VerificationKey.generate()
+      await rotate(peer, [replacement])
+      const zcap = await grantTo(peer.did)
+      assert.equal(
+        (await read({ keyPair: replacement, capability: zcap })).status,
+        200
+      )
+
+      // The host now serves the genesis entry alone, which lists the retired
+      // key. The key miss fetches it, and the head check refuses it.
+      peer.log = genesis
+      publish(peer)
+      await assertMasked(read({ keyPair: original, capability: zcap }))
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 2)
+    })
+
+    it('refuses a key not listed under capabilityInvocation', async () => {
+      const peer = await mintPeer({
+        host: 'peer-assert.example',
+        purpose: ['assertionMethod']
+      })
+      const zcap = await grantTo(peer.did)
+      await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 1)
+    })
+
+    it('refuses a log that does not verify', async () => {
+      const peer = await mintPeer({ host: 'peer-tampered.example' })
+      const [first, ...rest] = logToJsonlString(peer.log).split('\n')
+      const entry = JSON.parse(first!)
+      entry.versionTime = '2020-01-01T00:00:00Z'
+      served.set(
+        logUrlOf(peer.host),
+        new TextEncoder().encode([JSON.stringify(entry), ...rest].join('\n'))
+      )
+      const zcap = await grantTo(peer.did)
+      await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 1)
+    })
+
+    it('refuses the log of another DID (a wrong SCID)', async () => {
+      const peer = await mintPeer({ host: 'peer-scid.example' })
+      const other = await mintPeer({ host: 'peer-scid.example' })
+      // The host serves the other DID's log at the one URL both share.
+      assert.notEqual(peer.did, other.did)
+      const zcap = await grantTo(peer.did)
+      await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 1)
+    })
+
+    it('refuses an oversize log, and remembers the failure', async () => {
+      const peer = await mintPeer({ host: 'peer-big.example' })
+      served.set(logUrlOf(peer.host), async ({ maxBytes }) => {
+        return new Uint8Array(maxBytes + 1)
+      })
+      const zcap = await grantTo(peer.did)
+      await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 1)
+    })
+
+    it('refuses a fetch that outlasts the timeout', async () => {
+      const peer = await mintPeer({ host: 'peer-slow.example' })
+      // Ignores the abort signal; the resolver's own deadline cuts it off.
+      served.set(logUrlOf(peer.host), () => new Promise(() => {}))
+      const zcap = await grantTo(peer.did)
+      const started = performance.now()
+      await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      assert.ok(performance.now() - started < 3_000)
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 1)
+    })
+
+    it('limits fetches per host', async () => {
+      const host = 'peer-busy.example'
+      const outcomes: number[] = []
+      for (let index = 0; index < 4; index++) {
+        const peer = await mintPeer({ host })
+        const zcap = await grantTo(peer.did)
+        try {
+          outcomes.push(
+            (await read({ keyPair: peer.keyPair, capability: zcap })).status
+          )
+        } catch (err: any) {
+          outcomes.push(err.status)
+        }
+      }
+      assert.deepStrictEqual(outcomes, [200, 200, 200, 404])
+      assert.equal(fetchesOf(logUrlOf(host)), 3)
+    })
+
+    it('refreshes a verified DID after DIDs nobody verified use up its host window', async () => {
+      const host = 'peer-victim.example'
+      const victim = await mintPeer({ host })
+      const victimLog = served.get(logUrlOf(host))!
+      const victimZcap = await grantTo(victim.did)
+      assert.equal(
+        (await read({ keyPair: victim.keyPair, capability: victimZcap }))
+          .status,
+        200
+      )
+
+      // Any Space owner can delegate to fresh DIDs on the victim's host. The
+      // host serves only its own log, so each of them fails to verify.
+      const attackers: { peer: Peer; zcap: any }[] = []
+      for (let index = 0; index < 3; index++) {
+        const peer = await mintPeer({ host })
+        attackers.push({ peer, zcap: await grantTo(peer.did) })
+      }
+      served.set(logUrlOf(host), victimLog)
+      for (const { peer, zcap } of attackers) {
+        await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      }
+      // The victim's first fetch and two attacker fetches fill the window;
+      // the third attacker DID is refused without a fetch.
+      assert.equal(fetchesOf(logUrlOf(host)), 3)
+
+      await sleep(1_600)
+      assert.equal(
+        (await read({ keyPair: victim.keyPair, capability: victimZcap }))
+          .status,
+        200
+      )
+      assert.equal(fetchesOf(logUrlOf(host)), 4)
+    })
+
+    it('limits concurrent first-contact fetches, and still refreshes a verified DID', async () => {
+      const known = await mintPeer({ host: 'peer-known.example' })
+      const knownZcap = await grantTo(known.did)
+      assert.equal(
+        (await read({ keyPair: known.keyPair, capability: knownZcap })).status,
+        200
+      )
+      await sleep(1_600)
+
+      const held = gate()
+      const holding: { peer: Peer; zcap: any }[] = []
+      for (const host of ['peer-hold-1.example', 'peer-hold-2.example']) {
+        const peer = await mintPeer({ host })
+        const bytes = served.get(logUrlOf(host))!
+        served.set(logUrlOf(host), async () => {
+          await held.promise
+          return bytes
+        })
+        holding.push({ peer, zcap: await grantTo(peer.did) })
+      }
+      const third = await mintPeer({ host: 'peer-hold-3.example' })
+      const thirdZcap = await grantTo(third.did)
+
+      const pending = holding.map(({ peer, zcap }) =>
+        read({ keyPair: peer.keyPair, capability: zcap })
+      )
+      await until(() =>
+        holding.every(({ peer }) => fetchesOf(logUrlOf(peer.host)) === 1)
+      )
+      try {
+        await assertMasked(
+          read({ keyPair: third.keyPair, capability: thirdZcap })
+        )
+        assert.equal(fetchesOf(logUrlOf(third.host)), 0)
+        // The stale known DID is refreshed on its own budget.
+        assert.equal(
+          (await read({ keyPair: known.keyPair, capability: knownZcap }))
+            .status,
+          200
+        )
+        assert.equal(fetchesOf(logUrlOf(known.host)), 2)
+      } finally {
+        held.open()
+      }
+      for (const response of await Promise.all(pending)) {
+        assert.equal(response.status, 200)
+      }
+    })
+
+    it('shares one in-flight fetch among concurrent requests', async () => {
+      const peer = await mintPeer({ host: 'peer-shared.example' })
+      const bytes = served.get(logUrlOf(peer.host))!
+      const held = gate()
+      served.set(logUrlOf(peer.host), async () => {
+        await held.promise
+        return bytes
+      })
+      const zcap = await grantTo(peer.did)
+      const reads = [0, 1, 2].map(() =>
+        read({ keyPair: peer.keyPair, capability: zcap })
+      )
+      await until(() => fetchesOf(logUrlOf(peer.host)) === 1)
+      await sleep(150)
+      held.open()
+      for (const response of await Promise.all(reads)) {
+        assert.equal(response.status, 200)
+      }
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 1)
+    })
+
+    it('shares one in-flight fetch that fails among concurrent requests', async () => {
+      const peer = await mintPeer({ host: 'peer-shared-fail.example' })
+      const held = gate()
+      served.set(logUrlOf(peer.host), async () => {
+        await held.promise
+        throw new Error('The peer host is down.')
+      })
+      const zcap = await grantTo(peer.did)
+      const reads = [0, 1, 2].map(() =>
+        assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      )
+      await until(() => fetchesOf(logUrlOf(peer.host)) === 1)
+      await sleep(150)
+      held.open()
+      await Promise.all(reads)
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 1)
+    })
+
+    it('refuses a log that declares witnesses', async () => {
+      const witnessKey = await Ed25519VerificationKey.generate()
+      const peer = await mintPeer({
+        host: 'peer-witnessed.example',
+        witness: {
+          threshold: 1,
+          witnesses: [{ id: `did:key:${witnessKey.fingerprint()}` }]
+        }
+      })
+      const zcap = await grantTo(peer.did)
+      await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 1)
+    })
+
+    it('refuses a write under a read-only delegation', async () => {
+      const peer = await mintPeer({ host: 'peer-write.example' })
+      const zcap = await grantTo(peer.did)
+      assert.equal(
+        (await read({ keyPair: peer.keyPair, capability: zcap })).status,
+        200
+      )
+      await assertMasked(
+        client({ signer: peer.keyPair.signer() as any }).request({
+          url: docUrl,
+          method: 'PUT',
+          action: 'PUT',
+          capability: zcap,
+          json: { hello: 'peer' }
+        })
+      )
+      assert.deepStrictEqual(
+        await alice.was.space(spaceId).collection('credentials').get('doc-1'),
+        { hello: 'world' }
+      )
+    })
+  })
+
+  describe('no fetch at all', () => {
+    it('when a delegation proof does not verify', async () => {
+      const peer = await mintPeer({ host: 'nofetch-proof.example' })
+      const zcap = await grantTo(peer.did)
+      zcap.allowedAction = ['GET', 'PUT']
+      await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 0)
+    })
+
+    it('when the chain roots outside the Space', async () => {
+      const peer = await mintPeer({ host: 'nofetch-root.example' })
+      // The root targets every Space on the server, which no route accepts.
+      const allSpaces = new URL('/space/', serverUrl).toString()
+      const zcap = await delegate({
+        signer: alice.signer,
+        capability: `urn:zcap:root:${encodeURIComponent(allSpaces)}`,
+        invocationTarget: spaceUrl,
+        controller: peer.did,
+        allowedActions: ['GET']
+      })
+      await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 0)
+    })
+
+    it('when the chain is not delegated by the Space controller', async () => {
+      const peer = await mintPeer({ host: 'nofetch-signer.example' })
+      const zcap = await delegate({
+        signer: bob.signer,
+        capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
+        invocationTarget: spaceUrl,
+        controller: peer.did,
+        allowedActions: ['GET']
+      })
+      await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 0)
+    })
+
+    it('when the invoked capability names another controller', async () => {
+      const peer = await mintPeer({ host: 'nofetch-controller.example' })
+      const zcap = await grantTo(bob.did)
+      await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 0)
+    })
+
+    it('when a peer DID signs a delegation in the chain', async () => {
+      const delegator = await mintPeer({ host: 'nofetch-delegator.example' })
+      const invoker = await mintPeer({ host: 'nofetch-invoker.example' })
+      const parent = await grantTo(delegator.did)
+      const child = await delegate({
+        signer: delegator.keyPair.signer(),
+        capability: parent,
+        invocationTarget: spaceUrl,
+        controller: invoker.did,
+        allowedActions: ['GET']
+      })
+      await assertMasked(read({ keyPair: invoker.keyPair, capability: child }))
+      assert.equal(fetchesOf(logUrlOf(delegator.host)), 0)
+      assert.equal(fetchesOf(logUrlOf(invoker.host)), 0)
+    })
+
+    it('for a header that carries both an id and a capability', async () => {
+      const peer = await mintPeer({ host: 'nofetch-mixed.example' })
+      const zcap = await grantTo(peer.did)
+      const rootId = `urn:zcap:root:${encodeURIComponent(spaceUrl)}`
+      const headers = await signCapabilityInvocation({
+        url: docUrl,
+        method: 'GET',
+        headers: { host: new URL(serverUrl).host },
+        capability: zcap,
+        // Appends an `id` parameter after the embedded capability, inside
+        // the signed header value.
+        capabilityAction: `GET",id="${rootId}`,
+        invocationSigner: peer.keyPair.signer() as any
+      })
+      assert.match(
+        headers['capability-invocation'],
+        /^zcap capability="[^"]+",action="GET",id="urn:zcap:root:/
+      )
+      const response = await fastify.inject({
+        method: 'GET',
+        url: new URL(docUrl).pathname,
+        headers
+      })
+      assert.equal(response.statusCode, 404)
+      assert.equal(response.json().type, ProblemTypes.NOT_FOUND)
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 0)
+    })
+
+    it('for a root invocation by a peer DID', async () => {
+      const peer = await mintPeer({ host: 'nofetch-rootinv.example' })
+      await assertMasked(
+        read({
+          keyPair: peer.keyPair,
+          capability: rootZcap({ target: spaceUrl, controller: peer.did })
+        })
+      )
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 0)
+    })
+
+    it('for a DID whose path is not space:server:id', async () => {
+      const peer = await mintPeer({
+        host: 'nofetch-path.example',
+        path: 'space/other/id'
+      })
+      const zcap = await grantTo(peer.did)
+      await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      assert.equal(fetched.filter(url => url.includes(peer.host)).length, 0)
+    })
+
+    it('for a DID whose host carries a port', async () => {
+      const peer = await mintPeer({
+        host: 'nofetch-port.example',
+        address: 'https://nofetch-port.example:8443/space/server/id'
+      })
+      assert.match(peer.did, /nofetch-port\.example%3A8443/)
+      const zcap = await grantTo(peer.did)
+      await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      assert.equal(fetched.filter(url => url.includes(peer.host)).length, 0)
+    })
+
+    it('for a revoked capability', async () => {
+      const peer = await mintPeer({ host: 'nofetch-revoked.example' })
+      const zcap = await grantTo(peer.did)
+      const revoked = await client({ signer: alice.signer }).request({
+        url: new URL(
+          spaceRevocationsPath({ spaceId, revocationId: zcap.id }),
+          serverUrl
+        ).toString(),
+        method: 'POST',
+        action: 'POST',
+        capability: rootZcap({ target: spaceUrl, controller: alice.did }),
+        json: zcap
+      })
+      assert.equal(revoked.status, 204)
+      await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 0)
+    })
+
+    it('and a 5xx, not the mask, when the revocation lookup faults', async () => {
+      const peer = await mintPeer({ host: 'nofetch-fault.example' })
+      const zcap = await grantTo(peer.did)
+      const spy = vi
+        .spyOn(fastify.storage, 'isRevoked')
+        .mockRejectedValue(new Error('disk fault'))
+      try {
+        const err = await requestError(
+          read({ keyPair: peer.keyPair, capability: zcap })
+        )
+        assert.equal(err.status, 500)
+        assert.equal(err.data.type, ProblemTypes.STORAGE_ERROR)
+      } finally {
+        spy.mockRestore()
+      }
+      assert.equal(fetchesOf(logUrlOf(peer.host)), 0)
+      const response = await read({ keyPair: peer.keyPair, capability: zcap })
+      assert.equal(response.status, 200)
+    })
+  })
+})
+
+describe('parsePeerServerWebvh', () => {
+  const scid = 'QmbbLRNKupeZRGTmrEnENTwifoo7sbndRFJCnC7AhSwB59'
+  const serverUrl = 'https://was.example'
+
+  it('accepts a peer server DID on another host', () => {
+    assert.deepStrictEqual(
+      parsePeerServerWebvh(`did:webvh:${scid}:peer.example:space:server:id`, {
+        serverUrl
+      }),
+      { scid, host: 'peer.example' }
+    )
+  })
+
+  it('refuses every other shape', () => {
+    for (const did of [
+      // this server's own host goes through the local resolver
+      `did:webvh:${scid}:was.example:space:server:id`,
+      `did:webvh:${scid}:peer.example%3A8443:space:server:id`,
+      `did:webvh:${scid}:10.0.0.1:space:server:id`,
+      `did:webvh:${scid}:localhost:space:server:id`,
+      `did:webvh:${scid}:Peer.Example:space:server:id`,
+      `did:webvh:${scid}:peer.example:space:other:id`,
+      `did:webvh:${scid}:peer.example:space:server:id:extra`,
+      `did:webvh:${scid}:peer.example`,
+      `did:webvh:short:peer.example:space:server:id`,
+      `did:web:peer.example:space:server:id`
+    ]) {
+      assert.equal(parsePeerServerWebvh(did, { serverUrl }), undefined, did)
+    }
+  })
+})
+
+describe('the default peer log fetcher', () => {
+  it('fetches https on the default port only', () => {
+    assert.throws(
+      () =>
+        checkPeerLogUrl({
+          url: 'http://peer.example/space/server/id/did.jsonl'
+        }),
+      { name: 'PeerLogFetchError' }
+    )
+    assert.throws(
+      () =>
+        checkPeerLogUrl({
+          url: 'https://peer.example:8443/space/server/id/did.jsonl'
+        }),
+      { name: 'PeerLogFetchError' }
+    )
+    assert.throws(
+      () =>
+        checkPeerLogUrl({
+          url: 'https://user:pass@peer.example/space/server/id/did.jsonl'
+        }),
+      { name: 'PeerLogFetchError' }
+    )
+    assert.equal(
+      checkPeerLogUrl({ url: 'https://peer.example/space/server/id/did.jsonl' })
+        .hostname,
+      'peer.example'
+    )
+  })
+
+  it('refuses private, loopback, link-local and metadata addresses', () => {
+    const url = 'https://peer.example/space/server/id/did.jsonl'
+    for (const address of [
+      '127.0.0.1',
+      '10.1.2.3',
+      '172.16.0.1',
+      '192.168.1.1',
+      '169.254.169.254',
+      '100.64.0.1',
+      '0.0.0.0',
+      '::1',
+      'fe80::1',
+      'fd00::1',
+      '::ffff:127.0.0.1',
+      '::ffff:7f00:1'
+    ]) {
+      const family = address.includes(':') ? 6 : 4
+      assert.throws(
+        () =>
+          assertPublicAddresses({
+            url,
+            addresses: [
+              { address: '93.184.215.14', family: 4 },
+              { address, family }
+            ]
+          }),
+        { name: 'PeerLogFetchError' },
+        address
+      )
+    }
+    assert.throws(() => assertPublicAddresses({ url, addresses: [] }), {
+      name: 'PeerLogFetchError'
+    })
+    assert.doesNotThrow(() =>
+      assertPublicAddresses({
+        url,
+        addresses: [
+          { address: '93.184.215.14', family: 4 },
+          { address: '2606:2800:21f:cb07:6820:80da:af6b:8b2c', family: 6 }
+        ]
+      })
+    )
+  })
+
+  it('refuses a host that resolves to a non-public address', async () => {
+    for (const url of [
+      'https://localhost/space/server/id/did.jsonl',
+      'https://127.0.0.1/space/server/id/did.jsonl',
+      'https://169.254.169.254/space/server/id/did.jsonl',
+      'https://[::1]/space/server/id/did.jsonl'
+    ]) {
+      await assert.rejects(
+        fetchPeerLog({
+          url,
+          maxBytes: 1024,
+          signal: AbortSignal.timeout(2_000)
+        }),
+        { name: 'PeerLogFetchError' },
+        url
+      )
+    }
+  })
+
+  describe('reading the response', () => {
+    let server: Server, baseUrl: string, agent: Agent
+
+    beforeAll(async () => {
+      server = createServer((req, res) => {
+        if (req.url === '/redirect') {
+          res.writeHead(302, { location: 'http://169.254.169.254/' })
+          res.end()
+        } else if (req.url === '/declared-large') {
+          res.writeHead(200, { 'content-length': '4096' })
+          res.end(Buffer.alloc(4096))
+        } else if (req.url === '/streamed-large') {
+          res.writeHead(200)
+          for (let index = 0; index < 8; index++) {
+            res.write(Buffer.alloc(512))
+          }
+          res.end()
+        } else if (req.url === '/slow') {
+          res.writeHead(200)
+          res.write('{')
+          // Never ends: the signal must cut the read off.
+        } else if (req.url === '/missing') {
+          res.writeHead(404)
+          res.end()
+        } else {
+          res.writeHead(200, { 'content-type': 'text/jsonl' })
+          res.end('{"ok":true}\n')
+        }
+      })
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+      const { port } = server.address() as AddressInfo
+      baseUrl = `http://127.0.0.1:${port}`
+      agent = new Agent()
+    })
+    afterAll(async () => {
+      await agent.close()
+      server.closeAllConnections()
+      await new Promise(resolve => server.close(resolve))
+    })
+
+    /**
+     * Reads a path of the local server under a 1 KiB limit.
+     * @param path {string}
+     * @param [timeoutMs] {number}
+     * @returns {Promise<Uint8Array>}
+     */
+    function readPath(path: string, timeoutMs = 2_000): Promise<Uint8Array> {
+      return readBoundedResponse({
+        url: `${baseUrl}${path}`,
+        dispatcher: agent,
+        maxBytes: 1024,
+        signal: AbortSignal.timeout(timeoutMs)
+      })
+    }
+
+    it('reads a body within the limit', async () => {
+      const bytes = await readPath('/ok')
+      assert.equal(new TextDecoder().decode(bytes), '{"ok":true}\n')
+    })
+
+    it('does not follow a redirect', async () => {
+      await assert.rejects(readPath('/redirect'), {
+        name: 'PeerLogFetchError',
+        message: /redirect/
+      })
+    })
+
+    it('refuses a status other than 200', async () => {
+      await assert.rejects(readPath('/missing'), { name: 'PeerLogFetchError' })
+    })
+
+    it('refuses a declared length over the limit', async () => {
+      await assert.rejects(readPath('/declared-large'), {
+        name: 'PeerLogFetchError',
+        message: /larger than 1024/
+      })
+    })
+
+    it('abandons a streamed body at the byte that crosses the limit', async () => {
+      await assert.rejects(readPath('/streamed-large'), {
+        name: 'PeerLogFetchError',
+        message: /larger than 1024/
+      })
+    })
+
+    it('stops a body that outlasts the signal', async () => {
+      const started = performance.now()
+      await assert.rejects(readPath('/slow', 200), {
+        name: 'PeerLogFetchError'
+      })
+      assert.ok(performance.now() - started < 2_000)
+    })
+  })
+})

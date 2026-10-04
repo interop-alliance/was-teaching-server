@@ -39,6 +39,7 @@ import type {
 
 import type { EtagValidator, HeldValidators } from './lib/etag.js'
 import type { ServerSigningKey } from './lib/serverIdentity.js'
+import type { PeerWebvhResolver } from './lib/peerWebvh.js'
 import type { ExportAttestor } from './lib/exportProvenance.js'
 import type { ImportPlan } from './lib/importTar.js'
 import type {
@@ -1605,6 +1606,13 @@ declare module 'fastify' {
      * the server has no signing key. Set by `fastify.decorate` in plugin.ts.
      */
     serverSigningKey?: ServerSigningKey
+    /**
+     * The resolver for a peer server's `did:webvh`, the one foreign DID the
+     * capability verifier may fetch over the network (see
+     * `lib/peerWebvh.ts`). Passed to `handleZcapVerify` by the WAS route
+     * families. Set by `fastify.decorate` in plugin.ts.
+     */
+    peerWebvh: PeerWebvhResolver
     /**
      * The optional provisioning gate for the open provisioning endpoints
      * (`POST /spaces/`, Create Space by Id, `POST /kms/keystores`).

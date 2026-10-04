@@ -614,24 +614,28 @@ export async function provisionProviderContainers({
  * Gives a bare backend a server identity, the way an admin would through the
  * front door: the `server` Space under an admin `did:key`, its `id`
  * Collection, and a `did.jsonl` history log whose document lists the
- * seed-derived export-signing key under `assertionMethod` alone, named by its
- * full `publicKeyMultibase`. Written through the backend API, so no server
- * needs to run.
+ * seed-derived export-signing key under `purpose` (by default
+ * `assertionMethod` only), named by its full `publicKeyMultibase`. Written
+ * through the backend API, so no server needs to run.
  *
  * @param options {object}
  * @param options.backend {StorageBackend}
  * @param options.serverUrl {string}   the host the DID is minted for
  * @param options.seed {Uint8Array}   the export-signing key's 32-byte seed
+ * @param [options.purpose] {string[]}   the relationships the key is listed
+ *   under
  * @returns {Promise<{ signingKey: ServerSigningKey, did: string, didLog: string }>}
  */
 export async function provisionServerIdentity({
   backend,
   serverUrl,
-  seed
+  seed,
+  purpose = ['assertionMethod']
 }: {
   backend: StorageBackend
   serverUrl: string
   seed: Uint8Array
+  purpose?: string[]
 }): Promise<{ signingKey: ServerSigningKey; did: string; didLog: string }> {
   const signingKey = await createServerSigningKey({ seed })
   const admin = await Ed25519VerificationKey.generate()
@@ -645,7 +649,7 @@ export async function provisionServerIdentity({
       {
         type: 'Multikey',
         publicKeyMultibase: signingKey.keyPair.publicKeyMultibase,
-        purpose: ['assertionMethod']
+        purpose
       }
     ] as any
   })

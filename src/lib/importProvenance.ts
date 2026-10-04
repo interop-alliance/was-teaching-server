@@ -12,8 +12,10 @@
  * the snapshot's DID, and its `id` must sit on the host that DID is anchored
  * at. The method must appear in the document at the log entry whose
  * `versionId` equals the statement's `didLogVersionId`, under
- * `assertionMethod` alone. Then the `eddsa-jcs-2022` proof is verified, and
- * last the statement's claims are compared with the archived object: its
+ * `assertionMethod`. It may also be listed under `capabilityInvocation`, the
+ * relationship a server signs sync invocations under, and under no other.
+ * Then the `eddsa-jcs-2022` proof is verified, and last the statement's
+ * claims are compared with the archived object: its
  * `createdBy`, `createdAt`, its write stamp (`updatedAt`,
  * `updatedAtCounter`, `originId`) and, for a Resource, its `/meta` record's
  * stamp (`meta`) and its `digest`. The archived stamps are read here for
@@ -488,8 +490,9 @@ async function judgeStatement({
     return {
       verdict: 'unknownSigner',
       reason:
-        'The signing method is not listed under "assertionMethod" alone at ' +
-        'the named log version.'
+        'The signing method is not listed under "assertionMethod", or is ' +
+        'also listed under a relationship other than "capabilityInvocation", ' +
+        'at the named log version.'
     }
   }
 

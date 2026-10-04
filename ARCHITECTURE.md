@@ -444,15 +444,15 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   the server will sign export archives with, present whenever
   `WAS_SERVER_KEY_SEED` is set; and `serverDid`, the server's own self-hosted
   `did:webvh`, present only once the resolved current document of the log at
-  `server/id/did.jsonl` lists that key under `assertionMethod` and under no
-  other relationship. They sit on `instance` rather than on a `specs` entry
-  because they describe this deployment, not a specification it implements.
-  `serverDid` is read per request, since the admin writes that log after boot,
-  and the served body and its `ETag` are recomputed when it changes. The outcome
-  is memoized per backend on the log Resource's `ETag`, so a request costs one
-  metadata read while the log stands still. Listing the profile is how a client
-  learns this server authorizes with capability invocations, before its first
-  signed request. The last two members are read off `zcap.ts`
+  `server/id/did.jsonl` lists that key under `assertionMethod`, and under
+  `capabilityInvocation` at most. They sit on `instance` rather than on a
+  `specs` entry because they describe this deployment, not a specification it
+  implements. `serverDid` is read per request, since the admin writes that log
+  after boot, and the served body and its `ETag` are recomputed when it changes.
+  The outcome is memoized per backend on the log Resource's `ETag`, so a request
+  costs one metadata read while the log stands still. Listing the profile is how
+  a client learns this server authorizes with capability invocations, before its
+  first signed request. The last two members are read off `zcap.ts`
   (`INVOCATION_SIGNATURE_ALGORITHMS`, `delegationProofCryptosuites`), so a
   change to what verification accepts changes the advertisement too. The third
   entry, under `https://w3id.org/pws/encrypted-collections`, is the Encrypted
@@ -482,10 +482,10 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
 - **`src/lib/serverIdentity.ts`** -- the server's own identity, which export
   provenance (`lib/exportProvenance.ts`, below) signs with. Two keys with two
   holders: the server derives an Ed25519 export-signing key from
-  `WAS_SERVER_KEY_SEED` and holds nothing else; the administrator's `did:key`
-  (`WAS_ADMIN_DID`) holds the update key of the server's `did:webvh` history
-  log, so the server never mints or extends its own log and a compromised server
-  cannot take the DID over. The DID is the self-hosted
+  `WAS_SERVER_KEY_SEED`, and that seed is its only secret; the administrator's
+  `did:key` (`WAS_ADMIN_DID`) holds the update key of the server's `did:webvh`
+  history log, so the server never mints or extends its own log and a
+  compromised server cannot take the DID over. The DID is the self-hosted
   `did:webvh:{scid}:{host}:space:server:id`, whose log is the `did.jsonl`
   Resource of the `id` Collection in the `server` Space; it resolves through the
   same `webvhController.ts` path as any Space controller, so the log gets the
@@ -503,15 +503,56 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   shape check still admits it, so the admin's own Update Space, which must
   restate the stored `type` set, goes through. `resolveServerDid` reads the
   log's head for the DID, checks it is hosted at `server/id` of this server,
-  resolves it, and requires the signing key to be listed under `assertionMethod`
-  alone, reading every method that carries the key and any method embedded in a
-  relationship: a key under `capabilityInvocation` could root-invoke, and one
-  under `capabilityDelegation` without `capabilityInvocation` would read as a
-  ladder verification method to the client-annex clause. A log that is absent,
-  does not verify, or lists the key otherwise leaves `serverDid` off `/service`
-  with a `warn` line, logged once per log version rather than per request, and
-  the server signs nothing. The log is admin-custodied state: it dies with a
-  data wipe, and the admin's copy is what restores it.
+  resolves it, and requires the signing key to be listed under
+  `assertionMethod`. It reads every method that carries the key and any method
+  embedded in a relationship. The key may also be listed under
+  `capabilityInvocation`, which is how the admin enables replication. It may not
+  be listed under `capabilityDelegation`, `authentication` or `keyAgreement`. A
+  key under `capabilityDelegation` without `capabilityInvocation` would read as
+  a ladder verification method to the client-annex clause. One predicate,
+  `signingKeyRelationshipProblem`, decides this for `/service`, the export
+  snapshot check and the import statement check. A log that is absent, does not
+  verify, or lists the key otherwise leaves `serverDid` off `/service` with a
+  `warn` line, logged once per log version rather than per request, and the
+  server signs nothing. The log is admin-custodied state: it dies with a data
+  wipe, and the admin's copy is what restores it.
+- **`src/lib/syncIdentity.ts`** -- the signer a server invokes a peer's
+  capabilities with when it replicates a Space. It is the same seed key, named
+  as the method `{serverDid}#{publicKeyMultibase}`. `loadSyncSigner` returns a
+  signer only when `resolveServerDid` yields a `serverDid` and the resolved
+  document lists the key under `capabilityInvocation`. Otherwise it returns a
+  refusal with a reason: no advertised `serverDid`, or the key not listed under
+  `capabilityInvocation`. A storage fault met while reading the log is thrown as
+  its 5xx and is not a refusal. A controller delegates the pull capability to
+  `serverDid`, so a peer verifies the invocation against the server's log. There
+  is no second key and no `/service` member. Listing the relationship is the
+  switch that enables replication. Replication itself is not built yet, and
+  nothing calls the signer.
+- **`src/lib/peerWebvh.ts`** -- the one network resolution of a foreign
+  `did:webvh`: a peer server's DID, `did:webvh:<scid>:<host>:space:server:id`,
+  as the invoker of a delegated capability on the WAS routes (see "The
+  `did:webvh` resolver on every path" below). The log is fetched from
+  `https://<host>/space/server/id/did.jsonl` and verified like any log, with no
+  witness fetch. A peer log that carries witnesses is refused. It must extend
+  the last head verified for the DID, so a host cannot serve an older prefix to
+  restore a retired key. A verified document is cached per DID in an LRU for a
+  TTL, then fetched and verified again. A signature that names a key the cached
+  document lacks forces one fetch per DID per interval. A failure is remembered
+  briefly, so a failing host is not asked on every request. A first-contact
+  fetch is one for a DID with no verified head here. Those are counted per host
+  over a window and refused past a limit. A refresh of a DID that already
+  verified does not draw on that window, so other DIDs on its host cannot starve
+  it. Each of the two kinds also has its own limit on fetches in flight, and a
+  fetch past it is refused, not queued. The body is size-bounded and the fetch
+  has a timeout. The `PEER_WEBVH_*` constants in `config.default.ts` set these
+  bounds. The default fetcher, `fetchPeerLog`, speaks `https` only, on the
+  default port, follows no redirect, and connects only to the public addresses
+  it checked after DNS. `lib/outboundAddress.ts` holds those address checks, the
+  pinned lookup and the size-bounded body reader, shared with the CORS proxy.
+  `peerLogFetcher` is a plugin and `createApp` option that replaces the fetcher
+  in tests, since the host bound keeps a real fetch out of the suite. No
+  environment variable reaches it. The resolver is one per app, decorated as
+  `peerWebvh`.
 - **`src/lib/provenanceStatement.ts`** -- the provenance statement contract,
   shared by the two halves below and owned by neither. It holds the statement
   `type` (`STORAGE_ATTESTATION_TYPE`), the members a statement attests
@@ -526,11 +567,11 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   It takes the server DID from `resolveServerDid`, reads the log's bytes as the
   log Resource serves them, and checks that snapshot on its own terms: its head
   names the same DID, it verifies as that DID's log, and its document lists the
-  seed key under `assertionMethod` alone as the method
-  `{serverDid}#{publicKeyMultibase}`. With no identity the handler logs one
-  `warn` line naming the reason and the export carries no provenance. With one,
-  the backend's `exportSpace` hands its finished entry tree to
-  `attestArchiveEntries` before packing it. That call emits one
+  seed key as the method `{serverDid}#{publicKeyMultibase}`, under
+  `assertionMethod` and at most `capabilityInvocation`. With no identity the
+  handler logs one `warn` line naming the reason and the export carries no
+  provenance. With one, the backend's `exportSpace` hands its finished entry
+  tree to `attestArchiveEntries` before packing it. That call emits one
   `StorageAttestation` statement per exported object in manifest order: the
   Space Metadata object, each Collection Metadata object, and each Resource with
   a representation (a tombstone holds no content and gets none). A Collection
@@ -576,31 +617,32 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `server/id` DID of the host the statement's `id` names. The document is
   resolved at the log entry whose `versionId` equals the statement's
   `didLogVersionId`, by verifying the log up to that entry, and must list the
-  method under `assertionMethod` alone. Then the `eddsa-jcs-2022` proof is
-  verified. Last, the statement's claims are compared with the archived object:
-  `createdBy`, `createdAt`, the write stamp (`updatedAt`, `updatedAtCounter`,
-  `originId`), and for a Resource its `meta` and its `digest` (the composite
-  chunk digest for a chunked Resource). `meta` is compared member by member. The
-  archived object's members and digests are computed by the same
-  `lib/provenanceStatement.ts` functions export signs with. Each object the
-  archive carries an attestable entry for gets one verdict, whether or not the
-  destination already holds it: `verified`, `unattested` (no statement, or no
-  `provenance.jsonl`), `proofInvalid`, `contentMismatch`, or `unknownSigner` (no
-  `did.jsonl`, a log that does not verify, a method outside the snapshot's DID,
-  a version the log lacks, or a method not under `assertionMethod` alone there).
-  The counts are the `provenance` member of the returned `ImportStats`. Outside
-  `verified` the object is still imported, with its `createdBy` removed. A
-  tombstone carries no statement and is not counted, and its sidecar loses
-  `createdBy` too, since a re-create over a tombstone keeps the tombstone's
-  creator. A Collection tombstone travels on the plan apart from the live
-  Collections (`collectionTombstones`), so it is never judged or counted. The
-  Space Metadata object's verdict is counted only, since an import never
-  restores its `createdBy`. A `proofInvalid` and a `contentMismatch` are logged
-  at `warn` with different messages, so damaged bytes are not read as a bad
-  signature. `createdAt` keeps its import behavior whatever the verdict. The
-  archived stamps are read for this comparison only: the importing backend
-  re-stamps every record it writes with its own clock and origin id, and keeps
-  each record's archived generation.
+  method under `assertionMethod`, and at most `capabilityInvocation`. Then the
+  `eddsa-jcs-2022` proof is verified. Last, the statement's claims are compared
+  with the archived object: `createdBy`, `createdAt`, the write stamp
+  (`updatedAt`, `updatedAtCounter`, `originId`), and for a Resource its `meta`
+  and its `digest` (the composite chunk digest for a chunked Resource). `meta`
+  is compared member by member. The archived object's members and digests are
+  computed by the same `lib/provenanceStatement.ts` functions export signs with.
+  Each object the archive carries an attestable entry for gets one verdict,
+  whether or not the destination already holds it: `verified`, `unattested` (no
+  statement, or no `provenance.jsonl`), `proofInvalid`, `contentMismatch`, or
+  `unknownSigner` (no `did.jsonl`, a log that does not verify, a method outside
+  the snapshot's DID, a version the log lacks, or a method there that is not
+  under `assertionMethod`, or is under any relationship besides
+  `capabilityInvocation`). The counts are the `provenance` member of the
+  returned `ImportStats`. Outside `verified` the object is still imported, with
+  its `createdBy` removed. A tombstone carries no statement and is not counted,
+  and its sidecar loses `createdBy` too, since a re-create over a tombstone
+  keeps the tombstone's creator. A Collection tombstone travels on the plan
+  apart from the live Collections (`collectionTombstones`), so it is never
+  judged or counted. The Space Metadata object's verdict is counted only, since
+  an import never restores its `createdBy`. A `proofInvalid` and a
+  `contentMismatch` are logged at `warn` with different messages, so damaged
+  bytes are not read as a bad signature. `createdAt` keeps its import behavior
+  whatever the verdict. The archived stamps are read for this comparison only:
+  the importing backend re-stamps every record it writes with its own clock and
+  origin id, and keeps each record's archived generation.
 - **`src/storage.ts`** — supplies `defaultBackend()`, which opens the
   `FileSystemBackend` (rooted at `data/`) that `createApp()` uses when no
   backend is injected. The active backend is injected via
@@ -820,11 +862,14 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   (`did:webvh:{scid}:{host}:space:server:id`) together with the export-signing
   key derived from `WAS_SERVER_KEY_SEED`. The key is advertised on `/service` as
   `exportSigningKey`; the DID is advertised there as `serverDid` once the log
-  lists the key under `assertionMethod` alone. The key signs an export's
-  provenance statements as the method `{serverDid}#{publicKeyMultibase}`, and
-  only while the DID is advertised. Distinct from the admin identity, which
-  holds the log's update key and authorizes operator actions. Avoid: server DID
-  key (ambiguous between the two), server controller.
+  lists the key under `assertionMethod`, and under `capabilityInvocation` at
+  most. The key signs an export's provenance statements as the method
+  `{serverDid}#{publicKeyMultibase}`, and only while the DID is advertised. Once
+  the log also lists it under `capabilityInvocation`, the same key signs sync
+  invocations as the same method (`lib/syncIdentity.ts`), and a controller
+  delegates a pull capability to `serverDid`. Distinct from the admin identity,
+  which holds the log's update key and authorizes operator actions. Avoid:
+  server DID key (ambiguous between the two), server controller.
 - **Origin id** -- the store-level id that is the origin half of a write's
   replicated identity, for replicating a Space between servers. One per store (a
   filesystem data dir, a Postgres schema): `WAS_ORIGIN_ID` verbatim when set,
@@ -925,19 +970,22 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   final DID segment carrying `%` or another reserved character is refused by the
   parser. A Space is **promoted** to one by PUTting its Space Metadata object
   (at `meta`) with the new `controller`, still authorized by the stored
-  `did:key` — creation stays `did:key`-only. Resolution is a **local storage
-  read, never a network fetch**: cross-host `did:webvh`, `did:web`, and every
-  other method are refused. The log's Space need not be the Space an invocation
-  targets: the DID string carries the log's own `spaceId`, so a cross-Space
-  controller resolves through the same path as any other. A capability-gated
-  Collection works too — the server reads its own storage regardless of read
-  policy, so such a DID resolves for authorization while its log stays
-  unreadable without a capability. The log is verified, not trusted (SCID
-  pinning plus full hash-chain / update-key verification via
-  `@interop/did-method-webvh`), because after promotion the writes to that log
-  are authorized by the very document being resolved. The proposed controller
-  must resolve _before_ it is stored, or the Space would be deadlocked. Key
-  validity is the **current-key-set rule** (profile
+  `did:key` — creation stays `did:key`-only. Resolution of a self-hosted DID is
+  a **local storage read**, with no network fetch. Cross-host `did:webvh`,
+  `did:web`, and every other method are refused as a controller or a delegator.
+  The one network exception is a peer server's DID as the invoker of a delegated
+  capability (see "The `did:webvh` resolver on every path" under ZCap
+  Structure). The log's Space need not be the Space an invocation targets: the
+  DID string carries the log's own `spaceId`, so a cross-Space controller
+  resolves through the same path as any other. A capability-gated Collection
+  works too — the server reads its own storage regardless of read policy, so
+  such a DID resolves for authorization while its log stays unreadable without a
+  capability. The log is verified, not trusted (SCID pinning plus full
+  hash-chain / update-key verification via `@interop/did-method-webvh`), because
+  after promotion the writes to that log are authorized by the very document
+  being resolved. The proposed controller must resolve _before_ it is stored, or
+  the Space would be deadlocked. Key validity is the **current-key-set rule**
+  (profile
   ["Current-key-set rule"](https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/#current-key-set-rule)):
   an invocation or delegation verifies iff its verification method is in the
   currently resolved document, under the right verification relationship. One
@@ -1034,8 +1082,24 @@ invocation accepts, so a grant delegated from a Collection's or a Resource's own
 root is revocable too. List Spaces verifies against one candidate controller at
 most: the signer of a root invocation, or the signer of a delegated chain's base
 delegation, read off the header before any signature work. A listing grant roots
-in the `/spaces/` root capability, which no revocation route accepts, so it
+in the `/spaces/` root capability, which no revocation route accepts, so it it
 carries no revocation scope and its `expires` bounds it.
+
+One bounded exception reaches the network. A peer server's DID,
+`did:webvh:<scid>:<host>:space:server:id` on another host, may invoke a
+delegated capability on the WAS routes (`authorize()` and
+`fetchSpaceAndVerify()`). The HTTP-signature verifier resolves the signing key
+before it reads the capability, so a fetch made there would answer any host a
+request names. `handleZcapVerify` therefore runs a pre-pass first
+(`peerInvokerGrant`). It verifies the embedded delegation chain to the Space
+controller with local-only resolution, through the same roots and chain
+inspectors the invocation applies. It also requires the invoked capability's
+sole `controller` to equal the DID. Only then does the verification that follows
+fetch that one DID's log (`lib/peerWebvh.ts`). A peer DID may invoke and may not
+delegate, since every link of the chain must be signed by a key this server
+resolves without a fetch. A root invocation by a foreign DID never fetches.
+`/kms`, revocation submission, create consent and List Spaces stay local-only.
+Every refusal is the plain masked `not-found`.
 
 **Chain inspection:** after signature verification, the dereferenced chain
 passes through two composed inspectors. The revocation inspector
@@ -1286,7 +1350,9 @@ the plain `not-found`. An under-authorized caller still cannot tell an absent
 target from one it may not see. The policy fallback in `authorize.ts` is
 unchanged. A denial with a named cause still falls through to the target's
 access-control policy, and the error surfaces only when the policy does not
-grant either.
+grant either. A peer server DID is the one holder that gets no named cause. Its
+key is resolved only after its chain verifies, so a revoked or expired grant
+leaves the key unresolved and the answer is the plain `not-found`.
 
 The plain `not-found` body is byte-identical whether the target is absent or the
 caller is under-authorized: same `title`, naming no entity noun, and the same

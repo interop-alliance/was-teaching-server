@@ -39,6 +39,11 @@ import { defaultBackend } from './storage.js'
 import { bufferedBodyLimit } from './lib/bodyLimit.js'
 import { onboardingTokenAuthorizer } from './provisioning.js'
 import {
+  fetchPeerLog,
+  PeerWebvhResolver,
+  type PeerLogFetcher
+} from './lib/peerWebvh.js'
+import {
   createServerSigningKey,
   provisionServerSpace,
   resolveServerDid
@@ -215,6 +220,15 @@ export interface FastifyWasOptions {
    * or steps it to drive the write stamps.
    */
   physicalClock?: () => number
+  /**
+   * Performs the HTTP GET of a peer server's `did:webvh` history log, which
+   * the capability verifier fetches when such a DID invokes a delegated
+   * capability whose chain verified (see `lib/peerWebvh.ts`). `undefined`
+   * means `fetchPeerLog`: `https` on the default port, no redirects, public
+   * addresses only. A test injects one to serve a peer log from memory. No
+   * configuration setting reaches it.
+   */
+  peerLogFetcher?: PeerLogFetcher
 }
 
 /**
@@ -249,7 +263,8 @@ async function wasPlugin(
     adminDid,
     originId,
     replicationClockBoundMs,
-    physicalClock
+    physicalClock,
+    peerLogFetcher
   } = options
 
   // Fail fast on a missing or malformed base URL: without one no ZCap
@@ -362,6 +377,15 @@ async function wasPlugin(
       ? undefined
       : await createServerSigningKey({ seed: serverKeySeed })
   fastify.decorate('serverSigningKey', serverSigningKey)
+  // The peer server DID resolver, one per app, so its cache and rate limits
+  // are not shared with another app in the same process.
+  fastify.decorate(
+    'peerWebvh',
+    new PeerWebvhResolver({
+      fetchLog: peerLogFetcher ?? fetchPeerLog,
+      logger: fastify.log
+    })
+  )
   if (serverSigningKey !== undefined) {
     fastify.addHook('onListen', async function warnWithoutServerDid() {
       const did = await resolveServerDid({

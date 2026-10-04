@@ -48,6 +48,13 @@
  * a history of its own -- a restore re-creates the Space and imports an older
  * log by design. The record is in memory, so a restart forgets it too.
  *
+ * One foreign shape is resolved here too, through `lib/peerWebvh.ts`: a peer
+ * server's own `did:webvh`, fetched from its host. It is reachable only through
+ * a verification context that carries a peer grant for exactly that DID, which
+ * the capability verifier issues after it has verified the delegation chain
+ * naming the DID as invoker. Every other caller passes no grant, so for it a
+ * foreign DID stays refused.
+ *
  * NOTE: the log is read through the control-plane `storage` (the default data
  * plane). Pointing a log Collection at a non-default data-plane backend is out
  * of scope; such a log would not be found here.
@@ -59,7 +66,11 @@ import {
   readLogFromString,
   resolveDID
 } from '@interop/did-method-webvh'
-import type { DIDDoc, DIDLog } from '@interop/did-method-webvh'
+import type {
+  DIDDoc,
+  DIDLog,
+  WitnessProofFileEntry
+} from '@interop/did-method-webvh'
 import {
   WEBVH_DOCUMENT_CACHE_MAX,
   WEBVH_DOCUMENT_CACHE_TTL,
@@ -70,6 +81,7 @@ import { backendScoped, deleteByPrefix } from './backendCache.js'
 import { parseSelfHostedWebvh, WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
 import type { StorageBackend } from '../types.js'
 import { etagOf } from './etag.js'
+import type { PeerWebvhResolver } from './peerWebvh.js'
 
 /**
  * What the resolver needs from the request layer: the storage backend the log
@@ -80,6 +92,13 @@ import { etagOf } from './etag.js'
 export interface WebvhResolverContext {
   storage: StorageBackend
   serverUrl: string
+  /**
+   * A peer server DID this one verification may resolve over the network, and
+   * the resolver that fetches it. Set only by the capability verifier, after
+   * it verified the delegation chain that names `did` as its invoker. Absent,
+   * every foreign `did:webvh` is refused.
+   */
+  peer?: { did: string; resolver: PeerWebvhResolver }
 }
 
 /**
@@ -164,7 +183,7 @@ const documentCaches = backendScoped(() => {
  * A recorded log head: the number of entries in the log and the head entry's
  * `versionId`.
  */
-type LogHead = { count: number; versionId: string }
+export type LogHead = { count: number; versionId: string }
 
 /**
  * The head of the last log verified for each DID, per storage backend, keyed
@@ -372,15 +391,27 @@ async function readLog({
  * @param options.storage {StorageBackend}   the request's storage backend
  * @param options.serverUrl {string}   this server's base URL
  * @param options.did {string}   the controller DID to resolve
+ * @param [options.keyId] {string}   the verification method a signature
+ *   names. A peer DID's resolver may fetch its log once more for it; a local
+ *   resolution ignores it
+ * @param [options.peer] {object}   a peer grant: `did` alone resolves through
+ *   its `resolver` when it is not hosted here
  * @returns {Promise<DIDDoc>}   the verified controller document
  */
 export async function resolveWebvhController({
   storage,
   serverUrl,
-  did
-}: WebvhResolverContext & { did: string }): Promise<DIDDoc> {
+  did,
+  keyId,
+  peer
+}: WebvhResolverContext & { did: string; keyId?: string }): Promise<DIDDoc> {
   const parsed = parseSelfHostedWebvh(did, { serverUrl })
   if (!parsed) {
+    if (peer !== undefined && peer.did === did) {
+      return keyId === undefined
+        ? await peer.resolver.resolve({ did, serverUrl })
+        : await peer.resolver.resolveKey({ did, keyId, serverUrl })
+    }
     throw new Error(
       `"${did}" is not a did:webvh DID hosted by this server; only ` +
         'self-hosted did:webvh controllers are resolvable here.'
@@ -569,18 +600,25 @@ async function resolveVerifiedDocument({
  * @param options {object}
  * @param options.did {string}   the DID the log must resolve to
  * @param options.log {DIDLog}
+ * @param [options.witnessProofs] {WitnessProofFileEntry[]}   the witness
+ *   proofs to check the log against. Absent, the library fetches the DID's
+ *   `did-witness.json` for a log that declares witnesses. A peer log passes
+ *   `[]`, so its verification makes no request of its own.
  * @returns {Promise<{ doc: DIDDoc, deactivated: boolean }>}
  */
 export async function verifyWebvhLog({
   did,
-  log
+  log,
+  witnessProofs
 }: {
   did: string
   log: DIDLog
+  witnessProofs?: WitnessProofFileEntry[]
 }): Promise<{ doc: DIDDoc; deactivated: boolean }> {
   const resolved = await resolveDID(did, {
     verifier: defaultWebvhLogVerifier,
-    resolveControlledDid: async () => log
+    resolveControlledDid: async () => log,
+    ...(witnessProofs !== undefined && { witnessProofs })
   })
   const { error, message } = resolved.didResolutionMetadata
   if (error) {
@@ -616,7 +654,13 @@ export async function verifyWebvhLog({
  * @param [options.head] {LogHead}
  * @returns {boolean}
  */
-function extendsHead({ log, head }: { log: DIDLog; head?: LogHead }): boolean {
+export function extendsHead({
+  log,
+  head
+}: {
+  log: DIDLog
+  head?: LogHead
+}): boolean {
   if (!head) {
     return true
   }
@@ -672,7 +716,8 @@ export function dereferenceFragment({
  */
 export function webvhDidResolverDriver({
   storage,
-  serverUrl
+  serverUrl,
+  peer
 }: WebvhResolverContext) {
   return {
     method: 'webvh',
@@ -695,7 +740,8 @@ export function webvhDidResolverDriver({
       const doc = await resolveWebvhController({
         storage,
         serverUrl,
-        did: didAuthority
+        did: didAuthority,
+        peer
       })
       if (fragment) {
         return dereferenceFragment({ doc, id: `${doc.id}#${fragment}` })

@@ -282,7 +282,8 @@ export async function fetchSpaceAndVerify({
     logger: request.log,
     attenuatedRootTarget: context.spaceRootTarget,
     revocation: { storage, scope: { spaceId } },
-    containerRule
+    containerRule,
+    peerWebvh: request.server.peerWebvh
   })
   return { ...context, rootInvocation: verifiedRootInvocation({ result }) }
 }

@@ -3,8 +3,10 @@
  * for the server's `did:webvh` with the `di` command-line tool from
  * `@interop/did-cli`, spawned as a child process against an in-process server.
  * Covers minting the DID over the server's export-signing key, rotating that
- * key after a seed change, rotating the log's update key, and restoring the
- * log after a data wipe. Each step checks `instance.serverDid` on `/service`.
+ * key after a seed change, rotating the log's update key, restoring the
+ * log after a data wipe, and enabling replication by listing the key under
+ * `capabilityInvocation` during a seed rotation. Each step checks
+ * `instance.serverDid` on `/service`.
  */
 import { it, describe, beforeAll, afterAll, expect } from 'vitest'
 import assert from 'node:assert'
@@ -16,8 +18,10 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import type { FastifyInstance } from 'fastify'
+import { pino } from 'pino'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
+import { loadSyncSigner } from '../src/lib/syncIdentity.js'
 import type { IDID } from '../src/types.js'
 import { startTestServer } from './helpers.js'
 
@@ -52,7 +56,7 @@ function printedDid(stdout: string): string {
 
 /**
  * Each runbook spawns several `di` processes, and each loads the CLI afresh.
- * The four take about five seconds together here, so on a shared CI runner
+ * The five take about six seconds together here, so on a shared CI runner
  * one runbook alone can cross Vitest's default per-test limit.
  */
 const RUNBOOK_TIMEOUT_MS = 60_000
@@ -129,6 +133,15 @@ describe(
     function signingKeyMultibase(exportSigningKey: string): string {
       assert.match(exportSigningKey, /^did:key:z/)
       return exportSigningKey.slice('did:key:'.length)
+    }
+
+    async function syncSigner() {
+      return loadSyncSigner({
+        storage: fastify.storage,
+        serverUrl,
+        signingKey: fastify.serverSigningKey,
+        logger: pino({ level: 'silent' })
+      })
     }
 
     async function putLog(): Promise<void> {
@@ -232,6 +245,11 @@ describe(
       assert.equal(served.status, 200)
       assert.equal(await served.text(), await readFile(logPath, 'utf8'))
       expect(await logVersion()).toMatch(/^1-/)
+
+      // `assertionMethod` alone signs exports but not sync invocations.
+      const loaded = await syncSigner()
+      assert.ok('refusal' in loaded)
+      assert.equal(loaded.refusal, 'no-capability-invocation')
     })
 
     it('seed rotation runbook: replace-key restores serverDid under a new seed', async () => {
@@ -288,6 +306,39 @@ describe(
       const served = await fetch(`${serverUrl}/space/server/id/did.jsonl`)
       assert.equal(served.status, 200)
       assert.equal(await served.text(), await readFile(logPath, 'utf8'))
+    })
+
+    it('enable replication runbook: replace-key --purpose adds capabilityInvocation', async () => {
+      await fastify.close()
+      seed = randomBytes(32)
+      await boot({ dir: wipedDataDir })
+      const instance = await serviceInstance()
+      assert.equal(instance.serverDid, undefined)
+      const before = await syncSigner()
+      assert.ok('refusal' in before)
+      assert.equal(before.refusal, 'no-server-did')
+
+      const multibase = signingKeyMultibase(instance.exportSigningKey)
+      await di([
+        'did',
+        'webvh',
+        'replace-key',
+        'server-id',
+        '--verification-key',
+        multibase,
+        '--purpose',
+        'assertionMethod',
+        'capabilityInvocation',
+        '-y'
+      ])
+      await putLog()
+
+      assert.equal((await serviceInstance()).serverDid, serverDid)
+      const after = await syncSigner()
+      assert.ok('signer' in after, JSON.stringify(after))
+      assert.equal(after.serverDid, serverDid)
+      assert.equal(after.signer.id, `${serverDid}#${multibase}`)
+      expect(await logVersion()).toMatch(/^4-/)
     })
   },
   RUNBOOK_TIMEOUT_MS

@@ -4,7 +4,8 @@
  * advertised on `/service` as `instance.exportSigningKey`, and the
  * `instance.serverDid` member that
  * appears only once the admin's history log at `server/id/did.jsonl` lists
- * that key under `assertionMethod` alone. Also the boot-time checks on a
+ * that key under `assertionMethod`, optionally beside `capabilityInvocation`
+ * and under no other relationship. Also the boot-time checks on a
  * stored `server` Space, and the refusal of the `ServerInstanceSpace` subtype
  * on a client create.
  */
@@ -257,7 +258,7 @@ describe('Server identity', () => {
       assert.notEqual(etag, etagBefore)
     })
 
-    it('is withdrawn when a log entry lists the key under another relationship too', async () => {
+    it('stays advertised when a log entry adds capabilityInvocation', async () => {
       const updated = await updateDID({
         log,
         signer: admin.logSigner,
@@ -275,11 +276,36 @@ describe('Server identity', () => {
       log = updated.log
 
       const { entry } = await serviceEntry()
+      assert.equal(entry.serverDid, did)
+    })
+
+    it('is withdrawn when a log entry lists the key under a refused relationship too', async () => {
+      const updated = await updateDID({
+        log,
+        signer: admin.logSigner,
+        vmIdFragment: 'multibase',
+        verificationMethods: [
+          {
+            type: 'Multikey',
+            publicKeyMultibase: serverKeyMultibase,
+            purpose: [
+              'assertionMethod',
+              'capabilityInvocation',
+              'capabilityDelegation'
+            ]
+          }
+        ] as any
+      })
+      const published = await publishLog(logToJsonlString(updated.log))
+      assert.equal(published.status, 204)
+      log = updated.log
+
+      const { entry } = await serviceEntry()
       assert.equal(entry.serverDid, undefined)
       assert.equal(entry.exportSigningKey, exportSigningKey)
     })
 
-    it('returns once a later entry restores assertionMethod alone', async () => {
+    it('returns once a later entry drops the refused relationship', async () => {
       const updated = await updateDID({
         log,
         signer: admin.logSigner,
@@ -328,17 +354,70 @@ describe('signingKeyRelationshipProblem', () => {
   const key = 'z6MkServerKey'
   const did = 'did:webvh:scid:localhost:space:server:id'
 
-  it('accepts the key under assertionMethod alone', () => {
-    const doc = {
+  /**
+   * A document listing the key, as method `#k1`, under `relationships`.
+   */
+  function docUnder(relationships: string[]): any {
+    const doc: Record<string, unknown> = {
       id: did,
-      verificationMethod: [{ id: `${did}#k1`, publicKeyMultibase: key }],
-      assertionMethod: [`${did}#k1`]
-    } as any
+      verificationMethod: [{ id: `${did}#k1`, publicKeyMultibase: key }]
+    }
+    for (const relationship of relationships) {
+      doc[relationship] = [`${did}#k1`]
+    }
+    return doc
+  }
+
+  it('accepts the key under assertionMethod alone', () => {
     assert.equal(
-      signingKeyRelationshipProblem({ doc, publicKeyMultibase: key }),
+      signingKeyRelationshipProblem({
+        doc: docUnder(['assertionMethod']),
+        publicKeyMultibase: key
+      }),
       undefined
     )
   })
+
+  it('accepts the key under assertionMethod and capabilityInvocation', () => {
+    assert.equal(
+      signingKeyRelationshipProblem({
+        doc: docUnder(['assertionMethod', 'capabilityInvocation']),
+        publicKeyMultibase: key
+      }),
+      undefined
+    )
+  })
+
+  it('refuses capabilityInvocation without assertionMethod', () => {
+    assert.match(
+      signingKeyRelationshipProblem({
+        doc: docUnder(['capabilityInvocation']),
+        publicKeyMultibase: key
+      })!,
+      /does not list the export-signing key under "assertionMethod"/
+    )
+  })
+
+  for (const refused of [
+    'capabilityDelegation',
+    'authentication',
+    'keyAgreement'
+  ]) {
+    it(`refuses ${refused}, with or without capabilityInvocation`, () => {
+      for (const relationships of [
+        ['assertionMethod', refused],
+        ['assertionMethod', 'capabilityInvocation', refused]
+      ]) {
+        const problem = signingKeyRelationshipProblem({
+          doc: docUnder(relationships),
+          publicKeyMultibase: key
+        })
+        assert.ok(problem, `${relationships.join(', ')} is refused`)
+        // Only the refused relationship is named as the problem.
+        assert.ok(problem.includes(`under "${refused}";`), problem)
+      }
+    })
+  }
 
   it('reads every method carrying the key, not just the first', () => {
     const doc = {
@@ -348,11 +427,11 @@ describe('signingKeyRelationshipProblem', () => {
         { id: `${did}#k2`, publicKeyMultibase: key }
       ],
       assertionMethod: [`${did}#k1`],
-      capabilityInvocation: [`${did}#k2`]
+      authentication: [`${did}#k2`]
     } as any
     assert.match(
       signingKeyRelationshipProblem({ doc, publicKeyMultibase: key })!,
-      /"capabilityInvocation"/
+      /"authentication"/
     )
   })
 

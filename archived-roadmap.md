@@ -4790,3 +4790,70 @@ retried delete answers 404; an id never used answers 204. Postgres keeps the
 `collections` row with a `deleted` column (migration v10).
 
 ---
+
+### WAS-175: [M] [blocks 2] Server sync key and verification of a peer's invocations
+
+- status: done
+- done: 2026-10-03
+- priority: medium
+- labels: replication, security, zcap, webvh, service-description
+- blocks: WAS-96, WAS-176
+- touches:
+  - was-teaching-server: `src/lib/serverIdentity.ts`, `src/zcap.ts`,
+    `src/lib/webvhController.ts`, `docs/admin-guide.md` (a `di` runbook step) --
+    shipped here, with `src/lib/syncIdentity.ts`, `src/lib/peerWebvh.ts` and
+    `src/lib/outboundAddress.ts`; `src/serviceDescription.ts` unaffected (no
+    member names the key)
+  - wallet-attached-storage-spec: the peer `space:server:id` fetch, its bounds
+    and the one-key signing rule -- covered by WASS-50 (the replication
+    companion specification); the service description's `instance` member is
+    unaffected
+  - freewallet: delegating the pull capability to a server identity -- filed
+    FW-638
+  - did-cli: `di` 0.17.0 cannot add a relationship to a key the document already
+    lists, so the runbook adds `capabilityInvocation` at mint or at a seed
+    rotation -- filed CLI-24
+- acceptance:
+  - [x] The one seed key serves export signing and sync invocation; no second
+        key is derived and no `/service` member names it. `resolveServerDid` and
+        the import statement check require the key under `assertionMethod`,
+        permit `capabilityInvocation`, and still refuse `capabilityDelegation`,
+        `authentication` and `keyAgreement`
+  - [x] The admin guide shows adding `capabilityInvocation` to the key's log
+        entry; that relationship is the switch that enables replication
+  - [x] The server signs sync invocations with the `did:webvh` method
+        `{serverDid}#{key}`; a controller delegates the pull capability to
+        `serverDid`; a registration on a server with no advertised `serverDid`,
+        or whose log lacks the key under `capabilityInvocation`, is refused
+        naming that
+  - [x] A foreign `did:webvh` is resolved over the network only when it is the
+        invoker named by a delegated capability whose chain already verified to
+        the Space controller and its path is `space:server:id`; the log is
+        fetched from that host, verified like any log, cached per DID,
+        re-fetched once when a signature names a key the cached document lacks,
+        with a size bound and timeout; any other foreign `did:webvh` stays
+        refused
+  - [x] Tests cover the `did:webvh` signing form, the bounded fetch, the
+        re-fetch on a key miss, and the refusals
+
+Context (discovered-from: WAS-96, decision 6c). The pulling server's own
+`did:webvh` lives in its `server` Space, which no user controller replicates, so
+the serving server cannot resolve it from storage. The fetch is the first
+network resolution in this server and is bounded by shape and by the
+controller's delegation. WAS-162's findings note covers the general question and
+applies here; this item takes the bounded form only.
+
+Shipped 2026-10-03. There is no `did:key` signing form (decision 0003), so the
+acceptance line on tests names the `did:webvh` form alone. `loadSyncSigner`
+(`src/lib/syncIdentity.ts`) returns the signer or the refusal reason; the
+registration route that answers with it is WAS-176's. The fetch gate is a
+pre-pass in `handleZcapVerify` on the WAS route families only: `/kms`,
+revocation submission, create consent and List Spaces stay local-only. A peer
+DID may invoke and may not delegate. A peer whose grant is revoked or expired
+gets the plain masked `not-found`, since the pre-pass refuses before its key
+resolves. A refresh of a DID with a verified head does not draw on the per-host
+fetch window. Review findings left open: WAS-197 (the witness fetch in
+`verifyWebvhLog`, older than this item) and WAS-198 (head records and fetch
+bounds that outlive a restart or an eviction).
+
+---

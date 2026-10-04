@@ -13,6 +13,7 @@ import type {
   CapabilityChainDetails,
   InspectCapabilityChain
 } from '@interop/zcap'
+import { ProblemError, StorageError } from '../errors.js'
 import type {
   CapabilitySummary,
   RevocationScope,
@@ -110,7 +111,17 @@ export function revocationChainInspector({
     if (capabilities.length === 0) {
       return { valid: true }
     }
-    const revoked = await storage.isRevoked({ scope, capabilities })
+    let revoked: boolean
+    try {
+      revoked = await storage.isRevoked({ scope, capabilities })
+    } catch (err) {
+      // The verifier reports whatever this throws as a failed verification.
+      // A backend fault must stay recognizable as a 5xx there.
+      if (err instanceof ProblemError) {
+        throw err
+      }
+      throw new StorageError({ cause: err as Error })
+    }
     if (revoked) {
       const error = new Error(
         'One or more capabilities in the chain have been revoked.'

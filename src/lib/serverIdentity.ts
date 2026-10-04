@@ -6,7 +6,8 @@
  * The server holds no update key for its own DID. The admin named by
  * `WAS_ADMIN_DID` controls the `server` Space and writes the log
  * (`/space/server/id/did.jsonl`) through the ordinary front door, listing the
- * server's key as a verification method under `assertionMethod` only. The
+ * server's key as a verification method under `assertionMethod`, and under
+ * `capabilityInvocation` too when the server is to sign sync invocations. The
  * server's part is to provision that Space at boot, advertise its key on
  * `/service` as `exportSigningKey`, and advertise the DID as `serverDid` once the
  * resolved current document lists the key. Until then it signs nothing.
@@ -23,7 +24,8 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import {
   CountQuotaExceededError,
   PreconditionFailedError,
-  ProblemError
+  ProblemError,
+  isServerFault
 } from '../errors.js'
 import { backendScoped } from './backendCache.js'
 import { etagOf } from './etag.js'
@@ -163,8 +165,10 @@ const serverDidMemo = backendScoped<{
 
 /**
  * Resolves the server's DID from the stored log and checks that the resolved
- * current document lists the export-signing key under `assertionMethod` and
- * under no other relationship. Returns the DID string when it does, and
+ * current document lists the export-signing key the way
+ * {@link signingKeyRelationshipProblem} requires: under `assertionMethod`,
+ * optionally under `capabilityInvocation`, and under no other relationship.
+ * Returns the DID string when it does, and
  * `undefined` otherwise: the log is absent, does not parse, names a DID not
  * hosted at `server/id` of this server, fails verification, or lists the key
  * wrongly. The reason is logged at `warn`, since each is an operator matter.
@@ -267,6 +271,11 @@ async function resolveServerDidUncached({
   try {
     doc = await resolveWebvhController({ storage, serverUrl, did })
   } catch (err) {
+    // A storage fault says nothing about the log. It keeps its 5xx, and no
+    // outcome is memoized for it.
+    if (isServerFault(err)) {
+      throw err
+    }
     logger.warn(
       { err, did },
       'The server history log does not verify; the server identity is not ' +
@@ -340,11 +349,26 @@ async function readHeadDid({
 }
 
 /**
+ * The relationship the server key must be listed under, for export signing.
+ */
+const REQUIRED_RELATIONSHIP = 'assertionMethod'
+
+/**
+ * The one relationship the server key may also be listed under. It lets the
+ * server sign sync invocations with the same key. The admin adds it to enable
+ * replication.
+ */
+const PERMITTED_RELATIONSHIP = 'capabilityInvocation'
+
+/**
  * Why the resolved document does not list the export-signing key the way the
- * server requires: under `assertionMethod`, and under no other relationship,
- * so the key can neither invoke a capability nor be read as a ladder or
- * transient annex method by the client-annex clause. Returns `undefined` when
- * the document lists it correctly.
+ * server requires. The key must be listed under `assertionMethod`. It may also
+ * be listed under `capabilityInvocation`. It must not be listed under
+ * `capabilityDelegation`, `authentication` or `keyAgreement`. A key that could
+ * delegate would be read as a ladder or transient annex method by the
+ * client-annex clause. The server has no use for the other two. Returns
+ * `undefined` when the document lists it correctly. This one predicate serves
+ * `/service`, export signing and the import statement check.
  *
  * @param options {object}
  * @param options.doc {DIDDoc}   the resolved current document
@@ -380,17 +404,19 @@ export function signingKeyRelationshipProblem({
   if (methodIds.size === 0 && listedUnder.length === 0) {
     return 'The resolved server document lists no verification method for the export-signing key.'
   }
-  if (!listedUnder.includes('assertionMethod')) {
-    return 'The resolved server document does not list the export-signing key under "assertionMethod".'
+  if (!listedUnder.includes(REQUIRED_RELATIONSHIP)) {
+    return `The resolved server document does not list the export-signing key under "${REQUIRED_RELATIONSHIP}".`
   }
-  const others = listedUnder.filter(
-    relationship => relationship !== 'assertionMethod'
+  const refused = listedUnder.filter(
+    relationship =>
+      relationship !== REQUIRED_RELATIONSHIP &&
+      relationship !== PERMITTED_RELATIONSHIP
   )
-  if (others.length > 0) {
+  if (refused.length > 0) {
     return (
       'The resolved server document lists the export-signing key under ' +
-      `${others.map(name => `"${name}"`).join(', ')} as well as ` +
-      '"assertionMethod"; it must hold "assertionMethod" alone.'
+      `${refused.map(name => `"${name}"`).join(', ')}; it may be listed ` +
+      `only under "${REQUIRED_RELATIONSHIP}" and "${PERMITTED_RELATIONSHIP}".`
     )
   }
   return undefined

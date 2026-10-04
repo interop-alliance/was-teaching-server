@@ -12,7 +12,7 @@ import { Agent } from 'undici'
 import { createApp } from '../src/server.js'
 import type { FastifyInstance } from 'fastify'
 import { openTempBackend } from './helpers.js'
-import { createPinnedLookup } from '../src/corsProxy.js'
+import { createPinnedLookup } from '../src/lib/outboundAddress.js'
 import {
   CORS_PROXY_AGENT_CACHE_TTL,
   CORS_PROXY_HOST_CHECK_CACHE_TTL,
