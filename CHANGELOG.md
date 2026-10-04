@@ -1,5 +1,11 @@
 # History
 
+## 0.41.1 - TBD
+
+### Fixed
+
+- Widen the import-reservation test's quota margin for block-counted `du`.
+
 ## 0.41.0 - 2026-10-04
 
 ### Changed

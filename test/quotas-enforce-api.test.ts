@@ -254,10 +254,14 @@ describe('Quota enforcement (backend)', () => {
     // archive size sitting in the usage snapshot, refusing unrelated writes
     // with 507 until the TTL expired.
     const sourceBackend = await openTempBackend({ prefix: 'was-test-src-' })
-    // Capacity fits the archive once, but not the archive twice over.
+    // Capacity fits the archive twice (the stored copy plus the re-import's
+    // reservation), but not three times, so an archive-sized write afterward
+    // is refused if the reservation lingers. The spare 60 KB covers the
+    // Space's own files and directories, which `du` counts in whole blocks on
+    // an on-disk filesystem.
     const targetBackend = await openTempBackend({
       prefix: 'was-test-dst-',
-      capacityBytes: 120_000
+      capacityBytes: 260_000
     })
     const importSpaceId = `quota-import-${crypto.randomUUID()}`
     const seed = async (backend: FileSystemBackend) => {
@@ -288,8 +292,8 @@ describe('Quota enforcement (backend)', () => {
         input: {
           kind: 'binary',
           contentType: 'application/octet-stream',
-          declaredBytes: 50_000,
-          stream: bufferStream(Buffer.alloc(50_000, 0x61))
+          declaredBytes: 100_000,
+          stream: bufferStream(Buffer.alloc(100_000, 0x61))
         }
       })
       await seed(targetBackend)
@@ -314,8 +318,8 @@ describe('Quota enforcement (backend)', () => {
         input: {
           kind: 'binary',
           contentType: 'application/octet-stream',
-          declaredBytes: 40_000,
-          stream: bufferStream(Buffer.alloc(40_000, 0x61))
+          declaredBytes: 100_000,
+          stream: bufferStream(Buffer.alloc(100_000, 0x61))
         }
       })
     } finally {
