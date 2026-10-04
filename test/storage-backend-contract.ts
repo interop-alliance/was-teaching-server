@@ -31,6 +31,7 @@ import {
 import {
   PreconditionFailedError,
   ProblemError,
+  ResourceImmutableError,
   ResourceNotFoundError,
   StorageError,
   UniqueAttributeConflictError,
@@ -5162,6 +5163,439 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             record
           })
         ).rejects.toBeInstanceOf(StorageError)
+      })
+    })
+
+    describe('write-once Collections (immutable)', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-immutable'
+      const collectionId = 'col'
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId, collectionId)
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      /**
+       * The current feed checkpoint of the Collection.
+       */
+      async function feedCheckpoint(): Promise<number | null | undefined> {
+        const page = await harness.backend.changesSince!({
+          spaceId,
+          collectionId,
+          limit: 100
+        })
+        return page.checkpoint
+      }
+
+      it('a repeat of the stored bytes answers the stored validator and takes no feed position', async () => {
+        const { backend } = harness
+        const created = await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'repeat',
+          input: jsonInput({ a: 1 }),
+          immutable: true
+        })
+        const before = await feedCheckpoint()
+        const repeated = await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'repeat',
+          input: jsonInput({ a: 1 }),
+          immutable: true
+        })
+        assert.equal(formatEtag(repeated), formatEtag(created))
+        assert.equal(await feedCheckpoint(), before)
+        const stored = await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId: 'repeat'
+        })
+        assert.equal(etagOf(stored!), formatEtag(created))
+      })
+
+      it('a different body over a live Resource is refused and leaves the stored bytes', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'changed',
+          input: jsonInput({ a: 1 }),
+          immutable: true
+        })
+        await expect(
+          backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId: 'changed',
+            input: jsonInput({ a: 2 }),
+            immutable: true
+          })
+        ).rejects.toBeInstanceOf(ResourceImmutableError)
+        const read = await backend.getResource({
+          spaceId,
+          collectionId,
+          resourceId: 'changed'
+        })
+        assert.equal(await streamToString(read.resourceStream), '{"a":1}')
+      })
+
+      it('equal bytes under a different content type are refused', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'typed',
+          input: binaryInput(Buffer.from('same bytes'), {
+            contentType: 'text/plain'
+          }),
+          immutable: true
+        })
+        await expect(
+          backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId: 'typed',
+            input: binaryInput(Buffer.from('same bytes')),
+            immutable: true
+          })
+        ).rejects.toBeInstanceOf(ResourceImmutableError)
+      })
+
+      it('compares a binary body byte for byte', async () => {
+        const { backend } = harness
+        const bytes = randomBytes(4096)
+        const created = await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'blob',
+          input: binaryInput(bytes),
+          immutable: true
+        })
+        const repeated = await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'blob',
+          input: binaryInput(Buffer.from(bytes)),
+          immutable: true
+        })
+        assert.equal(formatEtag(repeated), formatEtag(created))
+        const other = Buffer.from(bytes)
+        other[4095] = other[4095]! ^ 1
+        await expect(
+          backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId: 'blob',
+            input: binaryInput(other),
+            immutable: true
+          })
+        ).rejects.toBeInstanceOf(ResourceImmutableError)
+      })
+
+      it('preconditions are evaluated first', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'guarded',
+          input: jsonInput({ a: 1 }),
+          immutable: true
+        })
+        await expect(
+          backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId: 'guarded',
+            input: jsonInput({ a: 1 }),
+            immutable: true,
+            ifNoneMatch: '*'
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+      })
+
+      it('a write over a tombstone is an ordinary create', async () => {
+        const { backend } = harness
+        const created = await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'tombstoned',
+          input: jsonInput({ a: 1 }),
+          immutable: true
+        })
+        await backend.deleteResource({
+          spaceId,
+          collectionId,
+          resourceId: 'tombstoned'
+        })
+        const before = await feedCheckpoint()
+        const recreated = await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'tombstoned',
+          input: jsonInput({ a: 2 }),
+          immutable: true
+        })
+        assertValidatorAdvanced(created, recreated)
+        assert.ok((await feedCheckpoint())! > before!)
+        const read = await backend.getResource({
+          spaceId,
+          collectionId,
+          resourceId: 'tombstoned'
+        })
+        assert.equal(await streamToString(read.resourceStream), '{"a":2}')
+      })
+
+      it('chunks follow the same rule', async () => {
+        const { backend } = harness
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'chunked',
+          input: jsonInput({ manifest: true }),
+          immutable: true
+        })
+        const chunk = await backend.writeChunk({
+          spaceId,
+          collectionId,
+          resourceId: 'chunked',
+          chunkIndex: 0,
+          input: binaryInput(Buffer.from('chunk zero')),
+          immutable: true
+        })
+        const repeated = await backend.writeChunk({
+          spaceId,
+          collectionId,
+          resourceId: 'chunked',
+          chunkIndex: 0,
+          input: binaryInput(Buffer.from('chunk zero')),
+          immutable: true
+        })
+        assert.equal(formatEtag(repeated), formatEtag(chunk))
+        await expect(
+          backend.writeChunk({
+            spaceId,
+            collectionId,
+            resourceId: 'chunked',
+            chunkIndex: 0,
+            input: binaryInput(Buffer.from('chunk 0 v2')),
+            immutable: true
+          })
+        ).rejects.toBeInstanceOf(ResourceImmutableError)
+        // A new index is a create.
+        await backend.writeChunk({
+          spaceId,
+          collectionId,
+          resourceId: 'chunked',
+          chunkIndex: 1,
+          input: binaryInput(Buffer.from('chunk one')),
+          immutable: true
+        })
+        const read = await backend.getChunk({
+          spaceId,
+          collectionId,
+          resourceId: 'chunked',
+          chunkIndex: 0
+        })
+        assert.equal(await streamToString(read.resourceStream), 'chunk zero')
+      })
+    })
+
+    describe('write-once Collections (rechecked under the lock)', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-immutable-recheck'
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId, 'plain')
+        await provisionSpace(harness.backend, spaceId, 'governed')
+        await provisionSpace(harness.backend, spaceId, 'unique')
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('hands the `immutable` recheck no log on an ungoverned Collection, and only over a live Resource', async () => {
+        const { backend } = harness
+        const seen: unknown[] = []
+        const immutableUnder = async ({ log }: { log?: unknown }) => {
+          seen.push(log)
+          return false
+        }
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'plain',
+          resourceId: 'doc',
+          input: jsonInput({ a: 1 }),
+          immutable: immutableUnder
+        })
+        // A create has no stored bytes to protect: the recheck is not run.
+        assert.deepEqual(seen, [])
+        await backend.writeResource({
+          spaceId,
+          collectionId: 'plain',
+          resourceId: 'doc',
+          input: jsonInput({ a: 2 }),
+          immutable: immutableUnder
+        })
+        assert.deepEqual(seen, [undefined])
+        const read = await backend.getResource({
+          spaceId,
+          collectionId: 'plain',
+          resourceId: 'doc'
+        })
+        assert.equal(await streamToString(read.resourceStream), '{"a":2}')
+      })
+
+      it('applies the rule when the log read under the lock declares it', async () => {
+        const { backend } = harness
+        const collectionId = 'governed'
+        const created = await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          input: jsonInput({ a: 1 })
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'chunked',
+          input: jsonInput({ manifest: true })
+        })
+        const chunk = await backend.writeChunk({
+          spaceId,
+          collectionId,
+          resourceId: 'chunked',
+          chunkIndex: 0,
+          input: binaryInput(Buffer.from('chunk zero'))
+        })
+        // The handler read the Collection as mutable; the log lands after.
+        const body = '{"state":{"revisions":{"immutable":true}}}\n'
+        const logValidator = await backend.writeCollectionLog({
+          spaceId,
+          collectionId,
+          body,
+          ifNoneMatch: '*'
+        })
+        let seenLog: { body: string; validator: unknown } | undefined
+        const immutableUnder = async ({
+          log
+        }: {
+          log?: { body: string; validator: unknown }
+        }) => {
+          seenLog = log
+          return log !== undefined
+        }
+        await expect(
+          backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId: 'doc',
+            input: jsonInput({ a: 2 }),
+            immutable: immutableUnder
+          })
+        ).rejects.toBeInstanceOf(ResourceImmutableError)
+        assert.equal(seenLog?.body, body)
+        assert.deepEqual(seenLog?.validator, logValidator)
+        const repeated = await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          input: jsonInput({ a: 1 }),
+          immutable: immutableUnder
+        })
+        assert.equal(formatEtag(repeated), formatEtag(created))
+
+        await expect(
+          backend.writeChunk({
+            spaceId,
+            collectionId,
+            resourceId: 'chunked',
+            chunkIndex: 0,
+            input: binaryInput(Buffer.from('chunk 0 v2')),
+            immutable: immutableUnder
+          })
+        ).rejects.toBeInstanceOf(ResourceImmutableError)
+        const repeatedChunk = await backend.writeChunk({
+          spaceId,
+          collectionId,
+          resourceId: 'chunked',
+          chunkIndex: 0,
+          input: binaryInput(Buffer.from('chunk zero')),
+          immutable: immutableUnder
+        })
+        assert.equal(formatEtag(repeatedChunk), formatEtag(chunk))
+      })
+
+      it('a repeat ignores media type parameters and case', async () => {
+        const { backend } = harness
+        const created = await backend.writeResource({
+          spaceId,
+          collectionId: 'plain',
+          resourceId: 'typed',
+          input: binaryInput(Buffer.from('same bytes'), {
+            contentType: 'text/plain'
+          }),
+          immutable: true
+        })
+        const repeated = await backend.writeResource({
+          spaceId,
+          collectionId: 'plain',
+          resourceId: 'typed',
+          input: binaryInput(Buffer.from('same bytes'), {
+            contentType: 'Text/Plain; charset=utf-8'
+          }),
+          immutable: true
+        })
+        assert.equal(formatEtag(repeated), formatEtag(created))
+      })
+
+      it('decides the rule before the unique-claim scan', async () => {
+        const { backend } = harness
+        const collectionId = 'unique'
+        const claim = (id: string, value: string) => ({
+          id,
+          sequence: 0,
+          indexed: [
+            {
+              hmac: { id: 'urn:hmac:immutable', type: 'Sha256HmacKey2019' },
+              sequence: 0,
+              attributes: [{ name: 'n1', value, unique: true }]
+            }
+          ],
+          jwe: {
+            protected: 'eyJlbmMiOiJYQzIwUCJ9',
+            iv: 'aXY',
+            ciphertext: 'Y2lwaGVydGV4dA',
+            tag: 'dGFn'
+          }
+        })
+        const write = (resourceId: string, value: string) =>
+          backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId,
+            input: jsonInput(claim(resourceId, value)),
+            immutable: true
+          })
+        await write('holder', 'v1')
+        const created = await write('other', 'v2')
+        // A changed body that also collides with `holder`'s claim is
+        // answered by the write-once rule, not the claim.
+        await expect(write('other', 'v1')).rejects.toBeInstanceOf(
+          ResourceImmutableError
+        )
+        // A repeat claims nothing new and is still the no-op.
+        assert.equal(
+          formatEtag(await write('other', 'v2')),
+          formatEtag(created)
+        )
+        // A create still pays for the scan.
+        await expect(write('claimant', 'v1')).rejects.toBeInstanceOf(
+          UniqueAttributeConflictError
+        )
       })
     })
 

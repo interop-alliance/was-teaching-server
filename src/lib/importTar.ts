@@ -20,10 +20,12 @@ import { assertEncryptedWriteConforms } from './encryption.js'
 import { assertGoverningLogAppend } from './governedLog.js'
 import { importedGeneration, isMintedGeneration } from './etag.js'
 import { isPlainObject } from './isPlainObject.js'
+import { assertRevisionsTransition, assertValidRevisions } from './revisions.js'
 import { spaceTypeChangeProblem, spaceTypeProblem } from './spaceType.js'
 import { InvalidImportError, ProblemError } from '../errors.js'
 import type {
   CollectionMetadata,
+  CollectionRevisions,
   PolicyDocument,
   RevocationRecord,
   SpaceMetadata,
@@ -80,7 +82,8 @@ function collectionLogFileId(fileName: string): string | undefined {
  * @param options {object}
  * @param options.collectionId {string}   for the error detail
  * @param options.bytes {Buffer}   the archive entry's bytes
- * @returns {void}
+ * @returns {{ revisions?: CollectionRevisions }}   the log head's `revisions`
+ *   slot
  */
 function assertImportedCollectionLog({
   collectionId,
@@ -88,7 +91,7 @@ function assertImportedCollectionLog({
 }: {
   collectionId: string
   bytes: Buffer
-}): void {
+}): { revisions?: CollectionRevisions } {
   const where = `history log of Collection '${collectionId}'`
   let record: unknown
   try {
@@ -112,11 +115,68 @@ function assertImportedCollectionLog({
     })
   }
   try {
-    assertGoverningLogAppend({ body: record.body, requestName: 'Import Space' })
+    return assertGoverningLogAppend({
+      body: record.body,
+      requestName: 'Import Space'
+    })
   } catch (err) {
     if (err instanceof ProblemError) {
       throw new InvalidImportError({
         message: `The ${where} is malformed: ${err.detail}`,
+        cause: err
+      })
+    }
+    throw err
+  }
+}
+
+/**
+ * Checks an archived Collection Metadata object's `revisions` descriptor
+ * before it is carried on the plan. It passes the shape check a Collection
+ * Metadata write passes, so an import cannot store a `resolution` this server
+ * does not apply or an `immutable` that is not a boolean. When the archive
+ * also carries the Collection's governing history log, the log head's
+ * `revisions` slot must keep what the archived object sets, the check the
+ * log's guarded create passed. The served descriptor is the log's, so an
+ * archive that fails it would import a write-once Collection as a mutable
+ * one. Fails the import (`InvalidImportError`, 400).
+ * @param options {object}
+ * @param options.collectionId {string}   for the error detail
+ * @param options.collectionMetadata {unknown}   the archived object
+ * @param [options.log] {{ revisions?: CollectionRevisions }}   the archived
+ *   log head's `revisions` slot, when the archive carries a log
+ * @returns {void}
+ */
+function assertImportedRevisions({
+  collectionId,
+  collectionMetadata,
+  log
+}: {
+  collectionId: string
+  collectionMetadata: unknown
+  log?: { revisions?: CollectionRevisions }
+}): void {
+  const stored = isPlainObject(collectionMetadata)
+    ? collectionMetadata.revisions
+    : undefined
+  try {
+    const revisions = assertValidRevisions({
+      revisions: stored,
+      requestName: 'Import Space'
+    })
+    if (log !== undefined) {
+      assertRevisionsTransition({
+        existing: revisions,
+        incoming: log.revisions,
+        declaring: true
+      })
+    }
+  } catch (err) {
+    if (err instanceof ProblemError) {
+      throw new InvalidImportError({
+        message:
+          `The 'revisions' descriptor of Collection '${collectionId}' is ` +
+          `malformed: ${err.detail}`,
         cause: err
       })
     }
@@ -531,6 +591,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     const resourceIds = new Set<string>()
     let collectionPolicy: PolicyDocument | undefined
     let collectionLog: Buffer | undefined
+    let collectionLogHead: { revisions?: CollectionRevisions } | undefined
     const resourcePolicies = new Map<string, PolicyDocument>()
     const resourceMetadata = new Map<string, Buffer>()
     const chunkFiles: ImportPlanChunkFile[] = []
@@ -608,7 +669,10 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       const collectionLogId = collectionLogFileId(fileName)
       if (collectionLogId !== undefined) {
         if (collectionLogId === collectionId) {
-          assertImportedCollectionLog({ collectionId, bytes: entry.body })
+          collectionLogHead = assertImportedCollectionLog({
+            collectionId,
+            bytes: entry.body
+          })
           collectionLog = entry.body
         }
         continue
@@ -663,6 +727,12 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
         body: entry.body
       })
     }
+
+    assertImportedRevisions({
+      collectionId,
+      collectionMetadata,
+      log: collectionLogHead
+    })
 
     return {
       collectionId,

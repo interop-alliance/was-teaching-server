@@ -1397,7 +1397,14 @@ spec decision 0011. The list stays as the derivation.
    invariant 14.
 7. Import under an immutable Collection (matrix cell Import / C): whether import
    respects the digest rule or bypasses it as it does the envelope rule. Owner:
-   WAS-173.
+   WAS-173. Decided 2026-10-03: bypasses, pending maintainer confirmation.
+   Import is skip-not-overwrite, so it never changes a stored Resource: an
+   archived body that differs from the stored one is skipped, not refused, and
+   counted in `resourcesSkipped` (pinned in `test/revisions-api.test.ts`).
+   Checked at implementation: import does not bypass the envelope rule here.
+   `assertImportBodiesFit` runs the fail-closed envelope check on every staged
+   body, so the premise "as it does the envelope rule" does not hold for this
+   server.
 8. (review 2026-10-01) wallet-core's account on more than one host: the
    chain-head pin keyed by Space id, the single `host` in the account pointer,
    and the DID-derived host in the annex log (section 3). A lagging replica

@@ -7,7 +7,8 @@ import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import {
   fetchCollectionAndBackend,
   getCollectionOrThrow,
-  getResourceMetadataOrThrow
+  getResourceMetadataOrThrow,
+  writeOnceOptions
 } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { invokerDid } from '../auth-header-hooks.js'
@@ -157,6 +158,15 @@ export class ResourceRequest {
         epoch,
         writerId,
         ...(uniqueIndexes.length > 0 && { uniqueIndexes }),
+        // A write-once Collection (`revisions.immutable`): the backend refuses
+        // a write that would change a live Resource's bytes and answers a
+        // repeat of them with the current `ETag`, atomically with the write.
+        ...writeOnceOptions({
+          request,
+          spaceId,
+          collectionId,
+          collectionMetadata
+        }),
         ...preconditions
       })
     } catch (err) {

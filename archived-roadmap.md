@@ -4659,3 +4659,76 @@ exported by a pre-stamp release is not a supported import input (greenfield
 only), so import does nothing about the retired members such an archive carries.
 
 ---
+
+### WAS-173: [M] [blocks 2] `revisions` descriptor on the Collection Metadata object
+
+- status: done
+- done: 2026-10-03
+- priority: medium
+- labels: data-model, wire-contract, collection-metadata
+- blocks: WAS-96, WAS-176
+- touches:
+  - wallet-attached-storage-spec: the Collection Metadata data model (filed as
+    WASS-49, which also carries the `resource-immutable` and
+    `revisions-immutable` registry entries and the encrypted-collections
+    `state.revisions` slot)
+  - storage-core: `CollectionMetadata` (shipped 2026-10-03, unpublished:
+    storage-core 0.30.0 adds `CollectionRevisions`,
+    `CollectionMetadata.revisions`, and the `REVISIONS_IMMUTABLE` /
+    `RESOURCE_IMMUTABLE` problem types; the server consumes it through a `link:`
+    until it is published)
+  - was-teaching-server: `src/lib/encryption.ts` (the descriptor-transition
+    pattern to follow), `CollectionRequest`, both backends' Resource write paths
+    (the immutable check), the governed-log derivation (shipped 2026-10-03:
+    `src/lib/revisions.ts`, the transition check on Create Collection, Update
+    Collection and the governed log, the derivation from `state.revisions`, and
+    the write-once rule in both backends' Resource and chunk write paths)
+  - conformance-suite: refusals and the immutable semantics (filed as PWSCS-19)
+- acceptance:
+  - [x] `revisions` is an optional object with `resolution` (closed set;
+        `last-writer-wins` only in v1, default when absent), `immutable`
+        (boolean, default false), and an optional client-declared `merge` object
+        served verbatim; an unknown `resolution` is refused with
+        `invalid-request-body` (400)
+  - [x] Once set, `resolution` and `immutable` are immutable, refused with the
+        same transition error class `encryption` uses; a governed Collection's
+        descriptor is derived from the log like `encryption`
+  - [x] On an `immutable` Collection an update of an existing Resource is
+        refused (error name pending sign-off), a re-create over a tombstone or a
+        repeat create with an equal body `Digest` is idempotent, and one with a
+        different digest is refused
+  - [x] Tests cover defaults, refusals, immutability, and the digest rule on
+        plaintext and encrypted Collections
+
+Context (discovered-from: WAS-96, decision 1). The two axes are independent:
+resolution says what the server does with concurrent revisions, immutability
+restricts which writes exist. A content-addressed, append-only Collection is the
+immutable axis under the default resolution; its only conflict is a create
+against a tombstone of the same id, which the stamp resolves. `keep-conflicts`
+(losing revisions retained for a client merge, stale `If-Match` accepted as a
+sibling) is reserved and not implemented. Member values are wire decisions
+pending sign-off.
+
+Implemented 2026-10-03. Judgment calls, for review. A tombstone keeps no bytes
+and no digest on either backend, so a write over one is an ordinary create: the
+stamp resolves it, as the context above says. "Equal body `Digest`" is read as
+equal content type and equal stored bytes, a JSON body compared as the
+`JSON.stringify` serialization both backends store; nothing stores a digest, so
+the filesystem backend hashes both sides and Postgres compares the bytea.
+Preconditions are evaluated first, so `If-None-Match: *` over a live Resource
+stays a 412 rather than the no-op. The repeat takes no feed position and mints
+no stamp. Create Collection by `POST` carries the full Metadata object, so it
+declares `revisions` directly; the "first `PUT .../meta` of a Collection created
+by `POST`" has no marker the server could read without a new stored member, so
+it is not a declaring write here. On a governed Collection a direct `revisions`
+write is checked against the derived descriptor and not stored (its `merge` is
+dropped; the log holds the descriptor). No new error name was needed. Unknown
+members of `revisions` are refused as `invalid-request-body`. Resource `/meta`
+writes are not restricted on an immutable Collection; the decision does not name
+them (open). The `encryption` half of creation-only is filed as WAS-194. Design
+open point 7 (import) is recorded in the design doc: import is
+skip-not-overwrite, so a differing archived body is skipped rather than refused;
+the decision's premise that import bypasses the envelope rule does not hold
+here, since `assertImportBodiesFit` enforces it.
+
+---

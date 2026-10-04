@@ -15,7 +15,8 @@ import {
   fetchCollectionAndBackend,
   getResourceMetadataOrThrow,
   readChunkMetadataOrThrow,
-  readGatedOnParentResource
+  readGatedOnParentResource,
+  writeOnceOptions
 } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
 import { assertValidIds } from '../lib/validateId.js'
@@ -106,12 +107,14 @@ export class ChunkRequest {
 
     // Fetch collection by id, and route chunk bytes to the Collection's
     // selected (data-plane) backend.
-    const { dataBackend } = await fetchCollectionAndBackend({
-      request,
-      spaceId,
-      collectionId,
-      requestName
-    })
+    const { collectionMetadata, dataBackend } = await fetchCollectionAndBackend(
+      {
+        request,
+        spaceId,
+        collectionId,
+        requestName
+      }
+    )
     const input = await resolveResourceInput(request, dataBackend)
     // Surface any `If-Match` / `If-None-Match` write precondition to the
     // storage layer, which evaluates it against the chunk's own validator
@@ -124,6 +127,14 @@ export class ChunkRequest {
         resourceId,
         chunkIndex,
         input,
+        // Chunks inherit the Collection's write-once rule
+        // (`revisions.immutable`).
+        ...writeOnceOptions({
+          request,
+          spaceId,
+          collectionId,
+          collectionMetadata
+        }),
         ...parseWritePreconditions(request.headers)
       })
     } catch (err) {

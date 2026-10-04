@@ -15,7 +15,7 @@ import { Readable } from 'node:stream'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import type { TempFileSystemBackend } from '../src/testing.js'
 import { formatEtag } from '../src/lib/etag.js'
-import { ResourceNotFoundError } from '../src/errors.js'
+import { ResourceImmutableError, ResourceNotFoundError } from '../src/errors.js'
 import { importArchive, openTempBackend } from './helpers.js'
 
 const controller = 'did:key:z6MkRacesTestController'
@@ -305,6 +305,91 @@ describe('FileSystemBackend races', () => {
     } finally {
       await sourceBackend.close()
     }
+  })
+
+  it("a governing log's guarded create waits for a write that already read the write-once flag", async () => {
+    // A guarded create can declare the Collection write-once. A Resource
+    // write decides that rule from the log it reads under its lock, so the
+    // create must not land between that read and the write's bytes.
+    const binary = (stream: Readable) => ({
+      kind: 'binary' as const,
+      contentType: 'application/octet-stream',
+      stream
+    })
+    await backend.writeResource({
+      spaceId,
+      collectionId,
+      resourceId: 'doc',
+      input: binary(bufferStream(Buffer.from('first')))
+    })
+
+    let recheckedWithLog: boolean | undefined
+    let signalRechecked!: () => void
+    const rechecked = new Promise<void>(resolve => {
+      signalRechecked = resolve
+    })
+    let releaseBody!: () => void
+    const bodyReleased = new Promise<void>(resolve => {
+      releaseBody = resolve
+    })
+    // A body that stalls after its first bytes, holding the write open.
+    let started = false
+    const stalled = new Readable({
+      read() {
+        if (started) {
+          return
+        }
+        started = true
+        this.push(Buffer.from('sec'))
+        void bodyReleased.then(() => {
+          this.push(Buffer.from('ond'))
+          this.push(null)
+        })
+      }
+    })
+    const overwrite = backend.writeResource({
+      spaceId,
+      collectionId,
+      resourceId: 'doc',
+      input: binary(stalled),
+      immutable: async ({ log }) => {
+        recheckedWithLog = log !== undefined
+        signalRechecked()
+        return log !== undefined
+      }
+    })
+    await rechecked
+    assert.equal(recheckedWithLog, false)
+
+    let logSettled = false
+    const logWrite = backend
+      .writeCollectionLog({
+        spaceId,
+        collectionId,
+        body: '{"state":{"revisions":{"immutable":true}}}\n',
+        ifNoneMatch: '*'
+      })
+      .finally(() => {
+        logSettled = true
+      })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.equal(logSettled, false, 'the create landed inside the write')
+
+    releaseBody()
+    await overwrite
+    assert.ok(await logWrite)
+
+    // A write that starts after the create reads the log and is refused.
+    await assert.rejects(
+      backend.writeResource({
+        spaceId,
+        collectionId,
+        resourceId: 'doc',
+        input: binary(bufferStream(Buffer.from('third'))),
+        immutable: async ({ log }) => log !== undefined
+      }),
+      (err: unknown) => err instanceof ResourceImmutableError
+    )
   })
 
   it('a write right after a delete is not refused by a stale quota snapshot', async () => {

@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 194
+nextAvailableId: 196
 
 <!-- roadmap-order:index:start -->
 
@@ -71,6 +71,7 @@ Ready:
 - WAS-64 [M] Default document for public collections (`index.html`)
 - WAS-162 [M] Research verifying zcap invocations signed by a did:webvh hosted
   elsewhere
+- WAS-194 [M] `encryption` is declared only when the Collection is created
 
 **Features**
 
@@ -82,6 +83,7 @@ Ready:
 - WAS-70 [M] Keystore deletion (route, backend method, orphan GC)
 - WAS-73 [M] Periodic sweep of Spaces and keystores whose did:webvh controller
   no longer resolves
+- WAS-195 [M] Store the content digest of each Resource and chunk
 
 Chains:
 
@@ -99,8 +101,6 @@ Chains:
 
 Ready:
 
-- WAS-173 [M] `revisions` descriptor on the Collection Metadata object
-  (blocks 2)
 - WAS-174 [M] Collection tombstones (blocks 2)
 - WAS-175 [M] Server sync key and verification of a peer's invocations
   (blocks 2)
@@ -115,10 +115,6 @@ Ready:
 
 Chains:
 
-- WAS-173 [M] `revisions` descriptor on the Collection Metadata object
-  - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
-    model)
-  - WAS-176 [M] Replica registration, pull loop, and the apply path
 - WAS-174 [M] Collection tombstones
   - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
     model)
@@ -1192,6 +1188,43 @@ another WAS host therefore cannot be invoked here. Freewallet FW-478
 audience member eventually. It ships with per-connection did:keys first and
 keeps the member layout open for account DIDs, pending this item.
 
+---
+
+### WAS-194: [M] `encryption` is declared only when the Collection is created
+
+- status: todo
+- priority: medium
+- labels: collection-metadata, encryption, wire-contract
+- discovered-from: WAS-173 (2026-10-03)
+- touches:
+  - wallet-attached-storage-spec: WASS-49 (the sentence permitting a declaration
+    on a Collection that lacks one is withdrawn)
+  - was-client: the `edv` branch of `sync/provisioning.ts`, which declares
+    `encryption` on an existing Collection, is removed
+  - was-react: `markCollectionEncrypted` is removed
+  - dcw: the sync smoke test is checked for the `edv` default
+  - conformance-suite: a case for the late-declaration refusal
+- acceptance:
+  - [ ] An Update Collection that adds `encryption` to an existing Collection
+        that lacks one is refused with `encryption-immutable` (409); Create
+        Collection, a create by `PUT .../meta`, and a governing log's guarded
+        create still declare it
+  - [ ] `assertEncryptionDescriptorTransition`, `assertEncryptionTransition`,
+        and the `EncryptionImmutableError` comment no longer describe late
+        declaration as allowed
+  - [ ] Tests that declare `encryption` on an existing Collection are rewritten
+        to declare it at creation, and a test pins the refusal
+  - [ ] ARCHITECTURE.md and CHANGELOG.md updated
+
+Context: spec decision 0012 makes the immutable Collection descriptors
+creation-only. Under replication, a late first set of `encryption` on one server
+and a concurrent full replacement without it on another both pass their own
+transition check, and last-writer-wins converges on an object with `encryption`
+gone. WAS-173 shipped the `revisions` half of the rule. This item is the
+`encryption` half. It removes a path was-client and was-react still use as
+fallbacks, so it lands with their removal. The App Connect flow already creates
+its Collections encrypted from birth.
+
 ## Features
 
 New capability. The Google Drive items are the remaining stages of the BYOS plan
@@ -1404,6 +1437,57 @@ are all deleted is unreachable to every client, since nothing can locate it and
 nothing can authorize against it, so the server is the only party that can
 remove it.
 
+### WAS-195: [M] Store the content digest of each Resource and chunk
+
+- status: todo
+- priority: medium
+- labels: data-model, storage, provenance, collection-metadata
+- discovered-from: WAS-173 (2026-10-03)
+- touches:
+  - was-teaching-server: both backends' Resource and chunk write paths, the
+    filesystem sidecar and the Postgres `resources` and chunk rows, the store
+    layout version, `src/lib/revisions.ts` (the write-once comparison),
+    `src/lib/exportProvenance.ts`, `src/lib/importTar.ts`
+  - space-archive: whether the archived sidecar carries the member
+  - conformance-suite: unaffected unless the digest becomes a served member
+- acceptance:
+  - [ ] Every content write records the digest of the stored representation, the
+        bytes a `GET` serves, in the `Digest` header's `mh=` multihash form
+        (sha-256). A JSON body is digested as stored, after re-serialization,
+        and not as sent
+  - [ ] The stored member's name on the filesystem sidecar and the Postgres
+        column name are signed off by the maintainer before coding
+  - [ ] The digest is written inside the write's critical section, with the
+        stamp, on both backends. A chunked Resource records the composite chunk
+        digest `chunkedDigest` defines
+  - [ ] A soft delete keeps the digest of the content it replaced on the
+        tombstone. On an `immutable` Collection a create over a tombstone with
+        an equal digest then follows the rule spec decision 0012 gives, and one
+        with a different digest is refused with `resource-immutable` (409)
+  - [ ] The write-once check on an `immutable` Collection compares the digest of
+        the bytes the write would store with the stored digest, and reads no
+        stored bytes
+  - [ ] Import recomputes the digest of each record it writes and ignores an
+        archived one
+  - [ ] A populated store written before this layout is refused at boot with
+        `StoreVersionError`, on both backends
+  - [ ] Tests cover JSON, binary, and chunked Resources, the tombstone rule, and
+        import, on both backends
+  - [ ] ARCHITECTURE.md and CHANGELOG.md updated
+
+Context: no backend stores a digest today. The write-once rule therefore
+compares content type and stored bytes on every repeat create. The filesystem
+backend re-hashes the stored file, and Postgres compares the whole `bytea`. A
+tombstone keeps nothing to compare, so a create over one is admitted as an
+ordinary create. Decided 2026-10-03 by the maintainer: the digest is of the
+stored representation, in multihash form. For a binary body that equals the
+request `Digest`. For a JSON body it does not when the body was sent
+non-compact, so the comparison hashes what the write would store. Export
+provenance digests each Resource at export time and reads it twice. Whether
+export signs the stored digest or keeps hashing the archived bytes is open,
+since a stored value does not detect damaged bytes. The write-time statements of
+WAS-184 need a digest at write time and would read this one.
+
 ### WAS-5: [L] [after WAS-1] Drive API ToS use-case clearance
 
 - status: todo
@@ -1426,46 +1510,6 @@ legal/policy item, not a technical one.
 The replication program: a Space served by several primaries with a replicated
 write identity and conflict model. WAS-96 is the umbrella and names the design
 doc; the other items are its sub-items in dependency order.
-
-### WAS-173: [M] [blocks 2] `revisions` descriptor on the Collection Metadata object
-
-- status: todo
-- priority: medium
-- labels: data-model, wire-contract, collection-metadata
-- blocks: WAS-96, WAS-176
-- touches:
-  - wallet-attached-storage-spec: the Collection Metadata data model
-  - storage-core: `CollectionMetadata`
-  - was-teaching-server: `src/lib/encryption.ts` (the descriptor-transition
-    pattern to follow), `CollectionRequest`, both backends' Resource write paths
-    (the immutable check), the governed-log derivation
-  - conformance-suite: refusals and the immutable semantics
-- acceptance:
-  - [ ] `revisions` is an optional object with `resolution` (closed set;
-        `last-writer-wins` only in v1, default when absent), `immutable`
-        (boolean, default false), and an optional client-declared `merge` object
-        served verbatim; an unknown `resolution` is refused with
-        `invalid-request-body` (400)
-  - [ ] Once set, `resolution` and `immutable` are immutable, refused with the
-        same transition error class `encryption` uses; a governed Collection's
-        descriptor is derived from the log like `encryption`
-  - [ ] On an `immutable` Collection an update of an existing Resource is
-        refused (error name pending sign-off), a re-create over a tombstone or a
-        repeat create with an equal body `Digest` is idempotent, and one with a
-        different digest is refused
-  - [ ] Tests cover defaults, refusals, immutability, and the digest rule on
-        plaintext and encrypted Collections
-
-Context (discovered-from: WAS-96, decision 1). The two axes are independent:
-resolution says what the server does with concurrent revisions, immutability
-restricts which writes exist. A content-addressed, append-only Collection is the
-immutable axis under the default resolution; its only conflict is a create
-against a tombstone of the same id, which the stamp resolves. `keep-conflicts`
-(losing revisions retained for a client merge, stale `If-Match` accepted as a
-sibling) is reserved and not implemented. Member values are wire decisions
-pending sign-off.
-
----
 
 ### WAS-174: [M] [blocks 2] Collection tombstones
 
@@ -1687,13 +1731,13 @@ still held it, a privacy regression rather than a stale record.
 
 ---
 
-### WAS-176: [M] [blocks 4] [after WAS-173, WAS-174, WAS-175, WAS-182, WAS-183] Replica registration, pull loop, and the apply path
+### WAS-176: [M] [blocks 4] [after WAS-174, WAS-175, WAS-182, WAS-183] Replica registration, pull loop, and the apply path
 
 - status: todo
 - priority: medium
 - labels: replication, routes, filesystem-backend, postgres-backend,
   space-metadata
-- blocked-by: WAS-173, WAS-174, WAS-175, WAS-182, WAS-183
+- blocked-by: WAS-174, WAS-175, WAS-182, WAS-183
 - blocks: WAS-96, WAS-177, WAS-179, WAS-184
 - touches:
   - wallet-attached-storage-spec: the replication specification (registration
@@ -1778,7 +1822,7 @@ alive on the surviving server, where the wallet can keep appending.
 
 ---
 
-### WAS-96: [M] [after WAS-173, WAS-174, WAS-175, WAS-176, WAS-177, WAS-182, WAS-183] Multi-primary Spaces (replicated write identity and conflict model)
+### WAS-96: [M] [after WAS-174, WAS-175, WAS-176, WAS-177, WAS-182, WAS-183] Multi-primary Spaces (replicated write identity and conflict model)
 
 - status: todo
 - priority: medium
@@ -1787,7 +1831,7 @@ alive on the surviving server, where the wallet can keep appending.
 - design-approved: 2026-10-02
 - decisions: wallet-attached-storage-spec decisions 0009 to 0013 (contract);
   this repo's decisions/0003 to 0005 (server-internal)
-- blocked-by: WAS-173, WAS-174, WAS-175, WAS-176, WAS-177, WAS-182, WAS-183
+- blocked-by: WAS-174, WAS-175, WAS-176, WAS-177, WAS-182, WAS-183
 - touches:
   - wallet-attached-storage-spec: the Resource data model (the origin stamp
     members and the validator), the `changes` profile (stamp members on the

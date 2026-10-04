@@ -281,16 +281,17 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   on one instance keeps its authority on another for up to one TTL. A changed or
   deleted policy likewise keeps granting there for up to one TTL. The write
   stamps rest on the same single-instance deployment (see `lib/hlc.ts`).
-- **`src/lib/governedEncryptionCache.ts`** -- a third read cache, one per
-  storage backend, memoizing the `encryption` descriptor derived from a
-  log-governed Collection's history log. The parse is what it saves, since the
-  log is append-only and grows. The log body is still read on each request. An
-  entry is keyed by Collection and by the log's own four-segment `ETag`, so a
-  log write leaves the old key behind and the next derivation misses on a new
-  one. It therefore carries none of the multi-instance staleness the two caches
-  above carry. Delete Collection, Delete Space, and Import Space still drop
-  entries by prefix. Entries expire after 600 s and are capped at 1000
-  (`GOVERNED_ENCRYPTION_CACHE_TTL`, `GOVERNED_ENCRYPTION_CACHE_MAX`).
+- **`src/lib/governedDescriptorsCache.ts`** -- a third read cache, one per
+  storage backend, memoizing the `encryption` and `revisions` descriptors
+  derived from a log-governed Collection's history log. The parse is what it
+  saves, since the log is append-only and grows. The log body is still read on
+  each request. An entry is keyed by Collection and by the log's own
+  four-segment `ETag`, so a log write leaves the old key behind and the next
+  derivation misses on a new one. It therefore carries none of the
+  multi-instance staleness the two caches above carry. Delete Collection, Delete
+  Space, and Import Space still drop entries by prefix. Entries expire after 600
+  s and are capped at 1000 (`GOVERNED_DESCRIPTORS_CACHE_TTL`,
+  `GOVERNED_DESCRIPTORS_CACHE_MAX`).
 - **`src/lib/governedLog.ts`** -- the `governed-history-logs` feature: a
   Collection's governing history log, served at its own sub-resource
   (`GET`/`PUT /space/:spaceId/:collectionId/meta/log`,
@@ -317,32 +318,104 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   Collection Metadata object never carries that derived member, a direct
   `encryption` write against it is refused with
   `encryption-history-log-governed` (409), and its other fields still update
-  normally. The derivation is memoized per backend by the log's validator
-  (`lib/governedEncryptionCache.ts`, above). Update Collection's recheck under
-  the lock derives from the log the backend hands its `assertTransition`
-  callback, so a Metadata write parses the log at most once. The server verifies
-  neither proofs nor a hash chain. It checks that the body is JSON Lines, each
-  line a JSON object with an object `state` member and the last line the head.
-  It also checks that the genesis line's `parameters` carries a string `method`,
-  and that no line's `state` carries a `history` member, since the server stamps
-  that member itself. A break of any of these is `invalid-request-body` (400).
-  It also checks that an append fast-forwards the stored log (the stored bytes
-  verbatim followed by exactly one new line; a body the stored log is not a
-  prefix of is `precondition-failed`, 412, with or without `If-Match`, and one
-  adding more than one line is `invalid-request-body`, 400). A body equal to the
-  stored log byte for byte is a no-op. Once its preconditions pass, it answers
-  204 with the current `ETag` and writes nothing, so neither the log's `ETag`
-  nor the Collection Metadata object's moves. A body that is a strict prefix of
-  the stored log would erase lines and stays a 412. On every append the server
-  runs the same encryption-descriptor transition checks against the prior head
-  that an ordinary Collection Metadata update runs. The fast-forward rule keeps
-  the log append-only at the server: a write capability can add history but not
-  erase it, while a break inside an appended entry stays the verifying reader's
-  to detect. A log write mints the log's own stamp. It also advances the
-  Collection Metadata object's local segment, since the object's served content
-  changed, and leaves that object's stamp untouched, `updatedAt` included. It is
-  serialized with Collection Metadata writes through the same per-Collection
-  lock.
+  normally. The `state` has one reserved slot, `revisions`. It is taken out of
+  the derived `encryption` member and served as the Collection's `revisions`
+  member instead, replacing any stored one. A direct `revisions` write on a
+  governed Collection is checked against the derived descriptor and is not
+  stored. A body `merge` that differs from the derived one is refused with
+  `revisions-immutable` (409, pointer `#/revisions/merge`). Omitting `merge` or
+  restating the derived one passes. The stored `revisions` member is carried
+  forward untouched by such a write. The guarded create may move a member off
+  its default, but may not change one the stored object sets to another value
+  (`revisions-immutable`, 409). The derivation is memoized per backend by the
+  log's validator (`lib/governedDescriptorsCache.ts`, above). Update
+  Collection's recheck under the lock derives from the log the backend hands its
+  `assertTransition` callback, so a Metadata write parses the log at most once.
+  The server verifies neither proofs nor a hash chain. It checks that the body
+  is JSON Lines, each line a JSON object with an object `state` member and the
+  last line the head. It also checks that the genesis line's `parameters`
+  carries a string `method`, and that no line's `state` carries a `history`
+  member, since the server stamps that member itself. A break of any of these is
+  `invalid-request-body` (400). It also checks that an append fast-forwards the
+  stored log (the stored bytes verbatim followed by exactly one new line; a body
+  the stored log is not a prefix of is `precondition-failed`, 412, with or
+  without `If-Match`, and one adding more than one line is
+  `invalid-request-body`, 400). A body equal to the stored log byte for byte is
+  a no-op. Once its preconditions pass, it answers 204 with the current `ETag`
+  and writes nothing, so neither the log's `ETag` nor the Collection Metadata
+  object's moves. A body that is a strict prefix of the stored log would erase
+  lines and stays a 412. On every append the server runs the same `encryption`
+  and `revisions` transition checks against the prior head that an ordinary
+  Collection Metadata update runs, and checks the shape of the head's
+  `revisions` slot. The fast-forward rule keeps the log append-only at the
+  server: a write capability can add history but not erase it, while a break
+  inside an appended entry stays the verifying reader's to detect. A log write
+  mints the log's own stamp. It also advances the Collection Metadata object's
+  local segment, since the object's served content changed, and leaves that
+  object's stamp untouched, `updatedAt` included. It is serialized with
+  Collection Metadata writes through the same per-Collection lock.
+- **`src/lib/revisions.ts`** -- the Collection `revisions` descriptor:
+  `resolution` (a closed set, `last-writer-wins` only, which is also the
+  default), `immutable` (a boolean, default `false`), and `merge` (an object the
+  server stores and serves verbatim and does not read). It holds the shape
+  check, which refuses an unknown `resolution` (the reserved `keep-conflicts`
+  included), a wrong member type, and an unknown member as
+  `invalid-request-body` (400). It holds the transition check: `resolution` and
+  `immutable` are declared by the write that creates the Collection (a Create
+  Collection `POST`, a create by `PUT .../meta`, or a governing log's guarded
+  create) and are immutable afterward. An absent member stands for its default,
+  and members are compared by the value they stand for. Restating a default, or
+  dropping an explicit default, passes. Setting `immutable: true` on an existing
+  Collection, or dropping or changing a set `immutable: true`, is refused with
+  `revisions-immutable` (409). So a full replacement that omits a set
+  `immutable: true` is refused, as one that omits a set `encryption` is. A
+  governing log's guarded create may move a member off its default, but may not
+  change one set to another value. `merge` follows the body. The module also
+  holds the split of a governing log's `state` into its `encryption` and
+  `revisions` parts, and the write-once rule.
+
+  The write-once rule is decided in two ways. A handler that read the Collection
+  as write-once passes `immutable: true` to the backend. Otherwise it passes a
+  recheck callback as `immutable` (built by `writeOnceOptions` in
+  `requests/collectionContext.ts`). Over a live Resource or chunk, the backend
+  calls it inside the write's critical section with the governing history log it
+  reads there. A log's guarded create is the one write that can declare
+  `immutable` on an existing Collection. In the filesystem backend, a log write
+  that may create the log runs on the exclusive side of the Space gate, so it
+  cannot land between a write's log read and its bytes. An append stays on the
+  shared side. In the Postgres backend, the recheck reads the log under the
+  `collections` row lock a log write takes.
+
+  Inside the critical section, after its preconditions pass, the backend
+  compares a write over a live Resource or chunk with the stored representation.
+  The media type is compared without its parameters and case-insensitively, so a
+  retry that adds `; charset=utf-8` is still a repeat. Bytes are compared
+  exactly, a JSON body as the `JSON.stringify` serialization both backends
+  store, so a different key order is a different body. The filesystem backend
+  compares the stored size first, then JSON bytes directly or a SHA-256 of a
+  binary body read through the upload cap. An over-cap body answers
+  `payload-too-large` (413), as a write would. A repeat is a no-op answering the
+  stored `ETag`, with no new stamp and no feed position. A byte-identical repeat
+  over a live Resource or chunk whose sidecar is missing or carries no validator
+  (a write torn between its bytes and its sidecar) stamps the sidecar and
+  answers the new `ETag`. Any other write is refused with `resource-immutable`
+  (409). Both backends decide the rule before the unique-claim scans (blinded
+  `unique` attributes and `unique` plaintext indexes). A write the rule answers
+  runs no Collection scan, and a changed body that also collides answers
+  `resource-immutable`. A tombstone keeps no bytes, so a write over one is an
+  ordinary create. Delete, Resource `/meta` writes, and imports are not
+  restricted. An import is skip-not-overwrite, so it never changes a stored
+  Resource, and an archived body that differs from a stored one is skipped
+  rather than refused. The rule holds on plaintext and encrypted Collections
+  alike, and on a `did.jsonl`, whose append is an update.
+
+  Import checks the descriptor too. The plan builder (`lib/importTar.ts`) runs
+  the shape check on an archived Collection Metadata object's `revisions`
+  member. When the archive also carries the Collection's governing log, it
+  requires the log head's `revisions` slot to keep what the archived object sets
+  (the guarded-create check). A break of either refuses the import as
+  `invalid-import` (400).
+
 - **`src/serviceDescription.ts`** -- the service description (spec "Service
   Description"): `GET /service`, unauthenticated, serving the JSON document that
   lists four entries in its `specs`. The core entry, under the
@@ -738,9 +811,11 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   once two separate objects -- the Collection description (`backend`,
   `encryption`, `generator`) and the `/meta` annotation object (`createdAt`,
   `updatedAt`, `custom`, `epoch`) -- into one object under one `ETag`; `PUT`
-  there is a full replacement that creates the Collection when absent. Its
-  `url`, and the `Location` of a newly created Collection, carry the trailing
-  slash.
+  there is a full replacement that creates the Collection when absent. It also
+  carries the optional `revisions` descriptor: the conflict `resolution`, the
+  write-once `immutable` flag, and a verbatim `merge` object (see
+  `lib/revisions.ts`). Its `url`, and the `Location` of a newly created
+  Collection, carry the trailing slash.
 - **Resource** — an individual stored item, JSON object or binary blob, within a
   Collection (`/space/:spaceId/:collectionId/:resourceId`).
 - **Feed position** -- a Resource's place in its Collection's `changes` feed:

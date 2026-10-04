@@ -7,10 +7,10 @@
 import { it, describe } from 'vitest'
 import assert from 'node:assert'
 
-import { deriveGovernedEncryption } from '../src/lib/governedLog.js'
+import { deriveGovernedDescriptors } from '../src/lib/governedLog.js'
 import { StorageError } from '../src/errors.js'
 
-describe('deriveGovernedEncryption', () => {
+describe('deriveGovernedDescriptors', () => {
   const logUrl = 'https://was.example/space/s/c/meta/log'
 
   it('derives the head state with history stamped on', () => {
@@ -19,9 +19,27 @@ describe('deriveGovernedEncryption', () => {
         parameters: { method: 'resource-log:0.1' },
         state: { scheme: 'edv' }
       }) + '\n'
-    assert.deepStrictEqual(deriveGovernedEncryption({ body, logUrl }), {
-      scheme: 'edv',
-      history: { method: 'resource-log:0.1', resource: logUrl }
+    assert.deepStrictEqual(deriveGovernedDescriptors({ body, logUrl }), {
+      encryption: {
+        scheme: 'edv',
+        history: { method: 'resource-log:0.1', resource: logUrl }
+      }
+    })
+  })
+
+  it('serves the state revisions slot as the revisions descriptor', () => {
+    const revisions = { immutable: true, merge: { kind: 'none' } }
+    const body =
+      JSON.stringify({
+        parameters: { method: 'resource-log:0.1' },
+        state: { scheme: 'edv', revisions }
+      }) + '\n'
+    assert.deepStrictEqual(deriveGovernedDescriptors({ body, logUrl }), {
+      encryption: {
+        scheme: 'edv',
+        history: { method: 'resource-log:0.1', resource: logUrl }
+      },
+      revisions
     })
   })
 
@@ -36,7 +54,7 @@ describe('deriveGovernedEncryption', () => {
       '{"parameters":{"method":"m"},"state":{"history":{}}}\n'
     ]) {
       assert.throws(
-        () => deriveGovernedEncryption({ body, logUrl }),
+        () => deriveGovernedDescriptors({ body, logUrl }),
         (err: Error) => err instanceof StorageError && err.statusCode === 500,
         `body ${JSON.stringify(body)}`
       )

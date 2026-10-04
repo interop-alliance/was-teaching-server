@@ -416,6 +416,80 @@ describe('buildImportPlan', () => {
     }
   })
 
+  /** Replaces the fixture's `colA` Metadata entry with the given members. */
+  function withCollectionMetadata(
+    members: Record<string, unknown>
+  ): Map<string, TarEntry> {
+    const entries = validSpaceEntries()
+    entries.set(
+      'space/S1/colA/.collection.colA.json',
+      fileEntry(
+        JSON.stringify({ id: 'colA', type: ['Collection'], ...members })
+      )
+    )
+    return entries
+  }
+
+  it('carries a well-formed `revisions` descriptor on the plan', () => {
+    const revisions = { immutable: true, merge: { kind: 'none' } }
+    const [colA] = buildImportPlan(
+      withCollectionMetadata({ revisions })
+    ).collections
+    assert.deepEqual(colA!.collectionMetadata.revisions, revisions)
+  })
+
+  it('throws InvalidImportError on a `revisions` descriptor a write would refuse', () => {
+    const cases: unknown[] = [
+      'yes',
+      { resolution: 'keep-conflicts' },
+      { immutable: 'yes' },
+      { merge: [] },
+      { immutable: true, extra: 1 }
+    ]
+    for (const revisions of cases) {
+      assert.throws(
+        () => buildImportPlan(withCollectionMetadata({ revisions })),
+        (err: Error) =>
+          err instanceof InvalidImportError &&
+          /'revisions' descriptor of Collection 'colA'/.test(err.message),
+        `revisions ${JSON.stringify(revisions)}`
+      )
+    }
+  })
+
+  it('throws InvalidImportError when the archived log drops a set `revisions` member', () => {
+    const governed = (state: Record<string, unknown>) =>
+      logRecord(
+        JSON.stringify({
+          ...JSON.parse(genesis),
+          state: { ...JSON.parse(genesis).state, ...state }
+        }) + '\n'
+      )
+    const dropped = withCollectionMetadata({ revisions: { immutable: true } })
+    dropped.set(
+      'space/S1/colA/.collectionlog.colA.json',
+      fileEntry(governed({}))
+    )
+    assert.throws(
+      () => buildImportPlan(dropped),
+      (err: Error) =>
+        err instanceof InvalidImportError && /immutable/.test(err.message)
+    )
+    // A log that keeps the member, or declares one the object lacks, passes.
+    const kept = withCollectionMetadata({ revisions: { immutable: true } })
+    kept.set(
+      'space/S1/colA/.collectionlog.colA.json',
+      fileEntry(governed({ revisions: { immutable: true } }))
+    )
+    assert.doesNotThrow(() => buildImportPlan(kept))
+    const declared = withCollectionMetadata({})
+    declared.set(
+      'space/S1/colA/.collectionlog.colA.json',
+      fileEntry(governed({ revisions: { immutable: true } }))
+    )
+    assert.doesNotThrow(() => buildImportPlan(declared))
+  })
+
   it('tolerates a chunk metadata sidecar whose JSON is not an object', () => {
     const entries = validSpaceEntries()
     entries.set('space/S1/colA/.chunks.res1/.meta.0.json', fileEntry('null'))

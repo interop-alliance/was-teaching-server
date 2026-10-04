@@ -351,6 +351,56 @@ export class EncryptionImmutableError extends ProblemError {
 }
 
 /**
+ * 409 -- a Collection Metadata write, or an append to the Collection's
+ * governing history log, tried to change the `resolution` or `immutable`
+ * member of the `revisions` descriptor. Both are immutable once set and are
+ * declared only by the write that creates the Collection, so a write that
+ * adds one to an existing Collection, drops one, or changes one is refused.
+ * The counterpart of `encryption-immutable`. Only observable by a caller
+ * already authorized to update the Collection.
+ * @param options {object}
+ * @param [options.detail] {string}   which member was changed
+ * @param [options.pointer] {string}   JSON pointer to the offending member
+ */
+export class RevisionsImmutableError extends ProblemError {
+  constructor({ detail, pointer }: { detail?: string; pointer?: string } = {}) {
+    const resolvedDetail =
+      detail ??
+      "A Collection's 'revisions.resolution' and 'revisions.immutable' are set at creation and cannot be added, changed, or cleared."
+    super({
+      type: ProblemTypes.REVISIONS_IMMUTABLE,
+      title: 'Collection revisions descriptor is immutable.',
+      detail: resolvedDetail,
+      statusCode: 409,
+      problems: [{ detail: resolvedDetail, pointer: pointer ?? '#/revisions' }]
+    })
+  }
+}
+
+/**
+ * 409 -- a Resource or chunk write into a Collection whose `revisions`
+ * descriptor sets `immutable` would change stored bytes: an update of a live
+ * Resource or chunk, or a repeat create whose body differs from the stored
+ * one. A repeat create with an equal body is not refused; it answers the
+ * current `ETag`. Only observable by a caller already authorized to write the
+ * target.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name for the error title
+ */
+export class ResourceImmutableError extends ProblemError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({
+      type: ProblemTypes.RESOURCE_IMMUTABLE,
+      title: `${requestName || 'Write'} refused: the Collection is immutable.`,
+      detail:
+        'This Collection is write-once: a stored Resource or chunk cannot be ' +
+        'changed. Only a repeat of the stored bytes is accepted.',
+      statusCode: 409
+    })
+  }
+}
+
+/**
  * 409 -- an Update Collection wrote the `encryption` member directly on a
  * Collection whose descriptor is governed by its history log (the
  * `.../meta/log` sub-resource, the `governed-history-logs` feature). The served

@@ -1,17 +1,22 @@
 /**
  * A Collection's governing history log (the `governed-history-logs` feature):
  * the `.../meta/log` sub-resource whose head entry's `state` the server serves
- * as the Collection's `encryption` descriptor. The server checks the line
- * contract alone (JSON Lines, each line an object with a `state` member, the
- * last line is the head) and, on each append, runs the encryption descriptor's
- * transition checks between the prior head and the new one. It also checks the
+ * as the Collection's `encryption` descriptor. The `state`'s `revisions` slot,
+ * when present, is served as the Collection's `revisions` descriptor instead.
+ * The server checks the line contract alone (JSON Lines, each line an object
+ * with a `state` member, the last line is the head) and, on each append, runs
+ * the transition checks of both descriptors between the prior head and the new
+ * one. It also checks the
  * two members the derived `history` stamp depends on: the genesis entry's
  * `parameters.method`, and the absence of a `history` member in every entry's
  * `state`. Entry proofs, the hash chain, and `state.type` belong to the
  * governing profile and are not checked here; a verifying reader checks them
  * and compares its result against the derived member.
  */
-import type { CollectionEncryption } from '@interop/storage-core'
+import type {
+  CollectionEncryption,
+  CollectionRevisions
+} from '@interop/storage-core'
 import type { CollectionLogResult, StoredCollectionLog } from '../types.js'
 import { type EtagValidator, stampedValidator } from './etag.js'
 import {
@@ -24,6 +29,21 @@ import {
   assertEncryptionDescriptorTransition,
   assertSupportedEncryption
 } from './encryption.js'
+import {
+  assertRevisionsTransition,
+  assertValidRevisions,
+  splitGovernedState
+} from './revisions.js'
+
+/**
+ * The descriptors a governing history log derives for its Collection: the
+ * served `encryption` member, and the `revisions` member when the head's
+ * `state` carries one.
+ */
+export interface GovernedDescriptors {
+  encryption: CollectionEncryption
+  revisions?: CollectionRevisions
+}
 
 /**
  * The content type the log is served under (JSON Lines, not JSON).
@@ -184,11 +204,12 @@ function lineCount(body: string): number {
 /**
  * The checks a log write runs atomically with the write: the line contract
  * on the new body, the head `state`'s shape as an encryption descriptor (the
- * same gate a Description write passes), the fast-forward rule against the
- * stored log, and the descriptor transition from the prior head (`epochs`
- * append-only, `currentEpoch` never older, `hmac` id and type permanent,
- * `scheme` and `version` set-once), raising exactly what a Description PUT
- * raises today.
+ * same gate a Collection Metadata write passes) and the shape of its
+ * `revisions` slot, the fast-forward rule against the stored log, and both
+ * descriptors' transitions from the prior head (`epochs` append-only,
+ * `currentEpoch` never older, `hmac` id and type permanent, `scheme` and
+ * `version` set-once; `revisions.resolution` and `revisions.immutable`
+ * set-once), raising exactly what a Collection Metadata write raises.
  *
  * The fast-forward rule is what keeps the log append-only at the server: an
  * append carries the stored bytes verbatim followed by exactly one new line.
@@ -206,7 +227,8 @@ function lineCount(body: string): number {
  * @param options.body {string}   the new log body
  * @param [options.prior] {string}   the stored log body, absent on a create
  * @param options.requestName {string}
- * @returns {void}
+ * @returns {{ revisions?: CollectionRevisions }}   the new head's `revisions`
+ *   slot, for the guarded create's declaration check
  */
 export function assertGoverningLogAppend({
   body,
@@ -216,11 +238,17 @@ export function assertGoverningLogAppend({
   body: string
   prior?: string
   requestName: string
-}): void {
+}): { revisions?: CollectionRevisions } {
   const { head } = parseGoverningLog({ body, requestName })
-  const incoming = assertSupportedEncryption({ encryption: head, requestName })
+  const { encryptionState, revisions } = splitGovernedState(head)
+  const incoming = assertSupportedEncryption({
+    encryption: encryptionState,
+    requestName
+  })
+  assertValidRevisions({ revisions, requestName, pointer: null })
+  const declared = { ...(revisions !== undefined && { revisions }) }
   if (prior === undefined) {
-    return
+    return declared
   }
   if (!isFastForward({ prior, body })) {
     throw new PreconditionFailedError({
@@ -239,18 +267,27 @@ export function assertGoverningLogAppend({
         `(${added} added).`
     })
   }
-  const existing = parseGoverningLog({ body: prior, requestName }).head
+  const existing = splitGovernedState(
+    parseGoverningLog({ body: prior, requestName }).head
+  )
   assertEncryptionDescriptorTransition({
-    existing: existing as CollectionEncryption,
+    existing: existing.encryptionState as CollectionEncryption,
     incoming
   })
+  assertRevisionsTransition({
+    existing: existing.revisions,
+    incoming: revisions
+  })
+  return declared
 }
 
 /**
- * The derived `encryption` member of a governed Collection: the log head's
- * `state` with `history: { method, resource }` stamped on, `method` being the
- * genesis entry's format identifier and `resource` the log's own URL. Exactly
- * what a verifying reader computes after stripping `history`.
+ * The derived descriptors of a governed Collection. The `encryption` member
+ * is the log head's `state` without its `revisions` slot, with
+ * `history: { method, resource }` stamped on, `method` being the genesis
+ * entry's format identifier and `resource` the log's own URL. Exactly what a
+ * verifying reader computes after stripping `history`. The `revisions`
+ * member is the head's `revisions` slot verbatim, absent when the slot is.
  *
  * The body is stored data, validated when it was written (a `/log` PUT or an
  * import), so a body the parser rejects here (the genesis `method` and the
@@ -261,15 +298,15 @@ export function assertGoverningLogAppend({
  * @param options {object}
  * @param options.body {string}   the stored log body
  * @param options.logUrl {string}   the absolute URL of the log sub-resource
- * @returns {CollectionEncryption}
+ * @returns {GovernedDescriptors}
  */
-export function deriveGovernedEncryption({
+export function deriveGovernedDescriptors({
   body,
   logUrl
 }: {
   body: string
   logUrl: string
-}): CollectionEncryption {
+}): GovernedDescriptors {
   let parsed: ReturnType<typeof parseGoverningLog>
   try {
     parsed = parseGoverningLog({ body })
@@ -281,8 +318,12 @@ export function deriveGovernedEncryption({
     })
   }
   const { head, method } = parsed
+  const { encryptionState, revisions } = splitGovernedState(head)
   return {
-    ...head,
-    history: { method, resource: logUrl }
-  } as CollectionEncryption
+    encryption: {
+      ...encryptionState,
+      history: { method, resource: logUrl }
+    } as CollectionEncryption,
+    ...(revisions !== undefined && { revisions })
+  }
 }

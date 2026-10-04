@@ -768,3 +768,69 @@ export async function importArchive({
     ...(restoreSpaceMetadata !== undefined && { restoreSpaceMetadata })
   })
 }
+
+/**
+ * A descriptor recipient entry (the JWE recipients-entry shape).
+ * @param kid {string}
+ * @returns {{ header: { kid: string, alg: string }, encrypted_key: string }}
+ */
+export function recipient(kid: string): {
+  header: { kid: string; alg: string }
+  encrypted_key: string
+} {
+  return {
+    header: { kid, alg: 'ECDH-ES+A256KW' },
+    encrypted_key: `wrapped-${kid}`
+  }
+}
+
+/**
+ * A valid `encryption` descriptor with one epoch and one recipient.
+ */
+export const oneEpoch = {
+  type: 'WasEpochConfiguration',
+  scheme: 'edv',
+  currentEpoch: 'urn:epoch:1',
+  epochs: [{ id: 'urn:epoch:1', recipients: [recipient('did:key:zApp1#ka')] }]
+}
+
+/**
+ * A governing history log entry line: the profile's members with `state` as
+ * given.
+ * @param options {object}
+ * @param options.ordinal {number}
+ * @param options.state {object}
+ * @param [options.parameters] {object}
+ * @returns {string}
+ */
+export function entryLine({
+  ordinal,
+  state,
+  parameters = {}
+}: {
+  ordinal: number
+  state: Record<string, unknown>
+  parameters?: Record<string, unknown>
+}): string {
+  return JSON.stringify({
+    versionId: `${ordinal}-hash${ordinal}`,
+    versionTime: '2026-09-07T00:00:00Z',
+    parameters,
+    state,
+    proof: []
+  })
+}
+
+/**
+ * A governing history log's genesis line: carries the format identifier and
+ * the SCID.
+ * @param state {object}
+ * @returns {string}
+ */
+export function genesisLine(state: Record<string, unknown>): string {
+  return entryLine({
+    ordinal: 1,
+    state,
+    parameters: { method: 'resource-log:0.1', scid: 'zScid' }
+  })
+}

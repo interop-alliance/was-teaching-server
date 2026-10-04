@@ -12,7 +12,7 @@ import { buildLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
 import { invalidateSpacePolicies } from '../lib/policyCache.js'
-import { invalidateSpaceGovernedEncryption } from '../lib/governedEncryptionCache.js'
+import { invalidateSpaceGovernedDescriptors } from '../lib/governedDescriptorsCache.js'
 import {
   assertBodyController,
   verifyBodyControllerConsent
@@ -546,7 +546,7 @@ export class SpaceRequest {
       // its Collections/Resources, and every descriptor derived from a
       // governing log in the Space.
       invalidateSpacePolicies({ storage, spaceId })
-      invalidateSpaceGovernedEncryption({ storage, spaceId })
+      invalidateSpaceGovernedDescriptors({ storage, spaceId })
     }
 
     return reply.status(204).send()
@@ -692,7 +692,7 @@ export class SpaceRequest {
       // It installs an archived governing log with the archive's own
       // validator, which could coincide with a cached derivation over
       // different bytes; drop every descriptor derived under this Space.
-      invalidateSpaceGovernedEncryption({ storage, spaceId })
+      invalidateSpaceGovernedDescriptors({ storage, spaceId })
       // A root-invoked import restores the Space Metadata object's `type` and
       // `name`, so the cached object is stale too.
       invalidateSpaceMetadata({ storage, spaceId })

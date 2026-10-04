@@ -13,3 +13,18 @@ export function bareMediaType({
 }): string {
   return (contentType ?? '').split(';')[0]!.trim().toLowerCase()
 }
+
+/**
+ * Whether two content types name the same media type. Parameters (a
+ * `charset`, a `boundary`) and case are ignored, so a write that adds
+ * `; charset=utf-8` still names the stored representation's type.
+ * @param stored {string}   the stored representation's content type
+ * @param incoming {string}   the write's content type
+ * @returns {boolean}
+ */
+export function sameMediaType(stored: string, incoming: string): boolean {
+  return (
+    bareMediaType({ contentType: stored }) ===
+    bareMediaType({ contentType: incoming })
+  )
+}

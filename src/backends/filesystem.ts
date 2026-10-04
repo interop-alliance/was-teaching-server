@@ -5,9 +5,10 @@
  * implementing the StorageBackend contract documented in types.ts.
  */
 import path from 'node:path'
-import { mkdir, rm, stat as fsStat, unlink } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat as fsStat, unlink } from 'node:fs/promises'
 import { pipeline } from 'node:stream/promises'
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
 import { Readable, Transform } from 'node:stream'
 import fs from 'node:fs'
@@ -15,6 +16,7 @@ import jsonfs from 'fs-json-store'
 import pino from 'pino'
 import type { FastifyBaseLogger } from 'fastify'
 import {
+  ResourceImmutableError,
   StorageError,
   ResourceNotFoundError,
   SpaceNotFoundError,
@@ -76,6 +78,8 @@ import { archivedSpaceMetadata } from '../lib/spaceProjection.js'
 import { attestArchiveEntries } from '../lib/exportProvenance.js'
 import type { ExportAttestor } from '../lib/exportProvenance.js'
 import { backendUsageFieldsFor } from '../lib/backendUsage.js'
+import { sameMediaType } from '../lib/mediaType.js'
+import { resolveWriteOnce } from '../lib/revisions.js'
 import {
   collectionListingItem,
   collectionResourcesList,
@@ -177,6 +181,7 @@ import type {
   StoredCollectionMetadata,
   StoredSpaceMetadata,
   CollectionLogResult,
+  ImmutableUnder,
   StoredCollectionLog,
   CollectionTransitionContext,
   KeystoreConfig,
@@ -243,6 +248,35 @@ async function openFileStream(
         resolve(resourceStream)
       })
   })
+}
+
+/**
+ * The SHA-256 digest of a byte stream, read through `guards` (the upload cap
+ * for an incoming body), so a body a write would refuse is refused here too.
+ * @param options {object}
+ * @param options.stream {Readable}
+ * @param [options.guards] {Transform[]}   byte-limit transforms to read the
+ *   stream through
+ * @returns {Promise<Buffer>}
+ */
+async function digestOfStream({
+  stream,
+  guards = []
+}: {
+  stream: Readable
+  guards?: Transform[]
+}): Promise<Buffer> {
+  const hash = createHash('sha256')
+  await pipeline([
+    stream,
+    ...guards,
+    async function digestChunks(source: AsyncIterable<Buffer>) {
+      for await (const chunk of source) {
+        hash.update(chunk)
+      }
+    }
+  ])
+  return hash.digest()
 }
 
 /**
@@ -2839,72 +2873,86 @@ export class FileSystemBackend implements StorageBackend {
       collectionMetadata: StoredCollectionMetadata
     }) => void | Promise<void>
   }): Promise<EtagValidator | undefined> {
-    return this.#underSpaceWrite({
-      spaceId,
-      write: () =>
-        this.#writeMutex.run(
-          this.#collectionMetaLockKey({ spaceId, collectionId }),
-          () =>
-            this.#writeMutex.run(
-              this.#collectionLogLockKey({ spaceId, collectionId }),
-              async () => {
-                const collectionMetadata = await this.getCollectionMetadata({
-                  spaceId,
-                  collectionId
-                })
-                if (!collectionMetadata) {
-                  return undefined
-                }
-                const prior = await this.#readCollectionLog({
-                  spaceId,
-                  collectionId
-                })
-                assertCollectionLogWritePrecondition({
-                  collectionId,
-                  currentEtag: prior && etagOf(prior),
-                  ifMatch,
-                  ifNoneMatch
-                })
-                const unchanged = unchangedLogValidator({ prior, body })
-                if (unchanged !== undefined) {
-                  return unchanged
-                }
-                await assertTransition?.({
-                  prior: prior && collectionLogResultOf(prior),
-                  collectionMetadata
-                })
-
-                const validator = await mintValidator({
-                  clock: this.#clock,
-                  prior
-                })
-                const { generation, stamp } = validator
-                await atomicWriteFile({
-                  filePath: this.#collectionLogPath({ spaceId, collectionId }),
-                  data: JSON.stringify({
-                    generation,
-                    ...stamp,
-                    body
-                  } satisfies StoredCollectionLog)
-                })
-                // The served Collection Metadata object changed with its
-                // derived member, so its local validator segment advances
-                // (generation and stamp kept); the stored body is carried
-                // verbatim.
-                await this.#persistCollection({
-                  spaceId,
-                  collectionId,
-                  body: stripMetadataValidator(collectionMetadata),
-                  generation: resolveGeneration(
-                    collectionMetadata.metaGeneration
-                  ),
-                  local: (collectionMetadata.metaLocal ?? 0) + 1
-                })
-                return validator
+    // A guarded create can declare the Collection write-once, and a Resource
+    // or chunk write decides that rule from the log it reads on the gate's
+    // shared side (`#isWriteOnce`). So a write that may create the log takes
+    // the exclusive side: every write to the Space in flight has finished, and
+    // each later one reads the new log. An append cannot change the flag and
+    // stays on the shared side. A log goes away only with its Collection,
+    // which also takes the exclusive side, so a log seen here is still there
+    // under the gate. One created after this check only makes the write below
+    // an append that holds the gate exclusively.
+    const logExists = await fileExists(
+      this.#collectionLogPath({ spaceId, collectionId })
+    )
+    const underGate = <T>(write: () => Promise<T>): Promise<T> =>
+      logExists
+        ? this.#underSpaceWrite({ spaceId, write })
+        : this.#underSpaceRemoval({ spaceId, remove: write })
+    return underGate(() =>
+      this.#writeMutex.run(
+        this.#collectionMetaLockKey({ spaceId, collectionId }),
+        () =>
+          this.#writeMutex.run(
+            this.#collectionLogLockKey({ spaceId, collectionId }),
+            async () => {
+              const collectionMetadata = await this.getCollectionMetadata({
+                spaceId,
+                collectionId
+              })
+              if (!collectionMetadata) {
+                return undefined
               }
-            )
-        )
-    })
+              const prior = await this.#readCollectionLog({
+                spaceId,
+                collectionId
+              })
+              assertCollectionLogWritePrecondition({
+                collectionId,
+                currentEtag: prior && etagOf(prior),
+                ifMatch,
+                ifNoneMatch
+              })
+              const unchanged = unchangedLogValidator({ prior, body })
+              if (unchanged !== undefined) {
+                return unchanged
+              }
+              await assertTransition?.({
+                prior: prior && collectionLogResultOf(prior),
+                collectionMetadata
+              })
+
+              const validator = await mintValidator({
+                clock: this.#clock,
+                prior
+              })
+              const { generation, stamp } = validator
+              await atomicWriteFile({
+                filePath: this.#collectionLogPath({ spaceId, collectionId }),
+                data: JSON.stringify({
+                  generation,
+                  ...stamp,
+                  body
+                } satisfies StoredCollectionLog)
+              })
+              // The served Collection Metadata object changed with its
+              // derived member, so its local validator segment advances
+              // (generation and stamp kept); the stored body is carried
+              // verbatim.
+              await this.#persistCollection({
+                spaceId,
+                collectionId,
+                body: stripMetadataValidator(collectionMetadata),
+                generation: resolveGeneration(
+                  collectionMetadata.metaGeneration
+                ),
+                local: (collectionMetadata.metaLocal ?? 0) + 1
+              })
+              return validator
+            }
+          )
+      )
+    )
   }
 
   /**
@@ -3051,6 +3099,7 @@ export class FileSystemBackend implements StorageBackend {
     epoch,
     writerId,
     uniqueIndexes,
+    immutable,
     ifMatch,
     ifNoneMatch
   }: {
@@ -3062,6 +3111,7 @@ export class FileSystemBackend implements StorageBackend {
     epoch?: string
     writerId?: string
     uniqueIndexes?: NormalizedIndexDeclaration[]
+    immutable?: true | ImmutableUnder
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator> {
@@ -3076,7 +3126,7 @@ export class FileSystemBackend implements StorageBackend {
     // Collection still exist, so a container removal can neither land in the
     // middle of the write nor precede it unnoticed.
     const container = { collectionId, requestName: 'Write Resource' }
-    const write = () =>
+    const write = (assertUnique?: () => Promise<void>) =>
       this.#writeMutex.run(lockKey, () =>
         this.#writeResourceLocked({
           spaceId,
@@ -3087,6 +3137,8 @@ export class FileSystemBackend implements StorageBackend {
           createdBy,
           epoch,
           writerId,
+          immutable,
+          assertUnique,
           ifMatch,
           ifNoneMatch
         })
@@ -3105,6 +3157,9 @@ export class FileSystemBackend implements StorageBackend {
     // Distinct-key nesting cannot deadlock: plain writes never hold a Resource
     // key while waiting on a Collection key. The two conditions are unified so a
     // write carrying both claims acquires the Collection lock exactly once.
+    // The scan itself runs inside the per-Resource lock (`assertUnique`), where
+    // the write-once rule is decided first: a write that rule answers stores
+    // nothing, so it claims nothing and skips the scan.
     const blindedUnique =
       input.kind === 'json' &&
       collectUniqueBlindedTerms({ document: input.data }).length > 0
@@ -3119,41 +3174,41 @@ export class FileSystemBackend implements StorageBackend {
         write: () =>
           this.#writeMutex.run(
             this.#collectionLockKey({ spaceId, collectionId }),
-            async () => {
-              // One Collection scan serves both claims. The equality candidate set
-              // is the richer of the two (it also carries blobs and each sidecar's
-              // `custom`), so when the equality claim needs it the blinded
-              // candidates -- the live, parsable JSON documents -- are derived from
-              // it rather than re-read. A blinded-only claim reads JSON documents
-              // only and never touches a sidecar.
-              const candidates = await this.#readEqualityCandidates({
-                spaceId,
-                collectionId,
-                excludeResourceId: resourceId,
-                jsonOnly: !equalityUnique
+            () =>
+              write(async () => {
+                // One Collection scan serves both claims. The equality candidate set
+                // is the richer of the two (it also carries blobs and each sidecar's
+                // `custom`), so when the equality claim needs it the blinded
+                // candidates -- the live, parsable JSON documents -- are derived from
+                // it rather than re-read. A blinded-only claim reads JSON documents
+                // only and never touches a sidecar.
+                const candidates = await this.#readEqualityCandidates({
+                  spaceId,
+                  collectionId,
+                  excludeResourceId: resourceId,
+                  jsonOnly: !equalityUnique
+                })
+                if (blindedUnique) {
+                  assertNoUniqueBlindedConflict({
+                    document: input.kind === 'json' ? input.data : undefined,
+                    candidates: this.#jsonCandidatesFrom(candidates)
+                  })
+                }
+                if (equalityUnique) {
+                  // A content write does not change the Resource's `custom`, so the
+                  // custom side of the claim comes from the CURRENT stored sidecar.
+                  const priorSidecar = await this.readMetaSidecar({
+                    collectionDir,
+                    resourceId
+                  })
+                  assertNoUniqueEqualityConflict({
+                    indexes: uniqueIndexes!,
+                    content: input.kind === 'json' ? input.data : undefined,
+                    custom: priorSidecar?.custom,
+                    candidates
+                  })
+                }
               })
-              if (blindedUnique) {
-                assertNoUniqueBlindedConflict({
-                  document: input.kind === 'json' ? input.data : undefined,
-                  candidates: this.#jsonCandidatesFrom(candidates)
-                })
-              }
-              if (equalityUnique) {
-                // A content write does not change the Resource's `custom`, so the
-                // custom side of the claim comes from the CURRENT stored sidecar.
-                const priorSidecar = await this.readMetaSidecar({
-                  collectionDir,
-                  resourceId
-                })
-                assertNoUniqueEqualityConflict({
-                  indexes: uniqueIndexes!,
-                  content: input.kind === 'json' ? input.data : undefined,
-                  custom: priorSidecar?.custom,
-                  candidates
-                })
-              }
-              return write()
-            }
           )
       })
     }
@@ -3162,7 +3217,10 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * The critical section of `writeResource`, run under the per-Resource lock:
-   * evaluates any precondition, writes the representation, prunes a stale
+   * decides whether the write-once rule applies, runs the unique-claim scan
+   * when it does not (`assertUnique`, passed by a write that holds the
+   * Collection lock), evaluates any precondition, applies the write-once
+   * rule, writes the representation, prunes a stale
    * representation under a different content-type, and persists the new
    * stamp in the sidecar. See `writeResource` for the parameters.
    * @returns {Promise<EtagValidator>}
@@ -3176,6 +3234,8 @@ export class FileSystemBackend implements StorageBackend {
     createdBy,
     epoch,
     writerId,
+    immutable,
+    assertUnique,
     ifMatch,
     ifNoneMatch
   }: {
@@ -3187,6 +3247,8 @@ export class FileSystemBackend implements StorageBackend {
     createdBy?: IDID
     epoch?: string
     writerId?: string
+    immutable?: true | ImmutableUnder
+    assertUnique?: () => Promise<void>
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator> {
@@ -3202,10 +3264,26 @@ export class FileSystemBackend implements StorageBackend {
     // (excluded either way), and the stale representations to remove are exactly
     // the ones this pre-write listing holds.
     const entries = await this.#readDirEntries(collectionDir)
-    const isLive =
-      (await this.#findFile({ collectionDir, resourceId, entries })) !==
-      undefined
+    const livePath = await this.#findFile({
+      collectionDir,
+      resourceId,
+      entries
+    })
+    const isLive = livePath !== undefined
     const prior = await this.readMetaSidecar({ collectionDir, resourceId })
+
+    // The write-once rule binds a write over a live Resource only. A
+    // tombstone keeps no bytes, so a write over one is an ordinary create.
+    const writeOnce =
+      livePath !== undefined &&
+      (await this.#isWriteOnce({
+        spaceId,
+        collectionId,
+        immutable
+      }))
+    if (!writeOnce) {
+      await assertUnique?.()
+    }
 
     // Evaluate any conditional-write precondition against the current state
     // before writing (still inside the lock, so the check and write are atomic).
@@ -3217,6 +3295,22 @@ export class FileSystemBackend implements StorageBackend {
         ifNoneMatch,
         state: { exists: isLive, prior }
       })
+    }
+
+    // A write-once Collection: over a live Resource, only a repeat of the
+    // stored bytes passes, and it writes nothing. A live representation with
+    // no stamp is a write torn between its bytes and its sidecar, and the
+    // repeat completes it: the bytes stay, and the sidecar is stamped below.
+    if (writeOnce) {
+      const stored = await this.#answerImmutableRepeat({
+        filePath: livePath,
+        sidecar: prior,
+        input,
+        requestName: 'Write Resource'
+      })
+      if (stored !== undefined) {
+        return stored
+      }
     }
 
     // Count quota (create path only): a new live Resource must not push its
@@ -3231,27 +3325,29 @@ export class FileSystemBackend implements StorageBackend {
       })
     }
 
-    try {
-      await this.#writeRepresentationBytes({ spaceId, filePath, input })
-    } catch (err) {
-      // Nothing landed under the Resource's name, so the create did not
-      // happen: give its count reservation back rather than letting a phantom
-      // Resource refuse valid creates until the cached count expires. The
-      // steps below (prune, sidecar) run after the representation is durably
-      // in place, so a failure there leaves a live Resource the count should
-      // keep.
-      releaseCountReservation?.()
-      throw err
-    }
+    if (!writeOnce) {
+      try {
+        await this.#writeRepresentationBytes({ spaceId, filePath, input })
+      } catch (err) {
+        // Nothing landed under the Resource's name, so the create did not
+        // happen: give its count reservation back rather than letting a phantom
+        // Resource refuse valid creates until the cached count expires. The
+        // steps below (prune, sidecar) run after the representation is durably
+        // in place, so a failure there leaves a live Resource the count should
+        // keep.
+        releaseCountReservation?.()
+        throw err
+      }
 
-    // A Resource has a single current representation: remove any prior one
-    // stored under a different content-type (write-new-then-prune).
-    await this.#pruneStaleRepresentations({
-      collectionDir,
-      resourceId,
-      keepPath: filePath,
-      entries
-    })
+      // A Resource has a single current representation: remove any prior one
+      // stored under a different content-type (write-new-then-prune).
+      await this.#pruneStaleRepresentations({
+        collectionDir,
+        resourceId,
+        keepPath: filePath,
+        entries
+      })
+    }
 
     // Maintain the server-managed timestamps and the ETag validator: a content
     // write sets `createdAt` on first write, mints a new content stamp over
@@ -3296,6 +3392,139 @@ export class FileSystemBackend implements StorageBackend {
         }
       }
     })
+  }
+
+  /**
+   * Whether the write-once rule binds a write into the Collection. The
+   * request layer's `immutable: true` was read before this write's lock. A
+   * recheck callback instead decides from the governing history log read
+   * here, inside the Space gate's shared side. A log's guarded create runs on
+   * the gate's exclusive side (see `writeCollectionLog`), so none can land
+   * between this read and the end of the write.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param [options.immutable] {true | ImmutableUnder}
+   * @returns {Promise<boolean>}
+   */
+  async #isWriteOnce({
+    spaceId,
+    collectionId,
+    immutable
+  }: {
+    spaceId: string
+    collectionId: string
+    immutable?: true | ImmutableUnder
+  }): Promise<boolean> {
+    return resolveWriteOnce({
+      immutable,
+      readLog: async () => {
+        const stored = await this.#readCollectionLog({ spaceId, collectionId })
+        return stored && collectionLogResultOf(stored)
+      }
+    })
+  }
+
+  /**
+   * The write-once rule over a live representation (a Resource, or a chunk
+   * inside its chunk dir), run under the item's lock: a write whose media
+   * type and bytes equal the stored representation answers the stored
+   * validator and writes nothing, and any other write is refused with
+   * `ResourceImmutableError` (409). Resolves `undefined` for a repeat of a
+   * representation that has no stored validator (its sidecar is missing or
+   * damaged), which the caller answers by stamping one.
+   * @param options {object}
+   * @param options.filePath {string}   the live representation file
+   * @param [options.sidecar] {MetaSidecar}   its stamp sidecar
+   * @param options.input {ResourceInput}
+   * @param options.requestName {string}   names the refused operation
+   * @returns {Promise<EtagValidator | undefined>}
+   */
+  async #answerImmutableRepeat({
+    filePath,
+    sidecar,
+    input,
+    requestName
+  }: {
+    filePath: string
+    sidecar?: MetaSidecar
+    input: ResourceInput
+    requestName: string
+  }): Promise<EtagValidator | undefined> {
+    if (!(await this.#repeatsStoredRepresentation({ filePath, input }))) {
+      throw new ResourceImmutableError({ requestName })
+    }
+    return validatorOf({ ...sidecar })
+  }
+
+  /**
+   * Whether a write repeats the stored representation: the same media type
+   * and the same bytes. The upload cap is applied as a write would apply it,
+   * so an over-cap body is a 413 here too. The stored size is compared first,
+   * so a body of another length is answered without reading either side. A
+   * JSON body is compared as the `JSON.stringify` serialization a write
+   * stores. A binary body is digested through the upload cap.
+   * @param options {object}
+   * @param options.filePath {string}   the live representation file
+   * @param options.input {ResourceInput}
+   * @returns {Promise<boolean>}
+   */
+  async #repeatsStoredRepresentation({
+    filePath,
+    input
+  }: {
+    filePath: string
+    input: ResourceInput
+  }): Promise<boolean> {
+    const { contentType } = parseResourceFileName(path.basename(filePath))
+    if (!sameMediaType(contentType, input.contentType)) {
+      return false
+    }
+    const { maxUploadBytes } = this
+    const { size: storedBytes } = await fsStat(filePath)
+    if (input.kind === 'json') {
+      const serialized = Buffer.from(JSON.stringify(input.data))
+      this.#assertUploadSize({ maxUploadBytes, uploadBytes: serialized.length })
+      return (
+        serialized.length === storedBytes &&
+        serialized.equals(await readFile(filePath))
+      )
+    }
+    this.#assertUploadSize({ maxUploadBytes, uploadBytes: input.declaredBytes })
+    if (
+      input.declaredBytes !== undefined &&
+      input.declaredBytes !== storedBytes
+    ) {
+      return false
+    }
+    const [incoming, stored] = await Promise.all([
+      digestOfStream({ stream: input.stream, guards: this.#uploadCapGuards() }),
+      digestOfStream({ stream: fs.createReadStream(filePath) })
+    ])
+    return incoming.equals(stored)
+  }
+
+  /**
+   * The streaming guard for the per-upload cap: one transform that fails the
+   * stream with `PayloadTooLargeError` (413) at the byte that crosses
+   * `maxUploadBytes`, or none when no cap is configured. It bounds a body
+   * whose size is omitted or understated.
+   * @returns {Transform[]}
+   */
+  #uploadCapGuards(): Transform[] {
+    const { maxUploadBytes } = this
+    if (maxUploadBytes === undefined) {
+      return []
+    }
+    return [
+      this.#byteLimitGuard({
+        limitBytes: maxUploadBytes,
+        error: new PayloadTooLargeError({
+          maxUploadBytes,
+          backendId: this.describe().id
+        })
+      })
+    ]
   }
 
   /**
@@ -3373,18 +3602,7 @@ export class FileSystemBackend implements StorageBackend {
         maxUploadBytes,
         uploadBytes: input.declaredBytes
       })
-      const guards: Transform[] = []
-      if (maxUploadBytes !== undefined) {
-        guards.push(
-          this.#byteLimitGuard({
-            limitBytes: maxUploadBytes,
-            error: new PayloadTooLargeError({
-              maxUploadBytes,
-              backendId: this.describe().id
-            })
-          })
-        )
-      }
+      const guards = this.#uploadCapGuards()
       let releaseByteReservation: (() => void) | undefined
       let reconcileByteReservation: ((actualBytes: number) => void) | undefined
       if (capacityBytes !== undefined) {
@@ -4405,6 +4623,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId,
     chunkIndex,
     input,
+    immutable,
     ifMatch,
     ifNoneMatch
   }: {
@@ -4413,6 +4632,7 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
     chunkIndex: number
     input: ResourceInput
+    immutable?: true | ImmutableUnder
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator> {
@@ -4433,8 +4653,10 @@ export class FileSystemBackend implements StorageBackend {
               spaceId,
               collectionDir,
               resourceId,
+              collectionId,
               chunkIndex,
               input,
+              immutable,
               ifMatch,
               ifNoneMatch
             })
@@ -4449,18 +4671,22 @@ export class FileSystemBackend implements StorageBackend {
    */
   async #writeChunkLocked({
     spaceId,
+    collectionId,
     collectionDir,
     resourceId,
     chunkIndex,
     input,
+    immutable,
     ifMatch,
     ifNoneMatch
   }: {
     spaceId: string
+    collectionId: string
     collectionDir: string
     resourceId: string
     chunkIndex: number
     input: ResourceInput
+    immutable?: true | ImmutableUnder
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator> {
@@ -4495,28 +4721,57 @@ export class FileSystemBackend implements StorageBackend {
       })
     }
 
-    // The chunk directory is created lazily on first write (a binary body is
-    // streamed into a temp file in it, so it must exist first).
-    await mkdir(chunkDir, { recursive: true })
-    await this.#writeRepresentationBytes({ spaceId, filePath, input })
-
-    // A chunk has a single current representation: remove any prior one stored
-    // under a different content-type (write-new-then-prune).
-    await this.#pruneStaleRepresentations({
+    // A write-once Collection: a stored chunk takes only a repeat of its
+    // bytes, which writes nothing. A stored chunk with no stamp is a write
+    // torn between its bytes and its sidecar, and the repeat completes it:
+    // the bytes stay, and the sidecar is stamped below.
+    const storedPath = await this.#findFile({
       collectionDir: chunkDir,
-      resourceId: chunkId,
-      keepPath: filePath
+      resourceId: chunkId
     })
+    const priorChunkSidecar = await this.readMetaSidecar({
+      collectionDir: chunkDir,
+      resourceId: chunkId
+    })
+    const writeOnce =
+      storedPath !== undefined &&
+      (await this.#isWriteOnce({
+        spaceId,
+        collectionId,
+        immutable
+      }))
+    if (writeOnce) {
+      const stored = await this.#answerImmutableRepeat({
+        filePath: storedPath,
+        sidecar: priorChunkSidecar,
+        input,
+        requestName: 'Write Chunk'
+      })
+      if (stored !== undefined) {
+        return stored
+      }
+    }
+
+    if (!writeOnce) {
+      // The chunk directory is created lazily on first write (a binary body is
+      // streamed into a temp file in it, so it must exist first).
+      await mkdir(chunkDir, { recursive: true })
+      await this.#writeRepresentationBytes({ spaceId, filePath, input })
+
+      // A chunk has a single current representation: remove any prior one stored
+      // under a different content-type (write-new-then-prune).
+      await this.#pruneStaleRepresentations({
+        collectionDir: chunkDir,
+        resourceId: chunkId,
+        keepPath: filePath
+      })
+    }
 
     // Mint the chunk's stamp under its `generation` (its ETag validator),
     // preserving its `createdAt`. A chunk keeps no tombstone, so a delete
     // takes the sidecar with it and the next write at this index mints a
     // fresh generation. A chunk carries no user Metadata / `createdBy` /
     // epoch.
-    const priorChunkSidecar = await this.readMetaSidecar({
-      collectionDir: chunkDir,
-      resourceId: chunkId
-    })
     return this.#stampSidecar({
       collectionDir: chunkDir,
       resourceId: chunkId,

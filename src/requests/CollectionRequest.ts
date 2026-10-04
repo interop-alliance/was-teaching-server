@@ -13,7 +13,8 @@ import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import {
   fetchCollectionAndBackend,
   getCollectionOrThrow,
-  governedEncryptionOf,
+  governedDescriptorsOf,
+  writeOnceOptions,
   projectCollectionMetadata
 } from './collectionContext.js'
 import { resolveResourceInput } from './resourceInput.js'
@@ -40,6 +41,7 @@ import {
 import { resolveBackendDescriptor } from '../lib/backends.js'
 import { stampCollectionMetadata } from '../lib/metadataWrite.js'
 import { assertEncryptedWriteConforms } from '../lib/encryption.js'
+import { assertRevisionsTransition } from '../lib/revisions.js'
 import { parseKeyEpochHeader } from '../lib/keyEpoch.js'
 import { parseWriterIdHeader } from '../lib/writerAttribution.js'
 import { parsePageParams } from '../lib/pagination.js'
@@ -51,9 +53,9 @@ import { resolveBackend } from '../lib/backendRegistry.js'
 import { forgetDeletedWebvhLocation } from '../lib/webvhController.js'
 import { invalidateCollectionPolicies } from '../lib/policyCache.js'
 import {
-  getCachedGovernedEncryption,
-  invalidateCollectionGovernedEncryption
-} from '../lib/governedEncryptionCache.js'
+  getCachedGovernedDescriptors,
+  invalidateCollectionGovernedDescriptors
+} from '../lib/governedDescriptorsCache.js'
 import {
   collectionPath,
   resourcePath,
@@ -221,7 +223,13 @@ export class CollectionRequest {
         createdBy: invokerDid(request),
         epoch,
         writerId,
-        ...(uniqueIndexes.length > 0 && { uniqueIndexes })
+        ...(uniqueIndexes.length > 0 && { uniqueIndexes }),
+        ...writeOnceOptions({
+          request,
+          spaceId,
+          collectionId,
+          collectionMetadata
+        })
       })
       response = {
         id: resourceId,
@@ -505,14 +513,15 @@ export class CollectionRequest {
     })
 
     // zCap checks out, continue. The stored object is read directly (not
-    // through `getCollectionOrThrow`), since the derived `encryption` of a
-    // log-governed Collection must not be re-persisted; the governed
-    // descriptor is resolved separately for the checks that need it.
-    const [existingCollection, logEncryption] = await Promise.all([
+    // through `getCollectionOrThrow`), since the derived `encryption` and
+    // `revisions` of a log-governed Collection must not be re-persisted; the
+    // governed descriptors are resolved separately for the checks that need
+    // them.
+    const [existingCollection, logDescriptors] = await Promise.all([
       storage.getCollectionMetadata({ spaceId, collectionId }),
-      governedEncryptionOf({ storage, serverUrl, spaceId, collectionId })
+      governedDescriptorsOf({ storage, serverUrl, spaceId, collectionId })
     ])
-    const governedEncryption = existingCollection ? logEncryption : undefined
+    const governed = existingCollection ? logDescriptors : undefined
     const collectionMetadata = await composeCollectionMetadata({
       request,
       spaceId,
@@ -521,7 +530,7 @@ export class CollectionRequest {
       ...(existingCollection && {
         existing: stripMetadataValidator(existingCollection)
       }),
-      governedEncryption,
+      governed,
       requestName
     })
 
@@ -575,23 +584,24 @@ export class CollectionRequest {
         createdBy,
         ...(ifMatch !== undefined && { ifMatch }),
         ...(ifNoneMatch !== undefined && { ifNoneMatch }),
-        // Re-evaluate the encryption-descriptor rails and the `plaintext` /
-        // `encryption` exclusion atomically with the write, against the prior
+        // Re-evaluate the descriptor checks (`encryption`, `revisions`) and the
+        // `plaintext` / `encryption` exclusion atomically with the write,
+        // against the prior
         // the backend re-reads under its lock: the early checks ran against a
         // pre-lock read, so without this a concurrent descriptor write in
         // between could be silently clobbered (an appended epoch, or a
         // just-added `plaintext`, dropped by this full replacement) even
         // though both writers passed the checks -- the guarantees must hold
         // unconditionally, not just under `If-Match`.
-        // The governed descriptor is derived from the log the backend hands
-        // over, read under that same lock; the derivation is memoized by the
-        // log's validator, so it is parsed again only if the log moved.
+        // The governed descriptors are derived from the log the backend
+        // hands over, read under that same lock; the derivation is memoized
+        // by the log's validator, so it is parsed again only if the log moved.
         assertTransition: async ({ prior, log }) => {
           assertCollectionMetadataTransition({
             parsed,
             existing: prior,
-            governedEncryption: prior
-              ? await getCachedGovernedEncryption({
+            governed: prior
+              ? await getCachedGovernedDescriptors({
                   storage,
                   serverUrl,
                   spaceId,
@@ -709,10 +719,12 @@ export class CollectionRequest {
    * bytes carried verbatim plus the new line), `412` on a lost race. The
    * guarded create is the declaration that makes the Collection log-governed;
    * it is refused with `encryption-immutable` (409) on a Collection whose
-   * Metadata object already holds a client-written `encryption` member. Each
-   * write checks the line contract (`invalid-request-body`, 400) and, against
-   * the prior head, the encryption descriptor's transition checks, atomically
-   * with the write. Authorization is capability-only (the `PUT` action), as
+   * Metadata object already holds a client-written `encryption` member. It may
+   * declare a `revisions` slot in its `state`, but must keep the `resolution`
+   * and `immutable` the stored object already sets (`revisions-immutable`,
+   * 409). Each write checks the line contract (`invalid-request-body`, 400)
+   * and, against the prior head, both descriptors' transition checks,
+   * atomically with the write. Authorization is capability-only (the `PUT` action), as
    * for `/meta`. Does NOT create a Collection. Returns 204 with the log's new
    * `ETag`. A body equal to the stored log, byte for byte, is a no-op: the
    * backend answers it with the current validator and writes nothing.
@@ -782,7 +794,21 @@ export class CollectionRequest {
                 'descriptor was written on its Metadata object.'
             })
           }
-          assertGoverningLogAppend({ body, prior: prior?.body, requestName })
+          const { revisions } = assertGoverningLogAppend({
+            body,
+            prior: prior?.body,
+            requestName
+          })
+          // The guarded create declares the governed `revisions`. It may add
+          // a member the stored object lacks, the way a create does, but
+          // must keep any the stored object already sets.
+          if (prior === undefined) {
+            assertRevisionsTransition({
+              existing: collectionMetadata.revisions,
+              incoming: revisions,
+              declaring: true
+            })
+          }
         }
       })
     } catch (err) {
@@ -1228,7 +1254,11 @@ export class CollectionRequest {
       // ...and every policy cached at the Collection level or under any of
       // its Resources, and the descriptor derived from its governing log.
       invalidateCollectionPolicies({ storage, spaceId, collectionId })
-      invalidateCollectionGovernedEncryption({ storage, spaceId, collectionId })
+      invalidateCollectionGovernedDescriptors({
+        storage,
+        spaceId,
+        collectionId
+      })
     }
 
     return reply.status(204).send()

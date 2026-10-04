@@ -11,8 +11,10 @@ import type { FastifyRequest } from 'fastify'
 import { resolveBackend } from '../lib/backendRegistry.js'
 import { DEFAULT_BACKEND_ID } from '../lib/backends.js'
 import { stripMetadataValidator } from '../lib/metadataValidator.js'
-import { getCachedGovernedEncryption } from '../lib/governedEncryptionCache.js'
+import { getCachedGovernedDescriptors } from '../lib/governedDescriptorsCache.js'
+import type { GovernedDescriptors } from '../lib/governedLog.js'
 import { collectionPath, linksetPath } from '../lib/paths.js'
+import { isImmutableCollection } from '../lib/revisions.js'
 import {
   CollectionNotFoundError,
   ResourceNotFoundError,
@@ -21,6 +23,7 @@ import {
 import type {
   ChunkMetadata,
   CollectionMetadata,
+  ImmutableUnder,
   ResourceMetadata,
   StorageBackend,
   StoredCollectionMetadata
@@ -66,12 +69,14 @@ export function projectCollectionMetadata({
  * Fetches a Collection Metadata object as served, or throws
  * CollectionNotFoundError (404) when absent. The out-of-band validator parts
  * (`metaGeneration` / `metaLocal`) ride along. For a Collection governed by
- * a history log (the `governed-history-logs` feature) the `encryption` member
- * is derived here from the log head, so every handler that reads the object
- * through this prelude -- Read Collection Metadata, the envelope enforcement
- * on writes, the listing's name suppression -- sees the governed descriptor.
+ * a history log (the `governed-history-logs` feature) the `encryption` and
+ * `revisions` members are derived here from the log head, so every handler
+ * that reads the object through this prelude -- Read Collection Metadata, the
+ * envelope enforcement and the write-once rule on writes, the listing's name
+ * suppression -- sees the governed descriptors. A stored `revisions` member
+ * is replaced by the derived one, and dropped when the head carries none.
  * Update Collection reads the stored object directly instead, since it must
- * not persist the derived member.
+ * not persist the derived members.
  * @param options {object}
  * @param options.request {FastifyRequest}   supplies `request.server.storage`
  *   and `serverUrl`
@@ -93,36 +98,41 @@ export async function getCollectionOrThrow({
   requestName: string
 }): Promise<StoredCollectionMetadata> {
   const { storage, serverUrl } = request.server
-  const [collectionMetadata, governedEncryption] = await Promise.all([
+  const [collectionMetadata, governed] = await Promise.all([
     storage.getCollectionMetadata({ spaceId, collectionId }),
-    governedEncryptionOf({ storage, serverUrl, spaceId, collectionId })
+    governedDescriptorsOf({ storage, serverUrl, spaceId, collectionId })
   ])
   if (!collectionMetadata) {
     throw new CollectionNotFoundError({ requestName })
   }
-  if (governedEncryption === undefined) {
+  if (governed === undefined) {
     return collectionMetadata
   }
-  return { ...collectionMetadata, encryption: governedEncryption }
+  const { revisions: _storedRevisions, ...rest } = collectionMetadata
+  return {
+    ...rest,
+    encryption: governed.encryption,
+    ...(governed.revisions !== undefined && { revisions: governed.revisions })
+  }
 }
 
 /**
- * The `encryption` descriptor a log-governed Collection serves, derived from
- * its history log's head (the `governed-history-logs` feature), or
- * `undefined` when the Collection has no log. The stored object carries no
- * `encryption` for such a Collection; a direct write of the member is refused.
- * The derivation is memoized per backend by the log's validator
- * (`lib/governedEncryptionCache.ts`); a caller that already holds a
+ * The `encryption` and `revisions` descriptors a log-governed Collection
+ * serves, derived from its history log's head (the `governed-history-logs`
+ * feature), or `undefined` when the Collection has no log. The stored object
+ * carries no `encryption` for such a Collection; a direct write of the member
+ * is refused. The derivation is memoized per backend by the log's validator
+ * (`lib/governedDescriptorsCache.ts`); a caller that already holds a
  * lock-consistent log (Update Collection's recheck under the backend's lock)
- * calls `getCachedGovernedEncryption` with it directly instead.
+ * calls `getCachedGovernedDescriptors` with it directly instead.
  * @param options {object}
  * @param options.storage {StorageBackend}
  * @param options.serverUrl {string}
  * @param options.spaceId {string}
  * @param options.collectionId {string}
- * @returns {Promise<CollectionMetadata['encryption']>}
+ * @returns {Promise<GovernedDescriptors | undefined>}
  */
-export async function governedEncryptionOf({
+export async function governedDescriptorsOf({
   storage,
   serverUrl,
   spaceId,
@@ -132,15 +142,63 @@ export async function governedEncryptionOf({
   serverUrl: string
   spaceId: string
   collectionId: string
-}): Promise<CollectionMetadata['encryption']> {
+}): Promise<GovernedDescriptors | undefined> {
   const log = await storage.getCollectionLog({ spaceId, collectionId })
-  return await getCachedGovernedEncryption({
+  return await getCachedGovernedDescriptors({
     storage,
     serverUrl,
     spaceId,
     collectionId,
     log
   })
+}
+
+/**
+ * What a Resource or chunk write handler hands the backend for the write-once
+ * rule (`revisions.immutable`). A Collection the handler already read as
+ * write-once passes `true`, since the flag is never taken back. Any other
+ * Collection passes a recheck callback, which the backend calls inside
+ * the write's critical section with the governing history log it reads
+ * there. The handler's own read ran before that lock, and a log's guarded
+ * create can declare `immutable` on an existing Collection in between. No
+ * other write can set the flag afterward, so the log is the only thing the
+ * backend re-reads.
+ * @param options {object}
+ * @param options.request {FastifyRequest}   supplies `request.server.storage`
+ *   and `serverUrl`
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.collectionMetadata {CollectionMetadata}   the Collection
+ *   Metadata object as served, read before the lock
+ * @returns {{ immutable: true | ImmutableUnder }}
+ */
+export function writeOnceOptions({
+  request,
+  spaceId,
+  collectionId,
+  collectionMetadata
+}: {
+  request: FastifyRequest
+  spaceId: string
+  collectionId: string
+  collectionMetadata: Pick<CollectionMetadata, 'revisions'>
+}): { immutable: true | ImmutableUnder } {
+  if (isImmutableCollection(collectionMetadata)) {
+    return { immutable: true }
+  }
+  const { storage, serverUrl } = request.server
+  return {
+    immutable: async ({ log }) => {
+      const governed = await getCachedGovernedDescriptors({
+        storage,
+        serverUrl,
+        spaceId,
+        collectionId,
+        log
+      })
+      return isImmutableCollection(governed ?? {})
+    }
+  }
 }
 
 /**

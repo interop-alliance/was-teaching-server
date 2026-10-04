@@ -34,17 +34,7 @@ import {
   EncryptionSchemeMismatchError,
   InvalidRequestBodyError
 } from '../src/errors.js'
-
-/** A minimal valid descriptor recipient entry (JWE recipients-entry shape). */
-function recipient(kid: string): {
-  header: { kid: string; alg: string }
-  encrypted_key: string
-} {
-  return {
-    header: { kid, alg: 'ECDH-ES+A256KW' },
-    encrypted_key: `wrapped-${kid}`
-  }
-}
+import { recipient } from './helpers.js'
 
 /** A valid multi-epoch descriptor naming `currentEpoch`, with two epochs. */
 function epochDescriptor(): CollectionEncryption {

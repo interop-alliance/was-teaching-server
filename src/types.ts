@@ -120,6 +120,7 @@ export type {
   CollectionEncryption,
   CollectionEncryptionEpoch,
   CollectionEncryptionRecipient,
+  CollectionRevisions,
   ResourceMetadata,
   ResourceMetadataCustom,
   CollectionMetadata,
@@ -546,6 +547,16 @@ export interface CollectionLogResult {
 }
 
 /**
+ * The write-once recheck a Resource or chunk write runs inside its critical
+ * section. The backend hands it the Collection's governing history log as
+ * read under the write's lock (`undefined` when it has none), and it answers
+ * whether that log declares the Collection write-once.
+ */
+export type ImmutableUnder = (context: {
+  log?: CollectionLogResult
+}) => Promise<boolean>
+
+/**
  * The persistence contract every backend implements. No write creates a
  * container implicitly. `writeSpace` is the only write that creates a Space,
  * and `writeCollection` (or an import) the only one that creates a Collection.
@@ -915,6 +926,24 @@ export interface StorageBackend {
      * authorization decision.
      */
     writerId?: string
+    /**
+     * `true` when the target Collection is write-once (its `revisions`
+     * descriptor sets `immutable`). Evaluated inside the write's critical
+     * section, after the preconditions: over a live Resource, a write whose
+     * content type and bytes equal the stored representation is a no-op that
+     * returns the current validator (no new stamp, no feed position), and any
+     * other write is refused with `ResourceImmutableError` (409). A write to
+     * an absent id or over a tombstone is an ordinary create. The media type
+     * is compared without its parameters.
+     *
+     * A recheck callback when the request layer read the Collection as not
+     * write-once. That read ran before the write's lock, and a governing
+     * history log's guarded create can declare `immutable` in between. Over
+     * a live Resource the backend calls it with the log it reads under the
+     * write's lock, and applies the rule when it answers `true`. A log's
+     * guarded create cannot land between that read and the write.
+     */
+    immutable?: true | ImmutableUnder
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator>
@@ -1072,6 +1101,11 @@ export interface StorageBackend {
     resourceId: string
     chunkIndex: number
     input: ResourceInput
+    /**
+     * `writeResource`'s `immutable` option (the flag, or the recheck
+     * callback), applied against a stored chunk at the index.
+     */
+    immutable?: true | ImmutableUnder
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator>

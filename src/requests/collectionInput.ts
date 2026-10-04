@@ -11,8 +11,9 @@
  * The work is split in two on the same boundary every handler keeps: the
  * shape checks run before authorization (a malformed body is a 400 whoever
  * sends it), while the checks that read Space or Collection state -- the
- * backend allowlist, the encryption transition, the `custom` envelope -- run
- * after it, so their 409/422 are observable only to an authorized caller.
+ * backend allowlist, the encryption and revisions transitions, the `custom`
+ * envelope -- run after it, so their 409/422 are observable only to an
+ * authorized caller.
  */
 import type { FastifyRequest } from 'fastify'
 import { assertSupportedBackend } from '../lib/backends.js'
@@ -25,6 +26,12 @@ import {
   assertSupportedPlaintext
 } from '../lib/equalityIndex.js'
 import { assertValidGenerator } from '../lib/generator.js'
+import {
+  assertGovernedMergeUnchanged,
+  assertRevisionsTransition,
+  assertValidRevisions
+} from '../lib/revisions.js'
+import type { GovernedDescriptors } from '../lib/governedLog.js'
 import { resolveMetadataCustom } from '../lib/customMetadata.js'
 import { parseMetaEpoch } from '../lib/keyEpoch.js'
 import {
@@ -44,14 +51,16 @@ export interface ParsedCollectionMetadataBody {
   encryption?: CollectionMetadata['encryption']
   plaintext?: CollectionMetadata['plaintext']
   generator?: CollectionMetadata['generator']
+  revisions?: CollectionMetadata['revisions']
   epoch?: string
 }
 
 /**
  * Shape-checks the writable members of a Collection Metadata body (400 on a
  * malformed one). The body must be a JSON object. `name` must be a string
- * when present. The encryption descriptor, the `plaintext` declaration, the
- * app-attribution members and the top-level `epoch` are checked by their own
+ * when present. The encryption descriptor, the `revisions` descriptor, the
+ * `plaintext` declaration, the app-attribution members and the top-level
+ * `epoch` are checked by their own
  * validators; the read-only members (`createdAt`, `updatedAt`, `createdBy`,
  * `url`, `linkset`) are ignored, as the spec requires, so a read-modify-write
  * round trip needs no stripping. `custom` is deferred: whether it must be a
@@ -102,6 +111,12 @@ export function parseCollectionMetadataBody({
     generator: record.generator,
     requestName
   })
+  // Validate the optional `revisions` descriptor (shape only; its set-once
+  // rule reads the stored object and runs after authorization).
+  const revisions = assertValidRevisions({
+    revisions: record.revisions,
+    requestName
+  })
   // The key-epoch stamp of the `custom` envelope (the `key-epochs` feature);
   // a present value must be a non-empty string.
   const { epoch } = parseMetaEpoch({ body: record, requestName })
@@ -111,48 +126,71 @@ export function parseCollectionMetadataBody({
     ...(encryption !== undefined && { encryption }),
     ...(plaintext !== undefined && { plaintext }),
     ...(generator !== undefined && { generator }),
+    ...(revisions !== undefined && { revisions }),
     ...(epoch !== undefined && { epoch })
   }
 }
 
 /**
- * The encryption-descriptor checks a Collection Metadata write runs against
- * the Collection's current state: a direct `encryption` write on a
- * log-governed Collection is refused (`encryption-history-log-governed`,
- * 409), the descriptor is set-once (`encryption-immutable`, 409), and the
- * effective object may not carry both `plaintext` and `encryption` (400).
- * Update Collection runs it twice, once against its pre-lock read for a clean
- * early rejection and again against the prior the backend re-reads under its
- * lock.
+ * The descriptor checks a Collection Metadata write runs against the
+ * Collection's current state: a direct `encryption` write on a log-governed
+ * Collection is refused (`encryption-history-log-governed`, 409), the
+ * encryption descriptor is set-once (`encryption-immutable`, 409), the
+ * `revisions` descriptor's `resolution` and `immutable` are set at creation
+ * and immutable afterward (`revisions-immutable`, 409), and the effective
+ * object may not carry both `plaintext` and `encryption` (400). On a
+ * log-governed Collection a `revisions` the body carries is checked against
+ * the derived descriptor, and an omitted one is not a change, since the log
+ * holds it. Update Collection runs it twice, once against its pre-lock read
+ * for a clean early rejection and again against the prior the backend
+ * re-reads under its lock. A create (no `existing`) declares freely.
  * @param options {object}
  * @param options.parsed {ParsedCollectionMetadataBody}   the shape-checked body
  * @param [options.existing] {CollectionMetadata}   the stored object, on an
  *   update (absent on a create)
- * @param [options.governedEncryption] {CollectionMetadata['encryption']}   the
- *   descriptor derived from the Collection's history log, when it has one
+ * @param [options.governed] {GovernedDescriptors}   the descriptors derived
+ *   from the Collection's history log, when it has one
  * @param options.requestName {string}   request name for error titles
  */
 export function assertCollectionMetadataTransition({
   parsed,
   existing,
-  governedEncryption,
+  governed,
   requestName
 }: {
   parsed: ParsedCollectionMetadataBody
   existing?: CollectionMetadata
-  governedEncryption?: CollectionMetadata['encryption']
+  governed?: GovernedDescriptors
   requestName: string
 }): void {
-  if (governedEncryption !== undefined && parsed.encryption !== undefined) {
+  if (governed !== undefined && parsed.encryption !== undefined) {
     throw new EncryptionHistoryLogGovernedError()
   }
   assertEncryptionDescriptorTransition({
     existing: existing?.encryption,
     incoming: parsed.encryption
   })
+  if (governed !== undefined) {
+    if (parsed.revisions !== undefined) {
+      assertRevisionsTransition({
+        existing: governed.revisions,
+        incoming: parsed.revisions
+      })
+      assertGovernedMergeUnchanged({
+        governed: governed.revisions,
+        incoming: parsed.revisions
+      })
+    }
+  } else if (existing !== undefined) {
+    assertRevisionsTransition({
+      existing: existing.revisions,
+      incoming: parsed.revisions
+    })
+  }
   assertPlaintextNotEncrypted({
     plaintext: parsed.plaintext ?? existing?.plaintext,
-    encryption: parsed.encryption ?? existing?.encryption ?? governedEncryption,
+    encryption:
+      parsed.encryption ?? existing?.encryption ?? governed?.encryption,
     requestName
   })
 }
@@ -172,6 +210,13 @@ export function assertCollectionMetadataTransition({
  *   (`encryption-history-log-governed`, 409). Otherwise the descriptor is
  *   set-once: an omitted member on an encrypted Collection is an attempt to
  *   clear it, `encryption-immutable` (409), as is any narrowing change.
+ * - `revisions`: `resolution` and `immutable` are declared by the create and
+ *   immutable afterward, so an update that adds, drops, or changes one is
+ *   refused (`revisions-immutable`, 409); `merge` follows the body. On a
+ *   log-governed Collection the log holds the descriptor: a body `revisions`
+ *   is checked against the derived one and not stored, a `merge` that differs
+ *   from the derived one is refused (`revisions-immutable`, 409), and the
+ *   stored descriptor is carried forward untouched.
  * - `plaintext` and `generator` are the spec's carve-outs from clearing: an
  *   omitted member leaves the stored one untouched, and a supplied one
  *   replaces it whole. The result may not carry both `plaintext` and
@@ -191,8 +236,8 @@ export function assertCollectionMetadataTransition({
  * @param options.parsed {ParsedCollectionMetadataBody}   the shape-checked body
  * @param [options.existing] {CollectionMetadata}   the stored object, on an
  *   update (absent on a create)
- * @param [options.governedEncryption] {CollectionMetadata['encryption']}   the
- *   descriptor derived from the Collection's history log, when it has one
+ * @param [options.governed] {GovernedDescriptors}   the descriptors derived
+ *   from the Collection's history log, when it has one
  * @param options.requestName {string}   request name for error titles
  * @returns {Promise<CollectionMetadata>}   the object to hand to
  *   `writeCollection` (validator-free; `createdBy` and the timestamps are the
@@ -204,7 +249,7 @@ export async function composeCollectionMetadata({
   collectionId,
   parsed,
   existing,
-  governedEncryption,
+  governed,
   requestName
 }: {
   request: FastifyRequest
@@ -212,7 +257,7 @@ export async function composeCollectionMetadata({
   collectionId: string
   parsed: ParsedCollectionMetadataBody
   existing?: CollectionMetadata
-  governedEncryption?: CollectionMetadata['encryption']
+  governed?: GovernedDescriptors
   requestName: string
 }): Promise<CollectionMetadata> {
   const { storage } = request.server
@@ -235,12 +280,17 @@ export async function composeCollectionMetadata({
   assertCollectionMetadataTransition({
     parsed,
     existing,
-    governedEncryption,
+    governed,
     requestName
   })
   const plaintext = parsed.plaintext ?? existing?.plaintext
   const generator = parsed.generator ?? existing?.generator
-  const encryption = parsed.encryption ?? governedEncryption
+  const encryption = parsed.encryption ?? governed?.encryption
+  // A governed Collection's descriptor lives in its log, so a body
+  // `revisions` that passed the check above is not stored. The stored one is
+  // carried forward as it is: the served descriptor is the log's either way.
+  const revisions =
+    governed === undefined ? parsed.revisions : existing?.revisions
 
   // An omitted `custom` is the cleared state, on an encrypted Collection as
   // much as on a plaintext one (spec "Lifecycle": clearing the annotations is
@@ -272,6 +322,7 @@ export async function composeCollectionMetadata({
     ...(parsed.encryption !== undefined && { encryption: parsed.encryption }),
     ...(plaintext !== undefined && { plaintext }),
     ...(generator !== undefined && { generator }),
+    ...(revisions !== undefined && { revisions }),
     ...(parsed.epoch !== undefined && { epoch: parsed.epoch }),
     ...(custom !== undefined && {
       custom: custom as CollectionMetadata['custom']

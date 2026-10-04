@@ -15,8 +15,12 @@ import type { FastifyInstance } from 'fastify'
 import {
   assertEncryptedCollectionsFeature,
   assertEtagAdvanced,
+  entryLine,
+  genesisLine,
+  oneEpoch,
   parseEtagSegments,
   openTempBackend,
+  recipient,
   responseOf,
   startTestServer,
   zcapClients
@@ -30,46 +34,6 @@ const envelope = {
   jwe: { protected: 'eyJhbGciOiJkaXI', ciphertext: 'c1phertext' }
 }
 
-/** A descriptor recipient entry (the JWE recipients-entry shape). */
-const recipient = (kid: string) => ({
-  header: { kid, alg: 'ECDH-ES+A256KW' },
-  encrypted_key: `wrapped-${kid}`
-})
-
-/** A log entry line: the profile's members with `state` as given. */
-function entryLine({
-  ordinal,
-  state,
-  parameters = {}
-}: {
-  ordinal: number
-  state: Record<string, unknown>
-  parameters?: Record<string, unknown>
-}): string {
-  return JSON.stringify({
-    versionId: `${ordinal}-hash${ordinal}`,
-    versionTime: '2026-09-07T00:00:00Z',
-    parameters,
-    state,
-    proof: []
-  })
-}
-
-/** The genesis line: carries the format identifier and the SCID. */
-function genesisLine(state: Record<string, unknown>): string {
-  return entryLine({
-    ordinal: 1,
-    state,
-    parameters: { method: 'resource-log:0.1', scid: 'zScid' }
-  })
-}
-
-const oneEpoch = {
-  type: 'WasEpochConfiguration',
-  scheme: 'edv',
-  currentEpoch: 'urn:epoch:1',
-  epochs: [{ id: 'urn:epoch:1', recipients: [recipient('did:key:zApp1#ka')] }]
-}
 const twoEpochs = {
   ...oneEpoch,
   currentEpoch: 'urn:epoch:2',

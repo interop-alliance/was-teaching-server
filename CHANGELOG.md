@@ -175,6 +175,37 @@
   its promise with `RequestFaultDisarmedError`. The hooks run ahead of every
   route group's own, and the plugin's options are unchanged.
 
+- The Collection Metadata object's optional `revisions` descriptor: `resolution`
+  (only `last-writer-wins`, the default), `immutable` (boolean, default
+  `false`), and `merge` (an object served verbatim and not read). An unknown
+  `resolution` (`keep-conflicts` included), a wrong member type, or an unknown
+  member is `invalid-request-body` (400). `resolution` and `immutable` are
+  declared by the write that creates the Collection and are immutable afterward.
+  An absent member stands for its default, so restating a default passes.
+  Setting `immutable: true` on an existing Collection, or dropping or changing
+  it, is `revisions-immutable` (409). On a log-governed Collection the
+  descriptor is derived from the head `state.revisions` slot, which the derived
+  `encryption` member no longer carries, and a log append runs the same check. A
+  governing log's guarded create may move a member off its default. A direct
+  `PUT .../meta` whose `revisions.merge` differs from the derived one is
+  `revisions-immutable` (409), and the stored `revisions` member is carried
+  forward untouched. Import runs the shape check on an archived `revisions`
+  member, and checks it against the archived governing log's head, refusing a
+  break as `invalid-import` (400).
+
+- On an `immutable` Collection, a Resource or chunk write over a live one is
+  refused with `resource-immutable` (409), unless its media type and bytes equal
+  the stored ones. The media type is compared without parameters and
+  case-insensitively. That repeat writes nothing and answers the current `ETag`.
+  A repeat over a Resource whose sidecar was torn from its bytes stamps the
+  sidecar instead of failing. The rule is decided before the unique-claim scans.
+  A write over a tombstone is a create. A governing log's guarded create can
+  declare `immutable` on an existing Collection, so the backend rechecks it
+  inside the write's critical section. Delete, Resource `/meta` writes, and
+  imports are not restricted. `StorageBackend.writeResource` and `writeChunk`
+  take an `immutable` option, the flag or a recheck callback. Requires
+  `@interop/storage-core` 0.30.0.
+
 ### Changed
 
 - The `ETag` is `"<generation>.<ms>.<counter>.<originId>"`, from the record's
@@ -304,8 +335,8 @@
   history log once per log version and memoized per backend, keyed by the log's
   `ETag`. The log body is still read on each request. Only the parse is saved.
   Delete Collection, Delete Space, and Import Space drop the affected entries.
-  New settings `GOVERNED_ENCRYPTION_CACHE_TTL` (600 s) and
-  `GOVERNED_ENCRYPTION_CACHE_MAX` (1000) in `config.default.ts`.
+  New settings `GOVERNED_DESCRIPTORS_CACHE_TTL` (600 s) and
+  `GOVERNED_DESCRIPTORS_CACHE_MAX` (1000) in `config.default.ts`.
 
 - The `assertTransition` callback of `StorageBackend.writeCollection` now
   receives `{ prior, log }`: the prior Collection Metadata object and the

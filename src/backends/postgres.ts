@@ -34,6 +34,7 @@ import pino from 'pino'
 import type { FastifyBaseLogger } from 'fastify'
 import {
   StorageError,
+  ResourceImmutableError,
   ResourceNotFoundError,
   SpaceNotFoundError,
   CollectionNotFoundError,
@@ -82,6 +83,8 @@ import { archivedSpaceMetadata } from '../lib/spaceProjection.js'
 import { attestArchiveEntries } from '../lib/exportProvenance.js'
 import type { ExportAttestor } from '../lib/exportProvenance.js'
 import { backendUsageFieldsFor } from '../lib/backendUsage.js'
+import { sameMediaType } from '../lib/mediaType.js'
+import { resolveWriteOnce } from '../lib/revisions.js'
 import {
   collectionListingItem,
   collectionResourcesList,
@@ -178,6 +181,7 @@ import type {
   StoredSpaceMetadata,
   StoredCollectionMetadata,
   CollectionLogResult,
+  ImmutableUnder,
   StoredCollectionLog,
   CollectionTransitionContext,
   KeystoreConfig,
@@ -879,6 +883,47 @@ export class PostgresBackend implements StorageBackend {
     if (!collectionRows[0]?.live) {
       throw new CollectionNotFoundError({ requestName })
     }
+  }
+
+  /**
+   * Whether the write-once rule binds a write into the Collection. The
+   * request layer's `immutable` was read before this transaction. When it is
+   * `true`, a recheck callback decides from the governing history log read
+   * here under the `collections` row lock, the lock a log write takes. A
+   * log's guarded create then either committed before this read or waits for
+   * this transaction to end. The row lock follows the Space row in the
+   * backend-wide order (`#lockSpaceRow`).
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param [options.immutable] {true | ImmutableUnder}
+   * @returns {Promise<boolean>}
+   */
+  async #isWriteOnce({
+    client,
+    spaceId,
+    collectionId,
+    immutable
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId: string
+    immutable?: true | ImmutableUnder
+  }): Promise<boolean> {
+    return resolveWriteOnce({
+      immutable,
+      readLog: async () => {
+        const { rows } = await client.query<LogRow>(
+          `SELECT ${LOG_COLUMNS}
+             FROM collections
+            WHERE space_id = $1 AND collection_id = $2
+            FOR UPDATE`,
+          [spaceId, collectionId]
+        )
+        return logResultFromRow(rows[0])
+      }
+    })
   }
 
   /**
@@ -2122,6 +2167,7 @@ export class PostgresBackend implements StorageBackend {
     epoch,
     writerId,
     uniqueIndexes,
+    immutable,
     ifMatch,
     ifNoneMatch
   }: {
@@ -2133,6 +2179,7 @@ export class PostgresBackend implements StorageBackend {
     epoch?: string
     writerId?: string
     uniqueIndexes?: NormalizedIndexDeclaration[]
+    immutable?: true | ImmutableUnder
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator> {
@@ -2148,6 +2195,67 @@ export class PostgresBackend implements StorageBackend {
         collectionId,
         requestName: 'Write Resource'
       })
+
+      // A write-once Collection: over a live Resource, only a repeat of the
+      // stored media type and bytes passes, and it writes nothing. It is
+      // decided first, before the unique-claim scans and before the feed
+      // position is taken: a write this rule answers stores nothing, so it
+      // claims nothing and takes no position. The Space row lock held above
+      // serializes every write to the Space's rows, so the row read here is
+      // the one the write would replace. A tombstone keeps no bytes, so a
+      // write over one is an ordinary create.
+      if (immutable !== undefined) {
+        const { rows: storedRows } = await client.query<
+          StampColumns & {
+            generation: string
+            deleted: boolean
+            content_type: string
+          }
+        >(
+          `SELECT generation, updated_at, updated_at_counter, origin_id,
+                  deleted, content_type
+             FROM resources
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
+          [spaceId, collectionId, resourceId]
+        )
+        const stored = storedRows[0]
+        if (
+          stored !== undefined &&
+          !stored.deleted &&
+          (await this.#isWriteOnce({
+            client,
+            spaceId,
+            collectionId,
+            immutable
+          }))
+        ) {
+          if (ifMatch !== undefined || ifNoneMatch !== undefined) {
+            assertWritePrecondition({
+              resourceId,
+              exists: true,
+              currentEtag: etagOfRow(stored),
+              ifMatch,
+              ifNoneMatch
+            })
+          }
+          const { rows: byteRows } = await client.query<{ same: boolean }>(
+            `SELECT (content = $4) AS same
+               FROM resources
+              WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
+            [spaceId, collectionId, resourceId, content]
+          )
+          if (
+            !sameMediaType(stored.content_type, input.contentType) ||
+            byteRows[0]?.same !== true
+          ) {
+            throw new ResourceImmutableError({ requestName: 'Write Resource' })
+          }
+          return stampedValidator({
+            generation: stored.generation,
+            stamp: stampOfRow(stored)
+          })
+        }
+      }
 
       // Two unique-attribute invariants can force a JSON content write to
       // serialize before it upserts its row: the EDV blinded one (`unique: true`
@@ -2892,6 +3000,7 @@ export class PostgresBackend implements StorageBackend {
     resourceId,
     chunkIndex,
     input,
+    immutable,
     ifMatch,
     ifNoneMatch
   }: {
@@ -2900,6 +3009,7 @@ export class PostgresBackend implements StorageBackend {
     resourceId: string
     chunkIndex: number
     input: ResourceInput
+    immutable?: true | ImmutableUnder
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<EtagValidator> {
@@ -2960,6 +3070,41 @@ export class PostgresBackend implements StorageBackend {
           currentEtag: prior ? etagOfRow(prior) : undefined,
           ifMatch,
           ifNoneMatch
+        })
+      }
+
+      // A write-once Collection: a stored chunk takes only a repeat of its
+      // media type and bytes, which writes nothing.
+      if (
+        prior !== undefined &&
+        (await this.#isWriteOnce({
+          client,
+          spaceId,
+          collectionId,
+          immutable
+        }))
+      ) {
+        const { rows: storedRows } = await client.query<{
+          content_type: string
+          same: boolean
+        }>(
+          `SELECT content_type, (bytes = $5) AS same
+             FROM chunks
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+              AND chunk_index = $4`,
+          [spaceId, collectionId, resourceId, chunkIndex, bytes]
+        )
+        const stored = storedRows[0]
+        if (
+          stored === undefined ||
+          !sameMediaType(stored.content_type, input.contentType) ||
+          !stored.same
+        ) {
+          throw new ResourceImmutableError({ requestName: 'Write Chunk' })
+        }
+        return stampedValidator({
+          generation: prior.generation,
+          stamp: stampOfRow(prior)
         })
       }
 
