@@ -113,6 +113,7 @@ export type {
   SpaceSummary,
   SpaceListing,
   CollectionSummary,
+  CollectionTombstoneSummary,
   CollectionsList,
   ResourceSummary,
   CollectionResourcesList,
@@ -518,6 +519,24 @@ export type StoredCollectionMetadata = CollectionMetadata &
   MetadataValidatorParts
 
 /**
+ * A Collection tombstone as a backend reads it back. Delete Collection
+ * leaves the Collection Metadata record in place marked `deleted`, keeping
+ * the generation (`metaGeneration`) and taking the delete's write stamp.
+ * Nothing else of the old body is kept.
+ */
+export type StoredCollectionTombstone = {
+  deleted: true
+  metaGeneration?: string
+} & WriteStamp
+
+/**
+ * What `deleteCollection` found: `deleted`, a live Collection it tombstoned
+ * now; `already-deleted`, a tombstone it left as it was (finishing any
+ * members a cut short delete left); `absent`, no record under the id at all.
+ */
+export type CollectionDeleteOutcome = 'deleted' | 'already-deleted' | 'absent'
+
+/**
  * A stored Space Metadata object as the backends surface it: the wire body
  * plus the out-of-band validator parts.
  */
@@ -716,11 +735,18 @@ export interface StorageBackend {
    * not issue one policy probe per listed Collection; only the page's
    * Collections are probed. A malformed/un-honorable `cursor` rejects with
    * `InvalidCursorError` (400 `invalid-cursor`).
+   *
+   * A tombstoned Collection is left out of the items and of `totalItems`
+   * unless `includeDeleted` is set. With it, each tombstone is listed in the
+   * same id order as `{ id, url, deleted: true }` plus the stamp of the
+   * delete, and counted in `totalItems`; `next` then carries
+   * `include=deleted` forward.
    */
   listCollections(options: {
     spaceId: string
     limit?: number
     cursor?: string
+    includeDeleted?: boolean
   }): Promise<CollectionsList>
   /**
    * Packs the Space as a tar archive: its Collections, Resources (including
@@ -791,7 +817,10 @@ export interface StorageBackend {
    * update-if-unchanged compare-and-swap), else `precondition-failed` (412).
    * `ifNoneMatch` (`If-None-Match: *`) is the guarded create: the write
    * proceeds only if the Collection does not exist yet, else
-   * `precondition-failed` (412), evaluated under the same lock. The
+   * `precondition-failed` (412), evaluated under the same lock. A tombstoned
+   * Collection counts as absent: a write over it is a create, mints a new
+   * generation and a stamp above the tombstone's, and inherits none of the
+   * old life's members, `createdAt` and `createdBy` included. The
    * generation and local segment travel only in the `ETag` header -- they are
    * kept OUT of the wire body.
    */
@@ -822,18 +851,31 @@ export interface StorageBackend {
   }): Promise<EtagValidator>
   /**
    * Reads a Collection Metadata object. Resolves falsy when the Collection
-   * does not exist. `metaGeneration` / `metaLocal` are the out-of-band `ETag`
-   * validator parts (the handler strips them from the wire body and sets the
-   * `ETag` header from them and the body's stamp members).
+   * does not exist, a tombstoned Collection included. `metaGeneration` /
+   * `metaLocal` are the out-of-band `ETag` validator parts (the handler
+   * strips them from the wire body and sets the `ETag` header from them and
+   * the body's stamp members).
    */
   getCollectionMetadata(options: {
     spaceId: string
     collectionId: string
   }): Promise<StoredCollectionMetadata | undefined>
+  /**
+   * Deletes a Collection, leaving a tombstone: the Collection Metadata record
+   * marked `deleted`, keeping its generation and taking a fresh write stamp
+   * minted inside the delete's critical section. Its Resources, chunks,
+   * policies, governing history log and changes-feed counter are removed.
+   * A tombstone reads as absent to every other method, so a later create
+   * under the id mints a new generation with a stamp above the tombstone's.
+   * Resolves what it found (`CollectionDeleteOutcome`). Over a tombstone it
+   * writes nothing, and the request layer answers 404. With no record at all
+   * it removes any members left without one and resolves `absent`, which the
+   * request layer answers 204.
+   */
   deleteCollection(options: {
     spaceId: string
     collectionId: string
-  }): Promise<void>
+  }): Promise<CollectionDeleteOutcome>
   /**
    * Lists a Collection's Resources, OPTIONALLY paginated (spec "Pagination").
    * `limit` bounds the page (a backend MAY clamp an oversized value to its own

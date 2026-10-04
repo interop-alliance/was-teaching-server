@@ -214,6 +214,8 @@ export async function applyImportProvenance({
     })
   }
 
+  // A Collection tombstone (`plan.collectionTombstones`) carries no
+  // statement and is not counted: only live Collections are judged.
   const collections = []
   for (const collection of plan.collections) {
     const { collectionId } = collection

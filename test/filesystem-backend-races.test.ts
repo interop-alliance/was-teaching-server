@@ -88,13 +88,14 @@ describe('FileSystemBackend races', () => {
       spaceId,
       collectionId
     })
-    // Either the Collection is gone outright, or it exists WITH its
-    // metadata file. What must never happen is content with no metadata.
+    // Either the Collection is deleted, leaving only its tombstone file, or
+    // it exists WITH its metadata file. What must never happen is content
+    // under a deleted Collection.
     if (metadata === undefined) {
       assert.deepEqual(
         await collectionDirEntries(),
-        [],
-        'Collection was deleted but its directory holds files'
+        [`.collection.${collectionId}.json`],
+        'Collection was deleted but its directory holds more than its tombstone'
       )
     }
   })

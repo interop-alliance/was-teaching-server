@@ -365,7 +365,19 @@ export const MIGRATIONS: Migration[] = [
   // counter. A schema holding any Space is refused, every boot, until it is
   // wiped or each Space is restored from an export archive (whose records an
   // import re-stamps): there is no stamping step. An empty schema is reshaped.
-  reshapeForWriteStamps
+  reshapeForWriteStamps,
+  // v10: Collection tombstones. Delete Collection keeps the 'collections' row
+  // and marks it 'deleted'. A tombstoned row keeps 'meta_generation', carries
+  // the delete's stamp in the stamp columns, and has 'metadata', the log
+  // columns and 'feed_generation' NULL and 'feed_position' 0. It reads as
+  // absent everywhere except the Space listing under '?include=deleted'. A
+  // create over it clears the mark and mints a new generation. Its member
+  // rows (Resources, chunks, policies) are removed in the delete's
+  // transaction.
+  `
+  ALTER TABLE collections
+    ADD COLUMN deleted boolean NOT NULL DEFAULT false;
+  `
 ]
 
 /**

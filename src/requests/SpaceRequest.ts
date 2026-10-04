@@ -71,7 +71,7 @@ import {
   backendsPath,
   quotasPath
 } from '../lib/paths.js'
-import { parsePageParams } from '../lib/pagination.js'
+import { parseIncludeSections, parsePageParams } from '../lib/pagination.js'
 import { loadExportAttestor } from '../lib/exportProvenance.js'
 import { prepareImportPlan } from '../lib/importPlan.js'
 import {
@@ -710,6 +710,12 @@ export class SpaceRequest {
    * (true iff a `PublicCanRead` policy is attached), so a client need not
    * probe each Collection's policy resource separately.
    *
+   * `?include=deleted` also lists tombstoned Collections, as their id, URL,
+   * `deleted: true` and the stamp of the delete, counted in `totalItems` and
+   * carried forward on `next`. It is honored only under a verified
+   * capability: a listing served through the access-control policy fallback
+   * (a public read) ignores it and lists live Collections only.
+   *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
    * @returns {Promise<FastifyReply>}
@@ -739,7 +745,7 @@ export class SpaceRequest {
     // target. Authorization still runs before any cursor validation in the
     // backend, so an under-authorized caller gets the merged 404 -- never an
     // `invalid-cursor`.
-    await fetchSpaceAndAuthorize({
+    const { grantedBy } = await fetchSpaceAndAuthorize({
       request,
       spaceId,
       targetPath: spacePath({ spaceId, trailingSlash: true }),
@@ -747,10 +753,17 @@ export class SpaceRequest {
       allowTargetQuery: true
     })
 
+    // Tombstones are listed only for a capability holder; an unknown
+    // `include` section is ignored, as on the quota report.
+    const includeDeleted =
+      grantedBy === 'capability' &&
+      parseIncludeSections(request.query.include).includes('deleted')
+
     const collections = await storage.listCollections({
       spaceId,
       ...(limit !== undefined && { limit }),
-      ...(cursor !== undefined && { cursor })
+      ...(cursor !== undefined && { cursor }),
+      includeDeleted
     })
     return reply
       .status(200)
@@ -856,19 +869,9 @@ export class SpaceRequest {
     })
 
     // The per-Collection breakdown is opt-in via `?include=collections` (spec
-    // "Quotas"); `include` is a comma-separated list of optional sections. A
-    // repeated `?include=` makes Fastify's default parser yield a string array,
-    // so normalize to an array first -- calling `.split` on the array would 500
-    // (unauthenticated-reachable on a public-readable Space).
-    const includeValues = Array.isArray(include)
-      ? include
-      : include !== undefined
-        ? [include]
-        : []
-    const includeCollections = includeValues
-      .flatMap(value => value.split(','))
-      .map(section => section.trim())
-      .includes('collections')
+    // "Quotas"); `include` is a comma-separated list of optional sections.
+    const includeCollections =
+      parseIncludeSections(include).includes('collections')
 
     const usage = await storage.reportUsage({ spaceId, includeCollections })
 

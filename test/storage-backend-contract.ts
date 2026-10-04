@@ -13,10 +13,11 @@ import * as tar from 'tar-stream'
 import { pino } from 'pino'
 import { createHeaderValue } from '@interop/http-digest-header'
 import { collectBytes, readSpaceArchive } from '@interop/space-archive'
+import { isCollectionTombstoneSummary } from '@interop/storage-core'
 import { etagOf, formatEtag, isMintedGeneration } from '../src/lib/etag.js'
 import { metadataEtagOf } from '../src/lib/metadataValidator.js'
 import type { EtagValidator } from '../src/lib/etag.js'
-import { compareStamps } from '../src/lib/hlc.js'
+import { compareStamps, stampOf } from '../src/lib/hlc.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
 import { loadExportAttestor } from '../src/lib/exportProvenance.js'
 import type { ExportAttestor } from '../src/lib/exportProvenance.js'
@@ -29,6 +30,7 @@ import {
   verifyProvenanceOffline
 } from './helpers.js'
 import {
+  CollectionNotFoundError,
   PreconditionFailedError,
   ProblemError,
   ResourceImmutableError,
@@ -52,11 +54,13 @@ import type {
   RevocationRecord,
   ResourceInput,
   CollectionMetadata,
+  CollectionSummary,
   CollectionLogResult,
   StoredCollectionMetadata,
   SpaceMetadata,
   IDID,
-  ImportStats
+  ImportStats,
+  WriteStamp
 } from '../src/types.js'
 
 /** A backend instance plus its teardown, as produced by the suite factory. */
@@ -400,7 +404,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       it('deletes are idempotent on absent targets', async () => {
         const { backend } = harness
         await backend.deleteSpace({ spaceId: 'nope' })
-        await backend.deleteCollection({ spaceId: 'nope', collectionId: 'x' })
+        assert.equal(
+          await backend.deleteCollection({
+            spaceId: 'nope',
+            collectionId: 'x'
+          }),
+          'absent'
+        )
         await backend.deleteResource({
           spaceId: 'nope',
           collectionId: 'x',
@@ -459,7 +469,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           ['col', 'zeta']
         )
         assert.equal(listing.totalItems, 2)
-        assert.equal(listing.items[1]!.name, 'Z')
+        assert.equal((listing.items[1] as CollectionSummary).name, 'Z')
         // A short listing that fits in one page advertises no continuation link.
         assert.equal(listing.next, undefined)
       })
@@ -493,7 +503,10 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         })
         const listing = await backend.listCollections({ spaceId })
         const publicById = new Map(
-          listing.items.map(collection => [collection.id, collection.public])
+          listing.items.map(collection => [
+            collection.id,
+            (collection as CollectionSummary).public
+          ])
         )
         // `false` is expressed on every item, not omitted.
         assert.equal(publicById.get('open'), true)
@@ -1225,9 +1238,8 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           collectionId
         })
         await backend.deleteCollection({ spaceId, collectionId })
-        // A Collection delete is a hard delete: the metadata counter goes
-        // with it, so the re-created Collection starts under a FRESH
-        // generation and the old validator matches nothing.
+        // A Collection delete leaves a tombstone, and a create over it starts
+        // under a FRESH generation, so the old validator matches nothing.
         const recreated = await backend.writeCollection({
           spaceId,
           collectionId,
@@ -1251,6 +1263,644 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             ifMatch: metadataEtagOf(before)!
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
+      })
+    })
+
+    describe('Collection tombstones', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-tombstones'
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId, 'keep')
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      /**
+       * Creates a Collection holding one Resource, deletes it, and returns
+       * the live validator it had and the tombstone listing item.
+       */
+      async function deletedCollection(createdBy?: IDID) {
+        const { backend } = harness
+        const collectionId = `gone-${crypto.randomUUID()}`
+        const live = await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: {
+            id: collectionId,
+            type: ['Collection'],
+            name: 'Doomed',
+            custom: { name: 'Doomed' }
+          },
+          ...(createdBy !== undefined && { createdBy })
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          input: jsonInput({ life: 'old' })
+        })
+        await backend.writePolicy({
+          spaceId,
+          collectionId,
+          policy: { type: 'PublicCanRead' }
+        })
+        assert.equal(
+          await backend.deleteCollection({ spaceId, collectionId }),
+          'deleted'
+        )
+        const listing = await backend.listCollections({
+          spaceId,
+          includeDeleted: true,
+          limit: 1000
+        })
+        const tombstone = listing.items.find(item => item.id === collectionId)
+        assert.ok(tombstone && isCollectionTombstoneSummary(tombstone))
+        return { collectionId, live, tombstone }
+      }
+
+      it('a deleted Collection reads as absent and its members are gone', async () => {
+        const { backend } = harness
+        const { collectionId } = await deletedCollection()
+        assert.equal(
+          await backend.getCollectionMetadata({ spaceId, collectionId }),
+          undefined
+        )
+        assert.equal(
+          await backend.getResourceMetadata({
+            spaceId,
+            collectionId,
+            resourceId: 'doc'
+          }),
+          undefined
+        )
+        assert.equal(
+          await backend.getPolicy({ spaceId, collectionId }),
+          undefined
+        )
+        // A second delete finds no live Collection and writes nothing.
+        assert.equal(
+          await backend.deleteCollection({ spaceId, collectionId }),
+          'already-deleted'
+        )
+        // A write into the tombstoned Collection is refused, as into an
+        // absent one.
+        await expect(
+          backend.writeResource({
+            spaceId,
+            collectionId,
+            resourceId: 'late',
+            input: jsonInput({ late: true })
+          })
+        ).rejects.toBeInstanceOf(CollectionNotFoundError)
+      })
+
+      it('the default listing leaves a tombstone out; includeDeleted lists it with its stamp', async () => {
+        const { backend } = harness
+        const before = await backend.listCollections({ spaceId, limit: 1000 })
+        const { collectionId, live, tombstone } = await deletedCollection()
+        const after = await backend.listCollections({ spaceId, limit: 1000 })
+        assert.equal(after.totalItems, before.totalItems)
+        assert.ok(after.items.every(item => item.id !== collectionId))
+        assert.ok(
+          after.items.every(item => !isCollectionTombstoneSummary(item))
+        )
+
+        assert.deepEqual(Object.keys(tombstone).sort(), [
+          'deleted',
+          'id',
+          'originId',
+          'updatedAt',
+          'updatedAtCounter',
+          'url'
+        ])
+        assert.equal(tombstone.url, `/space/${spaceId}/${collectionId}/`)
+        assert.equal(tombstone.originId, backend.originId)
+        // The delete's stamp sorts above the live record's last write.
+        assert.ok(compareStamps(tombstone, live.stamp) > 0)
+
+        const withDeleted = await backend.listCollections({
+          spaceId,
+          includeDeleted: true,
+          limit: 1000
+        })
+        assert.equal(withDeleted.totalItems, withDeleted.items.length)
+        assert.equal(
+          withDeleted.totalItems,
+          after.totalItems +
+            withDeleted.items.filter(isCollectionTombstoneSummary).length
+        )
+      })
+
+      it('includeDeleted pages in id order and carries the flag on next', async () => {
+        const { backend } = harness
+        const pagedSpace = 'space-tombstone-pages'
+        await provisionSpace(backend, pagedSpace, 'a')
+        for (const collectionId of ['b', 'c', 'd']) {
+          await backend.writeCollection({
+            spaceId: pagedSpace,
+            collectionId,
+            collectionMetadata: { id: collectionId, type: ['Collection'] }
+          })
+        }
+        await backend.deleteCollection({
+          spaceId: pagedSpace,
+          collectionId: 'b'
+        })
+        await backend.deleteCollection({
+          spaceId: pagedSpace,
+          collectionId: 'd'
+        })
+
+        const first = await backend.listCollections({
+          spaceId: pagedSpace,
+          includeDeleted: true,
+          limit: 2
+        })
+        assert.deepEqual(
+          first.items.map(item => item.id),
+          ['a', 'b']
+        )
+        assert.equal(first.totalItems, 4)
+        assert.ok(first.next?.includes('include=deleted'))
+        const cursor = new URL(
+          first.next!,
+          'https://x.example'
+        ).searchParams.get('cursor')!
+        const second = await backend.listCollections({
+          spaceId: pagedSpace,
+          includeDeleted: true,
+          limit: 2,
+          cursor
+        })
+        assert.deepEqual(
+          second.items.map(item => [
+            item.id,
+            isCollectionTombstoneSummary(item)
+          ]),
+          [
+            ['c', false],
+            ['d', true]
+          ]
+        )
+        assert.equal(second.next, undefined)
+
+        const plain = await backend.listCollections({
+          spaceId: pagedSpace,
+          limit: 1
+        })
+        assert.equal(plain.totalItems, 2)
+        assert.ok(plain.next && !plain.next.includes('include='))
+      })
+
+      it('a re-create over a tombstone starts a new life above the delete', async () => {
+        const { backend } = harness
+        const { collectionId, live, tombstone } =
+          await deletedCollection(CREATOR_ONE)
+        // The old life's ETag cannot pass If-Match against the tombstone.
+        await expect(
+          backend.writeCollection({
+            spaceId,
+            collectionId,
+            collectionMetadata: { id: collectionId, type: ['Collection'] },
+            ifMatch: formatEtag(live)
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        // The guarded create succeeds over the tombstone.
+        const recreated = await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: { id: collectionId, type: ['Collection'] },
+          createdBy: CREATOR_TWO,
+          ifNoneMatch: '*'
+        })
+        assert.notEqual(recreated.generation, live.generation)
+        assert.ok(compareStamps(recreated.stamp, tombstone) > 0)
+        const stored = await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        })
+        assert.equal(stored?.createdBy, CREATOR_TWO)
+        assert.equal(stored?.createdAt, recreated.stamp.updatedAt)
+        assert.equal(stored?.custom, undefined)
+        // The old life's Resource does not come back.
+        assert.equal(
+          await backend.getResourceMetadata({
+            spaceId,
+            collectionId,
+            resourceId: 'doc'
+          }),
+          undefined
+        )
+        await expect(
+          backend.writeCollection({
+            spaceId,
+            collectionId,
+            collectionMetadata: { id: collectionId, type: ['Collection'] },
+            ifMatch: formatEtag(live)
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        // Live again: the default listing names it, includeDeleted no longer
+        // lists a tombstone for it.
+        const listing = await backend.listCollections({
+          spaceId,
+          includeDeleted: true,
+          limit: 1000
+        })
+        const item = listing.items.find(entry => entry.id === collectionId)
+        assert.ok(item && !isCollectionTombstoneSummary(item))
+      })
+
+      it('a re-created Collection starts a fresh changes feed', async () => {
+        const { backend } = harness
+        if (!backend.changesSince) {
+          return
+        }
+        const collectionId = `feed-${crypto.randomUUID()}`
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: { id: collectionId, type: ['Collection'] }
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          input: jsonInput({ life: 'old' })
+        })
+        const old = await backend.changesSince({
+          spaceId,
+          collectionId,
+          limit: 10
+        })
+        await backend.deleteCollection({ spaceId, collectionId })
+        await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: { id: collectionId, type: ['Collection'] }
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'fresh',
+          input: jsonInput({ life: 'new' })
+        })
+        const fresh = await backend.changesSince({
+          spaceId,
+          collectionId,
+          limit: 10
+        })
+        assert.ok(old.feedGeneration)
+        assert.notEqual(fresh.feedGeneration, old.feedGeneration)
+        assert.deepEqual(
+          fresh.documents.map(doc => [doc.resourceId, doc.feedPosition]),
+          [['fresh', 1]]
+        )
+      })
+
+      it('a tombstone does not count against the Collection quota', async () => {
+        const quotaHarness = await makeBackend({ maxCollectionsPerSpace: 2 })
+        try {
+          const { backend } = quotaHarness
+          await provisionSpace(backend, 'space-quota', 'one')
+          await backend.writeCollection({
+            spaceId: 'space-quota',
+            collectionId: 'two',
+            collectionMetadata: { id: 'two', type: ['Collection'] }
+          })
+          await backend.deleteCollection({
+            spaceId: 'space-quota',
+            collectionId: 'two'
+          })
+          // One live Collection and one tombstone: a second live one fits.
+          await backend.writeCollection({
+            spaceId: 'space-quota',
+            collectionId: 'three',
+            collectionMetadata: { id: 'three', type: ['Collection'] }
+          })
+          // Two live ones: a re-create over the tombstone is a create, and
+          // the cap refuses it.
+          await expect(
+            backend.writeCollection({
+              spaceId: 'space-quota',
+              collectionId: 'two',
+              collectionMetadata: { id: 'two', type: ['Collection'] }
+            })
+          ).rejects.toBeInstanceOf(CountQuotaExceededError)
+          const usage = await backend.reportUsage({
+            spaceId: 'space-quota',
+            includeCollections: true
+          })
+          assert.ok(
+            (usage.usageByCollection ?? []).every(entry => entry.id !== 'two')
+          )
+        } finally {
+          await quotaHarness.cleanup()
+        }
+      })
+
+      it('Delete Space removes the Space tombstones with it', async () => {
+        const { backend } = harness
+        const doomedSpace = 'space-tombstone-doomed'
+        await provisionSpace(backend, doomedSpace, 'gone')
+        await backend.deleteCollection({
+          spaceId: doomedSpace,
+          collectionId: 'gone'
+        })
+        await backend.deleteSpace({ spaceId: doomedSpace })
+        await provisionSpace(backend, doomedSpace, 'other')
+        const listing = await backend.listCollections({
+          spaceId: doomedSpace,
+          includeDeleted: true
+        })
+        assert.deepEqual(
+          listing.items.map(item => item.id),
+          ['other']
+        )
+      })
+
+      it('export carries a tombstone in the Space directory, flagged on the manifest', async () => {
+        const { backend } = harness
+        const exportSpace = 'space-tombstone-export'
+        await provisionSpace(backend, exportSpace, 'live')
+        await backend.writeCollection({
+          spaceId: exportSpace,
+          collectionId: 'dead',
+          collectionMetadata: { id: 'dead', type: ['Collection'] }
+        })
+        await backend.writeResource({
+          spaceId: exportSpace,
+          collectionId: 'dead',
+          resourceId: 'doc',
+          input: jsonInput({ life: 'old' })
+        })
+        const generation = (await backend.getCollectionMetadata({
+          spaceId: exportSpace,
+          collectionId: 'dead'
+        }))!.metaGeneration
+        await backend.deleteCollection({
+          spaceId: exportSpace,
+          collectionId: 'dead'
+        })
+        const archive = await readSpaceArchive(
+          await collectBytes(
+            await backend.exportSpace({ spaceId: exportSpace })
+          )
+        )
+        const names: string[] = []
+        const files = new Map<string, Uint8Array>()
+        for await (const entry of archive.entries) {
+          names.push(entry.name)
+          if (entry.type === 'file') {
+            files.set(entry.name, await entry.bytes())
+          }
+        }
+        const tombstonePath = `space/${exportSpace}/.collection.dead.json`
+        assert.ok(files.has(tombstonePath))
+        assert.ok(
+          names.every(name => !name.startsWith(`space/${exportSpace}/dead/`))
+        )
+        assert.ok(names.every(name => name !== `space/${exportSpace}/dead`))
+        const body = JSON.parse(
+          Buffer.from(files.get(tombstonePath)!).toString('utf8')
+        )
+        assert.equal(body.deleted, true)
+        assert.equal(body._generation, generation)
+        assert.equal(body._local, undefined)
+        assert.equal(typeof body.updatedAt, 'string')
+        assert.equal(typeof body.updatedAtCounter, 'number')
+        assert.equal(body.originId, backend.originId)
+        assert.equal(body.name, undefined)
+        assert.ok(
+          JSON.stringify(archive.manifest.contents).includes('"deleted":true')
+        )
+      })
+
+      it('import writes a tombstone only where the destination holds no record', async () => {
+        const { backend } = harness
+        const source = 'space-tombstone-source'
+        await provisionSpace(backend, source, 'kept')
+        for (const collectionId of [
+          'absent-there',
+          'live-there',
+          'dead-there'
+        ]) {
+          await backend.writeCollection({
+            spaceId: source,
+            collectionId,
+            collectionMetadata: { id: collectionId, type: ['Collection'] }
+          })
+          await backend.deleteCollection({ spaceId: source, collectionId })
+        }
+        const sourceListing = await backend.listCollections({
+          spaceId: source,
+          includeDeleted: true
+        })
+        assert.equal(sourceListing.items.length, 4)
+        const archiveBytes = await collectBytes(
+          await backend.exportSpace({ spaceId: source })
+        )
+
+        const destination = 'space-tombstone-destination'
+        await provisionSpace(backend, destination, 'live-there')
+        await backend.writeCollection({
+          spaceId: destination,
+          collectionId: 'dead-there',
+          collectionMetadata: { id: 'dead-there', type: ['Collection'] }
+        })
+        await backend.deleteCollection({
+          spaceId: destination,
+          collectionId: 'dead-there'
+        })
+        const heldTombstone = (
+          await backend.listCollections({
+            spaceId: destination,
+            includeDeleted: true
+          })
+        ).items.find(item => item.id === 'dead-there')
+        const liveBefore = await backend.getCollectionMetadata({
+          spaceId: destination,
+          collectionId: 'live-there'
+        })
+
+        await importArchive({
+          backend,
+          spaceId: destination,
+          tarStream: Readable.from([archiveBytes])
+        })
+
+        const listing = await backend.listCollections({
+          spaceId: destination,
+          includeDeleted: true
+        })
+        const byId = new Map(listing.items.map(item => [item.id, item]))
+        // Absent at the destination: the tombstone is written, re-stamped by
+        // this store's clock.
+        const written = byId.get('absent-there')
+        assert.ok(written && isCollectionTombstoneSummary(written))
+        assert.equal(written.originId, backend.originId)
+        // A live destination Collection is left as it was.
+        assert.deepEqual(
+          await backend.getCollectionMetadata({
+            spaceId: destination,
+            collectionId: 'live-there'
+          }),
+          liveBefore
+        )
+        // A held tombstone is left as it was.
+        assert.deepEqual(byId.get('dead-there'), heldTombstone)
+        // The imported tombstone reads as absent.
+        assert.equal(
+          await backend.getCollectionMetadata({
+            spaceId: destination,
+            collectionId: 'absent-there'
+          }),
+          undefined
+        )
+      })
+
+      it('import of a live archived Collection over a tombstone starts a new life', async () => {
+        const { backend } = harness
+        const source = 'space-tombstone-revive-source'
+        await provisionSpace(backend, source, 'revived')
+        await backend.writeResource({
+          spaceId: source,
+          collectionId: 'revived',
+          resourceId: 'archived',
+          input: jsonInput({ life: 'archived' })
+        })
+        const archiveBytes = await collectBytes(
+          await backend.exportSpace({ spaceId: source })
+        )
+
+        const destination = 'space-tombstone-revive-destination'
+        await provisionSpace(backend, destination, 'unrelated')
+        await backend.writeCollection({
+          spaceId: destination,
+          collectionId: 'revived',
+          collectionMetadata: { id: 'revived', type: ['Collection'] }
+        })
+        await backend.writeResource({
+          spaceId: destination,
+          collectionId: 'revived',
+          resourceId: 'old',
+          input: jsonInput({ life: 'old' })
+        })
+        await backend.deleteCollection({
+          spaceId: destination,
+          collectionId: 'revived'
+        })
+        const tombstone = (
+          await backend.listCollections({
+            spaceId: destination,
+            includeDeleted: true
+          })
+        ).items.find(item => item.id === 'revived')
+        assert.ok(tombstone && isCollectionTombstoneSummary(tombstone))
+
+        const stats = await importArchive({
+          backend,
+          spaceId: destination,
+          tarStream: Readable.from([archiveBytes])
+        })
+        assert.equal(stats.collectionsCreated, 1)
+        const revived = await backend.getCollectionMetadata({
+          spaceId: destination,
+          collectionId: 'revived'
+        })
+        assert.ok(revived)
+        assert.ok(compareStamps(stampOf(revived) as WriteStamp, tombstone) > 0)
+        assert.equal(
+          await backend.getResourceMetadata({
+            spaceId: destination,
+            collectionId: 'revived',
+            resourceId: 'old'
+          }),
+          undefined
+        )
+        assert.ok(
+          await backend.getResourceMetadata({
+            spaceId: destination,
+            collectionId: 'revived',
+            resourceId: 'archived'
+          })
+        )
+      })
+
+      it('import refuses a tombstone body inside a Collection directory', async () => {
+        const { backend } = harness
+        const destination = 'space-tombstone-dirform'
+        await provisionSpace(backend, destination, 'present')
+        const pack = tar.pack()
+        pack.entry(
+          { name: 'manifest.yml' },
+          'ubc-version: "0.1"\ncontents:\n  space:\n    url: x\n'
+        )
+        pack.entry(
+          { name: 'space/src/bad/.collection.bad.json' },
+          JSON.stringify({
+            deleted: true,
+            updatedAt: '2026-10-03T00:00:00.000Z',
+            updatedAtCounter: 0,
+            originId: 'origin'
+          })
+        )
+        pack.entry(
+          { name: 'space/src/bad/r.doc.application%2Fjson.json' },
+          '{}'
+        )
+        pack.finalize()
+        const refusal = await importArchive({
+          backend,
+          spaceId: destination,
+          tarStream: Readable.from(pack)
+        }).catch((err: unknown) => err)
+        assert.ok(refusal instanceof InvalidImportError)
+        assert.match(refusal.detail ?? '', /holds a tombstone/)
+        const listing = await backend.listCollections({
+          spaceId: destination,
+          includeDeleted: true
+        })
+        assert.deepEqual(
+          listing.items.map(item => item.id),
+          ['present']
+        )
+      })
+
+      it('import keeps the archived generation of a tombstone', async () => {
+        const { backend } = harness
+        const source = 'space-tombstone-generation'
+        await provisionSpace(backend, source, 'gen')
+        const generation = (await backend.getCollectionMetadata({
+          spaceId: source,
+          collectionId: 'gen'
+        }))!.metaGeneration
+        await backend.deleteCollection({ spaceId: source, collectionId: 'gen' })
+        const archiveBytes = await collectBytes(
+          await backend.exportSpace({ spaceId: source })
+        )
+        const destination = 'space-tombstone-generation-copy'
+        await provisionSpace(backend, destination, 'unrelated')
+        await importArchive({
+          backend,
+          spaceId: destination,
+          tarStream: Readable.from([archiveBytes])
+        })
+        const exported = await readSpaceArchive(
+          await collectBytes(
+            await backend.exportSpace({ spaceId: destination })
+          )
+        )
+        let body: Record<string, unknown> | undefined
+        for await (const entry of exported.entries) {
+          if (entry.name === `space/${destination}/.collection.gen.json`) {
+            body = JSON.parse(
+              Buffer.from(await entry.bytes()).toString('utf8')
+            ) as Record<string, unknown>
+          }
+        }
+        assert.equal(body?._generation, generation)
       })
     })
 

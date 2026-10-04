@@ -4732,3 +4732,61 @@ the decision's premise that import bypasses the envelope rule does not hold
 here, since `assertImportBodiesFit` enforces it.
 
 ---
+
+### WAS-174: [M] [blocks 2] Collection tombstones
+
+- status: done
+- done: 2026-10-03
+- priority: medium
+- labels: data-model, replication, filesystem-backend, postgres-backend
+- blocks: WAS-96, WAS-176
+- touches:
+  - wallet-attached-storage-spec: Delete Collection, the Space listing -- filed
+    WASS-48 (also: Delete Collection of an already deleted Collection answers
+    404, while an id never used keeps the spec's 204)
+  - storage-core: the Collection listing type -- SC-9 (0.31.0 TBD,
+    `CollectionTombstoneSummary`), consumed here through a temporary `link:`
+    until published
+  - space-archive: the Metadata file and manifest dialect (tombstone form,
+    `_version` retired, stamp members stored bare) -- SAR-7 (0.7.0 TBD, codec
+    shipped locally), consumed here through a temporary `link:` until published
+  - was-teaching-server: both backends' `deleteCollection` and Space listing,
+    `src/lib/etag.ts` hard-delete rule, ARCHITECTURE.md -- shipped here
+  - conformance-suite: the listing flag -- needs an item filed for the
+    `?include=deleted` listing cases (none filed yet)
+  - unaffected: wallet-backup (its survey acts only on the `collection` and
+    `chunk` archive areas, so it skips the new tombstone area)
+- acceptance:
+  - [x] Delete Collection leaves a stamped tombstone (the Collection Metadata
+        record marked deleted, carrying its generation and storing `updatedAt`,
+        `updatedAtCounter`, and `originId` verbatim like every other versioned
+        record) in place of the hard delete; Resources and chunks under it are
+        still removed
+  - [x] The tombstone exports as the Collection's `.collection.<id>.json` with
+        `deleted: true` and no member directory, flagged on the manifest entry;
+        import writes it only when the destination holds no record under that id
+  - [x] A re-create under the same id mints a new generation; the tombstone's
+        stamp decides against a replicated concurrent write
+  - [x] The Space listing can include tombstoned Collections under a query flag
+        (name pending sign-off) for the puller, and excludes them otherwise
+  - [x] Tombstones are never reaped (WAS-13 owns retention)
+  - [x] Tests cover the tombstone, the listing flag, and re-creation
+
+Context (discovered-from: WAS-96, decision 5). A hard delete replicated by pull
+resurrects on the next pull from a peer that still holds the Collection, the
+Cassandra `gc_grace_seconds` hazard. The changes feed is per Collection, so the
+Space listing is the channel in which a deleted Collection can be seen. Delete
+Space needs no tombstone: a Space on two servers is two URL identities, each
+deleted by its own root invocation, and the replication registration (WAS-176)
+dies with the Space.
+
+Shipped 2026-10-03. The query flag is `?include=deleted` (decision 0011),
+honored only under a verified capability. The tombstone carries the stamp a
+replicated write is compared against; the comparison itself is the apply path's
+(WAS-176). The filesystem tombstone stays as `.collection.<id>.json` in the
+emptied Collection dir, and an unfinished cascade is finished at boot, on a
+read, by a retried delete, by a create over it, and by an import over it. A
+retried delete answers 404; an id never used answers 204. Postgres keeps the
+`collections` row with a `deleted` column (migration v10).
+
+---

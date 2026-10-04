@@ -30,7 +30,11 @@ import {
   LOG_CONTENT_TYPE,
   assertGoverningLogAppend
 } from '../lib/governedLog.js'
-import type { CollectionMetadata, StorageBackend } from '../types.js'
+import type {
+  CollectionDeleteOutcome,
+  CollectionMetadata,
+  StorageBackend
+} from '../types.js'
 import { parseBlindedIndexQueryBody } from '../lib/blindedIndex.js'
 import {
   declaredIndexesOf,
@@ -1236,8 +1240,14 @@ export class CollectionRequest {
       containerRule: 'controller-only'
     })
 
+    // Delete Collection leaves a tombstone. A delete of an already deleted
+    // Collection writes nothing and answers the masked 404,
+    // the same body an absent Collection gets on a read. A delete of an id
+    // with no record at all is idempotent and answers 204 (spec "Delete
+    // Collection").
+    let outcome: CollectionDeleteOutcome
     try {
-      await storage.deleteCollection({ spaceId, collectionId })
+      outcome = await storage.deleteCollection({ spaceId, collectionId })
     } catch (err) {
       // Rethrow a typed ProblemError from the data-plane backend unchanged
       // (e.g. a 507 quota / 412 precondition) rather than flattening it to a
@@ -1261,6 +1271,9 @@ export class CollectionRequest {
       })
     }
 
+    if (outcome === 'already-deleted') {
+      throw new CollectionNotFoundError({ requestName })
+    }
     return reply.status(204).send()
   }
 

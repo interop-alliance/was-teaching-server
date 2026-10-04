@@ -38,7 +38,9 @@ import type { IDID } from './types.js'
  * @param [options.attenuatedRootTarget] {string}   ancestor target (the Space
  *   URL) whose root capability is also accepted as the root of a delegated
  *   chain attenuating down to the request URL (see `verifyZcap`)
- * @returns {Promise<void>}   resolves when authorized; throws otherwise
+ * @returns {Promise<'capability' | 'policy'>}   resolves when authorized,
+ *   naming what granted the request: a verified capability invocation, or
+ *   the access-control policy fallback; throws otherwise
  */
 export async function authorize({
   request,
@@ -60,7 +62,7 @@ export async function authorize({
   requestName?: string
   allowTargetQuery?: boolean
   attenuatedRootTarget?: string
-}): Promise<void> {
+}): Promise<'capability' | 'policy'> {
   const { url, method, headers } = request
   const { serverUrl, storage } = request.server
   const action: AccessAction =
@@ -90,7 +92,7 @@ export async function authorize({
         attenuatedRootTarget,
         revocation: { storage, scope: { spaceId } }
       })
-      return
+      return 'capability'
     } catch (err) {
       zcapError = err as Error
     }
@@ -110,7 +112,7 @@ export async function authorize({
       { spaceId, collectionId, resourceId, action, policyType: policy?.type },
       'Access granted by access-control policy.'
     )
-    return
+    return 'policy'
   }
 
   // Neither a capability nor a policy authorizes this request. Re-throw the

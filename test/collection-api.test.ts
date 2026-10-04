@@ -298,13 +298,14 @@ describe('Collections API', () => {
     // Ensure it was deleted (reads return null on 404).
     assert.equal(await collection.describe(), null)
 
-    // Delete is idempotent: deleting an already-gone Collection resolves (204),
-    // it does not 500 with an underlying ENOENT.
+    // Deleting an already-deleted Collection answers 404 (it left a
+    // tombstone), which the client's idempotent delete treats as done; it
+    // does not 500 with an underlying ENOENT.
     await collection.delete()
     assert.equal(await collection.describe(), null)
   })
 
-  it('a Collection delete is a hard delete: re-creating starts a new generation', async () => {
+  it('a Collection re-created over its tombstone starts a new generation', async () => {
     const collectionId = crypto.randomUUID()
     const metaUrl = `${serverUrl}/space/${alice.space1.id}/${collectionId}/meta`
 

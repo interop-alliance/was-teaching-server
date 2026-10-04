@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 196
+nextAvailableId: 197
 
 <!-- roadmap-order:index:start -->
 
@@ -101,7 +101,6 @@ Chains:
 
 Ready:
 
-- WAS-174 [M] Collection tombstones (blocks 2)
 - WAS-175 [M] Server sync key and verification of a peer's invocations
   (blocks 2)
 - WAS-178 [M] Read a Space's revocations
@@ -115,10 +114,6 @@ Ready:
 
 Chains:
 
-- WAS-174 [M] Collection tombstones
-  - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
-    model)
-  - WAS-176 [M] Replica registration, pull loop, and the apply path
 - WAS-175 [M] Server sync key and verification of a peer's invocations
   - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
     model)
@@ -147,6 +142,7 @@ Chains:
 
 Ready:
 
+- WAS-196 [M] Bound the cost of accumulated Collection tombstones
 - WAS-77 [L] Per-Collection filename cache on the filesystem backend
 - WAS-86 [L] Backend-evaluated `If-None-Match` on Resource and chunk reads
 
@@ -1511,46 +1507,6 @@ The replication program: a Space served by several primaries with a replicated
 write identity and conflict model. WAS-96 is the umbrella and names the design
 doc; the other items are its sub-items in dependency order.
 
-### WAS-174: [M] [blocks 2] Collection tombstones
-
-- status: todo
-- priority: medium
-- labels: data-model, replication, filesystem-backend, postgres-backend
-- blocks: WAS-96, WAS-176
-- touches:
-  - wallet-attached-storage-spec: Delete Collection, the Space listing
-  - storage-core: the Collection listing type
-  - space-archive: the Metadata file and manifest dialect (tombstone form,
-    `_version` retired, stamp members stored bare)
-  - was-teaching-server: both backends' `deleteCollection` and Space listing,
-    `src/lib/etag.ts` hard-delete rule, ARCHITECTURE.md
-  - conformance-suite: the listing flag
-- acceptance:
-  - [ ] Delete Collection leaves a stamped tombstone (the Collection Metadata
-        record marked deleted, carrying its generation and storing `updatedAt`,
-        `updatedAtCounter`, and `originId` verbatim like every other versioned
-        record) in place of the hard delete; Resources and chunks under it are
-        still removed
-  - [ ] The tombstone exports as the Collection's `.collection.<id>.json` with
-        `deleted: true` and no member directory, flagged on the manifest entry;
-        import writes it only when the destination holds no record under that id
-  - [ ] A re-create under the same id mints a new generation; the tombstone's
-        stamp decides against a replicated concurrent write
-  - [ ] The Space listing can include tombstoned Collections under a query flag
-        (name pending sign-off) for the puller, and excludes them otherwise
-  - [ ] Tombstones are never reaped (WAS-13 owns retention)
-  - [ ] Tests cover the tombstone, the listing flag, and re-creation
-
-Context (discovered-from: WAS-96, decision 5). A hard delete replicated by pull
-resurrects on the next pull from a peer that still holds the Collection, the
-Cassandra `gc_grace_seconds` hazard. The changes feed is per Collection, so the
-Space listing is the channel in which a deleted Collection can be seen. Delete
-Space needs no tombstone: a Space on two servers is two URL identities, each
-deleted by its own root invocation, and the replication registration (WAS-176)
-dies with the Space.
-
----
-
 ### WAS-175: [M] [blocks 2] Server sync key and verification of a peer's invocations
 
 - status: todo
@@ -1731,13 +1687,13 @@ still held it, a privacy regression rather than a stale record.
 
 ---
 
-### WAS-176: [M] [blocks 4] [after WAS-174, WAS-175, WAS-182, WAS-183] Replica registration, pull loop, and the apply path
+### WAS-176: [M] [blocks 4] [after WAS-175, WAS-182, WAS-183] Replica registration, pull loop, and the apply path
 
 - status: todo
 - priority: medium
 - labels: replication, routes, filesystem-backend, postgres-backend,
   space-metadata
-- blocked-by: WAS-174, WAS-175, WAS-182, WAS-183
+- blocked-by: WAS-175, WAS-182, WAS-183
 - blocks: WAS-96, WAS-177, WAS-179, WAS-184
 - touches:
   - wallet-attached-storage-spec: the replication specification (registration
@@ -1786,6 +1742,10 @@ Collection list gives per-peer selectivity. One-way replication is the default
 shape: a registration names a source, and nothing flows back without a
 counterpart registration on the other side.
 
+The apply path also inherits the creating stamp from section 5.4 of the WAS-96
+design: the stamp of a Collection's first write under its generation, stored
+beside the generation, which decides a received generation change.
+
 ---
 
 ### WAS-177: [M] [blocks 1] [after WAS-176] Resolve a replicated peer-hosted `did:webvh` controller from storage
@@ -1822,7 +1782,7 @@ alive on the surviving server, where the wallet can keep appending.
 
 ---
 
-### WAS-96: [M] [after WAS-174, WAS-175, WAS-176, WAS-177, WAS-182, WAS-183] Multi-primary Spaces (replicated write identity and conflict model)
+### WAS-96: [M] [after WAS-175, WAS-176, WAS-177, WAS-182, WAS-183] Multi-primary Spaces (replicated write identity and conflict model)
 
 - status: todo
 - priority: medium
@@ -1831,7 +1791,7 @@ alive on the surviving server, where the wallet can keep appending.
 - design-approved: 2026-10-02
 - decisions: wallet-attached-storage-spec decisions 0009 to 0013 (contract);
   this repo's decisions/0003 to 0005 (server-internal)
-- blocked-by: WAS-174, WAS-175, WAS-176, WAS-177, WAS-182, WAS-183
+- blocked-by: WAS-175, WAS-176, WAS-177, WAS-182, WAS-183
 - touches:
   - wallet-attached-storage-spec: the Resource data model (the origin stamp
     members and the validator), the `changes` profile (stamp members on the
@@ -2129,6 +2089,50 @@ is in the storage, archive and import shapes.
 ## Performance
 
 Request cost on a path that already answers correctly.
+
+### WAS-196: [M] Bound the cost of accumulated Collection tombstones
+
+- status: todo
+- priority: medium
+- labels: performance, quotas, filesystem-backend, postgres-backend
+- discovered-from: code review of the Collection tombstone change (2026-10-03)
+- acceptance:
+  - [ ] The number of Collection tombstones a Space can hold is bounded, or the
+        operator can see and limit it. The item decides which: a cap on
+        tombstones per Space, counting them toward `maxCollectionsPerSpace`, or
+        a rate limit on Delete Collection
+  - [ ] On the filesystem backend, List Collections, the
+        `maxCollectionsPerSpace` check on a create, the usage report with the
+        per-Collection breakdown, and the live Resource count no longer read one
+        Metadata file per tombstone on each call
+  - [ ] The Postgres backend's equivalents are checked for the same growth and
+        either shown unaffected or fixed
+  - [ ] Tests in `test/`: a Space holding many tombstones lists, creates, and
+        reports usage without a per-tombstone file read (observable through a
+        counter on the Metadata read), and the chosen bound refuses or reports
+        as designed
+  - [ ] `?include=deleted` still lists every tombstone, and export still carries
+        each one
+
+Context: a Collection tombstone is never reaped (WAS-13) and does not count
+toward `maxCollectionsPerSpace`. A controller that creates and deletes
+Collections in a loop therefore leaves an unlimited number of tombstone
+directories in the Space. In the filesystem backend, `#collectionEntries` reads
+every Collection Metadata file in the Space, tombstones included, to tell a live
+Collection from a tombstone. It runs on every List Collections page, on every
+Collection create when `maxCollectionsPerSpace` is set, in `reportUsage` with
+the breakdown, and in import. `#countLiveResources` does the same read per
+directory. Each of those then costs one file read per tombstone the Space has
+ever made. Before tombstones, the Collection quota bounded the directory count
+and a listing was one `readdir`.
+
+Reaping is not the fix here. Replication keeps every tombstone until peers
+report their position (WAS-13), so the tombstones stay and the request cost has
+to stop depending on them. One option is a per-Space tombstone index (one file
+naming the tombstoned ids), so a live listing skips them without opening each
+Metadata file. Another is moving a tombstone out of the Collection directory
+namespace. The Postgres backend filters on the `deleted` column in SQL, so its
+per-request cost is an index question, but its row count grows the same way.
 
 ### WAS-77: [L] Per-Collection filename cache on the filesystem backend
 

@@ -94,6 +94,10 @@ import { decodeCursor } from '../lib/cursor.js'
 import { policyGrants } from '../policy.js'
 import { revocationFileName } from '../lib/revocations.js'
 import {
+  collectionTombstoneBody,
+  collectionTombstoneSummary
+} from '../lib/collectionTombstone.js'
+import {
   restampImportedMetadata,
   stampCollectionMetadata,
   stampSpaceMetadata
@@ -163,6 +167,7 @@ import type {
   CollectionMetadata,
   CollectionSummary,
   CollectionsList,
+  CollectionDeleteOutcome,
   CollectionResourcesList,
   ResourceResult,
   ChunkMetadata,
@@ -875,8 +880,9 @@ export class PostgresBackend implements StorageBackend {
     if (collectionId === undefined) {
       return
     }
+    // A tombstoned Collection has no Metadata object.
     const { rows: collectionRows } = await client.query<{ live: boolean }>(
-      `SELECT metadata IS NOT NULL AS live FROM collections
+      `SELECT metadata IS NOT NULL AND NOT deleted AS live FROM collections
         WHERE space_id = $1 AND collection_id = $2`,
       [spaceId, collectionId]
     )
@@ -1141,7 +1147,7 @@ export class PostgresBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @returns {Promise<number | undefined>}   the position, or `undefined`
-   *   when the Collection row is gone
+   *   when the Collection row is gone or tombstoned
    */
   async #takeFeedPosition({
     client,
@@ -1156,7 +1162,7 @@ export class PostgresBackend implements StorageBackend {
       `UPDATE collections
           SET feed_position = feed_position + 1,
               feed_generation = COALESCE(feed_generation, $3)
-        WHERE space_id = $1 AND collection_id = $2
+        WHERE space_id = $1 AND collection_id = $2 AND NOT deleted
         RETURNING feed_position`,
       [spaceId, collectionId, newGeneration()]
     )
@@ -1598,16 +1604,19 @@ export class PostgresBackend implements StorageBackend {
       // along for the transition checks, so they cost no second round trip
       // while the row lock is held.
       const { rows } = await client.query<
-        MetadataRow<CollectionMetadata> & LogRow
+        MetadataRow<CollectionMetadata> & LogRow & { deleted: boolean }
       >(
-        `SELECT ${METADATA_COLUMNS}, ${LOG_COLUMNS}
+        `SELECT ${METADATA_COLUMNS}, ${LOG_COLUMNS}, deleted
            FROM collections
           WHERE space_id = $1 AND collection_id = $2 FOR UPDATE`,
         [spaceId, collectionId]
       )
       // A missing row is "no Collection yet": no generation and no stamp, so
-      // the first write mints both.
+      // the first write mints both. A tombstoned row is no Collection either
+      // (its `metadata` is NULL), but its stamp is held: the create's stamp
+      // must sort above the delete's.
       const prior = storedMetadataFromRow(rows[0])
+      const tombstoneStamp = rows[0]?.deleted ? stampOfRow(rows[0]) : undefined
       // Guarded create (`If-None-Match: *`) or compare-and-swap (`If-Match`),
       // both opt-in: an existing Collection or a stale validator throws 412.
       // An unconditional write skips this.
@@ -1622,12 +1631,13 @@ export class PostgresBackend implements StorageBackend {
       // re-evaluated here against the row just read under the lock, its
       // history log included.
       await assertTransition?.({ prior, log: logResultFromRow(rows[0]) })
-      // Count quota (create path only): a create is no row or a placeholder
-      // (NULL-metadata) row; writing one must not push the Space past
-      // `maxCollectionsPerSpace` (spec "Quotas").
+      // Count quota (create path only): a create is no row or a tombstoned
+      // row; writing one must not push the Space past
+      // `maxCollectionsPerSpace` (spec "Quotas"). A tombstone does not count.
       if (this.maxCollectionsPerSpace !== undefined && prior === undefined) {
         const { rows: countRows } = await client.query<{ count: number }>(
-          'SELECT COUNT(*)::int AS count FROM collections WHERE space_id = $1',
+          `SELECT COUNT(*)::int AS count FROM collections
+            WHERE space_id = $1 AND NOT deleted`,
           [spaceId]
         )
         if (countRows[0]!.count >= this.maxCollectionsPerSpace) {
@@ -1647,7 +1657,9 @@ export class PostgresBackend implements StorageBackend {
       // coincide.
       const validator = await mintValidator({
         clock: this.#clock,
-        prior: prior && { generation: prior.metaGeneration, ...stampOf(prior) },
+        prior: prior
+          ? { generation: prior.metaGeneration, ...stampOf(prior) }
+          : tombstoneStamp,
         local: 0
       })
       const { generation, stamp } = validator
@@ -1675,7 +1687,8 @@ export class PostgresBackend implements StorageBackend {
    * caller has already resolved every server-managed member. The stamp goes
    * to its own columns, and the members of the body that carry it are left
    * out of the stored jsonb. The local validator segment is reset to 0, as
-   * every stamped write resets it.
+   * every stamped write resets it. Over a tombstoned row it is a create, and
+   * clears the `deleted` mark.
    * @param options {object}
    * @param options.queryable {Queryable}
    * @param options.spaceId {string}
@@ -1706,7 +1719,25 @@ export class PostgresBackend implements StorageBackend {
                                 updated_at_counter, origin_id)
        VALUES ($1, $2, $3::jsonb, $4, 0, $5, $6, $7)
        ON CONFLICT (space_id, collection_id) DO UPDATE SET
+         -- Over a tombstone this is a create: the old life's feed counter
+         -- and log columns do not carry into the new one, even if a write
+         -- that raced the delete left them set.
+         feed_position          = CASE WHEN collections.deleted THEN 0
+                                       ELSE collections.feed_position END,
+         feed_generation        = CASE WHEN collections.deleted THEN NULL
+                                       ELSE collections.feed_generation END,
+         log_body               = CASE WHEN collections.deleted THEN NULL
+                                       ELSE collections.log_body END,
+         log_generation         = CASE WHEN collections.deleted THEN NULL
+                                       ELSE collections.log_generation END,
+         log_updated_at         = CASE WHEN collections.deleted THEN NULL
+                                       ELSE collections.log_updated_at END,
+         log_updated_at_counter = CASE WHEN collections.deleted THEN NULL
+                                       ELSE collections.log_updated_at_counter END,
+         log_origin_id          = CASE WHEN collections.deleted THEN NULL
+                                       ELSE collections.log_origin_id END,
          metadata           = EXCLUDED.metadata,
+         deleted            = false,
          meta_generation    = EXCLUDED.meta_generation,
          meta_local         = 0,
          updated_at         = EXCLUDED.updated_at,
@@ -1724,7 +1755,7 @@ export class PostgresBackend implements StorageBackend {
 
   /**
    * Reads a Collection Metadata object. Resolves `undefined` when the
-   * Collection does not exist.
+   * Collection does not exist, a tombstoned one included.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -1744,7 +1775,7 @@ export class PostgresBackend implements StorageBackend {
     >(
       `SELECT ${METADATA_COLUMNS}
          FROM collections
-        WHERE space_id = $1 AND collection_id = $2`,
+        WHERE space_id = $1 AND collection_id = $2 AND NOT deleted`,
       [spaceId, collectionId]
     )
     // Surface the generation and local segment out of band as
@@ -1867,14 +1898,19 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
-   * Deletes the Collection's chunks and Resources (each by a `DELETE ...
-   * RETURNING` that totals the bytes it frees), then the Collection row and
-   * its policies, and subtracts the freed bytes from the Space usage counter
-   * -- all in one transaction. Idempotent.
+   * Deletes a Collection, leaving a tombstone, in one transaction: the
+   * Collection's chunks and Resources are removed (each by a `DELETE ...
+   * RETURNING` that totals the bytes it frees), then its policies, and the
+   * `collections` row is kept and marked `deleted`. The tombstoned row keeps
+   * its generation, takes a stamp minted over the live one, and drops the
+   * Metadata object, the governing history log, and the changes-feed counter.
+   * The freed bytes are subtracted from the Space usage counter. Over a
+   * tombstone nothing is written. A row with no Metadata object is removed
+   * with its member rows and reported `absent`, like no row at all.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
-   * @returns {Promise<void>}
+   * @returns {Promise<CollectionDeleteOutcome>}
    */
   async deleteCollection({
     spaceId,
@@ -1882,11 +1918,28 @@ export class PostgresBackend implements StorageBackend {
   }: {
     spaceId: string
     collectionId: string
-  }): Promise<void> {
-    await this.#withTransaction(async client => {
+  }): Promise<CollectionDeleteOutcome> {
+    return this.#withTransaction(async client => {
       // Lock order (see `#applyUsageDelta`): the Space's counter row first,
       // then the Collection's rows.
       await this.#lockSpaceRow({ client, spaceId })
+      const { rows: collectionRows } = await client.query<
+        MetadataRow<CollectionMetadata> & { deleted: boolean }
+      >(
+        `SELECT ${METADATA_COLUMNS}, deleted
+           FROM collections
+          WHERE space_id = $1 AND collection_id = $2
+          FOR UPDATE`,
+        [spaceId, collectionId]
+      )
+      const row = collectionRows[0]
+      if (row === undefined) {
+        return 'absent'
+      }
+      if (row.deleted) {
+        return 'already-deleted'
+      }
+      const prior = storedMetadataFromRow(row)
       // The Collection's freed bytes are its Resource content plus its chunk
       // bytes (the `chunked-streams` feature). Both are removed HERE, by
       // `DELETE ... RETURNING` statements that total exactly the rows they
@@ -1915,10 +1968,6 @@ export class PostgresBackend implements StorageBackend {
           (total, row) => total + Number(row.size_bytes),
           0
         )
-      await client.query(
-        `DELETE FROM collections WHERE space_id = $1 AND collection_id = $2`,
-        [spaceId, collectionId]
-      )
       // Collection- and Resource-level policies live under the Collection (the
       // filesystem removes them with the dir; here they key off collection_id).
       await client.query(
@@ -1928,6 +1977,41 @@ export class PostgresBackend implements StorageBackend {
       if (freedBytes > 0) {
         await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
       }
+      if (prior === undefined) {
+        // A row with no Metadata object is no Collection: it goes with its
+        // member rows, and no tombstone is left.
+        await client.query(
+          `DELETE FROM collections WHERE space_id = $1 AND collection_id = $2`,
+          [spaceId, collectionId]
+        )
+        return 'absent'
+      }
+      // The tombstone keeps the generation and takes a stamp above the live
+      // record's. Nothing else of the old life stays on the row.
+      const { generation, stamp } = await mintValidator({
+        clock: this.#clock,
+        prior: { generation: prior.metaGeneration, ...stampOf(prior) }
+      })
+      await client.query(
+        `UPDATE collections SET
+           deleted                = true,
+           metadata               = NULL,
+           meta_generation        = $3,
+           meta_local             = 0,
+           updated_at             = $4,
+           updated_at_counter     = $5,
+           origin_id              = $6,
+           log_body               = NULL,
+           log_generation         = NULL,
+           log_updated_at         = NULL,
+           log_updated_at_counter = NULL,
+           log_origin_id          = NULL,
+           feed_position          = 0,
+           feed_generation        = NULL
+         WHERE space_id = $1 AND collection_id = $2`,
+        [spaceId, collectionId, generation, ...stampValues(stamp)]
+      )
+      return 'deleted'
     })
   }
 
@@ -1942,21 +2026,26 @@ export class PostgresBackend implements StorageBackend {
    * is the canonical container form, with the trailing slash, as is the
    * listing's own. Each summary's `public` flag is the
    * Collection's `PublicCanRead` policy state, resolved for the page in a
-   * single batch query over the page's ids (not a per-row lookup).
+   * single batch query over the page's ids (not a per-row lookup). A
+   * tombstoned row is listed, and counted, only under `includeDeleted`, as
+   * its id, URL, `deleted: true` and the stamp of the delete.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.limit] {number}   requested page size
    * @param [options.cursor] {string}   opaque cursor from a prior page's `next`
+   * @param [options.includeDeleted] {boolean}   list tombstoned Collections too
    * @returns {Promise<CollectionsList>}
    */
   async listCollections({
     spaceId,
     limit,
-    cursor
+    cursor,
+    includeDeleted = false
   }: {
     spaceId: string
     limit?: number
     cursor?: string
+    includeDeleted?: boolean
   }): Promise<CollectionsList> {
     const after = cursor !== undefined ? decodeCursor(cursor).after : undefined
     const pageSize = resolvePageSize(limit)
@@ -1965,23 +2054,30 @@ export class PostgresBackend implements StorageBackend {
     // the pool at once rather than paying the two round trips serially.
     const [{ rows: countRows }, { rows }] = await Promise.all([
       this.#reader().query<{ total: string }>(
-        `SELECT COUNT(*) AS total FROM collections WHERE space_id = $1`,
-        [spaceId]
+        `SELECT COUNT(*) AS total FROM collections
+          WHERE space_id = $1 AND ($2 OR NOT deleted)`,
+        [spaceId, includeDeleted]
       ),
       // Take `pageSize + 1` from the seek point to detect a further page without
       // a second query; `hasMore` is whether the extra row arrived. The
       // `collection_id > $2` seek relies on the column's byte collation, the same
       // ordering the cursor codec's code-unit comparison assumes.
-      this.#reader().query<{
-        collection_id: string
-        metadata: CollectionMetadata | null
-      }>(
-        `SELECT collection_id, metadata FROM collections
-        WHERE space_id = $1
-          AND ($2::text IS NULL OR collection_id > $2)
-        ORDER BY collection_id
-        LIMIT $3`,
-        [spaceId, after ?? null, pageSize + 1]
+      this.#reader().query<
+        StampColumns & {
+          collection_id: string
+          metadata: CollectionMetadata | null
+          deleted: boolean
+        }
+      >(
+        `SELECT collection_id, metadata, deleted, updated_at,
+                updated_at_counter, origin_id
+           FROM collections
+          WHERE space_id = $1
+            AND ($2::text IS NULL OR collection_id > $2)
+            AND ($4 OR NOT deleted)
+          ORDER BY collection_id
+          LIMIT $3`,
+        [spaceId, after ?? null, pageSize + 1, includeDeleted]
       )
     ])
     const totalItems = Number(countRows[0]?.total ?? 0)
@@ -1995,7 +2091,9 @@ export class PostgresBackend implements StorageBackend {
     // convention in `#policyKey`); `public` is true iff a `PublicCanRead` policy
     // is attached (via the shared `policyGrants` recognizer, which fail-closes
     // any other/unrecognized policy type to false).
-    const pageIds = pageRows.map(row => row.collection_id)
+    const pageIds = pageRows
+      .filter(row => !row.deleted)
+      .map(row => row.collection_id)
     const publicCollectionIds = new Set<string>()
     if (pageIds.length > 0) {
       const { rows: policyRows } = await this.#reader().query<{
@@ -2019,16 +2117,25 @@ export class PostgresBackend implements StorageBackend {
       }
     }
 
-    const items: CollectionSummary[] = pageRows.map(row => ({
-      id: row.collection_id,
-      url: collectionPath({
-        spaceId,
-        collectionId: row.collection_id,
-        trailingSlash: true
-      }),
-      name: row.metadata?.name ?? row.collection_id,
-      public: publicCollectionIds.has(row.collection_id)
-    }))
+    const items = pageRows.map(row => {
+      if (row.deleted) {
+        return collectionTombstoneSummary({
+          spaceId,
+          collectionId: row.collection_id,
+          stamp: stampOfRow(row)
+        })
+      }
+      return {
+        id: row.collection_id,
+        url: collectionPath({
+          spaceId,
+          collectionId: row.collection_id,
+          trailingSlash: true
+        }),
+        name: row.metadata?.name ?? row.collection_id,
+        public: publicCollectionIds.has(row.collection_id)
+      } satisfies CollectionSummary
+    })
 
     const spaceUrl = spacePath({ spaceId, trailingSlash: true })
     let next: string | undefined
@@ -2036,7 +2143,8 @@ export class PostgresBackend implements StorageBackend {
       next = nextPageUrl({
         path: spaceUrl,
         limit: pageSize,
-        after: pageRows[pageRows.length - 1]!.collection_id
+        after: pageRows[pageRows.length - 1]!.collection_id,
+        ...(includeDeleted && { include: 'deleted' })
       })
     }
 
@@ -4454,9 +4562,10 @@ export class PostgresBackend implements StorageBackend {
         [spaceId]
       ),
       this.#reader().query<
-        MetadataRow<CollectionMetadata> & LogRow & { collection_id: string }
+        MetadataRow<CollectionMetadata> &
+          LogRow & { collection_id: string; deleted: boolean }
       >(
-        `SELECT collection_id, ${METADATA_COLUMNS}, ${LOG_COLUMNS}
+        `SELECT collection_id, deleted, ${METADATA_COLUMNS}, ${LOG_COLUMNS}
            FROM collections WHERE space_id = $1`,
         [spaceId]
       ),
@@ -4551,6 +4660,24 @@ export class PostgresBackend implements StorageBackend {
       return files
     }
     for (const row of collectionRows) {
+      // A tombstone travels as its Metadata file directly in the Space
+      // directory, with no Collection directory: `deleted: true`, the stamp
+      // of the delete, and the generation embedded as `_generation`. Its
+      // member rows went with the delete, so nothing else names its id.
+      if (row.deleted) {
+        spaceFiles.push({
+          name: collectionMetadataFileName(row.collection_id),
+          bytes: Buffer.from(
+            JSON.stringify(
+              embedMetadataValidator({
+                body: collectionTombstoneBody(stampOfRow(row)),
+                generation: row.meta_generation ?? undefined
+              })
+            )
+          )
+        })
+        continue
+      }
       const files = filesFor(row.collection_id)
       const stored = storedMetadataFromRow(row)
       if (stored !== undefined) {
@@ -4805,6 +4932,7 @@ export class PostgresBackend implements StorageBackend {
       spaceMetadata: archivedSpaceMetadata,
       spacePolicy,
       collections,
+      collectionTombstones,
       revocations
     },
     provenance,
@@ -4853,19 +4981,31 @@ export class PostgresBackend implements StorageBackend {
 
       // One pass over the Space's Collections: Metadata object presence drives
       // both the pre-flight encryption resolution and the skip-or-create
-      // decision in the apply loop (a NULL-metadata placeholder row counts as
-      // "does not exist", like a directory without a Metadata file).
-      const { rows: metadataRows } = await client.query<{
-        collection_id: string
-        metadata: CollectionMetadata | null
-      }>(
-        `SELECT collection_id, metadata FROM collections
+      // decision in the apply loop. A tombstoned row has no Metadata object,
+      // so it counts as "does not exist"; its stamp is held so a create over
+      // it sorts above the delete.
+      const { rows: metadataRows } = await client.query<
+        StampColumns & {
+          collection_id: string
+          metadata: CollectionMetadata | null
+          deleted: boolean
+        }
+      >(
+        `SELECT collection_id, metadata, deleted, updated_at,
+                updated_at_counter, origin_id
+           FROM collections
           WHERE space_id = $1`,
         [spaceId]
       )
-      const metadataById = new Map(
-        metadataRows.map(row => [row.collection_id, row.metadata])
-      )
+      const metadataById = new Map<string, CollectionMetadata | null>()
+      const tombstoneStampById = new Map<string, WriteStamp>()
+      for (const row of metadataRows) {
+        if (row.deleted) {
+          tombstoneStampById.set(row.collection_id, stampOfRow(row))
+        } else {
+          metadataById.set(row.collection_id, row.metadata)
+        }
+      }
 
       // Count quotas: measure the Space's existing Collection rows / live
       // Resources ONCE here, then track running totals as the apply loop
@@ -4874,6 +5014,7 @@ export class PostgresBackend implements StorageBackend {
       // count -- a re-imported existing id is skipped and does not -- mirroring
       // the per-create write-path guards without a COUNT query per row. The
       // transaction rolls the whole import back if a cap is exceeded mid-apply.
+      // A tombstoned row does not count.
       let collectionRowCount = metadataById.size
       let liveResourceCount = 0
       if (maxResourcesPerSpace !== undefined) {
@@ -4989,9 +5130,10 @@ export class PostgresBackend implements StorageBackend {
         if (collectionExisted) {
           stats.collectionsSkipped++
         } else {
-          // A brand-new Collection row counts against the cap; upserting a
-          // Metadata object onto an existing NULL-metadata placeholder row
-          // does not add a row, so it never trips the limit.
+          // A brand-new Collection counts against the cap, a create over a
+          // tombstone included; upserting a Metadata object onto an existing
+          // live row with NULL metadata does not add one, so it never trips
+          // the limit.
           const isNewRow = !metadataById.has(collectionId)
           if (
             maxCollectionsPerSpace !== undefined &&
@@ -5010,7 +5152,9 @@ export class PostgresBackend implements StorageBackend {
           // provenance only. This is only ever a create here (the branch
           // above skips existing Collections), so there is no prior object to
           // preserve anything from.
-          const stamp = await this.#clock.mint()
+          const stamp = await this.#clock.mint({
+            held: tombstoneStampById.get(collectionId)
+          })
           const { body, generation } = restampImportedMetadata({
             metadata: collectionMetadata,
             stamp
@@ -5225,6 +5369,26 @@ export class PostgresBackend implements StorageBackend {
           spaceId,
           delta: createdTotalBytes
         })
+      }
+
+      // The archive's Collection tombstones, each written only when this
+      // Space holds no row under its id, live or tombstoned: a tombstone
+      // never deletes or alters a Collection the destination holds. It keeps
+      // the archived generation and is re-stamped by this store's clock.
+      for (const { collectionId, generation } of collectionTombstones) {
+        await client.query(
+          `INSERT INTO collections (space_id, collection_id, metadata, deleted,
+                                    meta_generation, meta_local, updated_at,
+                                    updated_at_counter, origin_id)
+           VALUES ($1, $2, NULL, true, $3, 0, $4, $5, $6)
+           ON CONFLICT (space_id, collection_id) DO NOTHING`,
+          [
+            spaceId,
+            collectionId,
+            generation,
+            ...stampValues(await this.#clock.mint())
+          ]
+        )
       }
 
       // Restore the archive's Space-scoped zcap revocations under this

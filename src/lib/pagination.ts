@@ -98,26 +98,50 @@ export function seekPage<Item>({
  * page) and, where the listing echoes it, the page size are baked into the URL
  * so the client follows it verbatim without constructing query parameters.
  * `limit` is omitted for listings whose page size is not client-selectable.
+ * An `include` the listing honored is carried forward, so the next page lists
+ * the same set of items.
  * @param options {object}
  * @param options.path {string}   the listing's own URL, without a query
  * @param [options.limit] {number}   page size to echo back
  * @param options.after {string}   keyset key of the last item on this page
+ * @param [options.include] {string}   the `include` value to carry forward
  * @returns {string}
  */
 export function nextPageUrl({
   path,
   limit,
-  after
+  after,
+  include
 }: {
   path: string
   limit?: number
   after: string
+  include?: string
 }): string {
   const params = [
     ...(limit !== undefined ? [`limit=${limit}`] : []),
-    `cursor=${encodeCursor(after)}`
+    `cursor=${encodeCursor(after)}`,
+    ...(include !== undefined ? [`include=${include}`] : [])
   ]
   return `${path}?${params.join('&')}`
+}
+
+/**
+ * Reads the `include` query parameter: a comma-separated list of optional
+ * sections a read opts into (`?include=collections` on the quota report,
+ * `?include=deleted` on the Space listing). A repeated `?include=` makes
+ * Fastify's default parser yield a string array, so every value is split.
+ * An unknown section is ignored.
+ * @param include {string | string[] | undefined}   the raw query value
+ * @returns {string[]}   the requested section names, trimmed
+ */
+export function parseIncludeSections(
+  include: string | string[] | undefined
+): string[] {
+  const values = include === undefined ? [] : [include].flat()
+  return values
+    .flatMap(value => value.split(','))
+    .map(section => section.trim())
 }
 
 /**

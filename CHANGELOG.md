@@ -206,7 +206,42 @@
   take an `immutable` option, the flag or a recheck callback. Requires
   `@interop/storage-core` 0.30.0.
 
+- Collection tombstones. Delete Collection keeps the Collection Metadata record,
+  marked `deleted: true`, with its generation and a fresh write stamp, and still
+  removes the Resources, chunks, policies, governing log, and feed counter. A
+  tombstone reads as absent everywhere else: Read Collection, writes into it,
+  `id-conflict`, the Collection count quota, `totalItems`, and import's
+  existence check. A create over it mints a new generation and a stamp above the
+  tombstone's, and inherits nothing from the old life. Tombstones are never
+  reaped. Delete Space still removes everything.
+- The Space listing takes `?include=deleted`, honored only under a verified
+  capability. Tombstoned Collections are then listed as
+  `{ id, url, deleted: true, updatedAt, updatedAtCounter, originId }`, counted
+  in `totalItems`, and the `next` link carries the flag. A listing served by a
+  public-read policy ignores it. `StorageBackend.listCollections` takes
+  `includeDeleted`.
+- Export writes a tombstone as `.collection.<id>.json` in the Space directory
+  with no Collection directory, flagged on the manifest. Import writes it only
+  when the destination holds no record under that id, keeping the archived
+  generation and re-stamping it. An archive holding one Collection both ways is
+  `invalid-import` (400), and so is a `deleted: true` body inside a Collection
+  directory. A tombstone gets no provenance statement.
+- The filesystem backend keeps a tombstone as the Collection's
+  `.collection.<id>.json` in its emptied directory, written before the members
+  are removed. A delete cut short is finished at boot, on the next read of the
+  Collection, by a retried delete, or by a create over it. The Postgres backend
+  keeps the `collections` row with a new `deleted` column (schema migration 10)
+  and deletes in one transaction.
+- Requires `@interop/storage-core` 0.31.0 (`CollectionTombstoneSummary`) and
+  `@interop/space-archive` 0.7.0 (the tombstone archive form).
+
 ### Changed
+
+- Delete Collection of an already deleted Collection answers the masked
+  `not-found` (404) and writes nothing. An id never used still answers 204.
+  `StorageBackend.deleteCollection` resolves `deleted`, `already-deleted`, or
+  `absent`. On the filesystem, a Collection directory left without a Metadata
+  file is removed by a delete.
 
 - The `ETag` is `"<generation>.<ms>.<counter>.<originId>"`, from the record's
   generation and write stamp, with `ms` the stamp's `updatedAt` in epoch

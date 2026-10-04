@@ -86,6 +86,11 @@ import {
   suppressesItemNames
 } from '../lib/collectionListing.js'
 import { revocationFileName } from '../lib/revocations.js'
+import {
+  collectionTombstoneFile,
+  collectionTombstoneSummary,
+  isCollectionTombstone
+} from '../lib/collectionTombstone.js'
 import { applyStoreMigrations, writeClockHighWater } from './filesystemStore.js'
 import { HybridLogicalClock, stampOf } from '../lib/hlc.js'
 import { policyGrants } from '../policy.js'
@@ -164,6 +169,7 @@ import type {
   CollectionMetadata,
   CollectionSummary,
   CollectionsList,
+  CollectionDeleteOutcome,
   CollectionResourcesList,
   ResourceResult,
   ChunkMetadata,
@@ -179,6 +185,7 @@ import type {
   StorageBackend,
   StoredBackendRecord,
   StoredCollectionMetadata,
+  StoredCollectionTombstone,
   StoredSpaceMetadata,
   CollectionLogResult,
   ImmutableUnder,
@@ -196,6 +203,35 @@ import type {
 } from '../types.js'
 
 const { Store: MetadataJsonStore } = jsonfs
+
+/**
+ * How many Collection Metadata files `#collectionEntries` reads at once.
+ */
+const COLLECTION_READ_BATCH = 32
+
+/**
+ * Maps each item through an async function, `COLLECTION_READ_BATCH` items at
+ * a time, so a Space with many Collections does not open every file at once.
+ * The result keeps the order of `items`.
+ * @param options {object}
+ * @param options.items {T[]}
+ * @param options.map {(item: T) => Promise<R>}
+ * @returns {Promise<R[]>}
+ */
+async function mapInBatches<T, R>({
+  items,
+  map
+}: {
+  items: T[]
+  map: (item: T) => Promise<R>
+}): Promise<R[]> {
+  const results: R[] = []
+  for (let start = 0; start < items.length; start += COLLECTION_READ_BATCH) {
+    const batch = items.slice(start, start + COLLECTION_READ_BATCH)
+    results.push(...(await Promise.all(batch.map(map))))
+  }
+  return results
+}
 
 const execFileAsync = promisify(execFile)
 
@@ -465,8 +501,9 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Refuses a write into a container that has no Metadata object: the Space's
    * `.space.<id>.json`, and the Collection's `.collection.<id>.json` when a
-   * `collectionId` is given. Called under the Space gate (see
-   * `#underSpaceWrite`), so the answer holds until the write finishes.
+   * `collectionId` is given. A tombstoned Collection has no Metadata object.
+   * Called under the Space gate (see `#underSpaceWrite`), so the answer holds
+   * until the write finishes.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}
@@ -492,11 +529,7 @@ export class FileSystemBackend implements StorageBackend {
     if (collectionId === undefined) {
       return
     }
-    const collectionFile = path.join(
-      this.#collectionDir({ spaceId, collectionId }),
-      collectionMetadataFileName(collectionId)
-    )
-    if (!(await fileExists(collectionFile))) {
+    if (!(await this.#readLiveCollection({ spaceId, collectionId }))) {
       throw new CollectionNotFoundError({ requestName })
     }
   }
@@ -540,6 +573,18 @@ export class FileSystemBackend implements StorageBackend {
    * only.
    */
   #liveCountCache = new Map<string, { used: number; expiresAt: number }>()
+
+  /**
+   * Drops a Space's cached quota figures (`#usageCache`, `#liveCountCache`)
+   * after bytes and slots were freed, so the next write re-measures.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @returns {void}
+   */
+  #dropQuotaCaches({ spaceId }: { spaceId: string }): void {
+    this.#usageCache.delete(spaceId)
+    this.#liveCountCache.delete(spaceId)
+  }
 
   /**
    * The store's origin id, settled by `open()` (see `filesystemStore.ts`).
@@ -722,6 +767,56 @@ export class FileSystemBackend implements StorageBackend {
         'Removed temp files left by writes interrupted by a previous shutdown'
       )
     }
+    const finished = await this.#finishInterruptedCascades()
+    if (finished > 0) {
+      this.logger.warn(
+        { finished },
+        'Finished Collection deletes interrupted by a previous shutdown'
+      )
+    }
+  }
+
+  /**
+   * Finishes, at boot, every Collection delete a previous process left
+   * unfinished: a Collection dir whose Metadata file is a tombstone but which
+   * still holds other entries. No request is in flight yet, so no gate is
+   * taken. A failure on one Collection is logged and does not stop the open;
+   * the next touch of that Collection finishes it.
+   * @returns {Promise<number>}   how many Collections were finished
+   */
+  async #finishInterruptedCascades(): Promise<number> {
+    let finished = 0
+    for (const spaceEntry of await this.#readDirEntries(this.spacesDir)) {
+      if (!spaceEntry.isDirectory()) {
+        continue
+      }
+      const spaceId = spaceEntry.name
+      const collectionIds = (
+        await this.#readDirEntries(this.#spaceDir(spaceId))
+      )
+        .filter(entry => entry.isDirectory())
+        .map(entry => entry.name)
+      // Each Collection is independent, so they are checked in batches.
+      const outcomes = await mapInBatches({
+        items: collectionIds,
+        map: async collectionId => {
+          try {
+            if (await this.#hasInterruptedDelete({ spaceId, collectionId })) {
+              await this.#removeCollectionMembers({ spaceId, collectionId })
+              return true
+            }
+          } catch (err) {
+            this.logger.warn(
+              { err, spaceId, collectionId },
+              'Could not finish an interrupted Collection delete at boot'
+            )
+          }
+          return false
+        }
+      })
+      finished += outcomes.filter(Boolean).length
+    }
+    return finished
   }
 
   /**
@@ -841,8 +936,14 @@ export class FileSystemBackend implements StorageBackend {
     const spaceDir = this.#spaceDir(spaceId)
     const measuredAt = new Date().toISOString()
 
-    const { total: usageBytes, byCollection: usageByCollection } =
-      await this.#diskUsage(spaceDir)
+    const { total: usageBytes, byCollection } = await this.#diskUsage(spaceDir)
+    // A tombstoned Collection reads as absent, so the breakdown leaves it
+    // out. Its few bytes still count toward the Space total.
+    let usageByCollection: CollectionUsage[] | undefined
+    if (includeCollections) {
+      const liveIds = new Set(await this.#liveCollectionIds({ spaceId }))
+      usageByCollection = byCollection.filter(entry => liveIds.has(entry.id))
+    }
 
     return {
       ...backendUsageFieldsFor({
@@ -851,7 +952,7 @@ export class FileSystemBackend implements StorageBackend {
         spaceTotalBytes: usageBytes
       }),
       measuredAt,
-      ...(includeCollections && { usageByCollection })
+      ...(usageByCollection !== undefined && { usageByCollection })
     }
   }
 
@@ -1484,11 +1585,44 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * Reads a Collection Metadata file for an export: its bytes as the archive
+   * carries them (without the local segment), and whether they are a
+   * tombstone. Resolves `undefined` when the file is absent.
+   * @param file {string}   absolute path of the Metadata file
+   * @returns {Promise<{ bytes: Buffer, tombstone: boolean } | undefined>}
+   */
+  async #readArchivedCollectionMetadata(
+    file: string
+  ): Promise<{ bytes: Buffer; tombstone: boolean } | undefined> {
+    let raw: Buffer
+    try {
+      raw = await fs.promises.readFile(file)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return undefined
+      }
+      throw err
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw.toString('utf8'))
+    } catch {
+      // Unparseable bytes travel as stored, as a live Collection's would.
+      parsed = undefined
+    }
+    const tombstone =
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      isCollectionTombstone(parsed)
+    return { bytes: withoutLocalSegment(raw), tombstone }
+  }
+
+  /**
    * Reads one JSON metadata file (a Space or Collection Metadata object, a
    * sidecar, policy, log, backend record, or keystore config), `undefined` when absent.
    * `MetadataJsonStore.read` checks the file exists and then reads it, two
-   * steps a concurrent hard delete (Delete Space / Delete Collection removing
-   * the directory) can land between; the `ENOENT` the second step then throws
+   * steps a concurrent delete (Delete Space removing the directory, Delete
+   * Collection removing its members) can land between; the `ENOENT` the second step then throws
    * means the same thing as the first step's "absent", so it resolves
    * `undefined` too rather than surfacing as a 500 out of a read that happened
    * to touch the vanishing record. Every JSON metadata read goes through here
@@ -1553,8 +1687,7 @@ export class FileSystemBackend implements StorageBackend {
         this.#writeMutex.run(this.#spaceMetaLockKey({ spaceId }), async () => {
           // Freed bytes and slots: drop the cached quota figures so the next write
           // re-measures.
-          this.#usageCache.delete(spaceId)
-          this.#liveCountCache.delete(spaceId)
+          this.#dropQuotaCaches({ spaceId })
           // Remove this Space's revocations, which sit outside the Space dir.
           await rm(this.#spaceRevocationDir(spaceId), {
             recursive: true,
@@ -1616,19 +1749,19 @@ export class FileSystemBackend implements StorageBackend {
    * @returns {Promise<number>}   the number of live Resources
    */
   async #countLiveResources({ spaceId }: { spaceId: string }): Promise<number> {
-    const spaceDir = this.#spaceDir(spaceId)
-    let spaceEntries: fs.Dirent[]
+    // A tombstoned Collection holds no live Resource, even while an
+    // interrupted delete has left its members on disk.
+    let collectionIds: string[]
     try {
-      spaceEntries = await this.#readDirEntries(spaceDir)
+      collectionIds = await this.#liveCollectionIds({ spaceId })
     } catch (err) {
+      // `#liveCollectionIds` counts a Collection whose Metadata file does not
+      // parse as live, so only a filesystem fault reaches here.
       throw new StorageError({ cause: err as Error })
     }
     let count = 0
-    for (const entry of spaceEntries) {
-      if (!entry.isDirectory()) {
-        continue
-      }
-      const collectionDir = path.join(spaceDir, entry.name)
+    for (const collectionId of collectionIds) {
+      const collectionDir = this.#collectionDir({ spaceId, collectionId })
       // A Collection deleted between the Space listing and this read counts
       // nothing, rather than failing an unrelated write in another Collection
       // with a raw `ENOENT` (which `handleError` would render as a 500).
@@ -1651,27 +1784,80 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
-   * Every Collection id in the Space, in code-unit ascending order -- the
-   * keyset order the paginated `listCollections` seeks within. The unpaginated
-   * full-enumeration path: `listCollections` builds one page from it, while the
-   * internal full-Space callers (import count-quota seeding, create count-quota)
-   * that must see EVERY Collection rather than a single page read it directly.
+   * Every Collection dir in the Space, in code-unit ascending order of id --
+   * the keyset order the paginated `listCollections` seeks within -- each
+   * with its tombstone when the Collection is one. The unpaginated
+   * full-enumeration path: `listCollections` builds one page from it, while
+   * the internal full-Space callers (import count-quota seeding, create
+   * count-quota, the Resource count) read it through `#liveCollectionIds`.
+   * A live Collection carries its Metadata object, so the listing page need
+   * not read it again. A dir without a Metadata file counts as live, as it
+   * always has, and carries neither. A Metadata file that does not parse
+   * counts as live too and carries the parse error as `unreadable`. The
+   * Space-wide callers (the count quotas, the usage report, import) then keep
+   * working, and only a listing page that holds the Collection fails. A
+   * filesystem fault still rejects. An absent Space dir holds none.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @returns {Promise<Array<{ id: string, tombstone?: StoredCollectionTombstone, metadata?: StoredCollectionMetadata, unreadable?: Error }>>}
+   */
+  async #collectionEntries({ spaceId }: { spaceId: string }): Promise<
+    Array<{
+      id: string
+      tombstone?: StoredCollectionTombstone
+      metadata?: StoredCollectionMetadata
+      unreadable?: Error
+    }>
+  > {
+    const spaceEntries = await this.#readDirEntries(this.#spaceDir(spaceId))
+    // Sort in code-unit order -- the SAME ordering the cursor seek
+    // (`collectionId > after`) uses, so the keyset stays consistent
+    // (localeCompare could disagree with the `>` operator and break paging).
+    const ids = spaceEntries
+      .filter(entry => entry.isDirectory())
+      .map(entry => entry.name)
+      .sort(compareCodeUnits)
+    // Each Metadata file is an independent read, so they are read in
+    // batches; the order is kept.
+    return mapInBatches({
+      items: ids,
+      map: async id => {
+        let record:
+          StoredCollectionMetadata | StoredCollectionTombstone | undefined
+        try {
+          record = await this.#readCollectionRecord({
+            spaceId,
+            collectionId: id
+          })
+        } catch (err) {
+          // A filesystem fault carries a `code`; a parse error does not.
+          if ((err as NodeJS.ErrnoException).code !== undefined) {
+            throw err
+          }
+          return { id, unreadable: err as Error }
+        }
+        return isCollectionTombstone(record)
+          ? { id, tombstone: record }
+          : { id, metadata: record }
+      }
+    })
+  }
+
+  /**
+   * Every live Collection id in the Space, in code-unit ascending order: the
+   * Collections the count quota counts. A tombstone is left out.
    * @param options {object}
    * @param options.spaceId {string}
    * @returns {Promise<string[]>}
    */
-  async #collectionIds({ spaceId }: { spaceId: string }): Promise<string[]> {
-    const spaceDir = this.#spaceDir(spaceId)
-    const spaceEntries = await fs.promises.readdir(spaceDir, {
-      withFileTypes: true
-    })
-    // Sort in code-unit order -- the SAME ordering the cursor seek
-    // (`collectionId > after`) uses, so the keyset stays consistent
-    // (localeCompare could disagree with the `>` operator and break paging).
-    return spaceEntries
-      .filter(entry => entry.isDirectory())
-      .map(entry => entry.name)
-      .sort(compareCodeUnits)
+  async #liveCollectionIds({
+    spaceId
+  }: {
+    spaceId: string
+  }): Promise<string[]> {
+    return (await this.#collectionEntries({ spaceId }))
+      .filter(entry => entry.tombstone === undefined)
+      .map(entry => entry.id)
   }
 
   /**
@@ -1684,64 +1870,86 @@ export class FileSystemBackend implements StorageBackend {
    * count of the Space -- free here, since the whole directory is enumerated.
    * Each summary's `public` flag is the Collection's `PublicCanRead` policy
    * state, probed inline for the page's Collections only (O(page size)).
+   * A tombstoned Collection is listed, and counted, only under
+   * `includeDeleted`, as its id, URL, `deleted: true` and the stamp of the
+   * delete.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.limit] {number}   requested page size
    * @param [options.cursor] {string}   opaque cursor from a prior page's `next`
+   * @param [options.includeDeleted] {boolean}   list tombstoned Collections too
    * @returns {Promise<CollectionsList>}
    */
   async listCollections({
     spaceId,
     limit,
-    cursor
+    cursor,
+    includeDeleted = false
   }: {
     spaceId: string
     limit?: number
     cursor?: string
+    includeDeleted?: boolean
   }): Promise<CollectionsList> {
-    const ids = await this.#collectionIds({ spaceId })
+    const entries = (await this.#collectionEntries({ spaceId })).filter(
+      entry => includeDeleted || entry.tombstone === undefined
+    )
 
     // The full count is free (we enumerated the whole Space), so keep returning
-    // `totalItems` -- the count of every Collection, not the page.
-    const totalItems = ids.length
+    // `totalItems` -- the count of every listed Collection, not the page.
+    const totalItems = entries.length
 
     // Clamp `limit` to `[1, MAX_PAGE_SIZE]`, defaulting when absent, then cut
     // the page out at the cursor's seek point (the Collection id is the keyset).
     const pageSize = resolvePageSize(limit)
-    const { page: pageIds, hasMore } = seekPage({
-      items: ids,
+    const { page, hasMore } = seekPage({
+      items: entries,
       cursor,
       pageSize,
-      keyOf: id => id
+      keyOf: entry => entry.id
     })
 
     // Each Collection's reads are independent, so the page is assembled in
-    // parallel; `Promise.all` preserves the keyset order of `pageIds`.
-    const items: CollectionSummary[] = await Promise.all(
-      pageIds.map(async collectionId => {
-        const collectionMetadata = await this.getCollectionMetadata({
-          spaceId,
-          collectionId
-        })
-        // Probe the collection-level policy inline so a client need not issue one
-        // policy request per listed Collection (an N+1). Only page items are read,
-        // so this stays O(page size). `public` is true iff a `PublicCanRead`
-        // policy is attached (via the shared `policyGrants` recognizer, which
-        // fail-closes any other/unrecognized policy type to false).
-        const policy = await this.getPolicy({ spaceId, collectionId })
-        return {
-          id: collectionId,
-          // The canonical container form, with the trailing slash.
-          url: collectionPath({ spaceId, collectionId, trailingSlash: true }),
-          // `name` is optional on the wire type; a stored Collection normally has
-          // one (create defaults it to the id). Fall back to the dir name for a
-          // metadata-less directory too (e.g. one left by a policy write to a
-          // never-created Collection) -- reading `.name` off `undefined` here would
-          // 500 the entire Space listing.
-          name: collectionMetadata?.name ?? collectionId,
-          public: policyGrants({ policy, action: 'read', logger: this.logger })
+    // parallel; `Promise.all` preserves the keyset order of the page.
+    const items = await Promise.all(
+      page.map(
+        async ({ id: collectionId, tombstone, metadata, unreadable }) => {
+          // A Metadata file that does not parse fails the page that lists it,
+          // and no other page.
+          if (unreadable !== undefined) {
+            throw unreadable
+          }
+          if (tombstone !== undefined) {
+            return collectionTombstoneSummary({
+              spaceId,
+              collectionId,
+              stamp: tombstone
+            })
+          }
+          // Probe the collection-level policy inline so a client need not issue one
+          // policy request per listed Collection (an N+1). Only page items are read,
+          // so this stays O(page size). `public` is true iff a `PublicCanRead`
+          // policy is attached (via the shared `policyGrants` recognizer, which
+          // fail-closes any other/unrecognized policy type to false).
+          const policy = await this.getPolicy({ spaceId, collectionId })
+          return {
+            id: collectionId,
+            // The canonical container form, with the trailing slash.
+            url: collectionPath({ spaceId, collectionId, trailingSlash: true }),
+            // `name` is optional on the wire type; a stored Collection normally has
+            // one (create defaults it to the id). Fall back to the dir name for a
+            // metadata-less directory too (e.g. one left by a policy write to a
+            // never-created Collection) -- reading `.name` off `undefined` here would
+            // 500 the entire Space listing.
+            name: metadata?.name ?? collectionId,
+            public: policyGrants({
+              policy,
+              action: 'read',
+              logger: this.logger
+            })
+          } satisfies CollectionSummary
         }
-      })
+      )
     )
 
     // `next` is present iff a further page may follow; its absence marks the last
@@ -1751,7 +1959,8 @@ export class FileSystemBackend implements StorageBackend {
       next = nextPageUrl({
         path: spacePath({ spaceId, trailingSlash: true }),
         limit: pageSize,
-        after: pageIds[pageIds.length - 1]!
+        after: page[page.length - 1]!.id,
+        ...(includeDeleted && { include: 'deleted' })
       })
     }
 
@@ -1810,6 +2019,25 @@ export class FileSystemBackend implements StorageBackend {
       const entryPath = path.join(sourceSpaceDir, entry.name)
 
       if (entry.isDirectory()) {
+        // The Metadata file is read here, once, and the same bytes decide
+        // whether the Collection is live or a tombstone and are what the
+        // archive carries. A delete, or a create over a tombstone, landing
+        // before the pack then cannot leave a body that disagrees with its
+        // place in the archive.
+        const metadataFile = collectionMetadataFileName(entry.name)
+        const metadataBytes = await this.#readArchivedCollectionMetadata(
+          path.join(entryPath, metadataFile)
+        )
+        // A tombstone travels as its Metadata file directly in the Space
+        // directory, with no Collection directory. Members an interrupted
+        // delete left on disk do not travel.
+        if (metadataBytes?.tombstone) {
+          archiveEntries.push({
+            name: metadataFile,
+            read: async () => metadataBytes.bytes
+          })
+          continue
+        }
         const collectionEntries = await fs.promises.readdir(entryPath, {
           withFileTypes: true
         })
@@ -1834,8 +2062,9 @@ export class FileSystemBackend implements StorageBackend {
                   bytes: await readBytes(),
                   member: 'feedPosition'
                 })
-            } else if (child.name === collectionMetadataFileName(entry.name)) {
-              read = async () => withoutLocalSegment(await readBytes())
+            } else if (child.name === metadataFile) {
+              read = async () =>
+                metadataBytes?.bytes ?? withoutLocalSegment(await readBytes())
             }
             return { name: child.name, read }
           })
@@ -1909,8 +2138,13 @@ export class FileSystemBackend implements StorageBackend {
       }
     }
 
+    // A tombstone's file sorts among the Space-level files by its own name,
+    // the order the Postgres backend packs in.
+    archiveEntries.sort((left, right) => left.name.localeCompare(right.name))
+
     // One signed statement per exported object, over the entry tree about to
-    // be packed, plus the log snapshot they verify against.
+    // be packed, plus the log snapshot they verify against. A tombstone is a
+    // Space-level file entry, which gets no statement.
     const provenance =
       attestor === undefined
         ? undefined
@@ -1955,6 +2189,7 @@ export class FileSystemBackend implements StorageBackend {
       spaceMetadata: archivedSpaceMetadata,
       spacePolicy,
       collections,
+      collectionTombstones,
       revocations
     },
     provenance,
@@ -2082,7 +2317,9 @@ export class FileSystemBackend implements StorageBackend {
           // entry, now and again once the apply loop has run, so the next create
           // re-measures rather than trusting a count the import moved.
           this.#liveCountCache.delete(spaceId)
-          const collectionIds = new Set(await this.#collectionIds({ spaceId }))
+          const collectionIds = new Set(
+            await this.#liveCollectionIds({ spaceId })
+          )
           let liveResourceCount =
             maxResourcesPerSpace !== undefined
               ? await this.#countLiveResources({ spaceId })
@@ -2098,40 +2335,59 @@ export class FileSystemBackend implements StorageBackend {
             resourceMetadata,
             chunkFiles
           } of collections) {
-            // check if collection already exists
-            const collectionExisted = Boolean(
-              await this.getCollectionMetadata({ spaceId, collectionId })
+            // Check whether the Collection already exists, and create it when
+            // it does not, under the Collection Metadata lock, so a
+            // concurrent create of the same id lands wholly before or after.
+            // A tombstoned Collection counts as absent: the import creates it
+            // anew, once any members a delete left are gone, with a stamp
+            // above the tombstone's.
+            const collectionExisted = await this.#writeMutex.run(
+              this.#collectionMetaLockKey({ spaceId, collectionId }),
+              async () => {
+                const record = await this.#readCollectionRecord({
+                  spaceId,
+                  collectionId
+                })
+                if (record !== undefined && !isCollectionTombstone(record)) {
+                  return true
+                }
+                // A brand-new Collection (one whose id the Space did not
+                // already hold live, even as a metadata-less directory)
+                // counts against the cap; filling in the metadata of an
+                // existing directory does not.
+                if (
+                  maxCollectionsPerSpace !== undefined &&
+                  !collectionIds.has(collectionId) &&
+                  collectionIds.size >= maxCollectionsPerSpace
+                ) {
+                  throw new CountQuotaExceededError({
+                    scope: 'Collections per Space',
+                    limit: maxCollectionsPerSpace
+                  })
+                }
+                if (record !== undefined) {
+                  await this.#removeCollectionMembers({ spaceId, collectionId })
+                }
+                collectionIds.add(collectionId)
+                // Re-stamped by this store's clock: the archived stamp is read
+                // for provenance only. The archived generation is kept.
+                const { body, generation } = restampImportedMetadata({
+                  metadata: collectionMetadata,
+                  stamp: await this.#clock.mint({ held: stampOf(record) })
+                })
+                await this.#persistCollection({
+                  spaceId,
+                  collectionId,
+                  body,
+                  generation,
+                  local: 0
+                })
+                return false
+              }
             )
             if (collectionExisted) {
               stats.collectionsSkipped++
             } else {
-              // A brand-new Collection (one whose id the Space did not already hold,
-              // even as a metadata-less directory) counts against the cap; filling
-              // in the metadata of an existing directory does not.
-              if (
-                maxCollectionsPerSpace !== undefined &&
-                !collectionIds.has(collectionId) &&
-                collectionIds.size >= maxCollectionsPerSpace
-              ) {
-                throw new CountQuotaExceededError({
-                  scope: 'Collections per Space',
-                  limit: maxCollectionsPerSpace
-                })
-              }
-              collectionIds.add(collectionId)
-              // Re-stamped by this store's clock: the archived stamp is read
-              // for provenance only. The archived generation is kept.
-              const { body, generation } = restampImportedMetadata({
-                metadata: collectionMetadata,
-                stamp: await this.#clock.mint()
-              })
-              await this.#persistCollection({
-                spaceId,
-                collectionId,
-                body,
-                generation,
-                local: 0
-              })
               stats.collectionsCreated++
             }
 
@@ -2429,6 +2685,35 @@ export class FileSystemBackend implements StorageBackend {
             }
           }
 
+          // The archive's Collection tombstones, each written only when this
+          // Space holds no record under its id, live or tombstoned, and no
+          // directory content either: a tombstone never deletes or alters a
+          // Collection the destination holds. It keeps the archived
+          // generation and is re-stamped by this store's clock.
+          for (const { collectionId, generation } of collectionTombstones) {
+            await this.#writeMutex.run(
+              this.#collectionMetaLockKey({ spaceId, collectionId }),
+              async () => {
+                if (
+                  (await this.#readCollectionRecord({
+                    spaceId,
+                    collectionId
+                  })) !== undefined ||
+                  (await this.#hasCollectionMembers({ spaceId, collectionId }))
+                ) {
+                  return
+                }
+                await this.#ensureCollectionDir({ spaceId, collectionId })
+                await this.#persistCollectionTombstone({
+                  spaceId,
+                  collectionId,
+                  stamp: await this.#clock.mint(),
+                  generation
+                })
+              }
+            )
+          }
+
           // Restore the archive's Space-scoped zcap revocations under this Space's
           // scope: a capability revoked before the export must stay revoked after
           // an import (a backup/restore round-trip must not resurrect revoked
@@ -2522,11 +2807,19 @@ export class FileSystemBackend implements StorageBackend {
           async () => {
             // Prior object, read once and reused below: for the precondition,
             // the create-path quota check, the server-managed members, and the
-            // CAS validator.
-            const prior = await this.getCollectionMetadata({
+            // CAS validator. A tombstone is no prior object: a write over it
+            // is a create. Its members go first if a delete left any, so the
+            // new life starts empty; every other write into a tombstoned
+            // Collection is refused, so none can land meanwhile.
+            const record = await this.#readCollectionRecord({
               spaceId,
               collectionId
             })
+            const tombstoned = isCollectionTombstone(record)
+            if (tombstoned) {
+              await this.#removeCollectionMembers({ spaceId, collectionId })
+            }
+            const prior = tombstoned ? undefined : record
 
             // Guarded create (`If-None-Match: *`) or compare-and-swap on the
             // current `ETag` (`If-Match`), both opt-in: an existing Collection
@@ -2558,7 +2851,7 @@ export class FileSystemBackend implements StorageBackend {
             // Space past `maxCollectionsPerSpace`; overwriting an existing
             // Collection's metadata never trips it.
             if (this.maxCollectionsPerSpace !== undefined && !prior) {
-              const collectionIds = await this.#collectionIds({ spaceId })
+              const collectionIds = await this.#liveCollectionIds({ spaceId })
               if (collectionIds.length >= this.maxCollectionsPerSpace) {
                 throw new CountQuotaExceededError({
                   scope: 'Collections per Space',
@@ -2574,13 +2867,14 @@ export class FileSystemBackend implements StorageBackend {
             // stamp is minted over the prior one.
             // The object keeps its generation for the Collection's whole life;
             // a Collection deleted and re-created under the same id mints a new
-            // one, so the two lives' validators can never coincide.
+            // one, so the two lives' validators can never coincide. A create
+            // over a tombstone still raises the clock to the tombstone's
+            // stamp, so the new life's stamp sorts above the delete.
             const validator = await mintValidator({
               clock: this.#clock,
-              prior: prior && {
-                generation: prior.metaGeneration,
-                ...stampOf(prior)
-              },
+              prior: prior
+                ? { generation: prior.metaGeneration, ...stampOf(prior) }
+                : stampOf(record),
               local: 0
             })
             const { generation, stamp } = validator
@@ -2683,10 +2977,44 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * Writes a Collection tombstone over the Collection's Metadata file. The
+   * caller holds the `cmeta:` lock and has made sure the Collection dir
+   * exists. The file carries the generation and no local segment.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.stamp {WriteStamp}   the delete's write stamp
+   * @param options.generation {string}   the Collection's generation
+   * @returns {Promise<void>}
+   */
+  async #persistCollectionTombstone({
+    spaceId,
+    collectionId,
+    stamp,
+    generation
+  }: {
+    spaceId: string
+    collectionId: string
+    stamp: WriteStamp
+    generation: string
+  }): Promise<void> {
+    await atomicWriteFile({
+      filePath: path.join(
+        this.#collectionDir({ spaceId, collectionId }),
+        collectionMetadataFileName(collectionId)
+      ),
+      data: collectionTombstoneFile({ stamp, generation })
+    })
+  }
+
+  /**
    * Reads a Collection Metadata object: the one file holds the configuration
    * members beside `createdAt`, the stamp members, `custom`, and `epoch`, with
    * the generation and local segment re-surfaced out of band as
-   * `metaGeneration` / `metaLocal`.
+   * `metaGeneration` / `metaLocal`. A tombstoned Collection reads as absent.
+   * Reading one is a touch of the Collection, so a delete left unfinished
+   * under it is finished first (`#finishCascadeOnTouch`). Never call this
+   * while holding the Space gate: use `#readLiveCollection` there.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -2700,19 +3028,229 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
   }): Promise<StoredCollectionMetadata | undefined> {
-    const collectionDir = this.#collectionDir({ spaceId, collectionId })
-    const filename = collectionMetadataFileName(collectionId)
+    const record = await this.#readCollectionRecord({ spaceId, collectionId })
+    if (!isCollectionTombstone(record)) {
+      return record
+    }
+    await this.#finishCascadeOnTouch({ spaceId, collectionId })
+    return undefined
+  }
+
+  /**
+   * Reads a Collection's Metadata file in its stored form: the live
+   * Collection Metadata object, its tombstone, or `undefined` when the
+   * Collection has no Metadata file. The one low-level reader; every other
+   * reader of the file goes through it.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<StoredCollectionMetadata | StoredCollectionTombstone | undefined>}
+   */
+  async #readCollectionRecord({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<
+    StoredCollectionMetadata | StoredCollectionTombstone | undefined
+  > {
     const raw = await this.#readJsonFile<
-      CollectionMetadata & EmbeddedMetadataValidator
-    >(path.join(collectionDir, filename))
+      (CollectionMetadata | StoredCollectionTombstone) &
+        EmbeddedMetadataValidator
+    >(
+      path.join(
+        this.#collectionDir({ spaceId, collectionId }),
+        collectionMetadataFileName(collectionId)
+      )
+    )
     return raw && storedMetadataFromFile(raw)
   }
 
   /**
+   * Reads a live Collection Metadata object, `undefined` for an absent or
+   * tombstoned Collection. Finishes nothing, so it is safe under the Space
+   * gate and the per-Collection locks.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<StoredCollectionMetadata | undefined>}
+   */
+  async #readLiveCollection({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<StoredCollectionMetadata | undefined> {
+    const record = await this.#readCollectionRecord({ spaceId, collectionId })
+    return isCollectionTombstone(record) ? undefined : record
+  }
+
+  /**
+   * Whether a Collection dir holds anything besides its Metadata file. Under
+   * a tombstone, that is a delete left unfinished.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<boolean>}
+   */
+  async #hasCollectionMembers({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<boolean> {
+    return (
+      (await this.#listCollectionMembers({ spaceId, collectionId })).length > 0
+    )
+  }
+
+  /**
+   * Every entry of a Collection dir except its Metadata file. An absent dir
+   * holds none.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<fs.Dirent[]>}
+   */
+  async #listCollectionMembers({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<fs.Dirent[]> {
+    const metadataFile = collectionMetadataFileName(collectionId)
+    return (
+      await this.#readDirEntries(this.#collectionDir({ spaceId, collectionId }))
+    ).filter(entry => entry.name !== metadataFile)
+  }
+
+  /**
+   * Whether a Collection holds a delete left unfinished: its Metadata file is
+   * a tombstone and its dir still holds other entries. The tombstone check
+   * comes first, so a live Collection costs one small file read and only a
+   * tombstone's dir is listed. Takes no lock; each caller holds what its
+   * context needs.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<boolean>}
+   */
+  async #hasInterruptedDelete({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<boolean> {
+    return (
+      isCollectionTombstone(
+        await this.#readCollectionRecord({ spaceId, collectionId })
+      ) && (await this.#hasCollectionMembers({ spaceId, collectionId }))
+    )
+  }
+
+  /**
+   * Removes everything in a Collection dir except its Metadata file: the
+   * Resources and their sidecars, chunk dirs, policies, the governing history
+   * log, the changes-feed counter, and any staging temp file. This is the
+   * cascade of Delete Collection, run once the tombstone is durable. It is
+   * idempotent, so a cascade cut short is finished by running it again. The
+   * caller holds the exclusive side of the Space gate, or is the create that
+   * replaces the tombstone under the shared side and the `cmeta:` lock;
+   * either way no other write can land in the dir meanwhile, since every
+   * other write into a tombstoned Collection is refused.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @returns {Promise<void>}
+   */
+  async #removeCollectionMembers({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<void> {
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
+    const members = await this.#listCollectionMembers({
+      spaceId,
+      collectionId
+    })
+    try {
+      await Promise.all(
+        members.map(entry =>
+          rm(path.join(collectionDir, entry.name), {
+            recursive: true,
+            force: true
+          })
+        )
+      )
+    } finally {
+      // Freed bytes and slots: drop the cached quota figures so the next
+      // write re-measures. After the removal, as `deleteResource` does. This
+      // can run on the shared side of the Space gate, where dropping first
+      // would let a concurrent write cache the pre-removal total for a full
+      // TTL. A removal that failed part way has still freed bytes.
+      this.#dropQuotaCaches({ spaceId })
+    }
+  }
+
+  /**
+   * Finishes a delete left unfinished under a tombstone, when a read finds
+   * one: takes the exclusive side of the Space gate, re-reads the record, and
+   * removes the members if it is still a tombstone with members. Holding the
+   * gate keeps a concurrent create over the tombstone from losing members it
+   * has just written. A read that raced a delete still running finds the
+   * members gone once it has the gate, and does nothing.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<void>}
+   */
+  async #finishCascadeOnTouch({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<void> {
+    if (!(await this.#hasCollectionMembers({ spaceId, collectionId }))) {
+      return
+    }
+    await this.#underSpaceRemoval({
+      spaceId,
+      remove: async () => {
+        // The members seen before the gate may have belonged to a delete
+        // still running, which held the gate and has removed them by now.
+        if (await this.#hasInterruptedDelete({ spaceId, collectionId })) {
+          this.logger.warn(
+            { spaceId, collectionId },
+            'Finishing an interrupted Collection delete'
+          )
+          await this.#removeCollectionMembers({ spaceId, collectionId })
+        }
+      }
+    })
+  }
+
+  /**
+   * Deletes a Collection, leaving a tombstone. The Metadata file is replaced
+   * first, durably, by the tombstone: `deleted: true`, the Collection's
+   * generation, and a stamp minted over the live record's. Then every other
+   * entry in the Collection dir is removed. A process killed in between
+   * leaves a tombstone beside members, which boot, the next read of the
+   * Collection, or a create over it finishes. Over a tombstone nothing is
+   * written: it finishes any members left and resolves `already-deleted`.
+   * With no Metadata file it removes the directory, if one was left without
+   * one, and resolves `absent`.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<CollectionDeleteOutcome>}
    */
   async deleteCollection({
     spaceId,
@@ -2720,32 +3258,51 @@ export class FileSystemBackend implements StorageBackend {
   }: {
     spaceId: string
     collectionId: string
-  }): Promise<void> {
+  }): Promise<CollectionDeleteOutcome> {
     // Under the Collection Metadata lock, for the same reason as
-    // `deleteSpace`: a concurrent `writeCollection` must not recreate the
-    // directory with the deleted life's generation. And under the Space gate's
+    // `deleteSpace`: a concurrent `writeCollection` must not overwrite the
+    // tombstone with the deleted life's generation. And under the Space gate's
     // exclusive side, which excludes the Resource writes that would otherwise
-    // recreate this directory mid-`rm` as a metadata-less phantom.
+    // land in this directory mid-cascade.
     return this.#underSpaceRemoval({
       spaceId,
       remove: () =>
         this.#writeMutex.run(
           this.#collectionMetaLockKey({ spaceId, collectionId }),
           async () => {
-            // Freed bytes and slots: drop the cached quota figures so the next
-            // write re-measures.
-            this.#usageCache.delete(spaceId)
-            this.#liveCountCache.delete(spaceId)
-            // `force: true` keeps delete idempotent (spec / `StorageBackend`
-            // contract): removing an absent (or already-deleted) Collection
-            // resolves rather than rejecting with `ENOENT` (which the request
-            // layer would wrap as a 500). The Collection's metadata file and
-            // history log live inside that dir, so they go with it -- a re-created
-            // Collection of the same id starts a fresh life.
-            await rm(this.#collectionDir({ spaceId, collectionId }), {
-              recursive: true,
-              force: true
+            const record = await this.#readCollectionRecord({
+              spaceId,
+              collectionId
             })
+            if (record === undefined) {
+              // A directory with no Metadata file (a create cut short between
+              // its `mkdir` and its file write) is no Collection. It goes
+              // whole, and no tombstone is left.
+              this.#dropQuotaCaches({ spaceId })
+              await rm(this.#collectionDir({ spaceId, collectionId }), {
+                recursive: true,
+                force: true
+              })
+              return 'absent'
+            }
+            if (isCollectionTombstone(record)) {
+              await this.#removeCollectionMembers({ spaceId, collectionId })
+              return 'already-deleted'
+            }
+            // The tombstone keeps the generation and takes a stamp above the
+            // live record's.
+            const { generation, stamp } = await mintValidator({
+              clock: this.#clock,
+              prior: { generation: record.metaGeneration, ...stampOf(record) }
+            })
+            await this.#persistCollectionTombstone({
+              spaceId,
+              collectionId,
+              stamp,
+              generation
+            })
+            await this.#removeCollectionMembers({ spaceId, collectionId })
+            return 'deleted'
           }
         )
     })
@@ -2896,7 +3453,7 @@ export class FileSystemBackend implements StorageBackend {
           this.#writeMutex.run(
             this.#collectionLogLockKey({ spaceId, collectionId }),
             async () => {
-              const collectionMetadata = await this.getCollectionMetadata({
+              const collectionMetadata = await this.#readLiveCollection({
                 spaceId,
                 collectionId
               })
@@ -4508,8 +5065,7 @@ export class FileSystemBackend implements StorageBackend {
       // does -- invalidating first would let a concurrent write re-measure the
       // pre-delete tree and cache that total for a full TTL, refusing the
       // client's follow-up write (507) over space this delete just freed.
-      this.#usageCache.delete(spaceId)
-      this.#liveCountCache.delete(spaceId)
+      this.#dropQuotaCaches({ spaceId })
       // Cascade-delete the Resource's chunks (the `chunked-streams` feature): a
       // chunk must never outlive its parent Resource, so its whole chunk
       // directory goes with the content. Runs under the same per-Resource lock a

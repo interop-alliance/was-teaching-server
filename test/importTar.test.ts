@@ -529,3 +529,72 @@ describe('extractTarEntries', () => {
     )
   })
 })
+
+describe('buildImportPlan Collection tombstones', () => {
+  const generation = 'AbCdEfGhJkL'
+  const tombstoneBody = JSON.stringify({
+    deleted: true,
+    updatedAt: '2026-10-03T00:00:00.000Z',
+    updatedAtCounter: 0,
+    originId: 'origin',
+    _generation: generation
+  })
+
+  it('plans a tombstone in the Space directory with its archived generation', () => {
+    const entries = new Map<string, TarEntry>([
+      ['manifest.yml', fileEntry(validManifestYaml())],
+      ['space/s1/.space.s1.json', fileEntry('{}')],
+      ['space/s1/.collection.gone.json', fileEntry(tombstoneBody)],
+      ['space/s1/.collection.policy.json', fileEntry('{"type":"X"}')]
+    ])
+    const plan = buildImportPlan(entries)
+    assert.deepEqual(plan.collections, [])
+    assert.deepEqual(plan.collectionTombstones, [
+      { collectionId: 'gone', generation }
+    ])
+  })
+
+  it('refuses an archive holding one Collection both as a tombstone and a directory', () => {
+    const entries = new Map<string, TarEntry>([
+      ['manifest.yml', fileEntry(validManifestYaml())],
+      ['space/s1/.collection.both.json', fileEntry(tombstoneBody)],
+      [
+        'space/s1/both/.collection.both.json',
+        fileEntry('{"id":"both","type":["Collection"]}')
+      ]
+    ])
+    assert.throws(
+      () => buildImportPlan(entries),
+      (err: unknown) =>
+        err instanceof InvalidImportError &&
+        /both as a tombstone/.test(err.detail ?? '')
+    )
+  })
+
+  it('refuses a Space-level Collection Metadata file that is not a tombstone', () => {
+    const entries = new Map<string, TarEntry>([
+      ['manifest.yml', fileEntry(validManifestYaml())],
+      [
+        'space/s1/.collection.live.json',
+        fileEntry('{"id":"live","type":["Collection"]}')
+      ]
+    ])
+    assert.throws(
+      () => buildImportPlan(entries),
+      (err: unknown) => err instanceof InvalidImportError
+    )
+  })
+
+  it('refuses a tombstone body inside a Collection directory', () => {
+    const entries = new Map<string, TarEntry>([
+      ['manifest.yml', fileEntry(validManifestYaml())],
+      ['space/s1/dir/.collection.dir.json', fileEntry(tombstoneBody)]
+    ])
+    assert.throws(
+      () => buildImportPlan(entries),
+      (err: unknown) =>
+        err instanceof InvalidImportError &&
+        /holds a tombstone/.test(err.detail ?? '')
+    )
+  })
+})

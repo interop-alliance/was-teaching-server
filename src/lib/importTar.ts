@@ -14,12 +14,16 @@ import {
   spaceMetadataFileName,
   JSON_FILE_SUFFIX,
   META_FILE_PREFIX,
-  COLLECTION_LOG_FILE_PREFIX
+  COLLECTION_LOG_FILE_PREFIX,
+  collectionTombstoneFromFile,
+  isCollectionTombstone,
+  parseArchivePath
 } from '@interop/space-archive'
 import { assertEncryptedWriteConforms } from './encryption.js'
 import { assertGoverningLogAppend } from './governedLog.js'
 import { importedGeneration, isMintedGeneration } from './etag.js'
 import { isPlainObject } from './isPlainObject.js'
+import { compareCodeUnits } from './pagination.js'
 import { assertRevisionsTransition, assertValidRevisions } from './revisions.js'
 import { spaceTypeChangeProblem, spaceTypeProblem } from './spaceType.js'
 import { InvalidImportError, ProblemError } from '../errors.js'
@@ -382,6 +386,21 @@ export interface ImportPlanCollection {
 }
 
 /**
+ * One Collection tombstone staged for import: the archive's
+ * `.collection.<id>.json` file directly in the Space directory. Only the
+ * archived generation travels. The importing backend writes the tombstone
+ * only when it holds no record under the id, re-stamped by its own clock.
+ */
+export interface ImportPlanCollectionTombstone {
+  collectionId: string
+  /**
+   * The archived generation when it is one this server could have minted,
+   * else a fresh one (`importedGeneration`).
+   */
+  generation: string
+}
+
+/**
  * The archived Space Metadata object's user-writable members (spec "Space
  * Metadata Data Model"): the only two an import reads. `name` is the one an
  * import restores. `type` is immutable once a Space exists, so it is carried
@@ -412,6 +431,12 @@ export interface ImportPlan {
   /** Space-level access-control policy, if the archive carries one. */
   spacePolicy?: PolicyDocument
   collections: ImportPlanCollection[]
+  /**
+   * The archive's Collection tombstones. A Collection id is either here or
+   * in `collections`, never both: an archive holding one Collection both
+   * ways is refused.
+   */
+  collectionTombstones: ImportPlanCollectionTombstone[]
   /**
    * Space-scoped zcap revocation records the archive carries (top-level
    * `revocations/` entries), restored under the destination Space's scope.
@@ -515,6 +540,9 @@ export function validateManifest(entries: Map<string, TarEntry>): void {
  *   object; only its user-writable `type` and `name` are carried on the plan,
  *   and they are restored only under a root invocation)
  * - space/<sourceSpaceId>/.space.policy.json (space-level policy)
+ * - space/<sourceSpaceId>/.collection.<collectionId>.json (a Collection
+ *   tombstone: `deleted: true` and its archived validator, with no
+ *   `<collectionId>/` directory beside it)
  * - space/<sourceSpaceId>/<collectionId>/
  * - space/<sourceSpaceId>/<collectionId>/.collection.<collectionId>.json
  *   (the Collection Metadata object, with its archived validator)
@@ -585,6 +613,18 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     const collectionMetadata: CollectionMetadata = metaEntry?.body
       ? JSON.parse(metaEntry.body.toString('utf8'))
       : { id: collectionId, type: ['Collection'], name: collectionId }
+    // A tombstone travels only as a Space-level file. One inside a Collection
+    // directory would be stored as live metadata, so it refuses the import.
+    if (
+      isPlainObject(collectionMetadata) &&
+      isCollectionTombstone(collectionMetadata)
+    ) {
+      throw new InvalidImportError({
+        message:
+          `The archive's Collection "${collectionId}" directory holds a ` +
+          'tombstone as its Collection Metadata file.'
+      })
+    }
 
     const collectionPrefix = `${prefix}${collectionId}/`
     const resources: ImportPlanResource[] = []
@@ -751,8 +791,78 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     ...(spaceMetadata !== undefined && { spaceMetadata }),
     spacePolicy,
     collections,
+    collectionTombstones: collectionTombstones({
+      entries,
+      sourceSpaceId,
+      collectionIds
+    }),
     revocations: revocationRecords(entries)
   }
+}
+
+/**
+ * Reads the archive's Collection tombstones: each `.collection.<id>.json`
+ * file directly in the Space directory. A tombstone whose id the archive
+ * also carries as a Collection directory, or whose body is not a tombstone,
+ * refuses the import (`InvalidImportError`, 400) before anything is written.
+ * @param options {object}
+ * @param options.entries {Map<string, TarEntry>}
+ * @param options.sourceSpaceId {string}
+ * @param options.collectionIds {Set<string>}   the ids the archive carries as
+ *   Collection directories
+ * @returns {ImportPlanCollectionTombstone[]}   sorted by id
+ */
+function collectionTombstones({
+  entries,
+  sourceSpaceId,
+  collectionIds
+}: {
+  entries: Map<string, TarEntry>
+  sourceSpaceId: string
+  collectionIds: Set<string>
+}): ImportPlanCollectionTombstone[] {
+  const tombstones: ImportPlanCollectionTombstone[] = []
+  for (const [name, entry] of entries) {
+    const parsed = parseArchivePath(name)
+    if (
+      parsed.area !== 'collectionTombstone' ||
+      parsed.spaceId !== sourceSpaceId ||
+      entry.type !== 'file' ||
+      !entry.body
+    ) {
+      continue
+    }
+    const { collectionId } = parsed
+    assertValidId(collectionId, {
+      kind: 'collection',
+      requestName: 'Import Space'
+    })
+    if (collectionIds.has(collectionId)) {
+      throw new InvalidImportError({
+        message:
+          `The archive holds Collection "${collectionId}" both as a ` +
+          'tombstone and as a Collection directory.'
+      })
+    }
+    try {
+      collectionTombstoneFromFile({ bytes: entry.body })
+    } catch (err) {
+      throw new InvalidImportError({
+        message: `The archive's tombstone of Collection "${collectionId}" is not a Collection tombstone.`,
+        cause: err as Error
+      })
+    }
+    const { _generation: archivedGeneration } = JSON.parse(
+      entry.body.toString('utf8')
+    ) as { _generation?: unknown }
+    tombstones.push({
+      collectionId,
+      generation: importedGeneration(archivedGeneration)
+    })
+  }
+  return tombstones.sort((left, right) =>
+    compareCodeUnits(left.collectionId, right.collectionId)
+  )
 }
 
 /**

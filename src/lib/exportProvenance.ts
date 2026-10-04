@@ -309,6 +309,9 @@ export async function attestArchiveEntries({
   }
 
   for (const entry of entries) {
+    // A Space-level file other than the Space Metadata object gets no
+    // statement. That includes a Collection tombstone, which holds no
+    // content.
     if (!('files' in entry)) {
       if (classifyCollectionFile(entry.name).kind === 'spaceMetadata') {
         await attestMetadata({

@@ -158,7 +158,8 @@ async function fetchSpaceContext({
  * as a fallback (see authorize.ts). Use for read/list endpoints that may be
  * public-readable. The action checked is the request's HTTP method. Returns the
  * fetched Space Metadata object so callers that also serve it (Read Space)
- * need not fetch it twice.
+ * need not fetch it twice, and what granted the request (`grantedBy`), so a
+ * handler can serve some parts of a read only under a capability.
  *
  * @param options {object}
  * @param options.request {FastifyRequest}   supplies url, method, headers,
@@ -174,7 +175,7 @@ async function fetchSpaceContext({
  *   the caller already read from storage directly (Read Space, which serves it
  *   and decides its 304 on the stored state rather than the per-process
  *   cache), so the prelude does not read it again
- * @returns {Promise<VerifiedSpaceContext>}
+ * @returns {Promise<VerifiedSpaceContext & { grantedBy: 'capability' | 'policy' }>}
  */
 export async function fetchSpaceAndAuthorize({
   request,
@@ -200,7 +201,7 @@ export async function fetchSpaceAndAuthorize({
    * target rather than a different one. See `verifyZcap`.
    */
   allowTargetQuery?: boolean
-}): Promise<VerifiedSpaceContext> {
+}): Promise<VerifiedSpaceContext & { grantedBy: 'capability' | 'policy' }> {
   const context = await fetchSpaceContext({
     request,
     spaceId,
@@ -208,7 +209,7 @@ export async function fetchSpaceAndAuthorize({
     requestName,
     spaceMetadata
   })
-  await authorize({
+  const grantedBy = await authorize({
     request,
     allowedTarget: context.allowedTarget,
     spaceId,
@@ -219,7 +220,7 @@ export async function fetchSpaceAndAuthorize({
     allowTargetQuery,
     attenuatedRootTarget: context.spaceRootTarget
   })
-  return context
+  return { ...context, grantedBy }
 }
 
 /**

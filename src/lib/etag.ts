@@ -22,12 +22,14 @@
  * continues through a tombstone and its re-create, so its generation does
  * too; the Resource's `/meta` object is a record of its own, with its own
  * generation, and dies with the tombstone, so a re-create's first metadata
- * write mints a fresh one. A hard delete (a chunk, a Collection, a Space)
- * removes the record, so the next record under the same id mints a fresh
- * generation and its validators can never coincide with the old one's. That
- * is what keeps the validator strong across a delete: a client's cached
- * `ETag` from the previous record matches nothing, so it is never answered
- * 304 with the old body and never passes `If-Match` against the new one.
+ * write mints a fresh one. A hard delete (a chunk, a Space) removes the
+ * record, so the next record under the same id mints a fresh generation and
+ * its validators can never coincide with the old one's. A Collection delete
+ * leaves a tombstone that keeps the generation, and a create over the
+ * tombstone mints a fresh one, with the same effect. That is what keeps the
+ * validator strong across a delete: a client's cached `ETag` from the
+ * previous record matches nothing, so it is never answered 304 with the old
+ * body and never passes `If-Match` against the new one.
  */
 import { randomBytes } from 'node:crypto'
 import { base58 } from '@scure/base'

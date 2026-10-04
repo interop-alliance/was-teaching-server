@@ -150,43 +150,45 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   columns. A soft delete drops that record together with `custom`, so a
   re-create's first metadata write starts a fresh generation and a `/meta`
   `ETag` held from before the delete cannot pass `If-Match` against it. A hard
-  delete (a chunk, a Collection, a Space) removes the record, so the next record
-  under the same id mints a new generation and its validators never coincide
-  with the old record's; a client's stale cached `ETag` then matches nothing
-  instead of being answered 304 over different bytes. A client treats the whole
-  quoted value as opaque, and `If-Match` and `If-None-Match` compare the whole
-  string. Writes are gated by `If-Match` / `If-None-Match: *`, which
-  `parseWritePreconditions` normalizes and the backends evaluate atomically with
-  the write through `preconditions.ts`. The Space and Collection Metadata
-  objects take both: the `If-None-Match: *` guarded create is what resolves two
-  clients provisioning the same Space or Collection at once (the loser's
-  replace-semantics `PUT` would otherwise rewrite the winner's `type` array or
-  `backend`), and it refuses whenever the container already has a Metadata
-  object, `ETag` or not. Update Space (`PUT /space/:spaceId/meta`) chooses its
-  authorization from an unlocked read, so its write passes `writeSpace` an
-  `assertTransition` hook that pins it to that read: the Space must still be
-  absent on a create, and carry the same validator on an update. On a mismatch
-  the handler re-reads and re-authorizes on the branch the fresh read selects. A
-  create that lost a race is then authorized as an update against the winner's
-  controller. After three attempts it answers 503 with `Retry-After`. The
-  client's own preconditions go to the backend as sent, so a 412 answers only a
-  header the client sent. The generation and local segment are embedded in the
-  stored record as reserved `_generation` / `_local` members -- the filesystem
-  backend keeps one file per container (`.space.<id>.json`,
-  `.collection.<id>.json`) holding the wire body and the two together -- and as
-  `meta_generation` / `meta_local` columns on the Postgres `spaces` and
-  `collections` rows, kept out of the wire body. The stamp members are wire
-  members and are stored in the body. An export archive's Metadata entry carries
-  `_generation` alone, since the local segment does not leave this server. The
-  `ETag` is emitted on Read Space / Read Collection and on the Create/Update
-  responses. A Space Metadata write is serialized per Space (the `spacemeta:`
-  lock in the filesystem backend, an advisory lock plus row lock in Postgres)
-  and a Collection Metadata write per Collection (the `cmeta:` lock), so the
-  check and the stamp are atomic. Reads are conditional the other way round: a
-  GET/HEAD carrying `If-None-Match` is parsed by `parseIfNoneMatch` into the set
-  of validators the client holds (RFC 9110 weak comparison, list and `*` forms),
-  and a handler answers 304 Not Modified with the `ETag` and no body when that
-  set covers the current one (`isNotModified`, sent by the shared
+  delete (a chunk, a Space) removes the record, so the next record under the
+  same id mints a new generation and its validators never coincide with the old
+  record's; a client's stale cached `ETag` then matches nothing instead of being
+  answered 304 over different bytes. Delete Collection leaves a tombstone (see
+  the Glossary's Collection tombstone), which keeps the generation and takes the
+  delete's stamp. A create over the tombstone mints a new generation, with the
+  same effect on held validators. A client treats the whole quoted value as
+  opaque, and `If-Match` and `If-None-Match` compare the whole string. Writes
+  are gated by `If-Match` / `If-None-Match: *`, which `parseWritePreconditions`
+  normalizes and the backends evaluate atomically with the write through
+  `preconditions.ts`. The Space and Collection Metadata objects take both: the
+  `If-None-Match: *` guarded create is what resolves two clients provisioning
+  the same Space or Collection at once (the loser's replace-semantics `PUT`
+  would otherwise rewrite the winner's `type` array or `backend`), and it
+  refuses whenever the container already has a Metadata object, `ETag` or not.
+  Update Space (`PUT /space/:spaceId/meta`) chooses its authorization from an
+  unlocked read, so its write passes `writeSpace` an `assertTransition` hook
+  that pins it to that read: the Space must still be absent on a create, and
+  carry the same validator on an update. On a mismatch the handler re-reads and
+  re-authorizes on the branch the fresh read selects. A create that lost a race
+  is then authorized as an update against the winner's controller. After three
+  attempts it answers 503 with `Retry-After`. The client's own preconditions go
+  to the backend as sent, so a 412 answers only a header the client sent. The
+  generation and local segment are embedded in the stored record as reserved
+  `_generation` / `_local` members -- the filesystem backend keeps one file per
+  container (`.space.<id>.json`, `.collection.<id>.json`) holding the wire body
+  and the two together -- and as `meta_generation` / `meta_local` columns on the
+  Postgres `spaces` and `collections` rows, kept out of the wire body. The stamp
+  members are wire members and are stored in the body. An export archive's
+  Metadata entry carries `_generation` alone, since the local segment does not
+  leave this server. The `ETag` is emitted on Read Space / Read Collection and
+  on the Create/Update responses. A Space Metadata write is serialized per Space
+  (the `spacemeta:` lock in the filesystem backend, an advisory lock plus row
+  lock in Postgres) and a Collection Metadata write per Collection (the `cmeta:`
+  lock), so the check and the stamp are atomic. Reads are conditional the other
+  way round: a GET/HEAD carrying `If-None-Match` is parsed by `parseIfNoneMatch`
+  into the set of validators the client holds (RFC 9110 weak comparison, list
+  and `*` forms), and a handler answers 304 Not Modified with the `ETag` and no
+  body when that set covers the current one (`isNotModified`, sent by the shared
   `requests/notModified.ts` helper). The decision sits in each read handler,
   after authorization, so an under-authorized conditional read still gets the
   404 mask. A Resource or chunk GET consults the stored metadata first when the
@@ -531,7 +533,9 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `attestArchiveEntries` before packing it. That call emits one
   `StorageAttestation` statement per exported object in manifest order: the
   Space Metadata object, each Collection Metadata object, and each Resource with
-  a representation (a tombstone holds no content and gets none). A statement is
+  a representation (a tombstone holds no content and gets none). A Collection
+  tombstone is a Space-level file entry and gets no statement either. A
+  statement is
   `{ id, type, createdBy, createdAt, updatedAt, updatedAtCounter, originId, meta, digest, didLogVersionId }`.
   `id` is the object's absolute URL on this server. The server-managed members
   are read back off the archived Metadata file or `.meta.<id>.json` sidecar, and
@@ -588,10 +592,12 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `verified` the object is still imported, with its `createdBy` removed. A
   tombstone carries no statement and is not counted, and its sidecar loses
   `createdBy` too, since a re-create over a tombstone keeps the tombstone's
-  creator. The Space Metadata object's verdict is counted only, since an import
-  never restores its `createdBy`. A `proofInvalid` and a `contentMismatch` are
-  logged at `warn` with different messages, so damaged bytes are not read as a
-  bad signature. `createdAt` keeps its import behavior whatever the verdict. The
+  creator. A Collection tombstone travels on the plan apart from the live
+  Collections (`collectionTombstones`), so it is never judged or counted. The
+  Space Metadata object's verdict is counted only, since an import never
+  restores its `createdBy`. A `proofInvalid` and a `contentMismatch` are logged
+  at `warn` with different messages, so damaged bytes are not read as a bad
+  signature. `createdAt` keeps its import behavior whatever the verdict. The
   archived stamps are read for this comparison only: the importing backend
   re-stamps every record it writes with its own clock and origin id, and keeps
   each record's archived generation.
@@ -653,16 +659,16 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   every backend honors both unconditionally. No write creates a container
   implicitly: only a Space Metadata write creates a Space, and only a Collection
   Metadata write or an import creates a Collection. Every other write re-checks
-  that its Space, and its Collection where it names one, has a Metadata object,
-  under the lock it holds against Delete Space and Delete Collection (the
-  filesystem backend's Space gate, the Postgres `spaces` row). It is refused
-  with a 404 otherwise. The request layer's own existence check runs before that
-  lock, so a write racing a delete would otherwise recreate the removed
-  container. A Space-scoped revocation insert is one of these writes, though its
-  records live outside the Space tree. Each backend's `exportSpace` builds the
-  archive's entry tree out of its own storage and hands it to
-  `packSpaceArchive`; the per-Space archive codec itself -- the file-name
-  dialect, the `manifest.yml` document and the packer -- lives in
+  that its Space, and its Collection where it names one, has a Metadata object
+  (a tombstoned Collection has none), under the lock it holds against Delete
+  Space and Delete Collection (the filesystem backend's Space gate, the Postgres
+  `spaces` row). It is refused with a 404 otherwise. The request layer's own
+  existence check runs before that lock, so a write racing a delete would
+  otherwise recreate the removed container. A Space-scoped revocation insert is
+  one of these writes, though its records live outside the Space tree. Each
+  backend's `exportSpace` builds the archive's entry tree out of its own storage
+  and hands it to `packSpaceArchive`; the per-Space archive codec itself -- the
+  file-name dialect, the `manifest.yml` document and the packer -- lives in
   `@interop/space-archive`, shared with the wallets that read a backup, and
   `src/lib/importTar.ts` reads the same dialect back. The codec is isomorphic
   and resolves a streamx-based tar-stream `Pack`, which the backend wraps with
@@ -698,6 +704,41 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   entry over), or `'absent'` when the archive carried no such entry.
   `test/space-archive-fixture.test.ts` pins this server's entry trees against
   the archive fixture that package checks in.
+
+  Delete Collection leaves a tombstone in both backends. The filesystem backend
+  keeps it as the Collection's `.collection.<id>.json`, now holding only
+  `deleted: true`, the stamp, and `_generation`, in the Collection dir. It
+  writes the tombstone first, durably, then removes every other entry of the
+  dir. A tombstone beside other entries is a delete cut short, detected from the
+  disk alone. `open()` finishes every such delete at boot. A read of the
+  Collection (`getCollectionMetadata`) finishes it on the exclusive side of the
+  Space gate, a retried delete finishes it and answers 404, and a create or an
+  import over the tombstone finishes it before writing the new life. A
+  Collection dir with no Metadata file (a create cut short) is no Collection: a
+  delete removes it whole and answers 204, as for an id never used.
+  `deleteCollection` resolves `deleted`, `already-deleted` or `absent`, and the
+  handler answers 204, 404 and 204. Every reader of the Metadata file goes
+  through one low-level reader that returns the tombstone, and every other path
+  treats it as absent, so a new call site is safe by default. The Postgres
+  backend deletes in one transaction: member rows and policies go, and the
+  `collections` row stays with `deleted` set (schema migration 10), `metadata`
+  NULL, the log and feed columns cleared, and the generation and stamp columns
+  kept. A Collection on a registered external backend keeps its tombstone in the
+  primary store, where its Metadata object lives. Delete Space stays a hard
+  delete and takes the tombstones with it. Tombstones are never reaped. Export
+  writes a tombstone as `.collection.<id>.json` directly in the archive's Space
+  directory, with no Collection directory, and the codec flags it on the
+  manifest. Members a delete cut short left on disk do not travel. Import plans
+  it apart from the live Collections, refuses an archive holding one id both
+  ways as `invalid-import` (400), and writes it only when the destination holds
+  no record under the id, live or tombstoned. It keeps the archived generation
+  and takes a stamp from the importing store's clock. `ImportStats` does not
+  count it. A live archived Collection imported over a destination tombstone
+  also keeps its archived generation, as every imported record does. It is the
+  one create over a tombstone that does not mint a new generation, and its stamp
+  still sorts above the tombstone's. An archive with a `deleted: true` body
+  inside a Collection directory is refused as `invalid-import` (400).
+
 - **`src/errors.ts`** — custom error classes plus `handleError`, the Fastify
   error handler installed by each route group.
 - **`src/exchanges.ts`** — the ephemeral exchanges facet
@@ -815,7 +856,16 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   carries the optional `revisions` descriptor: the conflict `resolution`, the
   write-once `immutable` flag, and a verbatim `merge` object (see
   `lib/revisions.ts`). Its `url`, and the `Location` of a newly created
-  Collection, carry the trailing slash.
+  Collection, carry the trailing slash. Deleting it leaves a Collection
+  tombstone.
+- **Collection tombstone** -- what Delete Collection leaves in place of the
+  Collection Metadata object: `deleted: true`, the Collection's generation, and
+  the delete's write stamp, and nothing else of the old body. It reads as absent
+  everywhere except the Space listing under `?include=deleted`. A create over it
+  is a create: a new generation, a stamp above the tombstone's, and no
+  `createdAt` or `createdBy` carried over. A second Delete Collection answers
+  404, while one of an id never used answers 204. Avoid: soft-deleted
+  Collection, deleted marker, placeholder row.
 - **Resource** — an individual stored item, JSON object or binary blob, within a
   Collection (`/space/:spaceId/:collectionId/:resourceId`).
 - **Feed position** -- a Resource's place in its Collection's `changes` feed:
@@ -963,6 +1013,12 @@ the query-bearing request URL's own root capability to that set. It does not
 decide which invocation targets are accepted. Every WAS route passes the Space's
 root as an accepted ancestor root, so on those routes the request URL, query
 included, is always an accepted invocation target, with or without the option.
+
+The Space listing's `?include=deleted` lists tombstoned Collections only under a
+verified capability. `fetchSpaceAndAuthorize` reports what granted the read
+(`grantedBy`), and a listing served through the access-control policy fallback,
+a public read, ignores the flag and lists live Collections only. An unknown
+`include` section is ignored, as on the quota report.
 
 **The `did:webvh` resolver on every path:** each verification engages the local
 `did:webvh` resolver, whatever the scope's own controller is. That covers route
