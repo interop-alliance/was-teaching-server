@@ -12,7 +12,7 @@ import YAML from 'yaml'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { fileNameFor } from '@interop/space-archive'
 import { formatEtag } from '../src/lib/etag.js'
-import { compareStamps } from '../src/lib/hlc.js'
+import { compareStamps, withoutStampMembers } from '../src/lib/hlc.js'
 import { PreconditionFailedError } from '../src/errors.js'
 import { importArchive, resourceDocuments } from './helpers.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
@@ -338,16 +338,30 @@ describe('Storage API', () => {
 
         assert.equal(stats.policiesCreated, 3)
         assert.equal(stats.policiesSkipped, 0)
-        assert.deepEqual(await backend.getPolicy({ spaceId: dst }), {
-          type: 'SpaceLevelPolicy'
-        })
+        // Each is restored with a stamp minted by the importing store.
         assert.deepEqual(
-          await backend.getPolicy({ spaceId: dst, collectionId }),
+          withoutStampMembers((await backend.getPolicy({ spaceId: dst }))!),
+          { type: 'SpaceLevelPolicy' }
+        )
+        assert.deepEqual(
+          withoutStampMembers(
+            (await backend.getPolicy({ spaceId: dst, collectionId }))!
+          ),
           { type: 'PublicCanRead' }
         )
         assert.deepEqual(
-          await backend.getPolicy({ spaceId: dst, collectionId, resourceId }),
+          withoutStampMembers(
+            (await backend.getPolicy({
+              spaceId: dst,
+              collectionId,
+              resourceId
+            }))!
+          ),
           { type: 'ResourceLevelPolicy' }
+        )
+        assert.equal(
+          (await backend.getPolicy({ spaceId: dst }))?.originId,
+          backend.originId
         )
       } finally {
         await rm(tempDir, { recursive: true, force: true })

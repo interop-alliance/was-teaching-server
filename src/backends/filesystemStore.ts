@@ -24,7 +24,13 @@ import {
   unlink,
   utimes
 } from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
 import type { FastifyBaseLogger } from 'fastify'
+import {
+  COLLECTION_POLICY_FILE_NAME,
+  SPACE_POLICY_FILE_NAME,
+  parseResourcePolicyFileName
+} from '@interop/space-archive'
 import {
   TEMP_FILE_PREFIX,
   atomicCreateFile,
@@ -61,7 +67,14 @@ export const STORE_MIGRATIONS: StoreMigration[] = [
   // no stamping step: a store holding any Space is refused, every boot, until
   // it is wiped or restored from an archive (whose records an import
   // re-stamps). An empty store passes and is stamped at this version.
-  refuseUnstampedSpaces
+  refuseUnstampedSpaces,
+  // v3: an access-control policy is a versioned record, with a write stamp
+  // and a generation, and its delete leaves a tombstone. A policy file
+  // written at an earlier layout carries neither, and there is no stamping
+  // step: a store holding any policy file is refused, every boot, until it
+  // is wiped or restored from an archive (whose policies an import
+  // re-stamps). A store with no policy passes and is stamped at this version.
+  refuseUnstampedPolicies
 ]
 
 /**
@@ -114,6 +127,70 @@ async function refuseUnstampedSpaces({
         'data directory, or restore each Space from an export archive into ' +
         'an empty store.'
     })
+  }
+}
+
+/**
+ * The layout step that refuses a store holding a policy file written before
+ * policies carried write stamps: a Space's `.space.policy.json`, or a
+ * Collection's `.collection.policy.json` or `.r.<resourceId>.policy.json`.
+ * Staging temp files left by a killed process are not Spaces.
+ * @param options {object}
+ * @param options.dataDir {string}
+ * @returns {Promise<void>}
+ */
+async function refuseUnstampedPolicies({
+  dataDir
+}: {
+  dataDir: string
+}): Promise<void> {
+  const spacesDir = path.join(dataDir, 'spaces')
+  let count = 0
+  for (const space of await readDirEntries(spacesDir)) {
+    if (!space.isDirectory() || space.name.startsWith(TEMP_FILE_PREFIX)) {
+      continue
+    }
+    const spaceDir = path.join(spacesDir, space.name)
+    for (const entry of await readDirEntries(spaceDir)) {
+      if (entry.isFile() && entry.name === SPACE_POLICY_FILE_NAME) {
+        count++
+      } else if (entry.isDirectory()) {
+        const collectionEntries = await readDirEntries(
+          path.join(spaceDir, entry.name)
+        )
+        count += collectionEntries.filter(
+          child =>
+            child.isFile() &&
+            (child.name === COLLECTION_POLICY_FILE_NAME ||
+              parseResourcePolicyFileName(child.name) !== undefined)
+        ).length
+      }
+    }
+  }
+  if (count > 0) {
+    throw new StoreVersionError({
+      detail:
+        `${spacesDir} holds ${count} access-control policy file(s) written ` +
+        'before policies carried write stamps, and there is no stamping ' +
+        'migration. Wipe the data directory, or restore each Space from an ' +
+        'export archive into an empty store.'
+    })
+  }
+}
+
+/**
+ * A directory's entries, or none when the directory is absent.
+ * @param dir {string}
+ * @returns {Promise<import('node:fs').Dirent[]>}
+ */
+async function readDirEntries(dir: string): Promise<Dirent[]> {
+  try {
+    return await readdir(dir, { withFileTypes: true })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return []
+    }
+    throw err
   }
 }
 

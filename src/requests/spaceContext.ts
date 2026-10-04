@@ -244,6 +244,10 @@ export async function fetchSpaceAndAuthorize({
  *   (`lib/containerRule.ts`). It is keyed on the Space's canonical
  *   trailing-slash URL, which this prelude already passes as
  *   `attenuatedRootTarget`.
+ * @param [options.allowTargetQuery] {boolean}   tolerate query parameters on
+ *   the request URL that extend `targetPath` (e.g. Get Policy's
+ *   `?include=deleted`), so a controller's root invocation of the
+ *   query-bearing URL verifies (see `verifyZcap`)
  * @returns {Promise<VerifiedSpaceContext & { rootInvocation: boolean }>}   the
  *   context, plus whether the verified invocation was of the Space's root
  *   capability itself rather than a delegated chain (`verifiedRootInvocation`)
@@ -253,13 +257,15 @@ export async function fetchSpaceAndVerify({
   spaceId,
   targetPath,
   requestName,
-  containerRule
+  containerRule,
+  allowTargetQuery = false
 }: {
   request: FastifyRequest
   spaceId: string
   targetPath: string
   requestName: string
   containerRule?: ContainerRule
+  allowTargetQuery?: boolean
 }): Promise<VerifiedSpaceContext & { rootInvocation: boolean }> {
   const context = await fetchSpaceContext({
     request,
@@ -281,6 +287,7 @@ export async function fetchSpaceAndVerify({
     requestName,
     logger: request.log,
     attenuatedRootTarget: context.spaceRootTarget,
+    allowTargetQuery,
     revocation: { storage, scope: { spaceId } },
     containerRule,
     peerWebvh: request.server.peerWebvh

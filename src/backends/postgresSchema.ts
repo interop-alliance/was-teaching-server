@@ -392,7 +392,13 @@ export const MIGRATIONS: Migration[] = [
   ALTER TABLE collections
     ADD COLUMN metadata_feed_position bigint,
     ADD COLUMN log_feed_position bigint;
-  `
+  `,
+  // v12: an access-control policy is a versioned record with a write stamp
+  // and a generation, and its delete leaves a tombstone. A schema holding any
+  // policy row is refused, every boot, until it is wiped or each Space is
+  // restored from an export archive (whose policies an import re-stamps):
+  // there is no stamping step. An empty 'policies' table is reshaped.
+  reshapePoliciesForWriteStamps
 ]
 
 /**
@@ -470,6 +476,49 @@ async function reshapeForWriteStamps(client: pg.PoolClient): Promise<void> {
 
     ALTER TABLE store
       ADD COLUMN clock_high_water bigint;
+  `)
+}
+
+/**
+ * The v12 step. Refuses a schema whose `policies` table holds a row: every
+ * such row was written before policies carried write stamps. Otherwise adds
+ * the stamp columns `updated_at`, `updated_at_counter` and `origin_id` and
+ * the `generation` column, all `NOT NULL`, the `deleted` tombstone mark, and
+ * `feed_position`, the position the policy's latest write took in its
+ * Collection's changes feed (NULL for a Space policy, which is in no feed),
+ * with the index the feed reads it through.
+ * A tombstoned row has `deleted` set and `policy` NULL, so the column loses
+ * its `NOT NULL`.
+ * @param client {pg.PoolClient}   the migrating transaction's client
+ * @returns {Promise<void>}
+ */
+async function reshapePoliciesForWriteStamps(
+  client: pg.PoolClient
+): Promise<void> {
+  const { rows } = await client.query<{ count: number }>(
+    'SELECT COUNT(*)::int AS count FROM policies'
+  )
+  const count = rows[0]!.count
+  if (count > 0) {
+    throw new StoreVersionError({
+      detail:
+        `The Postgres schema holds ${count} access-control policy row(s) ` +
+        'written before policies carried write stamps, and there is no ' +
+        'stamping migration. Drop the schema, or restore each Space from an ' +
+        'export archive into an empty store.'
+    })
+  }
+  await client.query(`
+    ALTER TABLE policies
+      ALTER COLUMN policy DROP NOT NULL,
+      ADD COLUMN deleted            boolean NOT NULL DEFAULT false,
+      ADD COLUMN generation         text NOT NULL,
+      ADD COLUMN updated_at         text COLLATE "C" NOT NULL,
+      ADD COLUMN updated_at_counter integer NOT NULL,
+      ADD COLUMN origin_id          text NOT NULL,
+      ADD COLUMN feed_position      bigint;
+    CREATE INDEX policies_feed_idx
+      ON policies (space_id, collection_id, feed_position);
   `)
 }
 

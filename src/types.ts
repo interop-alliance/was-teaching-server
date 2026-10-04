@@ -70,6 +70,7 @@ import type {
   BackendUsage,
   ImportStats,
   PolicyDocument,
+  PolicyTombstone,
   ServiceDescription,
   ServiceDescriptionVersionEntry,
   WriteStamp,
@@ -136,6 +137,7 @@ export type {
   BackendUsage,
   SpaceQuotaReport,
   PolicyDocument,
+  PolicyTombstone,
   ImportStats,
   Action,
   ActionInput,
@@ -594,6 +596,30 @@ export interface ResourceWriteResult extends ResourceMetadataWriteResult {
 }
 
 /**
+ * A stored access-control policy as a backend reads it back: a live policy,
+ * served with its stamp members (`updatedAt`, `updatedAtCounter`,
+ * `originId`), or a tombstone, the `deleted` marker plus the delete's stamp.
+ * The validator (generation and stamp) rides beside it, out of band, and is
+ * absent when a part of it is missing. Only `getPolicyRecord` hands a
+ * tombstone over; every other reader sees it as no policy.
+ */
+export type StoredPolicy = { validator?: EtagValidator } & (
+  | { deleted: false; policy: PolicyDocument }
+  | { deleted: true; tombstone: PolicyTombstone }
+)
+
+/**
+ * What a policy write left, read inside the write's critical section: the
+ * policy's new validator, whether this write created it (a write over a
+ * tombstone included), and the served body as this write stored it.
+ */
+export interface PolicyWriteResult {
+  validator: EtagValidator
+  created: boolean
+  policy: PolicyDocument
+}
+
+/**
  * A Collection's governing history log as stored (the
  * `governed-history-logs` feature): the JSON Lines body verbatim, plus its
  * own `ETag` validator parts, the generation minted by the guarded create and
@@ -696,6 +722,9 @@ export type FeedDocument = WriteStamp & {
     | { kind: 'collection-metadata' }
     // The Collection's governing history log. `validator` is the log's own.
     | { kind: 'log' }
+    // An access-control policy in the Collection: the Collection's own
+    // (`resourceId` absent) or a Resource's, live or a tombstone.
+    | { kind: 'policy'; resourceId?: string; deleted: boolean }
   )
 
 export interface StorageBackend {
@@ -1331,12 +1360,13 @@ export interface StorageBackend {
    * starting at 1. Every Resource-level write in the Collection takes the
    * next one: a content write, a metadata write, a soft delete, and a
    * Resource written by an import. So does a Collection Metadata write (a
-   * create, by import too, and an update), and a governed-log write (the
+   * create, by import too, and an update), a governed-log write (the
    * guarded create and each append; a byte-identical log write writes
-   * nothing and takes none). A log write advances the Collection Metadata
-   * object's local validator segment without taking a position for it, so
-   * the `collection-metadata` document can carry a newer local segment than
-   * the one at its position. A chunk write takes none, so it never moves its
+   * nothing and takes none), and a write or delete of the Collection's own
+   * policy or a Resource policy (a Space policy is in no Collection's feed).
+   * A log write advances the Collection Metadata object's local validator
+   * segment without taking a position for it, so the `collection-metadata`
+   * document can carry a newer local segment than the one at its position. A chunk write takes none, so it never moves its
    * parent Resource. The backend assigns the position inside the
    * per-Collection critical section that makes the write visible to this
    * method, so no write can land at or before a position already returned.
@@ -1477,24 +1507,62 @@ export interface StorageBackend {
   /**
    * Access-control policy documents. The level is selected by which ids are
    * present: Space (`spaceId`), Collection (`+ collectionId`), or Resource
-   * (`+ collectionId + resourceId`). Getters resolve falsy when absent.
+   * (`+ collectionId + resourceId`). A policy is a versioned record: each
+   * write mints its write stamp inside the write's critical section, and its
+   * generation is minted by its first write and kept for its life.
+   *
+   * `getPolicy` resolves the live policy at that level, served with its stamp
+   * members, and falsy when there is none. A tombstone resolves falsy too, so
+   * no authorization path can grant from one.
    */
   getPolicy(options: {
     spaceId: string
     collectionId?: string
     resourceId?: string
   }): Promise<PolicyDocument | undefined>
+  /**
+   * The stored policy record at a level, live or a tombstone, beside its
+   * validator; `undefined` when no record is stored. Only Get Policy reads
+   * a tombstone, under `?include=deleted`.
+   */
+  getPolicyRecord(options: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+  }): Promise<StoredPolicy | undefined>
+  /**
+   * Creates or replaces the policy at a level. The body's stamp members,
+   * `deleted` and `_generation` are not stored from it. A tombstone counts
+   * as absent: a write over it is a create, under a new generation and a
+   * stamp above the tombstone's. `ifMatch` / `ifNoneMatch` are evaluated
+   * atomically with the write, against the live policy (412 otherwise). A
+   * Collection- or Resource-level write takes the Collection's next feed
+   * position. Refused with a 404 when the Space, or the named Collection,
+   * has no Metadata object.
+   */
   writePolicy(options: {
     spaceId: string
     collectionId?: string
     resourceId?: string
     policy: PolicyDocument
-  }): Promise<void>
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+  }): Promise<PolicyWriteResult>
+  /**
+   * Deletes the live policy at a level, leaving a tombstone that keeps its
+   * generation and takes a stamp above the live policy's. Resolves the
+   * tombstone's validator. Over no record, or over a tombstone, it writes
+   * nothing and resolves `undefined`. `ifMatch` / `ifNoneMatch` are
+   * evaluated atomically, against the live policy. A Collection- or
+   * Resource-level tombstone takes the Collection's next feed position.
+   */
   deletePolicy(options: {
     spaceId: string
     collectionId?: string
     resourceId?: string
-  }): Promise<void>
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+  }): Promise<EtagValidator | undefined>
 
   /**
    * Registered `external` backend records (spec "Backends"). The read/write

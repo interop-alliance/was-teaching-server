@@ -311,10 +311,10 @@ describe('Filesystem store version', () => {
     assert.equal(await storedVersion(dataDir), STORE_MIGRATIONS.length)
   })
 
-  it('stamps an empty store at the current version, two, and boots', async () => {
-    assert.equal(STORE_MIGRATIONS.length, 2)
+  it('stamps an empty store at the current version, three, and boots', async () => {
+    assert.equal(STORE_MIGRATIONS.length, 3)
     const backend = await FileSystemBackend.open({ dataDir })
-    assert.equal(await storedVersion(dataDir), 2)
+    assert.equal(await storedVersion(dataDir), 3)
     assert.match(backend.originId, ORIGIN_ID_PATTERN)
   })
 
@@ -328,6 +328,34 @@ describe('Filesystem store version', () => {
       )
       assert.equal(await storedVersion(dataDir), 1)
     }
+  })
+
+  it('refuses a layout-2 store that holds a policy file, on every boot', async () => {
+    await stamp(dataDir, 2)
+    const collectionDir = path.join(dataDir, 'spaces', 'some-space', 'col')
+    await mkdir(collectionDir, { recursive: true })
+    await writeFile(
+      path.join(collectionDir, '.r.doc.policy.json'),
+      '{"type":"PublicCanRead"}'
+    )
+    for (let boot = 0; boot < 2; boot++) {
+      await assert.rejects(
+        FileSystemBackend.open({ dataDir }),
+        (err: Error) =>
+          err instanceof StoreVersionError &&
+          err.message.includes('1 access-control policy file(s)')
+      )
+      assert.equal(await storedVersion(dataDir), 2)
+    }
+  })
+
+  it('stamps a layout-2 store holding Spaces but no policy at layout 3', async () => {
+    await stamp(dataDir, 2)
+    await mkdir(path.join(dataDir, 'spaces', 'some-space', 'col'), {
+      recursive: true
+    })
+    await FileSystemBackend.open({ dataDir })
+    assert.equal(await storedVersion(dataDir), 3)
   })
 
   it('refuses a store.json with no integer version', async () => {

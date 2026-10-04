@@ -6440,6 +6440,404 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       })
     })
 
+    describe('policy validators, preconditions and tombstones', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-pol-versioned'
+      const publicRead = { type: 'PublicCanRead' }
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId)
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      /**
+       * The three policy levels, each under ids of its own so the cases
+       * below do not share a record.
+       */
+      function levels(tag: string) {
+        return [
+          { spaceId: `${spaceId}` },
+          { spaceId, collectionId: 'col' },
+          { spaceId, collectionId: 'col', resourceId: `r-${tag}` }
+        ]
+      }
+
+      it('stamps a write, serves the stamp members, and keeps the generation across an update', async () => {
+        const { backend } = harness
+        const target = { spaceId, collectionId: 'col', resourceId: 'r-stamp' }
+        const created = await backend.writePolicy({
+          ...target,
+          policy: {
+            ...publicRead,
+            // A body's stamp members, `deleted` and `_generation` are not
+            // stored from it.
+            updatedAt: '2001-01-01T00:00:00.000Z',
+            updatedAtCounter: 99,
+            originId: 'forged',
+            deleted: true,
+            _generation: 'forged'
+          }
+        })
+        assert.equal(created.created, true)
+        assert.equal(created.validator.stamp.originId, backend.originId)
+        assert.deepEqual(created.policy, {
+          type: 'PublicCanRead',
+          ...created.validator.stamp
+        })
+        assert.deepEqual(await backend.getPolicy(target), created.policy)
+        const record = await backend.getPolicyRecord(target)
+        assert.equal(record?.deleted, false)
+        assert.deepEqual(record?.validator, created.validator)
+        assert.notEqual(created.validator.generation, 'forged')
+
+        const updated = await backend.writePolicy({
+          ...target,
+          policy: { type: 'Other' }
+        })
+        assert.equal(updated.created, false)
+        assertValidatorAdvanced(created.validator, updated.validator)
+      })
+
+      it('evaluates If-Match and If-None-Match against the live policy', async () => {
+        const { backend } = harness
+        for (const target of levels('pre')) {
+          await backend.deletePolicy(target)
+          const { validator } = await backend.writePolicy({
+            ...target,
+            policy: publicRead,
+            ifNoneMatch: '*'
+          })
+          const etag = formatEtag(validator)
+          await expect(
+            backend.writePolicy({
+              ...target,
+              policy: publicRead,
+              ifNoneMatch: '*'
+            })
+          ).rejects.toBeInstanceOf(PreconditionFailedError)
+          await expect(
+            backend.writePolicy({
+              ...target,
+              policy: publicRead,
+              ifMatch: etagWithCounterBumped({ validator, by: 1 })
+            })
+          ).rejects.toBeInstanceOf(PreconditionFailedError)
+          await expect(
+            backend.deletePolicy({
+              ...target,
+              ifMatch: etagWithCounterBumped({ validator, by: 1 })
+            })
+          ).rejects.toBeInstanceOf(PreconditionFailedError)
+          const { validator: next } = await backend.writePolicy({
+            ...target,
+            policy: publicRead,
+            ifMatch: etag
+          })
+          assertValidatorAdvanced(validator, next)
+          const tombstone = await backend.deletePolicy({
+            ...target,
+            ifMatch: formatEtag(next)
+          })
+          assert.ok(tombstone)
+          // A tombstone reads as absent: `If-Match` fails against it, and a
+          // guarded create passes.
+          await expect(
+            backend.writePolicy({
+              ...target,
+              policy: publicRead,
+              ifMatch: formatEtag(tombstone)
+            })
+          ).rejects.toBeInstanceOf(PreconditionFailedError)
+          const recreated = await backend.writePolicy({
+            ...target,
+            policy: publicRead,
+            ifNoneMatch: '*'
+          })
+          assert.equal(recreated.created, true)
+        }
+      })
+
+      it('leaves a tombstone that reads as absent, and a write over it mints a new generation', async () => {
+        const { backend } = harness
+        for (const target of levels('tomb')) {
+          const live = await backend.writePolicy({
+            ...target,
+            policy: publicRead
+          })
+          const tombstone = await backend.deletePolicy(target)
+          assert.ok(tombstone)
+          assertValidatorAdvanced(live.validator, tombstone)
+          assert.equal(await backend.getPolicy(target), undefined)
+          const record = await backend.getPolicyRecord(target)
+          assert.ok(record?.deleted)
+          assert.deepEqual(record.tombstone, {
+            deleted: true,
+            ...tombstone.stamp
+          })
+          assert.deepEqual(record.validator, tombstone)
+
+          // A second delete, and a delete of a policy never written, write
+          // nothing.
+          assert.equal(await backend.deletePolicy(target), undefined)
+          assert.deepEqual(
+            (await backend.getPolicyRecord(target))?.validator,
+            tombstone
+          )
+
+          const recreated = await backend.writePolicy({
+            ...target,
+            policy: publicRead
+          })
+          assert.equal(recreated.created, true)
+          assert.notEqual(recreated.validator.generation, tombstone.generation)
+          assert.ok(
+            compareStamps(recreated.validator.stamp, tombstone.stamp) > 0
+          )
+        }
+        assert.equal(
+          await backend.deletePolicy({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'never-written'
+          }),
+          undefined
+        )
+        assert.equal(
+          await backend.getPolicyRecord({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'never-written'
+          }),
+          undefined
+        )
+      })
+
+      it('lists a Collection whose policy was deleted as not public', async () => {
+        const { backend } = harness
+        await provisionSpace(backend, 'space-pol-public', 'shared')
+        await backend.writePolicy({
+          spaceId: 'space-pol-public',
+          collectionId: 'shared',
+          policy: publicRead
+        })
+        const before = await backend.listCollections({
+          spaceId: 'space-pol-public'
+        })
+        assert.equal((before.items[0] as CollectionSummary).public, true)
+        await backend.deletePolicy({
+          spaceId: 'space-pol-public',
+          collectionId: 'shared'
+        })
+        const after = await backend.listCollections({
+          spaceId: 'space-pol-public'
+        })
+        assert.equal((after.items[0] as CollectionSummary).public, false)
+      })
+
+      it('puts a Collection or Resource policy write and tombstone in the feed, and no Space policy', async () => {
+        const { backend } = harness
+        const feedSpace = 'space-pol-feed'
+        await provisionSpace(backend, feedSpace, 'feed')
+        const start = await backend.changesSince!({
+          spaceId: feedSpace,
+          collectionId: 'feed',
+          limit: 100
+        })
+        const after = start.checkpoint ?? 0
+        await backend.writePolicy({ spaceId: feedSpace, policy: publicRead })
+        const collectionPolicy = await backend.writePolicy({
+          spaceId: feedSpace,
+          collectionId: 'feed',
+          policy: publicRead
+        })
+        await backend.writePolicy({
+          spaceId: feedSpace,
+          collectionId: 'feed',
+          resourceId: 'doc',
+          policy: publicRead
+        })
+        const resourceTombstone = await backend.deletePolicy({
+          spaceId: feedSpace,
+          collectionId: 'feed',
+          resourceId: 'doc'
+        })
+        const page = await backend.changesSince!({
+          spaceId: feedSpace,
+          collectionId: 'feed',
+          afterPosition: after,
+          limit: 100
+        })
+        const policies = page.documents.filter(
+          (document): document is Extract<FeedDocument, { kind: 'policy' }> =>
+            document.kind === 'policy'
+        )
+        // One document per record, at the position of its latest write.
+        assert.equal(policies.length, 2)
+        const [collectionDocument, resourceDocument] = policies
+        assert.equal(collectionDocument!.resourceId, undefined)
+        assert.equal(collectionDocument!.deleted, false)
+        assert.deepEqual(
+          collectionDocument!.validator,
+          collectionPolicy.validator
+        )
+        assert.deepEqual(
+          stampOf(collectionDocument),
+          collectionPolicy.validator.stamp
+        )
+        assert.equal(resourceDocument!.resourceId, 'doc')
+        assert.equal(resourceDocument!.deleted, true)
+        assert.deepEqual(resourceDocument!.validator, resourceTombstone)
+        assert.ok(
+          resourceDocument!.feedPosition > collectionDocument!.feedPosition
+        )
+        assert.equal(page.checkpoint, resourceDocument!.feedPosition)
+
+        // Caught up: nothing past the last position.
+        const caughtUp = await backend.changesSince!({
+          spaceId: feedSpace,
+          collectionId: 'feed',
+          afterPosition: page.checkpoint!,
+          limit: 100
+        })
+        assert.equal(caughtUp.documents.length, 0)
+
+        // A page cut at the first policy document resumes at the second.
+        const firstOnly = await backend.changesSince!({
+          spaceId: feedSpace,
+          collectionId: 'feed',
+          afterPosition: after,
+          limit: 1
+        })
+        assert.equal(firstOnly.documents.length, 1)
+        assert.equal(firstOnly.documents[0]!.kind, 'policy')
+      })
+
+      it('exports live policies with their stamp and generation, and imports keep the generation under a fresh stamp', async () => {
+        const source = await makeBackend()
+        const target = await makeBackend()
+        try {
+          const exportSpaceId = 'space-pol-export'
+          await provisionSpace(source.backend, exportSpaceId)
+          const spacePolicy = await source.backend.writePolicy({
+            spaceId: exportSpaceId,
+            policy: publicRead
+          })
+          await source.backend.writePolicy({
+            spaceId: exportSpaceId,
+            collectionId: 'col',
+            policy: publicRead
+          })
+          await source.backend.deletePolicy({
+            spaceId: exportSpaceId,
+            collectionId: 'col'
+          })
+          await source.backend.writeResource({
+            spaceId: exportSpaceId,
+            collectionId: 'col',
+            resourceId: 'doc',
+            input: jsonInput({ n: 1 })
+          })
+          const resourcePolicy = await source.backend.writePolicy({
+            spaceId: exportSpaceId,
+            collectionId: 'col',
+            resourceId: 'doc',
+            policy: publicRead
+          })
+
+          const entries = await extractTarEntries(
+            await source.backend.exportSpace({ spaceId: exportSpaceId })
+          )
+          const prefix = `space/${exportSpaceId}/`
+          // The tombstoned Collection policy does not travel.
+          assert.equal(
+            entries.get(`${prefix}col/.collection.policy.json`),
+            undefined
+          )
+          const archivedSpacePolicy = JSON.parse(
+            entries.get(`${prefix}.space.policy.json`)!.body!.toString('utf8')
+          )
+          assert.deepEqual(archivedSpacePolicy, {
+            ...spacePolicy.policy,
+            _generation: spacePolicy.validator.generation
+          })
+          const archivedResourcePolicy = JSON.parse(
+            entries
+              .get(`${prefix}col/.r.doc.policy.json`)!
+              .body!.toString('utf8')
+          )
+          assert.deepEqual(archivedResourcePolicy, {
+            ...resourcePolicy.policy,
+            _generation: resourcePolicy.validator.generation
+          })
+
+          // The destination holds a tombstone at the Space level: the import
+          // skips the archived Space policy rather than undo the delete.
+          await target.backend.writeSpace({
+            spaceId: exportSpaceId,
+            spaceMetadata: {
+              id: exportSpaceId,
+              type: ['Space'],
+              name: 'Target',
+              controller: CONTROLLER
+            }
+          })
+          await target.backend.writePolicy({
+            spaceId: exportSpaceId,
+            policy: publicRead
+          })
+          await target.backend.deletePolicy({ spaceId: exportSpaceId })
+          const stats = await importArchive({
+            backend: target.backend,
+            spaceId: exportSpaceId,
+            tarStream: await source.backend.exportSpace({
+              spaceId: exportSpaceId
+            })
+          })
+          assert.equal(stats.policiesCreated, 1)
+          assert.equal(stats.policiesSkipped, 1)
+          assert.equal(
+            await target.backend.getPolicy({ spaceId: exportSpaceId }),
+            undefined
+          )
+          const imported = await target.backend.getPolicyRecord({
+            spaceId: exportSpaceId,
+            collectionId: 'col',
+            resourceId: 'doc'
+          })
+          assert.equal(imported?.deleted, false)
+          assert.equal(
+            imported!.validator?.generation,
+            resourcePolicy.validator.generation
+          )
+          assert.equal(
+            imported!.validator?.stamp.originId,
+            target.backend.originId
+          )
+          assert.notEqual(
+            imported!.validator?.stamp.originId,
+            resourcePolicy.validator.stamp.originId
+          )
+          // The imported policy takes a position in the destination's feed.
+          const feed = await target.backend.changesSince!({
+            spaceId: exportSpaceId,
+            collectionId: 'col',
+            limit: 100
+          })
+          assert.ok(
+            feed.documents.some(
+              document =>
+                document.kind === 'policy' && document.resourceId === 'doc'
+            )
+          )
+        } finally {
+          await source.cleanup()
+          await target.cleanup()
+        }
+      })
+    })
+
     describe('registered external backends', () => {
       let harness: BackendHarness
       const spaceId = 'space-back'

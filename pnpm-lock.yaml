@@ -66,8 +66,8 @@ importers:
         specifier: ^0.8.0
         version: 0.8.0
       '@interop/storage-core':
-        specifier: ^0.33.0
-        version: 0.33.0
+        specifier: link:../storage-core
+        version: link:../storage-core
       '@interop/x25519-key-agreement-key':
         specifier: ^5.4.1
         version: 5.4.1

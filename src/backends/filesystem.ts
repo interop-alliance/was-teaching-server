@@ -57,6 +57,7 @@ import {
   collectionMetadataFileName,
   COLLECTION_POLICY_FILE_NAME,
   resourcePolicyFileName,
+  parseResourcePolicyFileName,
   SPACE_POLICY_FILE_NAME,
   metaSidecarFileName,
   collectionLogFileName,
@@ -162,6 +163,18 @@ import {
   assertCollectionLogWritePrecondition
 } from '../lib/preconditions.js'
 import {
+  type ImportedPolicy,
+  livePolicyUnderPrecondition,
+  normalizePolicyWrite,
+  policyFeedDocument,
+  policyFile,
+  policyTombstoneBody,
+  priorPolicyParts,
+  stampedPolicy,
+  storedPolicyFromFile
+} from '../lib/policyRecord.js'
+import { isPlainObject } from '../lib/isPlainObject.js'
+import {
   collectionLogResultOf,
   unchangedLogValidator
 } from '../lib/governedLog.js'
@@ -180,6 +193,8 @@ import type {
   ResourceInput,
   ImportStats,
   PolicyDocument,
+  PolicyWriteResult,
+  StoredPolicy,
   BackendDescriptor,
   BackendUsage,
   CollectionUsage,
@@ -250,8 +265,8 @@ const silentLogger: FastifyBaseLogger = pino({ level: 'silent' })
  * Builds the file name of a Collection's changes-feed counter,
  * `.feed.<collectionId>.json`, a dot-file in the Collection dir holding the
  * counter's generation, the last feed position handed out, and the latest
- * positions of the Collection Metadata object and the governing history log
- * (see `FeedCounter`). Local to this backend: it is not an archive entry,
+ * positions of the Collection Metadata object, the governing history log and
+ * the Collection's policies (see `FeedCounter`). Local to this backend: it is not an archive entry,
  * and export leaves it out.
  * @param collectionId {string}
  * @returns {string}
@@ -263,13 +278,77 @@ function feedCounterFileName(collectionId: string): string {
 /**
  * A Collection's changes-feed counter as read from its counter file: the
  * generation and the last position handed out, plus the latest position the
- * Collection Metadata object and the governing history log each took.
+ * Collection Metadata object, the governing history log, the Collection's
+ * own policy and each Resource policy (keyed by Resource id) took.
  */
 type FeedCounter = {
   generation?: string
   position: number
   collectionMetadataPosition?: number
   logPosition?: number
+  collectionPolicyPosition?: number
+  resourcePolicyPositions?: Record<string, number>
+}
+
+/**
+ * The record a feed position is taken for: a Resource, the Collection
+ * Metadata object, the governing history log, or a policy (the Collection's
+ * own when `policy` is undefined, else that Resource's).
+ */
+type FeedRecord =
+  'resource' | 'collection-metadata' | 'log' | { policy: string | undefined }
+
+/**
+ * The counter file after a write took `feedPosition` for `record`.
+ * @param options {object}
+ * @param options.counter {FeedCounter}   the counter before the write
+ * @param options.feedPosition {number}   the position taken
+ * @param options.record {FeedRecord}
+ * @returns {FeedCounter}
+ */
+function advancedFeedCounter({
+  counter,
+  feedPosition,
+  record
+}: {
+  counter: FeedCounter
+  feedPosition: number
+  record: FeedRecord
+}): FeedCounter {
+  const next: FeedCounter = {
+    ...counter,
+    generation: counter.generation ?? newGeneration(),
+    position: feedPosition
+  }
+  if (record === 'collection-metadata') {
+    next.collectionMetadataPosition = feedPosition
+  } else if (record === 'log') {
+    next.logPosition = feedPosition
+  } else if (typeof record === 'object') {
+    const { policy: resourceId } = record
+    if (resourceId === undefined) {
+      next.collectionPolicyPosition = feedPosition
+    } else {
+      next.resourcePolicyPositions = {
+        ...counter.resourcePolicyPositions,
+        [resourceId]: feedPosition
+      }
+    }
+  }
+  return next
+}
+
+/**
+ * Whether a Collection dir entry is a policy file: the Collection's own
+ * (`.collection.policy.json`) or a Resource's (`.r.<resourceId>.policy.json`).
+ * @param fileName {string}
+ * @returns {boolean}
+ */
+function isPolicyFileName(fileName: string): boolean {
+  return (
+    fileName === COLLECTION_POLICY_FILE_NAME ||
+    parseResourcePolicyFileName(fileName) !== undefined
+  )
 }
 
 /**
@@ -451,12 +530,14 @@ export class FileSystemBackend implements StorageBackend {
    * The same mutex holds other key domains, each namespaced by a prefix:
    * `unique:` (a Collection's unique-claim scan), `feed:` (a Collection's
    * changes-feed counter, see `#takeFeedPosition`), `spacemeta:` and `cmeta:`
-   * (the container Metadata objects), and `clog:` (a Collection's governing
-   * history log). Within a Collection a Resource write nests `unique:` key,
-   * then the Resource key, then the `feed:` key; a Collection Metadata write
-   * nests `cmeta:` then `feed:`; a log write nests `cmeta:`, then `clog:`,
-   * then `feed:`. No path holds a `cmeta:` or `clog:` key together with a
-   * Resource or `unique:` key. The `feed:` key is innermost: nothing is
+   * (the container Metadata objects), `clog:` (a Collection's governing
+   * history log), and `policy:` (one access-control policy). Within a
+   * Collection a Resource write nests `unique:` key, then the Resource key,
+   * then the `feed:` key; a Collection Metadata write nests `cmeta:` then
+   * `feed:`; a log write nests `cmeta:`, then `clog:`, then `feed:`; a policy
+   * write nests `policy:` then `feed:`. No path holds a `cmeta:` or `clog:`
+   * key together with a Resource or `unique:` key, and no path holds a
+   * `policy:` key together with any key but `feed:`. The `feed:` key is innermost: nothing is
    * acquired while it is held.
    */
   #writeMutex = new KeyedMutex()
@@ -2064,22 +2145,45 @@ export class FileSystemBackend implements StorageBackend {
         const collectionEntries = await fs.promises.readdir(entryPath, {
           withFileTypes: true
         })
-        // The changes-feed counter, each sidecar's `feedPosition` and the
-        // Collection Metadata object's local validator segment are this
-        // server's own facts, so none travels: the counter file is left out,
+        // A policy file is read here, once: a tombstone does not travel, and
+        // the same bytes that decided so are what the archive carries.
+        const policyFiles = new Map<string, Buffer | undefined>()
+        await Promise.all(
+          collectionEntries
+            .filter(child => child.isFile() && isPolicyFileName(child.name))
+            .map(async child => {
+              policyFiles.set(
+                child.name,
+                await this.#readArchivedPolicy(path.join(entryPath, child.name))
+              )
+            })
+        )
+        // The changes-feed counter (the Collection Metadata object's, the
+        // log's and the policies' positions included), each sidecar's
+        // `feedPosition` and the Collection Metadata object's local validator
+        // segment are this server's own facts, so none travels: the counter
+        // file is left out,
         // `feedPosition` is stripped from every Resource sidecar (an importer
         // assigns its own positions), and `_local` from the Metadata file.
         const files: ArchiveEntry[] = collectionEntries
           .filter(
             child =>
-              child.isFile() && child.name !== feedCounterFileName(entry.name)
+              child.isFile() &&
+              child.name !== feedCounterFileName(entry.name) &&
+              !(
+                policyFiles.has(child.name) &&
+                policyFiles.get(child.name) === undefined
+              )
           )
           .sort((a, b) => a.name.localeCompare(b.name))
           .map(child => {
             const childPath = path.join(entryPath, child.name)
             const readBytes = () => fs.promises.readFile(childPath)
             let read: () => Promise<Buffer> = readBytes
-            if (metaSidecarFileId(child.name) !== undefined) {
+            const policyBytes = policyFiles.get(child.name)
+            if (policyBytes !== undefined) {
+              read = async () => policyBytes
+            } else if (metaSidecarFileId(child.name) !== undefined) {
               read = async () =>
                 withoutSidecarMember({
                   bytes: await readBytes(),
@@ -2115,6 +2219,19 @@ export class FileSystemBackend implements StorageBackend {
           files.push({ name: sub.name, files: chunkFiles })
         }
         archiveEntries.push({ name: entry.name, files })
+        continue
+      }
+
+      if (entry.isFile() && entry.name === SPACE_POLICY_FILE_NAME) {
+        // A Space policy tombstone does not travel (see the Collection
+        // policies above).
+        const policyBytes = await this.#readArchivedPolicy(entryPath)
+        if (policyBytes !== undefined) {
+          archiveEntries.push({
+            name: entry.name,
+            read: async () => policyBytes
+          })
+        }
         continue
       }
 
@@ -2319,13 +2436,13 @@ export class FileSystemBackend implements StorageBackend {
 
           // Space-level policy: restore it when the destination has none (the import
           // target Space pre-exists, so this fills in a missing policy without
-          // clobbering one the destination already carries).
+          // clobbering one the destination already carries). A deleted policy's
+          // tombstone counts as one, so an import does not undo the delete.
           if (spacePolicy) {
-            if (await this.getPolicy({ spaceId })) {
-              stats.policiesSkipped++
-            } else {
-              await this.writePolicy({ spaceId, policy: spacePolicy })
+            if (await this.#importPolicy({ spaceId, imported: spacePolicy })) {
               stats.policiesCreated++
+            } else {
+              stats.policiesSkipped++
             }
           }
 
@@ -2449,15 +2566,17 @@ export class FileSystemBackend implements StorageBackend {
             // A collection-level policy travels with a newly-created collection; for
             // an existing (skipped) collection, leave its access policy untouched.
             if (collectionPolicy) {
-              if (collectionExisted) {
-                stats.policiesSkipped++
-              } else {
-                await this.writePolicy({
+              if (
+                !collectionExisted &&
+                (await this.#importPolicy({
                   spaceId,
                   collectionId,
-                  policy: collectionPolicy
-                })
+                  imported: collectionPolicy
+                }))
+              ) {
                 stats.policiesCreated++
+              } else {
+                stats.policiesSkipped++
               }
             }
 
@@ -2556,17 +2675,23 @@ export class FileSystemBackend implements StorageBackend {
               )
 
               // The Resource's policy is written outside its lock: it lives in the
-              // policy tree, not under the Resource's key, and `writePolicy` takes
-              // no Resource lock of its own.
+              // policy tree, not under the Resource's key, and `#importPolicy`
+              // takes no Resource lock of its own. A policy record the
+              // destination already holds there, a tombstone included, is kept.
               const resourcePolicy = resourcePolicies.get(resourceId)
               if (imported && resourcePolicy) {
-                await this.writePolicy({
-                  spaceId,
-                  collectionId,
-                  resourceId,
-                  policy: resourcePolicy
-                })
-                stats.policiesCreated++
+                if (
+                  await this.#importPolicy({
+                    spaceId,
+                    collectionId,
+                    resourceId,
+                    imported: resourcePolicy
+                  })
+                ) {
+                  stats.policiesCreated++
+                } else {
+                  stats.policiesSkipped++
+                }
               }
             }
 
@@ -4589,9 +4714,22 @@ export class FileSystemBackend implements StorageBackend {
       position?: unknown
       collectionMetadataPosition?: unknown
       logPosition?: unknown
+      collectionPolicyPosition?: unknown
+      resourcePolicyPositions?: unknown
     }>(this.#feedCounterPath({ collectionDir, collectionId }))
-    const { generation, position, collectionMetadataPosition, logPosition } =
-      counter ?? {}
+    const {
+      generation,
+      position,
+      collectionMetadataPosition,
+      logPosition,
+      collectionPolicyPosition,
+      resourcePolicyPositions
+    } = counter ?? {}
+    const policyPositions = isPlainObject(resourcePolicyPositions)
+      ? Object.entries(resourcePolicyPositions).filter(([, value]) =>
+          Number.isSafeInteger(value)
+        )
+      : []
     return {
       ...(typeof generation === 'string' && { generation }),
       position: Number.isSafeInteger(position) ? (position as number) : 0,
@@ -4600,6 +4738,15 @@ export class FileSystemBackend implements StorageBackend {
       }),
       ...(Number.isSafeInteger(logPosition) && {
         logPosition: logPosition as number
+      }),
+      ...(Number.isSafeInteger(collectionPolicyPosition) && {
+        collectionPolicyPosition: collectionPolicyPosition as number
+      }),
+      ...(policyPositions.length > 0 && {
+        resourcePolicyPositions: Object.fromEntries(policyPositions) as Record<
+          string,
+          number
+        >
       })
     }
   }
@@ -4620,20 +4767,22 @@ export class FileSystemBackend implements StorageBackend {
    * written, and no reader was handed a position from it.
    *
    * A Resource's position is stored on its sidecar by `write`. The
-   * Collection Metadata object's and the governing log's are stored in the
-   * counter file itself, as `collectionMetadataPosition` and `logPosition`,
-   * so neither record's stored form carries a server-local member.
+   * Collection Metadata object's, the governing log's and each policy's are
+   * stored in the counter file itself, as `collectionMetadataPosition`,
+   * `logPosition`, `collectionPolicyPosition` and `resourcePolicyPositions`
+   * (keyed by Resource id), so none of these records' stored forms carries a
+   * server-local member.
    *
    * The `feed:` key is the innermost lock: the caller holds whatever else
    * the write needs (the Space gate, then `cmeta:` and `clog:` for a
-   * Collection-level record, or the `unique:` and Resource keys for a
-   * Resource), and `write` acquires nothing.
+   * Collection-level record, the `policy:` key for a policy, or the
+   * `unique:` and Resource keys for a Resource), and `write` acquires
+   * nothing.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param options.collectionDir {string}   must already exist
-   * @param options.record {'resource' | 'collection-metadata' | 'log'}   the
-   *   kind of record taking the position
+   * @param options.record {FeedRecord}   the record taking the position
    * @param [options.startsFeed] {boolean}   whether the write creates the
    *   Collection, so a stored counter is not continued
    * @param options.write {(feedPosition: number) => Promise<void>}   the
@@ -4651,7 +4800,7 @@ export class FileSystemBackend implements StorageBackend {
     spaceId: string
     collectionId: string
     collectionDir: string
-    record: 'resource' | 'collection-metadata' | 'log'
+    record: FeedRecord
     startsFeed?: boolean
     write: (feedPosition: number) => Promise<void>
   }): Promise<void> {
@@ -4664,15 +4813,9 @@ export class FileSystemBackend implements StorageBackend {
         const feedPosition = counter.position + 1
         await atomicWriteFile({
           filePath: this.#feedCounterPath({ collectionDir, collectionId }),
-          data: JSON.stringify({
-            ...counter,
-            generation: counter.generation ?? newGeneration(),
-            position: feedPosition,
-            ...(record === 'collection-metadata' && {
-              collectionMetadataPosition: feedPosition
-            }),
-            ...(record === 'log' && { logPosition: feedPosition })
-          } satisfies FeedCounter)
+          data: JSON.stringify(
+            advancedFeedCounter({ counter, feedPosition, record })
+          )
         })
         await write(feedPosition)
       }
@@ -5787,6 +5930,54 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * The changes-feed documents of the Collection's policies whose recorded
+   * position is past `after`: the Collection's own policy and each Resource
+   * policy, live or a tombstone, with its stamp and the validator its own
+   * GET serves. Runs under the Collection's `feed:` key, where every policy
+   * file matches the position the counter records for it.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.counter {FeedCounter}   the counter read under the key
+   * @param options.after {number}   the reader's position
+   * @returns {Promise<FeedDocument[]>}
+   */
+  async #policyFeedDocuments({
+    spaceId,
+    collectionId,
+    counter,
+    after
+  }: {
+    spaceId: string
+    collectionId: string
+    counter: FeedCounter
+    after: number
+  }): Promise<FeedDocument[]> {
+    const positioned: Array<{ resourceId?: string; feedPosition?: number }> = [
+      { feedPosition: counter.collectionPolicyPosition },
+      ...Object.entries(counter.resourcePolicyPositions ?? {}).map(
+        ([resourceId, feedPosition]) => ({ resourceId, feedPosition })
+      )
+    ]
+    const documents = await Promise.all(
+      positioned.map(async ({ resourceId, feedPosition }) => {
+        if (feedPosition === undefined || feedPosition <= after) {
+          return undefined
+        }
+        const record = await this.getPolicyRecord({
+          spaceId,
+          collectionId,
+          resourceId
+        })
+        return (
+          record && policyFeedDocument({ record, resourceId, feedPosition })
+        )
+      })
+    )
+    return documents.filter(document => document !== undefined)
+  }
+
+  /**
    * Replication change feed (the `changes` query profile; see the
    * `StorageBackend.changesSince` contract).
    * Reads the Collection's feed counter under the Collection's `feed:` key,
@@ -5805,10 +5996,11 @@ export class FileSystemBackend implements StorageBackend {
    * The counter read is the snapshot: a position is taken and the record
    * carrying it written in one `feed:` critical section
    * (`#takeFeedPosition`), so every position up to the counter's value is on
-   * disk when it is read. The Collection Metadata object and the log are
-   * read in the same section, so each matches the position the counter
-   * records for it. The Resource scan runs outside the lock and admits only
-   * positions at or below the counter's value. A Resource rewritten during
+   * disk when it is read. The Collection Metadata object, the log and the
+   * policies whose positions are past the reader's are read in the same
+   * section, so each matches the position the counter records for it. The
+   * Resource scan runs outside the lock and admits only positions at or
+   * below the counter's value. A Resource rewritten during
    * the scan moves past it, is left out of this page, and is served by the
    * next pull, so no position a reader is handed can later gain a write
    * behind it. A sidecar with no `feedPosition` (one written before feed
@@ -5850,7 +6042,8 @@ export class FileSystemBackend implements StorageBackend {
         logPosition
       },
       collectionMetadata,
-      log
+      log,
+      policyDocuments
     } = await this.#writeMutex.run(
       this.#feedLockKey({ spaceId, collectionId }),
       async () => {
@@ -5858,18 +6051,20 @@ export class FileSystemBackend implements StorageBackend {
           collectionDir,
           collectionId
         })
-        // A Collection-level record is read only when its position is past
-        // the reader's, so a caught-up poll reads the counter alone.
+        // A Collection-level record or a policy is read only when its
+        // position is past the reader's, so a caught-up poll reads the
+        // counter alone.
         const after = afterPosition ?? 0
-        const [collectionMetadata, log] = await Promise.all([
+        const [collectionMetadata, log, policyDocuments] = await Promise.all([
           (counter.collectionMetadataPosition ?? 0) > after
             ? this.#readLiveCollection({ spaceId, collectionId })
             : undefined,
           (counter.logPosition ?? 0) > after
             ? this.#readCollectionLog({ spaceId, collectionId })
-            : undefined
+            : undefined,
+          this.#policyFeedDocuments({ spaceId, collectionId, counter, after })
         ])
-        return { counter, collectionMetadata, log }
+        return { counter, collectionMetadata, log, policyDocuments }
       }
     )
     // A caught-up reader (the steady-state poll of a replica) is answered
@@ -6063,6 +6258,7 @@ export class FileSystemBackend implements StorageBackend {
       })
     const descriptors = [
       ...collectionDocuments.map((document): Descriptor => ({ document })),
+      ...policyDocuments.map((document): Descriptor => ({ document })),
       ...(
         await Promise.all([...liveDescriptors, ...tombstoneDescriptors])
       ).filter((desc): desc is Descriptor => desc !== undefined)
@@ -6391,12 +6587,89 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * Reads a stored policy file for an export archive: its bytes as stored
+   * (body, stamp members and `_generation`), or `undefined` for a tombstone,
+   * which does not travel, and for a file gone since the directory was read.
+   * @param filePath {string}
+   * @returns {Promise<Buffer | undefined>}
+   */
+  async #readArchivedPolicy(filePath: string): Promise<Buffer | undefined> {
+    let bytes: Buffer
+    try {
+      bytes = await fs.promises.readFile(filePath)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return undefined
+      }
+      throw err
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(bytes.toString('utf8'))
+    } catch {
+      return bytes
+    }
+    return storedPolicyFromFile(parsed)?.deleted ? undefined : bytes
+  }
+
+  /**
+   * The per-policy mutex key (`policy:` prefix, its own key domain), held by
+   * a policy write or delete for its read, precondition check and write. A
+   * Collection- or Resource-level write nests the Collection's `feed:` key
+   * inside it, and nothing else.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @returns {string}
+   */
+  #policyLockKey({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+  }): string {
+    return `policy:${spaceId}/${collectionId ?? ''}/${resourceId ?? ''}`
+  }
+
+  /**
+   * The stored policy record at a level, live or a tombstone, beside its
+   * validator. Every policy read goes through here; `getPolicy` drops a
+   * tombstone.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @returns {Promise<StoredPolicy | undefined>}   `undefined` when no record
+   *   is stored at that level (must not throw)
+   */
+  async getPolicyRecord({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+  }): Promise<StoredPolicy | undefined> {
+    return storedPolicyFromFile(
+      await this.#readJsonFile<unknown>(
+        this.#policyFile({ spaceId, collectionId, resourceId })
+      )
+    )
+  }
+
+  /**
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}
    * @param [options.resourceId] {string}
    * @returns {Promise<PolicyDocument|undefined>}
-   *   Resolves falsy when no policy is set at that level (must not throw).
+   *   Resolves falsy when no live policy is set at that level, a tombstone
+   *   included (must not throw).
    */
   async getPolicy({
     spaceId,
@@ -6407,9 +6680,12 @@ export class FileSystemBackend implements StorageBackend {
     collectionId?: string
     resourceId?: string
   }): Promise<PolicyDocument | undefined> {
-    return await this.#readJsonFile<PolicyDocument>(
-      this.#policyFile({ spaceId, collectionId, resourceId })
-    )
+    const record = await this.getPolicyRecord({
+      spaceId,
+      collectionId,
+      resourceId
+    })
+    return record?.deleted === false ? record.policy : undefined
   }
 
   /**
@@ -6418,31 +6694,67 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.collectionId] {string}
    * @param [options.resourceId] {string}
    * @param options.policy {PolicyDocument}
-   * @returns {Promise<void>}
+   * @param [options.ifMatch] {string}
+   * @param [options.ifNoneMatch] {HeldValidators}
+   * @returns {Promise<PolicyWriteResult>}
    */
   async writePolicy({
     spaceId,
     collectionId,
     resourceId,
-    policy
+    policy,
+    ifMatch,
+    ifNoneMatch
   }: {
     spaceId: string
     collectionId?: string
     resourceId?: string
     policy: PolicyDocument
-  }): Promise<void> {
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+  }): Promise<PolicyWriteResult> {
     // Under the Space gate, and only into a Space (and Collection) that still
     // has its Metadata object, so a policy never materializes a container
     // directory the listings would then report.
     return this.#underSpaceWrite({
       spaceId,
       container: { collectionId },
-      write: async () => {
-        await atomicWriteFile({
-          filePath: this.#policyFile({ spaceId, collectionId, resourceId }),
-          data: JSON.stringify(policy)
-        })
-      }
+      write: () =>
+        this.#writeMutex.run(
+          this.#policyLockKey({ spaceId, collectionId, resourceId }),
+          async () => {
+            const prior = await this.getPolicyRecord({
+              spaceId,
+              collectionId,
+              resourceId
+            })
+            const live = livePolicyUnderPrecondition({
+              prior,
+              spaceId,
+              collectionId,
+              resourceId,
+              ifMatch,
+              ifNoneMatch
+            })
+            // A write over a tombstone is a create: a new generation, and a
+            // stamp above the tombstone's.
+            const validator = await mintValidator({
+              clock: this.#clock,
+              prior: priorPolicyParts(prior)
+            })
+            const body = stampedPolicy({
+              body: normalizePolicyWrite(policy),
+              stamp: validator.stamp
+            })
+            await this.#persistPolicy({
+              spaceId,
+              collectionId,
+              resourceId,
+              data: policyFile({ body, generation: validator.generation })
+            })
+            return { validator, created: live === undefined, policy: body }
+          }
+        )
     })
   }
 
@@ -6451,19 +6763,158 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}
    * @param [options.resourceId] {string}
-   * @returns {Promise<void>}   idempotent (no error if absent)
+   * @param [options.ifMatch] {string}
+   * @param [options.ifNoneMatch] {HeldValidators}
+   * @returns {Promise<EtagValidator | undefined>}   the tombstone's validator,
+   *   or `undefined` when no live policy was stored (nothing written)
    */
   async deletePolicy({
     spaceId,
     collectionId,
-    resourceId
+    resourceId,
+    ifMatch,
+    ifNoneMatch
   }: {
     spaceId: string
     collectionId?: string
     resourceId?: string
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+  }): Promise<EtagValidator | undefined> {
+    // On the Space gate's shared side, so a container removal cannot land
+    // between the read and the tombstone write. No container check: a delete
+    // writes only over a live policy, whose directory is there.
+    return this.#underSpaceWrite({
+      spaceId,
+      write: () =>
+        this.#writeMutex.run(
+          this.#policyLockKey({ spaceId, collectionId, resourceId }),
+          async () => {
+            const prior = await this.getPolicyRecord({
+              spaceId,
+              collectionId,
+              resourceId
+            })
+            const live = livePolicyUnderPrecondition({
+              prior,
+              spaceId,
+              collectionId,
+              resourceId,
+              ifMatch,
+              ifNoneMatch
+            })
+            if (live === undefined) {
+              return undefined
+            }
+            // The tombstone keeps the generation and takes a stamp above
+            // the live policy's.
+            const validator = await mintValidator({
+              clock: this.#clock,
+              prior: priorPolicyParts(live)
+            })
+            await this.#persistPolicy({
+              spaceId,
+              collectionId,
+              resourceId,
+              data: policyFile({
+                body: policyTombstoneBody(validator.stamp),
+                generation: validator.generation
+              })
+            })
+            return validator
+          }
+        )
+    })
+  }
+
+  /**
+   * Writes an archived policy at a level, under the archived generation and a
+   * fresh stamp, when the destination stores no policy record there. A
+   * tombstone counts as a record, so an import does not undo a delete.
+   * Called from `importSpace`, which holds the Space gate's shared side.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @param options.imported {ImportedPolicy}
+   * @returns {Promise<boolean>}   whether the policy was written
+   */
+  async #importPolicy({
+    spaceId,
+    collectionId,
+    resourceId,
+    imported
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+    imported: ImportedPolicy
+  }): Promise<boolean> {
+    return this.#underSpaceWrite({
+      spaceId,
+      container: { collectionId, requestName: 'Import Space' },
+      write: () =>
+        this.#writeMutex.run(
+          this.#policyLockKey({ spaceId, collectionId, resourceId }),
+          async () => {
+            if (
+              await this.getPolicyRecord({ spaceId, collectionId, resourceId })
+            ) {
+              return false
+            }
+            const body = stampedPolicy({
+              body: imported.policy,
+              stamp: await this.#clock.mint()
+            })
+            await this.#persistPolicy({
+              spaceId,
+              collectionId,
+              resourceId,
+              data: policyFile({ body, generation: imported.generation })
+            })
+            return true
+          }
+        )
+    })
+  }
+
+  /**
+   * Writes a policy file. A Space policy is written directly. A Collection-
+   * or Resource-level one is written inside `#takeFeedPosition`, which takes
+   * the Collection's next feed position and records it in the feed counter
+   * file, so the policy file carries no server-local member. The caller holds
+   * the policy's own key.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @param options.data {string}   the serialized policy file
+   * @returns {Promise<void>}
+   */
+  async #persistPolicy({
+    spaceId,
+    collectionId,
+    resourceId,
+    data
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+    data: string
   }): Promise<void> {
-    await rm(this.#policyFile({ spaceId, collectionId, resourceId }), {
-      force: true
+    const filePath = this.#policyFile({ spaceId, collectionId, resourceId })
+    if (collectionId === undefined) {
+      await atomicWriteFile({ filePath, data })
+      return
+    }
+    await this.#takeFeedPosition({
+      spaceId,
+      collectionId,
+      collectionDir: this.#collectionDir({ spaceId, collectionId }),
+      record: { policy: resourceId },
+      write: async () => {
+        await atomicWriteFile({ filePath, data })
+      }
     })
   }
 

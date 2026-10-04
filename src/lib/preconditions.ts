@@ -2,11 +2,11 @@
  * Backend-agnostic conditional-write precondition evaluation (the
  * `conditional-writes` feature). Both storage backends evaluate `If-Match` /
  * `If-None-Match` against the current state of a Resource, a Space or
- * Collection Metadata object, a Resource Metadata object, or a history log
- * through these helpers, so the 412 semantics cannot drift between them.
- * Callers MUST invoke them atomically with the write that follows (under the
- * filesystem backend's per-record lock, or inside the Postgres backend's
- * row-locking transaction). The current state arrives as the record's `ETag`
+ * Collection Metadata object, a Resource Metadata object, a history log, or
+ * an access-control policy through these helpers, so the 412 semantics
+ * cannot drift between them. Callers MUST invoke them atomically with the
+ * write that follows (under the filesystem backend's per-record lock, or
+ * inside the Postgres backend's row-locking transaction). The current state arrives as the record's `ETag`
  * (from `etagOf`), `undefined` when the record has none: a Resource whose
  * sidecar is missing, or a Resource Metadata object never written. An
  * `If-Match` can never be satisfied against such a record, since no client
@@ -203,6 +203,42 @@ export function assertCollectionLogWritePrecondition({
   assertPrecondition({
     subject: `Collection '${collectionId}' history log`,
     exists: currentEtag !== undefined,
+    currentEtag,
+    ifMatch,
+    ifNoneMatch
+  })
+}
+
+/**
+ * Evaluates a policy write's or delete's precondition against the live
+ * policy at its level: `If-None-Match: *` is the guarded create (412 when a
+ * live policy exists), `If-Match` the compare-and-swap on its current `ETag`.
+ * A tombstone counts as absent, so `If-Match` fails against it and
+ * `If-None-Match: *` passes.
+ * @param options {object}
+ * @param options.policyPath {string}   the policy's path, for the error detail
+ * @param options.exists {boolean}   whether a live policy is stored
+ * @param [options.currentEtag] {string}   the live policy's current `ETag`
+ * @param [options.ifMatch] {string}   the `If-Match` header value
+ * @param [options.ifNoneMatch] {HeldValidators}   the parsed `If-None-Match`
+ * @returns {void}
+ */
+export function assertPolicyWritePrecondition({
+  policyPath,
+  exists,
+  currentEtag,
+  ifMatch,
+  ifNoneMatch
+}: {
+  policyPath: string
+  exists: boolean
+  currentEtag?: string
+  ifMatch?: string
+  ifNoneMatch?: HeldValidators
+}): void {
+  assertPrecondition({
+    subject: `Policy '${policyPath}'`,
+    exists,
     currentEtag,
     ifMatch,
     ifNoneMatch

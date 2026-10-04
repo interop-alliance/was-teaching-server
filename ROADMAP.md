@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 200
+nextAvailableId: 201
 
 <!-- roadmap-order:index:start -->
 
@@ -104,16 +104,12 @@ Chains:
 Ready:
 
 - WAS-180 [M] Delete Space removes revocations before the Space directory
-- WAS-183 [M] Stamped, tombstoned access-control policies (blocks 2)
+- WAS-176 [M] Replica registration, pull loop, and the apply path (blocks 4)
 - WAS-198 [L] Keep peer did:webvh head records and fetch bounds across eviction
   and restart
 
 Chains:
 
-- WAS-183 [M] Stamped, tombstoned access-control policies
-  - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
-    model)
-  - WAS-176 [M] Replica registration, pull loop, and the apply path
 - WAS-176 [M] Replica registration, pull loop, and the apply path
   - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
     model)
@@ -132,6 +128,7 @@ Ready:
 
 - WAS-196 [M] Bound the cost of accumulated Collection tombstones
 - WAS-199 [L] Verify a peer invoker's delegation chain once
+- WAS-200 [L] Feed counter file grows with every Resource policy
 - WAS-77 [L] Per-Collection filename cache on the filesystem backend
 - WAS-86 [L] Backend-evaluated `If-None-Match` on Resource and chunk reads
 
@@ -139,8 +136,6 @@ Ready:
 
 Ready:
 
-- WAS-187 [H] Export the in-process test boot as `was-teaching-server/testing`
-  (blocks 1)
 - WAS-46 [H] Un-skip the Postgres and flag-gated storage-contract tests
 - WAS-47 [M] Cover `start.ts` and the untested config parsers
 - WAS-9 [M] Open the upstream `minimal-cipher` AEAD-gap issue
@@ -149,11 +144,6 @@ Ready:
   URL by default
 - WAS-168 [L] `SERVER_URL` move runbook for the server DID log (portable domain
   move)
-
-Chains:
-
-- WAS-187 [H] Export the in-process test boot as `was-teaching-server/testing`
-  - WAS-188 [H] A request-level tear and hold seam on the testing export
 
 **Someday / Maybe**
 
@@ -1553,55 +1543,12 @@ pull; it is an existing defect independent of replication.
 
 ---
 
-### WAS-183: [M] [blocks 2] Stamped, tombstoned access-control policies
-
-- status: todo
-- priority: medium
-- labels: data-model, authz, replication, etag, wire-contract,
-  filesystem-backend, postgres-backend
-- blocks: WAS-96, WAS-176
-- touches:
-  - wallet-attached-storage-spec: "Access Control Policies" (the served stamp
-    members, the `ETag`, the preconditions, the tombstone)
-  - storage-core: `PolicyDocument`
-  - was-teaching-server: `PolicyRequest`, both backends' policy storage,
-    `src/lib/policyCache.ts`, ARCHITECTURE.md
-  - was-client: policy preconditions (optional)
-  - conformance-suite: policy `ETag` and precondition cases
-- acceptance:
-  - [ ] A stored policy carries the three stamp members and a generation;
-        `GET /policy` at each level serves the four-field `ETag` and the stamp
-        members as server-derived members a write body ignores
-  - [ ] `PUT` and `DELETE /policy` take `If-Match` / `If-None-Match: *`
-  - [ ] `DELETE` writes a tombstone (`deleted: true`) in place of the hard
-        delete; a tombstoned policy grants nothing and reads as absent
-        everywhere except the changes feed (WAS-182) and the apply path
-        (WAS-176); the Space policy's tombstone is readable with its stamp by
-        the pull loop (shape pending sign-off)
-  - [ ] A Collection or Resource `/policy` write or tombstone takes a feed
-        position and appears in the `changes` feed as a `kind: policy` document
-        carrying the policy's stamp, generation and URL (moved from WAS-182,
-        2026-10-04). The other non-Resource kinds carry their URL as `id`;
-        whether `policy` does the same or keeps the `target` member decided
-        2026-10-02 needs sign-off. storage-core's `ChangeDocument` gains the
-        kind
-  - [ ] Tests cover the validator, the preconditions, the tombstone and the
-        fail-closed read at all three levels, in both backends
-
-Context (discovered-from: WAS-96, open point 6). A policy had no validator, no
-`updatedAt`, and a hard delete, so "LWW by stamp" could not order two replicas'
-policies and a removed `PublicCanRead` policy would come back from a peer that
-still held it, a privacy regression rather than a stale record.
-
----
-
-### WAS-176: [M] [blocks 4] [after WAS-183] Replica registration, pull loop, and the apply path
+### WAS-176: [M] [blocks 4] Replica registration, pull loop, and the apply path
 
 - status: todo
 - priority: medium
 - labels: replication, routes, filesystem-backend, postgres-backend,
   space-metadata
-- blocked-by: WAS-183
 - blocks: WAS-96, WAS-177, WAS-179, WAS-184
 - touches:
   - wallet-attached-storage-spec: the replication specification (registration
@@ -1690,7 +1637,7 @@ alive on the surviving server, where the wallet can keep appending.
 
 ---
 
-### WAS-96: [M] [after WAS-176, WAS-177, WAS-183] Multi-primary Spaces (replicated write identity and conflict model)
+### WAS-96: [M] [after WAS-176, WAS-177] Multi-primary Spaces (replicated write identity and conflict model)
 
 - status: todo
 - priority: medium
@@ -1699,7 +1646,7 @@ alive on the surviving server, where the wallet can keep appending.
 - design-approved: 2026-10-02
 - decisions: wallet-attached-storage-spec decisions 0009 to 0013 (contract);
   this repo's decisions/0003 to 0005 (server-internal)
-- blocked-by: WAS-176, WAS-177, WAS-183
+- blocked-by: WAS-176, WAS-177
 - touches:
   - wallet-attached-storage-spec: the Resource data model (the origin stamp
     members and the validator), the `changes` profile (stamp members on the
@@ -2017,6 +1964,59 @@ The library option must not weaken verification. It should carry the verified
 chain result itself, keyed to the capability it was computed for, and the
 invocation proof and the invoker-is-controller check still run in full.
 
+### WAS-200: [L] Feed counter file grows with every Resource policy
+
+- status: todo
+- priority: low
+- labels: performance, filesystem-backend, changes-feed
+- discovered-from: simplify pass over the stamped-policies change (2026-10-04)
+- acceptance:
+  - [ ] A feed-visible write that is not a policy write (a Resource write, a
+        Resource `/meta` write, a soft delete, a Collection Metadata write, a
+        governed-log write) reads and rewrites a counter file whose size does
+        not depend on how many Resource policies the Collection holds
+  - [ ] A `changesSince` poll that is caught up reads no per-policy state beyond
+        one bounded file
+  - [ ] The feed still carries one `policy` document per policy record at the
+        position of its latest write, tombstones included, and a policy file
+        still matches its recorded position under the `feed:` key
+  - [ ] The item decides whether the per-record members
+        (`collectionMetadataPosition`, `logPosition`,
+        `collectionPolicyPosition`) become one map keyed by record, and
+        `FeedRecord` one flat tagged union. If the layout changes, it is a new
+        store version with a refusal step and no conversion step
+  - [ ] Tests in `test/`: a Collection holding many Resource policies takes a
+        Resource write without rewriting their positions (observable through the
+        bytes written to the counter file), and the storage contract's policy
+        feed cases pass unchanged
+  - [ ] ARCHITECTURE.md (`lib/changesCheckpoint.ts`, the Glossary's Feed
+        position) names where a policy's position is kept
+
+Context: the filesystem backend keeps each Collection's feed counter in
+`.feed.<collectionId>.json`. Every feed-visible write reads the file, takes the
+next position, and rewrites it whole (`#takeFeedPosition`). The file also
+records the latest position of each record that has no sidecar to carry it.
+Since policies became versioned records, that includes
+`resourcePolicyPositions`, a map with one entry per Resource policy ever
+written. A policy delete leaves a tombstone, which keeps its entry, so the map
+only grows. An ordinary Resource `PUT` therefore re-serializes the whole map,
+and so does each `changesSince` poll that parses the file. The cost per write is
+proportional to the number of Resource policies in the Collection, and an import
+of n Resource policies writes O(n^2) bytes. A Collection with few per-Resource
+policies does not notice.
+
+One option keeps the Resource policy positions in their own per-Collection file
+that only a policy write touches, still under the `feed:` key. That leaves the
+existing counter members alone. Another stores the position in the policy file
+itself, as a Resource sidecar stores `feedPosition`. The policy file is what an
+export archives as stored, so export would then have to strip the member.
+
+The counter's shape is a second, smaller cost. Each record kind has its own
+member and its own branch in `advancedFeedCounter`, and `FeedRecord` mixes
+string literals with `{ policy: string | undefined }`, where `undefined` means
+the Collection's own policy. The Postgres backend is unaffected: a policy's
+position is the `policies.feed_position` column.
+
 ### WAS-77: [L] Per-Collection filename cache on the filesystem backend
 
 - status: todo
@@ -2094,136 +2094,6 @@ testable normative statements matched against the conformance suite's tests,
 plus a survey of the server's own `test/` suite. Suite-side items land in
 `@interop/was-conformance-suite` (tracked here per convention); the `test/`
 items are in-repo.
-
-### WAS-187: [H] [blocks 1] Export the in-process test boot as `was-teaching-server/testing`
-
-- status: in-progress
-- priority: high
-- labels: tests, packaging, consumers
-- discovered-from: FW-633 (freewallet's test-infrastructure read, 2026-10-03)
-- blocks: WAS-188
-- touches:
-  - [x] freewallet (FW-633, done 2026-10-04: takes 0.40.0 from the registry as a
-        devDependency and boots its conformance suite through this export)
-  - [ ] wallet-core (WC-269: its integration tier boots through this export)
-  - [ ] was-sync, was-react, dcw (each copies the boot recipe today and still
-        calls `new FileSystemBackend(...)`)
-  - [x] `docs/consuming-server-as-library.md` (shipped: the "Testing against the
-        server" section)
-- acceptance:
-  - [x] `package.json` exports `./testing`, built to `dist`, with types
-  - [x] The export carries `startTestServer` (the `localhost` server URL fix-up
-        included; since WAS-188 it boots through `composeApp()` and also returns
-        `faults`) and a helper that opens a `FileSystemBackend` on a fresh temp
-        dir and removes it on close
-  - [x] The export carries the webvh identity provisioner
-        (`provisionWebvhIdentity`, with its ladder and transient VM shapes).
-        Decided 2026-10-03: it is exported
-  - [x] The export pulls in no test runner: nothing under it imports `vitest`
-  - [x] The server's own suites import the helpers from the same source file the
-        export is built from, so there is one copy
-  - [x] `docs/consuming-server-as-library.md` shows the boot through the export
-        and through the async `open()` backend factory
-
-The in-process boot lives in `test/helpers.ts`, which is outside `dist`. Every
-consumer that runs tests against the real server copies the recipe: `createApp`
-with `serverUrl: 'http://localhost'`, `listen({ port: 0 })`, read the port, then
-set `fastify.serverUrl`. was-sync, was-react, dcw, and freewallet's conformance
-suite each carry a copy, and wallet-core is about to add another. The
-`localhost` detail matters, since webkms-client relaxes its loopback checks for
-that host alone, and a copy that uses `127.0.0.1` fails in the KMS facet only.
-
-The same consumers construct the backend with `new FileSystemBackend(...)`. The
-0.40.0 source makes backends come only from the async `open()` factory, so each
-of them breaks on that release. A shared helper that opens the backend gives
-them one call to move to.
-
-`provisionWebvhIdentity` is exported too (decided 2026-10-03). It builds a
-did:webvh identity by hand, in the ladder and transient VM shapes, without
-running a wallet ceremony. That suits a consumer test about a server rule, where
-the identity is setup and the ceremony is not under test. A test about the
-ceremonies themselves builds its account through wallet-core's account builder
-(WC-270) instead.
-
-The export is test support. It adds nothing to the production plugin's options.
-
-### WAS-188: [H] [after WAS-187] A request-level tear and hold seam on the testing export
-
-- status: in-progress
-- priority: high
-- labels: tests, fault-injection, consumers
-- discovered-from: FW-634 (freewallet's test-infrastructure read, 2026-10-03)
-- blocked-by: WAS-187 (DONE)
-- touches:
-  - [ ] freewallet (FW-634: ports one torn-ceremony case to the seam)
-  - [ ] wallet-core (WC-269: its integration tier tears with the seam)
-- acceptance:
-  - [x] A first check settles the mechanism. A root Fastify hook added after
-        `createApp()` either reaches every route group, the KMS facet included,
-        or the item records what does. Checked 2026-10-03: it reaches every
-        group but runs behind each group's own hooks, so the hooks go on before
-        the plugin is registered (see below)
-  - [x] Tear, grade one: the first request matching a predicate (method, path,
-        invoking DID) is refused before any handler runs, with a chosen status
-  - [x] Tear, grade two: the first matching request is applied and its response
-        is dropped, so the client sees a transport failure over a write that
-        landed
-  - [x] Hold: a matching request pauses until the test releases it
-  - [x] Every request is recorded in order with its method, path, and invoking
-        DID
-  - [x] Each of the four has a test in this repo's own suite
-        (`test/request-faults.test.ts`)
-  - [x] The seam is reachable only through `was-teaching-server/testing`, and
-        `FastifyWasOptions` gains no member for it
-
-Consumers test ceremonies that write several resources in order, and most of
-their open bugs are about a run interrupted between two of those writes. The
-server has no way to fail a chosen request. Its only fault tests mock
-`node:fs/promises` at the syscall level. So each consumer invents its own tear:
-freewallet's Playwright suite aborts routes in the browser, compiles window-flag
-seams into the app, and simulates a tab death, and wallet-core's fakes carry
-hand-written kill switches.
-
-The two tear grades are different states. A refused request leaves the store
-untouched. A dropped response leaves the write durable while the client believes
-it failed. The second is the case a consumer's re-run has to detect from stored
-state, and a browser-side route abort cannot produce it.
-
-The hold is for interleaving two clients at a chosen write, such as two signups
-whose existence probes both miss before either one binds.
-
-A wrapper around the storage backend was the other candidate. It tears after
-authorization and has to cover the whole `StorageBackend` interface, about 50
-members. The hook is tried first for that reason.
-
-Findings, 2026-10-03. A root hook added after `createApp()` reaches every route
-group, `/kms` included, but runs behind each group's own hooks. An unsigned
-write that `requireAuthHeaders` refuses with a 401 never reaches a root
-`onRequest` hook added that late, so the record would miss it. That a signed
-request is seen at all rests on the order Fastify loads plugins in. The seam's
-hooks are therefore added to the root instance before the protocol plugin is
-registered. `createApp()` is split for that: it builds the instance and calls
-`composeApp({ fastify, ...options })`, which `startTestServer()` calls itself
-after adding the hooks. `composeApp` is not exported from the package root.
-
-The seam is `src/lib/requestFaults.ts`, returned by `startTestServer()` as
-`faults`: `refuse`, `dropResponse`, `hold`, `requests`, `reset`.
-
-- The invoking DID is read off the `Authorization` header's `keyId` before any
-  signature is verified, since the seam runs ahead of `parseAuthHeaders`. It
-  names who the request claims to be signed by.
-- An object predicate with no `method` never matches `OPTIONS`, so a browser's
-  CORS preflight does not take a fault meant for the request behind it.
-- The client stack retries. A `PUT` refused with a 5xx, or one whose response is
-  dropped, is sent again by was-client's HTTP layer, and a fault that fires once
-  is absorbed without the caller seeing it. The two tears take a `times` option
-  for that (default 1, `Infinity` allowed), and a refusal with a 4xx status is
-  not retried. Under grade two each retry is applied again.
-- Grade two closes the socket in an `onSend` hook, after the handler has
-  finished. It is meant for writes. A streamed response may have nothing to
-  lose.
-- A held request is an active connection, which `fastify.close()` waits on. A
-  `preClose` hook releases every hold, and `reset()` does too.
 
 ### WAS-46: [H] Un-skip the Postgres and flag-gated storage-contract tests
 

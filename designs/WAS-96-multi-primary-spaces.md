@@ -1217,9 +1217,9 @@ are proposals:
     2026-10-04: a `collection-metadata` or `log` document carries the record's
     absolute URL as its `id` (`.../meta`, `.../meta/log`), and every document
     carries the record's `generation` as a top-level member beside the stamp.
-    The `policy` kind ships with the stamped policies (WAS-183); whether it
-    keeps `target` or carries its URL as `id` like the other non-Resource kinds
-    is open there.
+    The `policy` kind shipped with the stamped policies (WAS-183). Decided
+    2026-10-04: it carries the policy's absolute URL as its `id`, like the other
+    non-Resource kinds, with no `target` member.
 14. (review) The provenance statement's `createdBy` rule for a foreign origin
     (open point 11).
 15. (review) The checkpoint's embedded generation (opaque, so internal, but it

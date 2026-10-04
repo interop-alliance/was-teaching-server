@@ -5059,3 +5059,183 @@ content write's body carries no `meta`. The Space create paths were traced and
 had no race: Create Space is always a guarded create, and Update Space pins its
 write to its read. The Collection `PUT .../meta` race was real and is pinned by
 a test.
+
+### WAS-188: [H] [after WAS-187] A request-level tear and hold seam on the testing export
+
+- status: done
+- done: 2026-10-04
+- priority: high
+- labels: tests, fault-injection, consumers
+- discovered-from: FW-634 (freewallet's test-infrastructure read, 2026-10-03)
+- blocked-by: WAS-187 (DONE)
+- touches:
+  - [x] freewallet (FW-634: ports one torn-ceremony case to the seam)
+  - [ ] wallet-core (WC-269: its integration tier tears with the seam)
+- acceptance:
+  - [x] A first check settles the mechanism. A root Fastify hook added after
+        `createApp()` either reaches every route group, the KMS facet included,
+        or the item records what does. Checked 2026-10-03: it reaches every
+        group but runs behind each group's own hooks, so the hooks go on before
+        the plugin is registered (see below)
+  - [x] Tear, grade one: the first request matching a predicate (method, path,
+        invoking DID) is refused before any handler runs, with a chosen status
+  - [x] Tear, grade two: the first matching request is applied and its response
+        is dropped, so the client sees a transport failure over a write that
+        landed
+  - [x] Hold: a matching request pauses until the test releases it
+  - [x] Every request is recorded in order with its method, path, and invoking
+        DID
+  - [x] Each of the four has a test in this repo's own suite
+        (`test/request-faults.test.ts`)
+  - [x] The seam is reachable only through `was-teaching-server/testing`, and
+        `FastifyWasOptions` gains no member for it
+
+Consumers test ceremonies that write several resources in order, and most of
+their open bugs are about a run interrupted between two of those writes. The
+server has no way to fail a chosen request. Its only fault tests mock
+`node:fs/promises` at the syscall level. So each consumer invents its own tear:
+freewallet's Playwright suite aborts routes in the browser, compiles window-flag
+seams into the app, and simulates a tab death, and wallet-core's fakes carry
+hand-written kill switches.
+
+The two tear grades are different states. A refused request leaves the store
+untouched. A dropped response leaves the write durable while the client believes
+it failed. The second is the case a consumer's re-run has to detect from stored
+state, and a browser-side route abort cannot produce it.
+
+The hold is for interleaving two clients at a chosen write, such as two signups
+whose existence probes both miss before either one binds.
+
+A wrapper around the storage backend was the other candidate. It tears after
+authorization and has to cover the whole `StorageBackend` interface, about 50
+members. The hook is tried first for that reason.
+
+Findings, 2026-10-03. A root hook added after `createApp()` reaches every route
+group, `/kms` included, but runs behind each group's own hooks. An unsigned
+write that `requireAuthHeaders` refuses with a 401 never reaches a root
+`onRequest` hook added that late, so the record would miss it. That a signed
+request is seen at all rests on the order Fastify loads plugins in. The seam's
+hooks are therefore added to the root instance before the protocol plugin is
+registered. `createApp()` is split for that: it builds the instance and calls
+`composeApp({ fastify, ...options })`, which `startTestServer()` calls itself
+after adding the hooks. `composeApp` is not exported from the package root.
+
+The seam is `src/lib/requestFaults.ts`, returned by `startTestServer()` as
+`faults`: `refuse`, `dropResponse`, `hold`, `requests`, `reset`.
+
+- The invoking DID is read off the `Authorization` header's `keyId` before any
+  signature is verified, since the seam runs ahead of `parseAuthHeaders`. It
+  names who the request claims to be signed by.
+- An object predicate with no `method` never matches `OPTIONS`, so a browser's
+  CORS preflight does not take a fault meant for the request behind it.
+- The client stack retries. A `PUT` refused with a 5xx, or one whose response is
+  dropped, is sent again by was-client's HTTP layer, and a fault that fires once
+  is absorbed without the caller seeing it. The two tears take a `times` option
+  for that (default 1, `Infinity` allowed), and a refusal with a 4xx status is
+  not retried. Under grade two each retry is applied again.
+- Grade two closes the socket in an `onSend` hook, after the handler has
+  finished. It is meant for writes. A streamed response may have nothing to
+  lose.
+- A held request is an active connection, which `fastify.close()` waits on. A
+  `preClose` hook releases every hold, and `reset()` does too.
+
+### WAS-187: [H] Export the in-process test boot as `was-teaching-server/testing`
+
+- status: done
+- done: 2026-10-04
+- priority: high
+- labels: tests, packaging, consumers
+- discovered-from: FW-633 (freewallet's test-infrastructure read, 2026-10-03)
+- touches:
+  - [x] freewallet (FW-633, done 2026-10-04: takes 0.40.0 from the registry as a
+        devDependency and boots its conformance suite through this export)
+  - [ ] wallet-core (WC-269: its integration tier boots through this export)
+  - [x] was-sync, was-react, dcw (shipped: each boots its in-process server
+        suites through this export, with `startTestServer` and
+        `openTempBackend`, and no longer calls `new FileSystemBackend(...)`)
+  - [x] `docs/consuming-server-as-library.md` (shipped: the "Testing against the
+        server" section)
+- acceptance:
+  - [x] `package.json` exports `./testing`, built to `dist`, with types
+  - [x] The export carries `startTestServer` (the `localhost` server URL fix-up
+        included; since WAS-188 it boots through `composeApp()` and also returns
+        `faults`) and a helper that opens a `FileSystemBackend` on a fresh temp
+        dir and removes it on close
+  - [x] The export carries the webvh identity provisioner
+        (`provisionWebvhIdentity`, with its ladder and transient VM shapes).
+        Decided 2026-10-03: it is exported
+  - [x] The export pulls in no test runner: nothing under it imports `vitest`
+  - [x] The server's own suites import the helpers from the same source file the
+        export is built from, so there is one copy
+  - [x] `docs/consuming-server-as-library.md` shows the boot through the export
+        and through the async `open()` backend factory
+
+The in-process boot lives in `test/helpers.ts`, which is outside `dist`. Every
+consumer that runs tests against the real server copies the recipe: `createApp`
+with `serverUrl: 'http://localhost'`, `listen({ port: 0 })`, read the port, then
+set `fastify.serverUrl`. was-sync, was-react, dcw, and freewallet's conformance
+suite each carry a copy, and wallet-core is about to add another. The
+`localhost` detail matters, since webkms-client relaxes its loopback checks for
+that host alone, and a copy that uses `127.0.0.1` fails in the KMS facet only.
+
+The same consumers construct the backend with `new FileSystemBackend(...)`. The
+0.40.0 source makes backends come only from the async `open()` factory, so each
+of them breaks on that release. A shared helper that opens the backend gives
+them one call to move to.
+
+`provisionWebvhIdentity` is exported too (decided 2026-10-03). It builds a
+did:webvh identity by hand, in the ladder and transient VM shapes, without
+running a wallet ceremony. That suits a consumer test about a server rule, where
+the identity is setup and the ceremony is not under test. A test about the
+ceremonies themselves builds its account through wallet-core's account builder
+(WC-270) instead.
+
+The export is test support. It adds nothing to the production plugin's options.
+
+### WAS-183: [M] [blocks 2] Stamped, tombstoned access-control policies
+
+- status: done
+- done: 2026-10-04
+- priority: medium
+- labels: data-model, authz, replication, etag, wire-contract,
+  filesystem-backend, postgres-backend
+- blocks: WAS-96, WAS-176
+- touches:
+  - wallet-attached-storage-spec: "Access Control Policies" (the served stamp
+    members, the `ETag`, the preconditions, the tombstone) -- filed: WASS-52
+  - storage-core: `PolicyDocument` -- shipped: 0.34.0 (stamp members,
+    `PolicyTombstone`, `PolicyChangeDocument`), publish pending
+  - was-teaching-server: `PolicyRequest`, both backends' policy storage,
+    `src/lib/policyCache.ts`, ARCHITECTURE.md -- shipped with this item
+  - was-client: policy preconditions (optional) -- filed: WCL-123
+  - conformance-suite: policy `ETag` and precondition cases -- filed: PWSCS-22
+    (the current suite passes unchanged)
+- acceptance:
+  - [x] A stored policy carries the three stamp members and a generation;
+        `GET /policy` at each level serves the four-field `ETag` and the stamp
+        members as server-derived members a write body ignores
+  - [x] `PUT` and `DELETE /policy` take `If-Match` / `If-None-Match: *`
+  - [x] `DELETE` writes a tombstone (`deleted: true`) in place of the hard
+        delete; a tombstoned policy grants nothing and reads as absent
+        everywhere except the changes feed (WAS-182) and the apply path
+        (WAS-176); the Space policy's tombstone is readable with its stamp by
+        the pull loop (`GET /policy?include=deleted` under a capability, as
+        decided 2026-10-02)
+  - [x] A Collection or Resource `/policy` write or tombstone takes a feed
+        position and appears in the `changes` feed as a `kind: policy` document
+        carrying the policy's stamp, generation and URL (moved from WAS-182,
+        2026-10-04). Decided 2026-10-04: the document carries the policy's
+        absolute URL as `id`, like the other non-Resource kinds, with no
+        `target` member. storage-core's `ChangeDocument` gains the kind
+  - [x] Tests cover the validator, the preconditions, the tombstone and the
+        fail-closed read at all three levels, in both backends
+
+Context (discovered-from: WAS-96, open point 6). A policy had no validator, no
+`updatedAt`, and a hard delete, so "LWW by stamp" could not order two replicas'
+policies and a removed `PublicCanRead` policy would come back from a peer that
+still held it, a privacy regression rather than a stale record.
+
+Decided 2026-10-04: an export archive carries live policies only, each with its
+stamp members and `_generation`. An import skips a level where the destination
+holds a policy or a tombstone. A store holding policies written before stamps is
+refused at startup (filesystem layout version 3, Postgres migration 12).

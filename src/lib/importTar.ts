@@ -23,6 +23,7 @@ import { assertEncryptedWriteConforms } from './encryption.js'
 import { assertGoverningLogAppend } from './governedLog.js'
 import { importedGeneration, isMintedGeneration } from './etag.js'
 import { isPlainObject } from './isPlainObject.js'
+import { type ImportedPolicy, importedPolicy } from './policyRecord.js'
 import { compareCodeUnits } from './pagination.js'
 import { assertRevisionsTransition, assertValidRevisions } from './revisions.js'
 import { spaceTypeChangeProblem, spaceTypeProblem } from './spaceType.js'
@@ -30,7 +31,6 @@ import { InvalidImportError, ProblemError } from '../errors.js'
 import type {
   CollectionMetadata,
   CollectionRevisions,
-  PolicyDocument,
   RevocationRecord,
   SpaceMetadata,
   StoredCollectionLog,
@@ -369,10 +369,10 @@ export interface ImportPlanCollection {
    */
   collectionMetadata: CollectionMetadata
   /** Collection-level access-control policy, if the archive carries one. */
-  collectionPolicy?: PolicyDocument
+  collectionPolicy?: ImportedPolicy
   resources: ImportPlanResource[]
   /** Resource-level policies, keyed by resourceId. */
-  resourcePolicies: Map<string, PolicyDocument>
+  resourcePolicies: Map<string, ImportedPolicy>
   /** Resource metadata sidecars (raw `.meta.<id>.json` bytes), keyed by resourceId. */
   resourceMetadata: Map<string, Buffer>
   /**
@@ -429,7 +429,7 @@ export interface ImportPlan {
    */
   spaceMetadata?: ImportedSpaceMetadata
   /** Space-level access-control policy, if the archive carries one. */
-  spacePolicy?: PolicyDocument
+  spacePolicy?: ImportedPolicy
   collections: ImportPlanCollection[]
   /**
    * The archive's Collection tombstones. A Collection id is either here or
@@ -587,8 +587,11 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
 
   // Space-level policy (`.space.policy.json` at the space root).
   const spacePolicyEntry = entries.get(`${prefix}${SPACE_POLICY_FILE_NAME}`)
-  const spacePolicy: PolicyDocument | undefined = spacePolicyEntry?.body
-    ? JSON.parse(spacePolicyEntry.body.toString('utf8'))
+  const spacePolicy = spacePolicyEntry?.body
+    ? importedPolicy({
+        bytes: spacePolicyEntry.body,
+        fileName: SPACE_POLICY_FILE_NAME
+      })
     : undefined
   const collectionIds = new Set<string>()
   for (const name of entries.keys()) {
@@ -629,10 +632,10 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     const collectionPrefix = `${prefix}${collectionId}/`
     const resources: ImportPlanResource[] = []
     const resourceIds = new Set<string>()
-    let collectionPolicy: PolicyDocument | undefined
+    let collectionPolicy: ImportedPolicy | undefined
     let collectionLog: Buffer | undefined
     let collectionLogHead: { revisions?: CollectionRevisions } | undefined
-    const resourcePolicies = new Map<string, PolicyDocument>()
+    const resourcePolicies = new Map<string, ImportedPolicy>()
     const resourceMetadata = new Map<string, Buffer>()
     const chunkFiles: ImportPlanChunkFile[] = []
     for (const [entryName, entry] of entries) {
@@ -684,7 +687,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       // policy; `.r.<resourceId>.policy.json` is a Resource policy keyed by
       // resource id.
       if (fileName === COLLECTION_POLICY_FILE_NAME) {
-        collectionPolicy = JSON.parse(entry.body.toString('utf8'))
+        collectionPolicy = importedPolicy({ bytes: entry.body, fileName })
         continue
       }
       const policyResourceId = parseResourcePolicyFileName(fileName)
@@ -696,7 +699,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
         })
         resourcePolicies.set(
           policyResourceId,
-          JSON.parse(entry.body.toString('utf8'))
+          importedPolicy({ bytes: entry.body, fileName })
         )
         continue
       }

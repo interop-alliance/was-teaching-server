@@ -70,7 +70,8 @@ import {
   collectionMetaPath,
   collectionLogPath,
   quotaPath,
-  queryPath
+  queryPath,
+  policyPath
 } from '../lib/paths.js'
 import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
 import {
@@ -1150,8 +1151,10 @@ export class CollectionRequest {
     // ride along so a metadata-only edit replicates alongside content, as
     // does the server-managed `createdBy`.
     //
-    // A `collection-metadata` or `log` document has no id of its own, so its
-    // `id` is the record's absolute URL. It carries no body.
+    // A `collection-metadata`, `log` or `policy` document has no id of its
+    // own, so its `id` is the record's absolute URL. It carries no body. A
+    // `policy` document is the Collection's own policy or a Resource's, and
+    // carries `deleted: true` on a tombstone.
     // `feedGeneration` is set whenever the page has a document: every
     // position on it was handed out under it.
     const issueCheckpoint = (position: number): ChangesCheckpoint =>
@@ -1178,6 +1181,18 @@ export class CollectionRequest {
         }),
         checkpoint: issueCheckpoint(doc.feedPosition),
         ...(etag !== undefined && { etag })
+      }
+      if (doc.kind === 'policy') {
+        return {
+          kind: doc.kind,
+          id: `${serverUrl}${policyPath({
+            spaceId,
+            collectionId,
+            resourceId: doc.resourceId
+          })}`,
+          deleted: doc.deleted,
+          ...base
+        }
       }
       if (doc.kind !== 'resource') {
         return {

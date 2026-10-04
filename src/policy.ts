@@ -35,8 +35,10 @@ export type AccessAction = 'read' | 'write'
 /**
  * Resolves the policy that governs a target, honoring the spec's
  * most-specific-wins inheritance: a Resource policy overrides a Collection
- * policy, which overrides a Space policy. The first level that has a policy
- * document is the effective policy; if none do, resolves undefined.
+ * policy, which overrides a Space policy. The first level that has a live
+ * policy document is the effective policy; if none do, resolves undefined. A
+ * deleted policy's tombstone is no policy, so its level falls through to the
+ * next.
  *
  * @param options {object}
  * @param options.storage {StorageBackend}   the request's storage backend

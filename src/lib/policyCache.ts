@@ -7,7 +7,9 @@
  * invalidate via `invalidatePolicy` (one level) or `invalidateSpacePolicies` /
  * `invalidateCollectionPolicies` (every level under a Space or Collection, for
  * Delete Space / Delete Collection / import) so all consumers always read the
- * same state.
+ * same state. It reads through `StorageBackend.getPolicy`, which answers a
+ * deleted policy's tombstone as no policy, so a tombstone is cached as an
+ * absence and never grants.
  */
 import { LruCache } from '@interop/lru-memoize'
 import { POLICY_CACHE_MAX, POLICY_CACHE_TTL } from '../config.default.js'

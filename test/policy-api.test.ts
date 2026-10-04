@@ -10,6 +10,7 @@ import type { FastifyInstance } from 'fastify'
 import type { Space, Collection } from '@interop/was-client'
 
 import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
+import { withoutStampMembers } from '../src/lib/hlc.js'
 
 describe('Access-control policy API', () => {
   let fastify: FastifyInstance,
@@ -55,9 +56,11 @@ describe('Access-control policy API', () => {
 
   it('[controller] collection.setPublic() sets a PublicCanRead policy', async () => {
     await publicCollection.setPublic()
-    assert.deepEqual(await publicCollection.getPolicy(), {
-      type: 'PublicCanRead'
-    })
+    // The read serves the policy's write stamp beside its body.
+    assert.deepEqual(
+      withoutStampMembers((await publicCollection.getPolicy())!),
+      { type: 'PublicCanRead' }
+    )
   })
 
   it('anonymous GET of a resource in a PublicCanRead collection succeeds (200)', async () => {

@@ -445,7 +445,10 @@ export async function initSpaceRoutes(
   // group's hook lets safe methods through: the route-level `requireAuthHeaders`
   // (run after the group chain) demands the auth headers (401). The same
   // applies to the Collection- and Resource-level policy GETs below.
-  app.get<{ Params: PolicyParams }>(
+  app.get<{
+    Params: PolicyParams
+    Querystring: { include?: string | string[] }
+  }>(
     '/space/:spaceId/policy',
     { onRequest: requireAuthHeaders },
     PolicyRequest.get
@@ -552,7 +555,10 @@ export async function initCollectionRoutes(
 
   // Collection access-control policy (reserved segment; static-beats-parametric
   // routing keeps this ahead of the `:resourceId` parameter).
-  app.get<{ Params: PolicyParams }>(
+  app.get<{
+    Params: PolicyParams
+    Querystring: { include?: string | string[] }
+  }>(
     '/space/:spaceId/:collectionId/policy',
     { onRequest: requireAuthHeaders },
     PolicyRequest.get
@@ -669,7 +675,10 @@ export async function initResourceRoutes(
   )
 
   // Resource access-control policy (reserved segment)
-  app.get<{ Params: PolicyParams }>(
+  app.get<{
+    Params: PolicyParams
+    Querystring: { include?: string | string[] }
+  }>(
     '/space/:spaceId/:collectionId/:resourceId/policy',
     { onRequest: requireAuthHeaders },
     PolicyRequest.get

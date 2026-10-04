@@ -2,8 +2,8 @@
  * Helpers for the HTTP `ETag` strong validator that backs conditional writes
  * (the `conditional-writes` feature) and conditional reads (spec "Caching").
  * A versioned record (a Resource, a chunk, a Resource's `/meta` object, a
- * Collection's governing history log, a Space or Collection Metadata object)
- * carries a `generation` and the write stamp of its last write (see
+ * Collection's governing history log, an access-control policy, a Space or
+ * Collection Metadata object) carries a `generation` and the write stamp of its last write (see
  * `lib/hlc.ts`). The two are formatted together as one quoted strong
  * validator, `"<generation>.<ms>.<counter>.<originId>"`, with `ms` the epoch
  * millisecond value of the stamp's `updatedAt`. A Space or Collection

@@ -212,7 +212,7 @@ describe('buildImportPlan', () => {
   it('builds a plan with sorted collections, policies, and resources', () => {
     const plan = buildImportPlan(validSpaceEntries())
 
-    assert.deepStrictEqual(plan.spacePolicy, { type: 'PublicCanRead' })
+    assert.deepStrictEqual(plan.spacePolicy?.policy, { type: 'PublicCanRead' })
     assert.deepStrictEqual(
       plan.collections.map(c => c.collectionId),
       ['colA', 'colB']
@@ -220,14 +220,14 @@ describe('buildImportPlan', () => {
 
     const [colA, colB] = plan.collections
     assert.equal(colA!.collectionMetadata.name, 'A')
-    assert.deepStrictEqual(colA!.collectionPolicy, {
+    assert.deepStrictEqual(colA!.collectionPolicy?.policy, {
       type: 'PublicCanRead',
       scope: 'collection'
     })
     assert.equal(colA!.resources.length, 1)
     assert.equal(colA!.resources[0]!.resourceId, 'res1')
     assert.equal(colA!.resources[0]!.fileName, 'r.res1.application%2Fjson.json')
-    assert.deepStrictEqual(colA!.resourcePolicies.get('res1'), {
+    assert.deepStrictEqual(colA!.resourcePolicies.get('res1')?.policy, {
       type: 'PublicCanRead',
       scope: 'resource'
     })

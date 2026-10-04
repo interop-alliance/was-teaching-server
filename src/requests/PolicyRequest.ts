@@ -6,12 +6,20 @@
  * the Space controller. The read-method relaxation in auth-header-hooks.ts does
  * not apply here (a policy is controller-managed metadata, not public data);
  * routes.ts installs the strict `requireAuthHeaders` on the GET routes.
+ *
+ * A policy is a versioned record (`lib/policyRecord.ts`): a read serves its
+ * write stamp members and its `ETag`, a write or delete takes `If-Match` /
+ * `If-None-Match`, and a delete leaves a tombstone that reads as absent
+ * unless asked for with `?include=deleted`.
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndVerify } from './spaceContext.js'
+import { notModifiedReply } from './notModified.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { policyPath } from '../lib/paths.js'
 import { invalidatePolicy } from '../lib/policyCache.js'
+import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
+import { parseIncludeSections } from '../lib/pagination.js'
 import { InvalidPolicyError, PolicyNotFoundError } from '../errors.js'
 import type { PolicyDocument } from '../types.js'
 
@@ -25,14 +33,24 @@ export interface PolicyParams {
 export class PolicyRequest {
   /**
    * GET /space/:spaceId[/:collectionId[/:resourceId]]/policy
-   * Read the access-control policy document set at this level.
+   * Read the access-control policy document set at this level, with its
+   * write stamp members (`updatedAt`, `updatedAtCounter`, `originId`) and its
+   * `ETag`. A conditional read whose `If-None-Match` covers the `ETag` is
+   * answered 304. A deleted policy's tombstone is answered 404, the same as
+   * no policy, unless the request asks for `?include=deleted`: then it is
+   * answered 200 with its `ETag` and a body of `deleted: true` plus the stamp
+   * of the delete. The read is capability-only, so the tombstone is only
+   * ever served under a verified capability.
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
    * @returns {Promise<FastifyReply>}
    */
   static async get(
-    request: FastifyRequest<{ Params: PolicyParams }>,
+    request: FastifyRequest<{
+      Params: PolicyParams
+      Querystring: { include?: string | string[] }
+    }>,
     reply: FastifyReply
   ): Promise<FastifyReply> {
     const { spaceId, collectionId, resourceId } = request.params
@@ -43,30 +61,53 @@ export class PolicyRequest {
 
     // Verify (capability-only): a policy is controller-managed metadata, so
     // reading it requires a valid capability invocation -- no policy fallback.
+    // `allowTargetQuery` lets a controller's root invocation of the
+    // `?include=deleted` URL verify: the query selects what the read serves
+    // and does not change the capability target.
     await fetchSpaceAndVerify({
       request,
       spaceId,
       targetPath: policyPath({ spaceId, collectionId, resourceId }),
-      requestName
+      requestName,
+      allowTargetQuery: true
     })
 
-    const policy = await storage.getPolicy({
+    // authorized, continue
+
+    // An unknown `include` section is ignored, as on the Space listing.
+    const includeDeleted = parseIncludeSections(request.query.include).includes(
+      'deleted'
+    )
+    const record = await storage.getPolicyRecord({
       spaceId,
       collectionId,
       resourceId
     })
-    if (!policy) {
+    if (!record || (record.deleted && !includeDeleted)) {
       throw new PolicyNotFoundError({ requestName })
+    }
+    const etag = record.validator && formatEtag(record.validator)
+    const notModified = notModifiedReply({ request, reply, etag })
+    if (notModified) {
+      return notModified
+    }
+    if (etag !== undefined) {
+      reply.header('etag', etag)
     }
     return reply
       .status(200)
       .type('application/json')
-      .send(JSON.stringify(policy))
+      .send(JSON.stringify(record.deleted ? record.tombstone : record.policy))
   }
 
   /**
    * PUT /space/:spaceId[/:collectionId[/:resourceId]]/policy
-   * Create or replace the access-control policy document at this level.
+   * Create or replace the access-control policy document at this level. The
+   * body's `updatedAt`, `updatedAtCounter`, `originId` and `deleted` are
+   * ignored. `If-Match` / `If-None-Match: *` are evaluated by the backend,
+   * atomically with the write (412 otherwise). Answers 201 with the stored
+   * policy when the write created it (over a tombstone included), else 204,
+   * both with the new `ETag`.
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
@@ -105,25 +146,38 @@ export class PolicyRequest {
       requestName
     })
 
-    const existing = await storage.getPolicy({
+    const {
+      validator,
+      created,
+      policy: stored
+    } = await storage.writePolicy({
       spaceId,
       collectionId,
-      resourceId
+      resourceId,
+      policy,
+      ...parseWritePreconditions(request.headers)
     })
-    await storage.writePolicy({ spaceId, collectionId, resourceId, policy })
     // Bust the cached policy at this exact level so the next read sees this
     // write (and does not keep serving a stale cached "no policy" negative).
     invalidatePolicy({ storage, spaceId, collectionId, resourceId })
 
-    reply.header('Location', policyUrl)
-    return existing
-      ? reply.status(204).send() // update
-      : reply.status(201).send(policy) // create
+    reply.header('Location', policyUrl).header('etag', formatEtag(validator))
+    if (!created) {
+      return reply.status(204).send()
+    }
+    return reply
+      .status(201)
+      .type('application/json')
+      .send(JSON.stringify(stored))
   }
 
   /**
    * DELETE /space/:spaceId[/:collectionId[/:resourceId]]/policy
    * Remove the access-control policy document at this level (idempotent).
+   * The backend leaves a tombstone in its place, which grants nothing, and
+   * the 204 carries the tombstone's `ETag`. Deleting an absent or already
+   * deleted policy writes nothing and answers 204 with no `ETag`.
+   * `If-Match` / `If-None-Match` are evaluated against the live policy.
    *
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
@@ -148,10 +202,18 @@ export class PolicyRequest {
       requestName
     })
 
-    await storage.deletePolicy({ spaceId, collectionId, resourceId })
+    const validator = await storage.deletePolicy({
+      spaceId,
+      collectionId,
+      resourceId,
+      ...parseWritePreconditions(request.headers)
+    })
     // Bust the cached policy at this exact level so the next read sees it gone
     // rather than a stale cached grant.
     invalidatePolicy({ storage, spaceId, collectionId, resourceId })
+    if (validator !== undefined) {
+      reply.header('etag', formatEtag(validator))
+    }
     return reply.status(204).send()
   }
 }

@@ -30,6 +30,7 @@ import {
   zcapClients,
   webvhLogSigner
 } from './helpers.js'
+import { withoutStampMembers } from '../src/lib/hlc.js'
 
 /** A minted, published self-hosted `did:webvh` and its enrolled client key. */
 interface WebvhIdentity {
@@ -399,7 +400,9 @@ describe('did:webvh delegation and chain depth', () => {
         capability: subtreeCap
       })
       assert.equal(response.status, 200)
-      assert.deepStrictEqual(response.data, { type: 'PublicCanRead' })
+      assert.deepStrictEqual(withoutStampMembers(response.data as object), {
+        type: 'PublicCanRead'
+      })
     })
   })
 })

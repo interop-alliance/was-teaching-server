@@ -1,5 +1,36 @@
 # History
 
+## 0.42.0 - TBD
+
+### Changed
+
+- **BREAKING**: an access-control policy is a versioned record at all three
+  levels. Get Policy serves `updatedAt`, `updatedAtCounter` and `originId`
+  beside the policy body, and the four-segment `ETag`. A conditional read is
+  answered 304. A `PUT` body's stamp members and `deleted` are ignored.
+- `PUT` and `DELETE .../policy` take `If-Match` and `If-None-Match: *` (412
+  otherwise). `PUT` answers `201` or `204` with the new `ETag`, from the
+  backend's decision under its lock.
+- **BREAKING**: Delete Policy leaves a tombstone, `deleted: true` plus the
+  delete's write stamp, and answers `204` with its `ETag`. A tombstone grants
+  nothing and Get Policy answers it `404`, the same as no policy.
+  `GET .../policy?include=deleted` answers it `200` with its `ETag`. A `PUT`
+  over a tombstone creates the policy under a new generation. Deleting an absent
+  or already deleted policy writes nothing.
+- A Collection or Resource policy write or delete takes a feed position. The
+  `changes` feed carries it as a `kind: 'policy'` document whose `id` is the
+  policy's absolute URL, with `deleted: true` on a tombstone.
+- Export carries live policies only, each with its stamp members and
+  `_generation`. Import keeps the archived generation, re-stamps the policy, and
+  skips a level where the destination holds a tombstone. An archived policy
+  tombstone refuses the import as `invalid-import` (400).
+- **BREAKING**: a store holding policies written before this release is refused
+  at startup with `StoreVersionError`. The filesystem layout moves to version 3,
+  which refuses a data directory holding any policy file. Postgres schema
+  migration 12 refuses a `policies` table holding any row, then adds the stamp,
+  `generation`, `deleted` and `feed_position` columns. Wipe the store, or
+  restore each Space from an export archive.
+
 ## 0.41.1 - 2026-10-04
 
 ### Fixed

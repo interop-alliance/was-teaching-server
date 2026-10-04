@@ -149,13 +149,14 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   still sniffed, and runs sandboxed too.
 - **`src/lib/etag.ts`** and **`src/lib/preconditions.ts`** — the `ETag`
   validators (spec "Caching" and "Conditional Requests"). A Resource, a chunk, a
-  Resource's `/meta` object, a Collection's governing history log, and each
-  container's Metadata object (the Space Metadata object, the Collection
-  Metadata object) carries a generation and the write stamp of its last write
-  (`lib/hlc.ts`, below). `formatEtag` emits the two together as one strong
-  `ETag` on GET/HEAD, `"<generation>.<ms>.<counter>.<originId>"`, where `ms` is
-  the stamp's `updatedAt` in epoch milliseconds. A container's Metadata object
-  appends a fifth segment, its local segment:
+  Resource's `/meta` object, a Collection's governing history log, an
+  access-control policy at each of its three levels, and each container's
+  Metadata object (the Space Metadata object, the Collection Metadata object)
+  carries a generation and the write stamp of its last write (`lib/hlc.ts`,
+  below). `formatEtag` emits the two together as one strong `ETag` on GET/HEAD,
+  `"<generation>.<ms>.<counter>.<originId>"`, where `ms` is the stamp's
+  `updatedAt` in epoch milliseconds. A container's Metadata object appends a
+  fifth segment, its local segment:
   `"<generation>.<ms>.<counter>.<originId>.<local>"`. Every write mints a new
   stamp, so the validator moves with every write. One validator covers a
   container's whole Metadata object. v0.5 merged what used to be a separate
@@ -277,29 +278,37 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   takes one too, the create included, and so does a governed-log write (the
   guarded create and each append). A log write takes no position for the
   Metadata object, whose local segment it advances. A byte-identical log write
-  takes none. A chunk write takes none, so it never moves its parent. The feed
-  holds one document per record, at the position of its latest write, and each
-  document carries a `kind`. A `resource` document is a Resource or its
-  tombstone, with its `contentType`, and its body inline as `data` when it is a
-  live JSON Resource. A `collection-metadata` document is the Collection
-  Metadata object and a `log` document its governing history log. Neither has an
-  id of its own, so its `id` is the record's absolute URL, and it carries no
-  body. Every document carries the record's write stamp, its `generation`, and
-  its `etag`, so a puller can decide whether to apply a change from the feed
-  alone. A `resource` document also carries the `/meta` record's stamp and
-  generation under `meta`, once metadata was written. A `/meta` write moves the
-  document to a new position with a new `meta` stamp, and its top-level stamp
-  and `etag` stay the content record's. A tombstone is marked `deleted: true`. A
-  consumer skips a `kind` it does not know. A policy write is not in the feed
-  yet. A Collection's own tombstone is not either, since the feed goes with the
-  Collection. The position is assigned inside the per-Collection critical
-  section that makes the write visible, so no write lands at or before a
-  position a reader was already handed. The write stamp each feed document
-  carries orders two revisions of one Resource, not the feed. `updatedAt` alone
-  has no ordering role, since two writes can share a millisecond. The filesystem
-  backend keeps the counter in `.feed.<collectionId>.json` in the Collection dir
-  and stamps the position on the sidecar as `feedPosition`, under a `feed:` key
-  nested inside the per-Resource lock. `changesSince` reads the counter under
+  takes none. A Collection's own policy and each Resource policy take one with
+  every write and every delete, which leaves a tombstone. A Space policy takes
+  none, since it is in no Collection. A chunk write takes none, so it never
+  moves its parent. The feed holds one document per record, at the position of
+  its latest write, and each document carries a `kind`. A `resource` document is
+  a Resource or its tombstone, with its `contentType`, and its body inline as
+  `data` when it is a live JSON Resource. A `collection-metadata` document is
+  the Collection Metadata object, a `log` document its governing history log,
+  and a `policy` document the Collection's own policy or a Resource's. None of
+  the three has an id of its own, so its `id` is the record's absolute URL
+  (`.../meta`, `.../meta/log`, `.../policy`), and it carries no body. Every
+  document carries the record's write stamp, its `generation`, and its `etag`,
+  so a puller can decide whether to apply a change from the feed alone. A
+  `resource` document also carries the `/meta` record's stamp and generation
+  under `meta`, once metadata was written. A `/meta` write moves the document to
+  a new position with a new `meta` stamp, and its top-level stamp and `etag`
+  stay the content record's. A tombstone is marked `deleted: true`. A consumer
+  skips a `kind` it does not know. A Collection's own tombstone is not in the
+  feed, since the feed goes with the Collection. The position is assigned inside
+  the per-Collection critical section that makes the write visible, so no write
+  lands at or before a position a reader was already handed. The write stamp
+  each feed document carries orders two revisions of one Resource, not the feed.
+  `updatedAt` alone has no ordering role, since two writes can share a
+  millisecond. The filesystem backend keeps the counter in
+  `.feed.<collectionId>.json` in the Collection dir and stamps the position on
+  the sidecar as `feedPosition`, under a `feed:` key nested inside the
+  per-Resource lock. The counter file also records the latest position of each
+  record that has no sidecar: the Collection Metadata object, the log, the
+  Collection's own policy (`collectionPolicyPosition`) and each Resource policy
+  (`resourcePolicyPositions`, keyed by Resource id). Postgres keeps a policy's
+  position in `policies.feed_position`. `changesSince` reads the counter under
   that key and admits only positions at or below it. The Postgres backend
   increments `collections.feed_position` with `UPDATE ... RETURNING`, whose row
   lock is held to commit, so positions are commit-ordered, and stamps
@@ -330,7 +339,9 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   two short-TTL read caches on the authorization path, one per storage backend.
   The first memoizes the Space Metadata object, whose `controller` every
   capability check verifies against. The second memoizes the access-control
-  policies the policy fallback reads. Both expire entries after 10 s
+  policies the policy fallback reads. It reads through `getPolicy`, which
+  answers a deleted policy's tombstone as no policy, so a tombstone is cached as
+  an absence and grants nothing. Both expire entries after 10 s
   (`SPACE_METADATA_CACHE_TTL`, `POLICY_CACHE_TTL` in `config.default.ts`). A
   write drops the affected entries, but only in the process that made the write.
   The TTLs therefore rest on a single-instance deployment. When several
@@ -411,6 +422,35 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   local segment, since the object's served content changed, and leaves that
   object's stamp untouched, `updatedAt` included. It is serialized with
   Collection Metadata writes through the same per-Collection lock.
+- **`src/lib/policyRecord.ts`** -- access-control policies as versioned records,
+  at all three levels. A stored policy carries the write stamp of its last write
+  and a generation. Get Policy serves the stamp members (`updatedAt`,
+  `updatedAtCounter`, `originId`) beside the body and the four-segment `ETag`,
+  and answers a conditional read 304. The generation is in the `ETag` only. A
+  `PUT` body's stamp members, `deleted` and `_generation` are not stored. `PUT`
+  and `DELETE` take `If-Match` / `If-None-Match: *`, evaluated by the backend
+  against the live policy under the write's lock (the filesystem `policy:` key,
+  the Postgres Space row). `PUT` answers 201 or 204 from what the backend
+  reports. Delete Policy leaves a tombstone, `deleted: true` plus the delete's
+  stamp, with the generation kept and no `type`, and answers 204 with its
+  `ETag`. A delete of an absent or already deleted policy writes nothing and
+  answers 204 with no `ETag`. A tombstone reads as absent everywhere:
+  `getPolicy` answers it as no policy, so the policy fallback, the policy cache,
+  the listing's `public` flag and the linkset never see it. Only
+  `getPolicyRecord` returns it, for Get Policy under `?include=deleted`
+  (capability-only, like every policy read), which answers it 200 with its
+  `ETag`, and for the changes feed. A plain Get Policy answers it with the same
+  404 as no policy. A `PUT` over a tombstone is a create: 201, a new generation,
+  and a stamp above the tombstone's. The filesystem backend stores a policy file
+  as the served body with `_generation` embedded. Postgres keeps the body in
+  `policies.policy` (NULL on a tombstone) and the stamp, generation and
+  `deleted` mark in columns. Export carries live policies only, as stored.
+  Import keeps the archived generation, re-stamps with the importing store's
+  clock, and skips a level where the destination holds any policy record, a
+  tombstone included, so an import does not undo a delete. An archived tombstone
+  refuses the import as `invalid-import` (400). Delete Collection and Delete
+  Space still remove their policies outright. Delete Resource leaves the
+  Resource's policy in place.
 - **`src/lib/revisions.ts`** -- the Collection `revisions` descriptor:
   `resolution` (a closed set, `last-writer-wins` only, which is also the
   default), `immutable` (a boolean, default `false`), and `merge` (an object the
@@ -722,24 +762,30 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   stamps carries none and there is no stamping step. The refusal repeats on
   every boot until the dir is wiped. An empty data dir passes and is stamped at
   the new version. The Postgres backend refuses a populated pre-stamp schema the
-  same way. The version is private to the backend: it is not exported, not
-  stored in any Space, and not served. The Postgres backend's `applyMigrations`
-  refuses the same way, with the same `StoreVersionError`, when its
-  `schema_migrations` table records a version newer than `MIGRATIONS` knows.
-  `store.json` also carries the store's origin id as its `originId` member (see
-  the Glossary's Origin id). `open()` settles it on every boot, under the same
-  lock, and it is not a migration step. A store with no id takes `WAS_ORIGIN_ID`
-  when set, else a minted one, and writes it before any step runs. A stored id
-  is kept, and a set `WAS_ORIGIN_ID` that differs from it refuses startup with
-  `StoreOriginIdError`, naming both. `store.json` also carries `clockHighWater`,
-  the high-water mark of the store's hybrid logical clock in epoch milliseconds
-  (see `lib/hlc.ts`). The clock raises it at runtime, and a lower value never
-  replaces a stored higher one. It is not a migration step either. Every rewrite
-  of `store.json` keeps the id, the high-water mark, and any member this code
-  does not know. The Postgres twin is the single row of the `store` table
-  (column `origin_id`, beside `clock_high_water`), settled by `applyMigrations`
-  in the same transaction, under its advisory lock. Each backend exposes the id
-  as `StorageBackend.originId`, and a data-plane backend adapter carries the
+  same way. Version 3 is the policy-stamp layout, in which an access-control
+  policy carries a write stamp and a generation, and its delete leaves a
+  tombstone. Its step refuses a data dir that holds any policy file, on the same
+  terms. Postgres schema migration 12 refuses a `policies` table that holds any
+  row the same way, then adds the stamp, generation, `deleted` and
+  `feed_position` columns. The version is private to the backend: it is not
+  exported, not stored in any Space, and not served. The Postgres backend's
+  `applyMigrations` refuses the same way, with the same `StoreVersionError`,
+  when its `schema_migrations` table records a version newer than `MIGRATIONS`
+  knows. `store.json` also carries the store's origin id as its `originId`
+  member (see the Glossary's Origin id). `open()` settles it on every boot,
+  under the same lock, and it is not a migration step. A store with no id takes
+  `WAS_ORIGIN_ID` when set, else a minted one, and writes it before any step
+  runs. A stored id is kept, and a set `WAS_ORIGIN_ID` that differs from it
+  refuses startup with `StoreOriginIdError`, naming both. `store.json` also
+  carries `clockHighWater`, the high-water mark of the store's hybrid logical
+  clock in epoch milliseconds (see `lib/hlc.ts`). The clock raises it at
+  runtime, and a lower value never replaces a stored higher one. It is not a
+  migration step either. Every rewrite of `store.json` keeps the id, the
+  high-water mark, and any member this code does not know. The Postgres twin is
+  the single row of the `store` table (column `origin_id`, beside
+  `clock_high_water`), settled by `applyMigrations` in the same transaction,
+  under its advisory lock. Each backend exposes the id as
+  `StorageBackend.originId`, and a data-plane backend adapter carries the
   hosting server's id, handed to it through the `BackendProvider` options. Both
   primary backends are obtained only from a static async `open()` (their
   constructors are protected), which resolves once the migrations have run and
@@ -975,21 +1021,24 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   Collection Metadata object and the governing history log keep theirs in the
   filesystem feed counter file (`collectionMetadataPosition`, `logPosition`) and
   in the Postgres `collections` columns `metadata_feed_position` and
-  `log_feed_position`. Local to one server and never replicated. The wire
-  **checkpoint** wraps one in an opaque string scoped to the issuing Collection
-  URL and to the feed counter's generation, which a re-create of the Collection
-  replaces (see `lib/changesCheckpoint.ts`). Avoid: keyset, cursor (the
-  listings' pagination token), `updatedAt` as an ordering key.
+  `log_feed_position`. A Collection or Resource policy keeps its position in the
+  counter file too (`collectionPolicyPosition`, `resourcePolicyPositions`), and
+  in the Postgres `policies.feed_position` column. Local to one server and never
+  replicated. The wire **checkpoint** wraps one in an opaque string scoped to
+  the issuing Collection URL and to the feed counter's generation, which a
+  re-create of the Collection replaces (see `lib/changesCheckpoint.ts`). Avoid:
+  keyset, cursor (the listings' pagination token), `updatedAt` as an ordering
+  key.
 - **Write stamp** -- the identity of a record's last write: `updatedAt`,
   `updatedAtCounter`, and `originId`, minted by the store's hybrid logical clock
   inside the write's critical section (`lib/hlc.ts`). Every versioned record
   carries one: a Resource's content, a chunk, a Resource's `/meta` record
   (nested under `meta`, beside its generation), the Space and Collection
-  Metadata objects, and a governing history log. With the record's generation it
-  forms the `ETag`. Stamps order two revisions of one record by
-  `(ms, counter, originId)`. They do not order the `changes` feed, which the
-  feed position does. Avoid: version, `metaVersion`, revision number, timestamp
-  (`updatedAt` alone is one member of the stamp).
+  Metadata objects, a governing history log, and an access-control policy. With
+  the record's generation it forms the `ETag`. Stamps order two revisions of one
+  record by `(ms, counter, originId)`. They do not order the `changes` feed,
+  which the feed position does. Avoid: version, `metaVersion`, revision number,
+  timestamp (`updatedAt` alone is one member of the stamp).
 - **Local segment** -- the fifth `ETag` segment of a Space or Collection
   Metadata object, a per-record counter this server keeps (`_local` in the
   filesystem Metadata file, `meta_local` in Postgres). It advances when the

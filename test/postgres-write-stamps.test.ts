@@ -40,6 +40,12 @@ const PRE_STAMP_VERSION = 8
  */
 const FEED_KINDS_VERSION = 11
 
+/**
+ * The schema version that added the policy stamp, generation, tombstone and
+ * feed position columns.
+ */
+const POLICY_STAMP_VERSION = 12
+
 if (!connectionString) {
   describe('PostgresBackend write stamps', () => {
     it.skip('skipped: set WAS_TEST_DATABASE_URL to run the Postgres backend tests', () => {})
@@ -488,6 +494,66 @@ if (!connectionString) {
         after.documents.map(document => [document.kind, document.feedPosition]),
         [['collection-metadata', 2]]
       )
+    })
+
+    /**
+     * Rolls the test schema back to the version before policies carried
+     * write stamps, keeping its other tables as they are.
+     * @returns {Promise<void>}
+     */
+    async function rollBackPolicyStamps(): Promise<void> {
+      await adminQuery(
+        `ALTER TABLE "${schema}".policies
+           DROP COLUMN deleted,
+           DROP COLUMN generation,
+           DROP COLUMN updated_at,
+           DROP COLUMN updated_at_counter,
+           DROP COLUMN origin_id,
+           DROP COLUMN feed_position,
+           ALTER COLUMN policy SET NOT NULL`
+      )
+      await adminQuery(
+        `DELETE FROM "${schema}".schema_migrations WHERE version = $1`,
+        [POLICY_STAMP_VERSION]
+      )
+    }
+
+    it('refuses a pre-policy-stamp schema that holds a policy, on every boot', async () => {
+      const backend = await boot()
+      await provision(backend)
+      await backend.close()
+      backends.splice(backends.indexOf(backend), 1)
+      await rollBackPolicyStamps()
+      await adminQuery(
+        `INSERT INTO "${schema}".policies (space_id, collection_id, policy)
+         VALUES ('space1', 'notes', '{"type":"PublicCanRead"}'::jsonb)`
+      )
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await assert.rejects(
+          PostgresBackend.open({ connectionString: connectionString!, schema }),
+          (err: unknown) =>
+            err instanceof StoreVersionError &&
+            err.message.includes('1 access-control policy row(s)')
+        )
+        assert.equal(await storedSchemaVersion(), POLICY_STAMP_VERSION - 1)
+      }
+    })
+
+    it('reshapes a pre-policy-stamp schema with no policy, and boots', async () => {
+      const backend = await boot()
+      await provision(backend)
+      await backend.close()
+      backends.splice(backends.indexOf(backend), 1)
+      await rollBackPolicyStamps()
+
+      const rebooted = await boot()
+      assert.equal(await storedSchemaVersion(), MIGRATIONS.length)
+      const { validator } = await rebooted.writePolicy({
+        spaceId: 'space1',
+        collectionId: 'notes',
+        policy: { type: 'PublicCanRead' }
+      })
+      assert.equal(validator.stamp.originId, rebooted.originId)
     })
   })
 }

@@ -160,6 +160,16 @@ import {
   assertCollectionLogWritePrecondition
 } from '../lib/preconditions.js'
 import {
+  type ImportedPolicy,
+  livePolicyUnderPrecondition,
+  normalizePolicyWrite,
+  policyFeedDocument,
+  policyFile,
+  priorPolicyParts,
+  stampedPolicy,
+  storedPolicy
+} from '../lib/policyRecord.js'
+import {
   collectionLogResultOf,
   unchangedLogValidator
 } from '../lib/governedLog.js'
@@ -178,6 +188,8 @@ import type {
   ResourceInput,
   ImportStats,
   PolicyDocument,
+  PolicyWriteResult,
+  StoredPolicy,
   BackendDescriptor,
   BackendUsage,
   CollectionUsage,
@@ -336,6 +348,45 @@ function stampOfRow(row: StampColumns): WriteStamp {
     updatedAtCounter: row.updated_at_counter,
     originId: row.origin_id
   }
+}
+
+/**
+ * The columns a `policies` read selects: the body, the tombstone mark, and
+ * the generation and stamp columns.
+ */
+const POLICY_COLUMNS =
+  'policy, deleted, generation, updated_at, updated_at_counter, origin_id'
+
+/**
+ * A `policies` row as `POLICY_COLUMNS` selects it. `policy` is `NULL` on a
+ * tombstone.
+ */
+type PolicyRow = StampColumns & {
+  policy: PolicyDocument | null
+  deleted: boolean
+  generation: string
+}
+
+/**
+ * The stored policy record of a `policies` row: a live policy served with
+ * its stamp members, or a tombstone. `undefined` for no row.
+ * @param row {PolicyRow | undefined}
+ * @returns {StoredPolicy | undefined}
+ */
+function storedPolicyFromRow(
+  row: PolicyRow | undefined
+): StoredPolicy | undefined {
+  if (row === undefined) {
+    return undefined
+  }
+  const stamp = stampOfRow(row)
+  return storedPolicy({
+    generation: row.generation,
+    stamp,
+    ...(!row.deleted && {
+      policy: stampedPolicy({ body: row.policy!, stamp })
+    })
+  })
 }
 
 /**
@@ -2281,7 +2332,8 @@ export class PostgresBackend implements StorageBackend {
         policy: PolicyDocument
       }>(
         `SELECT collection_id, policy FROM policies
-          WHERE space_id = $1 AND collection_id = ANY($2) AND resource_id = ''`,
+          WHERE space_id = $1 AND collection_id = ANY($2) AND resource_id = ''
+            AND NOT deleted`,
         [spaceId, pageIds]
       )
       for (const policyRow of policyRows) {
@@ -3706,10 +3758,12 @@ export class PostgresBackend implements StorageBackend {
    * a `resource` document, with the body parsed only for a live JSON
    * Resource. The Collection Metadata object is one `collection-metadata`
    * document at the position of its latest write, and the governing history
-   * log one `log` document at the position of its latest write. One
-   * statement reads the Collection row, its feed generation included, beside
-   * the first `limit` Resource rows past `afterPosition`, so all of it comes
-   * from one snapshot. Positions are commit-ordered (`#takeFeedPosition`), so
+   * log one `log` document at the position of its latest write. Each
+   * Collection- or Resource-level policy is one `policy` document at the
+   * position of its latest write, a tombstone included. One statement reads
+   * the Collection row, its feed generation included, beside the first
+   * `limit` Resource rows and the first `limit` policy rows past
+   * `afterPosition`, so all of it comes from one snapshot. Positions are commit-ordered (`#takeFeedPosition`), so
    * that snapshot never holds a position without every lower one. The at most
    * two container documents are merged in by position, and the page is cut at
    * `limit` across all kinds. Each `resource` document carries the content
@@ -3760,6 +3814,9 @@ export class PostgresBackend implements StorageBackend {
         c_log_updated_at: string | null
         c_log_updated_at_counter: number | null
         c_log_origin_id: string | null
+        c_policies: Array<
+          PolicyRow & { resource_id: string; feed_position: number }
+        >
       }
     >(
       `SELECT c.feed_generation        AS c_feed_generation,
@@ -3774,6 +3831,14 @@ export class PostgresBackend implements StorageBackend {
               c.log_updated_at         AS c_log_updated_at,
               c.log_updated_at_counter AS c_log_updated_at_counter,
               c.log_origin_id          AS c_log_origin_id,
+              (SELECT COALESCE(json_agg(p ORDER BY p.feed_position), '[]')
+                 FROM (SELECT resource_id, ${POLICY_COLUMNS}, feed_position
+                         FROM policies
+                        WHERE space_id = c.space_id
+                          AND collection_id = c.collection_id
+                          AND feed_position > $3
+                        ORDER BY feed_position
+                        LIMIT $4) p) AS c_policies,
               r.*
          FROM collections c
          LEFT JOIN LATERAL (
@@ -3849,9 +3914,24 @@ export class PostgresBackend implements StorageBackend {
         )
       }
     }
-    // The Resource rows are the first `pageSize` past the position, so after
-    // the container documents are merged in by position, the first
-    // `pageSize` documents of the merge are the page.
+    // The Collection's policies past the position, read by the same
+    // statement: the Collection's own (`resource_id` '') and each Resource's,
+    // live or a tombstone.
+    for (const policyRow of collectionRow?.c_policies ?? []) {
+      const document = policyFeedDocument({
+        record: storedPolicyFromRow(policyRow)!,
+        ...(policyRow.resource_id !== '' && {
+          resourceId: policyRow.resource_id
+        }),
+        feedPosition: Number(policyRow.feed_position)
+      })
+      if (document !== undefined) {
+        documents.push(document)
+      }
+    }
+    // The Resource rows and the policy rows are each the first `pageSize`
+    // past the position, so after the container documents are merged in by
+    // position, the first `pageSize` documents of the merge are the page.
     documents.sort((left, right) => left.feedPosition - right.feedPosition)
     documents.length = Math.min(documents.length, pageSize)
 
@@ -4124,11 +4204,47 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
+   * The stored policy record at a level, live or a tombstone, beside its
+   * validator. Every policy read goes through here; `getPolicy` drops a
+   * tombstone.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}
    * @param [options.resourceId] {string}
-   * @returns {Promise<PolicyDocument|undefined>}
+   * @param [options.queryable] {Queryable}   a transaction's client; the
+   *   pool when omitted
+   * @returns {Promise<StoredPolicy | undefined>}
+   */
+  async getPolicyRecord({
+    spaceId,
+    collectionId,
+    resourceId,
+    queryable = this.#reader()
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+    queryable?: Queryable
+  }): Promise<StoredPolicy | undefined> {
+    const { collectionKey, resourceKey } = this.#policyKey({
+      collectionId,
+      resourceId
+    })
+    const { rows } = await queryable.query<PolicyRow>(
+      `SELECT ${POLICY_COLUMNS} FROM policies
+        WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
+      [spaceId, collectionKey, resourceKey]
+    )
+    return storedPolicyFromRow(rows[0])
+  }
+
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @returns {Promise<PolicyDocument|undefined>}   falsy when no live policy
+   *   is set at that level, a tombstone included
    */
   async getPolicy({
     spaceId,
@@ -4139,113 +4255,262 @@ export class PostgresBackend implements StorageBackend {
     collectionId?: string
     resourceId?: string
   }): Promise<PolicyDocument | undefined> {
-    const { collectionKey, resourceKey } = this.#policyKey({
+    const record = await this.getPolicyRecord({
+      spaceId,
       collectionId,
       resourceId
     })
-    const { rows } = await this.#reader().query<{ policy: PolicyDocument }>(
-      `SELECT policy FROM policies
-        WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
-      [spaceId, collectionKey, resourceKey]
-    )
-    return rows[0]?.policy
+    return record?.deleted === false ? record.policy : undefined
   }
 
   /**
+   * Creates or replaces a policy. The Space row lock that
+   * `#lockLiveContainers` takes serializes every policy write in the Space,
+   * so the read, the precondition check and the upsert are atomic without a
+   * row lock of their own. A Collection- or Resource-level write takes the
+   * Collection's next feed position (`#takeFeedPosition`) once its
+   * preconditions pass.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}
    * @param [options.resourceId] {string}
    * @param options.policy {PolicyDocument}
-   * @returns {Promise<void>}
+   * @param [options.ifMatch] {string}
+   * @param [options.ifNoneMatch] {HeldValidators}
+   * @returns {Promise<PolicyWriteResult>}
    */
   async writePolicy({
     spaceId,
     collectionId,
     resourceId,
-    policy
+    policy,
+    ifMatch,
+    ifNoneMatch
   }: {
     spaceId: string
     collectionId?: string
     resourceId?: string
     policy: PolicyDocument
-  }): Promise<void> {
-    await this.#withTransaction(async client => {
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+  }): Promise<PolicyWriteResult> {
+    return this.#withTransaction(async client => {
       // The containing Space, and the Collection when the policy is below
       // Space level, must have a Metadata object: a policy never creates one.
       await this.#lockLiveContainers({ client, spaceId, collectionId })
-      await this.#upsertPolicy({
-        queryable: client,
+      const prior = await this.getPolicyRecord({
         spaceId,
         collectionId,
         resourceId,
-        policy
+        queryable: client
       })
+      const live = livePolicyUnderPrecondition({
+        prior,
+        spaceId,
+        collectionId,
+        resourceId,
+        ifMatch,
+        ifNoneMatch
+      })
+      // A write over a tombstone is a create: a new generation, and a stamp
+      // above the tombstone's.
+      const validator = await mintValidator({
+        clock: this.#clock,
+        prior: priorPolicyParts(prior)
+      })
+      const body = normalizePolicyWrite(policy)
+      await this.#upsertPolicy({
+        client,
+        spaceId,
+        collectionId,
+        resourceId,
+        body,
+        validator
+      })
+      return {
+        validator,
+        created: live === undefined,
+        policy: stampedPolicy({ body, stamp: validator.stamp })
+      }
     })
   }
 
   /**
-   * The one policy upsert statement, shared by `writePolicy` and the import
-   * apply loop; keys through `#policyKey` so the sentinel convention lives in
-   * one place.
-   * @param options {object}
-   * @param options.queryable {Queryable}
-   * @param options.spaceId {string}
-   * @param [options.collectionId] {string}
-   * @param [options.resourceId] {string}
-   * @param options.policy {PolicyDocument}
-   * @returns {Promise<void>}
-   */
-  async #upsertPolicy({
-    queryable,
-    spaceId,
-    collectionId,
-    resourceId,
-    policy
-  }: {
-    queryable: Queryable
-    spaceId: string
-    collectionId?: string
-    resourceId?: string
-    policy: PolicyDocument
-  }): Promise<void> {
-    const { collectionKey, resourceKey } = this.#policyKey({
-      collectionId,
-      resourceId
-    })
-    await queryable.query(
-      `INSERT INTO policies (space_id, collection_id, resource_id, policy)
-       VALUES ($1, $2, $3, $4::jsonb)
-       ON CONFLICT (space_id, collection_id, resource_id)
-       DO UPDATE SET policy = EXCLUDED.policy`,
-      [spaceId, collectionKey, resourceKey, JSON.stringify(policy)]
-    )
-  }
-
-  /**
+   * Deletes the live policy at a level, leaving a tombstone. Serialized with
+   * every other policy write by the Space row lock, as `writePolicy` is.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}
    * @param [options.resourceId] {string}
-   * @returns {Promise<void>}   idempotent
+   * @param [options.ifMatch] {string}
+   * @param [options.ifNoneMatch] {HeldValidators}
+   * @returns {Promise<EtagValidator | undefined>}   the tombstone's validator,
+   *   or `undefined` when no live policy was stored (nothing written)
    */
   async deletePolicy({
     spaceId,
     collectionId,
-    resourceId
+    resourceId,
+    ifMatch,
+    ifNoneMatch
   }: {
     spaceId: string
     collectionId?: string
     resourceId?: string
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+  }): Promise<EtagValidator | undefined> {
+    return this.#withTransaction(async client => {
+      await this.#lockSpaceRow({ client, spaceId })
+      const prior = await this.getPolicyRecord({
+        spaceId,
+        collectionId,
+        resourceId,
+        queryable: client
+      })
+      const live = livePolicyUnderPrecondition({
+        prior,
+        spaceId,
+        collectionId,
+        resourceId,
+        ifMatch,
+        ifNoneMatch
+      })
+      if (live === undefined) {
+        return undefined
+      }
+      // The tombstone keeps the generation and takes a stamp above the live
+      // policy's.
+      const validator = await mintValidator({
+        clock: this.#clock,
+        prior: priorPolicyParts(live)
+      })
+      await this.#upsertPolicy({
+        client,
+        spaceId,
+        collectionId,
+        resourceId,
+        body: null,
+        validator
+      })
+      return validator
+    })
+  }
+
+  /**
+   * Writes an archived policy at a level, under the archived generation and a
+   * fresh stamp, when the destination stores no policy record there. A
+   * tombstone counts as a record, so an import does not undo a delete. Runs in
+   * the import's transaction, which holds the Space row.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @param options.imported {ImportedPolicy}
+   * @returns {Promise<boolean>}   whether the policy was written
+   */
+  async #importPolicy({
+    client,
+    spaceId,
+    collectionId,
+    resourceId,
+    imported
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+    imported: ImportedPolicy
+  }): Promise<boolean> {
+    if (
+      await this.getPolicyRecord({
+        spaceId,
+        collectionId,
+        resourceId,
+        queryable: client
+      })
+    ) {
+      return false
+    }
+    await this.#upsertPolicy({
+      client,
+      spaceId,
+      collectionId,
+      resourceId,
+      body: imported.policy,
+      validator: stampedValidator({
+        generation: imported.generation,
+        stamp: await this.#clock.mint()
+      })
+    })
+    return true
+  }
+
+  /**
+   * The one policy upsert statement, shared by `writePolicy`, `deletePolicy`
+   * and the import apply loop; keys through `#policyKey` so the sentinel
+   * convention lives in one place. A `null` body writes a tombstone. A
+   * Collection- or Resource-level write takes the Collection's next feed
+   * position first, which locks the `collections` row ahead of the
+   * `policies` row; a Space policy takes none.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @param options.body {PolicyDocument | null}   the policy body without
+   *   its stamp, or `null` for a tombstone
+   * @param options.validator {EtagValidator}   the write's generation and
+   *   stamp
+   * @returns {Promise<void>}
+   */
+  async #upsertPolicy({
+    client,
+    spaceId,
+    collectionId,
+    resourceId,
+    body,
+    validator
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+    body: PolicyDocument | null
+    validator: EtagValidator
   }): Promise<void> {
     const { collectionKey, resourceKey } = this.#policyKey({
       collectionId,
       resourceId
     })
-    await this.#reader().query(
-      `DELETE FROM policies
-        WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
-      [spaceId, collectionKey, resourceKey]
+    const feedPosition =
+      collectionId === undefined
+        ? null
+        : await this.#takeFeedPosition({ client, spaceId, collectionId })
+    await client.query(
+      `INSERT INTO policies (space_id, collection_id, resource_id, policy,
+                             deleted, generation, updated_at,
+                             updated_at_counter, origin_id, feed_position)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (space_id, collection_id, resource_id)
+       DO UPDATE SET policy             = EXCLUDED.policy,
+                     deleted            = EXCLUDED.deleted,
+                     generation         = EXCLUDED.generation,
+                     updated_at         = EXCLUDED.updated_at,
+                     updated_at_counter = EXCLUDED.updated_at_counter,
+                     origin_id          = EXCLUDED.origin_id,
+                     feed_position      = EXCLUDED.feed_position`,
+      [
+        spaceId,
+        collectionKey,
+        resourceKey,
+        body === null ? null : JSON.stringify(body),
+        body === null,
+        validator.generation,
+        ...stampValues(validator.stamp),
+        feedPosition
+      ]
     )
   }
 
@@ -4797,13 +5062,12 @@ export class PostgresBackend implements StorageBackend {
       { rows: revocationRows },
       { rows: chunkRows }
     ] = await Promise.all([
-      this.#reader().query<{
-        collection_id: string
-        resource_id: string
-        policy: PolicyDocument
-      }>(
-        `SELECT collection_id, resource_id, policy FROM policies
-            WHERE space_id = $1`,
+      // Live policies only: a tombstone does not travel.
+      this.#reader().query<
+        PolicyRow & { collection_id: string; resource_id: string }
+      >(
+        `SELECT collection_id, resource_id, ${POLICY_COLUMNS} FROM policies
+            WHERE space_id = $1 AND NOT deleted`,
         [spaceId]
       ),
       this.#reader().query<
@@ -4861,9 +5125,18 @@ export class PostgresBackend implements StorageBackend {
     // Assemble the per-entry file lists in the filesystem's shapes: files are
     // named by the shared codecs and sorted with localeCompare, matching the
     // filesystem's directory-listing sort.
+    // A policy file is the filesystem backend's on-disk layout: the body
+    // with its stamp members, and the generation embedded as `_generation`.
+    const archivedPolicy = (row: PolicyRow): Buffer =>
+      Buffer.from(
+        policyFile({
+          body: stampedPolicy({ body: row.policy!, stamp: stampOfRow(row) }),
+          generation: row.generation
+        })
+      )
     const spacePolicy = policyRows.find(
       row => row.collection_id === '' && row.resource_id === ''
-    )?.policy
+    )
 
     // The shared archive entry shapes (`@interop/space-archive`): a file entry carries
     // its bytes inline (the small JSON dot-files) or a lazy `read()` resolved at
@@ -4891,7 +5164,7 @@ export class PostgresBackend implements StorageBackend {
     if (spacePolicy) {
       spaceFiles.push({
         name: SPACE_POLICY_FILE_NAME,
-        bytes: Buffer.from(JSON.stringify(spacePolicy))
+        bytes: archivedPolicy(spacePolicy)
       })
     }
 
@@ -4971,7 +5244,7 @@ export class PostgresBackend implements StorageBackend {
           row.resource_id === ''
             ? COLLECTION_POLICY_FILE_NAME
             : resourcePolicyFileName(row.resource_id),
-        bytes: Buffer.from(JSON.stringify(row.policy))
+        bytes: archivedPolicy(row)
       })
     }
     for (const row of resourceRows) {
@@ -5342,22 +5615,16 @@ export class PostgresBackend implements StorageBackend {
         }
       }
 
-      // Space-level policy: restore it when the destination has none.
+      // Space-level policy: restore it when the destination has none. A
+      // deleted policy's tombstone counts as one, so an import does not undo
+      // the delete.
       if (spacePolicy) {
-        const { rows } = await client.query(
-          `SELECT 1 FROM policies
-            WHERE space_id = $1 AND collection_id = '' AND resource_id = ''`,
-          [spaceId]
-        )
-        if (rows.length > 0) {
-          stats.policiesSkipped++
-        } else {
-          await this.#upsertPolicy({
-            queryable: client,
-            spaceId,
-            policy: spacePolicy
-          })
+        if (
+          await this.#importPolicy({ client, spaceId, imported: spacePolicy })
+        ) {
           stats.policiesCreated++
+        } else {
+          stats.policiesSkipped++
         }
       }
 
@@ -5434,16 +5701,18 @@ export class PostgresBackend implements StorageBackend {
         // A collection-level policy travels with a newly-created collection;
         // for an existing (skipped) collection, leave its policy untouched.
         if (collectionPolicy) {
-          if (collectionExisted) {
-            stats.policiesSkipped++
-          } else {
-            await this.#upsertPolicy({
-              queryable: client,
+          if (
+            !collectionExisted &&
+            (await this.#importPolicy({
+              client,
               spaceId,
               collectionId,
-              policy: collectionPolicy
-            })
+              imported: collectionPolicy
+            }))
+          ) {
             stats.policiesCreated++
+          } else {
+            stats.policiesSkipped++
           }
         }
 
@@ -5497,16 +5766,23 @@ export class PostgresBackend implements StorageBackend {
           createdBytes += body.length
           stats.resourcesCreated++
 
+          // A policy record the destination already holds there, a
+          // tombstone included, is kept.
           const resourcePolicy = resourcePolicies.get(resourceId)
           if (resourcePolicy) {
-            await this.#upsertPolicy({
-              queryable: client,
-              spaceId,
-              collectionId,
-              resourceId,
-              policy: resourcePolicy
-            })
-            stats.policiesCreated++
+            if (
+              await this.#importPolicy({
+                client,
+                spaceId,
+                collectionId,
+                resourceId,
+                imported: resourcePolicy
+              })
+            ) {
+              stats.policiesCreated++
+            } else {
+              stats.policiesSkipped++
+            }
           }
         }
 
