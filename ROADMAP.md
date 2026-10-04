@@ -2257,8 +2257,8 @@ items are in-repo.
 - discovered-from: FW-633 (freewallet's test-infrastructure read, 2026-10-03)
 - blocks: WAS-188
 - touches:
-  - [ ] freewallet (FW-633: takes the server as a devDependency and boots
-        through this export)
+  - [x] freewallet (FW-633, done 2026-10-04: takes 0.40.0 from the registry as a
+        devDependency and boots its conformance suite through this export)
   - [ ] wallet-core (WC-269: its integration tier boots through this export)
   - [ ] was-sync, was-react, dcw (each copies the boot recipe today and still
         calls `new FileSystemBackend(...)`)

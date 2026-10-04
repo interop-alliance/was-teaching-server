@@ -17,6 +17,7 @@ import type { FastifyInstance } from 'fastify'
 import { base64urlnopad } from '@scure/base'
 
 import type { Space } from '@interop/was-client'
+import { isResourceChange } from '@interop/storage-core'
 
 import {
   entryLine,
@@ -107,7 +108,7 @@ describe('Collection changes query profile', () => {
    * syncs Resources keeps, skipping every other kind.
    */
   function resourceDocs(documents: any[]): any[] {
-    return documents.filter((doc: any) => doc.kind === 'resource')
+    return documents.filter(isResourceChange)
   }
 
   /** Creates a Collection and PUTs `{ n: <id> }` at each id, in order. */

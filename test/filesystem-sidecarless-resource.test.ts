@@ -11,6 +11,7 @@ import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 
 import { fileNameFor } from '@interop/space-archive'
+import { isResourceChange } from '@interop/storage-core'
 
 import type { TempFileSystemBackend } from '../src/testing.js'
 import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
@@ -96,9 +97,7 @@ describe('FileSystemBackend: Resource with no metadata sidecar', () => {
       json: { profile: 'changes', limit: 10 }
     })
     assert.deepEqual(
-      data.documents
-        .filter((doc: any) => doc.kind === 'resource')
-        .map((doc: any) => doc.id),
+      data.documents.filter(isResourceChange).map((doc: any) => doc.id),
       ['normal']
     )
   })

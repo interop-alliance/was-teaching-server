@@ -66,8 +66,8 @@ importers:
         specifier: ^0.8.0
         version: 0.8.0
       '@interop/storage-core':
-        specifier: ^0.32.0
-        version: 0.32.0
+        specifier: ^0.33.0
+        version: 0.33.0
       '@interop/x25519-key-agreement-key':
         specifier: ^5.4.1
         version: 5.4.1
@@ -130,8 +130,8 @@ importers:
         specifier: ^6.3.0
         version: 6.3.0
       '@interop/was-client':
-        specifier: ^0.88.0
-        version: 0.88.0(@interop/jsonld-signatures@11.8.6)
+        specifier: ^0.89.0
+        version: 0.89.0(@interop/jsonld-signatures@11.8.6)
       '@interop/was-conformance-suite':
         specifier: link:../was-conformance-suite
         version: link:../was-conformance-suite
@@ -717,8 +717,8 @@ packages:
     resolution: {integrity: sha512-ql95AtuwA4SC5H+AggPJyMAhHA/exHXjEYqwRkxL/94F88Rt3BbbiWJ7jJjUc3NnCBhgIakGSlLyGlRC/xLitQ==}
     engines: {node: '>=22.0'}
 
-  '@interop/storage-core@0.32.0':
-    resolution: {integrity: sha512-1lbsqN0aUvkw6q50Vc5B7/Ls8GjyqOb9CftZUqbsYkp9ZYyI+zvvLREUmaxjCcsVJAGmSmhBn6rHSymK3B4AlQ==}
+  '@interop/storage-core@0.33.0':
+    resolution: {integrity: sha512-65eP8CACrov0achUsF9kMpq3Z61D1vBStlrDEKfkLF2F5/uaIkCBKEUjBnkcCwf2f02HXjyMG4I6ovbQ/ll9QQ==}
     engines: {node: '>=22.0'}
 
   '@interop/vc-bitstring-status-list@3.2.0':
@@ -755,8 +755,8 @@ packages:
     resolution: {integrity: sha512-468ho0S1fpqb0dkQGi5qK49ZC60+iBYFQWSiwpA05n0hGEbAeMJNmaa0ACrmzmOSIHBNVbMsMnsWTnTOwyZ18w==}
     engines: {node: '>=24.0'}
 
-  '@interop/was-client@0.88.0':
-    resolution: {integrity: sha512-4Mg6AY0zo3mZh6Kgjff4nsCEwenjU8JjZ/1cVarRJFC3slpPV8xg8vNeFYLU/gVfm3U6LLZVW1Y0761ZwPhubA==}
+  '@interop/was-client@0.89.0':
+    resolution: {integrity: sha512-xAESTPuDTzEqy6/0RecGp1xF4yPFNmHH3+lPJfNlHsYyOmuOBEdwag4QN5p9soR+uP4GG4Dx32GtpH2FnDVdbA==}
     engines: {node: '>=24.0'}
 
   '@interop/webkms-client@15.0.2':
@@ -3471,7 +3471,7 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.8.0
 
-  '@interop/storage-core@0.32.0':
+  '@interop/storage-core@0.33.0':
     dependencies:
       '@interop/data-integrity-core': 8.8.0
 
@@ -3577,7 +3577,7 @@ snapshots:
       - expo-crypto
       - react-native-get-random-values
 
-  '@interop/was-client@0.88.0(@interop/jsonld-signatures@11.8.6)':
+  '@interop/was-client@0.89.0(@interop/jsonld-signatures@11.8.6)':
     dependencies:
       '@interop/capability-agent': 0.2.1
       '@interop/data-integrity-core': 8.8.0
@@ -3586,7 +3586,7 @@ snapshots:
       '@interop/ezcap': 7.5.0
       '@interop/http-client': 1.0.5
       '@interop/minimal-cipher': 7.10.3
-      '@interop/storage-core': 0.31.0
+      '@interop/storage-core': 0.33.0
       '@interop/vh-resource-log': 0.6.1
       '@interop/x25519-key-agreement-key': 5.4.1
       '@noble/hashes': 2.4.0
