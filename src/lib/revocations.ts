@@ -6,7 +6,8 @@
  * capability with a stored revocation. Both route families share this hook;
  * they differ only in the scope the storage lookup is keyed on (a keystore or
  * a Space). Also home to the revocation-record file-name codec shared by the
- * filesystem store and both backends' Space exports.
+ * filesystem store and both backends' Space exports, and to the record
+ * builder shared by the revocation route and Import Space.
  */
 import { createHash } from 'node:crypto'
 import type {
@@ -16,9 +17,55 @@ import type {
 import { ProblemError, StorageError } from '../errors.js'
 import type {
   CapabilitySummary,
+  RevocationRecord,
   RevocationScope,
   StorageBackend
 } from '../types.js'
+
+/**
+ * One day in milliseconds -- the revocation record's GC margin.
+ */
+const ONE_DAY = 24 * 60 * 60 * 1000
+
+/**
+ * Builds the revocation record stored for a capability whose delegation chain
+ * verified under a scope. Every `meta` member is server-side: the `delegator`
+ * the verification yielded, the scope's `rootTarget`, `created` as now, and a
+ * GC horizon of one day past the capability's own `expires`. From that horizon
+ * on the capability is rejected on its expiry alone, and the margin covers
+ * clock-skew grace periods. The horizon is computed only from a parseable
+ * `expires`: an unparseable one yields `NaN`, and `new Date(NaN).toISOString()`
+ * would throw a `RangeError` (500). Omitting it drops the GC margin only.
+ *
+ * @param options {object}
+ * @param options.capability {RevocationRecord['capability']}   the revoked
+ *   capability, stored verbatim
+ * @param options.delegator {string}   the delegator its verified proof names
+ * @param options.rootTarget {string}   the scope's full URL
+ * @returns {RevocationRecord}
+ */
+export function revocationRecordFor({
+  capability,
+  delegator,
+  rootTarget
+}: {
+  capability: RevocationRecord['capability']
+  delegator: string
+  rootTarget: string
+}): RevocationRecord {
+  const expiresMs = capability.expires ? Date.parse(capability.expires) : NaN
+  return {
+    capability,
+    meta: {
+      delegator,
+      rootTarget,
+      created: new Date().toISOString(),
+      ...(Number.isFinite(expiresMs) && {
+        expires: new Date(expiresMs + ONE_DAY).toISOString()
+      })
+    }
+  }
+}
 
 /**
  * The file name a revocation record is stored (and archived) under:

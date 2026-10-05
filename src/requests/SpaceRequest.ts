@@ -28,10 +28,8 @@ import {
   assertValidIds,
   assertValidId
 } from '../lib/validateId.js'
-import {
-  composeCollectionMetadata,
-  parseCollectionMetadataBody
-} from './collectionInput.js'
+import { composeCollectionMetadata } from './collectionInput.js'
+import { parseCollectionMetadataBody } from '../lib/collectionMetadataBody.js'
 import {
   assertValidController,
   assertValidSpaceController,
@@ -74,6 +72,7 @@ import {
 import { parseIncludeSections, parsePageParams } from '../lib/pagination.js'
 import { loadExportAttestor } from '../lib/exportProvenance.js'
 import { prepareImportPlan } from '../lib/importPlan.js'
+import { installImportRevocations } from '../lib/importRevocations.js'
 import {
   ProblemError,
   InvalidImportError,
@@ -639,7 +638,13 @@ export class SpaceRequest {
     // thing: whether the archived Space Metadata object's user-writable
     // members are restored or skipped. It is read off the verification result
     // itself, not off the header's serialization.
-    const { rootInvocation } = await fetchSpaceAndVerify({
+    const {
+      rootInvocation,
+      invoker,
+      invokedCapability,
+      spaceMetadata,
+      spaceRootTarget
+    } = await fetchSpaceAndVerify({
       request,
       spaceId,
       targetPath: importPath({ spaceId }),
@@ -649,7 +654,7 @@ export class SpaceRequest {
     try {
       // Decode the archive, build its merge plan, and judge its provenance
       // once, here, so the backend only persists what it is handed.
-      const { plan, provenance } = await prepareImportPlan({
+      const { plan, provenance, revocations } = await prepareImportPlan({
         tarStream: request.body,
         logger: request.log
       })
@@ -660,6 +665,25 @@ export class SpaceRequest {
         // A delegated chain reaches the import route by attenuation, and
         // rewriting the Space's own description is the controller's.
         restoreSpaceMetadata: rootInvocation
+      })
+      // The archive's revocation records go in last. Each is installed only
+      // when its chain verifies under this Space and this invocation could
+      // have submitted it on the revocation route (no delegation-policy caps,
+      // as there). A chain may carry a link signed by a `did:webvh` whose log
+      // the archive just restored, so the resolver's view of this Space is
+      // refreshed first.
+      invalidateResolvedWebvhDid({ storage, spaceId })
+      await installImportRevocations({
+        capabilities: revocations,
+        scope: {
+          spaceId,
+          rootTarget: spaceRootTarget,
+          rootController: spaceMetadata.controller,
+          webvh: { storage, serverUrl: request.server.serverUrl },
+          invocation: { rootInvocation, invoker, invokedCapability }
+        },
+        storage,
+        logger: request.log
       })
       return reply.status(200).send(summary)
     } catch (err) {

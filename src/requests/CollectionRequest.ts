@@ -20,9 +20,9 @@ import {
 import { resolveResourceInput } from './resourceInput.js'
 import {
   assertCollectionMetadataTransition,
-  composeCollectionMetadata,
-  parseCollectionMetadataBody
+  composeCollectionMetadata
 } from './collectionInput.js'
+import { parseCollectionMetadataBody } from '../lib/collectionMetadataBody.js'
 import { invokerDid } from '../auth-header-hooks.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { readTextBody } from '../lib/requestBody.js'

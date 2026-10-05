@@ -240,6 +240,23 @@ export interface ImportedPolicy {
  * @param options.fileName {string}   the archive entry, for the error message
  * @returns {ImportedPolicy}
  */
+/**
+ * Whether a policy document names its `type`: a non-empty string. The set of
+ * recognized types is intentionally open (an unknown type is stored and
+ * fails closed at evaluation time, see `policy.ts`), so this is the one shape
+ * check a policy write and an imported policy file share, and it gates on no
+ * known-types allowlist.
+ * @param body {unknown}   the policy document
+ * @returns {boolean}
+ */
+export function hasPolicyType(body: unknown): boolean {
+  if (typeof body !== 'object' || body === null) {
+    return false
+  }
+  const { type } = body as Record<string, unknown>
+  return typeof type === 'string' && type.trim() !== ''
+}
+
 export function importedPolicy({
   bytes,
   fileName
@@ -258,6 +275,15 @@ export function importedPolicy({
       message:
         `The archive's policy file "${fileName}" is not a live policy ` +
         'object.'
+    })
+  }
+  // The shape check Update Policy applies. A typeless document would grant
+  // nothing yet shadow the broader level's policy in the fallback chain.
+  if (!hasPolicyType(parsed)) {
+    throw new InvalidImportError({
+      message:
+        `The archive's policy file "${fileName}" has no non-empty string ` +
+        "'type'."
     })
   }
   return {

@@ -282,18 +282,62 @@ export function assertGoverningLogAppend({
 }
 
 /**
+ * Parses a stored governing history log. The body is stored data, validated
+ * when it was written (a `/log` PUT or an import), so a body the parser
+ * rejects here (the genesis `method` and the `history` refusals included) is
+ * a server-side fault and surfaces as `StorageError` (500) rather than as the
+ * client-facing 400 the parser raises. Shared by the descriptor derivation
+ * below and the import plan's envelope check.
+ *
+ * @param options {object}
+ * @param options.body {string}   the stored log body
+ * @returns {ReturnType<typeof parseGoverningLog>}
+ */
+export function parseStoredGoverningLog({
+  body
+}: {
+  body: string
+}): ReturnType<typeof parseGoverningLog> {
+  try {
+    return parseGoverningLog({ body })
+  } catch (err) {
+    throw new StorageError({
+      cause: new Error('Stored history log breaks the line contract.', {
+        cause: err
+      })
+    })
+  }
+}
+
+/**
+ * The encryption descriptor a stored governing history log's head declares,
+ * without the `history` member `deriveGovernedDescriptors` stamps on: the
+ * log head's `state` without its `revisions` slot. What the envelope check on
+ * an import runs against, for the destination's stored log and the archive's
+ * alike, since that check does not read `history`.
+ *
+ * @param options {object}
+ * @param options.body {string}   the stored log body
+ * @returns {CollectionEncryption}
+ */
+export function storedGoverningEncryption({
+  body
+}: {
+  body: string
+}): CollectionEncryption {
+  const { head } = parseStoredGoverningLog({ body })
+  return splitGovernedState(head).encryptionState as CollectionEncryption
+}
+
+/**
  * The derived descriptors of a governed Collection. The `encryption` member
  * is the log head's `state` without its `revisions` slot, with
  * `history: { method, resource }` stamped on, `method` being the genesis
  * entry's format identifier and `resource` the log's own URL. Exactly what a
  * verifying reader computes after stripping `history`. The `revisions`
  * member is the head's `revisions` slot verbatim, absent when the slot is.
- *
- * The body is stored data, validated when it was written (a `/log` PUT or an
- * import), so a body the parser rejects here (the genesis `method` and the
- * `history` refusals included) is a server-side fault and surfaces as
- * `StorageError` (500) rather than as the client-facing 400 the parser
- * raises.
+ * The body is read with `parseStoredGoverningLog`, so a body that does not
+ * parse is a `StorageError` (500).
  *
  * @param options {object}
  * @param options.body {string}   the stored log body
@@ -307,17 +351,7 @@ export function deriveGovernedDescriptors({
   body: string
   logUrl: string
 }): GovernedDescriptors {
-  let parsed: ReturnType<typeof parseGoverningLog>
-  try {
-    parsed = parseGoverningLog({ body })
-  } catch (err) {
-    throw new StorageError({
-      cause: new Error('Stored history log breaks the line contract.', {
-        cause: err
-      })
-    })
-  }
-  const { head, method } = parsed
+  const { head, method } = parseStoredGoverningLog({ body })
   const { encryptionState, revisions } = splitGovernedState(head)
   return {
     encryption: {

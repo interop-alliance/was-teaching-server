@@ -2715,8 +2715,7 @@ export class FileSystemBackend implements StorageBackend {
       spaceMetadata: archivedSpaceMetadata,
       spacePolicy,
       collections,
-      collectionTombstones,
-      revocations
+      collectionTombstones
     },
     provenance,
     restoreSpaceMetadata = false
@@ -2742,6 +2741,8 @@ export class FileSystemBackend implements StorageBackend {
       collections,
       existingCollection: collectionId =>
         this.getCollectionMetadata({ spaceId, collectionId }),
+      existingCollectionLog: async collectionId =>
+        (await this.getCollectionLog({ spaceId, collectionId }))?.body,
       assertUploadSize: uploadBytes =>
         this.#assertUploadSize({ maxUploadBytes, uploadBytes }),
       chunkBodiesFor: collection => collection.chunkFiles
@@ -3278,25 +3279,11 @@ export class FileSystemBackend implements StorageBackend {
             )
           }
 
-          // Restore the archive's Space-scoped zcap revocations under this Space's
-          // scope: a capability revoked before the export must stay revoked after
-          // an import (a backup/restore round-trip must not resurrect revoked
-          // access). Merge semantics match the rest of the import -- an
-          // already-stored record is skipped -- and a record past its GC horizon is
-          // dropped (the capability itself has expired; `isRevoked` would prune it).
-          const now = Date.now()
-          for (const record of revocations) {
-            if (record.meta.expires && Date.parse(record.meta.expires) <= now) {
-              continue
-            }
-            try {
-              await this.insertRevocation({ scope: { spaceId }, record })
-            } catch (err) {
-              if (!(err instanceof DuplicateRevocationError)) {
-                throw err
-              }
-            }
-          }
+          // The archive's Space-scoped zcap revocations are not part of the
+          // plan. The handler verifies and installs them through
+          // `insertRevocation` once this write has landed, since a chain may
+          // carry a link signed by a `did:webvh` whose log the archive
+          // restores (`lib/importRevocations.ts`).
 
           this.#liveCountCache.delete(spaceId)
           return stats

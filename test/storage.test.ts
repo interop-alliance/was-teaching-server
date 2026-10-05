@@ -1417,14 +1417,25 @@ describe('Storage API', () => {
           body: '{"state":{"scheme":"edv"},"parameters":{"method":"x"}}\n',
           ifNoneMatch: '*'
         })
+        // The envelope the governed Collection's `edv` scheme asks of every
+        // write; the import checks the archived Resources against the log head.
         await backend.writeResource({
           spaceId,
           collectionId,
           resourceId: 'pic',
           input: {
-            kind: 'binary',
-            contentType: 'image/png',
-            stream: Readable.from(Buffer.from([0x89, 0x50]))
+            kind: 'json',
+            contentType: 'application/json',
+            data: {
+              id: 'urn:uuid:pic',
+              sequence: 0,
+              jwe: {
+                protected: 'eyJlbmMiOiJYQzIwUCJ9',
+                iv: 'aXY',
+                ciphertext: 'Y2lwaGVydGV4dA',
+                tag: 'dGFn'
+              }
+            }
           }
         })
         const entries = await extractTarEntries(

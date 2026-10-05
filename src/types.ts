@@ -964,8 +964,9 @@ export interface StorageBackend {
   }): Promise<Readable>
   /**
    * Merges a Space-export archive into an existing Space, skip-not-overwrite
-   * per item; the archive's revocation records are restored under this
-   * Space's scope on the same terms (already-stored records are skipped).
+   * per item. The archive's revocation records are not in the plan: the
+   * Import Space handler verifies and installs them through
+   * `insertRevocation` once this write has landed.
    *
    * The backend persists what it is handed. `plan` is the archive's merge
    * plan with its provenance already judged, and `provenance` the verdict
