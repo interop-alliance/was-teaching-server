@@ -14,6 +14,8 @@ import { pino } from 'pino'
 import { createHeaderValue } from '@interop/http-digest-header'
 import { collectBytes, readSpaceArchive } from '@interop/space-archive'
 import { isCollectionTombstoneSummary } from '@interop/storage-core'
+import { logToJsonlString } from '@interop/did-method-webvh'
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { etagOf, formatEtag, isMintedGeneration } from '../src/lib/etag.js'
 import { metadataEtagOf } from '../src/lib/metadataValidator.js'
 import type { EtagValidator } from '../src/lib/etag.js'
@@ -25,10 +27,12 @@ import {
   assertEtagAdvanced,
   frozenClock,
   importArchive,
+  mintServerDid,
   parseEtagSegments,
   provisionServerIdentity,
   resourceDocuments,
-  verifyProvenanceOffline
+  verifyProvenanceOffline,
+  watchWitnessFetches
 } from './helpers.js'
 import {
   CollectionNotFoundError,
@@ -11588,6 +11592,55 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(stats.provenance.unknownSigner, 5)
         assert.equal(stats.provenance.verified, 0)
         assert.equal(await createdByOf(spaceId, 'big'), undefined)
+      })
+
+      it('drops every createdBy when did.jsonl declares witnesses, fetching nothing (unknownSigner)', async () => {
+        // The statements are signed under a DID whose log declares a
+        // witness. The importer verifies the snapshot with no witness
+        // proofs, so it refuses the log rather than fetch the DID's
+        // `did-witness.json` from the host the log names.
+        const signingKey = await Ed25519VerificationKey.generate()
+        const witnessKey = await Ed25519VerificationKey.generate()
+        const { did, log } = await mintServerDid({
+          serverUrl,
+          publicKeyMultibase: signingKey.publicKeyMultibase!,
+          witness: {
+            threshold: 1,
+            witnesses: [{ id: `did:key:${witnessKey.fingerprint()}` }]
+          }
+        })
+        const attestor: ExportAttestor = {
+          serverUrl,
+          serverDid: did,
+          didLog: Buffer.from(logToJsonlString(log)),
+          didLogVersionId: log.at(-1)!.versionId,
+          keyPair: new Ed25519VerificationKey({
+            id: `${did}#${signingKey.publicKeyMultibase}`,
+            controller: did,
+            publicKeyMultibase: signingKey.publicKeyMultibase,
+            privateKeyMultibase: signingKey.privateKeyMultibase
+          })
+        }
+        const witnessed = Buffer.from(
+          await collectBytes(
+            await harness.backend.exportSpace({
+              spaceId: sourceSpaceId,
+              attestor
+            })
+          )
+        )
+        const watch = watchWitnessFetches()
+        try {
+          const { spaceId, stats } = await importInto(witnessed)
+          assert.deepStrictEqual(stats.provenance, counts({ unknownSigner: 5 }))
+          assert.equal(stats.resourcesCreated, 3)
+          assert.equal(await createdByOf(spaceId, 'plain'), undefined)
+          assert.equal(await createdByOf(spaceId, 'big'), undefined)
+          assert.equal(await collectionCreatedBy(spaceId), undefined)
+        } finally {
+          watch.restore()
+        }
+        assert.deepStrictEqual(watch.witnessFetches, [])
       })
 
       it('drops createdBy when a statement names a log version the log lacks (unknownSigner)', async () => {

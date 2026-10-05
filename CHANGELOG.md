@@ -13,6 +13,10 @@
   or lists under `capabilityDelegation` alone, is refused with `replica-refused`
   (409).
 - Silence request logging for the `/health` probe.
+- History-log verification passes no witness proofs on any path. A `did:webvh`
+  log that declares witnesses is refused, and the server never fetches
+  `did-witness.json`. Before, the self-hosted, append and import paths let the
+  library fetch it from the host the log named.
 
 ## 0.42.0 - 2026-10-04
 

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify'
 import pino from 'pino'
+import { vi } from 'vitest'
 import { ZcapClient } from '@interop/ezcap'
 import { WasClient } from '@interop/was-client'
 import { decodeSecretKeySeed } from '@interop/bnid'
@@ -15,6 +16,7 @@ import {
   readLogFromString,
   resolveDIDFromLog
 } from '@interop/did-method-webvh'
+import type { DIDLog } from '@interop/did-method-webvh'
 import { DataIntegrityProof } from '@interop/data-integrity-proof'
 import { createVerifyCryptosuite } from '@interop/ed25519-signature/eddsa-jcs-2022'
 import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
@@ -617,6 +619,46 @@ export async function provisionProviderContainers({
 }
 
 /**
+ * Mints the history log of a server's `did:webvh`, anchored at
+ * `{serverUrl}/space/server/id`, under a fresh admin update key. The
+ * document lists one Multikey, the server's signing key, under `purpose`.
+ * Nothing is written anywhere.
+ *
+ * @param options {object}
+ * @param options.serverUrl {string}   the host the DID is minted for
+ * @param options.publicKeyMultibase {string}   the signing key's public key
+ * @param [options.purpose] {string[]}   the relationships the key is listed
+ *   under
+ * @param [options.witness] {object}   the log's `witness` parameter
+ * @returns {Promise<{ did: string, log: DIDLog, admin: Ed25519VerificationKey }>}
+ */
+export async function mintServerDid({
+  serverUrl,
+  publicKeyMultibase,
+  purpose = ['assertionMethod'],
+  witness
+}: {
+  serverUrl: string
+  publicKeyMultibase: string
+  purpose?: string[]
+  witness?: { threshold: number; witnesses: { id: string }[] }
+}): Promise<{ did: string; log: DIDLog; admin: Ed25519VerificationKey }> {
+  const admin = await Ed25519VerificationKey.generate()
+  const { did, log } = await createDID({
+    address: `${serverUrl}/space/server/id`,
+    signer: webvhLogSigner({ keyPair: admin }),
+    updateKeys: [admin.publicKeyMultibase!],
+    vmIdFragment: 'multibase',
+    portable: true,
+    verificationMethods: [
+      { type: 'Multikey', publicKeyMultibase, purpose }
+    ] as any,
+    ...(witness !== undefined && { witness })
+  })
+  return { did, log, admin }
+}
+
+/**
  * Gives a bare backend a server identity, the way an admin would through the
  * front door: the `server` Space under an admin `did:key`, its `id`
  * Collection, and a `did.jsonl` history log whose document lists the
@@ -644,20 +686,10 @@ export async function provisionServerIdentity({
   purpose?: string[]
 }): Promise<{ signingKey: ServerSigningKey; did: string; didLog: string }> {
   const signingKey = await createServerSigningKey({ seed })
-  const admin = await Ed25519VerificationKey.generate()
-  const { did, log } = await createDID({
-    address: `${serverUrl}/space/server/id`,
-    signer: webvhLogSigner({ keyPair: admin }),
-    updateKeys: [admin.publicKeyMultibase!],
-    vmIdFragment: 'multibase',
-    portable: true,
-    verificationMethods: [
-      {
-        type: 'Multikey',
-        publicKeyMultibase: signingKey.keyPair.publicKeyMultibase,
-        purpose
-      }
-    ] as any
+  const { did, log, admin } = await mintServerDid({
+    serverUrl,
+    publicKeyMultibase: signingKey.keyPair.publicKeyMultibase!,
+    purpose
   })
   const didLog = logToJsonlString(log)
   await backend.writeSpace({
@@ -984,4 +1016,33 @@ export async function signedInject({
     },
     ...(payload !== undefined && { payload })
   })
+}
+
+/**
+ * Watches the global `fetch` for a request of a `did-witness.json`.
+ * `@interop/did-method-webvh` makes one, with the global `fetch`, when it
+ * verifies a log that declares witnesses and is given no witness proofs. A
+ * watched request is recorded and refused, so it never leaves the process.
+ * Every other request passes through, so a test's own HTTP clients keep
+ * working. Call `restore` when the test ends.
+ *
+ * @returns {{ witnessFetches: string[], restore: () => void }}
+ */
+export function watchWitnessFetches(): {
+  witnessFetches: string[]
+  restore: () => void
+} {
+  const realFetch = globalThis.fetch
+  const witnessFetches: string[] = []
+  const spy = vi
+    .spyOn(globalThis, 'fetch')
+    .mockImplementation(async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input)
+      if (url.includes('did-witness.json')) {
+        witnessFetches.push(url)
+        throw new Error(`Unexpected witness fetch: "${url}".`)
+      }
+      return realFetch(input, init)
+    })
+  return { witnessFetches, restore: () => spy.mockRestore() }
 }
