@@ -1,5 +1,19 @@
 # History
 
+## 0.42.1 - TBD
+
+### Changed
+
+- Register Replica admits a peer Space whose controller is a `did:webvh` hosted
+  in that Space when the local Space's `did:key` controller is listed under
+  `capabilityInvocation` in the DID's current document. A Space promoted to its
+  `did:webvh` before it gained a replica can now be registered as a source. The
+  log is read through the pull capability and verified offline, and the
+  registration must pull the log's Collection. A key the document does not list,
+  or lists under `capabilityDelegation` alone, is refused with `replica-refused`
+  (409).
+- Silence request logging for the `/health` probe.
+
 ## 0.42.0 - 2026-10-04
 
 ### Added

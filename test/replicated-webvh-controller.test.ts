@@ -34,6 +34,7 @@ import { createApp } from '../src/server.js'
 import type { TempFileSystemBackend } from '../src/testing.js'
 import type { IDID } from '../src/types.js'
 import {
+  bareDidKeyOf,
   bindKey,
   delegate,
   injectPeerFetch,
@@ -153,15 +154,20 @@ describe('A did:webvh controller resolved from a replicated log', () => {
   }
 
   /**
-   * Creates a Space under Alice's `did:key` straight through the backend.
+   * Creates a Space under a `did:key`, Alice's by default, straight through
+   * the backend.
    */
-  async function createSpace(server: Server, spaceId: string): Promise<void> {
+  async function createSpace(
+    server: Server,
+    spaceId: string,
+    controller = alice.did
+  ): Promise<void> {
     await server.backend.writeSpace({
       spaceId,
       spaceMetadata: {
         id: spaceId,
         type: ['Space'],
-        controller: alice.did as IDID
+        controller: controller as IDID
       }
     })
   }
@@ -214,9 +220,10 @@ describe('A did:webvh controller resolved from a replicated log', () => {
 
   /**
    * Mints a `did:webvh` whose log lives at `<spaceId>/id` on the origin, and
-   * publishes the log there.
+   * publishes the log there. The document lists one client key under every
+   * signing relationship, plus `extraMethods`.
    */
-  async function mintOnOrigin(spaceId: string) {
+  async function mintOnOrigin(spaceId: string, extraMethods: object[] = []) {
     const updateKey = await Ed25519VerificationKey.generate()
     const logSigner = webvhLogSigner({ keyPair: updateKey })
     const key = await Ed25519VerificationKey.generate()
@@ -225,7 +232,7 @@ describe('A did:webvh controller resolved from a replicated log', () => {
       signer: logSigner,
       updateKeys: [updateKey.publicKeyMultibase!],
       vmIdFragment: 'multibase',
-      verificationMethods: [clientMethod(key)] as any
+      verificationMethods: [clientMethod(key), ...extraMethods] as any
     })
     const published = await putLog({ server: origin, spaceId, log })
     assert.equal(published.statusCode, 201, published.payload)
@@ -234,22 +241,25 @@ describe('A did:webvh controller resolved from a replicated log', () => {
 
   /**
    * A registration body naming the origin's Space `fromSpaceId` as a source
-   * of the mirror's Space `toSpaceId`.
+   * of the mirror's Space `toSpaceId`. `delegator` signs the pull capability
+   * from the peer Space's root, so it is that Space's controller key.
    */
   async function registration({
     toSpaceId,
     fromSpaceId,
     replicaId = 'origin',
-    collections
+    collections,
+    delegator = alice.signer
   }: {
     toSpaceId: string
     fromSpaceId: string
     replicaId?: string
     collections?: string[]
+    delegator?: any
   }) {
     const fromSpace = `${origin.serverUrl}/space/${fromSpaceId}/`
     const capability = await delegate({
-      signer: alice.signer,
+      signer: delegator,
       capability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
       invocationTarget: fromSpace,
       controller: mirror.did,
@@ -269,14 +279,19 @@ describe('A did:webvh controller resolved from a replicated log', () => {
 
   /**
    * Sends Register Replica for the origin's Space `fromSpaceId` as a source
-   * of the mirror's Space `toSpaceId`.
+   * of the mirror's Space `toSpaceId`, under the local Space's controller key
+   * (`signer`, Alice's by default).
    */
-  async function postRegistration(options: Parameters<typeof registration>[0]) {
+  async function postRegistration({
+    signer,
+    ...options
+  }: Parameters<typeof registration>[0] & { signer?: any }) {
     return call({
       server: mirror,
       path: `/space/${options.toSpaceId}/replicas`,
       method: 'POST',
-      json: await registration(options)
+      json: await registration(options),
+      signer
     })
   }
 
@@ -284,7 +299,7 @@ describe('A did:webvh controller resolved from a replicated log', () => {
    * Registers the origin's Space `fromSpaceId` as a source of the mirror's
    * Space `toSpaceId`.
    */
-  async function register(options: Parameters<typeof registration>[0]) {
+  async function register(options: Parameters<typeof postRegistration>[0]) {
     const created = await postRegistration(options)
     assert.equal(created.statusCode, 201, created.payload)
   }
@@ -310,14 +325,20 @@ describe('A did:webvh controller resolved from a replicated log', () => {
   }
 
   /**
-   * Alice's Update Space on the mirror, naming `controller`.
+   * Update Space on `server`, naming `controller`, under the Space's current
+   * controller key (`signer`, Alice's by default).
    */
-  async function promote(spaceId: string, controller: string) {
+  async function promote(
+    spaceId: string,
+    controller: string,
+    { server = mirror, signer }: { server?: Server; signer?: any } = {}
+  ) {
     return call({
-      server: mirror,
+      server,
       path: `/space/${spaceId}/meta`,
       method: 'PUT',
-      json: { name: spaceId, controller }
+      json: { name: spaceId, controller },
+      signer
     })
   }
 
@@ -495,6 +516,125 @@ describe('A did:webvh controller resolved from a replicated log', () => {
       replicaId: 'origin'
     })
     assert.equal((await readAs('data', account.key)).statusCode, 200)
+  })
+
+  describe('a Space the origin promoted before it gained a replica', () => {
+    let promoted: Awaited<ReturnType<typeof mintOnOrigin>>
+    /**
+     * The bare `did:key` of the account's client key, which the new local
+     * Space is created under.
+     */
+    let local: { did: string; signer: any }
+    /**
+     * A key the account document lists under `capabilityDelegation` alone.
+     */
+    let delegationOnly: Ed25519VerificationKey
+
+    /**
+     * Sends Register Replica for the promoted Space as a source of the
+     * mirror's Space `toSpaceId`, with the pull capability the account's key
+     * delegates, invoked by `signer`.
+     */
+    async function postPromotedRegistration({
+      toSpaceId,
+      signer,
+      collections
+    }: {
+      toSpaceId: string
+      signer: any
+      collections?: string[]
+    }) {
+      return postRegistration({
+        toSpaceId,
+        fromSpaceId: 'promoted',
+        delegator: promoted.key.signer(),
+        signer,
+        collections
+      })
+    }
+
+    beforeAll(async () => {
+      await createSpace(origin, 'promoted')
+      await createCollection(origin, 'promoted', 'id')
+      delegationOnly = await Ed25519VerificationKey.generate()
+      promoted = await mintOnOrigin('promoted', [
+        {
+          type: 'Multikey',
+          publicKeyMultibase: delegationOnly.publicKeyMultibase!,
+          purpose: ['capabilityDelegation']
+        }
+      ])
+      local = bareDidKeyOf(promoted.key)
+      const onOrigin = await promote('promoted', promoted.did, {
+        server: origin
+      })
+      assert.equal(onOrigin.statusCode, 204, onOrigin.payload)
+    })
+
+    it('refuses a stranger holding the pull capability', async () => {
+      // Alice's did:key is not in the account document.
+      await createSpace(mirror, 'stranger-copy')
+      const refused = await postPromotedRegistration({
+        toSpaceId: 'stranger-copy',
+        signer: alice.signer
+      })
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
+      assert.match(refused.json().errors[0].detail, /capabilityInvocation/)
+    })
+
+    it('refuses a key the document lists under capabilityDelegation alone', async () => {
+      const bare = bareDidKeyOf(delegationOnly)
+      await createSpace(mirror, 'delegation-only-copy', bare.did)
+      const refused = await postPromotedRegistration({
+        toSpaceId: 'delegation-only-copy',
+        signer: bare.signer
+      })
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.match(refused.json().errors[0].detail, /capabilityInvocation/)
+    })
+
+    it('refuses a registration that does not pull the log Collection', async () => {
+      await createSpace(mirror, 'partial-promoted-copy', local.did)
+      const refused = await postPromotedRegistration({
+        toSpaceId: 'partial-promoted-copy',
+        signer: local.signer,
+        collections: ['notes']
+      })
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.equal(refused.json().errors[0].pointer, '#/collections')
+    })
+
+    it('registers under a key of the document, pulls, and promotes the copy', async () => {
+      const before = networkResolutions.length
+      await createSpace(mirror, 'promoted-copy', local.did)
+      await register({
+        toSpaceId: 'promoted-copy',
+        fromSpaceId: 'promoted',
+        delegator: promoted.key.signer(),
+        signer: local.signer
+      })
+      await mirror.fastify.replication.pullNow({
+        spaceId: 'promoted-copy',
+        replicaId: 'origin'
+      })
+      const copy = await call({
+        server: mirror,
+        path: '/space/promoted-copy/id/did.jsonl',
+        signer: local.signer
+      })
+      assert.equal(copy.statusCode, 200, copy.payload)
+
+      const onMirror = await promote('promoted-copy', promoted.did, {
+        signer: local.signer
+      })
+      assert.equal(onMirror.statusCode, 204, onMirror.payload)
+      const read = await readAs('promoted-copy', promoted.key)
+      assert.equal(read.statusCode, 200, read.payload)
+      assert.equal(read.json().controller, promoted.did)
+      // The log was read through the pull capability, never fetched by DID.
+      assert.equal(networkResolutions.length, before)
+    })
   })
 
   describe('with no registration that maps the DID', () => {

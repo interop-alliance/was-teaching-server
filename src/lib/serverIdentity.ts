@@ -382,25 +382,10 @@ export function signingKeyRelationshipProblem({
   doc: DIDDoc
   publicKeyMultibase: string
 }): string | undefined {
-  // Every method id the key is published under, not just the first: a second
-  // method carrying the same key would otherwise slip past the check.
-  const methodIds = new Set(
-    (doc.verificationMethod ?? [])
-      .filter(vm => vm.publicKeyMultibase === publicKeyMultibase)
-      .map(vm => vm.id)
-      .filter((id): id is string => typeof id === 'string')
-  )
-  const listedUnder = (
-    [
-      'authentication',
-      'assertionMethod',
-      'keyAgreement',
-      'capabilityInvocation',
-      'capabilityDelegation'
-    ] as const
-  ).filter(relationship =>
-    referencesKey(doc[relationship], { methodIds, publicKeyMultibase })
-  )
+  const { methodIds, listedUnder } = keyRelationships({
+    doc,
+    publicKeyMultibase
+  })
   if (methodIds.size === 0 && listedUnder.length === 0) {
     return 'The resolved server document lists no verification method for the export-signing key.'
   }
@@ -420,6 +405,55 @@ export function signingKeyRelationshipProblem({
     )
   }
   return undefined
+}
+
+/**
+ * Where a document lists a key: the ids of every verification method that
+ * carries it, and the verification relationships that name one of those
+ * methods or embed the key. Every method id is read, not just the first, so a
+ * second method carrying the same key cannot slip past a check. Shared with
+ * the replica registration check, which reads whether a local `did:key` is a
+ * current invocation key of the peer controller's document.
+ *
+ * @param options {object}
+ * @param options.doc {DIDDoc}   the resolved current document
+ * @param options.publicKeyMultibase {string}   the key
+ * @returns {{ methodIds: Set<string>, listedUnder: string[] }}
+ */
+export function keyRelationships({
+  doc,
+  publicKeyMultibase
+}: {
+  doc: DIDDoc
+  publicKeyMultibase: string
+}): {
+  methodIds: Set<string>
+  listedUnder: Array<
+    | 'authentication'
+    | 'assertionMethod'
+    | 'keyAgreement'
+    | 'capabilityInvocation'
+    | 'capabilityDelegation'
+  >
+} {
+  const methodIds = new Set(
+    (doc.verificationMethod ?? [])
+      .filter(vm => vm.publicKeyMultibase === publicKeyMultibase)
+      .map(vm => vm.id)
+      .filter((id): id is string => typeof id === 'string')
+  )
+  const listedUnder = (
+    [
+      'authentication',
+      'assertionMethod',
+      'keyAgreement',
+      'capabilityInvocation',
+      'capabilityDelegation'
+    ] as const
+  ).filter(relationship =>
+    referencesKey(doc[relationship], { methodIds, publicKeyMultibase })
+  )
+  return { methodIds, listedUnder }
 }
 
 /**

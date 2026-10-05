@@ -5462,3 +5462,46 @@ granted the request, so every create path records no `createdBy` under a grant.
 The reachable case was Create Space by Id with the policy consulted late, after
 a Space deleted past the gate's check, under a custom `authorizeProvisioning`.
 The test covers a `did:key` and a foreign `did:webvh` `keyId`.
+
+---
+
+### WAS-205: [H] A Space promoted to its own `did:webvh` cannot gain a new replica
+
+- status: done
+- done: 2026-10-05
+- priority: high
+- labels: replication, webvh, registration
+- discovered-from: WAS-177 (2026-10-04)
+- touches:
+  - was-teaching-server: `src/sync/registration.ts`, ARCHITECTURE.md (the
+    `src/sync/` section) -- shipped 2026-10-05
+  - wallet-attached-storage-spec: the registration checks (WASS-50; an
+    acceptance line on the key-membership branch was added there 2026-10-05)
+  - freewallet: the replica registration flow (FW-638; an acceptance line on
+    registering a promoted account's Space was added there 2026-10-05)
+- acceptance:
+  - [x] A Space whose controller is a `did:webvh` hosted in that Space can be
+        registered as the source of a new Space on another server
+  - [x] The stranger case stays closed: a holder of a readable pull capability
+        still cannot register another user's Space as a source
+  - [x] A two-server test registers a replica of an already promoted Space,
+        pulls, and promotes the replica to the replicated DID
+
+Context: a registration is refused unless the peer Space's `controller` equals
+the local Space's. A new local Space is created under a `did:key`. A peer Space
+already promoted to a `did:webvh` therefore never matches. Promoting the local
+Space first needs the DID to resolve here, which needs the registration. The
+setup works only while the origin Space is still under its `did:key`, which is
+how the tests register. An account that was promoted before it gained a replica
+has no path to one, and that is the common order. The design decision is what
+replaces literal equality, for example a proof that the local controller is a
+key of the peer controller's document.
+
+Shipped 2026-10-05. The controller check has a second branch: the peer
+controller is a `did:webvh` hosted in the peer Space whose current document
+lists the local Space's `did:key` controller under `capabilityInvocation`. The
+log is read through the pull capability and verified offline, and the
+registration must pull the log's Collection. After the first pull, Update Space
+moves the local Space to the DID. The test registers a Space the origin promoted
+first, pulls, promotes the copy, and refuses a stranger's key and a key listed
+under `capabilityDelegation` alone.
