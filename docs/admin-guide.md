@@ -612,3 +612,35 @@ takes a stamp above the one it replaces.
   `StoreVersionError`, on every boot. There is no migration. Wipe the store, or
   restore each Space from an export archive into an empty store. An import
   re-stamps every record with this server's clock and origin id.
+
+## Foreign `did:webvh` invokers
+
+A Space controller can delegate a capability to a `did:webvh` hosted on another
+server: a peer server's own DID, or the DID of a service or agent, with any path
+or none. When such a DID invokes the capability, this server fetches its history
+log from the host the DID names, at the URL the did:webvh method maps it to
+(`https://<host>/<path>/did.jsonl`, or `https://<host>/.well-known/did.jsonl`
+for a DID with no path). The fetch happens only after the delegation chain has
+verified to the Space controller, and only for the DID the invoked capability
+names as its controller. Such a DID may invoke. It cannot sign a delegation, and
+it cannot be a Space or keystore controller. A root invocation by one causes no
+fetch.
+
+The fetch is bounded. It speaks `https` on the default port only, follows no
+redirect, connects only to public addresses, and reads at most 1 MiB under a
+timeout. Fetches of DIDs not yet verified here are rate-limited per host. A DID
+whose host carries a port is refused.
+
+A DID whose log this server stores does not take this path. That is a DID hosted
+here, or one hosted on a replication peer whose Space a replica registration
+copies here.
+
+### Configuration surface
+
+| variable              | role                                                                                                                                                                                                                                                                                             |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WAS_WEBVH_BLOCKLIST` | A comma-separated list of foreign `did:webvh` hosts and DIDs whose log is not fetched. A host name blocks every DID on that host, compared case-insensitively. A full `did:webvh` DID blocks that DID alone. Unset: none is blocked. A malformed entry fails the deploy, and the error names it. |
+
+A blocked DID is refused before any fetch. Its request gets the same `404`
+`not-found` as a DID whose chain did not verify. The list covers the network
+path only, so a DID whose log this server stores still resolves.

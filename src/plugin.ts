@@ -43,6 +43,7 @@ import {
   PeerWebvhResolver,
   type PeerLogFetcher
 } from './lib/peerWebvh.js'
+import { compileWebvhBlocklist } from './lib/webvhBlocklist.js'
 import { fetchFromPeer, type PeerFetch } from './sync/peerFetch.js'
 import { ReplicationManager } from './sync/replication.js'
 import {
@@ -223,14 +224,23 @@ export interface FastifyWasOptions {
    */
   physicalClock?: () => number
   /**
-   * Performs the HTTP GET of a peer server's `did:webvh` history log, which
-   * the capability verifier fetches when such a DID invokes a delegated
+   * Performs the HTTP GET of a foreign `did:webvh` history log, which the
+   * capability verifier fetches when such a DID invokes a delegated
    * capability whose chain verified (see `lib/peerWebvh.ts`). `undefined`
    * means `fetchPeerLog`: `https` on the default port, no redirects, public
    * addresses only. A test injects one to serve a peer log from memory. No
    * configuration setting reaches it.
    */
   peerLogFetcher?: PeerLogFetcher
+  /**
+   * The foreign `did:webvh` DIDs whose log is never fetched (config
+   * `WAS_WEBVH_BLOCKLIST`): each entry a host name, which blocks every DID on
+   * that host (compared case-insensitively), or a full `did:webvh` DID. A
+   * blocked DID cannot invoke a delegated capability here; it is answered
+   * like any DID whose chain did not verify. A malformed entry is refused at
+   * registration. `undefined` means none is blocked.
+   */
+  webvhBlocklist?: string[]
   /**
    * Makes the requests a replica registration's pull loop sends its source
    * peer (see `sync/peerFetch.ts`). `undefined` means `fetchFromPeer`:
@@ -281,6 +291,7 @@ async function wasPlugin(
     replicationClockBoundMs,
     physicalClock,
     peerLogFetcher,
+    webvhBlocklist,
     peerFetch,
     replicationPullIntervalMs
   } = options
@@ -302,6 +313,12 @@ async function wasPlugin(
       'authorizeProvisioning and onboardingToken are mutually exclusive.'
     )
   }
+
+  // Refused here, before any backend is opened, like the other options.
+  const compiledWebvhBlocklist = compileWebvhBlocklist({
+    entries: webvhBlocklist ?? [],
+    source: 'webvhBlocklist'
+  })
 
   // A composition that runs the backend lifecycle itself needs the backend in
   // hand, or there is nothing for it to close.
@@ -400,13 +417,14 @@ async function wasPlugin(
       ? undefined
       : await createServerSigningKey({ seed: serverKeySeed })
   fastify.decorate('serverSigningKey', serverSigningKey)
-  // The peer server DID resolver, one per app, so its cache and rate limits
+  // The foreign did:webvh resolver, one per app, so its cache and rate limits
   // are not shared with another app in the same process.
   fastify.decorate(
     'peerWebvh',
     new PeerWebvhResolver({
       fetchLog: peerLogFetcher ?? fetchPeerLog,
-      logger: fastify.log
+      logger: fastify.log,
+      blocklist: compiledWebvhBlocklist
     })
   )
   // One pull loop per stored replica registration, started once the routes

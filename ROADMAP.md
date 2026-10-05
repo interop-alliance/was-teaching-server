@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 205
+nextAvailableId: 211
 
 <!-- roadmap-order:index:start -->
 
@@ -31,6 +31,8 @@ Ready:
 - WAS-65 [M] Response hardening on public resource serving (helmet, CSP,
   nosniff)
 - WAS-139 [M] Keystore config validation and listing completeness
+- WAS-208 [L] `createdBy` under a provisioning grant comes from an unverified
+  keyId
 
 Chains:
 
@@ -103,20 +105,18 @@ Chains:
 
 Ready:
 
+- WAS-205 [H] A Space promoted to its own `did:webvh` cannot gain a new replica
 - WAS-180 [M] Delete Space removes revocations before the Space directory
-- WAS-177 [M] Resolve a replicated peer-hosted `did:webvh` controller from
-  storage (blocks 1)
+- WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict model)
+- WAS-206 [M] Two local Spaces registering one source leave its replicated DID
+  unresolvable
+- WAS-207 [L] Resolve a replicated `did:webvh` log that declares witnesses
+- WAS-209 [L] Cover the replicated-controller path on Postgres and under the
+  client-annex clause
 - WAS-201 [L] Replicate a Collection stored on a registered external backend
 - WAS-198 [L] Keep peer did:webvh head records and fetch bounds across eviction
   and restart
 - WAS-184 [L] Write-time creation and revision statements
-
-Chains:
-
-- WAS-177 [M] Resolve a replicated peer-hosted `did:webvh` controller from
-  storage
-  - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
-    model)
 
 **Performance**
 
@@ -144,6 +144,7 @@ Ready:
 - WAS-168 [L] `SERVER_URL` move runbook for the server DID log (portable domain
   move)
 - WAS-202 [L] Pull-loop tests beyond the two-server filesystem case
+- WAS-210 [L] One function decides where a `did:webvh` resolves from
 
 **Someday / Maybe**
 
@@ -654,6 +655,26 @@ remains here is the rest of the helmet header set.
         alphabet rather than signing over silently dropped bytes
   - [ ] Decide whether Create Keystore takes a client idempotence key (a re-run
         mints a second keystore today; wire-level, ask first)
+
+### WAS-208: [L] `createdBy` under a provisioning grant comes from an unverified keyId
+
+- status: todo
+- priority: low
+- labels: provenance, provisioning, security
+- discovered-from: WAS-177 (2026-10-04)
+- acceptance:
+  - [ ] A create admitted by a provisioning token alone records no `createdBy`,
+        or records one only from a signature the server verified
+  - [ ] A test creates under a token with a `keyId` naming another party's DID
+        and asserts that DID is not recorded
+
+Context: `invokerDid` narrows the signing `keyId` by shape and leaves the
+verification to the authorization that ran before it. A create admitted by the
+provisioning token runs no signature verification, so the recorded DID is the
+caller's claim. That held for a `did:key` before. The shape check now also
+admits any `did:webvh`, so the claim can name those too.
+
+---
 
 ## Correctness and consistency
 
@@ -1519,6 +1540,37 @@ The replication program: a Space served by several primaries with a replicated
 write identity and conflict model. WAS-96 is the umbrella and names the design
 doc; the other items are its sub-items in dependency order.
 
+### WAS-205: [H] A Space promoted to its own `did:webvh` cannot gain a new replica
+
+- status: todo
+- priority: high
+- labels: replication, webvh, registration
+- discovered-from: WAS-177 (2026-10-04)
+- touches:
+  - was-teaching-server: `src/sync/registration.ts`, ARCHITECTURE.md (the
+    `src/sync/` section)
+  - wallet-attached-storage-spec: the registration checks (WASS-50)
+  - freewallet: the replica registration flow (FW-638)
+- acceptance:
+  - [ ] A Space whose controller is a `did:webvh` hosted in that Space can be
+        registered as the source of a new Space on another server
+  - [ ] The stranger case stays closed: a holder of a readable pull capability
+        still cannot register another user's Space as a source
+  - [ ] A two-server test registers a replica of an already promoted Space,
+        pulls, and promotes the replica to the replicated DID
+
+Context: a registration is refused unless the peer Space's `controller` equals
+the local Space's. A new local Space is created under a `did:key`. A peer Space
+already promoted to a `did:webvh` therefore never matches. Promoting the local
+Space first needs the DID to resolve here, which needs the registration. The
+setup works only while the origin Space is still under its `did:key`, which is
+how the tests register. An account that was promoted before it gained a replica
+has no path to one, and that is the common order. The design decision is what
+replaces literal equality, for example a proof that the local controller is a
+key of the peer controller's document.
+
+---
+
 ### WAS-180: [M] Delete Space removes revocations before the Space directory
 
 - status: todo
@@ -1544,41 +1596,7 @@ pull; it is an existing defect independent of replication.
 
 ---
 
-### WAS-177: [M] [blocks 1] Resolve a replicated peer-hosted `did:webvh` controller from storage
-
-- status: todo
-- priority: medium
-- labels: replication, webvh, zcap, security
-- blocked-by: WAS-176
-- blocks: WAS-96
-- touches:
-  - was-teaching-server: `src/lib/webvhController.ts`, `src/zcap.ts`,
-    ARCHITECTURE.md (the Controller and self-hosted `did:webvh` entries)
-  - wallet-attached-storage-spec: the authz profile's self-hosted rule
-  - freewallet: a controller log that now has copies; the DR flow (appending on
-    the surviving replica)
-- acceptance:
-  - [ ] A `did:webvh` whose host is a registered peer and whose log Collection
-        is replicated here resolves from the local copy, through the same
-        verify, cache, head-record and fast-forward path as a native log; no
-        network fetch
-  - [ ] Update Space to such a controller, and Create Space by Id under one,
-        work on the replica
-  - [ ] Any other cross-host `did:webvh` stays refused
-  - [ ] Tests resolve a controller minted on server A against server B after a
-        pull, and assert a key retired on A stops authorizing on B after the
-        next pull
-
-Context (discovered-from: WAS-96, decision 6b). The replica can authorize
-nothing without the controller's document. Fetching it from the original host
-was rejected: if that host is lost for good, a cached document can never be
-refreshed and the account can never rotate a key again, which defeats the
-disaster-recovery purpose of a replica. A replicated copy keeps the account
-alive on the surviving server, where the wallet can keep appending.
-
----
-
-### WAS-96: [M] [after WAS-177] Multi-primary Spaces (replicated write identity and conflict model)
+### WAS-96: [M] Multi-primary Spaces (replicated write identity and conflict model)
 
 - status: todo
 - priority: medium
@@ -1587,7 +1605,6 @@ alive on the surviving server, where the wallet can keep appending.
 - design-approved: 2026-10-02
 - decisions: wallet-attached-storage-spec decisions 0009 to 0013 (contract);
   this repo's decisions/0003 to 0005 (server-internal)
-- blocked-by: WAS-176, WAS-177
 - touches:
   - wallet-attached-storage-spec: the Resource data model (the origin stamp
     members and the validator), the `changes` profile (stamp members on the
@@ -1612,7 +1629,7 @@ alive on the surviving server, where the wallet can keep appending.
   - [x] The design doc is reviewed and approved, and every wire-level convention
         it flags is individually signed off (2026-10-02; the read-only-switch
         problem type is WAS-179's)
-  - [ ] Each `blocked-by` item is done
+  - [x] Each `blocked-by` item is done (WAS-176 and WAS-177, 2026-10-04)
   - [ ] A test boots two in-process servers over separate data dirs, registers
         one as the other's source for a Space, writes on the source, and asserts
         the replica serves the same bytes, the same `ETag`, and the same
@@ -1706,6 +1723,65 @@ that would be needed if per-Collection write serialization were ever relaxed;
 blob and chunk replication (WAS-14); server-signed checkpoints (WAS-36), which
 interact with per-source checkpoints; a read-only replica switch (WAS-179);
 `keep-conflicts` and stale-`If-Match`-as-sibling.
+
+---
+
+### WAS-206: [M] Two local Spaces registering one source leave its replicated DID unresolvable
+
+- status: todo
+- priority: medium
+- labels: replication, webvh, registration, lockout
+- discovered-from: WAS-177 (2026-10-04)
+- acceptance:
+  - [ ] A registration whose `fromSpace` another local Space already registers,
+        and which would pull the same controller-log Collection, is refused with
+        `replica-refused`, or the resolver gains a safe rule for choosing a copy
+  - [ ] A test shows no sequence of registrations leaves a Space whose
+        controller no longer resolves
+
+Context: a peer-hosted `did:webvh` resolves from storage only when exactly one
+local Space maps it through a registration. With two, it resolves from neither
+copy, since either could be an older prefix that still lists a retired key. If
+that DID controls both Spaces, nobody can then remove either registration or
+either Space, and there is no break-glass. Refusing the second registration
+changes registration behaviour, so it was left out of the resolver change.
+
+---
+
+### WAS-207: [L] Resolve a replicated `did:webvh` log that declares witnesses
+
+- status: todo
+- priority: low
+- labels: replication, webvh
+- discovered-from: WAS-177 (2026-10-04)
+- acceptance:
+  - [ ] A decision on witness proofs for a log this server holds a copy of:
+        replicate `did-witness.json` beside the log, or keep refusing
+  - [ ] If replicated, the copy verifies with the stored proofs and no fetch
+
+Context: a replicated log, and an append to any stored log that names a DID on
+another host, is verified with no witness proofs, so a log that declares
+witnesses is refused. Before the change such an append made the library fetch
+`did-witness.json` from the named host with no address, redirect or size bound.
+A wallet that uses witnesses cannot use a replica until this is decided.
+
+---
+
+### WAS-209: [L] Cover the replicated-controller path on Postgres and under the client-annex clause
+
+- status: todo
+- priority: low
+- labels: replication, webvh, tests, postgres-backend
+- discovered-from: WAS-177 (2026-10-04)
+- acceptance:
+  - [ ] The two-server replicated-controller test runs on the Postgres backend,
+        including the key-retirement case (the applied `did.jsonl` drops the
+        cached document)
+  - [ ] A test runs a ladder-signed delegation on a replica, where the account
+        DID is peer-hosted, and asserts the clause still bounds it
+
+Context: both paths were checked by reading the code, not by a test. The
+two-server test runs on the filesystem backend only.
 
 ---
 
@@ -2275,6 +2351,33 @@ registration, a pull, last-writer-wins both ways, the clock-bound stall, a
 Collection tombstone and the back-off. The cases above are covered at the
 backend level only (`test/storage-backend-contract.ts`, both backends), or not
 at all for the first two loop branches.
+
+---
+
+### WAS-210: [L] One function decides where a `did:webvh` resolves from
+
+- status: todo
+- priority: low
+- labels: webvh, authorization, cleanup
+- discovered-from: review of the WAS-177 change (2026-10-04)
+- acceptance:
+  - [ ] One exported function answers, for a DID, whether it resolves from a
+        stored log (and where), from the network, or not at all
+  - [ ] `peerInvokerGrant` and `resolveWebvhController` both take their branch
+        from it, and neither calls `locateWebvhLog` or `mayFetch` directly
+  - [ ] The resolver keeps its synchronous self-hosted path ahead of the cache
+  - [ ] No wire behaviour changes: the existing peer-resolution and
+        replicated-controller suites pass unmodified
+
+Context: the rule that a stored log wins over a network fetch is decided twice.
+`peerInvokerGrant` in `src/zcap.ts` calls `locateWebvhLog` and gives no grant
+when it finds a location. `resolveWebvhController` in
+`src/lib/webvhController.ts` locates first and consults the peer resolver only
+when there is no location. A third resolution source, or a change to the rule
+for an ambiguous mapping, has to be made in both. If only the resolver changes,
+the pre-pass spends a chain verification on grants that are never used, or
+withholds one the resolver would honor. It was left out of the cleanup pass
+because it restructures the authorization path.
 
 ---
 

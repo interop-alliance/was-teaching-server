@@ -143,7 +143,8 @@ export async function startServer(): Promise<void> {
       discloseVersion: config.discloseVersion,
       replicationClockBoundMs: config.replicationClockBoundMs,
       serverKeySeed: config.serverKeySeed,
-      adminDid: config.adminDid
+      adminDid: config.adminDid,
+      webvhBlocklist: config.webvhBlocklist
     })
     // Warn (once, at startup, where the Fastify logger now exists) about limits
     // left implicitly unbounded. These warnings live only here so library and

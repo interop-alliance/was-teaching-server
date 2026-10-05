@@ -8,7 +8,7 @@
  * listing, conditional writes, the bad-index and parent-missing guards, the
  * per-upload cap (413), the parent-delete cascade, and export/import carry.
  */
-import { it, describe, beforeAll, afterAll } from 'vitest'
+import { it, describe, beforeAll, afterAll, vi } from 'vitest'
 import assert from 'node:assert'
 import { mkdir, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -91,6 +91,7 @@ describe('Chunk API (chunked-streams)', () => {
       const etag = written.headers.get('etag')!
 
       for (const method of ['GET', 'HEAD']) {
+        const getChunk = vi.spyOn(fastify.storage, 'getChunk')
         const unchanged = await responseOf(
           alice.was.request({
             url: chunkUrl(resourceId, 0),
@@ -98,6 +99,9 @@ describe('Chunk API (chunked-streams)', () => {
             headers: { 'if-none-match': etag }
           })
         )
+        // The 304 ends the handler: the byte stream is never opened.
+        assert.equal(getChunk.mock.calls.length, 0, method)
+        getChunk.mockRestore()
         assert.equal(unchanged.status, 304, method)
         assert.equal(unchanged.headers.get('etag'), etag, method)
         assert.equal(await unchanged.text(), '', method)

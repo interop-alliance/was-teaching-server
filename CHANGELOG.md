@@ -4,6 +4,25 @@
 
 ### Added
 
+- A `did:webvh` hosted on a replication peer resolves from storage.
+  `did:webvh:<scid>:<H>:space:<S>:<C>` resolves from a local copy, with no
+  network fetch, when exactly one local Space holds a replica registration whose
+  `fromSpace` is `https://H/space/S/` and which pulls Collection `C`. The log
+  goes through the same verification, cache and fast-forward rules as a
+  self-hosted one. Two or more local Spaces mapping the DID means it does not
+  resolve from storage. Such a DID may be a Space controller, a keystore
+  controller, a delegator and a `createdBy`. A key retired at the origin stops
+  authorizing after the next pull.
+- Two guards keep such a DID resolvable. Register Replica refuses, with
+  `replica-refused` (409), a registration when another local Space already
+  replicates the same peer Space with a Collection in common. Delete Replica
+  refuses, with the same type, to remove the only registration that maps a local
+  Space's `did:webvh` controller to a copy of its log.
+- `WAS_WEBVH_BLOCKLIST` and the `webvhBlocklist` plugin option. A
+  comma-separated list of host names or full `did:webvh` DIDs whose log is never
+  fetched. A blocked DID is refused before any fetch with the masked
+  `not-found`. A malformed entry refuses startup. It covers the network path
+  only.
 - Replica registrations. `POST /space/:spaceId/replicas` registers one source
   peer of a Space: `id`, `fromSpace`, `toSpace`, `capability`, an optional
   `collections` list and `role` (`source`). `GET` there lists the records as
@@ -40,6 +59,14 @@
 
 ### Changed
 
+- Any `did:webvh` on another host may invoke a delegated capability, under any
+  path or none. Before, only a peer server's own DID could. The log is fetched
+  from the URL the did:webvh method maps the DID to. Such a DID cannot sign a
+  delegation link and cannot be a controller. All fetch bounds are unchanged,
+  and a DID whose host carries a port, or is an IP address, is refused.
+- `createdBy` now records a foreign `did:webvh` that invoked over the network.
+- A `did.jsonl` that declares witnesses is refused when it is a replicated log
+  or is appended to a log that is not self-hosted.
 - **BREAKING**: `replicas` and `zcaps` are reserved Collection ids. Creating a
   Collection under either answers `reserved-id` (409).
 - `GET /space/:spaceId/:collectionId/query` no longer answers 405.
@@ -84,6 +111,12 @@
   directory holding any feed counter file or any Collection- or Resource-level
   policy file, with `StoreVersionError` on every boot. A Space policy alone
   passes. Wipe the store, or restore each Space from an export archive.
+
+### Fixed
+
+- A conditional `GET` of a Resource or a chunk that answered 304 went on to open
+  the byte stream and send a second time. The 304 reached the client, and the
+  server logged `FST_ERR_REP_ALREADY_SENT`. The handler now stops at the 304.
 
 ## 0.41.1 - 2026-10-04
 

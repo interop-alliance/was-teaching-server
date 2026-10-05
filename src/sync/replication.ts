@@ -59,11 +59,11 @@ import { type ApplyResult, isReceivableStamp } from '../lib/replicaApply.js'
 import type { ServerSigningKey } from '../lib/serverIdentity.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
 import { loadSyncSigner } from '../lib/syncIdentity.js'
-import { parseSelfHostedWebvh } from '../lib/validateDid.js'
 import {
   isUrlSafeSegment,
   RESERVED_COLLECTION_IDS,
-  RESERVED_RESOURCE_IDS
+  RESERVED_RESOURCE_IDS,
+  spaceIdOfSpaceUrl
 } from '../lib/validateId.js'
 import {
   forgetDeletedWebvhLocation,
@@ -82,13 +82,10 @@ import type {
   StoredReplica,
   WriteStamp
 } from '../types.js'
+import { peerCollectionSelector } from './collectionSelection.js'
 import { PeerClient } from './peerClient.js'
 import type { PeerFetch } from './peerFetch.js'
-import {
-  peerUrlOf,
-  spaceIdOfSpaceUrl,
-  storedProjectionOfCollection
-} from './registration.js'
+import { peerUrlOf, storedProjectionOfCollection } from './registration.js'
 
 /**
  * What applying one change did, beside the apply path's own outcomes. Both
@@ -854,20 +851,13 @@ export class ReplicationManager {
     record: StoredReplica['record']
   }): Promise<(collectionId: string) => boolean> {
     if (record.collections === undefined) {
-      return () => true
+      return peerCollectionSelector({ record })
     }
-    const wanted = new Set(record.collections.map(({ id }) => id))
     const local = await this.#storage.getSpaceMetadata({ spaceId })
-    const hosted = parseSelfHostedWebvh(local?.controller, {
-      serverUrl: new URL(record.fromSpace).origin
+    return peerCollectionSelector({
+      record,
+      localController: local?.controller
     })
-    if (
-      hosted !== undefined &&
-      hosted.spaceId === spaceIdOfSpaceUrl(record.fromSpace)
-    ) {
-      wanted.add(hosted.collectionId)
-    }
-    return collectionId => wanted.has(collectionId)
   }
 
   /**

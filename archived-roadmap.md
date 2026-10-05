@@ -5382,3 +5382,56 @@ registration on every apply, where the design said once per batch. A received
 stamp that carries this server's own origin id goes through the one comparison
 like any other, where section 5.2 said to refuse it. Follow-ups: WAS-201 and
 WAS-202.
+
+---
+
+### WAS-177: [M] [blocks 1] Resolve a replicated peer-hosted `did:webvh` controller from storage
+
+- status: done
+- done: 2026-10-04
+- priority: medium
+- labels: replication, webvh, zcap, security
+- blocks: WAS-96
+- touches:
+  - was-teaching-server: `src/lib/webvhController.ts`, `src/zcap.ts`,
+    ARCHITECTURE.md (the Controller and self-hosted `did:webvh` entries) --
+    shipped with this item
+  - wallet-attached-storage-spec: the authz profile's self-hosted rule -- filed:
+    WASS-53 (the rule lives in the core spec's "Self-hosted histories" section)
+  - freewallet: a controller log that now has copies; the DR flow (appending on
+    the surviving replica) -- filed: FW-648
+- acceptance:
+  - [x] A `did:webvh` whose host is a registered peer and whose log Collection
+        is replicated here resolves from the local copy, through the same
+        verify, cache, head-record and fast-forward path as a native log; no
+        network fetch
+  - [x] Update Space to such a controller, and Create Space by Id under one,
+        work on the replica
+  - [x] Any other cross-host `did:webvh` resolves over the network as the
+        invoker of a delegated capability, unless the operator's blocklist
+        (`WAS_WEBVH_BLOCKLIST`) names it or its host. It may not sign a
+        delegation link or be a controller (reworded 2026-10-04 by the
+        maintainer; the line read "Any other cross-host `did:webvh` stays
+        refused")
+  - [x] Tests resolve a controller minted on server A against server B after a
+        pull, and assert a key retired on A stops authorizing on B after the
+        next pull
+
+Context (discovered-from: WAS-96, decision 6b). The replica can authorize
+nothing without the controller's document. Fetching it from the original host
+was rejected: if that host is lost for good, a cached document can never be
+refreshed and the account can never rotate a key again, which defeats the
+disaster-recovery purpose of a replica. A replicated copy keeps the account
+alive on the surviving server, where the wallet can keep appending.
+
+Shipped 2026-10-04. The maintainer amended the third acceptance line that day:
+wallets will delegate to long-lived services and agents that carry their own
+`did:webvh`, so a foreign DID must resolve unless blocklisted. The network
+resolver built for peer server DIDs now takes any cross-host `did:webvh`, any
+path or the host-only form, still as an invoker only. Decided with the
+maintainer: the invoker-only role, and the `WAS_WEBVH_BLOCKLIST` variable taking
+host names and full DIDs. Choices made in implementation: a DID that two local
+Spaces map through their registrations resolves from neither copy; a replicated
+log that declares witnesses is refused; the blocklist covers the network path
+only; `createdBy` records a network-resolved invoker. Follow-ups: WAS-205 to
+WAS-209.

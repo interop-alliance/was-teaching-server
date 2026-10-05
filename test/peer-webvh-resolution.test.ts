@@ -1,11 +1,14 @@
 /**
- * Network resolution of a peer server's `did:webvh` (Vitest).
+ * Network resolution of a foreign `did:webvh` (Vitest).
  *
- * A Space controller delegates a capability to a peer server's own DID,
- * `did:webvh:<scid>:<host>:space:server:id`, and the peer invokes it signing
- * as `{peerDid}#{key}`. The serving server fetches the peer's log from
- * `https://<host>/space/server/id/did.jsonl`, but only once the delegation
- * chain naming that DID as invoker has verified to the Space controller.
+ * A Space controller delegates a capability to a `did:webvh` on another host:
+ * a peer server's own DID, `did:webvh:<scid>:<host>:space:server:id`, or a
+ * service's DID under any path or none. The holder invokes it signing as
+ * `{did}#{key}`. The serving server fetches the log from the URL the method
+ * maps the DID to (`https://<host>/<path>/did.jsonl`, or
+ * `https://<host>/.well-known/did.jsonl`), but only once the delegation chain
+ * naming that DID as invoker has verified to the Space controller, and only
+ * for a DID the operator's blocklist does not name.
  *
  * The peer log fetch goes through the injected `peerLogFetcher`, which serves
  * minted logs from memory and counts every fetch, so the suite can assert
@@ -31,8 +34,10 @@ import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
 import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 import { ProblemTypes } from '@interop/storage-core'
 
-import { spaceRevocationsPath } from '../src/lib/paths.js'
-import { parsePeerServerWebvh } from '../src/lib/validateDid.js'
+import { parseWebvhBlocklist } from '../src/config.default.js'
+import { createApp } from '../src/server.js'
+import { spaceMetaPath, spaceRevocationsPath } from '../src/lib/paths.js'
+import { compileWebvhBlocklist } from '../src/lib/webvhBlocklist.js'
 import {
   assertPublicAddresses,
   checkPeerLogUrl,
@@ -41,6 +46,7 @@ import {
   type PeerLogFetcher
 } from '../src/lib/peerWebvh.js'
 import {
+  bindKey,
   client,
   delegate,
   openTempBackend,
@@ -67,6 +73,8 @@ vi.mock('../src/config.default.js', async importOriginal => ({
  */
 interface Peer {
   host: string
+  // the log URL the DID maps to
+  url: string
   did: string
   log: DIDLog
   logSigner: Signer
@@ -120,21 +128,6 @@ function methodOf(keyPair: Ed25519VerificationKey, purpose: string[]) {
     publicKeyMultibase: keyPair.publicKeyMultibase!,
     purpose
   }
-}
-
-/**
- * Sets a key pair's id and controller to a method of `did`.
- * @param keyPair {Ed25519VerificationKey}
- * @param did {string}
- * @returns {Ed25519VerificationKey}
- */
-function bindKey(
-  keyPair: Ed25519VerificationKey,
-  did: string
-): Ed25519VerificationKey {
-  keyPair.id = `${did}#${keyPair.publicKeyMultibase}`
-  keyPair.controller = did
-  return keyPair
 }
 
 describe('peer server did:webvh resolution', () => {
@@ -212,17 +205,15 @@ describe('peer server did:webvh resolution', () => {
    * @returns {void}
    */
   function publish(peer: Peer): void {
-    served.set(
-      logUrlOf(peer.host),
-      new TextEncoder().encode(logToJsonlString(peer.log))
-    )
+    served.set(peer.url, new TextEncoder().encode(logToJsonlString(peer.log)))
   }
 
   /**
    * Mints a peer server identity at `address` and serves its log.
    * @param options {object}
    * @param options.host {string}   the fake host the log is served for
-   * @param [options.path] {string}   the DID path, `space/server/id` by default
+   * @param [options.path] {string}   the DID path, `space/server/id` by
+   *   default; the empty string mints the host-only form
    * @param [options.purpose] {string[]}   the relationships the key is under
    * @param [options.address] {string}   overrides the address the DID is minted at
    * @param [options.witness] {object}   the log's `witness` parameter
@@ -232,7 +223,7 @@ describe('peer server did:webvh resolution', () => {
     host,
     path = 'space/server/id',
     purpose = ['assertionMethod', 'capabilityInvocation'],
-    address = `https://${host}/${path}`,
+    address = path === '' ? `https://${host}` : `https://${host}/${path}`,
     witness
   }: {
     host: string
@@ -254,6 +245,10 @@ describe('peer server did:webvh resolution', () => {
     })
     const peer = {
       host,
+      url:
+        path === ''
+          ? `https://${host}/.well-known/did.jsonl`
+          : `https://${host}/${path}/did.jsonl`,
       did: created.did,
       log: created.log,
       logSigner,
@@ -638,6 +633,67 @@ describe('peer server did:webvh resolution', () => {
       assert.equal(fetchesOf(logUrlOf(peer.host)), 1)
     })
 
+    it('lets a DID under any other path invoke, fetched from its mapped URL', async () => {
+      const agent = await mintPeer({
+        host: 'agent-path.example',
+        path: 'agents/a1',
+        purpose: ['capabilityInvocation']
+      })
+      assert.match(agent.did, /^did:webvh:[^:]+:agent-path\.example:agents:a1$/)
+      const zcap = await grantTo(agent.did)
+      const response = await read({ keyPair: agent.keyPair, capability: zcap })
+      assert.equal(response.status, 200)
+      assert.deepStrictEqual(response.data, { hello: 'world' })
+      assert.deepStrictEqual(
+        fetched.filter(url => url.includes(agent.host)),
+        ['https://agent-path.example/agents/a1/did.jsonl']
+      )
+    })
+
+    it('lets a host-only DID invoke, fetched from .well-known', async () => {
+      const agent = await mintPeer({
+        host: 'agent-root.example',
+        path: '',
+        purpose: ['capabilityInvocation']
+      })
+      assert.match(agent.did, /^did:webvh:[^:]+:agent-root\.example$/)
+      const zcap = await grantTo(agent.did)
+      const response = await read({ keyPair: agent.keyPair, capability: zcap })
+      assert.equal(response.status, 200)
+      assert.deepStrictEqual(
+        fetched.filter(url => url.includes(agent.host)),
+        ['https://agent-root.example/.well-known/did.jsonl']
+      )
+    })
+
+    it('records a foreign invoker as createdBy', async () => {
+      const agent = await mintPeer({
+        host: 'agent-writer.example',
+        path: 'agents/w1'
+      })
+      const zcap = await delegate({
+        signer: alice.signer,
+        capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
+        invocationTarget: spaceUrl,
+        controller: agent.did,
+        allowedActions: ['GET', 'PUT']
+      })
+      const written = await client({
+        signer: agent.keyPair.signer() as any
+      }).request({
+        url: new URL(
+          `/space/${spaceId}/credentials/by-agent`,
+          serverUrl
+        ).toString(),
+        method: 'PUT',
+        action: 'PUT',
+        capability: zcap,
+        json: { from: 'agent' }
+      })
+      assert.equal(written.status, 201)
+      assert.equal((written.data as any).createdBy, agent.did)
+    })
+
     it('refuses a write under a read-only delegation', async () => {
       const peer = await mintPeer({ host: 'peer-write.example' })
       const zcap = await grantTo(peer.did)
@@ -760,10 +816,35 @@ describe('peer server did:webvh resolution', () => {
       assert.equal(fetchesOf(logUrlOf(peer.host)), 0)
     })
 
-    it('for a DID whose path is not space:server:id', async () => {
+    it('when a foreign DID under another path signs a delegation in the chain', async () => {
+      const delegator = await mintPeer({
+        host: 'nofetch-agent-delegator.example',
+        path: 'agents/d1',
+        purpose: ['capabilityInvocation', 'capabilityDelegation']
+      })
+      const invoker = await mintPeer({ host: 'nofetch-agent-invoker.example' })
+      const parent = await grantTo(delegator.did)
+      const child = await delegate({
+        signer: delegator.keyPair.signer(),
+        capability: parent,
+        invocationTarget: spaceUrl,
+        controller: invoker.did,
+        allowedActions: ['GET']
+      })
+      await assertMasked(read({ keyPair: invoker.keyPair, capability: child }))
+      assert.equal(
+        fetched.filter(url => url.includes('nofetch-agent')).length,
+        0
+      )
+    })
+
+    it('for a DID whose path carries a segment that is not URL-safe', async () => {
+      // `%3F` decodes to `?`. The method would keep it percent-encoded in the
+      // log URL, but this server refuses any segment outside the unreserved
+      // charset before a URL is built.
       const peer = await mintPeer({
-        host: 'nofetch-path.example',
-        path: 'space/other/id'
+        host: 'nofetch-segment.example',
+        path: 'agents/a%3Fb'
       })
       const zcap = await grantTo(peer.did)
       await assertMasked(read({ keyPair: peer.keyPair, capability: zcap }))
@@ -819,36 +900,180 @@ describe('peer server did:webvh resolution', () => {
       assert.equal(response.status, 200)
     })
   })
+
+  describe('as a controller', () => {
+    /**
+     * Alice's Update Space naming `controller`, as a root invocation.
+     * @param controller {string}
+     * @returns {Promise<any>}
+     */
+    async function promote(controller: string): Promise<any> {
+      return client({ signer: alice.signer }).request({
+        url: new URL(spaceMetaPath({ spaceId }), serverUrl).toString(),
+        method: 'PUT',
+        action: 'PUT',
+        capability: rootZcap({
+          target: spaceUrl,
+          controller: alice.did
+        }),
+        json: { name: 'Replicated Space', controller }
+      })
+    }
+
+    it('cannot be stored, under a space path or any other, and is never fetched', async () => {
+      const server = await mintPeer({ host: 'controller-server.example' })
+      const agent = await mintPeer({
+        host: 'controller-agent.example',
+        path: 'agents/c1'
+      })
+      for (const did of [server.did, agent.did]) {
+        const err = await requestError(promote(did))
+        assert.equal(err.status, 400, did)
+        assert.equal(err.data.type, ProblemTypes.INVALID_REQUEST_BODY, did)
+      }
+      assert.equal(fetched.filter(url => url.includes('controller-')).length, 0)
+      const meta = await client({ signer: alice.signer }).request({
+        url: new URL(spaceMetaPath({ spaceId }), serverUrl).toString(),
+        method: 'GET',
+        action: 'GET',
+        capability: rootZcap({ target: spaceUrl, controller: alice.did })
+      })
+      assert.equal((meta.data as any).controller, alice.did)
+    })
+  })
+
+  describe('the blocklist', () => {
+    let blocked: FastifyInstance, blockedUrl: string
+    let byHost: Peer, byDid: Peer, allowed: Peer
+    const blockedSpaceId = randomUUID()
+    let blockedSpaceUrl: string
+
+    beforeAll(async () => {
+      byHost = await mintPeer({ host: 'blocked-host.example' })
+      byDid = await mintPeer({ host: 'blocked-did.example', path: 'agents/b1' })
+      allowed = await mintPeer({
+        host: 'blocked-did.example',
+        path: 'agents/b2'
+      })
+      ;({ fastify: blocked, serverUrl: blockedUrl } = await startTestServer({
+        backend: await openTempBackend(),
+        peerLogFetcher,
+        // A host is compared case-insensitively; a DID entry names one DID.
+        webvhBlocklist: [' BLOCKED-HOST.example ', byDid.did]
+      }))
+      const { alice: blockedAlice } = await zcapClients({
+        serverUrl: blockedUrl
+      })
+      const space = blockedAlice.was.space(blockedSpaceId)
+      await space.configure({ name: 'Blocklist Space', controller: alice.did })
+      await space.collection('credentials').configure({ force: true })
+      await space.collection('credentials').put('doc-1', { hello: 'world' })
+      blockedSpaceUrl = new URL(
+        `/space/${blockedSpaceId}/`,
+        blockedUrl
+      ).toString()
+    })
+    afterAll(async () => {
+      await blocked?.close()
+    })
+
+    /**
+     * Reads the blocklist server's Resource under a grant to `peer`.
+     * @param peer {Peer}
+     * @returns {Promise<any>}
+     */
+    async function readBlocked(peer: Peer): Promise<any> {
+      const zcap = await delegate({
+        signer: alice.signer,
+        capability: `urn:zcap:root:${encodeURIComponent(blockedSpaceUrl)}`,
+        invocationTarget: blockedSpaceUrl,
+        controller: peer.did,
+        allowedActions: ['GET']
+      })
+      return client({ signer: peer.keyPair.signer() as any }).request({
+        url: new URL(
+          `/space/${blockedSpaceId}/credentials/doc-1`,
+          blockedUrl
+        ).toString(),
+        method: 'GET',
+        action: 'GET',
+        capability: zcap
+      })
+    }
+
+    it('refuses every DID on a blocked host, with no fetch', async () => {
+      await assertMasked(readBlocked(byHost))
+      assert.equal(fetchesOf(byHost.url), 0)
+    })
+
+    it('refuses a blocked DID, with no fetch, and admits its neighbor', async () => {
+      await assertMasked(readBlocked(byDid))
+      assert.equal(fetchesOf(byDid.url), 0)
+      const response = await readBlocked(allowed)
+      assert.equal(response.status, 200)
+      assert.equal(fetchesOf(allowed.url), 1)
+    })
+  })
 })
 
-describe('parsePeerServerWebvh', () => {
+describe('the did:webvh blocklist setting', () => {
   const scid = 'QmbbLRNKupeZRGTmrEnENTwifoo7sbndRFJCnC7AhSwB59'
-  const serverUrl = 'https://was.example'
 
-  it('accepts a peer server DID on another host', () => {
+  it('compiles host and DID entries, lowering hosts', () => {
+    const did = `did:webvh:${scid}:Agent.Example:agents:a1`
+    const { hosts, dids } = compileWebvhBlocklist({
+      entries: [' Evil.Example ', '', did],
+      source: 'test'
+    })
+    assert.deepStrictEqual([...hosts], ['evil.example'])
     assert.deepStrictEqual(
-      parsePeerServerWebvh(`did:webvh:${scid}:peer.example:space:server:id`, {
-        serverUrl
-      }),
-      { scid, host: 'peer.example' }
+      [...dids],
+      [`did:webvh:${scid}:agent.example:agents:a1`]
     )
   })
 
-  it('refuses every other shape', () => {
-    for (const did of [
-      // this server's own host goes through the local resolver
-      `did:webvh:${scid}:was.example:space:server:id`,
-      `did:webvh:${scid}:peer.example%3A8443:space:server:id`,
-      `did:webvh:${scid}:10.0.0.1:space:server:id`,
-      `did:webvh:${scid}:localhost:space:server:id`,
-      `did:webvh:${scid}:Peer.Example:space:server:id`,
-      `did:webvh:${scid}:peer.example:space:other:id`,
-      `did:webvh:${scid}:peer.example:space:server:id:extra`,
-      `did:webvh:${scid}:peer.example`,
-      `did:webvh:short:peer.example:space:server:id`,
-      `did:web:peer.example:space:server:id`
+  it('parses the env value, and refuses a malformed entry naming it', () => {
+    assert.equal(parseWebvhBlocklist(undefined), undefined)
+    assert.equal(parseWebvhBlocklist(' , '), undefined)
+    assert.deepStrictEqual(
+      parseWebvhBlocklist(`evil.example, did:webvh:${scid}:agent.example`),
+      ['evil.example', `did:webvh:${scid}:agent.example`]
+    )
+    for (const entry of [
+      'evil.example:8443',
+      'https://evil.example',
+      '10.0.0.1',
+      'localhost',
+      `did:web:evil.example`,
+      `did:webvh:${scid}:evil.example%3A8443`,
+      `did:webvh:${scid}:evil.example:a%2Fb`,
+      'did:webvh:short:evil.example'
     ]) {
-      assert.equal(parsePeerServerWebvh(did, { serverUrl }), undefined, did)
+      assert.throws(
+        () => parseWebvhBlocklist(`ok.example,${entry}`),
+        (err: Error) =>
+          err.message.includes('WAS_WEBVH_BLOCKLIST') &&
+          err.message.includes(entry),
+        entry
+      )
+    }
+  })
+
+  it('refuses a malformed plugin option at registration', async () => {
+    const backend = await openTempBackend()
+    const app = createApp({
+      serverUrl: 'https://was.example',
+      backend,
+      logger: false,
+      webvhBlocklist: ['not a host']
+    })
+    try {
+      await assert.rejects(async () => {
+        await app.ready()
+      }, /webvhBlocklist entry "not a host"/)
+    } finally {
+      await app.close().catch(() => {})
+      await backend.close()
     }
   })
 })

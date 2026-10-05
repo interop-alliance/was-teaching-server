@@ -19,7 +19,7 @@ import { handleZcapVerify } from '../zcap.js'
 import {
   assertValidController,
   assertValidSpaceController,
-  isSelfHostedWebvhController
+  isWebvhControllerShape
 } from '../lib/validateDid.js'
 import { resolveWebvhController } from '../lib/webvhController.js'
 import { kmsKeystoresPath } from '../lib/paths.js'
@@ -337,7 +337,7 @@ export class KeystoreRequest {
     // Update Space. Every later request on the keystore verifies against the
     // stored controller, so an unresolvable one (a typo, a log not yet
     // published) would lock every key in it away with no way back.
-    if (isSelfHostedWebvhController(body.controller, { serverUrl })) {
+    if (isWebvhControllerShape(body.controller, { serverUrl })) {
       try {
         await resolveWebvhController({
           storage,

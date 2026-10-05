@@ -62,15 +62,18 @@ export function notModifiedReply({
  * before opening the byte stream: when the client names the validators it
  * holds, read the representation's metadata and answer 304 if the current
  * `ETag` is among them. Only a conditional request pays for the metadata read;
- * an unconditional one resolves `undefined` at once. Resolves `undefined` on a
- * miss too, so the handler opens the stream as usual.
+ * an unconditional one resolves `false` at once. Resolves `false` on a miss
+ * too, so the handler opens the stream as usual. Resolves `true` once the 304
+ * is sent, and the handler then returns its own `reply`. The reply itself is
+ * not resolved here: a `FastifyReply` is thenable, so awaiting a promise of
+ * one yields `undefined` after the response is sent.
  * @param options {object}
  * @param options.request {FastifyRequest}
  * @param options.reply {FastifyReply}
  * @param options.readMetadata {() => Promise<RecordValidatorParts>}   reads
  *   the stored metadata (404 when absent), run only when the request is
  *   conditional
- * @returns {Promise<FastifyReply | undefined>}
+ * @returns {Promise<boolean>}   whether the 304 was sent
  */
 export async function notModifiedBeforeStream({
   request,
@@ -80,11 +83,17 @@ export async function notModifiedBeforeStream({
   request: FastifyRequest
   reply: FastifyReply
   readMetadata: () => Promise<RecordValidatorParts>
-}): Promise<FastifyReply | undefined> {
+}): Promise<boolean> {
   const held = parseIfNoneMatch(request.headers['if-none-match'])
   if (!held) {
-    return undefined
+    return false
   }
   const metadata = await readMetadata()
-  return notModifiedReply({ request, reply, held, etag: etagOf(metadata) })
+  const sent = notModifiedReply({
+    request,
+    reply,
+    held,
+    etag: etagOf(metadata)
+  })
+  return sent !== undefined
 }

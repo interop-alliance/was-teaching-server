@@ -1,19 +1,28 @@
 /**
- * Local resolution of a self-hosted `did:webvh` Space controller.
+ * Local resolution of a `did:webvh` Space controller whose history log this
+ * server stores.
  *
  * A controller of the form
  * `did:webvh:<scid>:<host>:space:<spaceId>:<collectionId>` publishes its
- * history log as `did.jsonl` in that Collection of that Space on *this* server,
- * so the log is read straight out of storage -- never fetched over the network.
- * There is therefore no liveness, SSRF, or bootstrap surface. The read is the
- * server reading its own storage, so it happens regardless of the Collection's
- * read policy: a capability-gated (non-public) Collection's DID still resolves
- * for authorization while staying unreadable to anyone without a capability.
+ * history log as `did.jsonl` in that Collection of that Space. When `<host>`
+ * is *this* server, the log is that Resource here. When `<host>` is a
+ * replication peer, the log is the copy in the local replica of that peer
+ * Space, which a replica registration names (`lib/webvhLogLocation.ts`).
+ * Either way the log is read straight out of storage -- never fetched over
+ * the network -- so there is no liveness, SSRF, or bootstrap surface, and a
+ * replicated account keeps resolving after its origin host is lost. The read
+ * is the server reading its own storage, so it happens regardless of the
+ * Collection's read policy: a capability-gated (non-public) Collection's DID
+ * still resolves for authorization while staying unreadable to anyone
+ * without a capability.
  *
  * The log's Space need not be the Space an invocation targets. The DID string
- * carries the log's own `spaceId`, and every read below is keyed off the parsed
- * location, so a Space controlled by a DID whose log lives elsewhere resolves
- * with no special casing.
+ * carries the log's own `spaceId`, and every read below is keyed off the
+ * located log's local Space and Collection, so a Space controlled by a DID
+ * whose log lives elsewhere resolves with no special casing. A replicated log
+ * goes through the same verify, cache, head-record and fast-forward rules as a
+ * self-hosted one, keyed by its local location, so the apply path's write of
+ * the copy invalidates it like any other `did.jsonl` write.
  *
  * The log is **verified, not trusted**: writes to that Collection are
  * authorized by the Space controller, which after promotion is the very
@@ -46,14 +55,16 @@
  * forgotten only when the log's Collection or Space is deleted
  * ({@link forgetDeletedWebvhLocation}), since a location re-created afterwards starts
  * a history of its own -- a restore re-creates the Space and imports an older
- * log by design. The record is in memory, so a restart forgets it too.
+ * log by design. A replicated DID's record is kept by the DID alone and is
+ * not forgotten on a delete, since its history is the origin's (see
+ * {@link headKey}). The record is in memory, so a restart forgets it too.
  *
- * One foreign shape is resolved here too, through `lib/peerWebvh.ts`: a peer
- * server's own `did:webvh`, fetched from its host. It is reachable only through
- * a verification context that carries a peer grant for exactly that DID, which
+ * A foreign `did:webvh` with no stored log is resolved here too, through
+ * `lib/peerWebvh.ts`, fetched from its host. It is reachable only through a
+ * verification context that carries a peer grant for exactly that DID, which
  * the capability verifier issues after it has verified the delegation chain
  * naming the DID as invoker. Every other caller passes no grant, so for it a
- * foreign DID stays refused.
+ * foreign DID stays refused. A DID with a stored log never takes that path.
  *
  * NOTE: the log is read through the control-plane `storage` (the default data
  * plane). Pointing a log Collection at a non-default data-plane backend is out
@@ -78,25 +89,27 @@ import {
 } from '../config.default.js'
 import { ProblemError, StorageError } from '../errors.js'
 import { backendScoped, deleteByPrefix } from './backendCache.js'
-import { parseSelfHostedWebvh, WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
+import { WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
+import { locateWebvhLog, selfHostedLogLocation } from './webvhLogLocation.js'
 import type { StorageBackend } from '../types.js'
 import { etagOf } from './etag.js'
 import type { PeerWebvhResolver } from './peerWebvh.js'
 
 /**
  * What the resolver needs from the request layer: the storage backend the log
- * is read from, and this server's base URL (which the DID's embedded host must
- * match). Threaded through the verification path rather than held in module
- * state, so two backends in one process never resolve against each other.
+ * is read from, and this server's base URL (which tells a self-hosted DID's
+ * host from a peer's). Threaded through the verification path rather than
+ * held in module state, so two backends in one process never resolve against
+ * each other.
  */
 export interface WebvhResolverContext {
   storage: StorageBackend
   serverUrl: string
   /**
-   * A peer server DID this one verification may resolve over the network, and
-   * the resolver that fetches it. Set only by the capability verifier, after
-   * it verified the delegation chain that names `did` as its invoker. Absent,
-   * every foreign `did:webvh` is refused.
+   * A foreign `did:webvh` this one verification may resolve over the
+   * network, and the resolver that fetches it. Set only by the capability
+   * verifier, after it verified the delegation chain that names `did` as its
+   * invoker. Absent, every foreign `did:webvh` with no stored log is refused.
    */
   peer?: { did: string; resolver: PeerWebvhResolver }
 }
@@ -127,6 +140,8 @@ interface WebvhFetchContext {
   did: string
   spaceId: string
   collectionId: string
+  // False for a replicated copy of a peer-hosted log.
+  selfHosted: boolean
 }
 
 /**
@@ -187,7 +202,8 @@ export type LogHead = { count: number; versionId: string }
 
 /**
  * The head of the last log verified for each DID, per storage backend, keyed
- * like the document cache (see {@link cacheKey}). `count` is the number of
+ * by {@link headKey}: like the document cache for a self-hosted DID, and by
+ * the DID alone for a replicated one. `count` is the number of
  * log entries and `versionId` the head entry's `versionId`, which commits to
  * every entry before it through the hash chain. Unbounded, but it only ever
  * holds DIDs that were resolved for authorization.
@@ -205,8 +221,10 @@ const logHeads = backendScoped(() => ({
 }))
 
 /**
- * Cache key: the log's location (Space plus Collection) followed by the DID.
- * The location prefix is what makes invalidation by log location possible; the
+ * Cache key: the log's local location (Space plus Collection) followed by the
+ * DID. For a replicated log the location is the local replica's, not the one
+ * the DID names. The location prefix is what makes invalidation by log
+ * location possible; the
  * DID is part of the key because the same log resolves differently for a
  * different requested DID (a mismatched SCID must not be served a document
  * resolved for another one).
@@ -226,6 +244,35 @@ function cacheKey({
   did: string
 }): string {
   return `${spaceId}|${collectionId}|${did}`
+}
+
+/**
+ * The head-record key of a DID's log. A self-hosted DID's is its cache key,
+ * so a delete of the log's Collection or Space forgets it, and a log
+ * re-created there starts a history of its own. A replicated DID's is the DID
+ * alone, outside every location prefix. Its history is the origin's, which
+ * only grows, so the record holds across a change of the local Space that
+ * keeps the copy: a second registration's older copy, or a copy left behind
+ * when a registration goes, cannot pass for the head this server verified.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.collectionId {string}
+ * @param options.did {string}
+ * @param options.selfHosted {boolean}
+ * @returns {string}
+ */
+function headKey({
+  spaceId,
+  collectionId,
+  did,
+  selfHosted
+}: {
+  spaceId: string
+  collectionId: string
+  did: string
+  selfHosted: boolean
+}): string {
+  return selfHosted ? cacheKey({ spaceId, collectionId, did }) : `|${did}`
 }
 
 /**
@@ -362,13 +409,16 @@ async function readLog({
 }
 
 /**
- * Resolves and fully verifies a self-hosted `did:webvh` controller against its
- * locally stored history log, returning the verified DID document.
+ * Resolves and fully verifies a `did:webvh` controller against its locally
+ * stored history log, returning the verified DID document. The log is located
+ * by `locateWebvhLog` on every call, before the cache is consulted, so a
+ * removed replica registration stops a replicated DID resolving at once.
  *
  * Rejects with a plain `Error` (the caller decides the HTTP shape: a 400 at
  * promotion time, a failed verification during capability checking) when the
- * DID is not self-hosted, the log is absent or unparseable, verification fails,
- * the resolved document names a different DID, or the DID is deactivated.
+ * DID has no stored log here, the log is absent or unparseable, verification
+ * fails, the resolved document names a different DID, or the DID is
+ * deactivated.
  *
  * Caching has three tiers, all measured on the monotonic clock from the
  * entry's last full verification. Within {@link WEBVH_DOCUMENT_CACHE_TTL} a
@@ -395,7 +445,7 @@ async function readLog({
  *   names. A peer DID's resolver may fetch its log once more for it; a local
  *   resolution ignores it
  * @param [options.peer] {object}   a peer grant: `did` alone resolves through
- *   its `resolver` when it is not hosted here
+ *   its `resolver` when this server stores no log for it
  * @returns {Promise<DIDDoc>}   the verified controller document
  */
 export async function resolveWebvhController({
@@ -405,19 +455,24 @@ export async function resolveWebvhController({
   keyId,
   peer
 }: WebvhResolverContext & { did: string; keyId?: string }): Promise<DIDDoc> {
-  const parsed = parseSelfHostedWebvh(did, { serverUrl })
-  if (!parsed) {
+  // A self-hosted DID is located without an await, so its cache fetch starts
+  // in this tick (see `documentCaches` on an invalidation racing a fetch).
+  const location =
+    selfHostedLogLocation({ serverUrl, did }) ??
+    (await locateWebvhLog({ storage, serverUrl, did }))
+  if (location === undefined) {
     if (peer !== undefined && peer.did === did) {
       return keyId === undefined
         ? await peer.resolver.resolve({ did, serverUrl })
         : await peer.resolver.resolveKey({ did, keyId, serverUrl })
     }
     throw new Error(
-      `"${did}" is not a did:webvh DID hosted by this server; only ` +
-        'self-hosted did:webvh controllers are resolvable here.'
+      `"${did}" is not a did:webvh DID whose history log this server ` +
+        'stores; only self-hosted and replicated did:webvh controllers are ' +
+        'resolvable here.'
     )
   }
-  const { spaceId, collectionId } = parsed
+  const { spaceId, collectionId, selfHosted } = location
   const { cache } = documentCaches.for(storage)
   const key = cacheKey({ spaceId, collectionId, did })
   // `peek` sees through an in-flight refresh to the entry it is replacing, so
@@ -429,7 +484,7 @@ export async function resolveWebvhController({
     performance.now() - current.verifiedAt >= WEBVH_DOCUMENT_CACHE_TTL
   const entry = await cache.fetch(key, {
     forceRefresh: stale,
-    context: { storage, did, spaceId, collectionId }
+    context: { storage, did, spaceId, collectionId, selfHosted }
   })
   if (!entry) {
     // `fetchMethod` always resolves an entry or rejects; this is a type guard.
@@ -461,6 +516,7 @@ async function reviseEntry({
   did,
   spaceId,
   collectionId,
+  selfHosted,
   entry
 }: WebvhFetchContext & { entry: WebvhCacheEntry }): Promise<WebvhCacheEntry> {
   const dueForReverify =
@@ -479,7 +535,8 @@ async function reviseEntry({
     storage,
     did,
     spaceId,
-    collectionId
+    collectionId,
+    selfHosted
   })
 }
 
@@ -491,18 +548,10 @@ async function reviseEntry({
  * @param options {WebvhFetchContext}
  * @returns {Promise<WebvhCacheEntry>}
  */
-async function resolveVerifiedEntry({
-  storage,
-  did,
-  spaceId,
-  collectionId
-}: WebvhFetchContext): Promise<WebvhCacheEntry> {
-  const { doc, etag } = await resolveVerifiedDocument({
-    storage,
-    did,
-    spaceId,
-    collectionId
-  })
+async function resolveVerifiedEntry(
+  context: WebvhFetchContext
+): Promise<WebvhCacheEntry> {
+  const { doc, etag } = await resolveVerifiedDocument(context)
   return { doc, etag, verifiedAt: performance.now() }
 }
 
@@ -513,7 +562,9 @@ async function resolveVerifiedEntry({
  * read that was verified.
  *
  * The verification itself is {@link verifyWebvhLog}; a deactivated DID is
- * refused here, since it can no longer authorize anything.
+ * refused here, since it can no longer authorize anything. A replicated log is
+ * verified with no witness proofs, so one that declares witnesses is refused
+ * rather than sending the library to fetch `did-witness.json` from the peer.
  *
  * @param options {WebvhFetchContext}
  * @returns {Promise<{ doc: DIDDoc, etag: string | undefined }>}
@@ -522,7 +573,8 @@ async function resolveVerifiedDocument({
   storage,
   did,
   spaceId,
-  collectionId
+  collectionId,
+  selfHosted
 }: WebvhFetchContext): Promise<{ doc: DIDDoc; etag: string | undefined }> {
   const record = logHeads.for(storage)
   // Taken before the read, so a forget that lands while this resolve is
@@ -562,7 +614,7 @@ async function resolveVerifiedDocument({
     })
   }
   const { heads } = record
-  const key = cacheKey({ spaceId, collectionId, did })
+  const key = headKey({ spaceId, collectionId, did, selfHosted })
   if (!extendsHead({ log, head: heads.get(key) })) {
     throw new Error(
       `The history log for "${did}" does not extend the last version ` +
@@ -570,7 +622,11 @@ async function resolveVerifiedDocument({
     )
   }
 
-  const { doc, deactivated } = await verifyWebvhLog({ did, log })
+  const { doc, deactivated } = await verifyWebvhLog({
+    did,
+    log,
+    ...(!selfHosted && { witnessProofs: [] })
+  })
   if (deactivated) {
     throw new Error(`The DID "${did}" has been deactivated.`)
   }
@@ -602,8 +658,9 @@ async function resolveVerifiedDocument({
  * @param options.log {DIDLog}
  * @param [options.witnessProofs] {WitnessProofFileEntry[]}   the witness
  *   proofs to check the log against. Absent, the library fetches the DID's
- *   `did-witness.json` for a log that declares witnesses. A peer log passes
- *   `[]`, so its verification makes no request of its own.
+ *   `did-witness.json` for a log that declares witnesses. A fetched foreign
+ *   log, a replicated copy, and an append to a log that is not self-hosted
+ *   pass `[]`, so their verification makes no request of its own.
  * @returns {Promise<{ doc: DIDDoc, deactivated: boolean }>}
  */
 export async function verifyWebvhLog({

@@ -25,7 +25,12 @@ import type { ServerSigningKey } from '../lib/serverIdentity.js'
 import { SERVER_SPACE_ID } from '../lib/serverIdentity.js'
 import { isSameTypeSet } from '../lib/spaceType.js'
 import { loadSyncSigner } from '../lib/syncIdentity.js'
-import { isReplicaId, isUrlSafeSegment } from '../lib/validateId.js'
+import {
+  isReplicaId,
+  isUrlSafeSegment,
+  spaceIdOfSpaceUrl
+} from '../lib/validateId.js'
+import { replicaMappingConflict } from '../lib/webvhLogLocation.js'
 import type {
   CollectionMetadata,
   IDelegatedZcap,
@@ -57,36 +62,6 @@ export function peerUrlOf({
   fromSpace: string
 }): string {
   return new URL(path, fromSpace).toString()
-}
-
-/**
- * The Space id a canonical Space URL names, or `undefined` when the value is
- * not one: an absolute URL whose path is `/space/<id>/`, with no query and no
- * fragment.
- * @param value {unknown}
- * @returns {string | undefined}
- */
-export function spaceIdOfSpaceUrl(value: unknown): string | undefined {
-  if (typeof value !== 'string') {
-    return undefined
-  }
-  let url: URL
-  try {
-    url = new URL(value)
-  } catch {
-    return undefined
-  }
-  const match = /^\/space\/([^/]+)\/$/.exec(url.pathname)
-  if (
-    match === null ||
-    url.search !== '' ||
-    url.hash !== '' ||
-    url.href !== value ||
-    !isUrlSafeSegment(match[1]!)
-  ) {
-    return undefined
-  }
-  return match[1]
 }
 
 /**
@@ -297,6 +272,21 @@ export async function assertReplicaAcceptable({
     throw new ReplicaRefusedError({
       detail: 'The "server" Space is not replicated.',
       pointer: '#/toSpace'
+    })
+  }
+  const conflict = await replicaMappingConflict({
+    storage,
+    spaceId,
+    record,
+    localController: spaceMetadata.controller
+  })
+  if (conflict !== undefined) {
+    throw new ReplicaRefusedError({
+      detail:
+        `Space "${conflict}" on this server already replicates the peer ` +
+        'Space, with a Collection this registration would pull too. A ' +
+        'did:webvh hosted in a Collection two local Spaces replicate ' +
+        'resolves from neither copy.'
     })
   }
   const sync = await loadSyncSigner({ storage, serverUrl, signingKey, logger })

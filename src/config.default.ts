@@ -8,6 +8,7 @@ import { decodeSecretKeySeed } from '@interop/bnid'
 import { parseKekMultibase } from './lib/kmsRecordCipher.js'
 import { ORIGIN_ID_PATTERN, isValidOriginId } from './lib/originId.js'
 import { isValidController } from './lib/validateDid.js'
+import { compileWebvhBlocklist } from './lib/webvhBlocklist.js'
 import type { IDID, KmsRecordKekRegistry, RecordKek } from './types.js'
 
 // package.json sits a level above both src/ (dev, via tsx) and dist/ (prod),
@@ -129,6 +130,15 @@ export const WEBVH_DOCUMENT_CACHE_TTL = 5_000 // milliseconds
 export const WEBVH_DOCUMENT_REVERIFY_AGE = 60_000 // milliseconds
 /** Max number of resolved did:webvh documents held per backend cache. */
 export const WEBVH_DOCUMENT_CACHE_MAX = 1_000
+
+/**
+ * The index of every stored replica registration, which maps a replicated
+ * `did:webvh` to the local copy of its log (see src/lib/webvhLogLocation.ts).
+ * Storing or removing a registration, and Delete Space, drop it explicitly;
+ * the TTL bounds how long another server process sharing the store serves a
+ * stale one.
+ */
+export const REPLICA_INDEX_CACHE_TTL = 10_000 // milliseconds
 
 /**
  * Peer server `did:webvh` resolution (see src/lib/peerWebvh.ts). A peer
@@ -657,6 +667,11 @@ export interface EnvConfig {
    * (`WAS_REPLICATION_CLOCK_BOUND_MS`); unset = {@link REPLICATION_CLOCK_BOUND_MS}.
    */
   replicationClockBoundMs?: number
+  /**
+   * The foreign `did:webvh` hosts and DIDs whose log is never fetched
+   * (`WAS_WEBVH_BLOCKLIST`); unset = none.
+   */
+  webvhBlocklist?: string[]
 }
 
 /**
@@ -703,7 +718,8 @@ export function loadConfigFromEnv(
     originId: parseOriginId(env.WAS_ORIGIN_ID),
     replicationClockBoundMs: parseReplicationClockBound(
       env.WAS_REPLICATION_CLOCK_BOUND_MS
-    )
+    ),
+    webvhBlocklist: parseWebvhBlocklist(env.WAS_WEBVH_BLOCKLIST)
   }
 }
 
@@ -1329,6 +1345,33 @@ export function parseReplicationClockBound(
     )
   }
   return value
+}
+
+/**
+ * Parses the `WAS_WEBVH_BLOCKLIST` env value: a comma-separated list of the
+ * foreign `did:webvh` DIDs whose history log is never fetched, so they cannot
+ * invoke a delegated capability here. Each entry is a host name, which blocks
+ * every DID on that host, or a full `did:webvh` DID. Surrounding whitespace
+ * and empty entries are ignored. An unset or empty value returns `undefined`,
+ * meaning none is blocked. A malformed entry throws, naming it.
+ * @param raw {string|undefined}   the raw env value
+ * @returns {string[]|undefined}   the trimmed entries, or `undefined`
+ */
+export function parseWebvhBlocklist(
+  raw: string | undefined
+): string[] | undefined {
+  if (raw === undefined) {
+    return undefined
+  }
+  const entries = raw
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(entry => entry.length > 0)
+  if (entries.length === 0) {
+    return undefined
+  }
+  compileWebvhBlocklist({ entries, source: 'WAS_WEBVH_BLOCKLIST' })
+  return entries
 }
 
 export const SPEC_URL =

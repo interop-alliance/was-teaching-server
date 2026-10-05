@@ -336,28 +336,35 @@ export class UnsupportedBackendError extends ProblemError {
  * 409 — a replica registration refused over the state of the peer or of this
  * server, as opposed to a malformed body: no sync identity, a peer that does
  * not serve replication, a peer carrying this server's origin id, a differing
- * `controller` or `type`, a differing immutable Collection member, or the
- * `server` Space. Only a caller already authorized as the Space controller
- * sees it.
+ * `controller` or `type`, a differing immutable Collection member, another
+ * local Space that already replicates the same peer Collection, or the
+ * `server` Space. Also the removal of a registration refused because a
+ * Space's `did:webvh` controller resolves only through it, which passes its
+ * own `title` and no `pointer`. Only a caller already authorized as the Space
+ * controller sees it.
  * @param options {object}
  * @param options.detail {string}   the cause, for a person to read
- * @param [options.pointer] {string}   RFC 6901 JSON Pointer to the member of
- *   the registration the refusal is about; defaults to `#/fromSpace`
+ * @param [options.title] {string}   defaults to the registration refusal's
+ * @param [options.pointer] {string | null}   RFC 6901 JSON Pointer to the
+ *   member of the registration the refusal is about; defaults to
+ *   `#/fromSpace`. `null` for a refusal that is about no request body
  */
 export class ReplicaRefusedError extends ProblemError {
   constructor({
     detail,
+    title = 'The replica registration was refused.',
     pointer = '#/fromSpace'
   }: {
     detail: string
-    pointer?: string
+    title?: string
+    pointer?: string | null
   }) {
     super({
       type: ProblemTypes.REPLICA_REFUSED,
-      title: 'The replica registration was refused.',
+      title,
       detail,
       statusCode: 409,
-      problems: [{ detail, pointer }]
+      ...(pointer !== null && { problems: [{ detail, pointer }] })
     })
   }
 }

@@ -16,18 +16,18 @@ import { it, describe, beforeAll, afterAll, vi } from 'vitest'
 import assert from 'node:assert'
 import { randomBytes } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
-import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 import { ProblemTypes } from '@interop/storage-core'
 
 import { createApp } from '../src/server.js'
-import type { PeerFetch } from '../src/sync/peerFetch.js'
 import type { TempFileSystemBackend } from '../src/testing.js'
 import type { IDID } from '../src/types.js'
 import {
   delegate,
   frozenClock,
+  injectPeerFetch,
   openTempBackend,
   provisionServerIdentity,
+  signedInject,
   zcapClients
 } from './helpers.js'
 
@@ -50,29 +50,7 @@ const servers = new Map<string, Server>()
  * The transport both pull loops use: the request is handed to the app the
  * URL's origin names.
  */
-const peerFetch: PeerFetch = async ({ url, headers }) => {
-  const target = new URL(url)
-  const server = servers.get(target.origin)
-  if (server === undefined) {
-    throw new Error(`No test server at ${target.origin}.`)
-  }
-  const response = await server.fastify.inject({
-    method: 'GET',
-    url: `${target.pathname}${target.search}`,
-    headers: { ...headers, host: target.host }
-  })
-  return {
-    status: response.statusCode,
-    headers: {
-      get: (name: string) => {
-        const value = response.headers[name.toLowerCase()]
-        return value === undefined ? null : String(value)
-      }
-    },
-    body: new Blob([new Uint8Array(response.rawPayload)]).stream(),
-    release: () => {}
-  }
-}
+const peerFetch = injectPeerFetch(servers)
 
 /**
  * Boots one server with an identity whose key may invoke, so it can pull.
@@ -127,57 +105,10 @@ describe('Replication between two servers', () => {
    * capability of the Space the path is under.
    */
   async function call({
-    server,
-    path,
-    method = 'GET',
     signer = alice.signer,
-    capability,
-    json,
-    body,
-    contentType
-  }: {
-    server: Server
-    path: string
-    method?: string
-    signer?: any
-    capability?: any
-    json?: object
-    body?: Uint8Array
-    contentType?: string
-  }) {
-    const url = new URL(path, server.serverUrl).toString()
-    const spaceUrl = new URL(
-      `/space/${path.split('/')[2]}/`,
-      server.serverUrl
-    ).toString()
-    const headers = await signCapabilityInvocation({
-      url,
-      method,
-      headers: {
-        date: new Date().toUTCString(),
-        ...(contentType !== undefined && { 'content-type': contentType })
-      },
-      ...(json !== undefined && { json }),
-      ...(body !== undefined && { body }),
-      capability: capability ?? `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
-      capabilityAction: method,
-      invocationSigner: signer
-    })
-    let payload: string | Buffer | undefined
-    if (json !== undefined) {
-      payload = JSON.stringify(json)
-    } else if (body !== undefined) {
-      payload = Buffer.from(body)
-    }
-    return server.fastify.inject({
-      method: method as any,
-      url: path,
-      headers: {
-        ...(headers as Record<string, string>),
-        host: new URL(server.serverUrl).host
-      },
-      ...(payload !== undefined && { payload })
-    })
+    ...request
+  }: Omit<Parameters<typeof signedInject>[0], 'signer'> & { signer?: any }) {
+    return signedInject({ signer, ...request })
   }
 
   /**

@@ -209,12 +209,9 @@ import {
   type ChainCapability
 } from './chainCapability.js'
 import type { DIDDoc } from '@interop/did-method-webvh'
-import {
-  isSelfHostedWebvhController,
-  parseSelfHostedWebvh,
-  WEBVH_LOG_RESOURCE_ID
-} from './validateDid.js'
+import { WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
 import { resolveWebvhController } from './webvhController.js'
+import { locateWebvhLog } from './webvhLogLocation.js'
 import type { WebvhResolverContext } from './webvhController.js'
 import { getCachedSpaceMetadata } from './spaceMetadataCache.js'
 import { isDelegatedClientsSpace } from './spaceType.js'
@@ -449,13 +446,15 @@ function localPathSegments({
 /**
  * Whether a target is the delegator account's own history log resource URL.
  * The account DID itself carries its log's Space and Collection, so the
- * canonical URL is derived from the parsed DID and matched by exact string
+ * canonical URL is derived from the located log (for a replicated DID, the
+ * local replica's copy of it) and matched by exact string
  * equality -- an alternate encoding of the same path never passes, and no
  * other account's log (nor any other log-shaped path) qualifies.
  * @param options {object}
  * @param options.target {string}   the delegation's `invocationTarget`
- * @param options.logLocation {object}   the delegator DID's parsed log
- *   location
+ * @param options.logLocation {object}   where the delegator DID's history
+ *   log is stored here: the Space and Collection it names, or for a
+ *   replicated DID the local replica's
  * @param options.logLocation.spaceId {string}
  * @param options.logLocation.collectionId {string}
  * @param options.serverUrl {string}   this server's base URL
@@ -671,8 +670,9 @@ function isWithinSpaceItemsSubtree({
  * @param options {object}
  * @param options.capability {object}   the dereferenced delegation
  * @param options.doc {DIDDoc}   the resolved account document (the delegator)
- * @param options.logLocation {object}   the delegator DID's parsed log
- *   location
+ * @param options.logLocation {object}   where the delegator DID's history
+ *   log is stored here: the Space and Collection it names, or for a
+ *   replicated DID the local replica's
  * @param options.logLocation.spaceId {string}
  * @param options.logLocation.collectionId {string}
  * @param options.parent {object}   the chain link this delegation hangs from,
@@ -714,8 +714,9 @@ async function ladderDelegationAdmitted({
   // so a GC pointer swap instantly kills the prior generation's delegations.
   // `controller` is normalized from the array form first (spec-legal, even if
   // in-ecosystem clients emit a string), and exactly one entry is required: a
-  // second controller could invoke too, outside the pointer. The syntactic
-  // self-hosted gate keeps the admitted controller resolvable here.
+  // second controller could invoke too, outside the pointer. The stored-log
+  // gate keeps the admitted controller resolvable here from storage: a DID
+  // self-hosted on this server, or one a replica registration copies here.
   //
   // Bound two -- the target. The grant stays within the items subtree of the
   // account Space, the Space carrying the delegator DID's own log, and may not
@@ -740,13 +741,14 @@ async function ladderDelegationAdmitted({
     controllers.length === 1 &&
     clientAnnexDid !== undefined &&
     controllers[0] === clientAnnexDid &&
-    isSelfHostedWebvhController(clientAnnexDid, { serverUrl }) &&
     isWithinSpaceItemsSubtree({
       target,
       spaceId: logLocation.spaceId,
       serverUrl
     }) &&
-    actionsWithin({ capability, allowed: WAS_ACTIONS })
+    actionsWithin({ capability, allowed: WAS_ACTIONS }) &&
+    (await locateWebvhLog({ storage, serverUrl, did: clientAnnexDid })) !==
+      undefined
   ) {
     return true
   }
@@ -957,8 +959,9 @@ function ladderInvocationRefusal({
  * no delegated capability in the chain is ladder-signed or transient-annex-
  * signed, or when every ladder-signed one satisfies an admission predicate
  * and the invoked operation passes both invocation-time bounds.
- * Non-`did:webvh` proof methods (and cross-host ones, which could not have
- * verified here) are outside the clause and pass untouched, so a chain of
+ * Non-`did:webvh` proof methods (and `did:webvh` ones with no stored log,
+ * which could not have verified here) are outside the clause and pass
+ * untouched, so a chain of
  * ordinary client delegations pays one string check per link. A `did:webvh`
  * signer is classified once by `signerKindOf`, off its already-resolved
  * document; the transient bound then applies only to a Space DELETE. Invoked
@@ -1000,7 +1003,7 @@ export function clientAnnexChainInspector({
         continue
       }
       const [did] = verificationMethod.split('#')
-      const logLocation = parseSelfHostedWebvh(did, { serverUrl })
+      const logLocation = await locateWebvhLog({ storage, serverUrl, did })
       if (logLocation === undefined) {
         continue
       }

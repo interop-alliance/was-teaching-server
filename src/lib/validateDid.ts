@@ -5,25 +5,29 @@
  * - An Ed25519 `did:key`, whose multibase encoding always begins `z6Mk` (the
  *   `0xed01` Ed25519-pub multicodec prefix) followed by base58btc characters.
  *   This is the only shape Space create, and the keystore routes, accept.
- * - Additionally, on Update Space only: a **self-hosted** `did:webvh` --
- *   `did:webvh:<scid>:<didDomainComponent>:space:<spaceId>:<collectionId>`,
- *   whose embedded host is this server. Its history log lives at
- *   `<host>/space/<spaceId>/<collectionId>/did.jsonl`, so it resolves from
- *   local storage and never over the network. A cross-host `did:webvh`, a
- *   `did:web`, and every other DID method stay refused as controllers.
+ * - Additionally, on Update Space only: a `did:webvh` whose history log this
+ *   server stores, of the form
+ *   `did:webvh:<scid>:<didDomainComponent>:space:<spaceId>:<collectionId>`.
+ *   Its host is either this server ({@link parseSelfHostedWebvh}), with the
+ *   log at `<spaceId>/<collectionId>/did.jsonl`, or a replication peer
+ *   ({@link parsePeerHostedWebvh}), with the log read from the local replica
+ *   of that peer Space (`lib/webvhLogLocation.ts`). Either way it resolves
+ *   from local storage and never over the network. A `did:web`, and every
+ *   other DID method, stay refused as controllers.
  *
- * A third parser, {@link parsePeerServerWebvh}, recognizes a peer server's own
- * `did:webvh` on another host. It is never a controller shape. The capability
- * verifier uses it to decide whether a delegated invocation's signer is a peer
- * whose log it may fetch.
+ * A third parser, {@link parseCrossHostWebvh}, recognizes any `did:webvh` on
+ * another host. It is never a controller shape. The capability verifier uses
+ * it to decide whether a delegated invocation's signer is a foreign DID whose
+ * log it may fetch.
  *
- * Both are syntactic checks at the request layer, so a malformed or
+ * All are syntactic checks at the request layer, so a malformed or
  * unsupported controller is rejected on the way in, rather than being stored
  * and only failing later at capability-verification time. Whether a
- * syntactically self-hosted `did:webvh` actually *resolves* is a separate,
+ * syntactically accepted `did:webvh` actually *resolves* is a separate,
  * storage-reading check (`lib/webvhController.ts`), which Update Space and
  * Update Keystore both run before storing a `did:webvh` controller.
  */
+import { getFileUrl } from '@interop/did-method-webvh'
 import { InvalidControllerError } from '../errors.js'
 import { isUrlSafeSegment } from './validateId.js'
 import type { IDID } from '../types.js'
@@ -132,48 +136,71 @@ export function parseSelfHostedWebvh(
 }
 
 /**
- * The method-specific path of a peer server's own `did:webvh`: the `id`
- * Collection of its `server` Space, where the server publishes its history log.
- */
-const PEER_SERVER_DID_PATH = 'space:server:id'
-
-/**
  * A DNS host name of two or more labels, in lower case, with no port. Each
  * label is letters, digits and inner hyphens. The last label must start with a
  * letter, so an IPv4 literal does not match. A `%` cannot occur, so the
  * percent-encoded port (`%3A`) a `did:webvh` domain component can carry is
  * refused.
  */
-const PEER_HOST_PATTERN =
+const CROSS_HOST_PATTERN =
   /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 
 /**
- * Parses a peer server's own `did:webvh`, or returns `undefined` when `value`
- * is not one. The only accepted form is
- * `did:webvh:<scid>:<host>:space:server:id`, where `<host>` is a DNS name with
- * no port, and is not this server's own host. A DID on this server's host
- * resolves through the local resolver ({@link parseSelfHostedWebvh}), and
- * every other foreign `did:webvh` is refused.
+ * Whether `host` is a host name a cross-host `did:webvh` may name: a DNS name
+ * in lower case, with no port, at most 253 characters long.
+ * @param host {string}
+ * @returns {boolean}
+ */
+export function isCrossHostName(host: string): boolean {
+  return host.length <= 253 && CROSS_HOST_PATTERN.test(host)
+}
+
+/**
+ * Whether `host` names this server, with or without its port.
+ * @param options {object}
+ * @param options.host {string}   a lower-case host name
+ * @param options.serverUrl {string}   this server's base URL
+ * @returns {boolean}
+ */
+function isOwnHost({
+  host,
+  serverUrl
+}: {
+  host: string
+  serverUrl: string
+}): boolean {
+  const ownUrl = new URL(serverUrl)
+  return (
+    host === ownUrl.hostname.toLowerCase() || host === ownUrl.host.toLowerCase()
+  )
+}
+
+/**
+ * Parses any `did:webvh` on a host, without regard to which server reads it,
+ * or returns `undefined` when `value` is not one. The accepted form is
+ * `did:webvh:<scid>:<host>` or `did:webvh:<scid>:<host>:<segment>...`, where
+ * `<host>` is a DNS name in lower case with no port ({@link isCrossHostName}),
+ * and every path segment is a URL-safe segment (the RFC 3986 unreserved
+ * charset, as {@link isUrlSafeSegment} checks), so nothing needs encoding
+ * when the segments become the log URL's path.
  *
- * This shape alone grants nothing. The capability verifier fetches such a DID's
- * log only for the invoker of a delegated capability whose chain it already
- * verified to the Space controller.
+ * The log URL is the did:webvh method's own mapping (`getFileUrl` of
+ * `@interop/did-method-webvh`): `https://<host>/<segments>/did.jsonl`, or
+ * `https://<host>/.well-known/did.jsonl` for the host-only form.
  *
  * @param value {unknown}   the candidate DID
- * @param options {object}
- * @param options.serverUrl {string}   this server's base URL
- * @returns {{ scid: string, host: string } | undefined}
+ * @returns {{ scid: string, host: string, path: string[], logUrl: string } |
+ *   undefined}
  */
-export function parsePeerServerWebvh(
-  value: unknown,
-  { serverUrl }: { serverUrl: string }
-): { scid: string; host: string } | undefined {
+export function parseWebvhAddress(
+  value: unknown
+): { scid: string; host: string; path: string[]; logUrl: string } | undefined {
   if (typeof value !== 'string') {
     return undefined
   }
-  // `did`, `webvh`, scid, host, then the three path segments.
+  // `did`, `webvh`, scid, host, then the path segments, if any.
   const segments = value.split(':')
-  if (segments.length !== 7) {
+  if (segments.length < 4) {
     return undefined
   }
   const [scheme, method, scid, host] = segments as [
@@ -185,38 +212,132 @@ export function parsePeerServerWebvh(
   if (scheme !== 'did' || method !== 'webvh') {
     return undefined
   }
-  if (segments.slice(4).join(':') !== PEER_SERVER_DID_PATH) {
+  if (!SCID_PATTERN.test(scid) || !isCrossHostName(host)) {
     return undefined
   }
-  if (!SCID_PATTERN.test(scid)) {
+  const path = segments.slice(4)
+  if (!path.every(segment => isUrlSafeSegment(segment))) {
     return undefined
   }
-  if (host.length > 253 || !PEER_HOST_PATTERN.test(host)) {
+  // The method's mapping of a DID this parser admitted. Restated as a check,
+  // so a change in that mapping cannot send a fetch to another host.
+  let logUrl: string
+  let parsed: URL
+  try {
+    logUrl = getFileUrl(value)
+    parsed = new URL(logUrl)
+  } catch {
     return undefined
   }
-  const ownUrl = new URL(serverUrl)
   if (
-    host === ownUrl.hostname.toLowerCase() ||
-    host === ownUrl.host.toLowerCase()
+    parsed.protocol !== 'https:' ||
+    parsed.host !== host ||
+    parsed.search !== '' ||
+    parsed.hash !== ''
   ) {
     return undefined
   }
-  return { scid, host }
+  return { scid, host, path, logUrl }
 }
 
 /**
- * Returns true when `value` is a syntactically valid `did:webvh` anchored in a
- * Space on *this* server (see {@link parseSelfHostedWebvh}).
+ * Parses a `did:webvh` on another host than this server's, or returns
+ * `undefined` when `value` is not one. Any path is accepted, and the
+ * host-only form too ({@link parseWebvhAddress}). A DID on this server's host
+ * resolves through the local resolver ({@link parseSelfHostedWebvh}).
+ *
+ * This shape alone grants nothing. The capability verifier fetches such a
+ * DID's log only for the invoker of a delegated capability whose chain it
+ * already verified to the Space controller, and only when the log is not
+ * stored here ({@link parsePeerHostedWebvh}).
+ *
+ * @param value {unknown}   the candidate DID
+ * @param options {object}
+ * @param options.serverUrl {string}   this server's base URL
+ * @returns {{ scid: string, host: string, path: string[], logUrl: string } |
+ *   undefined}
+ */
+export function parseCrossHostWebvh(
+  value: unknown,
+  { serverUrl }: { serverUrl: string }
+): { scid: string; host: string; path: string[]; logUrl: string } | undefined {
+  const parsed = parseWebvhAddress(value)
+  if (parsed === undefined || isOwnHost({ host: parsed.host, serverUrl })) {
+    return undefined
+  }
+  return parsed
+}
+
+/**
+ * Parses a `did:webvh` hosted in a Space of another server, of the form
+ * `did:webvh:<scid>:<host>:space:<spaceId>:<collectionId>`, or returns
+ * `undefined` when `value` is not one. `<host>` is a DNS name with no port,
+ * and not this server's host. The result names the peer Space's canonical URL,
+ * `https://<host>/space/<spaceId>/`, which a replica registration names as
+ * its `fromSpace` when this server holds a copy of that Space.
+ *
+ * This shape alone resolves nothing. `lib/webvhLogLocation.ts` maps it to a
+ * local Space through the replica registrations.
+ *
+ * @param value {unknown}   the candidate DID
+ * @param options {object}
+ * @param options.serverUrl {string}   this server's base URL
+ * @returns {{ scid: string, host: string, spaceId: string,
+ *   collectionId: string, fromSpace: string } | undefined}
+ */
+export function parsePeerHostedWebvh(
+  value: unknown,
+  { serverUrl }: { serverUrl: string }
+):
+  | {
+      scid: string
+      host: string
+      spaceId: string
+      collectionId: string
+      fromSpace: string
+    }
+  | undefined {
+  const parsed = parseCrossHostWebvh(value, { serverUrl })
+  if (parsed === undefined || parsed.path.length !== 3) {
+    return undefined
+  }
+  const [spaceSegment, spaceId, collectionId] = parsed.path as [
+    string,
+    string,
+    string
+  ]
+  if (spaceSegment !== WEBVH_SPACE_SEGMENT) {
+    return undefined
+  }
+  return {
+    scid: parsed.scid,
+    host: parsed.host,
+    spaceId,
+    collectionId,
+    fromSpace: `https://${parsed.host}/${WEBVH_SPACE_SEGMENT}/${spaceId}/`
+  }
+}
+
+/**
+ * Returns true when `value` is a syntactically valid `did:webvh` controller
+ * shape: one anchored in a Space on *this* server
+ * ({@link parseSelfHostedWebvh}), or in a Space on another server that a
+ * replica registration may copy here ({@link parsePeerHostedWebvh}). The
+ * second shape resolves only through a registration, which the caller's
+ * resolvability check (`resolveWebvhController`) reads.
  * @param value {unknown}
  * @param options {object}
  * @param options.serverUrl {string}   this server's base URL
  * @returns {boolean}
  */
-export function isSelfHostedWebvhController(
+export function isWebvhControllerShape(
   value: unknown,
   { serverUrl }: { serverUrl: string }
 ): value is IDID {
-  return parseSelfHostedWebvh(value, { serverUrl }) !== undefined
+  return (
+    parseSelfHostedWebvh(value, { serverUrl }) !== undefined ||
+    parsePeerHostedWebvh(value, { serverUrl }) !== undefined
+  )
 }
 
 /**
@@ -238,8 +359,8 @@ export function assertValidController(
 
 /**
  * Asserts that `controller` is a controller shape a Space (or a keystore) may
- * be *updated* to, or listed by: an Ed25519 `did:key`, or a self-hosted
- * `did:webvh` anchored on this server. The sibling of
+ * be *updated* to, or listed by: an Ed25519 `did:key`, or a `did:webvh`
+ * controller shape ({@link isWebvhControllerShape}). The sibling of
  * {@link assertValidController}, kept separate so the create paths stay
  * `did:key`-only by construction rather than by a flag.
  *
@@ -259,7 +380,7 @@ export function assertValidSpaceController(
 ): void {
   if (
     !isValidController(controller) &&
-    !isSelfHostedWebvhController(controller, { serverUrl })
+    !isWebvhControllerShape(controller, { serverUrl })
   ) {
     throw new InvalidControllerError({ requestName, allowWebvh: true })
   }

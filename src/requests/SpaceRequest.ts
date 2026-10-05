@@ -11,6 +11,7 @@ import { SPACE_METADATA_WRITE_ATTEMPTS } from '../config.default.js'
 import { buildLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
+import { invalidateReplicaIndex } from '../lib/webvhLogLocation.js'
 import { invalidateSpacePolicies } from '../lib/policyCache.js'
 import { invalidateSpaceGovernedDescriptors } from '../lib/governedDescriptorsCache.js'
 import {
@@ -31,7 +32,7 @@ import {
 import {
   assertValidController,
   assertValidSpaceController,
-  isSelfHostedWebvhController
+  isWebvhControllerShape
 } from '../lib/validateDid.js'
 import {
   forgetDeletedWebvhLocation,
@@ -527,8 +528,10 @@ export class SpaceRequest {
       // Every Collection in the Space went with it, so any controller document
       // resolved out of a history log there is stale too.
       // A log re-created in the Space afterwards starts a history of its own,
-      // so its recorded heads go too.
+      // so its recorded heads go too. The Space's registrations no longer
+      // map a peer-hosted did:webvh onto its copy of a log.
       forgetDeletedWebvhLocation({ storage, spaceId })
+      invalidateReplicaIndex({ storage })
       // ...and so is every policy cached at the Space level or under any of
       // its Collections/Resources, and every descriptor derived from a
       // governing log in the Space.
@@ -997,8 +1000,9 @@ async function authorizeAndWriteSpaceMetadata({
   // After the promotion, both this request and writes to the Collection
   // holding that log are authorized by the very controller being named, so
   // storing an unresolvable DID (a typo, a not-yet-published log) would
-  // deadlock the Space with no break-glass.
-  if (isSelfHostedWebvhController(body.controller, { serverUrl })) {
+  // deadlock the Space with no break-glass. A DID hosted on a replication
+  // peer resolves only from the copy a replica registration keeps here.
+  if (isWebvhControllerShape(body.controller, { serverUrl })) {
     try {
       await resolveWebvhController({
         storage,

@@ -1,26 +1,31 @@
 /**
- * Network resolution of a peer server's own `did:webvh`, the one foreign DID
- * this server resolves.
+ * Network resolution of a foreign `did:webvh`: a DID on another host whose
+ * history log this server does not store.
  *
- * A replica pulls a Space from its peer under a capability the Space's
- * controller delegated to the pulling server's DID,
- * `did:webvh:<scid>:<host>:space:server:id`. That DID's history log lives in
- * the pulling server's `server` Space, which is not replicated here, so the
- * serving server fetches it from `https://<host>/space/server/id/did.jsonl`.
+ * Two kinds of party invoke here under such a DID. A replica pulls a Space
+ * under a capability the Space's controller delegated to the pulling server's
+ * DID, `did:webvh:<scid>:<host>:space:server:id`, whose log lives in that
+ * server's `server` Space. And a wallet delegates to long-lived services and
+ * agents that hold their own `did:webvh`, with any path or none. The log is
+ * fetched from the URL the did:webvh method maps the DID to
+ * (`https://<host>/<path>/did.jsonl`, or
+ * `https://<host>/.well-known/did.jsonl` for the host-only form).
  *
  * The fetch is reached only through a peer grant on the verification context
  * (`WebvhResolverContext.peer`). The capability verifier issues one after it
  * has verified the delegation chain whose invoked capability names the DID as
  * its controller, so a request that does not carry such a chain causes no
- * request to any host. What this module adds is the bounds on the fetch
- * itself:
+ * request to any host. A DID on the operator's blocklist
+ * (`lib/webvhBlocklist.ts`) gets no grant and is refused here too, before any
+ * fetch. What this module adds is the bounds on the fetch itself:
  *
  * - The log is verified like a local log (SCID pinning, hash chain, update-key
  *   signatures), with no witness fetch, and must extend the last head verified
  *   for the DID, so a host cannot serve an older prefix to restore a retired
  *   key.
  * - A verified document is cached per DID for a TTL, then fetched and verified
- *   again, so a key the peer's admin retires stops verifying within one TTL.
+ *   again, so a key the DID's controller retires stops verifying within one
+ *   TTL.
  * - A signature naming a key the cached document lacks forces one fetch per DID
  *   per interval. A failed fetch or verification is remembered for a short
  *   time.
@@ -28,7 +33,7 @@
  *   against a per-host window and a global limit on concurrent fetches. Past
  *   either it is refused, not queued. A DID this resolver already verified
  *   is refreshed outside the host window, under a concurrency limit of its
- *   own, so DIDs nobody verified cannot crowd out a known peer's refresh.
+ *   own, so DIDs nobody verified cannot crowd out a known DID's refresh.
  *   A known DID's refreshes stay bounded by the TTL and the key-miss
  *   interval.
  * - The default fetcher ({@link fetchPeerLog}) speaks `https` only, on the
@@ -64,11 +69,12 @@ import {
   isBlockedIp,
   readBodyBounded
 } from './outboundAddress.js'
-import { parsePeerServerWebvh, WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
+import { parseCrossHostWebvh } from './validateDid.js'
+import { isBlockedWebvh, type WebvhBlocklist } from './webvhBlocklist.js'
 import { extendsHead, verifyWebvhLog, type LogHead } from './webvhController.js'
 
 /**
- * Performs the HTTP GET of a peer's history log and resolves its body bytes.
+ * Performs the HTTP GET of a foreign history log and resolves its body bytes.
  * It must not resolve more than `maxBytes` bytes, and should stop reading when
  * `signal` aborts. The resolver enforces both again on what it gets back.
  * Injected through the `peerLogFetcher` plugin option; {@link fetchPeerLog} is
@@ -81,18 +87,7 @@ export type PeerLogFetcher = (options: {
 }) => Promise<Uint8Array>
 
 /**
- * The URL a peer server publishes its history log at: the `did.jsonl`
- * Resource of the `id` Collection of its `server` Space.
- * @param options {object}
- * @param options.host {string}   the peer's host, as the DID names it
- * @returns {string}
- */
-export function peerLogUrl({ host }: { host: string }): string {
-  return `https://${host}/space/server/id/${WEBVH_LOG_RESOURCE_ID}`
-}
-
-/**
- * A verified peer document and the monotonic time its log was fetched.
+ * A verified foreign document and the monotonic time its log was fetched.
  */
 interface PeerEntry {
   doc: DIDDoc
@@ -100,14 +95,15 @@ interface PeerEntry {
 }
 
 /**
- * Resolves peer server DIDs over the network, with the cache, rate limits and
- * rollback check described in this module's header. One instance per app,
- * decorated as `fastify.peerWebvh`. Reached only through a peer grant on a
- * verification context.
+ * Resolves foreign `did:webvh` DIDs over the network, with the cache, rate
+ * limits, blocklist and rollback check described in this module's header. One
+ * instance per app, decorated as `fastify.peerWebvh`. Reached only through a
+ * peer grant on a verification context.
  */
 export class PeerWebvhResolver {
   #fetchLog: PeerLogFetcher
   #logger: FastifyBaseLogger
+  #blocklist: WebvhBlocklist
   #documents = new LRUCache<string, PeerEntry>({ max: PEER_WEBVH_CACHE_MAX })
   /**
    * The head of the last log verified per DID. Kept apart from the documents
@@ -143,23 +139,47 @@ export class PeerWebvhResolver {
    * @param options {object}
    * @param options.fetchLog {PeerLogFetcher}   performs the log's HTTP GET
    * @param options.logger {FastifyBaseLogger}   logs failed fetches
+   * @param options.blocklist {WebvhBlocklist}   the hosts and DIDs never
+   *   fetched
    */
   constructor({
     fetchLog,
-    logger
+    logger,
+    blocklist
   }: {
     fetchLog: PeerLogFetcher
     logger: FastifyBaseLogger
+    blocklist: WebvhBlocklist
   }) {
     this.#fetchLog = fetchLog
     this.#logger = logger
+    this.#blocklist = blocklist
   }
 
   /**
-   * Resolves a peer DID to its verified document: from the cache while the
-   * entry is within its TTL, otherwise by fetching and verifying the log.
+   * Whether this resolver may fetch the log of `did` at all: a `did:webvh` on
+   * another host than this server's, of a shape the method maps to an
+   * `https` URL on the default port, and not on the blocklist. Decides
+   * nothing about the chain that names it, which the capability verifier
+   * checks before it issues a grant.
    * @param options {object}
-   * @param options.did {string}   a peer server DID
+   * @param options.did {string}
+   * @param options.serverUrl {string}   this server's base URL
+   * @returns {boolean}
+   */
+  mayFetch({ did, serverUrl }: { did: string; serverUrl: string }): boolean {
+    const parsed = parseCrossHostWebvh(did, { serverUrl })
+    return (
+      parsed !== undefined &&
+      !isBlockedWebvh({ blocklist: this.#blocklist, did, host: parsed.host })
+    )
+  }
+
+  /**
+   * Resolves a foreign DID to its verified document: from the cache while
+   * the entry is within its TTL, otherwise by fetching and verifying the log.
+   * @param options {object}
+   * @param options.did {string}   a foreign `did:webvh`
    * @param options.serverUrl {string}   this server's base URL
    * @returns {Promise<DIDDoc>}
    */
@@ -175,12 +195,12 @@ export class PeerWebvhResolver {
   }
 
   /**
-   * Resolves a peer DID for a signature made with `keyId`. When the cached
-   * document does not list that key, the log is fetched once more, unless it
-   * was just fetched by this call or a key miss already forced a fetch for
-   * this DID within the interval.
+   * Resolves a foreign DID for a signature made with `keyId`. When the
+   * cached document does not list that key, the log is fetched once more,
+   * unless it was just fetched by this call or a key miss already forced a
+   * fetch for this DID within the interval.
    * @param options {object}
-   * @param options.did {string}   a peer server DID
+   * @param options.did {string}   a foreign `did:webvh`
    * @param options.keyId {string}   the verification method the signature names
    * @param options.serverUrl {string}   this server's base URL
    * @returns {Promise<DIDDoc>}   a verified document listing `keyId`
@@ -263,12 +283,14 @@ export class PeerWebvhResolver {
   }
 
   /**
-   * One fetch and verification of a peer log. A failure drops the cached
+   * One fetch and verification of a foreign log. A failure drops the cached
    * document, so a stale one is never served in place of a failed refresh,
-   * and is remembered for {@link PEER_WEBVH_FAILURE_TTL}. A first-contact
-   * fetch must fit the host window and the first-contact concurrency limit;
-   * a known DID's fetch must fit the known concurrency limit. A refusal by
-   * either limit is not remembered.
+   * and is remembered for {@link PEER_WEBVH_FAILURE_TTL}. A blocked DID is
+   * refused before any of that. The capability verifier already gives one no
+   * grant, so this restates the bound where the fetch is made. A
+   * first-contact fetch must fit the host window and the first-contact
+   * concurrency limit; a known DID's fetch must fit the known concurrency
+   * limit. A refusal by either limit is not remembered.
    * @param options {object}
    * @param options.did {string}
    * @param options.serverUrl {string}
@@ -281,11 +303,19 @@ export class PeerWebvhResolver {
     did: string
     serverUrl: string
   }): Promise<PeerEntry> {
-    const parsed = parsePeerServerWebvh(did, { serverUrl })
+    const parsed = parseCrossHostWebvh(did, { serverUrl })
     if (parsed === undefined) {
       throw new PeerWebvhResolutionError({
         did,
-        detail: 'it is not a peer server DID on another host.'
+        detail: 'it is not a did:webvh on another host.'
+      })
+    }
+    if (
+      isBlockedWebvh({ blocklist: this.#blocklist, did, host: parsed.host })
+    ) {
+      throw new PeerWebvhResolutionError({
+        did,
+        detail: 'it is on the blocklist.'
       })
     }
     const failure = this.#failures.get(did)
@@ -314,7 +344,7 @@ export class PeerWebvhResolver {
     }
     this.#running[kind]++
     try {
-      const log = await this.#fetchLogOf({ did, host: parsed.host })
+      const log = await this.#fetchLogOf({ did, url: parsed.logUrl })
       if (!extendsHead({ log, head: this.#heads.get(did) })) {
         throw new PeerWebvhResolutionError({
           did,
@@ -343,7 +373,7 @@ export class PeerWebvhResolver {
     } catch (err) {
       this.#documents.delete(did)
       this.#failures.set(did, err as Error)
-      this.#logger.warn({ err, did }, 'Could not resolve a peer server DID.')
+      this.#logger.warn({ err, did }, 'Could not resolve a foreign DID.')
       throw err instanceof PeerWebvhResolutionError
         ? err
         : new PeerWebvhResolutionError({
@@ -357,20 +387,19 @@ export class PeerWebvhResolver {
   }
 
   /**
-   * Fetches a peer log under the timeout and size limit, and parses it.
+   * Fetches a foreign log under the timeout and size limit, and parses it.
    * @param options {object}
    * @param options.did {string}
-   * @param options.host {string}
+   * @param options.url {string}   the log URL the DID maps to
    * @returns {Promise<DIDLog>}
    */
   async #fetchLogOf({
     did,
-    host
+    url
   }: {
     did: string
-    host: string
+    url: string
   }): Promise<DIDLog> {
-    const url = peerLogUrl({ host })
     const signal = AbortSignal.timeout(PEER_WEBVH_FETCH_TIMEOUT_MS)
     const bytes = await withDeadline({
       work: this.#fetchLog({

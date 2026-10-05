@@ -1,7 +1,7 @@
 /**
  * Resource API unit tests (Vitest).
  */
-import { it, describe, beforeAll, afterAll } from 'vitest'
+import { it, describe, beforeAll, afterAll, vi } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
@@ -636,6 +636,7 @@ describe('Resource API', () => {
 
     it('[signed] GET with a matching If-None-Match is 304 with the ETag and no body', async () => {
       const { url, etag } = await textResource('cond-read-get-match')
+      const getResource = vi.spyOn(fastify.storage, 'getResource')
       const response = await responseOf(
         alice.was.request({
           url,
@@ -643,6 +644,9 @@ describe('Resource API', () => {
           headers: { 'if-none-match': etag }
         })
       )
+      // The 304 ends the handler: the byte stream is never opened.
+      assert.equal(getResource.mock.calls.length, 0)
+      getResource.mockRestore()
       assert.equal(response.status, 304)
       assert.equal(response.headers.get('etag'), etag)
       // RFC 9110 section 8.6: a 304 does not describe its own empty body.

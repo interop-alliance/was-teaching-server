@@ -209,7 +209,7 @@ export class ChunkRequest {
         })
     })
     if (notModified) {
-      return notModified
+      return reply
     }
 
     let result

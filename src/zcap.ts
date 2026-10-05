@@ -19,15 +19,20 @@
  * the request layer supplies a resolver context to, since a delegated link may
  * be signed by a `did:webvh` method on a `did:key`-controlled Space.
  *
- * One foreign `did:webvh` is resolved over the network: a peer server's own
- * DID (`did:webvh:<scid>:<host>:space:server:id`), as the invoker of a
- * delegated capability on the WAS routes. The HTTP-signature verifier resolves
- * the invoker's key before it reads the capability, so `handleZcapVerify`
- * first verifies the embedded delegation chain without that key
- * ({@link peerInvokerGrant}). Only a chain that verifies to the Space
- * controller, and whose invoked capability names the DID as its controller,
- * lets the verification that follows fetch that one DID's log
- * (`lib/peerWebvh.ts`).
+ * A `did:webvh` on a replication peer's host whose log a replica
+ * registration copies here resolves from that copy, through the same local
+ * resolver (`lib/webvhLogLocation.ts`).
+ *
+ * A foreign `did:webvh` with no stored log -- a peer server's own DID, or a
+ * service's or agent's DID on any host, under any path -- is resolved over
+ * the network, as the invoker of a delegated capability on the WAS routes.
+ * The HTTP-signature verifier resolves the invoker's key before it reads the
+ * capability, so `handleZcapVerify` first verifies the embedded delegation
+ * chain without that key ({@link peerInvokerGrant}). Only a chain that
+ * verifies to the Space controller, and whose invoked capability names the
+ * DID as its controller, lets the verification that follows fetch that one
+ * DID's log (`lib/peerWebvh.ts`), and only when the operator's blocklist does
+ * not name the DID or its host.
  */
 import type { IncomingHttpHeaders } from 'node:http'
 import {
@@ -82,7 +87,7 @@ import {
   type WebvhResolverContext
 } from './lib/webvhController.js'
 import type { PeerWebvhResolver } from './lib/peerWebvh.js'
-import { parsePeerServerWebvh } from './lib/validateDid.js'
+import { locateWebvhLog } from './lib/webvhLogLocation.js'
 import {
   containerRuleInspector,
   type ContainerRule
@@ -613,9 +618,9 @@ export function verifiedRootInvocation({
  *   root included (see `verifyZcap`)
  * @param [options.maxDelegationTtl] {number}   max delegated-zcap TTL in
  *   milliseconds (see `verifyZcap`)
- * @param [options.peerWebvh] {PeerWebvhResolver}   lets a peer server's
- *   `did:webvh` invoke a delegated capability here: when the request is
- *   signed by one, its delegation chain is verified first
+ * @param [options.peerWebvh] {PeerWebvhResolver}   lets a foreign
+ *   `did:webvh` with no stored log invoke a delegated capability here: when
+ *   the request is signed by one, its delegation chain is verified first
  *   ({@link peerInvokerGrant}), and only a chain that verifies lets this
  *   resolver fetch the DID's log. Passed by the WAS route families; requires
  *   `webvh`.
@@ -722,8 +727,9 @@ export async function handleZcapVerify({
   ]
   const inspectCapabilityChain =
     inspectors.length > 0 ? composeChainInspectors(inspectors) : undefined
-  // The peer pre-pass. Without a grant a foreign did:webvh invoker stays
-  // unresolvable, and the verification below answers the masked `not-found`.
+  // The peer pre-pass. Without a grant a foreign did:webvh invoker with no
+  // stored log stays unresolvable, and the verification below answers the
+  // masked `not-found`.
   const peerDid =
     peerWebvh !== undefined && webvh !== undefined
       ? await peerInvokerGrant({
@@ -731,6 +737,7 @@ export async function handleZcapVerify({
           serverUrl,
           spaceController,
           webvh,
+          peerWebvh,
           rootsFor: () =>
             expectedRoots({
               allowedTarget,
@@ -1032,8 +1039,11 @@ function expectedRoots({
  * capability, so a fetch made there would be an unauthenticated request to
  * any host a request names. This runs first, and issues a grant only when:
  *
- * - the signing keyId's DID is a peer server DID on another host
- *   (`parsePeerServerWebvh`);
+ * - the signing keyId's DID is a `did:webvh` on another host, of a shape the
+ *   method maps to an `https` URL on the default port, and neither it nor its
+ *   host is on the blocklist (`PeerWebvhResolver.mayFetch`);
+ * - this server stores no log for the DID (`locateWebvhLog`), since a DID it
+ *   stores resolves from storage and never over the network;
  * - the invocation embeds a delegated capability (a root invocation by a
  *   foreign DID never fetches, nor does a header that also carries an `id`)
  *   whose `controller` is exactly that DID;
@@ -1043,7 +1053,7 @@ function expectedRoots({
  *
  * The chain is verified here with the local resolver alone, so every
  * delegation link must be signed by a key this server resolves without a
- * fetch. A peer DID may invoke, and may not delegate. The invocation's own
+ * fetch. A foreign DID may invoke, and may not delegate. The invocation's own
  * verification decodes the same header, so it sees the same chain.
  *
  * A request that fails any check gets no grant and causes no fetch. Its
@@ -1055,6 +1065,8 @@ function expectedRoots({
  * @param options.serverUrl {string}   this server's base URL
  * @param options.spaceController {IDID}   the controller of the root
  * @param options.webvh {WebvhResolverContext}   the local resolver context
+ * @param options.peerWebvh {PeerWebvhResolver}   the network resolver, asked
+ *   whether it may fetch the DID at all
  * @param options.rootsFor {Function}   computes the roots the invocation may
  *   root in ({@link expectedRoots}), called only once a chain is to be
  *   verified
@@ -1071,6 +1083,7 @@ async function peerInvokerGrant({
   serverUrl,
   spaceController,
   webvh,
+  peerWebvh,
   rootsFor,
   inspectCapabilityChain,
   maxChainLength,
@@ -1081,6 +1094,7 @@ async function peerInvokerGrant({
   serverUrl: string
   spaceController: IDID
   webvh: WebvhResolverContext
+  peerWebvh: PeerWebvhResolver
   rootsFor: () => { rootCapabilities: string[]; attenuates: boolean }
   inspectCapabilityChain?: InspectCapabilityChain
   maxChainLength?: number
@@ -1095,7 +1109,7 @@ async function peerInvokerGrant({
       return undefined
     }
     did = keyId.split('#')[0] ?? ''
-    if (parsePeerServerWebvh(did, { serverUrl }) === undefined) {
+    if (!peerWebvh.mayFetch({ did, serverUrl })) {
       return undefined
     }
     const invocation = capabilityInvocationHeader({ headers })
@@ -1121,6 +1135,14 @@ async function peerInvokerGrant({
   }
   const controllers = [capability.controller].flat()
   if (controllers.length !== 1 || controllers[0] !== did) {
+    return undefined
+  }
+  // A DID whose log this server stores (a replicated peer-hosted one) takes
+  // the storage path alone, so it is never fetched.
+  if (
+    (await locateWebvhLog({ storage: webvh.storage, serverUrl, did })) !==
+    undefined
+  ) {
     return undefined
   }
   const documentLoader = rootCapabilityLoader({
@@ -1155,7 +1177,7 @@ async function peerInvokerGrant({
     }
     logger.debug(
       { err: result.error, did },
-      'A peer invoker chain did not verify; the peer log is not fetched.'
+      'A foreign invoker chain did not verify; its log is not fetched.'
     )
     return undefined
   }

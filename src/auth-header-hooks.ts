@@ -13,8 +13,9 @@ import {
 } from './errors.js'
 import { parseSignatureHeader } from '@interop/http-signature-header'
 import {
-  isSelfHostedWebvhController,
-  isValidController
+  isValidController,
+  parseSelfHostedWebvh,
+  parseWebvhAddress
 } from './lib/validateDid.js'
 import type { IDID, ParsedZcap } from './types.js'
 
@@ -90,10 +91,16 @@ export async function parseAuthHeaders(
  * Resolves to `undefined` when the request carries no parsed invocation (an
  * anonymous read of a public Resource, or a provisioning-token request), or
  * when the stripped `keyId` is neither a syntactically valid `did:key` nor a
- * self-hosted `did:webvh` (the second accepted controller shape -- recognized
- * here so `createdBy` provenance keeps being recorded once a Space is promoted
- * to one). Callers recording it as server-managed provenance therefore treat it
- * as optional, and never persist a value that failed to narrow to a DID.
+ * `did:webvh` this server could have verified. That is a self-hosted one (the
+ * second accepted controller shape -- recognized here so `createdBy`
+ * provenance keeps being recorded once a Space is promoted to one), a
+ * replicated one whose log a replica registration copies here (so a wallet's
+ * creates on a replica under its origin-hosted DID keep their provenance), or
+ * a foreign one invoking a delegated capability, whose log was fetched. The
+ * check is syntactic, as it is for a `did:key`: whether the key verified was
+ * decided by the authorization that ran before. Callers recording
+ * it as server-managed provenance therefore treat it as optional, and never
+ * persist a value that failed to narrow to a DID.
  *
  * @param request {import('fastify').FastifyRequest}
  * @returns {IDID | undefined}
@@ -104,7 +111,13 @@ export function invokerDid(request: FastifyRequest): IDID | undefined {
     return did
   }
   const { serverUrl } = request.server
-  return isSelfHostedWebvhController(did, { serverUrl }) ? did : undefined
+  if (
+    parseSelfHostedWebvh(did, { serverUrl }) !== undefined ||
+    parseWebvhAddress(did) !== undefined
+  ) {
+    return did as IDID
+  }
+  return undefined
 }
 
 /**

@@ -291,7 +291,7 @@ export class ResourceRequest {
         })
     })
     if (notModified) {
-      return notModified
+      return reply
     }
 
     const contentType = request.headers['content-type']

@@ -199,3 +199,33 @@ export function assertValidIds(
     assertValidId(ids.resourceId, { kind: 'resource', requestName })
   }
 }
+
+/**
+ * The Space id a canonical Space URL names, or `undefined` when the value is
+ * not one: an absolute URL whose path is `/space/<id>/`, with no query and no
+ * fragment.
+ * @param value {unknown}
+ * @returns {string | undefined}
+ */
+export function spaceIdOfSpaceUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return undefined
+  }
+  const match = /^\/space\/([^/]+)\/$/.exec(url.pathname)
+  if (
+    match === null ||
+    url.search !== '' ||
+    url.hash !== '' ||
+    url.href !== value ||
+    !isUrlSafeSegment(match[1]!)
+  ) {
+    return undefined
+  }
+  return match[1]
+}

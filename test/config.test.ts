@@ -361,6 +361,29 @@ describe('loadConfigFromEnv', () => {
       /STORAGE_LIMIT_PER_SPACE/
     )
   })
+
+  it('reads the did:webvh blocklist, and refuses a malformed entry', () => {
+    const config = loadConfigFromEnv({
+      SERVER_URL: 'http://localhost:3002',
+      WAS_WEBVH_BLOCKLIST: ' evil.example , Other.Example '
+    })
+    assert.deepStrictEqual(config.webvhBlocklist, [
+      'evil.example',
+      'Other.Example'
+    ])
+    assert.equal(
+      loadConfigFromEnv({ SERVER_URL: 'http://localhost:3002' }).webvhBlocklist,
+      undefined
+    )
+    assert.throws(
+      () =>
+        loadConfigFromEnv({
+          SERVER_URL: 'http://localhost:3002',
+          WAS_WEBVH_BLOCKLIST: 'evil.example:8443'
+        }),
+      /WAS_WEBVH_BLOCKLIST/
+    )
+  })
 })
 
 describe('loadConfigFromEnv (KMS record KEK vars)', () => {

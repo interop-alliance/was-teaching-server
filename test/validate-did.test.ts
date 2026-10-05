@@ -1,9 +1,10 @@
 /**
  * Unit tests for the controller-DID validators (`isValidController`,
- * `parseSelfHostedWebvh`, `isSelfHostedWebvhController`,
- * `assertValidController` / `assertValidSpaceController`). These exercise the
- * two accepted controller shapes directly, without an HTTP round-trip (see
- * webvh-controller-api.test.ts for the end-to-end behavior).
+ * `parseSelfHostedWebvh`, `parsePeerHostedWebvh`, `parseCrossHostWebvh`,
+ * `isWebvhControllerShape`, `assertValidController` /
+ * `assertValidSpaceController`). These exercise the accepted controller shapes
+ * directly, without an HTTP round-trip (see webvh-controller-api.test.ts for
+ * the end-to-end behavior).
  */
 import { it, describe } from 'vitest'
 import assert from 'node:assert'
@@ -11,8 +12,10 @@ import assert from 'node:assert'
 import {
   assertValidController,
   assertValidSpaceController,
-  isSelfHostedWebvhController,
   isValidController,
+  isWebvhControllerShape,
+  parseCrossHostWebvh,
+  parsePeerHostedWebvh,
   parseSelfHostedWebvh
 } from '../src/lib/validateDid.js'
 import { InvalidControllerError } from '../src/errors.js'
@@ -163,9 +166,116 @@ describe('parseSelfHostedWebvh', () => {
   for (const [label, value] of rejected) {
     it(`rejects ${label}`, () => {
       assert.equal(parseSelfHostedWebvh(value, { serverUrl }), undefined)
-      assert.equal(isSelfHostedWebvhController(value, { serverUrl }), false)
     })
   }
+})
+
+describe('parsePeerHostedWebvh', () => {
+  it('accepts a space:<S>:<C> DID on another host, naming its peer Space', () => {
+    assert.deepStrictEqual(
+      parsePeerHostedWebvh(
+        `did:webvh:${scid}:peer.example:space:${spaceId}:id`,
+        { serverUrl }
+      ),
+      {
+        scid,
+        host: 'peer.example',
+        spaceId,
+        collectionId: 'id',
+        fromSpace: `https://peer.example/space/${spaceId}/`
+      }
+    )
+  })
+
+  it('refuses this host, a port, another path, and malformed ids', () => {
+    for (const did of [
+      selfHosted,
+      `did:webvh:${scid}:localhost:space:${spaceId}:id`,
+      `did:webvh:${scid}:peer.example%3A8443:space:${spaceId}:id`,
+      `did:webvh:${scid}:Peer.Example:space:${spaceId}:id`,
+      `did:webvh:${scid}:peer.example:spaces:${spaceId}:id`,
+      `did:webvh:${scid}:peer.example:space:${spaceId}`,
+      `did:webvh:${scid}:peer.example:space:${spaceId}:id:extra`,
+      `did:webvh:${scid}:peer.example:space:..:id`,
+      `did:webvh:${scid}:peer.example:space:${spaceId}:a%2Fb`,
+      `did:webvh:short:peer.example:space:${spaceId}:id`
+    ]) {
+      assert.equal(parsePeerHostedWebvh(did, { serverUrl }), undefined, did)
+    }
+  })
+})
+
+describe('parseCrossHostWebvh', () => {
+  it('maps any path, and the host-only form, to its log URL', () => {
+    assert.deepStrictEqual(
+      parseCrossHostWebvh(`did:webvh:${scid}:agent.example:agents:a1`, {
+        serverUrl
+      }),
+      {
+        scid,
+        host: 'agent.example',
+        path: ['agents', 'a1'],
+        logUrl: 'https://agent.example/agents/a1/did.jsonl'
+      }
+    )
+    assert.deepStrictEqual(
+      parseCrossHostWebvh(`did:webvh:${scid}:agent.example`, { serverUrl }),
+      {
+        scid,
+        host: 'agent.example',
+        path: [],
+        logUrl: 'https://agent.example/.well-known/did.jsonl'
+      }
+    )
+  })
+
+  it('refuses this host, a port, an IP, and segments that are not URL-safe', () => {
+    for (const did of [
+      `did:webvh:${scid}:localhost%3A3000:space:${spaceId}:id`,
+      `did:webvh:${scid}:localhost`,
+      `did:webvh:${scid}:agent.example%3A8443:agents:a1`,
+      `did:webvh:${scid}:10.0.0.1:agents:a1`,
+      `did:webvh:${scid}:Agent.Example:agents:a1`,
+      `did:webvh:${scid}:agent.example:agents:..`,
+      `did:webvh:${scid}:agent.example:agents:.`,
+      `did:webvh:${scid}:agent.example:agents:`,
+      `did:webvh:${scid}:agent.example:a%2Fb`,
+      `did:webvh:${scid}:agent.example:a%3Fb`,
+      `did:webvh:${scid}:agent.example:a b`,
+      `did:webvh:short:agent.example:agents:a1`,
+      `did:web:agent.example:agents:a1`,
+      42
+    ]) {
+      assert.equal(
+        parseCrossHostWebvh(did, { serverUrl }),
+        undefined,
+        String(did)
+      )
+    }
+  })
+})
+
+describe('isWebvhControllerShape', () => {
+  it('accepts a self-hosted and a peer-hosted space:<S>:<C> DID', () => {
+    assert.equal(isWebvhControllerShape(selfHosted, { serverUrl }), true)
+    assert.equal(
+      isWebvhControllerShape(
+        `did:webvh:${scid}:peer.example:space:${spaceId}:id`,
+        { serverUrl }
+      ),
+      true
+    )
+  })
+
+  it('refuses a cross-host DID of any other path, and the host-only form', () => {
+    for (const did of [
+      `did:webvh:${scid}:agent.example:agents:a1`,
+      `did:webvh:${scid}:agent.example`,
+      didKey
+    ]) {
+      assert.equal(isWebvhControllerShape(did, { serverUrl }), false, did)
+    }
+  })
 })
 
 describe('assertValidController (did:key-only call sites)', () => {
@@ -202,11 +312,20 @@ describe('assertValidSpaceController (Update Space)', () => {
     )
   })
 
-  it('throws for a cross-host did:webvh, naming both accepted shapes', () => {
+  it('passes a peer-hosted did:webvh, whose resolvability is checked later', () => {
+    assert.doesNotThrow(() =>
+      assertValidSpaceController(
+        `did:webvh:${scid}:peer.example:space:${spaceId}:id`,
+        { serverUrl }
+      )
+    )
+  })
+
+  it('throws for a cross-host did:webvh off the space path, naming both accepted shapes', () => {
     assert.throws(
       () =>
         assertValidSpaceController(
-          `did:webvh:${scid}:evil.example:space:${spaceId}:id`,
+          `did:webvh:${scid}:evil.example:agents:${spaceId}`,
           { serverUrl, requestName: 'Update Space' }
         ),
       (err: unknown) => {

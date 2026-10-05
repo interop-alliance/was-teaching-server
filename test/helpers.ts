@@ -1,6 +1,7 @@
 import assert from 'node:assert'
 import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
+import type { FastifyInstance } from 'fastify'
 import pino from 'pino'
 import { ZcapClient } from '@interop/ezcap'
 import { WasClient } from '@interop/was-client'
@@ -16,6 +17,7 @@ import {
 } from '@interop/did-method-webvh'
 import { DataIntegrityProof } from '@interop/data-integrity-proof'
 import { createVerifyCryptosuite } from '@interop/ed25519-signature/eddsa-jcs-2022'
+import { signCapabilityInvocation } from '@interop/http-signature-zcap-invoke'
 import jsigs from '@interop/jsonld-signatures'
 
 import {
@@ -27,6 +29,7 @@ import { compareStamps, isoOfMs } from '../src/lib/hlc.js'
 import { prepareImportPlan } from '../src/lib/importPlan.js'
 import { createServerSigningKey } from '../src/lib/serverIdentity.js'
 import type { ServerSigningKey } from '../src/lib/serverIdentity.js'
+import type { PeerFetch } from '../src/sync/peerFetch.js'
 import { webvhLogSigner } from '../src/testing.js'
 import type {
   FeedDocument,
@@ -856,4 +859,127 @@ export function resourceDocuments(
   return documents.filter(
     (document): document is ResourceFeedDocument => document.kind === 'resource'
   )
+}
+
+/**
+ * Sets a key pair's id and controller to a method of `did`.
+ * @param keyPair {Ed25519VerificationKey}
+ * @param did {string}
+ * @returns {Ed25519VerificationKey}
+ */
+export function bindKey(
+  keyPair: Ed25519VerificationKey,
+  did: string
+): Ed25519VerificationKey {
+  keyPair.id = `${did}#${keyPair.publicKeyMultibase}`
+  keyPair.controller = did
+  return keyPair
+}
+
+/**
+ * The pull loops' transport for servers booted in one process that never
+ * listen: the request is handed to the app the URL's origin names, through
+ * `fastify.inject`. `servers` is read on every request, so a server may be
+ * added after the transport is built.
+ *
+ * @param servers {Map<string, { fastify: FastifyInstance }>}   the apps, by
+ *   server URL
+ * @returns {PeerFetch}
+ */
+export function injectPeerFetch(
+  servers: Map<string, { fastify: FastifyInstance }>
+): PeerFetch {
+  return async ({ url, headers }) => {
+    const target = new URL(url)
+    const server = servers.get(target.origin)
+    if (server === undefined) {
+      throw new Error(`No test server at ${target.origin}.`)
+    }
+    const response = await server.fastify.inject({
+      method: 'GET',
+      url: `${target.pathname}${target.search}`,
+      headers: { ...headers, host: target.host }
+    })
+    return {
+      status: response.statusCode,
+      headers: {
+        get: (name: string) => {
+          const value = response.headers[name.toLowerCase()]
+          return value === undefined ? null : String(value)
+        }
+      },
+      body: new Blob([new Uint8Array(response.rawPayload)]).stream(),
+      release: () => {}
+    }
+  }
+}
+
+/**
+ * Sends one signed request to a server that never listens, through
+ * `fastify.inject`, signed as a client would sign it.
+ *
+ * @param options {object}
+ * @param options.server {{ fastify: FastifyInstance, serverUrl: string }}
+ * @param options.path {string}   the server-relative path, under a Space
+ * @param options.signer {any}   the invocation signer
+ * @param [options.method] {string}   defaults to `GET`
+ * @param [options.capability] {any}   defaults to the root capability of the
+ *   Space the path is under
+ * @param [options.json] {object}   a JSON body
+ * @param [options.body] {Uint8Array}   a binary body
+ * @param [options.contentType] {string}
+ * @returns {Promise<import('fastify').LightMyRequestResponse>}
+ */
+export async function signedInject({
+  server,
+  path,
+  signer,
+  method = 'GET',
+  capability,
+  json,
+  body,
+  contentType
+}: {
+  server: { fastify: FastifyInstance; serverUrl: string }
+  path: string
+  signer: any
+  method?: string
+  capability?: any
+  json?: object
+  body?: Uint8Array
+  contentType?: string
+}) {
+  const url = new URL(path, server.serverUrl).toString()
+  const spaceUrl = new URL(
+    `/space/${path.split('/')[2]}/`,
+    server.serverUrl
+  ).toString()
+  const headers = await signCapabilityInvocation({
+    url,
+    method,
+    headers: {
+      date: new Date().toUTCString(),
+      ...(contentType !== undefined && { 'content-type': contentType })
+    },
+    ...(json !== undefined && { json }),
+    ...(body !== undefined && { body }),
+    capability: capability ?? `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
+    capabilityAction: method,
+    invocationSigner: signer
+  })
+  let payload: string | Buffer | undefined
+  if (json !== undefined) {
+    payload = JSON.stringify(json)
+  } else if (body !== undefined) {
+    payload = Buffer.from(body)
+  }
+  return server.fastify.inject({
+    method: method as any,
+    url: path,
+    headers: {
+      ...(headers as Record<string, string>),
+      host: new URL(server.serverUrl).host
+    },
+    ...(payload !== undefined && { payload })
+  })
 }

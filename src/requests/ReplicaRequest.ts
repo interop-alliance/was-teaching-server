@@ -13,8 +13,12 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 
-import { ReplicaNotFoundError } from '../errors.js'
+import { ReplicaNotFoundError, ReplicaRefusedError } from '../errors.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
+import {
+  controllerUnmappedByRemoval,
+  invalidateReplicaIndex
+} from '../lib/webvhLogLocation.js'
 import { replicaPath, replicasPath, replicaStatusPath } from '../lib/paths.js'
 import { assertValidIds, isReplicaId } from '../lib/validateId.js'
 import {
@@ -87,8 +91,10 @@ export class ReplicaRequest {
 
     const stored = await storage.createReplica({ spaceId, record })
     // The Space Metadata object lists the registration under `replicas` and
-    // its validator advanced with it, so the cached object is stale.
+    // its validator advanced with it, so the cached object is stale. The
+    // registration may map a peer-hosted did:webvh onto this Space's copy.
     invalidateSpaceMetadata({ storage, spaceId })
+    invalidateReplicaIndex({ storage })
     replication.register({ spaceId, replicaId: record.id })
 
     reply.header(
@@ -179,7 +185,9 @@ export class ReplicaRequest {
    * DELETE /space/:spaceId/replicas/:replicaId
    * Removes a registration and its loop state, and stops its pull loop.
    * Nothing already pulled is removed. Idempotent: 204 whether or not a
-   * registration was stored.
+   * registration was stored. Refused with `replica-refused` (409) while the
+   * registration is the only one that maps a Space's `did:webvh` controller
+   * to a local copy of its log.
    * @param request {import('fastify').FastifyRequest}
    * @param reply {import('fastify').FastifyReply}
    * @returns {Promise<FastifyReply>}
@@ -193,7 +201,7 @@ export class ReplicaRequest {
     const {
       params: { spaceId, replicaId }
     } = request
-    const { storage, replication } = request.server
+    const { serverUrl, storage, replication } = request.server
     const requestName = 'Delete Replica'
 
     assertValidIds({ spaceId }, { requestName })
@@ -209,8 +217,31 @@ export class ReplicaRequest {
     if (!isReplicaId(replicaId)) {
       return reply.status(204).send()
     }
+    // A did:webvh hosted on the peer resolves here only through a
+    // registration. Removing the last one that maps a Space's controller
+    // would leave that Space with no resolvable controller and no
+    // break-glass, since re-registering and Update Space are both authorized
+    // by the controller.
+    const unmapped = await controllerUnmappedByRemoval({
+      storage,
+      serverUrl,
+      spaceId,
+      replicaId
+    })
+    if (unmapped !== undefined) {
+      throw new ReplicaRefusedError({
+        title: 'The replica registration cannot be removed.',
+        pointer: null,
+        detail:
+          `Space "${unmapped.spaceId}" is controlled by "${unmapped.did}", ` +
+          'which resolves only from the log this registration replicates. ' +
+          'Change that controller first, or to replace the registration, ' +
+          'add the new one before removing this one.'
+      })
+    }
     if (await storage.deleteReplica({ spaceId, replicaId })) {
       invalidateSpaceMetadata({ storage, spaceId })
+      invalidateReplicaIndex({ storage })
     }
     replication.unregister({ spaceId, replicaId })
     return reply.status(204).send()
