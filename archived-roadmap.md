@@ -5608,3 +5608,26 @@ content stamp, `epoch`, `writerId`). A cached `/meta` can keep naming a key
 epoch the Resource no longer carries, with every revalidation affirming it.
 Separately, the parallel metadata/log read pairs the post-append validator with
 the pre-append descriptor, so a 304 pins a stale recipient set.
+
+### WAS-143: [M] Method refusals answer before the auth hook, and every container has them
+
+- status: done
+- done: 2026-10-05
+- priority: medium
+- labels: routing, spec-conformance
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [x] An anonymous unsafe method at a reserved endpoint or container URL
+        answers 405 with `Allow`, not 401 (register the refusal routes outside
+        the auth hook, or give them a route-level `onRequest` that
+        short-circuits it)
+  - [x] `/space/:spaceId/backends/:backendId` and
+        `/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex` are in
+        their group's refusal list, so `GET /space/S/backends/x` is a 405 rather
+        than backtracking to the Resource route's 409 `reserved-id`;
+        `GET /space/S/meta/log` likewise
+  - [x] The `/spaces/` group ends with `refuseUnimplementedMethods` and the bare
+        `/spaces` redirects for the whole `CONTAINER_REDIRECT_METHODS` set
+  - [x] The strip-slash 308 on Resource and chunk URLs applies to every method,
+        or to none (today `PUT` only)
+  - [x] Tests per case

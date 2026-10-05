@@ -4,6 +4,14 @@
 
 ### Changed
 
+- A `405` method refusal and a `308` slash redirect answer ahead of the
+  auth-header and digest hooks. An anonymous `PUT` of a container URL, or an
+  unimplemented method at a reserved endpoint, is a `405` with `Allow`, not a
+  `401`. `/spaces/` refuses the methods it does not implement, and the bare
+  `/spaces` redirects for every container method. `GET /space/:s/backends/:b`,
+  `GET /space/:s/meta/log` and an unimplemented method at a chunk URL are `405`
+  rather than a `409` `reserved-id` or a `404`. The slash form of a Resource or
+  chunk URL redirects for every method, not only `PUT`.
 - Register Replica admits a peer Space whose controller is a `did:webvh` hosted
   in that Space when the local Space's `did:key` controller is listed under
   `capabilityInvocation` in the DID's current document. A Space promoted to its

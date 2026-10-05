@@ -15,13 +15,21 @@
  * counts: it installs the strict `requireAuthHeaders` -- the webkms protocol
  * has no public reads -- and no slash redirects, since the protocol's URLs
  * are exact.)
+ *
+ * A method a WAS URL does not implement is refused with a 405 naming the
+ * methods it does (`refuseUnimplementedMethods`). The refusals and the slash
+ * redirects are marked `config.noAuth`. They answer the same whoever asks, so
+ * the group's auth and digest hooks skip them, and an anonymous request gets
+ * the 405 or the 308 rather than a 401.
  */
+import type { Readable } from 'node:stream'
 import type {
   FastifyInstance,
   FastifyPluginOptions,
   FastifyReply,
   FastifyRequest,
-  HTTPMethods
+  HTTPMethods,
+  RouteShorthandOptionsWithHandler
 } from 'fastify'
 import { SpacesRepositoryRequest } from './requests/SpacesRepositoryRequest.js'
 import { SpaceRequest } from './requests/SpaceRequest.js'
@@ -54,7 +62,10 @@ import {
  * shares, in the one order they all rely on: the optional provisioning gate,
  * the auth-header requirement, `parseAuthHeaders`, `captureRawBody`,
  * `verifyBodyDigest`, then the POST `Cache-Control: no-store` marking and the
- * hosted-page sandbox policy.
+ * hosted-page sandbox policy. The four auth and digest hooks skip a route
+ * marked `config.noAuth` (a 405 refusal or a 308 redirect); the gate, the
+ * two `onSend` hooks and the error handler still apply to it, so its 405 is
+ * still a problem document carrying the sandbox policy.
  * @param app {import('fastify').FastifyInstance}
  * @param options {object}
  * @param [options.provisioningRoutes] {ProvisioningRoute[]}   routes (URLs
@@ -81,10 +92,13 @@ function installGroupHooks(
     app.addHook('onRequest', provisioningGateFor(provisioningRoutes))
   }
   // The auth and digest hooks are skipped for a request the gate granted (it
-  // carries a Bearer token, not an HTTP Signature).
+  // carries a Bearer token, not an HTTP Signature), and for a `noAuth` route.
   if (strictAuth) {
     // Every operation is privileged: 401 when auth headers are absent.
-    app.addHook('onRequest', unlessProvisioningAuthorized(requireAuthHeaders))
+    app.addHook(
+      'onRequest',
+      unlessNoAuthRoute(unlessProvisioningAuthorized(requireAuthHeaders))
+    )
   } else {
     // Writes require auth; reads (GET/HEAD) may proceed unauthenticated so the
     // handler can fall back to an access-control policy (e.g. a public Space,
@@ -93,17 +107,25 @@ function installGroupHooks(
     // (the exception to 404 masking).
     app.addHook(
       'onRequest',
-      unlessProvisioningAuthorized(requireAuthHeadersOrPublicRead)
+      unlessNoAuthRoute(
+        unlessProvisioningAuthorized(requireAuthHeadersOrPublicRead)
+      )
     )
   }
   // Parse the relevant request headers, set the request.zcap parameter
-  app.addHook('onRequest', unlessProvisioningAuthorized(parseAuthHeaders))
+  app.addHook(
+    'onRequest',
+    unlessNoAuthRoute(unlessProvisioningAuthorized(parseAuthHeaders))
+  )
   // Capture raw body bytes (JSON/text) so the digest can be recomputed against
   // exactly what the client signed (spec "Request Body Integrity").
-  app.addHook('preParsing', captureRawBody)
+  app.addHook('preParsing', captureRawBodyUnlessNoAuth)
   // Enforce the Digest header binding: require it covered by the signature and,
   // when the raw body is available, recompute and compare it.
-  app.addHook('preValidation', unlessProvisioningAuthorized(verifyBodyDigest))
+  app.addHook(
+    'preValidation',
+    unlessNoAuthRoute(unlessProvisioningAuthorized(verifyBodyDigest))
+  )
   // Mark the response to a non-idempotent operation non-cacheable (spec
   // "Caching"). Only POST is non-idempotent here; reads carry an `ETag` for
   // validation instead, and the spec defers further `Cache-Control` semantics.
@@ -111,6 +133,48 @@ function installGroupHooks(
   // Stamp the hosted-page sandbox policy on every response in the group, so a
   // route serving stored bytes cannot be added without it.
   app.addHook('onSend', sandboxHostedPage)
+}
+
+/**
+ * Wraps a group hook so it is skipped for a route marked `config.noAuth`: a
+ * 405 method refusal or a 308 slash redirect, which answer the same whatever
+ * the caller's identity. Every other request reaches the wrapped hook
+ * unchanged.
+ * @param hook {(request: FastifyRequest, reply: FastifyReply) => Promise<void>}
+ *   the hook to guard
+ * @returns {(request: FastifyRequest, reply: FastifyReply) => Promise<void>}
+ */
+function unlessNoAuthRoute(
+  hook: (request: FastifyRequest, reply: FastifyReply) => Promise<void>
+): (request: FastifyRequest, reply: FastifyReply) => Promise<void> {
+  return async function skipForNoAuthRoute(
+    request: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<void> {
+    if (request.routeOptions.config.noAuth) {
+      return
+    }
+    await hook(request, reply)
+  }
+}
+
+/**
+ * The `preParsing` form of {@link unlessNoAuthRoute} for `captureRawBody`: a
+ * `noAuth` route gets its body stream back untouched.
+ * @param request {import('fastify').FastifyRequest}
+ * @param reply {import('fastify').FastifyReply}
+ * @param payload {Readable}   the raw request body stream
+ * @returns {Promise<Readable>}   the stream Fastify should parse
+ */
+async function captureRawBodyUnlessNoAuth(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  payload: Readable
+): Promise<Readable> {
+  if (request.routeOptions.config.noAuth) {
+    return payload
+  }
+  return captureRawBody(request, reply, payload)
 }
 
 /**
@@ -145,6 +209,15 @@ async function markPostNoStore(
  * response cacheable.
  */
 const safeRoute = { config: { safe: true } }
+
+/**
+ * Route config marking a route that answers the same whatever the caller's
+ * identity -- a 308 slash redirect here, and every 405 refusal through
+ * `methodNotAllowed` -- so the group's auth and digest hooks skip it. A
+ * redirect reveals nothing about its target, and the bare form of a container
+ * URL reaches its 405 only through one.
+ */
+const noAuthRoute = { config: { noAuth: true } }
 
 /**
  * Splits a request URL into its path and its query string (`?` included, or
@@ -251,24 +324,31 @@ function redirectCollectionsToSpace(
  * accept -- and so a request to a reserved endpoint does not reach the
  * parametric route one level up, whose reserved-id guard would answer the
  * unrelated `409 reserved-id`.
+ *
+ * Returns route options rather than a bare handler. The route is marked
+ * `config.noAuth`, so the group's auth and digest hooks skip it, and the
+ * refusal is thrown from a route-level `onRequest` hook, so it answers before
+ * the body is parsed. An anonymous request, or one with a malformed body, gets
+ * the same 405 as a signed one.
  * @param allow {string[]}   the methods implemented at the URL
  * @param targetName {string}   what the URL addresses, named in the detail
  * @param [hint] {string}   one sentence naming where the refused operation
  *   lives instead
- * @returns {(request: FastifyRequest) => never}
+ * @returns {RouteShorthandOptionsWithHandler}
  */
 function methodNotAllowed(
   allow: string[],
   targetName: string,
   hint?: string
-): (request: FastifyRequest) => never {
-  return () => {
+): RouteShorthandOptionsWithHandler {
+  async function refuseMethod(): Promise<never> {
     throw new MethodNotAllowedError({
       allow,
       targetName,
       ...(hint !== undefined && { hint })
     })
   }
+  return { ...noAuthRoute, onRequest: refuseMethod, handler: refuseMethod }
 }
 
 /**
@@ -300,7 +380,8 @@ const CONTAINER_META_DELETE_HINT =
  * refused as a `409 reserved-id`, which answers a question the request never
  * asked. The refusal is registered before any storage access and does not
  * look at the path's ids, so it answers the same whether or not the Space,
- * Collection, or Resource exists.
+ * Collection, or Resource exists. It also answers ahead of the auth hooks
+ * (see `methodNotAllowed`), so an anonymous caller gets the 405, not a 401.
  *
  * The implemented set is read from the router itself (`hasRoute`), so the
  * `Allow` header cannot drift from the routes. That makes the call order
@@ -336,7 +417,7 @@ function refuseUnimplementedMethods(
       app.route({
         method: method as HTTPMethods,
         url,
-        handler: methodNotAllowed(allow, targetName, hints[method])
+        ...methodNotAllowed(allow, targetName, hints[method])
       })
     }
   }
@@ -350,7 +431,24 @@ function refuseUnimplementedMethods(
 const CONTAINER_REDIRECT_METHODS: HTTPMethods[] = [...CONTAINER_METHODS, 'PUT']
 
 /**
- * Registers SpacesRepository routes (POST/GET /spaces). Installs the
+ * The methods the trailing-slash form of a Resource or chunk URL redirects
+ * for, to the no-slash canonical form: every WAS method, so whether the slash
+ * form redirects does not depend on the method. `POST` is included though
+ * neither URL implements it, so the slash form answers as the canonical form
+ * does once the redirect is followed. OPTIONS is left to the CORS plugin's
+ * preflight route.
+ */
+const STRIP_SLASH_METHODS: HTTPMethods[] = [
+  'GET',
+  'HEAD',
+  'POST',
+  'PUT',
+  'DELETE'
+]
+
+/**
+ * Registers SpacesRepository routes (POST/GET /spaces/, the bare `/spaces`
+ * redirect, and the 405 refusals of every other method). Installs the
  * `requireAuthHeadersOrPublicRead` then `parseAuthHeaders` onRequest hooks and
  * the `handleError` error handler.
  * @param app {import('fastify').FastifyInstance}
@@ -361,9 +459,9 @@ export async function initSpacesRepositoryRoutes(
   app: FastifyInstance,
   _options: FastifyPluginOptions
 ): Promise<void> {
-  // `/spaces` (no trailing slash) is gated too, so a token-authorized request
-  // reaches the canonical-slash 308 redirect below instead of failing the
-  // auth-header check first.
+  // `/spaces` (no trailing slash) is gated too, so a deployment with a
+  // provisioning policy refuses a tokenless Create Space there as it does at
+  // the canonical form, rather than redirecting it first.
   installGroupHooks(app, {
     provisioningRoutes: [
       { method: 'POST', url: '/spaces' },
@@ -371,13 +469,26 @@ export async function initSpacesRepositoryRoutes(
     ]
   })
 
+  // The repository container: canonically `/spaces/`; the bare form redirects
+  // there for every WAS method (see the Space container's note on OPTIONS).
+  app.route({
+    method: CONTAINER_REDIRECT_METHODS,
+    url: '/spaces',
+    ...noAuthRoute,
+    handler: redirectAddSlash
+  })
   // Add a Space to a SpacesRepository (Create Space)
-  app.post('/spaces', redirectAddSlash)
   app.post('/spaces/', SpacesRepositoryRequest.post)
 
   // List Spaces
-  app.get('/spaces', redirectAddSlash)
   app.get('/spaces/', SpacesRepositoryRequest.get)
+
+  // Every other method is refused with a 405. Last in the group, so the
+  // implemented set above is complete when it is read.
+  refuseUnimplementedMethods(app, [
+    { url: '/spaces/', targetName: 'Spaces repository' },
+    { url: '/spaces', targetName: 'Spaces repository' }
+  ])
 }
 
 /**
@@ -411,6 +522,7 @@ export async function initSpaceRoutes(
   app.route({
     method: CONTAINER_REDIRECT_METHODS,
     url: '/space/:spaceId',
+    ...noAuthRoute,
     handler: redirectAddSlash
   })
   // List Collections (a `GET` of the container lists its members)
@@ -435,10 +547,26 @@ export async function initSpaceRoutes(
   // The retired `collections` endpoint (reserved segment): listing and
   // creating Collections moved to the Space URL in v0.5, so both slash forms
   // redirect there for the two methods it served.
-  app.get('/space/:spaceId/collections', redirectCollectionsToSpace)
-  app.get('/space/:spaceId/collections/', redirectCollectionsToSpace)
-  app.post('/space/:spaceId/collections', redirectCollectionsToSpace)
-  app.post('/space/:spaceId/collections/', redirectCollectionsToSpace)
+  app.get(
+    '/space/:spaceId/collections',
+    noAuthRoute,
+    redirectCollectionsToSpace
+  )
+  app.get(
+    '/space/:spaceId/collections/',
+    noAuthRoute,
+    redirectCollectionsToSpace
+  )
+  app.post(
+    '/space/:spaceId/collections',
+    noAuthRoute,
+    redirectCollectionsToSpace
+  )
+  app.post(
+    '/space/:spaceId/collections/',
+    noAuthRoute,
+    redirectCollectionsToSpace
+  )
 
   // Space access-control policy (reserved segment; Fastify routes static
   // segments ahead of the `:collectionId` parameter, so this never collides).
@@ -527,8 +655,16 @@ export async function initSpaceRoutes(
       targetName: 'Space Metadata',
       hints: { DELETE: CONTAINER_META_DELETE_HINT }
     },
+    // Anchors the path, which a Space does not serve: without it the
+    // Collection-level `meta/log` shape would reach the Resource route, with
+    // the reserved `meta` as a Collection id.
+    { url: '/space/:spaceId/meta/log', targetName: 'Space Metadata log' },
     { url: '/space/:spaceId/policy', targetName: 'Space policy' },
     { url: '/space/:spaceId/backends', targetName: 'Space backends' },
+    {
+      url: '/space/:spaceId/backends/:backendId',
+      targetName: 'Space backend'
+    },
     { url: '/space/:spaceId/collections', targetName: 'retired collections' },
     { url: '/space/:spaceId/collections/', targetName: 'retired collections' },
     { url: '/space/:spaceId/export', targetName: 'Space export' },
@@ -569,6 +705,7 @@ export async function initCollectionRoutes(
   app.route({
     method: CONTAINER_REDIRECT_METHODS,
     url: '/space/:spaceId/:collectionId',
+    ...noAuthRoute,
     handler: redirectAddSlash
   })
   // List Collection items (a `GET` of the container lists its members)
@@ -688,11 +825,16 @@ export async function initResourceRoutes(
 ): Promise<void> {
   installGroupHooks(app)
 
+  // A Resource URL carries no trailing slash; the slash form redirects to it
+  // for every WAS method (see the Space container's note on OPTIONS).
+  app.route({
+    method: STRIP_SLASH_METHODS,
+    url: '/space/:spaceId/:collectionId/:resourceId/',
+    ...noAuthRoute,
+    handler: redirectStripSlash
+  })
+
   // Create a Resource by Id
-  app.put(
-    '/space/:spaceId/:collectionId/:resourceId/', // no trailing slash allowed
-    redirectStripSlash
-  )
   app.put('/space/:spaceId/:collectionId/:resourceId', ResourceRequest.put)
 
   // Head Resource. Declared before the GET route so it overrides Fastify's
@@ -742,11 +884,16 @@ export async function initResourceRoutes(
   // below the Resource level, so it needs no reserved-id entry (`meta` does,
   // because it is also addressed one level up, on a Collection and a Space).
 
+  // A chunk URL carries no trailing slash either; the slash form redirects to
+  // it for every WAS method.
+  app.route({
+    method: STRIP_SLASH_METHODS,
+    url: '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex/',
+    ...noAuthRoute,
+    handler: redirectStripSlash
+  })
+
   // Store a chunk by index
-  app.put(
-    '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex/', // no trailing slash allowed
-    redirectStripSlash
-  )
   app.put(
     '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex',
     ChunkRequest.put
@@ -775,6 +922,7 @@ export async function initResourceRoutes(
   // List a Resource's chunks (container form; trailing slash is canonical)
   app.get(
     '/space/:spaceId/:collectionId/:resourceId/chunks', // trailing slash required
+    noAuthRoute,
     redirectAddSlash
   )
   app.get(
@@ -800,6 +948,10 @@ export async function initResourceRoutes(
     {
       url: '/space/:spaceId/:collectionId/:resourceId/chunks/',
       targetName: 'Resource chunks'
+    },
+    {
+      url: '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex',
+      targetName: 'Resource chunk'
     }
   ])
 }

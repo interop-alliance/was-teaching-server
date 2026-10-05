@@ -5,8 +5,9 @@
  * (`/space/:spaceId`), which a client cannot follow -- and use `308`. A
  * container (the repository, a Space, a Collection) is canonical WITH the
  * trailing slash, and the retired `collections` endpoint redirects to the Space
- * container. (The write-method redirects run the same shared helpers, but sit
- * behind the auth hooks, so they 401 without signed headers.)
+ * container. (The write-method redirects run the same shared helpers and,
+ * like these, answer ahead of the auth hooks; test/method-refusals-api.test.ts
+ * covers them.)
  */
 import { afterAll, describe, it, expect } from 'vitest'
 import { createApp } from '../src/server.js'
