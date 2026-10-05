@@ -35,6 +35,11 @@
   reads each sidecar once, and the changes feed reads a tombstone's once.
 - Filesystem Delete Resource and Delete Chunk remove every representation file
   of the id, so a file a crash left beside the live one is reclaimed.
+- Import Space checks an archived Collection Metadata file's `id` the way the
+  Collection write handlers check a body's: an absent `id` is set from the
+  Collection directory the file is stored under, and one naming another
+  Collection, or a file that is not a JSON object, refuses the import as
+  `invalid-import` (400). Before, the archived object was stored verbatim.
 
 ## 0.42.1 - 2026-10-05
 
