@@ -637,6 +637,189 @@ describe('A did:webvh controller resolved from a replicated log', () => {
     })
   })
 
+  describe('a promotion that would make a second holder of the log', () => {
+    /**
+     * A DID hosted in Collection `id` of the origin's Space `shared`.
+     */
+    let shared: Awaited<ReturnType<typeof mintOnOrigin>>
+
+    beforeAll(async () => {
+      await createSpace(origin, 'shared')
+      await createCollection(origin, 'shared', 'id')
+      await createCollection(origin, 'shared', 'notes')
+      shared = await mintOnOrigin('shared')
+
+      // Space `shared-a` pulls the log Collection, `shared-b` only `notes`.
+      await createSpace(mirror, 'shared-a')
+      await register({
+        toSpaceId: 'shared-a',
+        fromSpaceId: 'shared',
+        collections: ['id']
+      })
+      await mirror.fastify.replication.pullNow({
+        spaceId: 'shared-a',
+        replicaId: 'origin'
+      })
+      await createSpace(mirror, 'shared-b')
+      await register({
+        toSpaceId: 'shared-b',
+        fromSpaceId: 'shared',
+        collections: ['notes']
+      })
+    })
+
+    it('promotes a Space whose registration already pulls the log Collection', async () => {
+      const promoted = await promote('shared-a', shared.did)
+      assert.equal(promoted.statusCode, 204, promoted.payload)
+      assert.equal((await readAs('shared-a', shared.key)).statusCode, 200)
+    })
+
+    it('refuses to promote a Space whose registration would then pull the log Collection too', async () => {
+      const refused = await promote('shared-b', shared.did)
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
+      const [problem] = refused.json().errors
+      assert.equal(problem.pointer, '#/controller')
+      assert.match(problem.detail, /Collection "id"/)
+      assert.match(problem.detail, /Space "shared-a"/)
+
+      // The Space stays under its did:key.
+      const read = await call({ server: mirror, path: '/space/shared-b/meta' })
+      assert.equal(read.statusCode, 200, read.payload)
+      assert.equal(read.json().controller, alice.did)
+      // And the DID still resolves from the one copy.
+      assert.equal((await readAs('shared-a', shared.key)).statusCode, 200)
+    })
+
+    it('promotes a second Space that holds no registration of the peer Space', async () => {
+      await createSpace(mirror, 'shared-c')
+      const promoted = await promote('shared-c', shared.did)
+      assert.equal(promoted.statusCode, 204, promoted.payload)
+      assert.equal((await readAs('shared-c', shared.key)).statusCode, 200)
+    })
+
+    it('refuses a registration by a promoted Space, which always pulls its log Collection', async () => {
+      // The registration lists `notes` alone, but under the promoted
+      // controller it selects `id` too, which `shared-a` already pulls.
+      const refused = await postRegistration({
+        toSpaceId: 'shared-c',
+        fromSpaceId: 'shared',
+        collections: ['notes'],
+        signer: shared.key.signer()
+      })
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
+      assert.match(refused.json().errors[0].detail, /Space "shared-a"/)
+      assert.equal((await readAs('shared-a', shared.key)).statusCode, 200)
+      assert.equal((await readAs('shared-c', shared.key)).statusCode, 200)
+    })
+
+    it('promotes a Space whose registrations pull another peer Space', async () => {
+      await createSpace(origin, 'side')
+      await createCollection(origin, 'side', 'notes')
+      await createSpace(mirror, 'shared-d')
+      await register({
+        toSpaceId: 'shared-d',
+        fromSpaceId: 'side',
+        collections: ['notes']
+      })
+      const promoted = await promote('shared-d', shared.did)
+      assert.equal(promoted.statusCode, 204, promoted.payload)
+      assert.equal((await readAs('shared-d', shared.key)).statusCode, 200)
+    })
+  })
+
+  describe('a controller change that would leave a Space with no copy', () => {
+    /**
+     * A DID hosted in Collection `id` of the origin's Space `held`.
+     */
+    let held: Awaited<ReturnType<typeof mintOnOrigin>>
+
+    beforeAll(async () => {
+      await createSpace(origin, 'held')
+      await createCollection(origin, 'held', 'id')
+      await createCollection(origin, 'held', 'notes')
+      held = await mintOnOrigin('held')
+
+      // Space `held-x` registers the peer Space twice: `log` pulls the log
+      // Collection by name, `origin` only `notes`.
+      await createSpace(mirror, 'held-x')
+      await register({
+        toSpaceId: 'held-x',
+        fromSpaceId: 'held',
+        replicaId: 'log',
+        collections: ['id']
+      })
+      await register({
+        toSpaceId: 'held-x',
+        fromSpaceId: 'held',
+        collections: ['notes']
+      })
+      await mirror.fastify.replication.pullNow({
+        spaceId: 'held-x',
+        replicaId: 'log'
+      })
+      const promoted = await promote('held-x', held.did)
+      assert.equal(promoted.statusCode, 204, promoted.payload)
+
+      // Under the promoted controller the `origin` registration selects the
+      // log Collection too, so the registration that named it can go. The
+      // copy is then held through the controller alone.
+      const removed = await call({
+        server: mirror,
+        path: '/space/held-x/replicas/log',
+        method: 'DELETE',
+        signer: held.key.signer()
+      })
+      assert.equal(removed.statusCode, 204, removed.payload)
+      assert.equal((await readAs('held-x', held.key)).statusCode, 200)
+
+      // A second Space is promoted to the DID through that copy.
+      await createSpace(mirror, 'held-y')
+      const second = await promote('held-y', held.did)
+      assert.equal(second.statusCode, 204, second.payload)
+      assert.equal((await readAs('held-y', held.key)).statusCode, 200)
+    })
+
+    it('refuses to move the Space back to a did:key', async () => {
+      const refused = await promote('held-x', alice.did, {
+        signer: held.key.signer()
+      })
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
+      const [problem] = refused.json().errors
+      assert.equal(problem.pointer, '#/controller')
+      assert.match(problem.detail, /Space "held-y"/)
+      assert.equal((await readAs('held-x', held.key)).statusCode, 200)
+      assert.equal((await readAs('held-y', held.key)).statusCode, 200)
+    })
+
+    it('refuses to move the Space to a DID hosted elsewhere', async () => {
+      const refused = await promote('held-x', account.did, {
+        signer: held.key.signer()
+      })
+      assert.equal(refused.statusCode, 409, refused.payload)
+      assert.equal(refused.json().type, ProblemTypes.REPLICA_REFUSED)
+      assert.match(refused.json().errors[0].detail, /Space "held-y"/)
+      assert.equal((await readAs('held-y', held.key)).statusCode, 200)
+    })
+
+    it('moves the Space once the other Space changed its controller', async () => {
+      const first = await promote('held-y', alice.did, {
+        signer: held.key.signer()
+      })
+      assert.equal(first.statusCode, 204, first.payload)
+      const second = await promote('held-x', alice.did, {
+        signer: held.key.signer()
+      })
+      assert.equal(second.statusCode, 204, second.payload)
+      assert.equal((await readAs('held-x', held.key)).statusCode, 404)
+      const read = await call({ server: mirror, path: '/space/held-x/meta' })
+      assert.equal(read.statusCode, 200, read.payload)
+      assert.equal(read.json().controller, alice.did)
+    })
+  })
+
   describe('with no registration that maps the DID', () => {
     it('refuses a DID on the origin whose Space no registration names', async () => {
       await createSpace(origin, 'other')

@@ -11,7 +11,10 @@ import { SPACE_METADATA_WRITE_ATTEMPTS } from '../config.default.js'
 import { buildLinkset } from '../policy.js'
 import { fetchSpaceAndAuthorize, fetchSpaceAndVerify } from './spaceContext.js'
 import { invalidateSpaceMetadata } from '../lib/spaceMetadataCache.js'
-import { invalidateReplicaIndex } from '../lib/webvhLogLocation.js'
+import {
+  controllerChangeConflict,
+  invalidateReplicaIndex
+} from '../lib/webvhLogLocation.js'
 import { invalidateSpacePolicies } from '../lib/policyCache.js'
 import { invalidateSpaceGovernedDescriptors } from '../lib/governedDescriptorsCache.js'
 import {
@@ -77,6 +80,7 @@ import {
   InvalidRequestBodyError,
   IdConflictError,
   PreconditionFailedError,
+  ReplicaRefusedError,
   SpaceControllerMismatchError,
   UnresolvableControllerError,
   SpaceNotFoundError,
@@ -1014,6 +1018,40 @@ async function authorizeAndWriteSpaceMetadata({
         did: body.controller,
         requestName: 'Update Space',
         cause: err as Error
+      })
+    }
+  }
+  // A controller change moves which peer Collections this Space's own
+  // registrations pull; `controllerChangeConflict` says what that breaks.
+  if (
+    existingSpaceMetadata !== undefined &&
+    body.controller !== existingSpaceMetadata.controller
+  ) {
+    const conflict = await controllerChangeConflict({
+      storage,
+      serverUrl,
+      spaceId,
+      controller: body.controller,
+      currentController: existingSpaceMetadata.controller
+    })
+    if (conflict !== undefined) {
+      const detail =
+        conflict.kind === 'second-holder'
+          ? 'Under this controller, a replica registration of Space ' +
+            `"${spaceId}" would pull Collection "${conflict.collectionId}" ` +
+            `of the peer Space "${conflict.fromSpace}", which Space ` +
+            `"${conflict.holder}" on this server already replicates. A ` +
+            'did:webvh hosted in a Collection two local Spaces replicate ' +
+            'resolves from neither copy.'
+          : `Space "${conflict.spaceId}" is controlled by "${conflict.did}", ` +
+            'which resolves only from the log a replica registration of ' +
+            `Space "${spaceId}" pulls under its current controller. Change ` +
+            "that Space's controller first, or register the log's " +
+            'Collection on this Space by name before changing its controller.'
+      throw new ReplicaRefusedError({
+        title: 'The controller change was refused.',
+        pointer: '#/controller',
+        detail
       })
     }
   }

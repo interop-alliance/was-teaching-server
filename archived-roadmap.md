@@ -5659,3 +5659,41 @@ segment answers 405 for a method it lacks. A path under such a segment is still
 matched by the parametric Resource route, whose reserved-id guard refuses it as
 a 409 about ids. The refusal reads no ids and must not depend on whether the
 Space exists. The default Fastify 404 body on the unmatched cases is WAS-142's.
+
+### WAS-206: [M] Two local Spaces registering one source leave its replicated DID unresolvable
+
+- status: done (2026-10-05)
+- priority: medium
+- labels: replication, webvh, registration, lockout
+- discovered-from: WAS-177 (2026-10-04)
+- acceptance:
+  - [x] A registration whose `fromSpace` another local Space already registers,
+        and which would pull the same controller-log Collection, is refused with
+        `replica-refused`, or the resolver gains a safe rule for choosing a copy
+  - [x] Update Space to a peer-hosted `did:webvh` is refused when the promoted
+        Space's own registrations would, under the new controller, select the
+        log Collection another local Space already maps
+  - [x] A test shows no sequence of registrations and promotions leaves a Space
+        whose controller no longer resolves
+
+Context: a peer-hosted `did:webvh` resolves from storage only when exactly one
+local Space maps it through a registration. With two, it resolves from neither
+copy, since either could be an older prefix that still lists a retired key. If
+that DID controls both Spaces, nobody can then remove either registration or
+either Space, and there is no break-glass. Refusing the second registration
+changes registration behaviour, so it was left out of the resolver change.
+
+Refined 2026-10-05: Register Replica refuses the second registration since
+v0.42.0, so the first line is met. A probe found the sequence the second line
+asks about still open, through a promotion rather than a registration. Space A
+registers source S pulling the log Collection C. Space B, under a `did:key`,
+registers S pulling only another Collection, which is admitted since the
+selections are disjoint. B is then promoted to the DID hosted at S/C, which
+resolves through A's copy. The selection rule adds the controller's log
+Collection to B's registration once B's controller is that DID, so B becomes a
+second holder of C and the DID resolves from neither copy. B's new controller
+can no longer invoke, so B cannot remove its registration, and when A is under
+the same DID neither Space can be repaired. The promotion is the step to guard:
+it already resolves the DID before storing it, and can refuse when the promoted
+Space's own registrations would select the log Collection another local Space
+maps.

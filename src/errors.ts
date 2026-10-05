@@ -340,8 +340,10 @@ export class UnsupportedBackendError extends ProblemError {
  * local Space that already replicates the same peer Collection, or the
  * `server` Space. Also the removal of a registration refused because a
  * Space's `did:webvh` controller resolves only through it, which passes its
- * own `title` and no `pointer`. Only a caller already authorized as the Space
- * controller sees it.
+ * own `title` and no `pointer`. Also an Update Space whose controller change
+ * would leave a peer-hosted `did:webvh` with two local copies of its log or
+ * none, which passes its own `title` and the `#/controller` pointer. Only a
+ * caller already authorized as the Space controller sees it.
  * @param options {object}
  * @param options.detail {string}   the cause, for a person to read
  * @param [options.title] {string}   defaults to the registration refusal's
