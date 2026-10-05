@@ -19,7 +19,7 @@ on:
           Wipe the staging data volume before deploying. The server then starts
           over an empty data directory.
         type: boolean
-        default: false
+        default: true
 
 concurrency:
   group: fly-deploy-staging
