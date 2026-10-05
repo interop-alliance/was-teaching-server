@@ -20,9 +20,9 @@ import type {
 /**
  * The on-disk shape of a Resource's metadata sidecar (`.meta.<resourceId>.json`,
  * see `metaSidecarFileName`). Only the server-managed timestamps, the write
- * stamps, and the user-writable `custom` object are persisted; `contentType`
- * / `size` are always derived from the stored representation, never
- * duplicated here.
+ * stamps, the representation's `contentType`, and the user-writable `custom`
+ * object are persisted; `size` is always derived from the stored
+ * representation, never duplicated here.
  *
  * `createdBy` is the DID of whoever created the Resource (spec "Resource
  * Metadata Data Model"): an OPTIONAL server-managed property, absent when no
@@ -54,11 +54,15 @@ import type {
  * representation but keeps the sidecar so the change feed (replication) still
  * surfaces it. A
  * tombstone has no `r.<id>...` content file, so it is invisible to every normal
- * read path (which gates on the content file via `#findFile`); only the
- * (future) change feed reads it. `contentType` records the representation's
- * last-known content-type, which the content filename no longer carries once it
- * is gone -- present only on a tombstone (a live Resource derives its
- * content-type from the filename).
+ * read path; only the change feed reads it.
+ *
+ * `contentType` is the content-type the representation's filename was built
+ * from (`fileNameFor`), recorded by every write that leaves a live Resource or
+ * chunk, from the filename it wrote and never from the request, so a read can
+ * rebuild the exact filename from it instead of listing the directory. The
+ * filename stays authoritative: the write sets both in the same critical
+ * section. On a tombstone it is the deleted representation's last-known
+ * content-type, which the change feed reports.
  *
  * `feedPosition` is the Resource's position in its Collection's changes feed:
  * each content write, metadata write, soft delete, and import of the Resource
@@ -104,7 +108,7 @@ export interface MetaSidecar {
   // uses it in any authorization decision.
   writerId?: string
   deleted?: boolean
-  contentType?: string
+  contentType: string
   feedPosition?: number
 }
 

@@ -6131,7 +6131,10 @@ export class PostgresBackend implements StorageBackend {
       ...(row.epoch !== null && { epoch: row.epoch }),
       // The client-declared writer-attribution label (spec "Writer
       // attribution") rides the sidecar on the same terms.
-      ...(row.writer_id !== null && { writerId: row.writer_id })
+      ...(row.writer_id !== null && { writerId: row.writer_id }),
+      // The representation's content-type, as the filesystem writer records
+      // it on every live sidecar.
+      contentType: row.content_type
     }
   }
 
@@ -7153,7 +7156,8 @@ export class PostgresBackend implements StorageBackend {
       restamped = {
         createdAt: stamp.updatedAt,
         ...stamp,
-        generation: newGeneration()
+        generation: newGeneration(),
+        contentType
       }
     } else {
       restamped = await restampImportedSidecar({ sidecar, mint })
