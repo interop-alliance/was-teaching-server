@@ -661,6 +661,41 @@ describe('Governing history log API (meta/log)', () => {
       )
       assert.equal(err.response.status, 404)
     })
+
+    it('[signed] governing a Collection that declares plaintext is 409 encryption-immutable, and the Collection stays writable', async () => {
+      const collectionId = await freshCollection({
+        plaintext: { indexes: ['kind'] }
+      })
+      const response = await putLog({
+        collectionId,
+        body: genesisLine(oneEpoch) + '\n',
+        headers: { 'if-none-match': '*' }
+      })
+      assert.equal(response.status, 409)
+      assert.match(response.problem.type, /#encryption-immutable$/)
+      assert.equal(response.problem.errors[0].pointer, '#/plaintext')
+      const err = await rejection(
+        alice.was.request({ url: logUrl(collectionId), method: 'GET' })
+      )
+      assert.equal(err.response.status, 404)
+      // The exclusion rule never engages: a later rename still lands.
+      const renamed = await alice.was.request({
+        url: metaUrl(collectionId),
+        method: 'PUT',
+        json: {
+          id: collectionId,
+          name: 'Renamed plaintext',
+          plaintext: { indexes: ['kind'] }
+        }
+      })
+      assert.equal(renamed.status, 204)
+      const described = await alice.was.request({
+        url: metaUrl(collectionId),
+        method: 'GET'
+      })
+      assert.equal(described.data.name, 'Renamed plaintext')
+      assert.deepEqual(described.data.plaintext, { indexes: ['kind'] })
+    })
   })
 
   describe('a sub-resource, not a Resource', () => {

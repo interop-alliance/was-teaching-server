@@ -39,7 +39,6 @@ Chains:
 
 Ready:
 
-- WAS-128 [H] Refuse a governing log on a Collection that declares `plaintext`
 - WAS-92 [M] Filesystem GET can observe a Resource with no validator mid-write
 - WAS-132 [M] A present but unparseable `If-None-Match` on a write is a 400
 - WAS-133 [M] The Resource `/meta` validator covers every member it serves
@@ -626,29 +625,6 @@ remains here is the rest of the helmet header set.
 A wrong answer, a torn write, or two backends that disagree. Nothing here widens
 what a caller may do; it is the server answering incorrectly for a caller who is
 allowed to ask.
-
-### WAS-128: [H] Refuse a governing log on a Collection that declares `plaintext`
-
-- status: todo
-- priority: high
-- labels: governed-history-logs, encryption, consistency
-- discovered-from: whole-codebase review (2026-09-17), verified
-- acceptance:
-  - [ ] The guarded create in `CollectionRequest.putLog`'s `assertTransition`
-        refuses when the stored Metadata object carries `plaintext`, on the same
-        terms as a stored `encryption`
-  - [ ] A test declares `plaintext.indexes`, attempts the log create, and
-        asserts the refusal and that a later `PUT /meta` rename still works
-  - [ ] `test/governed-log-api.test.ts` covers both orders (it covers only "add
-        `plaintext` to a governed Collection" today)
-
-The declaration check reads `collectionMetadata.encryption` only. After the log
-lands, the served object carries both `plaintext` and the derived `encryption`,
-and every later `PUT /meta`, including a bare rename or a `custom` write, is
-refused 400 by the exclusion rule. `plaintext` has no removal path and the log
-is append-only, so the Collection's Metadata object is permanently unwritable;
-the only remedy is Delete Collection. `POST .../query` answers 501 on such a
-Collection while `GET ?filter[...]` still runs the equality machinery.
 
 ### WAS-92: [M] Filesystem GET can observe a Resource with no validator mid-write
 

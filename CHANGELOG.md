@@ -13,6 +13,10 @@
   or lists under `capabilityDelegation` alone, is refused with `replica-refused`
   (409).
 - Silence request logging for the `/health` probe.
+- The guarded create of a governing history log is refused with
+  `encryption-immutable` (409) on a Collection whose Metadata object carries a
+  `plaintext` member. Before, the log landed and every later Metadata write was
+  refused by the `plaintext` / `encryption` exclusion rule.
 - History-log verification passes no witness proofs on any path. A `did:webvh`
   log that declares witnesses is refused, and the server never fetches
   `did-witness.json`. Before, the self-hosted, append and import paths let the
