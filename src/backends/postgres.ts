@@ -6561,8 +6561,7 @@ export class PostgresBackend implements StorageBackend {
       spaceMetadata: archivedSpaceMetadata,
       spacePolicy,
       collections,
-      collectionTombstones,
-      revocations
+      collectionTombstones
     },
     provenance,
     restoreSpaceMetadata = false
@@ -6668,6 +6667,16 @@ export class PostgresBackend implements StorageBackend {
         collections,
         existingCollection: collectionId =>
           metadataById.get(collectionId) ?? undefined,
+        // Read per Collection the archive carries Resources into, since a
+        // governing log is append-only and grows.
+        existingCollectionLog: async collectionId => {
+          const { rows } = await client.query<{ log_body: string | null }>(
+            `SELECT log_body FROM collections
+              WHERE space_id = $1 AND collection_id = $2`,
+            [spaceId, collectionId]
+          )
+          return rows[0]?.log_body ?? undefined
+        },
         assertUploadSize: uploadBytes => {
           if (uploadBytes > maxUploadBytes) {
             throw new PayloadTooLargeError({
@@ -7023,32 +7032,11 @@ export class PostgresBackend implements StorageBackend {
         )
       }
 
-      // Restore the archive's Space-scoped zcap revocations under this
-      // Space's scope: a capability revoked before the export must stay
-      // revoked after an import (a backup/restore round-trip must not
-      // resurrect revoked access). `ON CONFLICT DO NOTHING` gives the
-      // skip-not-overwrite merge per record; a record past its GC horizon is
-      // dropped (the capability itself has expired; `isRevoked` would prune
-      // it). Transactional like the rest of the apply loop.
-      const now = Date.now()
-      for (const record of revocations) {
-        if (record.meta.expires && Date.parse(record.meta.expires) <= now) {
-          continue
-        }
-        await client.query(
-          `INSERT INTO space_revocations
-             (space_id, delegator, capability_id, record, expires)
-           VALUES ($1, $2, $3, $4::jsonb, $5)
-           ON CONFLICT DO NOTHING`,
-          [
-            spaceId,
-            record.meta.delegator,
-            record.capability.id,
-            JSON.stringify(record),
-            record.meta.expires ?? null
-          ]
-        )
-      }
+      // The archive's Space-scoped zcap revocations are not part of the
+      // plan. The handler verifies and installs them through
+      // `insertRevocation` once this transaction has committed, since a chain
+      // may carry a link signed by a `did:webvh` whose log the archive
+      // restores (`lib/importRevocations.ts`).
 
       return stats
     })

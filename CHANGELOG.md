@@ -40,6 +40,30 @@
   Collection directory the file is stored under, and one naming another
   Collection, or a file that is not a JSON object, refuses the import as
   `invalid-import` (400). Before, the archived object was stored verbatim.
+- Import Space installs an archived zcap revocation record only when its
+  capability chain verifies under the destination Space and the import's own
+  invocation could have submitted it on the revocation route (the controller's
+  root invocation, an invoker the chain names, or a delegated `POST` grant that
+  reaches the revocation URL). The record's `meta` is rebuilt server-side. A
+  record that fails either check is skipped with a `warn` line, an expired one
+  silently. The records are installed after the rest of the archive, so a chain
+  signed by a `did:webvh` whose log the archive restores verifies. An archive
+  with more than 1000 revocation records is `invalid-import` (400). Before, any
+  archived `(delegator, capabilityId)` record was installed as the archive
+  carried it.
+- Import Space applies to an archived Collection Metadata object the shape check
+  a Collection Metadata write applies, through the same parser (`name`,
+  `encryption`, `plaintext`, `generator`, `revisions`, `epoch`, and the
+  `plaintext`/`encryption` exclusion), requires a non-empty string `type` of
+  each archived policy, and refuses a Collection Metadata `encryption` or
+  `plaintext` beside an archived governing log. Each break is `invalid-import`
+  (400) before anything is written.
+- The import's encrypted-Collection envelope check derives the effective
+  `encryption` from the governing log's head first, as a live write does, so an
+  import into or of a log-governed Collection checks its Resources. Before, a
+  governed Collection's Resources were not checked.
+- A server-side fault met while verifying a submitted revocation's chain
+  surfaces as its 5xx rather than as a 400 `invalid-revocation`.
 
 ## 0.42.1 - 2026-10-05
 

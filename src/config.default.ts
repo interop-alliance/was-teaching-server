@@ -1374,5 +1374,13 @@ export function parseWebvhBlocklist(
   return entries
 }
 
+/**
+ * Max number of Space-scoped zcap revocation records Import Space accepts in
+ * one archive. Each record costs the import a full capability-chain
+ * verification before it is installed, so an archive past this count is
+ * refused as `invalid-import` (400) before anything is written.
+ */
+export const IMPORT_MAX_REVOCATIONS = 1_000
+
 export const SPEC_URL =
   'https://digitalcredentials.github.io/wallet-attached-storage-spec/'

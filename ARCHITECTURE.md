@@ -997,6 +997,65 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   archived stamps are read for this comparison only: the importing backend
   re-stamps every record it writes with its own clock and origin id, and keeps
   each record's archived generation.
+- **`src/lib/importRevocations.ts`** -- the Space-scoped zcap revocation records
+  an archive carries. Import Space installs them last, one by one through
+  `insertRevocation`, after the backend's `importSpace` has written the rest of
+  the archive. A chain may carry a link signed by a `did:webvh` whose history
+  log the archive itself restores, so a chain verified before that write would
+  not resolve. Each record passes two checks. Its capability chain verifies
+  under the destination Space, through the same `verifyRevocationChain` the
+  revocation route runs. And the import's own invocation could have submitted
+  that revocation on the route, under the route's dual-root rule. A root
+  invocation is the Space controller's and may revoke anything delegated from
+  the Space. An invoker the verified chain names as a controller may revoke its
+  own grant or one below it. A delegated capability may when its target reaches
+  the revocation URL by the zcap library's attenuation rule with `POST` among
+  its actions, which a `POST` grant on the whole Space does and a `POST` grant
+  on the import URL alone does not. The invocation's facts come off the verified
+  result (`verifiedInvocation` in `zcap.ts`), not off the header. The record's
+  `meta` is rebuilt server-side: the delegator from the proof, the destination
+  Space's URL as `rootTarget`, `created` now, `expires` the capability's plus
+  one day (the shared `revocationRecordFor`). A record that fails either check,
+  or names a root capability, is skipped with one `warn` line and the import
+  goes on. A revocation is a fact about a chain rooted in a Space URL. A chain
+  that does not root in the destination Space could not be invoked there. An
+  unverifiable record is also what a forged archive would carry, and there is no
+  un-revoke. A record whose capability has already expired is skipped with no
+  log line and no verification, since the chain could not verify and the record
+  would reach its GC horizon within a day. So is a second record of one
+  capability, and one the store already holds. Any other error the verifier
+  raises over an archived record is a skip too. A server-side fault met while
+  verifying or storing is thrown as its 5xx. The plan builder reads only each
+  record's `capability` (`archivedRevocations`), and refuses an archive carrying
+  more than `IMPORT_MAX_REVOCATIONS` records as `invalid-import` (400), since
+  each one costs a chain verification. Before this, a holder of a Space-subtree
+  `POST` grant could install arbitrary `(delegator, capabilityId)` records. A
+  revocation whose chain's first link was signed by a `did:webvh` controller is
+  restored only into a Space that already carries that controller, since the
+  chain roots in the destination's controller. A restore of a promoted Space
+  therefore puts the log back and promotes the Space before it imports.
+
+  The plan builder (`lib/importTar.ts`) also applies to an archived Collection
+  Metadata object the shape check a Collection Metadata write applies, through
+  the same parser (`parseCollectionMetadataBody` in
+  `lib/collectionMetadataBody.ts`): `name`, `encryption`, `plaintext`,
+  `generator`, `revisions`, `epoch`, and then the `plaintext` and `encryption`
+  exclusion. A member added to the live write's shape check is checked on import
+  too. The `revisions` transition against the archived log is checked apart
+  (below). An archived policy file must name a non-empty string `type`, as
+  Update Policy requires. A Collection whose archive carries a governing log may
+  carry neither `encryption` nor `plaintext` on its Metadata object, the rule a
+  log's guarded create applies. A break of any of these refuses the import as
+  `invalid-import` (400) before anything is written. The envelope check over the
+  archived Resources derives the effective `encryption` the way
+  `getCollectionOrThrow` does, the governing log's head first: the destination
+  Collection's stored log, else its Metadata object, where the Collection
+  exists, and the archived log's head, else the archived object, where the
+  import creates it. A stored log is read through `parseStoredGoverningLog`, the
+  reader `deriveGovernedDescriptors` uses, so a log that does not parse is a
+  `StorageError` (500) on both paths. So an import into or of a log-governed
+  Collection checks its Resources as a live write is checked.
+
 - **`src/storage.ts`** — supplies `defaultBackend()`, which opens the
   `FileSystemBackend` (rooted at `data/`) that `createApp()` uses when no
   backend is injected. The active backend is injected via

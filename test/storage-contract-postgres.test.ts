@@ -153,12 +153,12 @@ if (!connectionString) {
       })
       await backend.writePolicy({
         spaceId,
-        policy: { level: 'space' } as never
+        policy: { type: 'Marker', level: 'space' } as never
       })
       await backend.writePolicy({
         spaceId,
         collectionId: 'docs',
-        policy: { level: 'collection' } as never
+        policy: { type: 'Marker', level: 'collection' } as never
       })
     }
 

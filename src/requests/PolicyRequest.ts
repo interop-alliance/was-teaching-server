@@ -18,6 +18,7 @@ import { notModifiedReply } from './notModified.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { policyPath } from '../lib/paths.js'
 import { invalidatePolicy } from '../lib/policyCache.js'
+import { hasPolicyType } from '../lib/policyRecord.js'
 import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
 import { parseIncludeSections } from '../lib/pagination.js'
 import { InvalidPolicyError, PolicyNotFoundError } from '../errors.js'
@@ -125,14 +126,8 @@ export class PolicyRequest {
     assertValidIds({ spaceId, collectionId, resourceId }, { requestName })
 
     // A policy document must be a JSON object carrying a non-empty string
-    // `type`. The set of recognized types is intentionally open (unknown types
-    // are stored and fail-closed at evaluation time, see policy.ts), so this is
-    // a shape check only -- it does not gate on a known-types allowlist.
-    const policyType =
-      typeof body === 'object' && body !== null
-        ? (body as Record<string, unknown>).type
-        : undefined
-    if (typeof policyType !== 'string' || policyType.trim() === '') {
+    // `type` (`hasPolicyType`, a shape check only).
+    if (!hasPolicyType(body)) {
       throw new InvalidPolicyError({ requestName })
     }
     const policy = body as PolicyDocument

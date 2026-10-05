@@ -18,7 +18,6 @@ Ready:
   attenuation)
 - WAS-61 [H] Separate `/policy` control from data writes (exposure test +
   enforcement)
-- WAS-126 [H] Import Space validates what it installs
 - WAS-127 [H] A Resource's access-control policy dies with the Resource
 - WAS-108 [M] Container rule for the policy and backend-registration writes
   (blocks 1)
@@ -314,46 +313,6 @@ Note 2026-09-17: the exposure test's premise is confirmed (a delegated data
 grant on the Collection wrote `PublicCanRead` and an anonymous read of the
 Collection's Resource then answered 200). The other half of policy hygiene, a
 Resource-level policy surviving the Resource's deletion, is WAS-127.
-
-### WAS-126: [H] Import Space validates what it installs
-
-- status: todo
-- priority: high
-- labels: import, security, consistency
-- discovered-from: whole-codebase review (2026-09-17)
-- touches:
-  - `src/lib/importTar.ts`, `src/backends/filesystem.ts` (`importSpace`,
-    `#persistCollection`), `src/backends/postgres.ts`,
-    `src/lib/metadataWrite.ts`, `src/requests/SpaceRequest.ts` (`import`)
-  - WAS-68 covers the archived Collection `id`; this item covers the rest
-- acceptance:
-  - [ ] Validators (`_generation` / `_version`) from the archive are never
-        stored; the import path mints a fresh generation (and starts the version
-        at 1, or keeps the archived version if a reason to is found)
-  - [ ] Revocation records are installed only after `verifyRevocationChain`
-        passes for each, or the archive's revocations are ignored with a
-        documented reason; today a Space-subtree POST grant installs arbitrary
-        `(delegator, capabilityId)` records and there is no un-revoke
-  - [ ] The effective `encryption` for the encrypted-write check is derived the
-        way `getCollectionOrThrow` derives it (log head first), so a
-        log-governed Collection's Resources are checked on import
-  - [ ] An archive carrying both an `encryption` member and a governing log for
-        one Collection, or `plaintext` plus a log, is refused
-  - [ ] `plaintext.indexes`, each policy document, and the history log bytes
-        pass the same validation the live write paths apply
-        (`assertSupportedPlaintext`, `PolicyRequest.put`'s shape check, JSON
-        parse) before anything is written
-  - [ ] Tests for each refusal on both backends
-
-Each of these lets a tarball put a Collection into a state no live write can
-reach and no live write can repair. A `_version` of 2^53 freezes the Collection
-Metadata `ETag` (every `+1` returns the same number), so conditional reads are
-304 forever and every `If-Match` compare-and-swap succeeds. A re-imported
-hard-deleted Collection resurrects its old generation, so a client's cached
-validator matches different bytes. A `null` index entry makes `normalizeIndexes`
-throw on every Resource write and on the repair `PUT /meta`. A non-JSON log
-makes every Metadata load 500. A falsy policy document falls through the `||`
-chain in `policy.ts` to the broader level.
 
 ### WAS-127: [H] A Resource's access-control policy dies with the Resource
 

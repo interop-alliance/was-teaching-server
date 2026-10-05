@@ -12,11 +12,13 @@ import YAML from 'yaml'
 import * as tar from 'tar-stream'
 
 import {
+  archivedRevocations,
   validateManifest,
   buildImportPlan,
   extractTarEntries,
   type TarEntry
 } from '../src/lib/importTar.js'
+import { IMPORT_MAX_REVOCATIONS } from '../src/config.default.js'
 import {
   InvalidImportError,
   InvalidCollectionIdError,
@@ -363,11 +365,13 @@ describe('buildImportPlan', () => {
     )
   })
 
-  it('carries top-level revocation records into the plan (and none when absent)', () => {
+  it('reads the capabilities of top-level revocation records (and none when absent)', () => {
     // An archive without a `revocations/` dir (e.g. from an older server)
-    // plans an empty list.
-    assert.deepStrictEqual(buildImportPlan(validSpaceEntries()).revocations, [])
+    // yields an empty list.
+    assert.deepStrictEqual(archivedRevocations(validSpaceEntries()), [])
 
+    // Only the capability is read. The record's `meta` is the exporting
+    // server's and is rebuilt on import, so a record without one passes.
     const record = {
       capability: { id: 'urn:zcap:delegated-1' },
       meta: {
@@ -376,32 +380,55 @@ describe('buildImportPlan', () => {
         created: '2026-07-01T00:00:00.000Z'
       }
     }
+    const metaless = { capability: { id: 'urn:zcap:delegated-2' } }
     const entries = validSpaceEntries()
     entries.set('revocations/', { type: 'directory' })
     entries.set('revocations/abc123.json', fileEntry(JSON.stringify(record)))
-    assert.deepStrictEqual(buildImportPlan(entries).revocations, [record])
+    entries.set('revocations/def456.json', fileEntry(JSON.stringify(metaless)))
+    assert.deepStrictEqual(archivedRevocations(entries), [
+      record.capability,
+      metaless.capability
+    ])
   })
 
   it('throws InvalidImportError on a malformed revocation record', () => {
     const badJson = validSpaceEntries()
     badJson.set('revocations/broken.json', fileEntry('{not json'))
     assert.throws(
-      () => buildImportPlan(badJson),
+      () => archivedRevocations(badJson),
       (err: Error) =>
         err instanceof InvalidImportError && /not valid JSON/i.test(err.message)
     )
 
-    // Parses, but lacks the `(capability.id, meta.delegator)` unique key.
-    const badShape = validSpaceEntries()
-    badShape.set(
-      'revocations/keyless.json',
-      fileEntry(JSON.stringify({ capability: {}, meta: {} }))
-    )
+    // Parses, but names no capability id.
+    for (const body of [{ capability: {}, meta: {} }, { meta: {} }, []]) {
+      const badShape = validSpaceEntries()
+      badShape.set('revocations/keyless.json', fileEntry(JSON.stringify(body)))
+      assert.throws(
+        () => archivedRevocations(badShape),
+        (err: Error) =>
+          err instanceof InvalidImportError && /malformed/i.test(err.message),
+        JSON.stringify(body)
+      )
+    }
+  })
+
+  it('throws InvalidImportError on more revocation records than the import verifies', () => {
+    const entries = validSpaceEntries()
+    for (let index = 0; index <= IMPORT_MAX_REVOCATIONS; index++) {
+      entries.set(
+        `revocations/${index}.json`,
+        fileEntry(JSON.stringify({ capability: { id: `urn:zcap:${index}` } }))
+      )
+    }
     assert.throws(
-      () => buildImportPlan(badShape),
+      () => archivedRevocations(entries),
       (err: Error) =>
-        err instanceof InvalidImportError && /malformed/i.test(err.message)
+        err instanceof InvalidImportError &&
+        /more than \d+ revocation records/.test(err.message)
     )
+    entries.delete(`revocations/${IMPORT_MAX_REVOCATIONS}.json`)
+    assert.equal(archivedRevocations(entries).length, IMPORT_MAX_REVOCATIONS)
   })
 
   /** A stored-log record whose single line carries a supported descriptor. */
@@ -441,6 +468,77 @@ describe('buildImportPlan', () => {
       colA!.collectionLog?.toString('utf8'),
       logRecord(genesis + '\n')
     )
+  })
+
+  it('throws InvalidImportError on a Collection Metadata `encryption` or `plaintext` beside a governing log', () => {
+    for (const member of [
+      { encryption: { scheme: 'edv' } },
+      { plaintext: { indexes: ['a'] } }
+    ]) {
+      const entries = validSpaceEntries()
+      entries.set(
+        'space/S1/colA/.collection.colA.json',
+        fileEntry(
+          JSON.stringify({ id: 'colA', type: ['Collection'], ...member })
+        )
+      )
+      entries.set(
+        'space/S1/colA/.collectionlog.colA.json',
+        fileEntry(logRecord(genesis + '\n'))
+      )
+      assert.throws(
+        () => buildImportPlan(entries),
+        (err: unknown) =>
+          err instanceof InvalidImportError &&
+          /beside a governing history log/.test(err.detail ?? '')
+      )
+    }
+  })
+
+  it('throws InvalidImportError on a Collection Metadata member a write would refuse', () => {
+    const malformed: Array<Record<string, unknown>> = [
+      { name: 7 },
+      { encryption: { scheme: 'no-such-scheme' } },
+      { plaintext: { indexes: [null] } },
+      { plaintext: { indexes: ['a'] }, encryption: { scheme: 'edv' } },
+      { generator: 'not-an-object' },
+      { epoch: '' }
+    ]
+    for (const members of malformed) {
+      const entries = validSpaceEntries()
+      entries.set(
+        'space/S1/colA/.collection.colA.json',
+        fileEntry(
+          JSON.stringify({ id: 'colA', type: ['Collection'], ...members })
+        )
+      )
+      assert.throws(
+        () => buildImportPlan(entries),
+        (err: unknown) =>
+          err instanceof InvalidImportError &&
+          /Collection Metadata file of Collection 'colA'/.test(
+            err.detail ?? ''
+          ),
+        JSON.stringify(members)
+      )
+    }
+  })
+
+  it('throws InvalidImportError on a policy file with no non-empty string `type`', () => {
+    for (const policy of [{}, { type: '' }, { type: 3 }, { type: ' ' }]) {
+      const entries = validSpaceEntries()
+      entries.set(
+        'space/S1/colA/.collection.policy.json',
+        fileEntry(JSON.stringify(policy))
+      )
+      assert.throws(
+        () => buildImportPlan(entries),
+        (err: unknown) =>
+          err instanceof InvalidImportError &&
+          /no non-empty string 'type'/.test(err.detail ?? ''),
+        JSON.stringify(policy)
+      )
+    }
   })
 
   it('throws InvalidImportError on a governing history log the read path could not parse', () => {
@@ -500,7 +598,9 @@ describe('buildImportPlan', () => {
         () => buildImportPlan(withCollectionMetadata({ revisions })),
         (err: Error) =>
           err instanceof InvalidImportError &&
-          /'revisions' descriptor of Collection 'colA'/.test(err.message),
+          /Collection Metadata file of Collection 'colA' is malformed/.test(
+            err.message
+          ),
         `revisions ${JSON.stringify(revisions)}`
       )
     }

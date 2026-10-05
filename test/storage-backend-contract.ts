@@ -28,8 +28,12 @@ import { compareStamps, stampOf } from '../src/lib/hlc.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
 import { loadExportAttestor } from '../src/lib/exportProvenance.js'
 import type { ExportAttestor } from '../src/lib/exportProvenance.js'
+import { verifyRevocationChain } from '../src/zcap.js'
+import { revocationRecordFor } from '../src/lib/revocations.js'
 import {
   assertEtagAdvanced,
+  bareDidKeyOf,
+  delegate,
   frozenClock,
   importArchive,
   mintServerDid,
@@ -271,7 +275,8 @@ const CREATOR_TWO = 'did:key:z6MkContractSuiteCreatorTwo' as IDID
 async function provisionSpace(
   backend: StorageBackend,
   spaceId: string,
-  collectionId = 'col'
+  collectionId = 'col',
+  controller: IDID = CONTROLLER
 ): Promise<void> {
   await backend.writeSpace({
     spaceId,
@@ -279,7 +284,7 @@ async function provisionSpace(
       id: spaceId,
       type: ['Space'],
       name: `Space ${spaceId}`,
-      controller: CONTROLLER
+      controller
     }
   })
   await backend.writeCollection({
@@ -340,6 +345,70 @@ function revocationRecord({
       ...(expires && { expires })
     }
   }
+}
+
+/**
+ * The server URL the revocation import cases root their capability chains in.
+ */
+const REVOCATION_SERVER_URL = 'https://was.example'
+
+/**
+ * A Space's canonical trailing-slash URL under {@link REVOCATION_SERVER_URL}.
+ * @param spaceId {string}
+ * @returns {string}
+ */
+function revocationSpaceUrl(spaceId: string): string {
+  return `${REVOCATION_SERVER_URL}/space/${spaceId}/`
+}
+
+/**
+ * Delegates read access on a Space's `col` Collection from the Space's root
+ * capability, signed by the Space controller's key.
+ * @param options {object}
+ * @param options.signer {any}   the Space controller's signer
+ * @param options.spaceUrl {string}   the Space's canonical trailing-slash URL
+ * @returns {Promise<any>}
+ */
+async function delegatedFromSpace({
+  signer,
+  spaceUrl
+}: {
+  signer: any
+  spaceUrl: string
+}): Promise<any> {
+  const { did: delegee } = bareDidKeyOf(await Ed25519VerificationKey.generate())
+  return delegate({
+    signer,
+    capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
+    invocationTarget: `${spaceUrl}col`,
+    controller: delegee,
+    allowedActions: ['GET']
+  })
+}
+
+/**
+ * The revocation records a Space holds, read back off its export archive.
+ * @param options {object}
+ * @param options.backend {StorageBackend}
+ * @param options.spaceId {string}
+ * @returns {Promise<RevocationRecord[]>}
+ */
+async function archivedRevocations({
+  backend,
+  spaceId
+}: {
+  backend: StorageBackend
+  spaceId: string
+}): Promise<RevocationRecord[]> {
+  const entries = await extractTarEntries(
+    await backend.exportSpace({ spaceId })
+  )
+  return [...entries]
+    .filter(
+      ([entryName, entry]) =>
+        entryName.startsWith('revocations/') && entry.type === 'file'
+    )
+    .map(([, entry]) => JSON.parse(entry.body!.toString('utf8')))
 }
 
 /**
@@ -2063,6 +2132,143 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           }
         }
         assert.equal(body?._generation, generation)
+      })
+    })
+
+    describe('import validates what it installs', () => {
+      let harness: BackendHarness
+      beforeAll(async () => {
+        harness = await makeBackend()
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      const manifest = 'ubc-version: "0.1"\ncontents:\n  space:\n    url: x\n'
+      const edvLog = JSON.stringify({
+        body: '{"state":{"scheme":"edv"},"parameters":{"method":"x"}}\n',
+        generation: 'gen'
+      })
+
+      /** Packs the given archive entries into a tar stream. */
+      function archive(entries: Record<string, string>): Readable {
+        const pack = tar.pack()
+        pack.entry({ name: 'manifest.yml' }, manifest)
+        for (const [name, body] of Object.entries(entries)) {
+          pack.entry({ name }, body)
+        }
+        pack.finalize()
+        return Readable.from(pack)
+      }
+
+      it('checks an archived Resource against the archived log head, not the Metadata object', async () => {
+        const { backend } = harness
+        const spaceId = 'space-import-governed-new'
+        await provisionSpace(backend, spaceId, 'present')
+        const refusal = await importArchive({
+          backend,
+          spaceId,
+          tarStream: archive({
+            'space/src/gov/.collection.gov.json': JSON.stringify({
+              id: 'gov',
+              type: ['Collection']
+            }),
+            'space/src/gov/.collectionlog.gov.json': edvLog,
+            'space/src/gov/r.doc.text%2Fplain.txt': 'not an envelope'
+          })
+        }).catch((err: unknown) => err)
+        assert.ok(refusal instanceof ProblemError)
+        assert.equal(refusal.statusCode, 422)
+        assert.match(refusal.type, /encryption-scheme-mismatch/)
+        const listing = await backend.listCollections({ spaceId })
+        assert.deepEqual(
+          listing.items.map(item => item.id),
+          ['present']
+        )
+      })
+
+      it('checks an archived Resource against an existing log-governed destination Collection', async () => {
+        const { backend } = harness
+        const spaceId = 'space-import-governed-existing'
+        await provisionSpace(backend, spaceId, 'gov')
+        await backend.writeCollectionLog({
+          spaceId,
+          collectionId: 'gov',
+          body: '{"state":{"scheme":"edv"},"parameters":{"method":"x"}}\n',
+          ifNoneMatch: '*'
+        })
+        const refusal = await importArchive({
+          backend,
+          spaceId,
+          tarStream: archive({
+            'space/src/gov/r.doc.text%2Fplain.txt': 'not an envelope'
+          })
+        }).catch((err: unknown) => err)
+        assert.ok(refusal instanceof ProblemError)
+        assert.equal(refusal.statusCode, 422)
+        assert.equal(
+          await backend.getResourceMetadata({
+            spaceId,
+            collectionId: 'gov',
+            resourceId: 'doc'
+          }),
+          undefined
+        )
+      })
+
+      it('refuses, before writing, what a live write refuses: a descriptor beside a log, a null index entry, a typeless policy', async () => {
+        const { backend } = harness
+        const spaceId = 'space-import-shape'
+        await provisionSpace(backend, spaceId, 'present')
+        const cases: Array<[Record<string, string>, RegExp]> = [
+          [
+            {
+              'space/src/col/.collection.col.json': JSON.stringify({
+                id: 'col',
+                type: ['Collection'],
+                encryption: { scheme: 'edv' }
+              }),
+              'space/src/col/.collectionlog.col.json': edvLog
+            },
+            /beside a governing history log/
+          ],
+          [
+            {
+              'space/src/col/.collection.col.json': JSON.stringify({
+                id: 'col',
+                type: ['Collection'],
+                plaintext: { indexes: [null] }
+              })
+            },
+            /Collection Metadata file of Collection 'col' is malformed/
+          ],
+          [
+            {
+              'space/src/col/.collection.col.json': JSON.stringify({
+                id: 'col',
+                type: ['Collection']
+              }),
+              'space/src/col/.collection.policy.json': JSON.stringify({
+                public: true
+              })
+            },
+            /no non-empty string 'type'/
+          ]
+        ]
+        for (const [entries, expected] of cases) {
+          const refusal = await importArchive({
+            backend,
+            spaceId,
+            tarStream: archive(entries)
+          }).catch((err: unknown) => err)
+          assert.ok(refusal instanceof InvalidImportError, expected.source)
+          assert.match(refusal.detail ?? '', expected)
+        }
+        const listing = await backend.listCollections({ spaceId })
+        assert.deepEqual(
+          listing.items.map(item => item.id),
+          ['present']
+        )
       })
     })
 
@@ -5269,11 +5475,23 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             body: logLine1,
             ifNoneMatch: '*'
           })
+          // The envelope the governed Collection's `edv` scheme asks of
+          // every write, since the import checks the archived Resources
+          // against the log head, as a live write is checked.
           await source.backend.writeResource({
             spaceId: sourceSpaceId,
             collectionId: 'governed',
             resourceId: 'bin',
-            input: binaryInput(Buffer.from('bin'))
+            input: jsonInput({
+              id: 'urn:uuid:bin',
+              sequence: 0,
+              jwe: {
+                protected: 'eyJlbmMiOiJYQzIwUCJ9',
+                iv: 'aXY',
+                ciphertext: 'Y2lwaGVydGV4dA',
+                tag: 'dGFn'
+              }
+            })
           })
           // Move the source's positions well past the ones the import will
           // assign, so a carried position would show.
@@ -10597,18 +10815,18 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           })
           await source.backend.writePolicy({
             spaceId,
-            policy: { space: true } as never
+            policy: { type: 'Marker', space: true } as never
           })
           await source.backend.writePolicy({
             spaceId,
             collectionId: 'col',
-            policy: { collection: true } as never
+            policy: { type: 'Marker', collection: true } as never
           })
           await source.backend.writePolicy({
             spaceId,
             collectionId: 'col',
             resourceId: 'doc',
-            policy: { resource: true } as never
+            policy: { type: 'Marker', resource: true } as never
           })
           // Backend registration records must NOT travel in an export.
           await source.backend.writeBackend({
@@ -10976,61 +11194,44 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         }
       })
 
-      it('round-trips Space-scoped zcap revocations (a revoked capability stays revoked after import)', async () => {
+      it('round-trips a Space-scoped zcap revocation whose chain verifies under the destination Space', async () => {
         const source = await makeBackend()
         const target = await makeBackend()
         try {
           const spaceId = 'space-exp-rev'
-          const capabilities = [
-            {
-              capabilityId: 'urn:zcap:exp-live',
-              delegator: 'did:key:z6MkDelegator'
-            }
-          ]
-          await provisionSpace(source.backend, spaceId)
+          const spaceUrl = revocationSpaceUrl(spaceId)
+          const { did, signer } = bareDidKeyOf(
+            await Ed25519VerificationKey.generate()
+          )
+          const controller = did as IDID
+          const capability = await delegatedFromSpace({ signer, spaceUrl })
+          const { delegator, capabilities } = await verifyRevocationChain({
+            capability,
+            rootTarget: spaceUrl,
+            rootController: controller
+          })
+          await provisionSpace(source.backend, spaceId, 'col', controller)
           await source.backend.insertRevocation({
             scope: { spaceId },
-            record: revocationRecord({
-              capabilityId: 'urn:zcap:exp-live',
-              delegator: 'did:key:z6MkDelegator'
+            record: revocationRecordFor({
+              capability,
+              delegator,
+              rootTarget: spaceUrl
             })
           })
-          // A record past its GC horizon does not come back in (the
-          // capability itself has expired).
-          await source.backend.insertRevocation({
-            scope: { spaceId },
-            record: revocationRecord({
-              capabilityId: 'urn:zcap:exp-expired',
-              delegator: 'did:key:z6MkDelegator',
-              expires: new Date(Date.now() - 60_000).toISOString()
-            })
-          })
+          await provisionSpace(target.backend, spaceId, 'col', controller)
+          const revocationScope = {
+            spaceId,
+            rootTarget: spaceUrl,
+            rootController: controller,
+            webvh: {
+              storage: target.backend,
+              serverUrl: REVOCATION_SERVER_URL
+            },
+            invocation: { rootInvocation: true }
+          }
 
-          const tarStream = await source.backend.exportSpace({ spaceId })
-          await provisionSpace(target.backend, spaceId)
-          await importArchive({ backend: target.backend, spaceId, tarStream })
-          assert.equal(
-            await target.backend.isRevoked({
-              scope: { spaceId },
-              capabilities
-            }),
-            true
-          )
-          assert.equal(
-            await target.backend.isRevoked({
-              scope: { spaceId },
-              capabilities: [
-                {
-                  capabilityId: 'urn:zcap:exp-expired',
-                  delegator: 'did:key:z6MkDelegator'
-                }
-              ]
-            }),
-            false
-          )
-
-          // Re-importing the same archive skips the already-stored record
-          // rather than rejecting the import as a duplicate.
+          // With no revocation scope, the plan installs no revocation.
           await importArchive({
             backend: target.backend,
             spaceId,
@@ -11041,8 +11242,148 @@ export function describeStorageBackendContract(options: ContractOptions): void {
               scope: { spaceId },
               capabilities
             }),
+            false
+          )
+
+          await importArchive({
+            backend: target.backend,
+            spaceId,
+            tarStream: await source.backend.exportSpace({ spaceId }),
+            revocationScope
+          })
+          assert.equal(
+            await target.backend.isRevoked({
+              scope: { spaceId },
+              capabilities
+            }),
             true
           )
+          // The stored record's `meta` is rebuilt server-side.
+          const [stored, ...rest] = await archivedRevocations({
+            backend: target.backend,
+            spaceId
+          })
+          assert.equal(rest.length, 0)
+          assert.equal(stored!.capability.id, capability.id)
+          assert.equal(stored!.meta.delegator, delegator)
+          assert.equal(stored!.meta.rootTarget, spaceUrl)
+          assert.equal(
+            Date.parse(stored!.meta.expires!),
+            Date.parse(capability.expires) + 24 * 60 * 60 * 1000
+          )
+
+          // Re-importing the same archive skips the already-stored record
+          // rather than rejecting the import as a duplicate.
+          await importArchive({
+            backend: target.backend,
+            spaceId,
+            tarStream: await source.backend.exportSpace({ spaceId }),
+            revocationScope
+          })
+          assert.equal(
+            await target.backend.isRevoked({
+              scope: { spaceId },
+              capabilities
+            }),
+            true
+          )
+        } finally {
+          await source.cleanup()
+          await target.cleanup()
+        }
+      })
+
+      it('skips an archived revocation whose chain does not verify under the destination Space', async () => {
+        const source = await makeBackend()
+        const target = await makeBackend()
+        try {
+          const spaceId = 'space-exp-rev-skip'
+          const spaceUrl = revocationSpaceUrl(spaceId)
+          const otherSpaceUrl = revocationSpaceUrl('space-exp-rev-other')
+          const { did, signer } = bareDidKeyOf(
+            await Ed25519VerificationKey.generate()
+          )
+          const controller = did as IDID
+          // A genuine delegation, but rooted in another Space's URL.
+          const elsewhere = await delegatedFromSpace({
+            signer,
+            spaceUrl: otherSpaceUrl
+          })
+          const elsewhereVerified = await verifyRevocationChain({
+            capability: elsewhere,
+            rootTarget: otherSpaceUrl,
+            rootController: controller
+          })
+          // A forged record: no proof at all.
+          const forged = revocationRecord({
+            capabilityId: 'urn:zcap:forged',
+            delegator: 'did:key:z6MkDelegator'
+          })
+          // A root capability, which cannot be revoked.
+          const root = revocationRecord({
+            capabilityId: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
+            delegator: controller
+          })
+          await provisionSpace(source.backend, spaceId, 'col', controller)
+          for (const record of [
+            forged,
+            root,
+            revocationRecordFor({
+              capability: elsewhere,
+              delegator: elsewhereVerified.delegator,
+              rootTarget: spaceUrl
+            })
+          ]) {
+            await source.backend.insertRevocation({
+              scope: { spaceId },
+              record
+            })
+          }
+          assert.equal(
+            (await archivedRevocations({ backend: source.backend, spaceId }))
+              .length,
+            3
+          )
+
+          await provisionSpace(target.backend, spaceId, 'col', controller)
+          const stats = await importArchive({
+            backend: target.backend,
+            spaceId,
+            tarStream: await source.backend.exportSpace({ spaceId }),
+            revocationScope: {
+              spaceId,
+              rootTarget: spaceUrl,
+              rootController: controller,
+              webvh: {
+                storage: target.backend,
+                serverUrl: REVOCATION_SERVER_URL
+              },
+              invocation: { rootInvocation: true }
+            }
+          })
+          // The import itself succeeds; only the revocations are skipped.
+          assert.equal(stats.collectionsSkipped, 1)
+          assert.deepStrictEqual(
+            await archivedRevocations({ backend: target.backend, spaceId }),
+            []
+          )
+          for (const capabilities of [
+            elsewhereVerified.capabilities,
+            [
+              {
+                capabilityId: forged.capability.id,
+                delegator: forged.meta.delegator
+              }
+            ]
+          ]) {
+            assert.equal(
+              await target.backend.isRevoked({
+                scope: { spaceId },
+                capabilities
+              }),
+              false
+            )
+          }
         } finally {
           await source.cleanup()
           await target.cleanup()

@@ -19,8 +19,13 @@ import {
   isCollectionTombstone,
   parseArchivePath
 } from '@interop/space-archive'
+import { parseCollectionMetadataBody } from './collectionMetadataBody.js'
+import { IMPORT_MAX_REVOCATIONS } from '../config.default.js'
 import { assertEncryptedWriteConforms } from './encryption.js'
-import { assertGoverningLogAppend } from './governedLog.js'
+import {
+  assertGoverningLogAppend,
+  storedGoverningEncryption
+} from './governedLog.js'
 import { importedGeneration, isMintedGeneration } from './etag.js'
 import { isPlainObject } from './isPlainObject.js'
 import { type ImportedPolicy, importedPolicy } from './policyRecord.js'
@@ -29,6 +34,7 @@ import { assertRevisionsTransition, assertValidRevisions } from './revisions.js'
 import { spaceTypeChangeProblem, spaceTypeProblem } from './spaceType.js'
 import { InvalidImportError, ProblemError } from '../errors.js'
 import type {
+  CollectionEncryption,
   CollectionMetadata,
   CollectionRevisions,
   RevocationRecord,
@@ -124,14 +130,35 @@ function assertImportedCollectionLog({
       requestName: 'Import Space'
     })
   } catch (err) {
-    if (err instanceof ProblemError) {
-      throw new InvalidImportError({
-        message: `The ${where} is malformed: ${err.detail}`,
-        cause: err
-      })
-    }
-    throw err
+    rethrowAsMalformed({ what: where, err })
   }
+}
+
+/**
+ * Rethrows a failed shape or transition check over an archived object as the
+ * import's refusal: a `ProblemError` the live write path's validator raised
+ * (a 400 on the wire) becomes `InvalidImportError` (400) naming the object,
+ * and anything else is rethrown as it is.
+ *
+ * @param options {object}
+ * @param options.what {string}   the archived object, for the message
+ * @param options.err {unknown}   the error the check threw
+ * @returns {never}
+ */
+function rethrowAsMalformed({
+  what,
+  err
+}: {
+  what: string
+  err: unknown
+}): never {
+  if (err instanceof ProblemError) {
+    throw new InvalidImportError({
+      message: `The ${what} is malformed: ${err.detail}`,
+      cause: err
+    })
+  }
+  throw err
 }
 
 /**
@@ -176,15 +203,10 @@ function assertImportedRevisions({
       })
     }
   } catch (err) {
-    if (err instanceof ProblemError) {
-      throw new InvalidImportError({
-        message:
-          `The 'revisions' descriptor of Collection '${collectionId}' is ` +
-          `malformed: ${err.detail}`,
-        cause: err
-      })
-    }
-    throw err
+    rethrowAsMalformed({
+      what: `'revisions' descriptor of Collection '${collectionId}'`,
+      err
+    })
   }
 }
 
@@ -206,11 +228,21 @@ export function restampImportedLog({
   bytes: Buffer
   stamp: WriteStamp
 }): StoredCollectionLog {
-  const { body, generation } = JSON.parse(bytes.toString('utf8')) as {
+  const { body, generation } = parseArchivedLog(bytes)
+  return { body, generation: importedGeneration(generation), ...stamp }
+}
+
+/**
+ * Reads an archived governing history log entry the plan builder already
+ * checked (`assertImportedCollectionLog`).
+ * @param bytes {Buffer}   the archive entry's bytes
+ * @returns {{ body: string, generation: string }}
+ */
+function parseArchivedLog(bytes: Buffer): { body: string; generation: string } {
+  return JSON.parse(bytes.toString('utf8')) as {
     body: string
     generation: string
   }
-  return { body, generation: importedGeneration(generation), ...stamp }
 }
 
 /**
@@ -437,11 +469,6 @@ export interface ImportPlan {
    * ways is refused.
    */
   collectionTombstones: ImportPlanCollectionTombstone[]
-  /**
-   * Space-scoped zcap revocation records the archive carries (top-level
-   * `revocations/` entries), restored under the destination Space's scope.
-   */
-  revocations: RevocationRecord[]
 }
 
 /**
@@ -526,10 +553,17 @@ export function validateManifest(entries: Map<string, TarEntry>): void {
 /**
  * Parses an archived Collection Metadata file (`.collection.<id>.json` inside
  * the Collection's directory). The entry is caller-supplied, so it gets the
- * check the Collection write handlers apply to a body's `id`: an absent `id`
- * is set from the path the file is stored under, and one naming another
- * Collection fails the import (`InvalidImportError`, 400). Nothing downstream
- * re-derives the id, so this is the one place the archive's `id` is checked.
+ * checks the Collection write handlers apply to a body. An absent `id` is set
+ * from the path the file is stored under, and one naming another Collection
+ * fails the import (`InvalidImportError`, 400). Nothing downstream re-derives
+ * the id, so this is the one place the archive's `id` is checked. `name`, the
+ * `encryption` descriptor, the `plaintext` declaration, the `generator`
+ * object and the `epoch` stamp pass the shape checks a Collection Metadata
+ * write passes (`parseCollectionMetadataBody`, the same parser, which also
+ * refuses `plaintext` beside `encryption`), so an import cannot store a
+ * descriptor no live write could, such as a `null` index entry that would
+ * fail every later Resource write. The `revisions` descriptor's transition
+ * against the archived log is checked apart (`assertImportedRevisions`).
  *
  * @param options {object}
  * @param options.bytes {Buffer}
@@ -564,6 +598,11 @@ function importedCollectionMetadata({
         `The ${where} names id "${String(parsed.id)}", which does not ` +
         'match the Collection directory it is stored under.'
     })
+  }
+  try {
+    parseCollectionMetadataBody({ body: parsed, requestName: 'Import Space' })
+  } catch (err) {
+    rethrowAsMalformed({ what: where, err })
   }
   return { ...parsed, id: collectionId } as CollectionMetadata
 }
@@ -821,6 +860,21 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       collectionMetadata,
       log: collectionLogHead
     })
+    // The declaration rule a log's guarded create applies: a governed
+    // Collection's `encryption` is derived from its log, so its stored object
+    // carries no `encryption` member, and a `plaintext` member would exclude
+    // the derived one on every later write with no removal path.
+    if (collectionLogHead !== undefined) {
+      for (const member of ['encryption', 'plaintext'] as const) {
+        if (collectionMetadata[member] !== undefined) {
+          throw new InvalidImportError({
+            message:
+              `The Collection Metadata file of Collection '${collectionId}' ` +
+              `carries '${member}' beside a governing history log.`
+          })
+        }
+      }
+    }
 
     return {
       collectionId,
@@ -843,8 +897,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
       entries,
       sourceSpaceId,
       collectionIds
-    }),
-    revocations: revocationRecords(entries)
+    })
   }
 }
 
@@ -1013,11 +1066,14 @@ export function restoredSpaceMetadata({
  * summed `incomingBytes` for the backend's own capacity/headroom check, which
  * is engine-specific (a `du` snapshot vs. a transactional usage counter).
  *
- * The effective encryption descriptor is the merged-into Collection's existing
- * one, else the import's own Collection Metadata object (a new Collection); how an
- * existing Collection is looked up differs per backend, hence
- * `existingCollection`. Skips (existing ids) are counted conservatively, as for
- * the quota estimate.
+ * The effective encryption descriptor is derived the way the live write path
+ * derives it, the governing history log's head first: the merged-into
+ * Collection's own (its stored log, else its Metadata object), else the
+ * archive's (the archived log's head, else the archived Metadata object) for a
+ * Collection the import creates. How an existing Collection and its log are
+ * looked up differs per backend, hence `existingCollection` and
+ * `existingCollectionLog`. Skips (existing ids) are counted conservatively,
+ * as for the quota estimate.
  *
  * Chunk bodies (the `chunked-streams` feature) inherit the per-upload cap and
  * the quota estimate, but NOT the encryption-conformance check: a chunk is
@@ -1034,6 +1090,10 @@ export function restoredSpaceMetadata({
  *   Promise<CollectionMetadata | undefined> | CollectionMetadata |
  *   undefined}   the destination's current Collection Metadata object for a
  *   Collection id, falsy when it does not exist
+ * @param options.existingCollectionLog {(collectionId: string) =>
+ *   Promise<string | undefined>}   the stored governing log body of an
+ *   existing destination Collection, undefined when it has none; read only
+ *   for a Collection the archive carries Resources into
  * @param options.assertUploadSize {(uploadBytes: number) => void}   throws the
  *   backend's 413 when one body exceeds its per-upload cap
  * @param [options.chunkBodiesFor] {(collection: ImportPlanCollection) =>
@@ -1046,6 +1106,7 @@ export function restoredSpaceMetadata({
 export async function assertImportBodiesFit({
   collections,
   existingCollection,
+  existingCollectionLog,
   assertUploadSize,
   chunkBodiesFor,
   trailingChunkBodies
@@ -1054,6 +1115,7 @@ export async function assertImportBodiesFit({
   existingCollection: (
     collectionId: string
   ) => Promise<CollectionMetadata | undefined> | CollectionMetadata | undefined
+  existingCollectionLog: (collectionId: string) => Promise<string | undefined>
   assertUploadSize: (uploadBytes: number) => void
   chunkBodiesFor?: (
     collection: ImportPlanCollection
@@ -1062,11 +1124,27 @@ export async function assertImportBodiesFit({
 }): Promise<number> {
   let incomingBytes = 0
   for (const collection of collections) {
-    const { collectionId, collectionMetadata, resources } = collection
-    const existing = await existingCollection(collectionId)
-    const effectiveEncryption = existing
-      ? existing.encryption
-      : collectionMetadata.encryption
+    const { collectionId, collectionMetadata, collectionLog, resources } =
+      collection
+    // Derived the way `getCollectionOrThrow` derives it: the governing log's
+    // head first, then the Metadata object. The destination's state governs
+    // where the Collection exists, the archive's where the import creates it.
+    // Only a Collection the archive carries Resources into is read.
+    let effectiveEncryption: CollectionEncryption | undefined
+    if (resources.length > 0) {
+      const existing = await existingCollection(collectionId)
+      let log: string | undefined
+      if (existing) {
+        log = await existingCollectionLog(collectionId)
+      } else if (collectionLog !== undefined) {
+        log = parseArchivedLog(collectionLog).body
+      }
+      if (log !== undefined) {
+        effectiveEncryption = storedGoverningEncryption({ body: log })
+      } else {
+        effectiveEncryption = (existing ?? collectionMetadata).encryption
+      }
+    }
     for (const { fileName, body } of resources) {
       assertUploadSize(body.length)
       if (effectiveEncryption?.scheme !== undefined) {
@@ -1097,21 +1175,30 @@ export async function assertImportBodiesFit({
   return incomingBytes
 }
 
-/** Prefix of the archive's Space-scoped revocation entries. */
+/**
+ * Prefix of the archive's Space-scoped revocation entries.
+ */
 const REVOCATIONS_PREFIX = 'revocations/'
 
 /**
- * Parses the archive's Space-scoped zcap revocation records (top-level
- * `revocations/<digest>.json` entries; see `revocationFileName`). Archives
- * from servers that predate revocation export carry none, which yields an
- * empty list. A record that is not JSON or lacks the `(capability.id,
- * meta.delegator)` unique key rejects the import -- the store's file names
- * and uniqueness gate are derived from those fields.
+ * Reads the capabilities the archive's Space-scoped zcap revocation records
+ * name (top-level `revocations/<digest>.json` entries; see
+ * `revocationFileName`). Only each record's `capability` is read. Its `meta`
+ * is the exporting server's and is rebuilt by the importing one, so the
+ * import does not check it. Archives from servers that predate revocation
+ * export carry none, which yields an empty list. A record that is not JSON,
+ * or whose `capability` is not an object with a non-empty string `id`,
+ * refuses the import. So does an archive carrying more than
+ * `IMPORT_MAX_REVOCATIONS` records, since each one costs the import a chain
+ * verification. The records are not part of the merge plan: the handler
+ * installs them after the plan is written (`lib/importRevocations.ts`).
  * @param entries {Map<string, TarEntry>}
- * @returns {RevocationRecord[]}
+ * @returns {RevocationRecord['capability'][]}
  */
-function revocationRecords(entries: Map<string, TarEntry>): RevocationRecord[] {
-  const records: RevocationRecord[] = []
+export function archivedRevocations(
+  entries: Map<string, TarEntry>
+): RevocationRecord['capability'][] {
+  const capabilities: RevocationRecord['capability'][] = []
   for (const [entryName, entry] of entries) {
     if (
       !entryName.startsWith(REVOCATIONS_PREFIX) ||
@@ -1121,7 +1208,14 @@ function revocationRecords(entries: Map<string, TarEntry>): RevocationRecord[] {
     ) {
       continue
     }
-    let record: RevocationRecord
+    if (capabilities.length >= IMPORT_MAX_REVOCATIONS) {
+      throw new InvalidImportError({
+        message:
+          'The archive carries more than ' +
+          `${IMPORT_MAX_REVOCATIONS} revocation records.`
+      })
+    }
+    let record: unknown
     try {
       record = JSON.parse(entry.body.toString('utf8'))
     } catch (err) {
@@ -1130,17 +1224,17 @@ function revocationRecords(entries: Map<string, TarEntry>): RevocationRecord[] {
         cause: err as Error
       })
     }
+    const capability = isPlainObject(record) ? record.capability : undefined
     if (
-      typeof record?.capability?.id !== 'string' ||
-      record.capability.id.length === 0 ||
-      typeof record?.meta?.delegator !== 'string' ||
-      record.meta.delegator.length === 0
+      !isPlainObject(capability) ||
+      typeof capability.id !== 'string' ||
+      capability.id.length === 0
     ) {
       throw new InvalidImportError({
         message: `Archive revocation record "${entryName}" is malformed.`
       })
     }
-    records.push(record)
+    capabilities.push(capability as RevocationRecord['capability'])
   }
-  return records
+  return capabilities
 }

@@ -25,7 +25,10 @@ import {
   handleRevocationInvocationVerify,
   verifyRevocationChain
 } from '../zcap.js'
-import { revocationChainInspector } from '../lib/revocations.js'
+import {
+  revocationChainInspector,
+  revocationRecordFor
+} from '../lib/revocations.js'
 import {
   clientAnnexChainInspector,
   composeChainInspectors
@@ -43,9 +46,6 @@ import type { WebvhResolverContext } from '../lib/webvhController.js'
 import type { IDID, RevocationRecord, RevocationScope } from '../types.js'
 import { fetchKeystore } from './keystoreContext.js'
 import { fetchSpace } from './spaceContext.js'
-
-/** One day in milliseconds -- the revocation record's GC margin. */
-const ONE_DAY = 24 * 60 * 60 * 1000
 
 /**
  * Checks the submitted body is a revocable delegated capability naming the
@@ -266,23 +266,11 @@ async function submitRevocation({
     throw new CapabilityAlreadyRevokedError()
   }
 
-  const capability = capabilityBody as RevocationRecord['capability']
-  // Compute the record's GC expiry only from a parseable `expires`; an
-  // unparseable one yields `NaN`, and `new Date(NaN).toISOString()` would
-  // throw a `RangeError` (500). Omitting `expires` here just drops the GC
-  // margin -- the capability is still rejected on its own expiry.
-  const expiresMs = capability.expires ? Date.parse(capability.expires) : NaN
-  const record: RevocationRecord = {
-    capability,
-    meta: {
-      delegator,
-      rootTarget,
-      created: new Date().toISOString(),
-      ...(Number.isFinite(expiresMs) && {
-        expires: new Date(expiresMs + ONE_DAY).toISOString()
-      })
-    }
-  }
+  const record = revocationRecordFor({
+    capability: capabilityBody as RevocationRecord['capability'],
+    delegator,
+    rootTarget
+  })
   await storage.insertRevocation({ scope, record })
 }
 

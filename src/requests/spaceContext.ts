@@ -15,7 +15,8 @@
  *   policy resource.
  */
 import type { FastifyRequest } from 'fastify'
-import { handleZcapVerify, verifiedRootInvocation } from '../zcap.js'
+import { handleZcapVerify, verifiedInvocation } from '../zcap.js'
+import type { VerifiedInvocation } from '../zcap.js'
 import type { ContainerRule } from '../lib/containerRule.js'
 import { authorize } from '../authorize.js'
 import { spacePath } from '../lib/paths.js'
@@ -248,9 +249,10 @@ export async function fetchSpaceAndAuthorize({
  *   the request URL that extend `targetPath` (e.g. Get Policy's
  *   `?include=deleted`), so a controller's root invocation of the
  *   query-bearing URL verifies (see `verifyZcap`)
- * @returns {Promise<VerifiedSpaceContext & { rootInvocation: boolean }>}   the
- *   context, plus whether the verified invocation was of the Space's root
- *   capability itself rather than a delegated chain (`verifiedRootInvocation`)
+ * @returns {Promise<VerifiedSpaceContext & VerifiedInvocation>}   the context,
+ *   plus the verified invocation's facts: whether it was of the Space's root
+ *   capability itself rather than a delegated chain (`rootInvocation`), who
+ *   signed it, and the delegated capability it invoked (`verifiedInvocation`)
  */
 export async function fetchSpaceAndVerify({
   request,
@@ -266,7 +268,7 @@ export async function fetchSpaceAndVerify({
   requestName: string
   containerRule?: ContainerRule
   allowTargetQuery?: boolean
-}): Promise<VerifiedSpaceContext & { rootInvocation: boolean }> {
+}): Promise<VerifiedSpaceContext & VerifiedInvocation> {
   const context = await fetchSpaceContext({
     request,
     spaceId,
@@ -292,5 +294,5 @@ export async function fetchSpaceAndVerify({
     containerRule,
     peerWebvh: request.server.peerWebvh
   })
-  return { ...context, rootInvocation: verifiedRootInvocation({ result }) }
+  return { ...context, ...verifiedInvocation({ result }) }
 }

@@ -29,6 +29,8 @@ import {
 import type { EtagValidator } from '../src/lib/etag.js'
 import { compareStamps, isoOfMs } from '../src/lib/hlc.js'
 import { prepareImportPlan } from '../src/lib/importPlan.js'
+import { installImportRevocations } from '../src/lib/importRevocations.js'
+import type { ImportRevocationScope } from '../src/lib/importRevocations.js'
 import { createServerSigningKey } from '../src/lib/serverIdentity.js'
 import type { ServerSigningKey } from '../src/lib/serverIdentity.js'
 import type { PeerFetch } from '../src/sync/peerFetch.js'
@@ -815,36 +817,52 @@ export async function verifyProvenanceOffline({
 /**
  * Imports an archive straight into a backend the way the Import Space handler
  * does: the plan is built and its provenance judged through the same shared
- * call (`prepareImportPlan`), then handed to `importSpace`.
+ * call (`prepareImportPlan`), then handed to `importSpace`, and the archive's
+ * revocation records are verified and installed last
+ * (`installImportRevocations`).
  *
  * @param options {object}
  * @param options.backend {StorageBackend}
  * @param options.spaceId {string}
  * @param options.tarStream {Readable}
  * @param [options.restoreSpaceMetadata] {boolean}
+ * @param [options.revocationScope] {ImportRevocationScope}   the destination
+ *   Space's revocation scope; omitted, no archived revocation is installed
  * @returns {Promise<ImportStats>}
  */
 export async function importArchive({
   backend,
   spaceId,
   tarStream,
-  restoreSpaceMetadata
+  restoreSpaceMetadata,
+  revocationScope
 }: {
   backend: StorageBackend
   spaceId: string
   tarStream: Readable
   restoreSpaceMetadata?: boolean
+  revocationScope?: ImportRevocationScope
 }): Promise<ImportStats> {
-  const { plan, provenance } = await prepareImportPlan({
+  const logger = backend.logger ?? pino({ level: 'silent' })
+  const { plan, provenance, revocations } = await prepareImportPlan({
     tarStream,
-    logger: backend.logger ?? pino({ level: 'silent' })
+    logger
   })
-  return backend.importSpace({
+  const stats = await backend.importSpace({
     spaceId,
     plan,
     provenance,
     ...(restoreSpaceMetadata !== undefined && { restoreSpaceMetadata })
   })
+  if (revocationScope !== undefined) {
+    await installImportRevocations({
+      capabilities: revocations,
+      scope: revocationScope,
+      storage: backend,
+      logger
+    })
+  }
+  return stats
 }
 
 /**

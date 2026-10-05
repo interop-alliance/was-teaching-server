@@ -5771,3 +5771,57 @@ Import is the one path that does not enforce it, which makes the guarantee
 weaker than the handlers suggest. The consumer side now depends on it:
 was-client 0.45.0's `ensureSpaceAndCollection` refuses a caller-supplied Space
 description whose `id` does not name the Space being provisioned.
+
+### WAS-126: [H] Import Space validates what it installs
+
+- status: done
+- done: 2026-10-05
+- priority: high
+- labels: import, security, consistency
+- discovered-from: whole-codebase review (2026-09-17)
+- touches:
+  - `src/lib/importTar.ts`, `src/backends/filesystem.ts` (`importSpace`,
+    `#persistCollection`), `src/backends/postgres.ts`,
+    `src/lib/metadataWrite.ts`, `src/requests/SpaceRequest.ts` (`import`)
+    (shipped 2026-10-05: `lib/importRevocations.ts`, `lib/importTar.ts`,
+    `lib/policyRecord.ts`, both backends' envelope pre-flight, the handler;
+    ARCHITECTURE.md updated)
+  - WAS-68 covers the archived Collection `id`; this item covers the rest
+- acceptance:
+  - [x] Validators (`_generation` / `_version`) from the archive are never
+        stored; the import path mints a fresh generation (and starts the version
+        at 1, or keeps the archived version if a reason to is found)
+  - [x] Revocation records are installed only after `verifyRevocationChain`
+        passes for each, or the archive's revocations are ignored with a
+        documented reason; today a Space-subtree POST grant installs arbitrary
+        `(delegator, capabilityId)` records and there is no un-revoke
+  - [x] The effective `encryption` for the encrypted-write check is derived the
+        way `getCollectionOrThrow` derives it (log head first), so a
+        log-governed Collection's Resources are checked on import
+  - [x] An archive carrying both an `encryption` member and a governing log for
+        one Collection, or `plaintext` plus a log, is refused
+  - [x] `plaintext.indexes`, each policy document, and the history log bytes
+        pass the same validation the live write paths apply
+        (`assertSupportedPlaintext`, `PolicyRequest.put`'s shape check, JSON
+        parse) before anything is written
+  - [x] Tests for each refusal on both backends
+
+Each of these lets a tarball put a Collection into a state no live write can
+reach and no live write can repair. A `_version` of 2^53 freezes the Collection
+Metadata `ETag` (every `+1` returns the same number), so conditional reads are
+304 forever and every `If-Match` compare-and-swap succeeds. A re-imported
+hard-deleted Collection resurrects its old generation, so a client's cached
+validator matches different bytes. A `null` index entry makes `normalizeIndexes`
+throw on every Resource write and on the repair `PUT /meta`. A non-JSON log
+makes every Metadata load 500. A falsy policy document falls through the `||`
+chain in `policy.ts` to the broader level.
+
+Note 2026-10-05, at done: the first criterion is met under the design that
+superseded its wording. `_version` no longer exists; every record is re-stamped
+by the importing store's clock. A well-formed archived `_generation` is kept by
+design (a hard delete's successor record still cannot coincide with a held
+validator, since the stamp half of the `ETag` is fresh), and a malformed one is
+replaced by a minted one. Revocations take the verify branch: each archived
+record's chain is verified under the destination Space and the record is rebuilt
+server-side, and one that does not verify is skipped with a `warn` line rather
+than refusing the import.

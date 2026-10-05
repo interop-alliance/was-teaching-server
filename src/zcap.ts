@@ -567,6 +567,50 @@ export function verifiedRootInvocation({
 }
 
 /**
+ * The facts of a verified invocation that a later authorization decision
+ * reads: who signed it and what it invoked. `invoker` is the signing key's
+ * controller, the DID the verifier matched the invoked capability's
+ * `controller` against. `invokedCapability` is the embedded delegated
+ * capability, with its `invocationTarget` and `allowedAction`, and is absent
+ * on a root invocation, whose header carries the root capability's id alone.
+ * Import Space reads these to decide which archived revocations the
+ * invocation could have submitted on the revocation route
+ * (`lib/importRevocations.ts`).
+ */
+export interface VerifiedInvocation {
+  rootInvocation: boolean
+  invoker?: string
+  invokedCapability?: {
+    invocationTarget?: string
+    allowedAction?: string | string[]
+  }
+}
+
+/**
+ * Reads the {@link VerifiedInvocation} facts off a verified result.
+ *
+ * @param options {object}
+ * @param options.result {VerifyCapabilityInvocationResult}   a successful
+ *   verification result
+ * @returns {VerifiedInvocation}
+ */
+export function verifiedInvocation({
+  result
+}: {
+  result: VerifyCapabilityInvocationResult
+}): VerifiedInvocation {
+  const { capability, invoker } = result
+  return {
+    rootInvocation: verifiedRootInvocation({ result }),
+    ...(invoker !== undefined && { invoker }),
+    ...(typeof capability === 'object' &&
+      capability !== null && {
+        invokedCapability: capability as VerifiedInvocation['invokedCapability']
+      })
+  }
+}
+
+/**
  * Verifies the capability-invocation signature on a request against the Space
  * controller's key. Throws `AuthVerificationError` (400) if verification itself
  * errors. If the capability does not verify, throws the 404 `denialError`
@@ -954,7 +998,7 @@ async function verifiedOrThrow({
  * @param [options.depth] {number}   how deep this call is in the walk
  * @returns {ProblemError | undefined}
  */
-function serverFaultIn({
+export function serverFaultIn({
   error,
   depth = 0
 }: {
@@ -1409,7 +1453,7 @@ function expectedRevocationRoots({
  * @param options.rootTarget {string}   the scope's full URL
  * @returns {boolean}
  */
-function isUnderScope({
+export function isUnderScope({
   target,
   rootTarget
 }: {
@@ -1423,7 +1467,8 @@ function isUnderScope({
 /**
  * Verifies the delegation chain of a capability submitted for revocation
  * (`CapabilityDelegation` proof purpose over the embedded chain), throwing
- * `InvalidRevocationError` (400) when it does not verify. The chain must root
+ * `InvalidRevocationError` (400) when it does not verify. A server-side fault
+ * met while verifying is thrown as its own 5xx instead. The chain must root
  * in the revocation's scope: its root capability's invocation target must be
  * `rootTarget` -- the keystore URL, or the canonical (trailing-slash) Space
  * URL for a WAS-route revocation -- or a path under it (enforced where the
@@ -1524,6 +1569,13 @@ export async function verifyRevocationChain({
     }>
   }
   if (!result.verified) {
+    // A server-side fault met under the document loader (a storage error
+    // under a did:webvh log read) is not the submitter's doing and keeps its
+    // 5xx rather than reading as an invalid delegation.
+    const fault = serverFaultIn({ error: result.error })
+    if (fault !== undefined) {
+      throw fault
+    }
     throw new InvalidRevocationError({
       detail: 'The provided capability delegation is invalid.',
       cause: result.error

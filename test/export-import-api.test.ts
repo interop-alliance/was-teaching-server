@@ -17,13 +17,20 @@ import type { FastifyInstance } from 'fastify'
 import * as tar from 'tar-stream'
 import YAML from 'yaml'
 
+import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
+import { createDID, logToJsonlString } from '@interop/did-method-webvh'
+
 import { extractTarEntries } from '../src/lib/importTar.js'
+import { spaceRevocationsPath } from '../src/lib/paths.js'
 import {
   anHourFromNow,
+  bareDidKeyOf,
   client,
   delegate,
   openTempBackend,
+  rootZcap,
   startTestServer,
+  webvhLogSigner,
   zcapClients
 } from './helpers.js'
 
@@ -684,6 +691,391 @@ describe('Export/Import Space API (wire level)', () => {
         method: 'GET'
       })
       assert.equal(read.data.name, 'Destination Name')
+    })
+  })
+
+  describe('archived zcap revocations', () => {
+    /**
+     * The Space's canonical trailing-slash URL.
+     */
+    function spaceUrlOf(spaceId: string): string {
+      return new URL(`/space/${spaceId}/`, serverUrl).toString()
+    }
+
+    /**
+     * Exports a Space and returns its archive entries.
+     */
+    async function exportEntries(spaceId: string) {
+      const response = await alice.was.request({
+        path: `/space/${spaceId}/export`,
+        method: 'POST'
+      })
+      return extractTarEntries(
+        Readable.from(Buffer.from(await response.arrayBuffer()))
+      )
+    }
+
+    /**
+     * The revocation records a Space holds, read off its export archive.
+     */
+    async function storedRevocations(spaceId: string): Promise<any[]> {
+      const entries = await exportEntries(spaceId)
+      return [...entries]
+        .filter(
+          ([entryName, entry]) =>
+            entryName.startsWith('revocations/') && entry.type === 'file'
+        )
+        .map(([, entry]) => JSON.parse(entry.body!.toString('utf8')))
+    }
+
+    /**
+     * Imports archive bytes into a Space under Alice's root invocation.
+     */
+    async function importInto(spaceId: string, tarBytes: Uint8Array) {
+      const response = await alice.was.request({
+        path: `/space/${spaceId}/import`,
+        method: 'POST',
+        body: tarBytes,
+        headers: { 'content-type': 'application/x-tar' }
+      })
+      assert.equal(response.status, 200)
+    }
+
+    it('installs an archived revocation only where its chain roots', async () => {
+      // A Space holding one real revocation: a grant Alice delegated from
+      // the Space's root capability, revoked through the revocation route.
+      const spaceId = `revoked-src-${crypto.randomUUID()}`
+      await alice.was.createSpace({
+        id: spaceId,
+        name: 'Revocation Source',
+        controller: alice.did
+      })
+      const spaceUrl = spaceUrlOf(spaceId)
+      const grant = await delegate({
+        signer: alice.signer,
+        capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
+        invocationTarget: spaceUrl,
+        controller: bob.did,
+        allowedActions: ['GET']
+      })
+      const revoked = await client({ signer: alice.signer }).request({
+        url: new URL(
+          spaceRevocationsPath({ spaceId, revocationId: grant.id }),
+          serverUrl
+        ).toString(),
+        method: 'POST',
+        action: 'POST',
+        capability: rootZcap({ target: spaceUrl, controller: alice.did }),
+        json: grant
+      })
+      assert.equal(revoked.status, 204)
+      const [original] = await storedRevocations(spaceId)
+      assert.equal(original.capability.id, grant.id)
+
+      // The archive also carries a forged record: no proof, and a
+      // capability no one delegated.
+      const forged = {
+        capability: { id: 'urn:zcap:forged' },
+        meta: {
+          delegator: bob.did,
+          rootTarget: spaceUrl,
+          created: new Date().toISOString()
+        }
+      }
+      const archived = await exportEntries(spaceId)
+      const tarBytes = await packTar([
+        ...[...archived].map(([entryName, entry]): [string, string | null] => [
+          entryName,
+          entry.type === 'directory' ? null : entry.body!.toString('utf8')
+        ]),
+        ['revocations/forged.json', JSON.stringify(forged)]
+      ])
+
+      // A fresh Space has another root, so the chain does not verify there
+      // and the import installs nothing.
+      const freshSpaceId = `revoked-dest-${crypto.randomUUID()}`
+      await alice.was.createSpace({
+        id: freshSpaceId,
+        name: 'Revocation Destination',
+        controller: alice.did
+      })
+      await importInto(freshSpaceId, tarBytes)
+      assert.deepEqual(await storedRevocations(freshSpaceId), [])
+
+      // The same Space id, deleted and created again, has the chain's root:
+      // the genuine record is installed with server-built `meta`, and the
+      // forged one is skipped.
+      const deleted = await alice.was.request({
+        path: `/space/${spaceId}/`,
+        method: 'DELETE'
+      })
+      assert.equal(deleted.status, 204)
+      await alice.was.createSpace({
+        id: spaceId,
+        name: 'Revocation Source',
+        controller: alice.did
+      })
+      assert.deepEqual(await storedRevocations(spaceId), [])
+      await importInto(spaceId, tarBytes)
+      const restored = await storedRevocations(spaceId)
+      assert.equal(restored.length, 1)
+      assert.equal(restored[0].capability.id, grant.id)
+      assert.equal(restored[0].meta.rootTarget, spaceUrl)
+      assert.equal(restored[0].meta.delegator, original.meta.delegator)
+    })
+
+    /**
+     * The archive of a Space with one extra record naming `capability` as
+     * revoked, as a forged or foreign archive would carry it.
+     */
+    async function archiveNaming(spaceId: string, capability: any) {
+      const archived = await exportEntries(spaceId)
+      return packTar([
+        ...[...archived].map(([entryName, entry]): [string, string | null] => [
+          entryName,
+          entry.type === 'directory' ? null : entry.body!.toString('utf8')
+        ]),
+        ['revocations/named.json', JSON.stringify({ capability })]
+      ])
+    }
+
+    /**
+     * Imports archive bytes under a delegated capability.
+     */
+    async function importUnder({
+      signer,
+      capability,
+      spaceId,
+      tarBytes
+    }: {
+      signer: any
+      capability: any
+      spaceId: string
+      tarBytes: Uint8Array
+    }) {
+      const response = await client({ signer }).request({
+        url: `${spaceUrlOf(spaceId)}import`,
+        method: 'POST',
+        action: 'POST',
+        capability,
+        body: tarBytes,
+        headers: { 'content-type': 'application/x-tar' }
+      })
+      assert.equal(response.status, 200)
+    }
+
+    /**
+     * Reads the Space Metadata object under a delegated GET grant and returns
+     * the status: 200 while the grant stands, 404 once it is revoked.
+     */
+    async function readStatus(spaceId: string, grant: any): Promise<number> {
+      try {
+        const response = await client({ signer: bob.signer }).request({
+          url: `${spaceUrlOf(spaceId)}meta`,
+          method: 'GET',
+          action: 'GET',
+          capability: grant
+        })
+        return response.status
+      } catch (err: any) {
+        return err.status
+      }
+    }
+
+    it("installs a revocation only when the import's own grant could submit it on the revocation route", async () => {
+      const spaceId = `revoked-grant-${crypto.randomUUID()}`
+      await alice.was.createSpace({
+        id: spaceId,
+        name: 'Revocation Grant',
+        controller: alice.did
+      })
+      const spaceUrl = spaceUrlOf(spaceId)
+      const root = `urn:zcap:root:${encodeURIComponent(spaceUrl)}`
+      // Bob's genuine, live grant, which Alice never revoked.
+      const bobGrant = await delegate({
+        signer: alice.signer,
+        capability: root,
+        invocationTarget: `${spaceUrl}meta`,
+        controller: bob.did,
+        allowedActions: ['GET']
+      })
+      assert.equal(await readStatus(spaceId, bobGrant), 200)
+      const tarBytes = await archiveNaming(spaceId, bobGrant)
+
+      // Carol holds an import-only grant: `POST` on the import URL alone.
+      // It does not reach the revocation URL, so on the revocation route she
+      // could not revoke Bob's grant, and the import does not either.
+      const carol = bareDidKeyOf(await Ed25519VerificationKey.generate())
+      const importOnly = await delegate({
+        signer: alice.signer,
+        capability: root,
+        invocationTarget: `${spaceUrl}import`,
+        controller: carol.did,
+        allowedActions: ['POST']
+      })
+      await importUnder({
+        signer: carol.signer,
+        capability: importOnly,
+        spaceId,
+        tarBytes
+      })
+      assert.deepEqual(await storedRevocations(spaceId), [])
+      assert.equal(await readStatus(spaceId, bobGrant), 200)
+
+      // A `POST` grant on the whole Space reaches the revocation URL by
+      // attenuation, as it does on the route, so the same archive installs
+      // the record under it.
+      const subtree = await delegate({
+        signer: alice.signer,
+        capability: root,
+        invocationTarget: spaceUrl,
+        controller: carol.did,
+        allowedActions: ['POST']
+      })
+      await importUnder({
+        signer: carol.signer,
+        capability: subtree,
+        spaceId,
+        tarBytes
+      })
+      const [stored, ...rest] = await storedRevocations(spaceId)
+      assert.equal(rest.length, 0)
+      assert.equal(stored.capability.id, bobGrant.id)
+      assert.equal(stored.meta.delegator, alice.did)
+      assert.equal(await readStatus(spaceId, bobGrant), 404)
+    })
+
+    it('installs a revocation of a grant the importing invoker holds', async () => {
+      const spaceId = `revoked-own-${crypto.randomUUID()}`
+      await alice.was.createSpace({
+        id: spaceId,
+        name: 'Revocation Own',
+        controller: alice.did
+      })
+      const spaceUrl = spaceUrlOf(spaceId)
+      const root = `urn:zcap:root:${encodeURIComponent(spaceUrl)}`
+      const bobGrant = await delegate({
+        signer: alice.signer,
+        capability: root,
+        invocationTarget: `${spaceUrl}meta`,
+        controller: bob.did,
+        allowedActions: ['GET']
+      })
+      const importOnly = await delegate({
+        signer: alice.signer,
+        capability: root,
+        invocationTarget: `${spaceUrl}import`,
+        controller: bob.did,
+        allowedActions: ['POST']
+      })
+      // Bob is a controller in the chain he names, so he may revoke his own
+      // grant, as the revocation route lets a delegee do.
+      await importUnder({
+        signer: bob.signer,
+        capability: importOnly,
+        spaceId,
+        tarBytes: await archiveNaming(spaceId, bobGrant)
+      })
+      const [stored] = await storedRevocations(spaceId)
+      assert.equal(stored.capability.id, bobGrant.id)
+      assert.equal(await readStatus(spaceId, bobGrant), 404)
+    })
+
+    it('installs a revocation whose chain resolves through a history log the archive restores', async () => {
+      // A `did:webvh` hosted in the Space's `id` Collection, holding one key
+      // under every relationship a delegation needs.
+      const spaceId = `revoked-webvh-${crypto.randomUUID()}`
+      await alice.was.createSpace({
+        id: spaceId,
+        name: 'Revocation Webvh',
+        controller: alice.did
+      })
+      await alice.was.space(spaceId).collection('id').configure({ force: true })
+      const updateKeyPair = await Ed25519VerificationKey.generate()
+      const clientKeyPair = await Ed25519VerificationKey.generate()
+      const created = await createDID({
+        address: `${serverUrl}/space/${spaceId}/id`,
+        signer: webvhLogSigner({ keyPair: updateKeyPair }),
+        updateKeys: [updateKeyPair.publicKeyMultibase!],
+        vmIdFragment: 'multibase',
+        verificationMethods: [
+          {
+            type: 'Multikey',
+            publicKeyMultibase: clientKeyPair.publicKeyMultibase!,
+            purpose: [
+              'authentication',
+              'assertionMethod',
+              'capabilityInvocation',
+              'capabilityDelegation'
+            ]
+          }
+        ] as any
+      })
+      clientKeyPair.id = `${created.did}#${clientKeyPair.publicKeyMultibase}`
+      clientKeyPair.controller = created.did
+      const published = await alice.was.request({
+        path: `/space/${spaceId}/id/did.jsonl`,
+        method: 'PUT',
+        headers: { 'content-type': 'text/jsonl' },
+        body: new Blob([logToJsonlString(created.log)], { type: 'text/jsonl' })
+      })
+      assert.equal(published.status, 201)
+
+      // Alice delegates to the DID, which delegates onward to Bob. The link
+      // to Bob is signed by a key only that log resolves.
+      const spaceUrl = spaceUrlOf(spaceId)
+      const toWebvh = await delegate({
+        signer: alice.signer,
+        capability: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
+        invocationTarget: spaceUrl,
+        controller: created.did,
+        allowedActions: ['GET']
+      })
+      const toBob = await delegate({
+        signer: clientKeyPair.signer(),
+        capability: toWebvh,
+        invocationTarget: `${spaceUrl}meta`,
+        controller: bob.did,
+        allowedActions: ['GET']
+      })
+      assert.equal(await readStatus(spaceId, toBob), 200)
+      const revoked = await client({ signer: alice.signer }).request({
+        url: new URL(
+          spaceRevocationsPath({ spaceId, revocationId: toBob.id }),
+          serverUrl
+        ).toString(),
+        method: 'POST',
+        action: 'POST',
+        capability: rootZcap({ target: spaceUrl, controller: alice.did }),
+        json: toBob
+      })
+      assert.equal(revoked.status, 204)
+      assert.equal(await readStatus(spaceId, toBob), 404)
+
+      // The Space is lost and restored from its archive. The log comes back
+      // with the archive, so the record's chain verifies again and Bob stays
+      // revoked. Verified before the log landed, the record would be skipped.
+      const exportResponse = await alice.was.request({
+        path: `/space/${spaceId}/export`,
+        method: 'POST'
+      })
+      const tarBytes = new Uint8Array(await exportResponse.arrayBuffer())
+      const deleted = await alice.was.request({
+        path: `/space/${spaceId}/`,
+        method: 'DELETE'
+      })
+      assert.equal(deleted.status, 204)
+      await alice.was.createSpace({
+        id: spaceId,
+        name: 'Revocation Webvh',
+        controller: alice.did
+      })
+      await importInto(spaceId, tarBytes)
+      const [restored, ...rest] = await storedRevocations(spaceId)
+      assert.equal(rest.length, 0)
+      assert.equal(restored.capability.id, toBob.id)
+      assert.equal(restored.meta.delegator, created.did)
+      assert.equal(await readStatus(spaceId, toBob), 404)
     })
   })
 })
