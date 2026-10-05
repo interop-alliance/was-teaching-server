@@ -14,6 +14,7 @@ import {
   newGeneration,
   isNotModified,
   parseIfNoneMatch,
+  resourceMetaEtag,
   stampedValidator,
   validatorOf
 } from '../src/lib/etag.js'
@@ -104,6 +105,29 @@ describe('formatEtag', () => {
       }),
       '"abc.5.0.o.2"'
     )
+  })
+})
+
+describe('resourceMetaEtag', () => {
+  const content = { generation: 'gC', stamp }
+  const meta = {
+    generation: 'gM',
+    stamp: { ...stamp, updatedAtCounter: 4, originId: 'p' }
+  }
+
+  it('is the content ETag alone before any metadata write', () => {
+    assert.equal(resourceMetaEtag({ content }), formatEtag(content))
+  })
+
+  it('appends the /meta record segments after the content segments', () => {
+    assert.equal(
+      resourceMetaEtag({ content, meta }),
+      `"gC.${Date.parse(stamp.updatedAt)}.1.o.gM.${Date.parse(stamp.updatedAt)}.4.p"`
+    )
+  })
+
+  it('is absent when the content record has no validator', () => {
+    assert.equal(resourceMetaEtag({ meta }), undefined)
   })
 })
 

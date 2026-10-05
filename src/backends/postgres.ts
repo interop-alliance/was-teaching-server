@@ -126,6 +126,7 @@ import {
   mintValidator,
   newGeneration,
   resolveGeneration,
+  resourceMetaEtagOf,
   stampedValidator,
   validatorOf,
   containerFeedDocument
@@ -3297,7 +3298,8 @@ export class PostgresBackend implements StorageBackend {
    * Replaces the user-writable `custom` object (full replacement; `{}`
    * clears), minting a new stamp on the `/meta` record over its prior one --
    * one row-locked transaction, preconditions evaluated on the current
-   * metadata `ETag` via the shared helper. The `/meta` record keeps its own
+   * `/meta` `ETag` (the composite of the content and `/meta` validators) via
+   * the shared helper. The `/meta` record keeps its own
    * `meta_generation`, minted by the first metadata write (afresh after a
    * tombstone dropped it). The content record's stamp, `generation` and
    * `writer_id` are untouched. The write still takes a feed position, so the
@@ -3312,8 +3314,8 @@ export class PostgresBackend implements StorageBackend {
    * @param [options.ifNoneMatch] {HeldValidators}
    * @returns {Promise<ResourceMetadataWriteResult | undefined>}
    *   the `/meta` object's new validator (its `meta_generation` with the
-   *   stamp this write mints) beside the members the writing statement
-   *   returned
+   *   stamp this write mints) and the content record's validator, beside the
+   *   members the writing statement returned
    */
   async writeResourceMetadata({
     spaceId,
@@ -3364,6 +3366,10 @@ export class PostgresBackend implements StorageBackend {
       const { rows } = await client.query<
         Pick<
           ResourceRow,
+          | 'generation'
+          | 'updated_at'
+          | 'updated_at_counter'
+          | 'origin_id'
           | 'meta_generation'
           | 'meta_updated_at'
           | 'meta_updated_at_counter'
@@ -3371,7 +3377,8 @@ export class PostgresBackend implements StorageBackend {
           | 'deleted'
         >
       >(
-        `SELECT meta_generation, meta_updated_at, meta_updated_at_counter,
+        `SELECT generation, updated_at, updated_at_counter, origin_id,
+                meta_generation, meta_updated_at, meta_updated_at_counter,
                 meta_origin_id, deleted
            FROM resources
           WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
@@ -3383,9 +3390,19 @@ export class PostgresBackend implements StorageBackend {
         return undefined
       }
       const priorMeta = metaStampOfRow(prior)
+      // The `/meta` `ETag` a `GET` serves is the composite of the content
+      // record's validator and the `/meta` record's, so the precondition is
+      // evaluated against that composite.
+      const priorRecord = {
+        generation: prior.generation,
+        ...stampOfRow(prior),
+        ...(priorMeta !== undefined && { meta: priorMeta })
+      }
+      const contentValidator = validatorOf(priorRecord)
       assertMetaWritePrecondition({
         resourceId,
-        currentEtag: etagOf(priorMeta ?? {}),
+        currentEtag: resourceMetaEtagOf(priorRecord),
+        metaWritten: priorMeta !== undefined,
         ifMatch,
         ifNoneMatch
       })
@@ -3462,6 +3479,7 @@ export class PostgresBackend implements StorageBackend {
       )
       return {
         validator: metaValidator,
+        ...(contentValidator !== undefined && { contentValidator }),
         members: writtenMembersOfRow(written[0]!)
       }
     })

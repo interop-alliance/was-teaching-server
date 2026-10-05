@@ -19,7 +19,13 @@ import { resolveMetadataCustom } from '../lib/customMetadata.js'
 import { assertJsonObjectBody } from '../lib/requestBody.js'
 import { declaredIndexesOf, uniqueIndexesOf } from '../lib/equalityIndex.js'
 import { resourcePath, metaPath } from '../lib/paths.js'
-import { etagOf, formatEtag, parseWritePreconditions } from '../lib/etag.js'
+import {
+  etagOf,
+  formatEtag,
+  parseWritePreconditions,
+  resourceMetaEtag,
+  resourceMetaEtagOf
+} from '../lib/etag.js'
 import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
 import { parseWriterIdHeader } from '../lib/writerAttribution.js'
 import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
@@ -461,13 +467,15 @@ export class ResourceRequest {
 
     // The content `generation` is an out-of-band ETag part, not part of the
     // Resource Metadata wire body, so it is stripped before serializing; the
-    // content record's stamp stays as the top-level members. The `/meta`
-    // sub-resource carries its OWN ETag, from its own stamp and generation
-    // (the nested `meta` member), so a metadata-only edit does not disturb
-    // the content ETag, and the validator dies with the metadata object on a
-    // soft delete; it is present only once metadata has been written.
+    // content record's stamp stays as the top-level members. The body mixes
+    // members of the content record (`contentType`, `size`, the content
+    // stamp, `epoch`, `writerId`) and of the `/meta` record (`custom`, the
+    // nested `meta` stamp), so its ETag is the composite of both validators,
+    // content first. A content write and a `/meta` write each move it. Before
+    // any metadata write it is the content ETag alone. A `/meta` write leaves
+    // the Resource's own ETag untouched.
     const { generation: _generation, ...metadataBody } = metadata
-    const metaEtag = etagOf(metadata.meta ?? {})
+    const metaEtag = resourceMetaEtagOf(metadata)
 
     // A conditional read (spec "Caching") against the `/meta` ETag.
     const notModified = notModifiedReply({ request, reply, etag: metaEtag })
@@ -567,7 +575,7 @@ export class ResourceRequest {
 
     // Write Metadata to the Collection's selected (data-plane) backend. An
     // `If-Match` / `If-None-Match` precondition (the `conditional-writes`
-    // feature) is evaluated on the `/meta` record's own `ETag` atomically
+    // feature) is evaluated on the `/meta` `ETag` a GET serves atomically
     // with the write; a mismatch surfaces as 412 `precondition-failed` (rethrown unchanged).
     const dataBackend = await resolveBackend({
       request,
@@ -601,13 +609,20 @@ export class ResourceRequest {
       throw new ResourceNotFoundError({ requestName })
     }
 
-    // Return the new `/meta` ETag so a client can chain a subsequent
+    // Return the new `/meta` ETag (the composite of the content record's
+    // validator and the `/meta` record's) so a client can chain a subsequent
     // conditional metadata write, and the server-managed members as the
     // write left them. A metadata write never creates, so the body carries
     // no provenance.
-    return reply
-      .status(200)
-      .header('etag', formatEtag(written.validator))
+    const metaEtag = resourceMetaEtag({
+      content: written.contentValidator,
+      meta: written.validator
+    })
+    const metaReply = reply.status(200)
+    if (metaEtag !== undefined) {
+      metaReply.header('etag', metaEtag)
+    }
+    return metaReply
       .type('application/json')
       .send(
         JSON.stringify(

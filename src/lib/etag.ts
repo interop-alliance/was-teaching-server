@@ -11,8 +11,10 @@
  * `"<generation>.<ms>.<counter>.<originId>.<local>"`: a per-record counter
  * this server advances when the served object changes through a derived
  * member (a backend registration, a governed-log append) without a write, and
- * resets to 0 on the next stamped write. A stamp is minted afresh by every
- * write, so the validator moves with every write. Incoming `If-Match` /
+ * resets to 0 on the next stamped write. A Resource's `/meta` object serves a
+ * composite of the content record's validator and its own
+ * (`resourceMetaEtag`). A stamp is minted afresh by every write, so the
+ * validator moves with every write. Incoming `If-Match` /
  * `If-None-Match` request headers are normalized into write preconditions,
  * and a read's `If-None-Match` into the set of validators the client already
  * holds; both compare the whole string.
@@ -134,11 +136,22 @@ export function resolveGeneration(prior: string | null | undefined): string {
  * @param validator {EtagValidator}
  * @returns {string}
  */
-export function formatEtag({
+export function formatEtag(validator: EtagValidator): string {
+  return `"${etagSegments(validator).join('.')}"`
+}
+
+/**
+ * The unquoted segments of a validator, in `ETag` order: the generation, the
+ * stamp's epoch milliseconds, its counter and its origin id, then the local
+ * segment when the validator carries one.
+ * @param validator {EtagValidator}
+ * @returns {(string | number)[]}
+ */
+function etagSegments({
   generation,
   stamp,
   local
-}: EtagValidator): string {
+}: EtagValidator): (string | number)[] {
   const segments = [
     generation,
     Date.parse(stamp.updatedAt),
@@ -148,7 +161,57 @@ export function formatEtag({
   if (local !== undefined) {
     segments.push(local)
   }
+  return segments
+}
+
+/**
+ * The `ETag` of a Resource's `/meta` object. Its body mixes members of two
+ * records: the content record (`contentType`, `size`, the content stamp,
+ * `epoch`, `writerId`, provenance) and the `/meta` record (`custom` and the
+ * nested `meta` stamp). So the validator covers both, content first:
+ * `"<generation>.<ms>.<counter>.<originId>"` of the content record, the same
+ * string the Resource's own `ETag` carries, followed by the `/meta` record's
+ * four segments once metadata has been written. It moves with every content
+ * write and every `/meta` write. With no metadata written it is the content
+ * `ETag` alone. A Resource whose content record has no validator (a missing
+ * sidecar) has no `/meta` `ETag` either.
+ * @param options {object}
+ * @param [options.content] {EtagValidator}   the content record's validator
+ * @param [options.meta] {EtagValidator}   the `/meta` record's validator,
+ *   absent until the first metadata write
+ * @returns {string | undefined}
+ */
+export function resourceMetaEtag({
+  content,
+  meta
+}: {
+  content?: EtagValidator
+  meta?: EtagValidator
+}): string | undefined {
+  if (content === undefined) {
+    return undefined
+  }
+  const segments = etagSegments(content)
+  if (meta !== undefined) {
+    segments.push(...etagSegments(meta))
+  }
   return `"${segments.join('.')}"`
+}
+
+/**
+ * `resourceMetaEtag` over a stored Resource record: the content record's
+ * validator parts at the top level and the `/meta` record's under `meta`,
+ * the shape of the filesystem sidecar and of a `getResourceMetadata` result.
+ * @param record {ValidatorParts & { meta?: ValidatorParts }}
+ * @returns {string | undefined}
+ */
+export function resourceMetaEtagOf(
+  record: ValidatorParts & { meta?: ValidatorParts }
+): string | undefined {
+  return resourceMetaEtag({
+    content: validatorOf(record),
+    meta: record.meta && validatorOf(record.meta)
+  })
 }
 
 /**
@@ -415,8 +478,8 @@ export function parseIfNoneMatch(
  * Whether a read is answered 304 Not Modified: the client's held validators
  * (from `parseIfNoneMatch`) cover the representation's current `etag`. RFC
  * 9110 section 13.1.2 makes `*` cover any current representation, so it
- * matches a representation with no `ETag` too (metadata never written); a
- * listed validator can only match a representation that has one.
+ * matches a representation with no `ETag` too (a Resource whose sidecar is
+ * missing); a listed validator can only match a representation that has one.
  * @param options {object}
  * @param [options.held] {HeldValidators}   the parsed `If-None-Match`, if any
  * @param [options.etag] {string}   the representation's current `ETag`

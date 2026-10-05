@@ -131,6 +131,7 @@ import {
   newGeneration,
   mintValidator,
   resolveGeneration,
+  resourceMetaEtagOf,
   validatorOf,
   containerFeedDocument,
   validatorPartsOf
@@ -5149,7 +5150,8 @@ export class FileSystemBackend implements StorageBackend {
    * Also surfaces the two records' stamps, so the request layer can set the
    * `ETag` header: HEAD / the resource itself pair the content `generation`
    * (out of band, not part of the wire body) with the top-level stamp, while
-   * `GET /meta` reads the nested `meta` record's stamp and generation.
+   * `GET /meta` composes that validator with the nested `meta` record's
+   * stamp and generation.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -5209,7 +5211,8 @@ export class FileSystemBackend implements StorageBackend {
    *
    * Runs under the per-Resource write lock -- the same lock content writes take
    * -- so an `If-Match` / `If-None-Match` precondition (evaluated on the
-   * metadata `ETag`) is atomic with the write and serializes with concurrent
+   * `/meta` `ETag`, the composite of the content and `/meta` validators) is
+   * atomic with the write and serializes with concurrent
    * content/metadata writes to the same Resource. A precondition mismatch throws
    * `PreconditionFailedError` (412).
    * @param options {object}
@@ -5217,15 +5220,15 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.collectionId {string}
    * @param options.resourceId {string}
    * @param options.custom {ResourceMetadataCustom | Record<string, unknown>}
-   * @param [options.ifMatch] {string}   `If-Match` on the current metadata
+   * @param [options.ifMatch] {string}   `If-Match` on the current `/meta`
    *   `ETag`
    * @param [options.ifNoneMatch] {HeldValidators}   `If-None-Match: *` -- write only if
-   *   no metadata has been written yet (no `/meta` `ETag`, i.e. no `meta`
-   *   record)
+   *   no metadata has been written yet (no `meta` record)
    * @returns {Promise<ResourceMetadataWriteResult | undefined>}
    *   the metadata object's new validator (its own generation with the stamp
-   *   this write mints) beside the server-managed members as the write left
-   *   them, or `undefined` when the Resource does not exist
+   *   this write mints) and the content record's validator, beside the
+   *   server-managed members as the write left them, or `undefined` when the
+   *   Resource does not exist
    */
   async writeResourceMetadata({
     spaceId,
@@ -5258,13 +5261,16 @@ export class FileSystemBackend implements StorageBackend {
         return undefined
       }
       const prior = await this.readMetaSidecar({ collectionDir, resourceId })
-      // Evaluate the `/meta` precondition against the current metadata `ETag`
-      // atomically under the lock, before writing. `If-None-Match: *` means
-      // "only if no metadata has been written yet"; `If-Match` pins the current
-      // `/meta` ETag.
+      // Evaluate the `/meta` precondition against the current `/meta` `ETag`
+      // atomically under the lock, before writing. That `ETag` is the
+      // composite of the content record's validator and the `/meta` record's,
+      // as a `GET` of `/meta` serves it. `If-None-Match: *` means "only if no
+      // metadata has been written yet"; `If-Match` pins the composite.
+      const contentValidator = validatorOf(prior ?? {})
       assertMetaWritePrecondition({
         resourceId,
-        currentEtag: etagOf(prior?.meta ?? {}),
+        currentEtag: resourceMetaEtagOf(prior ?? {}),
+        metaWritten: prior?.meta !== undefined,
         ifMatch,
         ifNoneMatch
       })
@@ -5317,6 +5323,7 @@ export class FileSystemBackend implements StorageBackend {
       })
       return {
         validator: metaValidator,
+        ...(contentValidator !== undefined && { contentValidator }),
         members: await this.#writtenMembers({ filePath, sidecar })
       }
     }

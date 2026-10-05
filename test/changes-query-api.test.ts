@@ -255,6 +255,31 @@ describe('Collection changes query profile', () => {
     assert.equal(doc.metaEtag, metaResponse.headers.get('etag'))
   })
 
+  it('carries metaEtag before any /meta write, matching GET .../meta', async () => {
+    // No metadata was written, so the composite is the content validator
+    // alone, as `GET .../meta` serves it from the first content write.
+    await seedCollection('etag-feed-premeta', ['a'])
+
+    const { data } = await queryChanges(alice, 'etag-feed-premeta', {
+      limit: 10
+    })
+    const doc = data.documents.find((entry: any) => entry.id === 'a')
+    assert.ok(doc, 'expected the resource in the feed')
+    assert.equal(doc.meta, undefined)
+
+    const resourceUrl = new URL(
+      `/space/${alice.space1.id}/etag-feed-premeta/a`,
+      serverUrl
+    ).toString()
+    const metaResponse = await alice.was.request({
+      url: `${resourceUrl}/meta`,
+      method: 'GET'
+    })
+    assert.equal(typeof doc.metaEtag, 'string')
+    assert.equal(doc.metaEtag, metaResponse.headers.get('etag'))
+    assert.equal(doc.metaEtag, doc.etag)
+  })
+
   it('carries etag on a tombstone', async () => {
     const collection = await seedCollection('etag-tombstone-feed', ['a'])
     await collection.resource('a').delete()

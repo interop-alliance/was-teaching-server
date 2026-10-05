@@ -145,6 +145,14 @@ export async function signedGet({
 }
 
 /**
+ * The four capturing segments of a validator as this server emits them:
+ * generation, epoch milliseconds, counter, origin id. The `ETag` parsers
+ * below build their patterns from it.
+ */
+const VALIDATOR_SEGMENTS =
+  '([A-Za-z0-9]+)\\.(\\d+)\\.(\\d+)\\.([A-Za-z0-9_-]{1,64})'
+
+/**
  * Parses an `ETag` header this server emits into the validator it formats,
  * asserting the layout: `"<generation>.<ms>.<counter>.<originId>"` on a
  * Resource, a chunk, a Resource's `/meta` object and a governed log, plus a
@@ -163,8 +171,8 @@ export function parseEtagSegments(
 ): EtagValidator {
   assert.ok(etag, 'expected an ETag header')
   const pattern = container
-    ? /^"([A-Za-z0-9]+)\.(\d+)\.(\d+)\.([A-Za-z0-9_-]{1,64})\.(\d+)"$/
-    : /^"([A-Za-z0-9]+)\.(\d+)\.(\d+)\.([A-Za-z0-9_-]{1,64})"$/
+    ? new RegExp(`^"${VALIDATOR_SEGMENTS}\\.(\\d+)"$`)
+    : new RegExp(`^"${VALIDATOR_SEGMENTS}"$`)
   const match = pattern.exec(etag!)
   assert.ok(
     match,
@@ -180,6 +188,36 @@ export function parseEtagSegments(
       originId: match![4]!
     },
     ...(container && { local: Number(match![5]) })
+  }
+}
+
+/**
+ * Splits a Resource `/meta` `ETag` into its two parts, each re-quoted as a
+ * four-segment validator: the content record's, which equals the Resource's
+ * own `ETag`, and the `/meta` record's, absent before the first metadata
+ * write. Asserts the layout. Test-only: a client treats the whole value as
+ * opaque.
+ *
+ * @param etag {string | null | undefined}   the `/meta` `ETag` header value
+ * @returns {{ content: string, meta?: string }}
+ */
+export function splitResourceMetaEtag(etag: string | null | undefined): {
+  content: string
+  meta?: string
+} {
+  assert.ok(etag, 'expected an ETag header')
+  const match = new RegExp(
+    `^"(${VALIDATOR_SEGMENTS})(?:\\.(${VALIDATOR_SEGMENTS}))?"$`
+  ).exec(etag!)
+  assert.ok(
+    match,
+    `expected a quoted content validator, optionally followed by a /meta validator, got ${etag}`
+  )
+  // Group 1 is the whole content validator and group 6 the whole `/meta`
+  // one; the groups between are the segments the shared pattern captures.
+  return {
+    content: `"${match![1]!}"`,
+    ...(match![6] !== undefined && { meta: `"${match![6]}"` })
   }
 }
 
@@ -225,9 +263,7 @@ export function assertEtagAdvanced({
  * @returns {string}
  */
 export function etagGeneration(etag: string): string {
-  const match = /^"([A-Za-z0-9]+)\.\d+\.\d+\.[A-Za-z0-9_-]+(?:\.\d+)?"$/.exec(
-    etag
-  )
+  const match = new RegExp(`^"${VALIDATOR_SEGMENTS}(?:\\.\\d+)?"$`).exec(etag)
   assert.ok(match, `expected a quoted stamp ETag, got ${etag}`)
   return match![1]!
 }

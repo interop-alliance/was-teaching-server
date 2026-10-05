@@ -21,6 +21,7 @@ import {
   openTempBackend,
   parseEtagSegments,
   requestError,
+  splitResourceMetaEtag,
   startTestServer,
   zcapClients
 } from './helpers.js'
@@ -300,7 +301,10 @@ function describeWriteResponses({
       // The content record did not move.
       assert.deepEqual(stampOf(body), stampOf(created.data))
       assert.equal(typeof body.meta.generation, 'string')
-      assertEtagNamesStamp(response.headers.get('etag'), body.meta)
+      // The /meta ETag is the content ETag followed by the /meta record's.
+      const metaEtag = splitResourceMetaEtag(response.headers.get('etag'))
+      assert.equal(metaEtag.content, created.headers.get('etag'))
+      assertEtagNamesStamp(metaEtag.meta ?? null, body.meta)
       const doc = await feedDocument('annotated')
       assert.deepEqual(doc.meta, body.meta)
       assert.deepEqual((await readMeta('annotated')).meta, body.meta)

@@ -41,7 +41,6 @@ Ready:
 
 - WAS-92 [M] Filesystem GET can observe a Resource with no validator mid-write
 - WAS-132 [M] A present but unparseable `If-None-Match` on a write is a 400
-- WAS-133 [M] The Resource `/meta` validator covers every member it serves
 - WAS-134 [M] Compose Update Collection under the lock
 - WAS-135 [M] Torn-run ordering in the filesystem backend's delete and update
   paths
@@ -680,30 +679,6 @@ is deliberate. Reused for writes it turns a guarded create into an unconditional
 replace: the loser of a provisioning race rewrites the winner's `controller` or
 `type`, with a 204 to both. Node joins duplicate `If-None-Match` headers with
 `, `, so a client library plus a wrapper that both set `*` produce `*, *`.
-
-### WAS-133: [M] The Resource `/meta` validator covers every member it serves
-
-- status: todo
-- priority: medium
-- labels: conditional-requests, etag, consistency
-- discovered-from: whole-codebase review (2026-09-17), verified
-- acceptance:
-  - [ ] A content write bumps `metaVersion` (or mints a fresh `metaGeneration`)
-        whenever it changes `contentType`, `size`, `updatedAt` or `epoch`, or
-        those members leave the `/meta` representation; decide which
-  - [ ] `getCollectionOrThrow` reads the Collection Metadata object before the
-        log, or both under the `cmeta:` lock, so a served `ETag` never pairs
-        with an older log head
-  - [ ] Tests: a conditional `GET /meta` after a content-type change is 200; a
-        conditional Collection Metadata read racing a log append never returns
-        304 for a body the server would not serve
-
-The `/meta` `ETag` is `metaGeneration.metaVersion`, which a content write
-deliberately leaves alone, while the representation includes content-derived
-members. A cached `/meta` can keep naming a key epoch the Resource no longer
-carries, with every revalidation affirming it. Separately, the parallel
-metadata/log read pairs the post-append validator with the pre-append
-descriptor, so a 304 pins a stale recipient set.
 
 ### WAS-134: [M] Compose Update Collection under the lock
 

@@ -70,25 +70,26 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
 
   A write answers from what the backend returns, not from a read made after it.
   `writeResource` and `writeResourceMetadata` return the validator beside the
-  server-managed members as the write left them. The filesystem backend reads
-  them under the per-Resource lock, and Postgres takes them from the writing
-  statement's `RETURNING`. Create or Update Resource (`PUT /space/:s/:c/:id`)
-  answers `201` when the write created the Resource, a write over a tombstone
-  included, and `200` when it updated a live one. A write-once repeat updates
-  nothing, but the Resource is live, so it answers `200` with the stored
-  members. Update Resource Metadata (`PUT .../:id/meta`) answers `200` and never
-  creates. A `/meta` write to an absent Resource is a 404. Both keep the `ETag`
-  header and send a JSON body that holds only server-managed members:
-  `contentType`, `size`, and the content record's write stamp (`updatedAt`,
-  `updatedAtCounter`, `originId`). A `201` adds `createdAt` and `createdBy`, so
-  a writer learns no provenance it did not record. A `/meta` write adds the
-  nested `meta` stamp and generation. The body never carries `custom`, `epoch`,
-  or `writerId`. A Resource created over a tombstone records fresh provenance:
-  this write's invoker as `createdBy` and its stamp's time as `createdAt`. The
-  tombstone's values stay with the deleted Resource. Create Resource (`POST`), a
-  chunk `PUT`, Delete Resource, and the governing log `PUT` keep their answers.
-  The `did.jsonl` write shares the Resource `PUT` handler and answers the same
-  way.
+  server-managed members as the write left them. `writeResourceMetadata` also
+  returns the content record's validator, for the `/meta` `ETag` (below). The
+  filesystem backend reads them under the per-Resource lock, and Postgres takes
+  them from the writing statement's `RETURNING`. Create or Update Resource
+  (`PUT /space/:s/:c/:id`) answers `201` when the write created the Resource, a
+  write over a tombstone included, and `200` when it updated a live one. A
+  write-once repeat updates nothing, but the Resource is live, so it answers
+  `200` with the stored members. Update Resource Metadata (`PUT .../:id/meta`)
+  answers `200` and never creates. A `/meta` write to an absent Resource is
+  a 404. Both keep the `ETag` header and send a JSON body that holds only
+  server-managed members: `contentType`, `size`, and the content record's write
+  stamp (`updatedAt`, `updatedAtCounter`, `originId`). A `201` adds `createdAt`
+  and `createdBy`, so a writer learns no provenance it did not record. A `/meta`
+  write adds the nested `meta` stamp and generation. The body never carries
+  `custom`, `epoch`, or `writerId`. A Resource created over a tombstone records
+  fresh provenance: this write's invoker as `createdBy` and its stamp's time as
+  `createdAt`. The tombstone's values stay with the deleted Resource. Create
+  Resource (`POST`), a chunk `PUT`, Delete Resource, and the governing log `PUT`
+  keep their answers. The `did.jsonl` write shares the Resource `PUT` handler
+  and answers the same way.
 
   Container writes follow the same rule. `writeSpace` and `writeCollection`
   return the validator, whether the write created the container, and the stored
@@ -184,62 +185,75 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   stamp on that record only. The content record's stamp and `ETag` do not
   change, so the Resource's top-level `updatedAt` is the time of its last
   content write. The filesystem sidecar nests both under its `meta` member, and
-  Postgres keeps them in `meta_` columns. A soft delete drops that record
-  together with `custom`, so a re-create's first metadata write starts a fresh
-  generation and a `/meta` `ETag` held from before the delete cannot pass
-  `If-Match` against it. A hard delete (a chunk, a Space) removes the record, so
-  the next record under the same id mints a new generation and its validators
-  never coincide with the old record's; a client's stale cached `ETag` then
-  matches nothing instead of being answered 304 over different bytes. Delete
-  Collection leaves a tombstone (see the Glossary's Collection tombstone), which
-  keeps the generation and takes the delete's stamp. A create over the tombstone
-  mints a new generation, with the same effect on held validators. A client
-  treats the whole quoted value as opaque, and `If-Match` and `If-None-Match`
-  compare the whole string. Writes are gated by `If-Match` / `If-None-Match: *`,
-  which `parseWritePreconditions` normalizes and the backends evaluate
-  atomically with the write through `preconditions.ts`. The Space and Collection
-  Metadata objects take both: the `If-None-Match: *` guarded create is what
-  resolves two clients provisioning the same Space or Collection at once (the
-  loser's replace-semantics `PUT` would otherwise rewrite the winner's `type`
-  array or `backend`), and it refuses whenever the container already has a
-  Metadata object, `ETag` or not. Update Space (`PUT /space/:spaceId/meta`)
-  chooses its authorization from an unlocked read, so its write passes
-  `writeSpace` an `assertTransition` hook that pins it to that read: the Space
-  must still be absent on a create, and carry the same validator on an update.
-  On a mismatch the handler re-reads and re-authorizes on the branch the fresh
-  read selects. A create that lost a race is then authorized as an update
-  against the winner's controller. After three attempts it answers 503 with
-  `Retry-After`. The client's own preconditions go to the backend as sent, so a
-  412 answers only a header the client sent. The generation and local segment
-  are embedded in the stored record as reserved `_generation` / `_local` members
-  -- the filesystem backend keeps one file per container (`.space.<id>.json`,
-  `.collection.<id>.json`) holding the wire body and the two together -- and as
-  `meta_generation` / `meta_local` columns on the Postgres `spaces` and
-  `collections` rows, kept out of the wire body. The stamp members are wire
-  members and are stored in the body. An export archive's Metadata entry carries
-  `_generation` alone, since the local segment does not leave this server. The
-  `ETag` is emitted on Read Space / Read Collection and on the Create/Update
-  responses. A Space Metadata write is serialized per Space (the `spacemeta:`
-  lock in the filesystem backend, an advisory lock plus row lock in Postgres)
-  and a Collection Metadata write per Collection (the `cmeta:` lock), so the
-  check and the stamp are atomic. Reads are conditional the other way round: a
-  GET/HEAD carrying `If-None-Match` is parsed by `parseIfNoneMatch` into the set
-  of validators the client holds (RFC 9110 weak comparison, list and `*` forms),
-  and a handler answers 304 Not Modified with the `ETag` and no body when that
-  set covers the current one (`isNotModified`, sent by the shared
+  Postgres keeps them in `meta_` columns. The `/meta` body serves members of
+  both records, so its `ETag` covers both (`resourceMetaEtag`). It is the
+  content record's four segments, the Resource's own `ETag` value, followed by
+  the `/meta` record's four once metadata has been written:
+  `"<generation>.<ms>.<counter>.<originId>.<generation>.<ms>.<counter>.<originId>"`.
+  So it moves with every content write and every `/meta` write, and exists from
+  the Resource's first write. A `/meta` `If-Match` is evaluated against this
+  composite, in both backends. `If-None-Match: *` on a `/meta` write passes only
+  while no `/meta` record exists. The changes feed's `metaEtag` is the same
+  composite. A soft delete drops that record together with `custom`, so a
+  re-create's first metadata write starts a fresh generation and a `/meta`
+  `ETag` held from before the delete cannot pass `If-Match` against it. A hard
+  delete (a chunk, a Space) removes the record, so the next record under the
+  same id mints a new generation and its validators never coincide with the old
+  record's; a client's stale cached `ETag` then matches nothing instead of being
+  answered 304 over different bytes. Delete Collection leaves a tombstone (see
+  the Glossary's Collection tombstone), which keeps the generation and takes the
+  delete's stamp. A create over the tombstone mints a new generation, with the
+  same effect on held validators. A client treats the whole quoted value as
+  opaque, and `If-Match` and `If-None-Match` compare the whole string. Writes
+  are gated by `If-Match` / `If-None-Match: *`, which `parseWritePreconditions`
+  normalizes and the backends evaluate atomically with the write through
+  `preconditions.ts`. The Space and Collection Metadata objects take both: the
+  `If-None-Match: *` guarded create is what resolves two clients provisioning
+  the same Space or Collection at once (the loser's replace-semantics `PUT`
+  would otherwise rewrite the winner's `type` array or `backend`), and it
+  refuses whenever the container already has a Metadata object, `ETag` or not.
+  Update Space (`PUT /space/:spaceId/meta`) chooses its authorization from an
+  unlocked read, so its write passes `writeSpace` an `assertTransition` hook
+  that pins it to that read: the Space must still be absent on a create, and
+  carry the same validator on an update. On a mismatch the handler re-reads and
+  re-authorizes on the branch the fresh read selects. A create that lost a race
+  is then authorized as an update against the winner's controller. After three
+  attempts it answers 503 with `Retry-After`. The client's own preconditions go
+  to the backend as sent, so a 412 answers only a header the client sent. The
+  generation and local segment are embedded in the stored record as reserved
+  `_generation` / `_local` members -- the filesystem backend keeps one file per
+  container (`.space.<id>.json`, `.collection.<id>.json`) holding the wire body
+  and the two together -- and as `meta_generation` / `meta_local` columns on the
+  Postgres `spaces` and `collections` rows, kept out of the wire body. The stamp
+  members are wire members and are stored in the body. An export archive's
+  Metadata entry carries `_generation` alone, since the local segment does not
+  leave this server. The `ETag` is emitted on Read Space / Read Collection and
+  on the Create/Update responses. A Space Metadata write is serialized per Space
+  (the `spacemeta:` lock in the filesystem backend, an advisory lock plus row
+  lock in Postgres) and a Collection Metadata write per Collection (the `cmeta:`
+  lock), so the check and the stamp are atomic. Reads are conditional the other
+  way round: a GET/HEAD carrying `If-None-Match` is parsed by `parseIfNoneMatch`
+  into the set of validators the client holds (RFC 9110 weak comparison, list
+  and `*` forms), and a handler answers 304 Not Modified with the `ETag` and no
+  body when that set covers the current one (`isNotModified`, sent by the shared
   `requests/notModified.ts` helper). The decision sits in each read handler,
   after authorization, so an under-authorized conditional read still gets the
   404 mask. A Resource or chunk GET consults the stored metadata first when the
   header is present and opens the byte stream only on a miss. A representation
-  with no validator (a Resource whose sidecar is missing, or a `/meta` object
-  never written) is matched only by `*`, which RFC 9110 makes true for any
-  current representation; its 304 then carries no `ETag`, as its 200 would not.
-  Responses to non-idempotent POSTs are marked `Cache-Control: no-store` by an
-  `onSend` hook in `routes.ts`; a slash-variant redirect and a POST route
-  registered with `config.safe` (Query and Export, reads that use POST to carry
-  a body) stay cacheable. The spec defers further `Cache-Control` semantics. The
-  Metadata-object pieces (the five-segment `ETag` and the reserved `_generation`
-  / `_local` file members) live in `src/lib/metadataValidator.ts`.
+  with no validator (a Resource whose sidecar is missing, and so its `/meta`
+  object) is matched only by `*`, which RFC 9110 makes true for any current
+  representation; its 304 then carries no `ETag`, as its 200 would not. A
+  Collection Metadata read takes the object before the governing log, not beside
+  it. A log append advances the object's local segment, so a read in the other
+  order could serve the new `ETag` over the old descriptors, and a 304 would
+  then keep them. In this order the worst case is the old `ETag` over the new
+  descriptors, which the next revalidation replaces. Responses to non-idempotent
+  POSTs are marked `Cache-Control: no-store` by an `onSend` hook in `routes.ts`;
+  a slash-variant redirect and a POST route registered with `config.safe` (Query
+  and Export, reads that use POST to carry a body) stay cacheable. The spec
+  defers further `Cache-Control` semantics. The Metadata-object pieces (the
+  five-segment `ETag` and the reserved `_generation` / `_local` file members)
+  live in `src/lib/metadataValidator.ts`.
 - **`src/lib/hlc.ts`** -- the write stamp. Each storage backend holds one hybrid
   logical clock for its store, and a versioned write mints its stamp with it
   inside the write's critical section. The stamp is the clock reading plus the

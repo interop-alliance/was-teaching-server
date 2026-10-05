@@ -5571,3 +5571,40 @@ refused 400 by the exclusion rule. `plaintext` has no removal path and the log
 is append-only, so the Collection's Metadata object is permanently unwritable;
 the only remedy is Delete Collection. `POST .../query` answers 501 on such a
 Collection while `GET ?filter[...]` still runs the equality machinery.
+
+### WAS-133: [M] The Resource `/meta` validator covers every member it serves
+
+- status: done (2026-10-05)
+- priority: medium
+- labels: conditional-requests, etag, consistency
+- discovered-from: whole-codebase review (2026-09-17), verified
+- touches:
+  - `@interop/was-conformance-suite`: no case pins the old shape (304/304 pass);
+    PWSCS-25 filed (2026-10-05) to assert the new behavior
+  - unaffected: `was-client` (treats the `ETag` as opaque)
+  - `wallet-attached-storage-spec`: WASS-56 filed (2026-10-05) so "Update
+    Resource Metadata" says a content write moves the Metadata object's `ETag`
+    too
+- acceptance:
+  - [x] The `/meta` `ETag` is a content-first composite: the content record's
+        validator (`"<generation>.<ms>.<counter>.<originId>"`), followed by the
+        `/meta` record's own validator once metadata has been written. It
+        therefore moves with every content write and every `/meta` write, and
+        exists from the Resource's first write
+  - [x] `PUT /meta` evaluates `If-Match` against the composite, in both
+        backends, and answers with it
+  - [x] `getCollectionOrThrow` reads the Collection Metadata object before the
+        log, so a served `ETag` never pairs with a newer log head
+  - [x] Tests: a conditional `GET /meta` after a content-type or `epoch` change
+        is 200; a conditional `GET /meta` on a Resource with no metadata written
+        answers 304 against its `ETag`; a conditional Collection Metadata read
+        racing a log append never returns 304 for a body the server would not
+        serve
+
+The `/meta` `ETag` is built from the `/meta` record's stamp and generation
+alone, which a content write deliberately leaves untouched, while the
+representation includes content-derived members (`contentType`, `size`, the
+content stamp, `epoch`, `writerId`). A cached `/meta` can keep naming a key
+epoch the Resource no longer carries, with every revalidation affirming it.
+Separately, the parallel metadata/log read pairs the post-append validator with
+the pre-append descriptor, so a 304 pins a stale recipient set.

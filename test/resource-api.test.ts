@@ -15,6 +15,7 @@ import {
   etagGeneration,
   openTempBackend,
   responseOf,
+  splitResourceMetaEtag,
   startTestServer,
   zcapClients
 } from './helpers.js'
@@ -724,9 +725,7 @@ describe('Resource API', () => {
       assert.equal(unchanged.headers.get('etag'), metaEtag)
       assert.equal(unchanged.headers.get('content-length'), null)
 
-      // The metadata ETag has a generation of its own, so it never reads the
-      // same as the content ETag; only the meta one is compared here. A
-      // superseded meta validator misses.
+      // A superseded /meta ETag misses.
       const rewritten = await alice.was.request({
         url: metaUrl,
         method: 'PUT',
@@ -743,32 +742,95 @@ describe('Resource API', () => {
       assert.equal(stale.status, 200)
     })
 
-    it('[signed] GET /meta never written: `*` is 304 with no ETag, a listed validator misses', async () => {
-      // No `/meta` stamp, so no ETag to compare a listed validator against;
-      // but the metadata object is a current representation, which is all
-      // `*` asks (RFC 9110 section 13.1.2). The 304 carries no ETag, as the
-      // 200 would not have.
+    it("[signed] GET /meta never written: the ETag is the Resource's own, and a conditional read with it is 304", async () => {
+      // With no /meta record, the /meta ETag is the content record's
+      // validator alone, so it equals the Resource's own ETag.
       const { url, etag: contentEtag } = await textResource(
         'cond-read-meta-unwritten'
       )
-      const any = await responseOf(
+      const read = await alice.was.request({
+        url: `${url}/meta`,
+        method: 'GET'
+      })
+      assert.equal(read.headers.get('etag'), contentEtag)
+      for (const ifNoneMatch of [contentEtag, '*']) {
+        const conditional = await responseOf(
+          alice.was.request({
+            url: `${url}/meta`,
+            method: 'GET',
+            headers: { 'if-none-match': ifNoneMatch }
+          })
+        )
+        assert.equal(conditional.status, 304, `If-None-Match: ${ifNoneMatch}`)
+        assert.equal(conditional.headers.get('etag'), contentEtag)
+      }
+    })
+
+    it('[signed] GET /meta after PUT /meta serves the composite, and the pre-write ETag misses', async () => {
+      const { url, etag: contentEtag } = await textResource(
+        'cond-read-meta-composite'
+      )
+      const metaUrl = `${url}/meta`
+      const before = await alice.was.request({ url: metaUrl, method: 'GET' })
+      const beforeEtag = before.headers.get('etag')!
+      await alice.was.request({
+        url: metaUrl,
+        method: 'PUT',
+        json: { custom: { name: 'Composite' } }
+      })
+      const after = await alice.was.request({ url: metaUrl, method: 'GET' })
+      const afterEtag = after.headers.get('etag')!
+      // Eight segments: the content ETag, then the /meta record's validator.
+      const parts = splitResourceMetaEtag(afterEtag)
+      assert.equal(parts.content, contentEtag)
+      assert.ok(parts.meta, "the /meta record's validator follows")
+      parseEtagSegments(parts.meta)
+      assert.equal(afterEtag.split('.').length, 8)
+      const stale = await responseOf(
         alice.was.request({
-          url: `${url}/meta`,
+          url: metaUrl,
           method: 'GET',
-          headers: { 'if-none-match': '*' }
+          headers: { 'if-none-match': beforeEtag }
         })
       )
-      assert.equal(any.status, 304)
-      assert.equal(any.headers.get('etag'), null)
-      const listed = await responseOf(
+      assert.equal(stale.status, 200)
+      assert.equal(stale.headers.get('etag'), afterEtag)
+    })
+
+    it('[signed] a content write that changes the content type moves the /meta ETag', async () => {
+      const { url } = await textResource('cond-read-meta-content-type')
+      const metaUrl = `${url}/meta`
+      await alice.was.request({
+        url: metaUrl,
+        method: 'PUT',
+        json: { custom: { name: 'Typed' } }
+      })
+      const held = (
+        await alice.was.request({ url: metaUrl, method: 'GET' })
+      ).headers.get('etag')!
+      // The content write leaves the /meta record alone, but the body it
+      // serves changes (`contentType`, `size`, the content stamp).
+      const rewritten = await alice.was.request({
+        url,
+        method: 'PUT',
+        body: new Blob(['<p>hello</p>'], { type: 'text/html' })
+      })
+      const response = await responseOf(
         alice.was.request({
-          url: `${url}/meta`,
+          url: metaUrl,
           method: 'GET',
-          headers: { 'if-none-match': contentEtag }
+          headers: { 'if-none-match': held }
         })
       )
-      assert.equal(listed.status, 200)
-      assert.equal(listed.headers.get('etag'), null)
+      assert.equal(response.status, 200)
+      // The http client parsed the JSON body already.
+      const body = (response as any).data
+      assert.match(body.contentType, /^text\/html/)
+      assert.deepEqual(body.custom, { name: 'Typed' })
+      const parts = splitResourceMetaEtag(response.headers.get('etag'))
+      assert.equal(parts.content, rewritten.headers.get('etag'))
+      // The /meta record did not move.
+      assert.equal(parts.meta, splitResourceMetaEtag(held).meta)
     })
 
     it('an under-authorized conditional GET is the 404 mask, never a 304', async () => {
@@ -1064,6 +1126,66 @@ describe('Resource API', () => {
       assert.equal(etagGeneration(recreatedEtag!), etagGeneration(createdEtag))
     })
 
+    it('PUT /meta with If-Match from a GET of /meta succeeds, and a stale one is 412', async () => {
+      const resourceId = 'cond-meta-if-match'
+      const metaUrl = `${resourceUrl(resourceId)}/meta`
+      await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 1 }
+      })
+      // Before any metadata write, the ETag a GET serves is the content ETag,
+      // and it still gates the first metadata write.
+      const unwritten = await alice.was.request({ url: metaUrl, method: 'GET' })
+      const first = await alice.was.request({
+        url: metaUrl,
+        method: 'PUT',
+        json: { custom: { name: 'first' } },
+        headers: { 'if-match': unwritten.headers.get('etag')! }
+      })
+      assert.equal(first.status, 200)
+
+      const read = await alice.was.request({ url: metaUrl, method: 'GET' })
+      const readEtag = read.headers.get('etag')!
+      assert.equal(readEtag, first.headers.get('etag'))
+      const second = await alice.was.request({
+        url: metaUrl,
+        method: 'PUT',
+        json: { custom: { name: 'second' } },
+        headers: { 'if-match': readEtag }
+      })
+      assert.equal(second.status, 200)
+
+      // The ETag read before the second write is now stale ...
+      const staleMeta = await responseOf(
+        alice.was.request({
+          url: metaUrl,
+          method: 'PUT',
+          json: { custom: { name: 'stale' } },
+          headers: { 'if-match': readEtag }
+        })
+      )
+      assert.equal(staleMeta.status, 412)
+      // ... and so is the current one once a content write lands.
+      const current = second.headers.get('etag')!
+      await alice.was.request({
+        url: resourceUrl(resourceId),
+        method: 'PUT',
+        json: { id: resourceId, n: 2 }
+      })
+      const staleContent = await responseOf(
+        alice.was.request({
+          url: metaUrl,
+          method: 'PUT',
+          json: { custom: { name: 'stale' } },
+          headers: { 'if-match': current }
+        })
+      )
+      assert.equal(staleContent.status, 412)
+      const meta = await aliceCredentials.resource(resourceId).meta()
+      assert.deepEqual(meta!.custom, { name: 'second' })
+    })
+
     it('a tombstone drops the /meta validator: PUT /meta, DELETE, PUT, PUT /meta starts a new meta generation', async () => {
       const resourceId = 'cond-tombstone-meta-generation'
       const metaUrl = `${resourceUrl(resourceId)}/meta`
@@ -1079,11 +1201,13 @@ describe('Resource API', () => {
         json: { custom: { name: 'before' } }
       })
       const preDeleteMetaEtag = preDeleteMeta.headers.get('etag')!
-      parseEtagSegments(preDeleteMetaEtag)
+      // The /meta ETag is the content ETag followed by the /meta record's.
+      const preDeleteParts = splitResourceMetaEtag(preDeleteMetaEtag)
+      assert.equal(preDeleteParts.content, createdEtag)
       assert.notEqual(
-        etagGeneration(preDeleteMetaEtag),
+        etagGeneration(preDeleteParts.meta!),
         etagGeneration(createdEtag),
-        'the /meta validator carries its own generation'
+        'the /meta record carries its own generation'
       )
 
       await alice.was.request({
@@ -1124,11 +1248,12 @@ describe('Resource API', () => {
         headers: { 'if-none-match': '*' }
       })
       const revivedMetaEtag = revivedMeta.headers.get('etag')!
-      parseEtagSegments(revivedMetaEtag)
+      const revivedParts = splitResourceMetaEtag(revivedMetaEtag)
+      assert.equal(revivedParts.content, recreated.headers.get('etag'))
       assert.notEqual(revivedMetaEtag, preDeleteMetaEtag)
       assert.notEqual(
-        etagGeneration(revivedMetaEtag),
-        etagGeneration(preDeleteMetaEtag)
+        etagGeneration(revivedParts.meta!),
+        etagGeneration(preDeleteParts.meta!)
       )
       const meta = await aliceCredentials.resource(resourceId).meta()
       assert.deepEqual(meta!.custom, { name: 'after' })

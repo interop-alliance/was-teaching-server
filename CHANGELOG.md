@@ -21,6 +21,15 @@
   log that declares witnesses is refused, and the server never fetches
   `did-witness.json`. Before, the self-hosted, append and import paths let the
   library fetch it from the host the log named.
+- A Resource's `/meta` `ETag` covers both records its body serves. It is the
+  content record's validator, the Resource's own `ETag` value, followed by the
+  `/meta` record's validator once metadata has been written. A content write now
+  moves it, and it is present from the Resource's first write. `PUT /meta`
+  evaluates `If-Match` against it and answers with it, and the changes feed's
+  `metaEtag` carries it.
+- A Collection Metadata read takes the object before the governing log. A read
+  racing a log append could serve the new `ETag` with the old derived
+  descriptors, and conditional reads then answered 304 over them.
 
 ## 0.42.0 - 2026-10-04
 
