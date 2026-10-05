@@ -588,11 +588,14 @@ export type ResourceWriteMembers = Pick<
 
 /**
  * What a Resource `/meta` write left, read inside the write's critical
- * section: the `/meta` record's validator and the server-managed members as
- * this write left them.
+ * section: the `/meta` record's validator, the content record's validator
+ * the write left as it was (absent when it has none), and the server-managed
+ * members as this write left them. The `/meta` `ETag` is the composite of
+ * the two (`resourceMetaEtag`).
  */
 export interface ResourceMetadataWriteResult {
   validator: EtagValidator
+  contentValidator?: EtagValidator
   members: ResourceWriteMembers
 }
 
@@ -602,7 +605,9 @@ export interface ResourceMetadataWriteResult {
  * Resource (a re-create over a tombstone included), and the server-managed
  * members as this write left them.
  */
-export interface ResourceWriteResult extends ResourceMetadataWriteResult {
+export interface ResourceWriteResult {
+  validator: EtagValidator
+  members: ResourceWriteMembers
   created: boolean
 }
 
@@ -705,8 +710,9 @@ export type FeedDocument = WriteStamp & {
         // The `/meta` record's stamp and generation, present once metadata has
         // been written.
         meta?: ResourceMetaStamp
-        // The `/meta` record's validator, which the request layer formats as
-        // the wire `metaEtag`. Absent when no metadata has been written.
+        // The `/meta` record's validator, which the request layer composes
+        // with `validator` into the wire `metaEtag`. Absent when no metadata
+        // has been written.
         metaValidator?: EtagValidator
         createdBy?: IDID
         // Present only on a live JSON Resource.
@@ -1236,16 +1242,18 @@ export interface StorageBackend {
    * replacement; pass `{}` to clear). Resolves `undefined` when the Resource
    * does not exist (this operation does not create one) so the handler can 404,
    * else the `/meta` object's new ETag validator (its own generation, minted
-   * by the first metadata write, with the stamp this write mints) beside the
-   * server-managed members as the write left them, read inside the same
-   * critical section. The write moves the nested `meta` record only; the
-   * content record's stamp, `ETag`, and `writerId` are left as they are.
+   * by the first metadata write, with the stamp this write mints) and the
+   * content record's validator, beside the server-managed members as the
+   * write left them, read inside the same critical section. The write moves
+   * the nested `meta` record only; the content record's stamp, `ETag`, and
+   * `writerId` are left as they are.
    *
    * On an encrypted Collection `custom` is the opaque encryption envelope (an
    * arbitrary JSON object) rather than a `{ name, tags }` object; the backend
    * stores it verbatim. When `ifMatch` / `ifNoneMatch` is supplied
    * (`conditional-writes`), the write is gated on the current `/meta` `ETag`
-   * atomically (`If-None-Match: *` passes only while there is none), rejecting
+   * atomically, the composite `resourceMetaEtag` builds (`If-None-Match: *`
+   * passes only while no `/meta` record exists), rejecting
    * a mismatch with `precondition-failed` (412).
    */
   writeResourceMetadata(options: {
@@ -1446,8 +1454,8 @@ export interface StorageBackend {
    * `validator`, which the request layer formats as the wire `etag`. A
    * `resource` document's stamp and validator are its content record's. It
    * also carries the `/meta` record's stamp and generation as `meta` (when a
-   * metadata write has occurred) with its `metaValidator` (the wire
-   * `metaEtag`), the server-managed `createdBy` (the creator's DID, when one
+   * metadata write has occurred) with its `metaValidator` (composed with
+   * `validator` into the wire `metaEtag`), the server-managed `createdBy` (the creator's DID, when one
    * was recorded -- so provenance replicates and does not have to be fetched
    * per Resource from `/meta`), and -- so metadata replicates alongside
    * content -- the user-writable `custom` object (the opaque encryption

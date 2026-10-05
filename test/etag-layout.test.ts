@@ -18,6 +18,7 @@ import {
   openTempBackend,
   parseEtagSegments,
   responseOf,
+  splitResourceMetaEtag,
   startTestServer,
   zcapClients
 } from './helpers.js'
@@ -262,6 +263,8 @@ describe('Write stamp and ETag layout', () => {
     const metaUrl = `${resourceUrl(collectionId, 'doc')}/meta`
     const before = await get(metaUrl)
     assert.equal(before.data.meta, undefined, 'no /meta record yet')
+    // With no /meta record the /meta ETag is the content ETag alone.
+    assert.equal(before.headers.get('etag'), contentEtag)
 
     clock.now += 5000
     const written = await alice.was.request({
@@ -270,7 +273,10 @@ describe('Write stamp and ETag layout', () => {
       json: { custom: { name: 'Doc' }, writerId: 'ignored-writer' }
     })
     assert.equal(written.status, 200)
-    const metaEtag = parseEtagSegments(written.headers.get('etag'))
+    // The /meta ETag is the content ETag followed by the /meta record's.
+    const writtenParts = splitResourceMetaEtag(written.headers.get('etag'))
+    assert.equal(writtenParts.content, contentEtag)
+    const metaEtag = parseEtagSegments(writtenParts.meta)
     assert.equal(Date.parse(metaEtag.stamp.updatedAt), clock.now)
 
     const after = await get(metaUrl)
@@ -306,7 +312,9 @@ describe('Write stamp and ETag layout', () => {
       json: { custom: { name: 'Doc again' } }
     })
     assert.equal(rewritten.status, 200)
-    const secondEtag = parseEtagSegments(rewritten.headers.get('etag'))
+    const rewrittenParts = splitResourceMetaEtag(rewritten.headers.get('etag'))
+    assert.equal(rewrittenParts.content, contentEtag)
+    const secondEtag = parseEtagSegments(rewrittenParts.meta)
     assert.equal(secondEtag.generation, metaEtag.generation)
     assert.equal(secondEtag.stamp.updatedAt, metaEtag.stamp.updatedAt)
     assert.equal(

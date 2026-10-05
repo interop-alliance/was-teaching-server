@@ -73,7 +73,11 @@ import {
   queryPath,
   policyPath
 } from '../lib/paths.js'
-import { formatEtag, parseWritePreconditions } from '../lib/etag.js'
+import {
+  formatEtag,
+  parseWritePreconditions,
+  resourceMetaEtag
+} from '../lib/etag.js'
 import {
   metadataEtagOf,
   stripMetadataValidator
@@ -1308,7 +1312,13 @@ export class CollectionRequest {
           ...base
         }
       }
-      const metaEtag = doc.metaValidator && formatEtag(doc.metaValidator)
+      // The `/meta` ETag as `GET .../meta` serves it, the composite of the
+      // content and `/meta` validators, so a replica can echo it as
+      // `If-Match` on a metadata write.
+      const metaEtag = resourceMetaEtag({
+        content: doc.validator,
+        meta: doc.metaValidator
+      })
       return {
         kind: doc.kind,
         id: doc.resourceId,

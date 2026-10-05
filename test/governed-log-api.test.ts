@@ -8,7 +8,7 @@
  * epoch-transition violation, and governing a Collection that already carries
  * a client-written descriptor.
  */
-import { it, describe, beforeAll, afterAll } from 'vitest'
+import { it, describe, beforeAll, afterAll, vi } from 'vitest'
 import assert from 'node:assert'
 import type { FastifyInstance } from 'fastify'
 
@@ -489,6 +489,17 @@ describe('Governing history log API (meta/log)', () => {
         method: 'GET'
       })
       assert.notEqual(after.headers.get('etag'), before.headers.get('etag'))
+      // The append advanced the local segment alone: the Metadata object's
+      // generation and stamp are untouched.
+      const beforeSegments = parseEtagSegments(before.headers.get('etag'), {
+        container: true
+      })
+      const afterSegments = parseEtagSegments(after.headers.get('etag'), {
+        container: true
+      })
+      assert.equal(afterSegments.local, beforeSegments.local! + 1)
+      assert.equal(afterSegments.generation, beforeSegments.generation)
+      assert.deepEqual(afterSegments.stamp, beforeSegments.stamp)
       // A conditional read against the stale Collection Metadata ETag is a 200.
       const conditional = await responseOf(
         alice.was.request({
@@ -498,6 +509,86 @@ describe('Governing history log API (meta/log)', () => {
         })
       )
       assert.equal(conditional.status, 200)
+    })
+
+    it('[signed] a Collection Metadata read racing a log append never pairs the new ETag with the old descriptors', async () => {
+      const { collectionId, body, etag } = await governedCollection()
+      const extended = body + entryLine({ ordinal: 2, state: twoEpochs }) + '\n'
+      const storage = fastify.storage
+      const readMetadata = storage.getCollectionMetadata.bind(storage)
+      const readLog = storage.getCollectionLog.bind(storage)
+      // The racing read's log read lands an append right after it read the
+      // old log. A Metadata read that runs beside the log read waits for
+      // that append, so it would see the advanced local segment. A Metadata
+      // read that completed before the log read began does not wait.
+      let armed = true
+      let logReadStarted = false
+      let appending = false
+      let appended!: () => void
+      const appendDone = new Promise<void>(resolve => {
+        appended = resolve
+      })
+      const logSpy = vi
+        .spyOn(storage, 'getCollectionLog')
+        .mockImplementation(async options => {
+          if (!armed || options.collectionId !== collectionId) {
+            return readLog(options)
+          }
+          armed = false
+          logReadStarted = true
+          const prior = await readLog(options)
+          appending = true
+          await storage.writeCollectionLog({
+            spaceId,
+            collectionId,
+            body: extended,
+            ifMatch: etag
+          })
+          appending = false
+          appended()
+          return prior
+        })
+      const metadataSpy = vi
+        .spyOn(storage, 'getCollectionMetadata')
+        .mockImplementation(async options => {
+          if (options.collectionId === collectionId && !appending) {
+            await new Promise(resolve => setImmediate(resolve))
+            if (logReadStarted && !appending) {
+              await appendDone
+            }
+          }
+          return readMetadata(options)
+        })
+      let raced: any
+      try {
+        raced = await alice.was.request({
+          url: metaUrl(collectionId),
+          method: 'GET'
+        })
+      } finally {
+        logSpy.mockRestore()
+        metadataSpy.mockRestore()
+      }
+      assert.equal(armed, false, 'the log read landed the append')
+      // The racing read served the descriptors of the old head under the old
+      // ETag, so revalidating that ETag now is a 200 with the new head.
+      assert.equal(raced.data.encryption.currentEpoch, 'urn:epoch:1')
+      const conditional = await responseOf(
+        alice.was.request({
+          url: metaUrl(collectionId),
+          method: 'GET',
+          headers: { 'if-none-match': raced.headers.get('etag')! }
+        })
+      )
+      assert.equal(conditional.status, 200)
+      assert.notEqual(
+        conditional.headers.get('etag'),
+        raced.headers.get('etag')
+      )
+      assert.equal(
+        (conditional as any).data.encryption.currentEpoch,
+        'urn:epoch:2'
+      )
     })
   })
 

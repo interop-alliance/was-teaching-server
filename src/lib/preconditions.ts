@@ -7,10 +7,10 @@
  * cannot drift between them. Callers MUST invoke them atomically with the
  * write that follows (under the filesystem backend's per-record lock, or
  * inside the Postgres backend's row-locking transaction). The current state arrives as the record's `ETag`
- * (from `etagOf`), `undefined` when the record has none: a Resource whose
- * sidecar is missing, or a Resource Metadata object never written. An
- * `If-Match` can never be satisfied against such a record, since no client
- * holds a validator for it.
+ * (from `etagOf`, or `resourceMetaEtag` for a Resource's `/meta` object),
+ * `undefined` when the record has none, such as a Resource whose sidecar is
+ * missing. An `If-Match` can never be satisfied against such a record,
+ * since no client holds a validator for it.
  *
  * The two headers are evaluated in the order RFC 9110 section 13.2.2
  * prescribes: `If-Match` first, then `If-None-Match`. A request carrying both
@@ -145,13 +145,17 @@ export function assertSpaceWritePrecondition({
 
 /**
  * Evaluates a metadata-write (`/meta`) precondition against a Resource's
- * current metadata `ETag`. Throws `PreconditionFailedError` (412) when it is
- * not met. `If-None-Match: *` means "only if no metadata has been written yet"
- * (no metadata `ETag`); `If-Match` pins the current one.
+ * current `/meta` `ETag`, the composite `resourceMetaEtag` builds, which a
+ * `GET` of `/meta` serves. Throws `PreconditionFailedError` (412) when it is
+ * not met. `If-Match` pins the composite, so an `ETag` a `GET` served before
+ * any metadata was written still passes. `If-None-Match: *` is the guarded
+ * first metadata write: it passes only while no `/meta` record exists. A
+ * listed `If-None-Match` refuses when it names the composite.
  * @param options {object}
  * @param options.resourceId {string}   for the error detail
- * @param [options.currentEtag] {string}   the current metadata `ETag`
- *   (`undefined` until the first metadata write)
+ * @param [options.currentEtag] {string}   the current `/meta` `ETag`
+ *   (`undefined` when the content record has no validator)
+ * @param options.metaWritten {boolean}   whether a `/meta` record exists
  * @param [options.ifMatch] {string}   the `If-Match` header value
  * @param [options.ifNoneMatch] {HeldValidators}   the parsed `If-None-Match`
  * @returns {void}
@@ -159,17 +163,20 @@ export function assertSpaceWritePrecondition({
 export function assertMetaWritePrecondition({
   resourceId,
   currentEtag,
+  metaWritten,
   ifMatch,
   ifNoneMatch
 }: {
   resourceId: string
   currentEtag?: string
+  metaWritten: boolean
   ifMatch?: string
   ifNoneMatch?: HeldValidators
 }): void {
   assertPrecondition({
     subject: `Resource '${resourceId}' metadata`,
     exists: currentEtag !== undefined,
+    existsForCreate: metaWritten,
     currentEtag,
     ifMatch,
     ifNoneMatch
@@ -252,10 +259,15 @@ export function assertPolicyWritePrecondition({
  * (`*`, or one of the listed strong validators; a record with no `ETag`
  * matches nothing). `If-None-Match` is evaluated next: `*` refuses any
  * existing record, `ETag` or not, and a list refuses when it names the current
- * `ETag`.
+ * `ETag`. A record whose guarded create sees a different existence than its
+ * update passes `existsForCreate`: a Resource's `/meta` object exists for
+ * `If-Match` from the content write, through the composite `ETag`, while
+ * `If-None-Match: *` asks whether the `/meta` record itself exists.
  * @param options {object}
  * @param options.subject {string}   the subject phrase for the error detail
  * @param options.exists {boolean}   whether the record is stored
+ * @param [options.existsForCreate] {boolean}   what `If-None-Match: *`
+ *   refuses on; defaults to `exists`
  * @param [options.currentEtag] {string}   the record's current `ETag`
  * @param [options.ifMatch] {string}   the `If-Match` header value
  * @param [options.ifNoneMatch] {HeldValidators}   the parsed `If-None-Match`
@@ -264,12 +276,14 @@ export function assertPolicyWritePrecondition({
 function assertPrecondition({
   subject,
   exists,
+  existsForCreate = exists,
   currentEtag,
   ifMatch,
   ifNoneMatch
 }: {
   subject: string
   exists: boolean
+  existsForCreate?: boolean
   currentEtag?: string
   ifMatch?: string
   ifNoneMatch?: HeldValidators
@@ -286,15 +300,18 @@ function assertPrecondition({
       })
     }
   }
-  if (ifNoneMatch === undefined || !exists) {
+  if (ifNoneMatch === undefined) {
     return
   }
   if (ifNoneMatch === '*') {
-    throw new PreconditionFailedError({
-      detail: `${subject} already exists (If-None-Match: *).`
-    })
+    if (existsForCreate) {
+      throw new PreconditionFailedError({
+        detail: `${subject} already exists (If-None-Match: *).`
+      })
+    }
+    return
   }
-  if (isNotModified({ held: ifNoneMatch, etag: currentEtag })) {
+  if (exists && isNotModified({ held: ifNoneMatch, etag: currentEtag })) {
     throw new PreconditionFailedError({
       detail: `${subject} ETag ${currentEtag} is named by If-None-Match.`
     })

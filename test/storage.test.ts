@@ -11,7 +11,7 @@ import * as tar from 'tar-stream'
 import YAML from 'yaml'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { fileNameFor } from '@interop/space-archive'
-import { formatEtag } from '../src/lib/etag.js'
+import { resourceMetaEtag } from '../src/lib/etag.js'
 import { compareStamps, withoutStampMembers } from '../src/lib/hlc.js'
 import { PreconditionFailedError } from '../src/errors.js'
 import { importArchive, resourceDocuments } from './helpers.js'
@@ -1244,16 +1244,20 @@ describe('Storage API', () => {
           }
         })
         // If-None-Match: * succeeds on the first metadata write (none exists yet).
-        const first = (
-          await backend.writeResourceMetadata({
-            spaceId,
-            collectionId,
-            resourceId: 'doc',
-            custom: { name: 'first' },
-            ifNoneMatch: '*'
-          })
-        )?.validator
-        assert.ok(first, 'the first metadata write returns a validator')
+        const firstWrite = await backend.writeResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId: 'doc',
+          custom: { name: 'first' },
+          ifNoneMatch: '*'
+        })
+        assert.ok(firstWrite, 'the first metadata write returns a validator')
+        // The `/meta` ETag is the composite of the content and `/meta`
+        // validators.
+        const first = resourceMetaEtag({
+          content: firstWrite.contentValidator,
+          meta: firstWrite.validator
+        })
         // A second If-None-Match: * now fails (metadata already exists).
         await assert.rejects(
           backend.writeResourceMetadata({
@@ -1271,7 +1275,7 @@ describe('Storage API', () => {
           collectionId,
           resourceId: 'doc',
           custom: { name: 'second' },
-          ifMatch: formatEtag(first!)
+          ifMatch: first
         })
         await assert.rejects(
           backend.writeResourceMetadata({
@@ -1279,7 +1283,7 @@ describe('Storage API', () => {
             collectionId,
             resourceId: 'doc',
             custom: { name: 'third' },
-            ifMatch: formatEtag(first!)
+            ifMatch: first
           }),
           PreconditionFailedError
         )

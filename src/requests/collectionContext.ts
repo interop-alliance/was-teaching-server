@@ -98,13 +98,25 @@ export async function getCollectionOrThrow({
   requestName: string
 }): Promise<StoredCollectionMetadata> {
   const { storage, serverUrl } = request.server
-  const [collectionMetadata, governed] = await Promise.all([
-    storage.getCollectionMetadata({ spaceId, collectionId }),
-    governedDescriptorsOf({ storage, serverUrl, spaceId, collectionId })
-  ])
+  // The Metadata object is read before the log, not beside it. A log append
+  // advances the object's local segment, so its `ETag`. Read in the other
+  // order, a read racing an append could pair the new `ETag` with the old
+  // log head, and every later conditional read would answer 304 over the
+  // stale descriptors. In this order the worst case is the old `ETag` over
+  // the new descriptors, which the next revalidation replaces.
+  const collectionMetadata = await storage.getCollectionMetadata({
+    spaceId,
+    collectionId
+  })
   if (!collectionMetadata) {
     throw new CollectionNotFoundError({ requestName })
   }
+  const governed = await governedDescriptorsOf({
+    storage,
+    serverUrl,
+    spaceId,
+    collectionId
+  })
   if (governed === undefined) {
     return collectionMetadata
   }

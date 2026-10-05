@@ -16,7 +16,12 @@ import { collectBytes, readSpaceArchive } from '@interop/space-archive'
 import { isCollectionTombstoneSummary } from '@interop/storage-core'
 import { logToJsonlString } from '@interop/did-method-webvh'
 import { Ed25519VerificationKey } from '@interop/ed25519-verification-key'
-import { etagOf, formatEtag, isMintedGeneration } from '../src/lib/etag.js'
+import {
+  etagOf,
+  formatEtag,
+  isMintedGeneration,
+  resourceMetaEtag
+} from '../src/lib/etag.js'
 import { metadataEtagOf } from '../src/lib/metadataValidator.js'
 import type { EtagValidator } from '../src/lib/etag.js'
 import { compareStamps, stampOf } from '../src/lib/hlc.js'
@@ -3107,24 +3112,40 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         assert.equal(etagOf(read), formatEtag(revived))
       })
 
-      it('metadata preconditions gate on the metadata ETag', async () => {
+      it('metadata preconditions gate on the composite /meta ETag', async () => {
         const { backend } = harness
-        await backend.writeResource({
+        const { validator: content } = await backend.writeResource({
           spaceId,
           collectionId: 'col',
           resourceId: 'mp',
           input: jsonInput({})
         })
-        // If-None-Match: * -- only when no metadata has been written yet.
-        const firstMeta = (
-          await backend.writeResourceMetadata({
+        // Before any metadata write the /meta ETag is the content ETag alone,
+        // so If-Match with it passes. A stale content validator does not.
+        await expect(
+          backend.writeResourceMetadata({
             spaceId,
             collectionId: 'col',
             resourceId: 'mp',
-            custom: { name: 'a' },
-            ifNoneMatch: '*'
+            custom: { name: 'z' },
+            ifMatch: etagWithCounterBumped({ validator: content, by: 2 })
           })
-        )?.validator
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        // If-None-Match: * -- only when no metadata has been written yet.
+        const firstWrite = await backend.writeResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'mp',
+          custom: { name: 'a' },
+          ifNoneMatch: '*'
+        })
+        assert.ok(firstWrite)
+        assert.deepEqual(firstWrite.contentValidator, content)
+        const firstMeta = firstWrite.validator
+        const firstEtag = resourceMetaEtag({
+          content,
+          meta: firstMeta
+        })
         await expect(
           backend.writeResourceMetadata({
             spaceId,
@@ -3134,13 +3155,14 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             ifNoneMatch: '*'
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
+        // The /meta record's validator alone is not the /meta ETag.
         await expect(
           backend.writeResourceMetadata({
             spaceId,
             collectionId: 'col',
             resourceId: 'mp',
             custom: { name: 'b' },
-            ifMatch: etagWithCounterBumped({ validator: firstMeta!, by: 2 })
+            ifMatch: formatEtag(firstMeta)
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         const result = (
@@ -3149,11 +3171,37 @@ export function describeStorageBackendContract(options: ContractOptions): void {
             collectionId: 'col',
             resourceId: 'mp',
             custom: { name: 'b' },
-            ifMatch: formatEtag(firstMeta!)
+            ifMatch: firstEtag
           })
         )?.validator
-        assertValidatorAdvanced(firstMeta!, result!)
-        assert.equal(result?.generation, firstMeta!.generation)
+        assertValidatorAdvanced(firstMeta, result!)
+        assert.equal(result?.generation, firstMeta.generation)
+        const secondEtag = resourceMetaEtag({ content, meta: result })
+        // A content write moves the /meta ETag, so the one held from before
+        // it is stale.
+        const { validator: content2 } = await backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'mp',
+          input: jsonInput({ v: 2 })
+        })
+        await expect(
+          backend.writeResourceMetadata({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'mp',
+            custom: { name: 'c' },
+            ifMatch: secondEtag
+          })
+        ).rejects.toBeInstanceOf(PreconditionFailedError)
+        const third = await backend.writeResourceMetadata({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'mp',
+          custom: { name: 'c' },
+          ifMatch: resourceMetaEtag({ content: content2, meta: result })
+        })
+        assert.deepEqual(third?.contentValidator, content2)
       })
 
       it('a soft delete drops the /meta validator: the re-created Resource starts a new meta generation', async () => {
@@ -3189,7 +3237,7 @@ export function describeStorageBackendContract(options: ContractOptions): void {
           backend.writeResourceMetadata({
             ...target,
             custom: { name: 'stale replica' },
-            ifMatch: formatEtag(preDeleteMeta!)
+            ifMatch: resourceMetaEtag({ content: created, meta: preDeleteMeta })
           })
         ).rejects.toBeInstanceOf(PreconditionFailedError)
         // ... while a guarded first write succeeds, under a fresh generation
