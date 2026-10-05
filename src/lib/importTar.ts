@@ -524,6 +524,51 @@ export function validateManifest(entries: Map<string, TarEntry>): void {
 }
 
 /**
+ * Parses an archived Collection Metadata file (`.collection.<id>.json` inside
+ * the Collection's directory). The entry is caller-supplied, so it gets the
+ * check the Collection write handlers apply to a body's `id`: an absent `id`
+ * is set from the path the file is stored under, and one naming another
+ * Collection fails the import (`InvalidImportError`, 400). Nothing downstream
+ * re-derives the id, so this is the one place the archive's `id` is checked.
+ *
+ * @param options {object}
+ * @param options.bytes {Buffer}
+ * @param options.collectionId {string}   the id the archive path places it under
+ * @returns {CollectionMetadata}
+ */
+function importedCollectionMetadata({
+  bytes,
+  collectionId
+}: {
+  bytes: Buffer
+  collectionId: string
+}): CollectionMetadata {
+  const where = `Collection Metadata file of Collection '${collectionId}'`
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(bytes.toString('utf8'))
+  } catch (err) {
+    throw new InvalidImportError({
+      message: `The ${where} is not valid JSON.`,
+      cause: err as Error
+    })
+  }
+  if (!isPlainObject(parsed)) {
+    throw new InvalidImportError({
+      message: `The ${where} is not a JSON object.`
+    })
+  }
+  if (parsed.id !== undefined && parsed.id !== collectionId) {
+    throw new InvalidImportError({
+      message:
+        `The ${where} names id "${String(parsed.id)}", which does not ` +
+        'match the Collection directory it is stored under.'
+    })
+  }
+  return { ...parsed, id: collectionId } as CollectionMetadata
+}
+
+/**
  * Build a merge plan from a WAS space export tarball.
  *
  * Expected archive layout (UBC v0.1, produced by exportSpace):
@@ -614,7 +659,7 @@ export function buildImportPlan(entries: Map<string, TarEntry>): ImportPlan {
     const collectionMetaKey = `${prefix}${collectionId}/${collectionMetadataFileName(collectionId)}`
     const metaEntry = entries.get(collectionMetaKey)
     const collectionMetadata: CollectionMetadata = metaEntry?.body
-      ? JSON.parse(metaEntry.body.toString('utf8'))
+      ? importedCollectionMetadata({ bytes: metaEntry.body, collectionId })
       : { id: collectionId, type: ['Collection'], name: collectionId }
     // A tombstone travels only as a Space-level file. One inside a Collection
     // directory would be stored as live metadata, so it refuses the import.

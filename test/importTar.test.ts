@@ -279,6 +279,55 @@ describe('buildImportPlan', () => {
     })
   })
 
+  it('sets an absent Collection Metadata `id` from the archive path, as the write handlers do', () => {
+    const entries = new Map<string, TarEntry>([
+      ['manifest.yml', fileEntry(validManifestYaml())],
+      [
+        'space/S1/colA/.collection.colA.json',
+        fileEntry(JSON.stringify({ type: ['Collection'], name: 'A' }))
+      ]
+    ])
+    const [colA] = buildImportPlan(entries).collections
+    assert.deepStrictEqual(colA!.collectionMetadata, {
+      id: 'colA',
+      type: ['Collection'],
+      name: 'A'
+    })
+  })
+
+  it('throws InvalidImportError on a Collection Metadata `id` naming another Collection', () => {
+    const entries = new Map<string, TarEntry>([
+      ['manifest.yml', fileEntry(validManifestYaml())],
+      [
+        'space/S1/colA/.collection.colA.json',
+        fileEntry(
+          JSON.stringify({ id: 'colB', type: ['Collection'], name: 'A' })
+        )
+      ]
+    ])
+    assert.throws(
+      () => buildImportPlan(entries),
+      (err: unknown) =>
+        err instanceof InvalidImportError &&
+        /names id "colB"/.test(err.detail ?? '')
+    )
+  })
+
+  it('throws InvalidImportError on a Collection Metadata file that is not a JSON object', () => {
+    for (const body of ['not json', '[1]', '"colA"']) {
+      const entries = new Map<string, TarEntry>([
+        ['manifest.yml', fileEntry(validManifestYaml())],
+        ['space/S1/colA/.collection.colA.json', fileEntry(body)]
+      ])
+      assert.throws(
+        () => buildImportPlan(entries),
+        (err: unknown) =>
+          err instanceof InvalidImportError &&
+          /Collection Metadata file of Collection 'colA'/.test(err.detail ?? '')
+      )
+    }
+  })
+
   it('throws InvalidImportError when the archive has no space data', () => {
     const entries = new Map<string, TarEntry>([
       ['manifest.yml', fileEntry(validManifestYaml())]

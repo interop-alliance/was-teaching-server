@@ -5731,3 +5731,43 @@ sidecar, and Delete Resource and Delete Chunk remove every representation file
 of the id, so a delete is the one path that reclaims an orphan. The Collection
 listing's `totalItems` and the Resource count quota are exact.
 `test/filesystem-ghost-files.test.ts` plants the orphans.
+
+### WAS-68: [M] Import trusts the tarball's Collection Description `id`
+
+- status: done
+- done: 2026-10-05
+- priority: medium
+- labels: data-model, import, validation
+- acceptance:
+  - [x] An imported Collection Description whose `id` is absent, or names a
+    collection other than the one its tar path places it in, is either
+    rejected or normalized to the path-derived id
+  - [x] Whichever is chosen, it matches what the three write handlers already do
+    (they set `id` from the URL segment unconditionally)
+  - [x] A test imports a hand-crafted tar carrying both shapes
+
+Every other write path to a Collection Description sets `id` from the URL
+segment, so a client can neither omit it nor choose it: `CollectionRequest` does
+it on create and update (`src/requests/CollectionRequest.ts:357`, `:373`), and
+the POST-to-space handler does the same
+(`src/requests/SpaceRequest.ts:442-443`). A body whose `id` disagrees with the
+URL is refused as `invalid-request-body`.
+
+Import is the exception. It parses the Collection Description out of the tarball
+verbatim -- `JSON.parse(metaEntry.body.toString('utf8'))` at
+`src/lib/importTar.ts:376-380` -- and synthesizes
+`{ id: collectionId, type, name }` only when the tar carries no description
+entry at all. So a hand-crafted tar can plant a Collection Description whose
+`id` is missing, or whose `id` names a different collection than the tar path it
+is stored under. Neither shape is reachable through any other route, and nothing
+downstream re-derives the id.
+
+Space Descriptions are not affected: import merges into a pre-existing Space and
+never rewrites its description.
+
+Discovered 2026-08-28 while confirming, for a was-client change, that `id` is
+guaranteed present in a served Description. It is -- through the handlers.
+Import is the one path that does not enforce it, which makes the guarantee
+weaker than the handlers suggest. The consumer side now depends on it:
+was-client 0.45.0's `ensureSpaceAndCollection` refuses a caller-supplied Space
+description whose `id` does not name the Space being provisioned.

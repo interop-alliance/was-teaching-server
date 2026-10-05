@@ -20,7 +20,6 @@ Ready:
   enforcement)
 - WAS-126 [H] Import Space validates what it installs
 - WAS-127 [H] A Resource's access-control policy dies with the Resource
-- WAS-68 [M] Import trusts the tarball's Collection Description `id`
 - WAS-108 [M] Container rule for the policy and backend-registration writes
   (blocks 1)
 - WAS-137 [M] Bind the KMS record envelope to its record
@@ -386,45 +385,6 @@ whatever next occupies that id (client-chosen ids such as `keyring` or `index`
 collide routinely). No listing shows a Resource-level policy. Delete Collection
 and Delete Space do clean policies up; the Resource level is the lone gap. The
 container-rule half of policy control is WAS-61 / WAS-108.
-
-### WAS-68: [M] Import trusts the tarball's Collection Description `id`
-
-- status: todo
-- priority: medium
-- labels: data-model, import, validation
-- acceptance:
-  - [ ] An imported Collection Description whose `id` is absent, or names a
-        collection other than the one its tar path places it in, is either
-        rejected or normalized to the path-derived id
-  - [ ] Whichever is chosen, it matches what the three write handlers already do
-        (they set `id` from the URL segment unconditionally)
-  - [ ] A test imports a hand-crafted tar carrying both shapes
-
-Every other write path to a Collection Description sets `id` from the URL
-segment, so a client can neither omit it nor choose it: `CollectionRequest` does
-it on create and update (`src/requests/CollectionRequest.ts:357`, `:373`), and
-the POST-to-space handler does the same
-(`src/requests/SpaceRequest.ts:442-443`). A body whose `id` disagrees with the
-URL is refused as `invalid-request-body`.
-
-Import is the exception. It parses the Collection Description out of the tarball
-verbatim -- `JSON.parse(metaEntry.body.toString('utf8'))` at
-`src/lib/importTar.ts:376-380` -- and synthesizes
-`{ id: collectionId, type, name }` only when the tar carries no description
-entry at all. So a hand-crafted tar can plant a Collection Description whose
-`id` is missing, or whose `id` names a different collection than the tar path it
-is stored under. Neither shape is reachable through any other route, and nothing
-downstream re-derives the id.
-
-Space Descriptions are not affected: import merges into a pre-existing Space and
-never rewrites its description.
-
-Discovered 2026-08-28 while confirming, for a was-client change, that `id` is
-guaranteed present in a served Description. It is -- through the handlers.
-Import is the one path that does not enforce it, which makes the guarantee
-weaker than the handlers suggest. The consumer side now depends on it:
-was-client 0.45.0's `ensureSpaceAndCollection` refuses a caller-supplied Space
-description whose `id` does not name the Space being provisioned.
 
 ### WAS-108: [M] [blocks 1] Container rule for the policy and backend-registration writes
 
