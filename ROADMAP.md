@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 212
+nextAvailableId: 213
 
 <!-- roadmap-order:index:start -->
 
@@ -99,8 +99,6 @@ Ready:
 
 - WAS-180 [M] Delete Space removes revocations before the Space directory
 - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict model)
-- WAS-206 [M] Two local Spaces registering one source leave its replicated DID
-  unresolvable
 - WAS-207 [L] Resolve a replicated `did:webvh` log that declares witnesses
 - WAS-209 [L] Cover the replicated-controller path on Postgres and under the
   client-annex clause
@@ -116,11 +114,12 @@ Ready:
 - WAS-196 [M] Bound the cost of accumulated Collection tombstones
 - WAS-203 [M] Skip a feed document the puller already holds before reading its
   body
+- WAS-212 [M] Open a Resource's byte stream lazily so a conditional read costs
+  one metadata read
 - WAS-204 [L] Stop re-applying a peer's Collection tombstones on every pull
   cycle
 - WAS-199 [L] Verify a peer invoker's delegation chain once
 - WAS-77 [L] Per-Collection filename cache on the filesystem backend
-- WAS-86 [L] Backend-evaluated `If-None-Match` on Resource and chunk reads
 
 **Docs, tests, and cleanup**
 
@@ -267,12 +266,12 @@ is load-bearing and must keep working: freewallet's replication invokes
 `<collection>/query` and resource `meta` under a collection-scoped grant.
 
 Rebased 2026-10-05 on wallet-attached-storage-spec WASS-58: a capability
-declares subtree coverage with a `*` at the end of its `invocationTarget`,
-and a target without it covers that URL alone. `attenuatedRootTarget` and
-`expectedRoots` therefore retire as per-route configuration (the capability
-says what it covers), and this item's three classes are consulted for `*`
-targets alone: among the reserved endpoints beneath a `*` target's base,
-which ones the grant reaches. A target without `*` reaches none.
+declares subtree coverage with a `*` at the end of its `invocationTarget`, and a
+target without it covers that URL alone. `attenuatedRootTarget` and
+`expectedRoots` therefore retire as per-route configuration (the capability says
+what it covers), and this item's three classes are consulted for `*` targets
+alone: among the reserved endpoints beneath a `*` target's base, which ones the
+grant reaches. A target without `*` reaches none.
 
 ### WAS-61: [H] Separate `/policy` control from data writes (exposure test + enforcement)
 
@@ -1590,46 +1589,6 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
 
 ---
 
-### WAS-206: [M] Two local Spaces registering one source leave its replicated DID unresolvable
-
-- status: todo
-- priority: medium
-- labels: replication, webvh, registration, lockout
-- discovered-from: WAS-177 (2026-10-04)
-- acceptance:
-  - [x] A registration whose `fromSpace` another local Space already registers,
-        and which would pull the same controller-log Collection, is refused with
-        `replica-refused`, or the resolver gains a safe rule for choosing a copy
-  - [ ] Update Space to a peer-hosted `did:webvh` is refused when the promoted
-        Space's own registrations would, under the new controller, select the
-        log Collection another local Space already maps
-  - [ ] A test shows no sequence of registrations and promotions leaves a Space
-        whose controller no longer resolves
-
-Context: a peer-hosted `did:webvh` resolves from storage only when exactly one
-local Space maps it through a registration. With two, it resolves from neither
-copy, since either could be an older prefix that still lists a retired key. If
-that DID controls both Spaces, nobody can then remove either registration or
-either Space, and there is no break-glass. Refusing the second registration
-changes registration behaviour, so it was left out of the resolver change.
-
-Refined 2026-10-05: Register Replica refuses the second registration since
-v0.42.0, so the first line is met. A probe found the sequence the second line
-asks about still open, through a promotion rather than a registration. Space A
-registers source S pulling the log Collection C. Space B, under a `did:key`,
-registers S pulling only another Collection, which is admitted since the
-selections are disjoint. B is then promoted to the DID hosted at S/C, which
-resolves through A's copy. The selection rule adds the controller's log
-Collection to B's registration once B's controller is that DID, so B becomes a
-second holder of C and the DID resolves from neither copy. B's new controller
-can no longer invoke, so B cannot remove its registration, and when A is under
-the same DID neither Space can be repaired. The promotion is the step to guard:
-it already resolves the DID before storing it, and can refuse when the promoted
-Space's own registrations would select the log Collection another local Space
-maps.
-
----
-
 ### WAS-207: [L] Resolve a replicated `did:webvh` log that declares witnesses
 
 - status: todo
@@ -1865,6 +1824,62 @@ The feed document already carries the record's stamp, so the decision needs no
 peer request. The local read is the sidecar on the filesystem backend and the
 stamp columns in Postgres.
 
+### WAS-212: [M] Open a Resource's byte stream lazily so a conditional read costs one metadata read
+
+- status: todo
+- priority: medium
+- labels: performance, caching, filesystem-backend, postgres-backend
+- discovered-from: question about the Resource GET path (2026-10-05)
+- acceptance:
+  - [ ] `ResourceResult` resolves the validator parts and `storedResourceType`
+        eagerly and the bytes behind an `open()` function that resolves the
+        `Readable`, in place of the open stream. `getResource` and `getChunk` on
+        `StorageBackend` resolve that shape on both backends
+  - [ ] Get Resource and Get Chunk call `getResource` / `getChunk` once, decide
+        the 304 from the result's validator with `notModifiedReply`, and call
+        `open()` only on a miss. `notModifiedBeforeStream` and the
+        metadata-first read it wrapped are removed
+  - [ ] On the filesystem backend a conditional GET reads the sidecar once and
+        runs one directory lookup, hit or miss, and a 304 opens no file. On
+        Postgres a hit is one query that selects no `content` column, and a miss
+        costs the single query an unconditional read costs. Deferring the open
+        splits the row read in two, so the item settles how a miss avoids a
+        second round trip (one query whose `content` is wrapped behind `open()`,
+        or a second query on the miss alone)
+  - [ ] The other `getResource` callers (`lib/webvhController.ts`,
+        `lib/webvhLogWrite.ts`, `lib/serverIdentity.ts`, export, the apply
+        path's log read) open the stream where they read it, and a caller that
+        never opens leaves no file handle behind
+  - [ ] The 304 wire behavior, the `ETag` on a 200, and every conditional-read
+        test in `test/` and the conformance suite are unchanged.
+        `test/storage-backend-contract.ts` covers the lazy shape on both
+        backends
+  - [ ] ARCHITECTURE.md's `lib/etag.ts` paragraph describes the single read in
+        place of the metadata-first read
+
+Context: a conditional Resource or chunk GET reads the record twice on the
+filesystem backend. The handler first calls `getResourceMetadata`
+(`#statRepresentation`: a directory lookup, a `stat`, and the sidecar read) to
+decide a 304 without opening the byte stream, and on a miss calls `getResource`
+(`#readRepresentation`: the same lookup and sidecar read, then the open). The
+second read exists only because `getResource` resolves an open stream, so the
+validator cannot be learned without opening the bytes. With the open deferred
+behind a function, `#readRepresentation` already does its work in the right
+order (locate the file, read the sidecar, open), and simply stops opening. The
+decision stays in the request layer, where the header is parsed, and the backend
+interface learns nothing about `If-None-Match`.
+
+This item absorbs WAS-86 (filed 2026-09-03 from a signup request-pattern review,
+dropped 2026-10-05), which reached the same single read by passing the held
+validators into the backend and letting it resolve a not-modified result. That
+put the `If-None-Match` decision inside `StorageBackend`. The Postgres
+observation it carried stands: the metadata-first read is a separate query
+there, and a miss then runs the content query as well, so the single read is
+worth as much on Postgres as on the filesystem backend once Postgres is a
+deployment target for the wallet log workloads that motivated the 304 path.
+`StorageBackend` and `ResourceResult` are server-local types with no implementer
+outside this repo, so the shape change needs no cross-repo follow-up.
+
 ### WAS-204: [L] Stop re-applying a peer's Collection tombstones on every pull cycle
 
 - status: todo
@@ -1990,39 +2005,6 @@ is the same shape as the Space Description and policy caches, with one more
 invalidation surface (any file write under the Collection). Surfaced by the
 2026-09-05 codebase simplification review; the Postgres backend has no
 equivalent cost (a primary-key lookup).
-
-### WAS-86: [L] Backend-evaluated `If-None-Match` on Resource and chunk reads
-
-- status: todo
-- priority: low
-- labels: caching, performance, postgres-backend
-- discovered-from: signup request-pattern review (2026-09-03)
-- acceptance:
-  - [ ] `getResource` and `getChunk` on `StorageBackend` accept an optional
-        held-validator set (the `HeldValidators` value `parseIfNoneMatch`
-        already produces, rather than the raw header) and resolve a not-modified
-        result, carrying the current validator and no stream, when it covers the
-        stored one
-  - [ ] The Postgres backend answers a covered read without selecting the
-        `content` column; the filesystem backend compares the sidecar validator
-        it already reads and skips opening the file
-  - [ ] Get Resource and Get Chunk pass the parsed set down and drop their
-        metadata-first read; the 304 wire behavior and every existing
-        conditional-read test in `test/` and the conformance suite are unchanged
-  - [ ] Storage-contract tests cover the covered and uncovered paths on both
-        backends; the webvh controller's unconditional `getResource` call is
-        unaffected
-
-Context: the conditional-read check (archived WAS-54) lives in the handlers. A
-conditional Resource or chunk GET reads the metadata first and opens the byte
-stream only on a miss, so on the filesystem backend a 304 costs a sidecar read.
-On Postgres that first read is a separate query, and a miss then runs the
-content query as well. Moving the comparison into the backend makes a
-conditional hit one query with no content transfer and a miss the single query
-an unconditional read costs. The header parsing stays in the request layer; the
-backend only answers whether the stored version is in the set. Only worth doing
-once Postgres is a deployment target for the wallet log workloads that motivated
-the 304 path. discovered-from: WAS-54.
 
 ## Docs, tests, and cleanup
 

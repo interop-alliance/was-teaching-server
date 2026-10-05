@@ -837,6 +837,28 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   either: a replicated copy of a log goes away with its Collection or Space, as
   a self-hosted log does.
 
+  Update Space is refused with the same `replica-refused` (409, pointer
+  `#/controller`) when the controller change would break a mapping. A
+  registration that lists its Collections always pulls the one holding its
+  Space's controller log, so a controller change moves what the Space's own
+  registrations pull. It touches at most two peer Collections: the one hosting
+  the new controller's log, which the change may add to a selection, and the one
+  hosting the current controller's log, which it may remove. An added Collection
+  another local Space's registration of the same peer Space already pulls is
+  refused, since the DID would then resolve from neither copy and the new
+  controller could not invoke to undo the change. A removed Collection the Space
+  was the one holder of is refused while some local Space's controller is a
+  `did:webvh` hosted there, since that Space would be left with no resolvable
+  controller, the lockout Delete Replica refuses. A demotion back to a `did:key`
+  is such a change. The caller changes that Space's controller first, or
+  registers the log's Collection on this Space by name, which holds it whatever
+  the controller. `controllerChangeConflict` in `lib/webvhLogLocation.ts`
+  decides both cases, and shares the second with Delete Replica. The three
+  checks read the stored registrations and the other Spaces' controllers afresh,
+  past the caches, so a controller another process wrote a moment ago counts. A
+  Space with no registrations is not checked. None of the checks is atomic with
+  its write.
+
   `sync/replication.ts` is the `ReplicationManager`, one per app, decorated as
   `replication`. It runs one pull loop per stored registration, started at
   `onReady` and on registration. A cycle reads the peer Space's Metadata object

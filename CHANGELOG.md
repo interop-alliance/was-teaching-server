@@ -31,6 +31,16 @@
   or lists under `capabilityDelegation` alone, is refused with `replica-refused`
   (409).
 - Silence request logging for the `/health` probe.
+- Update Space refuses with `replica-refused` (409, pointer `#/controller`) a
+  controller change that would break a replicated `did:webvh` mapping: a
+  promotion under which one of the Space's own replica registrations would pull
+  the Collection holding the DID's log beside another local Space's registration
+  of the same peer Space, and a change away from a peer-hosted `did:webvh` that
+  would leave another Space's controller with no copy of its log. Without it the
+  DID resolved from neither copy, or from none, and the Space could not be
+  repaired by its controller. The registration, Delete Replica, and Update Space
+  checks now read the other Spaces' controllers from storage rather than the
+  Space Metadata cache.
 - The guarded create of a governing history log is refused with
   `encryption-immutable` (409) on a Collection whose Metadata object carries a
   `plaintext` member. Before, the log landed and every later Metadata write was
