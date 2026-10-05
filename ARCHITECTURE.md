@@ -54,13 +54,24 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   request about a method. The refusal reads no ids, so it answers the same
   whether or not the Space, Collection, or Resource exists. A reserved endpoint
   this server anchors but serves nothing at (the cross-collection
-  `/space/:spaceId/query`) sends an empty `Allow`. The no-slash form of a
-  container URL redirects to the slash form with a 308 for every method
-  (spec-defined; see the Glossary's Trailing slashes note), so a signed request
-  must be re-signed for the redirect target rather than replay its
-  `Authorization` header. The retired `/space/:spaceId/collections/` endpoint
-  308s to the Space URL, which lists and creates Collections since v0.5;
-  `collections` and `meta` stay reserved Collection ids.
+  `/space/:spaceId/query`) sends an empty `Allow`. So does
+  `/space/:spaceId/meta/log`, which would otherwise reach the Resource route
+  with `meta` as a Collection id. The `/spaces/` repository, the member URLs
+  `backends/:backendId` and `chunks/:chunkIndex` included, has the same
+  refusals. A refusal and a slash redirect answer the same whatever the caller's
+  identity, so both carry the `noAuth` route config and the group's auth-header,
+  `parseAuthHeaders` and digest hooks skip them. An anonymous `PUT` of a
+  container URL is therefore a 405, not a 401, and a refusal is thrown from a
+  route-level `onRequest` hook, ahead of body parsing. The provisioning gate,
+  the error handler, the `no-store` marking and the hosted-page sandbox still
+  run on them. The no-slash form of a container URL redirects to the slash form
+  with a 308 for every method (spec-defined; see the Glossary's Trailing slashes
+  note), so a signed request must be re-signed for the redirect target rather
+  than replay its `Authorization` header. The slash form of a Resource or chunk
+  URL redirects to the no-slash form the same way, for every method. The retired
+  `/space/:spaceId/collections/` endpoint 308s to the Space URL, which lists and
+  creates Collections since v0.5; `collections` and `meta` stay reserved
+  Collection ids.
 - **`src/requests/*Request.ts`** — request handlers as static class methods
   (`SpaceRequest.post`, etc.). Each handler follows the same shape: fetch the
   Space/Collection for context, call `handleZcapVerify(...)`, then call a

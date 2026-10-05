@@ -2009,6 +2009,14 @@ declare module 'fastify' {
      * `no-store` hook in `routes.ts` leaves its response cacheable.
      */
     safe?: boolean
+    /**
+     * Marks a route that answers the same whatever the caller's identity: a
+     * 405 method refusal or a 308 slash redirect. The group's auth-header,
+     * `parseAuthHeaders`, `captureRawBody` and `verifyBodyDigest` hooks in
+     * `routes.ts` skip it, so an anonymous request gets the refusal or the
+     * redirect rather than a 401.
+     */
+    noAuth?: boolean
   }
   interface FastifyInstance {
     serverUrl: string
