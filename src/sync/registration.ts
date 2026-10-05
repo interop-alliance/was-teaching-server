@@ -7,6 +7,8 @@
  */
 import type { FastifyBaseLogger } from 'fastify'
 import type { ISigner } from '@interop/data-integrity-core'
+import { readLogFromString } from '@interop/did-method-webvh'
+import type { DIDDoc } from '@interop/did-method-webvh'
 
 import {
   REPLICATION_IDENTIFIER,
@@ -20,17 +22,29 @@ import {
 } from '../errors.js'
 import { isPlainObject } from '../lib/isPlainObject.js'
 import { mergeAppliedCollectionMetadata } from '../lib/replicaApply.js'
-import { collectionMetaPath, spaceMetaPath, spacePath } from '../lib/paths.js'
+import {
+  collectionMetaPath,
+  resourcePath,
+  spaceMetaPath,
+  spacePath
+} from '../lib/paths.js'
 import type { ServerSigningKey } from '../lib/serverIdentity.js'
-import { SERVER_SPACE_ID } from '../lib/serverIdentity.js'
+import { SERVER_SPACE_ID, keyRelationships } from '../lib/serverIdentity.js'
 import { isSameTypeSet } from '../lib/spaceType.js'
 import { loadSyncSigner } from '../lib/syncIdentity.js'
+import {
+  WEBVH_LOG_RESOURCE_ID,
+  isValidController,
+  parsePeerHostedWebvh
+} from '../lib/validateDid.js'
 import {
   isReplicaId,
   isUrlSafeSegment,
   spaceIdOfSpaceUrl
 } from '../lib/validateId.js'
+import { verifyWebvhLog } from '../lib/webvhController.js'
 import { replicaMappingConflict } from '../lib/webvhLogLocation.js'
+import { selectedCollectionIds } from './collectionSelection.js'
 import type {
   CollectionMetadata,
   IDelegatedZcap,
@@ -232,7 +246,9 @@ export function storedProjectionOfCollection(
  *   the version this server speaks and an `originId` that is not this
  *   server's.
  * - The peer Space, read through the capability, has the local Space's
- *   `controller` and `type` set.
+ *   `type` set, and either the local Space's `controller` or a `did:webvh`
+ *   hosted in the peer Space whose current document lists the local
+ *   `did:key` controller under `capabilityInvocation`.
  * - Each Collection the registration pulls that both sides hold agrees on
  *   the immutable members (`encryption`, `revisions.resolution`,
  *   `revisions.immutable`).
@@ -312,7 +328,7 @@ export async function assertReplicaAcceptable({
   })
   try {
     await assertPeerServes({ peer, record, storage })
-    await assertPeerSpaceMatches({ peer, record, spaceMetadata })
+    await assertPeerSpaceMatches({ peer, record, spaceMetadata, serverUrl })
     await assertImmutableMembersMatch({ peer, record, spaceId, storage })
   } catch (err) {
     if (err instanceof PeerRequestError) {
@@ -382,21 +398,25 @@ async function assertPeerServes({
 
 /**
  * The peer Space, read through the pull capability, must have the local
- * Space's `controller` and `type` set.
+ * Space's `type` set and a controller the local Space's controller matches
+ * (see {@link assertLocalControllerIsPeerKey}).
  * @param options {object}
  * @param options.peer {PeerClient}
  * @param options.record {ReplicaRegistration}
  * @param options.spaceMetadata {StoredSpaceMetadata}   the local object
+ * @param options.serverUrl {string}   this server's base URL
  * @returns {Promise<void>}
  */
 async function assertPeerSpaceMatches({
   peer,
   record,
-  spaceMetadata
+  spaceMetadata,
+  serverUrl
 }: {
   peer: PeerClient
   record: ReplicaRegistration
   spaceMetadata: StoredSpaceMetadata
+  serverUrl: string
 }): Promise<void> {
   const peerSpaceId = spaceIdOfSpaceUrl(record.fromSpace)!
   const { json } = await peer.readJson({
@@ -407,10 +427,12 @@ async function assertPeerSpaceMatches({
     expect: [200]
   })
   if (json.controller !== spaceMetadata.controller) {
-    throw new ReplicaRefusedError({
-      detail:
-        'The peer Space has another controller than this Space. A Space ' +
-        'replicates only between Spaces of one controller.'
+    await assertLocalControllerIsPeerKey({
+      peer,
+      record,
+      serverUrl,
+      peerController: json.controller,
+      localController: spaceMetadata.controller
     })
   }
   if (
@@ -420,6 +442,110 @@ async function assertPeerSpaceMatches({
     throw new ReplicaRefusedError({
       detail: 'The peer Space has another "type" set than this Space.'
     })
+  }
+}
+
+/**
+ * The second branch of the controller check, for a peer Space whose
+ * controller differs from the local Space's. A wallet promotes its Space to
+ * a `did:webvh` before the Space gains a replica, so the peer controller is
+ * that DID while a new local Space is still under a `did:key`. The local
+ * Space cannot be promoted first, since the DID resolves here only through
+ * the registration. The registration is admitted when the local `did:key` is
+ * a current key of the peer controller's document, listed under
+ * `capabilityInvocation`, the relationship a controller invokes under. A
+ * holder of a pull capability whose own key the document does not list still
+ * cannot register another user's Space as a source.
+ *
+ * The DID must be hosted in the peer Space itself, where the registration
+ * will make it resolvable here, and the registration must pull its log's
+ * Collection, else the copy the promotion needs would never arrive. The log
+ * is read through the pull capability and verified offline with no witness
+ * proofs, as a replicated copy is. Nothing is fetched by DID.
+ *
+ * @param options {object}
+ * @param options.peer {PeerClient}
+ * @param options.record {ReplicaRegistration}
+ * @param options.serverUrl {string}   this server's base URL
+ * @param options.peerController {unknown}   the peer Space's `controller`
+ * @param options.localController {string}   the local Space's `controller`
+ * @returns {Promise<void>}
+ * @throws {ReplicaRefusedError}
+ */
+async function assertLocalControllerIsPeerKey({
+  peer,
+  record,
+  serverUrl,
+  peerController,
+  localController
+}: {
+  peer: PeerClient
+  record: ReplicaRegistration
+  serverUrl: string
+  peerController: unknown
+  localController: string
+}): Promise<void> {
+  const refuse = (detail: string, pointer?: string): never => {
+    throw new ReplicaRefusedError({
+      detail: `The peer Space has another controller than this Space. ${detail}`,
+      ...(pointer !== undefined && { pointer })
+    })
+  }
+  const hosted = parsePeerHostedWebvh(peerController, { serverUrl })
+  if (
+    !isValidController(localController) ||
+    hosted === undefined ||
+    hosted.fromSpace !== record.fromSpace
+  ) {
+    return refuse(
+      'A Space replicates between Spaces of one controller, or onto a ' +
+        "Space under a did:key the peer Space's did:webvh controller lists."
+    )
+  }
+  const selected = selectedCollectionIds({ record, localController })
+  if (selected !== undefined && !selected.has(hosted.collectionId)) {
+    return refuse(
+      `The registration does not pull Collection "${hosted.collectionId}", ` +
+        "which holds the peer controller's history log.",
+      '#/collections'
+    )
+  }
+  const { body } = await peer.read({
+    url: peerUrlOf({
+      path: resourcePath({
+        spaceId: hosted.spaceId,
+        collectionId: hosted.collectionId,
+        resourceId: WEBVH_LOG_RESOURCE_ID
+      }),
+      fromSpace: record.fromSpace
+    }),
+    expect: [200]
+  })
+  let doc: DIDDoc
+  try {
+    const log = readLogFromString(body.toString('utf8'))
+    const verified = await verifyWebvhLog({
+      did: peerController as string,
+      log,
+      witnessProofs: []
+    })
+    if (verified.deactivated) {
+      throw new Error('the DID has been deactivated.')
+    }
+    doc = verified.doc
+  } catch (err) {
+    return refuse(
+      "The peer controller's history log does not verify: " +
+        (err as Error).message
+    )
+  }
+  const publicKeyMultibase = localController.slice('did:key:'.length)
+  const { listedUnder } = keyRelationships({ doc, publicKeyMultibase })
+  if (!listedUnder.includes('capabilityInvocation')) {
+    return refuse(
+      "The peer controller's document does not list this Space's " +
+        'controller under "capabilityInvocation".'
+    )
   }
 }
 

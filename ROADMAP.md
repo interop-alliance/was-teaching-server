@@ -103,7 +103,6 @@ Chains:
 
 Ready:
 
-- WAS-205 [H] A Space promoted to its own `did:webvh` cannot gain a new replica
 - WAS-180 [M] Delete Space removes revocations before the Space directory
 - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict model)
 - WAS-206 [M] Two local Spaces registering one source leave its replicated DID
@@ -1520,37 +1519,6 @@ The replication program: a Space served by several primaries with a replicated
 write identity and conflict model. WAS-96 is the umbrella and names the design
 doc; the other items are its sub-items in dependency order.
 
-### WAS-205: [H] A Space promoted to its own `did:webvh` cannot gain a new replica
-
-- status: todo
-- priority: high
-- labels: replication, webvh, registration
-- discovered-from: WAS-177 (2026-10-04)
-- touches:
-  - was-teaching-server: `src/sync/registration.ts`, ARCHITECTURE.md (the
-    `src/sync/` section)
-  - wallet-attached-storage-spec: the registration checks (WASS-50)
-  - freewallet: the replica registration flow (FW-638)
-- acceptance:
-  - [ ] A Space whose controller is a `did:webvh` hosted in that Space can be
-        registered as the source of a new Space on another server
-  - [ ] The stranger case stays closed: a holder of a readable pull capability
-        still cannot register another user's Space as a source
-  - [ ] A two-server test registers a replica of an already promoted Space,
-        pulls, and promotes the replica to the replicated DID
-
-Context: a registration is refused unless the peer Space's `controller` equals
-the local Space's. A new local Space is created under a `did:key`. A peer Space
-already promoted to a `did:webvh` therefore never matches. Promoting the local
-Space first needs the DID to resolve here, which needs the registration. The
-setup works only while the origin Space is still under its `did:key`, which is
-how the tests register. An account that was promoted before it gained a replica
-has no path to one, and that is the common order. The design decision is what
-replaces literal equality, for example a proof that the local controller is a
-key of the peer controller's document.
-
----
-
 ### WAS-180: [M] Delete Space removes revocations before the Space directory
 
 - status: todo
@@ -1728,11 +1696,14 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
 - labels: replication, webvh, registration, lockout
 - discovered-from: WAS-177 (2026-10-04)
 - acceptance:
-  - [ ] A registration whose `fromSpace` another local Space already registers,
+  - [x] A registration whose `fromSpace` another local Space already registers,
         and which would pull the same controller-log Collection, is refused with
         `replica-refused`, or the resolver gains a safe rule for choosing a copy
-  - [ ] A test shows no sequence of registrations leaves a Space whose
-        controller no longer resolves
+  - [ ] Update Space to a peer-hosted `did:webvh` is refused when the promoted
+        Space's own registrations would, under the new controller, select the
+        log Collection another local Space already maps
+  - [ ] A test shows no sequence of registrations and promotions leaves a Space
+        whose controller no longer resolves
 
 Context: a peer-hosted `did:webvh` resolves from storage only when exactly one
 local Space maps it through a registration. With two, it resolves from neither
@@ -1740,6 +1711,21 @@ copy, since either could be an older prefix that still lists a retired key. If
 that DID controls both Spaces, nobody can then remove either registration or
 either Space, and there is no break-glass. Refusing the second registration
 changes registration behaviour, so it was left out of the resolver change.
+
+Refined 2026-10-05: Register Replica refuses the second registration since
+v0.42.0, so the first line is met. A probe found the sequence the second line
+asks about still open, through a promotion rather than a registration. Space A
+registers source S pulling the log Collection C. Space B, under a `did:key`,
+registers S pulling only another Collection, which is admitted since the
+selections are disjoint. B is then promoted to the DID hosted at S/C, which
+resolves through A's copy. The selection rule adds the controller's log
+Collection to B's registration once B's controller is that DID, so B becomes a
+second holder of C and the DID resolves from neither copy. B's new controller
+can no longer invoke, so B cannot remove its registration, and when A is under
+the same DID neither Space can be repaired. The promotion is the step to guard:
+it already resolves the DID before storing it, and can refuse when the promoted
+Space's own registrations would select the log Collection another local Space
+maps.
 
 ---
 

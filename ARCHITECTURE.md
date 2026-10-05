@@ -688,23 +688,24 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   head-record and fast-forward path as a native one. The mapping goes through
   the registration because a local Space named S could belong to anyone on this
   server. A registration passes the controller check in `sync/registration.ts`,
-  so only the peer Space's controller can make one. When two or more local
-  Spaces map one DID, it has no location and does not resolve from storage. An
-  older copy could list a retired key, and the head record is lost on restart,
-  so picking either copy would let the older one win. The registrations are read
-  through an index of every stored registration, cached per backend for
-  `REPLICA_INDEX_CACHE_TTL`. Storing or removing a registration drops it, and so
-  does Delete Space. The head record of a replicated DID is keyed by the DID
-  alone, so it survives a change of the local Space that keeps the copy. A
-  replicated log, or an append to a log that is not self-hosted, is verified
-  with no witness proofs, so one that declares witnesses is refused. The apply
-  path's write of a `did.jsonl` drops the cached document, so a key retired at
-  the origin stops authorizing after the next pull. Such a DID may be a Space
-  controller, a keystore controller, a delegator, and the `createdBy` of a
-  write. `lib/serverIdentity.ts`, `lib/syncIdentity.ts` and import provenance
-  stay native-only. `invokerDid` (`createdBy`) also records a DID resolved over
-  the network, since the authorization that ran before decided its key. A create
-  the provisioning policy granted verifies no signature, so it records no
+  so only the peer Space's controller, or a current invocation key of its
+  `did:webvh` document, can make one. When two or more local Spaces map one DID,
+  it has no location and does not resolve from storage. An older copy could list
+  a retired key, and the head record is lost on restart, so picking either copy
+  would let the older one win. The registrations are read through an index of
+  every stored registration, cached per backend for `REPLICA_INDEX_CACHE_TTL`.
+  Storing or removing a registration drops it, and so does Delete Space. The
+  head record of a replicated DID is keyed by the DID alone, so it survives a
+  change of the local Space that keeps the copy. A replicated log, or an append
+  to a log that is not self-hosted, is verified with no witness proofs, so one
+  that declares witnesses is refused. The apply path's write of a `did.jsonl`
+  drops the cached document, so a key retired at the origin stops authorizing
+  after the next pull. Such a DID may be a Space controller, a keystore
+  controller, a delegator, and the `createdBy` of a write.
+  `lib/serverIdentity.ts`, `lib/syncIdentity.ts` and import provenance stay
+  native-only. `invokerDid` (`createdBy`) also records a DID resolved over the
+  network, since the authorization that ran before decided its key. A create the
+  provisioning policy granted verifies no signature, so it records no
   `createdBy`.
 - **`src/lib/replicaApply.ts`** -- the rules the apply path stores a replicated
   record by. A storage backend's `apply*` methods take a record a pull loop read
@@ -763,17 +764,31 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   the `server` Space. This server has a sync signer, and the capability is
   delegated to its DID. The peer's `/service` lists the replication entry at
   this server's version and an `originId` that is not this server's. The peer
-  Space, read through the capability, has the local Space's `controller` and
-  `type` set. Without the controller check, a holder of any readable pull
-  capability could register another user's Space as a source and read the copy
-  through root invocations. Each Collection both sides hold agrees on the
-  immutable members. The peer Space's id need not equal the local one. One check
-  reads no peer. A registration is refused when another local Space already
-  replicates the same peer Space with a Collection in common, since a
-  `did:webvh` hosted in a Collection two local Spaces replicate resolves from
-  neither copy (`lib/webvhLogLocation.ts`). Two registrations on one local Space
-  may overlap. The check is not atomic with the write, so two concurrent
-  registrations can both pass, and the resolver then refuses the DID.
+  Space, read through the capability, has the local Space's `type` set, and a
+  controller the local one matches. The two are equal, or the peer controller is
+  a `did:webvh` hosted in the peer Space whose current document lists the local
+  Space's `did:key` controller under `capabilityInvocation`. The second branch
+  is the common order: a wallet promotes its Space to its `did:webvh` before the
+  Space gains a replica, and a new local Space is created under one of the
+  account's enrolled client keys. The local Space cannot be promoted first,
+  since the DID resolves here only through the registration. For that branch the
+  check reads the peer's `did.jsonl` through the pull capability, verifies it
+  offline with no witness proofs, as a replicated copy is, and requires the
+  registration to pull the log's Collection, so the copy the promotion needs
+  arrives with the first pull. The DID is never fetched by itself. Once the
+  first pull lands, Update Space moves the local Space to the DID, and the
+  controllers are equal from then on. Without the controller check, a holder of
+  any readable pull capability could register another user's Space as a source
+  and read the copy through root invocations. A key the document lists under
+  `capabilityDelegation` alone, a ladder method, does not pass. Each Collection
+  both sides hold agrees on the immutable members. The peer Space's id need not
+  equal the local one. One check reads no peer. A registration is refused when
+  another local Space already replicates the same peer Space with a Collection
+  in common, since a `did:webvh` hosted in a Collection two local Spaces
+  replicate resolves from neither copy (`lib/webvhLogLocation.ts`). Two
+  registrations on one local Space may overlap. The check is not atomic with the
+  write, so two concurrent registrations can both pass, and the resolver then
+  refuses the DID.
 
   Delete Replica is refused with the same `replica-refused` (409) while the
   registration is the only one that maps a local Space's `did:webvh` controller
