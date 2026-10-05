@@ -11,7 +11,17 @@
   `/spaces` redirects for every container method. `GET /space/:s/backends/:b`,
   `GET /space/:s/meta/log` and an unimplemented method at a chunk URL are `405`
   rather than a `409` `reserved-id` or a `404`. The slash form of a Resource or
-  chunk URL redirects for every method, not only `PUT`.
+  chunk URL redirects for every method the canonical form implements, not only
+  `PUT`, and refuses `POST` with the canonical form's `Allow`.
+- A path beneath a reserved segment that no route serves, such as
+  `GET /space/:s/policy/x`, answers `404` rather than a `409` `reserved-id`. The
+  bare `/space/:s/zcaps` is not found, and is no longer redirected to a
+  Collection listing. Every URL the server routes, the revocation endpoint, both
+  forms of a container URL and of a Resource URL, and the `/kms` keystore URLs
+  included, refuses an unimplemented method with a `405` and `Allow`; a
+  `DELETE /kms/keystores/:k` was a `404`. The `405` detail no longer names the
+  kind of endpoint; it reads `The method is not defined at this URL.` before the
+  hint and the `Allow` list.
 - Register Replica admits a peer Space whose controller is a `did:webvh` hosted
   in that Space when the local Space's `did:key` controller is listed under
   `capabilityInvocation` in the DID's current document. A Space promoted to its

@@ -831,41 +831,29 @@ export class InvalidCollectionError extends ProblemError {
 }
 
 /**
- * 405 -- the method is not defined at this URL. Two places raise it: a `PUT`
- * of a container URL (a Space or Collection: the container is described at
- * its `meta` sub-resource instead; spec "Space Metadata Data Model" /
- * "Collection Metadata Data Model"), and a `DELETE` of a container's Metadata
- * URL (spec "Lifecycle": there is no `DELETE` at `meta`; the object is
- * removed by deleting the container). The spec assigns this refusal no error
- * `type`, so the problem `type` is RFC 9457's `about:blank`: the HTTP status
- * is the whole meaning. For that reason the `title` is the status phrase
- * itself, `Method Not Allowed`, as RFC 9457 section 4.2.1 says it SHOULD be
- * when `type` is `about:blank`; which URL refused the method is a
- * per-occurrence specific, and so goes in `detail`. `handleError` emits the
- * RFC 9110 `Allow` header from `allow`, the methods the URL does accept.
+ * 405 -- the method is not defined at this URL. The route layer raises it for
+ * every method a URL does not implement (`refuseUnimplementedMethods` in
+ * `routes.ts`), and Delete Resource raises it for a `did:webvh` history log.
+ * The spec assigns this refusal no error `type`, so the problem `type` is RFC
+ * 9457's `about:blank`: the HTTP status is the whole meaning. For that reason
+ * the `title` is the status phrase itself, `Method Not Allowed`, as RFC 9457
+ * section 4.2.1 says it SHOULD be when `type` is `about:blank`; the optional
+ * `hint` and the `Allow` list are the per-occurrence specifics and go in
+ * `detail`. `handleError` emits the RFC 9110 `Allow` header from `allow`, the
+ * methods the URL does accept.
  * @param options {object}
  * @param options.allow {string[]}   the methods defined at the URL
  * @param [options.hint] {string}   one sentence naming where the refused
  *   operation lives instead, sited between the refusal and the `Allow` list
- * @param [options.targetName] {string}   what the URL addresses (e.g.
- *   `Space Metadata`), named in the detail
  */
 export class MethodNotAllowedError extends ProblemError {
   allow: string[]
-  constructor({
-    allow,
-    hint,
-    targetName
-  }: {
-    allow: string[]
-    hint?: string
-    targetName?: string
-  }) {
+  constructor({ allow, hint }: { allow: string[]; hint?: string }) {
     super({
       type: 'about:blank',
       title: 'Method Not Allowed',
       detail: [
-        `The method is not defined at this ${targetName ? `${targetName} ` : ''}URL.`,
+        'The method is not defined at this URL.',
         ...(hint ? [hint] : []),
         // An empty `Allow` is legal (RFC 9110: the URL allows no methods), and
         // a reserved endpoint the server anchors but serves nothing at has one.

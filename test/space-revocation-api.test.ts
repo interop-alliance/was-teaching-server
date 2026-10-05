@@ -681,16 +681,17 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
   })
 
   /**
-   * The `zcaps` segment is not in the Reserved Path Segment Registry, and the
-   * comment on `spaceRevocationsPath` explains why it needs no entry. These
-   * pin that explanation against the live route table, since the comment it
-   * replaced argued from depth and was wrong.
+   * `zcaps` is a reserved Collection id, so the route table gives the segment
+   * to the revocation route and the not-found wildcard beneath it. These pin
+   * that no method at the revocation shape, and no path beneath the segment,
+   * reaches the parametric Collection or Resource routes.
    */
   describe('the `zcaps` segment shadows no Collection route', () => {
     /**
      * The route parameters find-my-way binds for one method and path, or
      * `null` when nothing is registered. A `collectionId` means the parametric
-     * Collection or Resource branch won; a `revocationId` means this route did.
+     * Collection or Resource branch won; a `revocationId` means this route did,
+     * and a `*` means the not-found wildcard did.
      */
     function routeParams(method: string, url: string) {
       return fastify.findRoute({ method: method as never, url })?.params ?? null
@@ -713,25 +714,24 @@ describe('Space zcap revocations (/space/:spaceId/zcaps/revocations)', () => {
       })
     })
 
-    it('leaves every other method at that shape to the parametric routes', () => {
+    it('refuses every other method at that shape itself', () => {
       for (const method of ['GET', 'PUT', 'DELETE']) {
         assert.deepEqual(
           routeParams(method, '/space/s/zcaps/revocations/meta'),
-          { spaceId: 's', collectionId: 'zcaps', resourceId: 'revocations' },
-          `${method} should reach the Resource metadata route`
+          { spaceId: 's', revocationId: 'meta' },
+          `${method} should reach the revocation route's 405 refusal`
         )
       }
     })
 
-    it('leaves a Collection genuinely named `zcaps` fully usable', () => {
+    it('answers every other path beneath the segment as not found', () => {
       assert.deepEqual(routeParams('POST', '/space/s/zcaps/'), {
         spaceId: 's',
-        collectionId: 'zcaps'
+        '*': ''
       })
       assert.deepEqual(routeParams('GET', '/space/s/zcaps/revocations'), {
         spaceId: 's',
-        collectionId: 'zcaps',
-        resourceId: 'revocations'
+        '*': 'revocations'
       })
     })
 

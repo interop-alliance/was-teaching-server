@@ -5631,3 +5631,31 @@ the pre-append descriptor, so a 304 pins a stale recipient set.
   - [x] The strip-slash 308 on Resource and chunk URLs applies to every method,
         or to none (today `PUT` only)
   - [x] Tests per case
+
+### WAS-211: [M] Paths under a reserved segment answer by method, not by id
+
+- status: done
+- done: 2026-10-05
+- priority: medium
+- labels: routing, spec-conformance
+- discovered-from: WAS-143 (2026-10-05)
+- acceptance:
+  - [x] A path one level under a Space-level reserved segment that is no
+        registered endpoint (`GET /space/S/policy/x`, `GET /space/S/export/x`,
+        `GET /space/S/zcaps/revocations`) answers 404 or 405, not a 409
+        `reserved-id` from the Resource route one level up
+  - [x] `/space/:spaceId/zcaps/revocations/:revocationId` is in the Space
+        group's refusal list, so a method other than `POST` there is a 405 with
+        `Allow: POST` rather than a 404
+  - [x] The bare `/space/S/zcaps` and `/space/S/zcaps/` do not redirect to or
+        list a Collection named by a reserved segment
+  - [x] Decide whether the bare container forms (`/space/S`, `/space/S/C`) join
+        the refusal lists, so `PATCH /space/S` is a 405 with `Allow` rather than
+        a 404; today only `/spaces` does
+  - [x] Tests per case
+
+The method refusals cover each registered reserved endpoint, so a reserved
+segment answers 405 for a method it lacks. A path under such a segment is still
+matched by the parametric Resource route, whose reserved-id guard refuses it as
+a 409 about ids. The refusal reads no ids and must not depend on whether the
+Space exists. The default Fastify 404 body on the unmatched cases is WAS-142's.

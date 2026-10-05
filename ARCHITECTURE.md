@@ -40,38 +40,49 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   A `PUT` of a container URL answers 405, with an `Allow` header naming the
   methods the container accepts (the spec assigns this refusal no problem
   `type`, so it is RFC 9457's `about:blank`, and its `title` is the status
-  phrase `Method Not Allowed`, as RFC 9457 asks of an `about:blank` problem; the
-  refusing URL is named in the `detail`). Every reserved endpoint (spec
-  "Reserved Path Segment Registry") answers the same 405 for each method it does
-  not implement -- a `DELETE` of either Metadata URL, a `GET` of `export`, a
-  `PUT` of a Collection's `quota`. Each group ends with
-  `refuseUnimplementedMethods`, which reads the implemented set from the router
-  (`hasRoute`) and registers a refusal for every other method Fastify routes, so
-  the `Allow` header cannot drift from the routes. It must stay last in its
-  group. `OPTIONS` is left to the CORS preflight, and `HEAD` follows `GET`.
-  Without these refusals such a request fell through to the parametric route one
-  level up and was refused as a 409 `reserved-id`, an answer about ids to a
-  request about a method. The refusal reads no ids, so it answers the same
-  whether or not the Space, Collection, or Resource exists. A reserved endpoint
-  this server anchors but serves nothing at (the cross-collection
-  `/space/:spaceId/query`) sends an empty `Allow`. So does
-  `/space/:spaceId/meta/log`, which would otherwise reach the Resource route
-  with `meta` as a Collection id. The `/spaces/` repository, the member URLs
-  `backends/:backendId` and `chunks/:chunkIndex` included, has the same
-  refusals. A refusal and a slash redirect answer the same whatever the caller's
+  phrase `Method Not Allowed`, as RFC 9457 asks of an `about:blank` problem).
+  Every URL a group registers, the `/kms` group's included, answers the same 405
+  for each method it does not implement -- a `DELETE` of either Metadata URL, a
+  `GET` of `export`, a `PATCH` of a Space, a Collection or a Resource, at either
+  slash form, a `DELETE` of a keystore. Each group records its route URLs with
+  an `onRoute` hook (`collectRouteUrls`) and ends with
+  `refuseUnimplementedMethods`, which reads the implemented set at each from the
+  router (`hasRoute`) and registers a refusal for every other method Fastify
+  routes. Neither the URLs nor the `Allow` header can drift from the routes, and
+  the only hand-written input is the `PUT`/`DELETE` hints and the two anchors a
+  Space does not serve, the cross-collection `/space/:spaceId/query` and the
+  Collection-level shape `/space/:spaceId/meta/log`, which answer 405 with an
+  empty `Allow`. The call must stay last in its group. `OPTIONS` is left to the
+  CORS preflight, and `HEAD` follows `GET`. A bare container form's `Allow`
+  names the methods it redirects for. The refusal reads no ids, so it answers
+  the same whether or not the Space, Collection, or Resource exists. Without it
+  such a request fell through to the parametric route one level up and was
+  refused as a 409 `reserved-id`, an answer about ids to a request about a
+  method. A path beneath a Space-level or Collection-level reserved segment that
+  no route serves is not found (404), as an unmatched URL is.
+  `refusePathsBeneath` registers a wildcard route, `<segment>/*`, for each id in
+  the reserved-id registry (`lib/validateId.ts`), and anchors the bare segment
+  too when no route serves it (`zcaps`), so it is not read as a Collection's
+  bare form. The route is marked `noAuth` and answers from a route-level
+  `onRequest` hook through `reply.callNotFound()`, so it reads no ids and parses
+  no body. Static and parametric routes beat a wildcard, so the endpoints
+  beneath a segment (`backends/:backendId`, `meta/log`,
+  `zcaps/revocations/:revocationId`) keep answering, their 405 refusals
+  included. A refusal and a slash redirect answer the same whatever the caller's
   identity, so both carry the `noAuth` route config and the group's auth-header,
   `parseAuthHeaders` and digest hooks skip them. An anonymous `PUT` of a
   container URL is therefore a 405, not a 401, and a refusal is thrown from a
   route-level `onRequest` hook, ahead of body parsing. The provisioning gate,
   the error handler, the `no-store` marking and the hosted-page sandbox still
   run on them. The no-slash form of a container URL redirects to the slash form
-  with a 308 for every method (spec-defined; see the Glossary's Trailing slashes
-  note), so a signed request must be re-signed for the redirect target rather
-  than replay its `Authorization` header. The slash form of a Resource or chunk
-  URL redirects to the no-slash form the same way, for every method. The retired
-  `/space/:spaceId/collections/` endpoint 308s to the Space URL, which lists and
-  creates Collections since v0.5; `collections` and `meta` stay reserved
-  Collection ids.
+  with a 308 for every container method (spec-defined; see the Glossary's
+  Trailing slashes note), so a signed request must be re-signed for the redirect
+  target rather than replay its `Authorization` header. The slash form of a
+  Resource or chunk URL redirects to the no-slash form the same way, for every
+  method the canonical form implements, and refuses `POST` with the canonical
+  form's `Allow`. The retired `/space/:spaceId/collections/` endpoint 308s to
+  the Space URL, which lists and creates Collections since v0.5; `collections`
+  and `meta` stay reserved Collection ids.
 - **`src/requests/*Request.ts`** — request handlers as static class methods
   (`SpaceRequest.post`, etc.). Each handler follows the same shape: fetch the
   Space/Collection for context, call `handleZcapVerify(...)`, then call a
