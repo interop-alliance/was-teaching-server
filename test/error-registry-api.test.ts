@@ -138,7 +138,7 @@ describe('Error registry wire coverage', () => {
         assert.equal(err.data.title, 'Method Not Allowed')
         assert.match(
           err.data.errors[0].detail,
-          /^The method is not defined at this (Space|Collection) URL\./
+          /^The method is not defined at this URL\./
         )
       })
     }
@@ -166,7 +166,7 @@ describe('Error registry wire coverage', () => {
         assert.equal(err.data.title, 'Method Not Allowed')
         assert.match(
           err.data.errors[0].detail,
-          /^The method is not defined at this (Space|Collection) Metadata URL\./
+          /^The method is not defined at this URL\./
         )
         // The detail names where the operation lives instead, and says
         // nothing about the `meta` sub-resource of a container -- that is the
@@ -208,7 +208,11 @@ describe('Error registry wire coverage', () => {
         allow: 'GET, HEAD, PUT'
       },
       { method: 'POST', path: '/space/:s/c/r/meta', allow: 'GET, HEAD, PUT' },
-      { method: 'DELETE', path: '/space/:s/c/r/chunks/', allow: 'GET, HEAD' }
+      { method: 'DELETE', path: '/space/:s/c/r/chunks/', allow: 'GET, HEAD' },
+      // One of each new refusal shape; the full table is in
+      // method-refusals-api.test.ts.
+      { method: 'PATCH', path: '/space/:s/', allow: 'GET, HEAD, POST, DELETE' },
+      { method: 'GET', path: '/space/:s/zcaps/revocations/x', allow: 'POST' }
     ]
     for (const { method, path, allow } of refusals) {
       it(`${method} ${path} is 405 with Allow: ${allow}`, async () => {

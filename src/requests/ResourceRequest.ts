@@ -665,8 +665,7 @@ export class ResourceRequest {
     if (resourceId === WEBVH_LOG_RESOURCE_ID) {
       throw new MethodNotAllowedError({
         allow: ['GET', 'HEAD', 'PUT'],
-        targetName: 'did:webvh history log',
-        hint: 'A history log is removed only with its Collection or Space.'
+        hint: 'A did:webvh history log is removed only with its Collection or Space.'
       })
     }
 

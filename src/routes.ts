@@ -14,13 +14,14 @@
  * by a trailing slash. (The WebKMS `/kms` group is the exception on both
  * counts: it installs the strict `requireAuthHeaders` -- the webkms protocol
  * has no public reads -- and no slash redirects, since the protocol's URLs
- * are exact.)
+ * are exact. Its 405 refusals are the same as every other group's.)
  *
- * A method a WAS URL does not implement is refused with a 405 naming the
- * methods it does (`refuseUnimplementedMethods`). The refusals and the slash
- * redirects are marked `config.noAuth`. They answer the same whoever asks, so
- * the group's auth and digest hooks skip them, and an anonymous request gets
- * the 405 or the 308 rather than a 401.
+ * A method a WAS URL does not implement is refused with a 405
+ * (`refuseUnimplementedMethods`), and a path beneath a reserved segment that
+ * no route serves is not found (`refusePathsBeneath`). Both, like the slash
+ * redirects, are marked `config.noAuth`: they answer the same whoever asks,
+ * so the group's auth and digest hooks skip them and an anonymous request
+ * gets the 405, 404 or 308 rather than a 401.
  */
 import type { Readable } from 'node:stream'
 import type {
@@ -50,6 +51,10 @@ import {
   requireAuthHeadersOrPublicRead
 } from './auth-header-hooks.js'
 import { captureRawBody, verifyBodyDigest } from './digest.js'
+import {
+  RESERVED_COLLECTION_IDS,
+  RESERVED_RESOURCE_IDS
+} from './lib/validateId.js'
 import {
   provisioningGateFor,
   spaceIsAbsent,
@@ -331,20 +336,17 @@ function redirectCollectionsToSpace(
  * the body is parsed. An anonymous request, or one with a malformed body, gets
  * the same 405 as a signed one.
  * @param allow {string[]}   the methods implemented at the URL
- * @param targetName {string}   what the URL addresses, named in the detail
  * @param [hint] {string}   one sentence naming where the refused operation
  *   lives instead
  * @returns {RouteShorthandOptionsWithHandler}
  */
 function methodNotAllowed(
   allow: string[],
-  targetName: string,
   hint?: string
 ): RouteShorthandOptionsWithHandler {
   async function refuseMethod(): Promise<never> {
     throw new MethodNotAllowedError({
       allow,
-      targetName,
       ...(hint !== undefined && { hint })
     })
   }
@@ -372,8 +374,38 @@ const CONTAINER_META_DELETE_HINT =
   'A Metadata object is removed by deleting the container it describes.'
 
 /**
- * Registers a `405 Method Not Allowed` route for every method a reserved
- * endpoint does not implement (spec "Methods at Reserved Endpoints"), with an
+ * The methods a refusal or a not-found anchor is registered for: every method
+ * Fastify routes except `OPTIONS`, which the CORS plugin's preflight route
+ * answers. Read per instance, since a plugin can add a method.
+ * @param app {import('fastify').FastifyInstance}   the owning route group
+ * @returns {HTTPMethods[]}
+ */
+function routedMethods(app: FastifyInstance): HTTPMethods[] {
+  return app.supportedMethods.filter(
+    method => method !== 'OPTIONS'
+  ) as HTTPMethods[]
+}
+
+/**
+ * Records the URL template of every route a group registers, so the group can
+ * refuse the methods it does not implement at each of them
+ * (`refuseUnimplementedMethods`) without listing its URLs by hand. Call it
+ * before the group's routes. `onRoute` is encapsulated, so the set holds the
+ * group's own routes only.
+ * @param app {import('fastify').FastifyInstance}   the owning route group
+ * @returns {Set<string>}   the URL templates, growing as routes are added
+ */
+function collectRouteUrls(app: FastifyInstance): Set<string> {
+  const urls = new Set<string>()
+  app.addHook('onRoute', routeOptions => {
+    urls.add(routeOptions.url)
+  })
+  return urls
+}
+
+/**
+ * Registers a `405 Method Not Allowed` route for every method a URL in the
+ * group does not implement (spec "Methods at Reserved Endpoints"), with an
  * `Allow` header naming the methods it does. Without these, a method the
  * endpoint lacks falls through to the parametric route one level up -- a
  * Collection or Resource operation on the reserved segment as an id -- and is
@@ -383,43 +415,129 @@ const CONTAINER_META_DELETE_HINT =
  * Collection, or Resource exists. It also answers ahead of the auth hooks
  * (see `methodNotAllowed`), so an anonymous caller gets the 405, not a 401.
  *
- * The implemented set is read from the router itself (`hasRoute`), so the
- * `Allow` header cannot drift from the routes. That makes the call order
- * matter: call it at the end of the route group that owns the endpoints, after
- * their real routes and before any refusal is added. Every method Fastify
- * routes is considered except `OPTIONS`, which the CORS plugin's preflight
- * route answers. `HEAD` is never registered here: Fastify exposes it beside
- * every `GET`, so it is implemented wherever `GET` is and refused wherever a
- * `GET` refusal is registered.
+ * The URLs are the ones the group registered (`collectRouteUrls`), and the
+ * implemented set at each is read from the router itself (`hasRoute`), so
+ * neither can drift from the routes. That makes the call order matter: call
+ * it at the end of the route group, after its real routes. `HEAD` is never
+ * registered here: Fastify exposes it beside every `GET`, so it is
+ * implemented wherever `GET` is and refused wherever a `GET` refusal is
+ * registered.
  * @param app {import('fastify').FastifyInstance}   the owning route group
- * @param endpoints {object[]}   the reserved endpoints, each a route `url`
- *   template, the `targetName` its refusal names, and optional per-method
- *   `hints`
+ * @param urls {Iterable<string>}   the group's route URL templates
+ * @param [options] {object}
+ * @param [options.anchors] {string[]}   URL templates no route serves that
+ *   still answer 405, with an empty `Allow`, rather than fall through
+ * @param [options.hints] {object}   per URL, per method, one sentence naming
+ *   where the refused operation lives instead
  * @returns {void}
  */
 function refuseUnimplementedMethods(
   app: FastifyInstance,
-  endpoints: {
-    url: string
-    targetName: string
-    hints?: Partial<Record<string, string>>
-  }[]
+  urls: Iterable<string>,
+  {
+    anchors = [],
+    hints = {}
+  }: {
+    anchors?: string[]
+    hints?: Record<string, Partial<Record<string, string>>>
+  } = {}
 ): void {
-  const candidates = app.supportedMethods.filter(method => method !== 'OPTIONS')
-  for (const { url, targetName, hints = {} } of endpoints) {
+  const candidates = routedMethods(app)
+  // Snapshot first: the refusals registered below are routes too.
+  for (const url of [...urls, ...anchors]) {
     const allow = candidates
-      .filter(method => app.hasRoute({ url, method: method as HTTPMethods }))
+      .filter(method => app.hasRoute({ url, method }))
       .sort((a, b) => ALLOW_ORDER.indexOf(a) - ALLOW_ORDER.indexOf(b))
     for (const method of candidates) {
       if (method === 'HEAD' || allow.includes(method)) {
         continue
       }
       app.route({
-        method: method as HTTPMethods,
+        method,
         url,
-        ...methodNotAllowed(allow, targetName, hints[method])
+        ...methodNotAllowed(allow, hints[url]?.[method])
       })
     }
+  }
+}
+
+/**
+ * The handler of a not-found anchor (`notFoundAt`). `reply.callNotFound()`
+ * hands the request to the not-found handler an unmatched URL reaches, so
+ * the two answer alike. The reply is awaited, not just acted on:
+ * `callNotFound` sends asynchronously, and a hook that resolves before the
+ * reply is sent lets Fastify go on to parse the body and run the handler. A
+ * reply is a thenable that settles once it is sent, so awaiting it holds the
+ * hook until the 404 is out.
+ * @param _request {import('fastify').FastifyRequest}
+ * @param reply {import('fastify').FastifyReply}
+ * @returns {Promise<void>}
+ */
+async function notFound(
+  _request: FastifyRequest,
+  reply: FastifyReply
+): Promise<void> {
+  reply.callNotFound()
+  await reply
+}
+
+/**
+ * Registers the app's not-found answer at a URL for every routed method
+ * (`routedMethods`). The route is marked `config.noAuth` and answers from a
+ * route-level `onRequest` hook, as a 405 refusal does (`methodNotAllowed`),
+ * so it reads no ids, parses no body, and answers the same whoever asks and
+ * whether or not the Space exists. The `handler` is required by Fastify and
+ * never reached.
+ * @param app {import('fastify').FastifyInstance}   the owning route group
+ * @param url {string}   the route URL template
+ * @returns {void}
+ */
+function notFoundAt(app: FastifyInstance, url: string): void {
+  app.route({
+    method: routedMethods(app),
+    url,
+    ...noAuthRoute,
+    onRequest: notFound,
+    handler: notFound
+  })
+}
+
+/**
+ * Answers every path beneath a reserved segment that no route serves as not
+ * found (`notFoundAt`), instead of letting it reach the parametric route one
+ * level up. A path such as `/space/S/policy/x`, `/space/S/meta/x` or
+ * `/space/S/C/policy/meta` would otherwise match the Collection or Resource
+ * route with the reserved segment as an id, whose reserved-id guard answers a
+ * `409 reserved-id`, an answer about ids to a request for a URL that does not
+ * exist. The segments are the reserved ids of the position below `base`
+ * (`lib/validateId.ts`), so a segment added to the registry is covered
+ * without an edit here. Each gets a wildcard route, `<base>/<id>/*`. Static
+ * and parametric routes beat a wildcard, so the endpoints a group registers
+ * beneath the same segment (`backends/:backendId`, `meta/log`,
+ * `zcaps/revocations/:revocationId`) keep answering, their 405 refusals
+ * included. The wildcard also matches the segment's own slash form,
+ * `<base>/<id>/`, so that form is not read as a Collection container. A
+ * wildcard does not match the bare segment, so a segment that no route serves
+ * at all (`zcaps`, whose only route lies two levels down) is anchored there
+ * too, or it would be read as a Collection's bare form and redirected to a
+ * listing of it. Call it after the group's refusals, so a 405 counts as a
+ * route at the bare form.
+ * @param app {import('fastify').FastifyInstance}   the owning route group
+ * @param base {string}   the URL template of the position above the segment
+ * @param ids {Iterable<string>}   the reserved ids of the position below it
+ * @returns {void}
+ */
+function refusePathsBeneath(
+  app: FastifyInstance,
+  base: string,
+  ids: Iterable<string>
+): void {
+  for (const id of ids) {
+    const url = `${base}/${id}`
+    if (!routedMethods(app).some(method => app.hasRoute({ url, method }))) {
+      notFoundAt(app, url)
+    }
+    notFoundAt(app, `${url}/*`)
   }
 }
 
@@ -432,19 +550,13 @@ const CONTAINER_REDIRECT_METHODS: HTTPMethods[] = [...CONTAINER_METHODS, 'PUT']
 
 /**
  * The methods the trailing-slash form of a Resource or chunk URL redirects
- * for, to the no-slash canonical form: every WAS method, so whether the slash
- * form redirects does not depend on the method. `POST` is included though
- * neither URL implements it, so the slash form answers as the canonical form
- * does once the redirect is followed. OPTIONS is left to the CORS plugin's
- * preflight route.
+ * for, to the no-slash canonical form: the methods the canonical form
+ * implements. `POST` is left out, since neither URL implements it, so the
+ * slash form refuses it with the same `Allow` the canonical form sends rather
+ * than advertising it in a redirect's `Allow`. OPTIONS is left to the CORS
+ * plugin's preflight route.
  */
-const STRIP_SLASH_METHODS: HTTPMethods[] = [
-  'GET',
-  'HEAD',
-  'POST',
-  'PUT',
-  'DELETE'
-]
+const STRIP_SLASH_METHODS: HTTPMethods[] = ['GET', 'HEAD', 'PUT', 'DELETE']
 
 /**
  * Registers SpacesRepository routes (POST/GET /spaces/, the bare `/spaces`
@@ -468,6 +580,7 @@ export async function initSpacesRepositoryRoutes(
       { method: 'POST', url: '/spaces/' }
     ]
   })
+  const urls = collectRouteUrls(app)
 
   // The repository container: canonically `/spaces/`; the bare form redirects
   // there for every WAS method (see the Space container's note on OPTIONS).
@@ -485,10 +598,7 @@ export async function initSpacesRepositoryRoutes(
 
   // Every other method is refused with a 405. Last in the group, so the
   // implemented set above is complete when it is read.
-  refuseUnimplementedMethods(app, [
-    { url: '/spaces/', targetName: 'Spaces repository' },
-    { url: '/spaces', targetName: 'Spaces repository' }
-  ])
+  refuseUnimplementedMethods(app, urls)
 }
 
 /**
@@ -513,6 +623,7 @@ export async function initSpaceRoutes(
       { method: 'PUT', url: '/space/:spaceId/meta', provisions: spaceIsAbsent }
     ]
   })
+  const urls = collectRouteUrls(app)
 
   // The Space container: canonically `/space/:spaceId/`; the bare form
   // redirects there for every WAS method (a 308 replays the method and body).
@@ -532,10 +643,6 @@ export async function initSpaceRoutes(
   // Delete Space
   app.delete('/space/:spaceId/', SpaceRequest.delete)
   // `PUT` is not defined at the container: the Space is written at `meta`.
-  app.put(
-    '/space/:spaceId/',
-    methodNotAllowed(CONTAINER_METHODS, 'Space', CONTAINER_PUT_HINT)
-  )
 
   // The Space Metadata object (reserved `meta` segment; static-beats-parametric
   // routing keeps it ahead of the `:collectionId` parameter in the Collection
@@ -645,43 +752,29 @@ export async function initSpaceRoutes(
   })
   app.post('/space/:spaceId/import', SpaceRequest.import)
 
-  // Every Space-level reserved endpoint refuses the methods it does not
-  // implement with a 405, rather than letting them fall through to a
-  // Collection operation on the reserved segment. Last in the group, so the
-  // implemented set above is complete when it is read.
-  refuseUnimplementedMethods(app, [
-    {
-      url: '/space/:spaceId/meta',
-      targetName: 'Space Metadata',
-      hints: { DELETE: CONTAINER_META_DELETE_HINT }
-    },
-    // Anchors the path, which a Space does not serve: without it the
-    // Collection-level `meta/log` shape would reach the Resource route, with
-    // the reserved `meta` as a Collection id.
-    { url: '/space/:spaceId/meta/log', targetName: 'Space Metadata log' },
-    { url: '/space/:spaceId/policy', targetName: 'Space policy' },
-    { url: '/space/:spaceId/backends', targetName: 'Space backends' },
-    {
-      url: '/space/:spaceId/backends/:backendId',
-      targetName: 'Space backend'
-    },
-    { url: '/space/:spaceId/collections', targetName: 'retired collections' },
-    { url: '/space/:spaceId/collections/', targetName: 'retired collections' },
-    { url: '/space/:spaceId/export', targetName: 'Space export' },
-    { url: '/space/:spaceId/import', targetName: 'Space import' },
-    { url: '/space/:spaceId/linkset', targetName: 'Space linkset' },
-    { url: '/space/:spaceId/query', targetName: 'Space query' },
-    { url: '/space/:spaceId/quotas', targetName: 'Space quotas' },
-    { url: '/space/:spaceId/replicas', targetName: 'Space replicas' },
-    {
-      url: '/space/:spaceId/replicas/:replicaId',
-      targetName: 'Space replica'
-    },
-    {
-      url: '/space/:spaceId/replicas/:replicaId/status',
-      targetName: 'Space replica status'
+  // Every Space-level URL refuses the methods it does not implement with a
+  // 405, rather than letting them fall through to a Collection operation on
+  // the reserved segment. Last in the group, so the implemented set above is
+  // complete when it is read. The canonical container's `PUT` refusal comes
+  // from here too, with a hint; the bare form's `Allow` names the methods it
+  // redirects for.
+  refuseUnimplementedMethods(app, urls, {
+    anchors: [
+      // The Collection-level `meta/log` shape, which a Space does not serve,
+      // answers 405 rather than the not-found of the `meta/*` wildcard below.
+      '/space/:spaceId/meta/log',
+      // The cross-collection query the spec reserves and this server does not
+      // serve.
+      '/space/:spaceId/query'
+    ],
+    hints: {
+      '/space/:spaceId/': { PUT: CONTAINER_PUT_HINT },
+      '/space/:spaceId/meta': { DELETE: CONTAINER_META_DELETE_HINT }
     }
-  ])
+  })
+  // Every other path beneath a Space-level reserved segment is not found, and
+  // so is the bare `zcaps` segment, which no route serves.
+  refusePathsBeneath(app, '/space/:spaceId', RESERVED_COLLECTION_IDS)
 }
 
 /**
@@ -698,6 +791,7 @@ export async function initCollectionRoutes(
   _options: FastifyPluginOptions
 ): Promise<void> {
   installGroupHooks(app)
+  const urls = collectRouteUrls(app)
 
   // The Collection container: canonically `/space/:spaceId/:collectionId/`;
   // the bare form redirects there for every WAS method (see the Space
@@ -714,11 +808,8 @@ export async function initCollectionRoutes(
   app.post('/space/:spaceId/:collectionId/', CollectionRequest.post)
   // Delete Collection
   app.delete('/space/:spaceId/:collectionId/', CollectionRequest.delete)
-  // `PUT` is not defined at the container: the Collection is written at `meta`.
-  app.put(
-    '/space/:spaceId/:collectionId/',
-    methodNotAllowed(CONTAINER_METHODS, 'Collection', CONTAINER_PUT_HINT)
-  )
+  // `PUT` is not defined at the container: the Collection is written at
+  // `meta`.
 
   // Collection access-control policy (reserved segment; static-beats-parametric
   // routing keeps this ahead of the `:resourceId` parameter).
@@ -777,39 +868,22 @@ export async function initCollectionRoutes(
     CollectionRequest.queryChangesByGet
   )
 
-  // Every Collection-level reserved endpoint refuses the methods it does not
-  // implement with a 405 (see the Space group's note).
-  refuseUnimplementedMethods(app, [
-    {
-      url: '/space/:spaceId/:collectionId/policy',
-      targetName: 'Collection policy'
-    },
-    {
-      url: '/space/:spaceId/:collectionId/linkset',
-      targetName: 'Collection linkset'
-    },
-    {
-      url: '/space/:spaceId/:collectionId/meta',
-      targetName: 'Collection Metadata',
-      hints: { DELETE: CONTAINER_META_DELETE_HINT }
-    },
-    {
-      url: '/space/:spaceId/:collectionId/meta/log',
-      targetName: 'Collection history log'
-    },
-    {
-      url: '/space/:spaceId/:collectionId/backend',
-      targetName: 'Collection backend'
-    },
-    {
-      url: '/space/:spaceId/:collectionId/quota',
-      targetName: 'Collection quota'
-    },
-    {
-      url: '/space/:spaceId/:collectionId/query',
-      targetName: 'Collection query'
+  // Every Collection-level URL refuses the methods it does not implement
+  // with a 405 (see the Space group's note).
+  refuseUnimplementedMethods(app, urls, {
+    hints: {
+      '/space/:spaceId/:collectionId/': { PUT: CONTAINER_PUT_HINT },
+      '/space/:spaceId/:collectionId/meta': {
+        DELETE: CONTAINER_META_DELETE_HINT
+      }
     }
-  ])
+  })
+  // Every other path beneath a Collection-level reserved segment is not found.
+  refusePathsBeneath(
+    app,
+    '/space/:spaceId/:collectionId',
+    RESERVED_RESOURCE_IDS
+  )
 }
 
 /**
@@ -824,6 +898,7 @@ export async function initResourceRoutes(
   _options: FastifyPluginOptions
 ): Promise<void> {
   installGroupHooks(app)
+  const urls = collectRouteUrls(app)
 
   // A Resource URL carries no trailing slash; the slash form redirects to it
   // for every WAS method (see the Space container's note on OPTIONS).
@@ -930,30 +1005,9 @@ export async function initResourceRoutes(
     ChunkRequest.list
   )
 
-  // Every Resource-level reserved endpoint refuses the methods it does not
-  // implement with a 405 (see the Space group's note).
-  refuseUnimplementedMethods(app, [
-    {
-      url: '/space/:spaceId/:collectionId/:resourceId/policy',
-      targetName: 'Resource policy'
-    },
-    {
-      url: '/space/:spaceId/:collectionId/:resourceId/meta',
-      targetName: 'Resource metadata'
-    },
-    {
-      url: '/space/:spaceId/:collectionId/:resourceId/chunks',
-      targetName: 'Resource chunks'
-    },
-    {
-      url: '/space/:spaceId/:collectionId/:resourceId/chunks/',
-      targetName: 'Resource chunks'
-    },
-    {
-      url: '/space/:spaceId/:collectionId/:resourceId/chunks/:chunkIndex',
-      targetName: 'Resource chunk'
-    }
-  ])
+  // Every Resource-level URL refuses the methods it does not implement with
+  // a 405 (see the Space group's note).
+  refuseUnimplementedMethods(app, urls)
 }
 
 /**
@@ -975,6 +1029,7 @@ export async function initKmsRoutes(
     provisioningRoutes: [{ method: 'POST', url: '/kms/keystores' }],
     strictAuth: true
   })
+  const urls = collectRouteUrls(app)
 
   // Create Keystore
   app.post('/kms/keystores', KeystoreRequest.post)
@@ -1009,4 +1064,10 @@ export async function initKmsRoutes(
     '/kms/keystores/:keystoreId/zcaps/revocations/:revocationId',
     RevocationRequest.post
   )
+
+  // Every keystore URL refuses the methods it does not implement with a 405
+  // (see the Space group's note). The webkms protocol has no public reads,
+  // but a refusal is not a read: it answers before the strict auth hook, so
+  // an anonymous caller learns the `Allow` set and nothing else.
+  refuseUnimplementedMethods(app, urls)
 }

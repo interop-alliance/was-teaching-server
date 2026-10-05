@@ -90,10 +90,10 @@ describe('Request validation API', () => {
   })
 
   describe('Reserved path segments', () => {
-    it('PUT /space/:spaceId/export/meta cannot create a Collection named "export" (409)', async () => {
-      // No static PUT route exists at /export/meta (export is POST-only), so
-      // the request falls through to the parametric Collection Metadata route
-      // -- which must reject the reserved id rather than create the Collection.
+    it('PUT /space/:spaceId/export/meta creates no Collection named "export" (404)', async () => {
+      // No route serves a path beneath the reserved `export` segment, so the
+      // request answers not found rather than reaching the parametric
+      // Collection Metadata route with `export` as a Collection id.
       let expectedError: any
       try {
         await alice.was.request({
@@ -104,12 +104,12 @@ describe('Request validation API', () => {
       } catch (error) {
         expectedError = error
       }
-      assert.ok(expectedError, 'expected the reserved id to be rejected')
-      assert.equal(expectedError.response.status, 409)
-      assert.equal(
-        expectedError.data.type,
+      assert.ok(expectedError, 'expected the request to be refused')
+      assert.equal(expectedError.response.status, 404)
+      assert.notEqual(
+        expectedError.data?.type,
         'https://w3id.org/pws#reserved-id',
-        'expected the spec reserved-id problem type'
+        'expected not found, not the reserved-id problem'
       )
     })
 

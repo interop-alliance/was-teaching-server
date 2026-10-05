@@ -512,10 +512,9 @@ export function kmsRevocationsPath({
  * URL-encoded into the single path segment the route expects.
  *
  * `zcaps` is a reserved Collection id (`lib/validateId.ts`), so no Collection
- * is created under it. Only `POST` is registered here. find-my-way falls back
- * to the parametric branch for a method the static branch does not serve, so
- * `GET`, `PUT` and `DELETE` at this shape resolve to the Collection and
- * Resource routes, which answer for a Collection that cannot exist.
+ * is created under it. Only `POST` is served here. Every other method at this
+ * shape is refused with a 405 (`Allow: POST`), and every other path beneath
+ * `zcaps`, the bare segment included, is not found (`routes.ts`).
  * @param options {object}
  * @param options.spaceId {string}
  * @param options.revocationId {string}   the to-be-revoked capability's id

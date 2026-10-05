@@ -61,7 +61,6 @@ Ready:
 
 Ready:
 
-- WAS-211 [M] Paths under a reserved segment answer by method, not by id
 - WAS-142 [M] Problem documents on every route, and Fastify's own errors typed
 - WAS-66 [M] Accept ids beyond the unreserved charset (percent-encoding on disk,
   real webvh round-trip)
@@ -266,6 +265,14 @@ Space-scoped delegated capability reaches every reserved endpoint beneath the
 Space, `policy` included, exactly as it reaches data paths. The "inherits" class
 is load-bearing and must keep working: freewallet's replication invokes
 `<collection>/query` and resource `meta` under a collection-scoped grant.
+
+Rebased 2026-10-05 on wallet-attached-storage-spec WASS-58: a capability
+declares subtree coverage with a `*` at the end of its `invocationTarget`,
+and a target without it covers that URL alone. `attenuatedRootTarget` and
+`expectedRoots` therefore retire as per-route configuration (the capability
+says what it covers), and this item's three classes are consulted for `*`
+targets alone: among the reserved endpoints beneath a `*` target's base,
+which ones the grant reaches. A target without `*` reaches none.
 
 ### WAS-61: [H] Separate `/policy` control from data writes (exposure test + enforcement)
 
@@ -948,33 +955,6 @@ orders by content stamps would not see that change as a content revision.
 
 Conformance gaps against the spec, spec-side proposals this server would
 implement once decided, and research that may end in either.
-
-### WAS-211: [M] Paths under a reserved segment answer by method, not by id
-
-- status: todo
-- priority: medium
-- labels: routing, spec-conformance
-- discovered-from: WAS-143 (2026-10-05)
-- acceptance:
-  - [ ] A path one level under a Space-level reserved segment that is no
-        registered endpoint (`GET /space/S/policy/x`, `GET /space/S/export/x`,
-        `GET /space/S/zcaps/revocations`) answers 404 or 405, not a 409
-        `reserved-id` from the Resource route one level up
-  - [ ] `/space/:spaceId/zcaps/revocations/:revocationId` is in the Space
-        group's refusal list, so a method other than `POST` there is a 405 with
-        `Allow: POST` rather than a 404
-  - [ ] The bare `/space/S/zcaps` and `/space/S/zcaps/` do not redirect to or
-        list a Collection named by a reserved segment
-  - [ ] Decide whether the bare container forms (`/space/S`, `/space/S/C`) join
-        the refusal lists, so `PATCH /space/S` is a 405 with `Allow` rather than
-        a 404; today only `/spaces` does
-  - [ ] Tests per case
-
-The method refusals cover each registered reserved endpoint, so a reserved
-segment answers 405 for a method it lacks. A path under such a segment is still
-matched by the parametric Resource route, whose reserved-id guard refuses it as
-a 409 about ids. The refusal reads no ids and must not depend on whether the
-Space exists. The default Fastify 404 body on the unmatched cases is WAS-142's.
 
 ### WAS-142: [M] Problem documents on every route, and Fastify's own errors typed
 
