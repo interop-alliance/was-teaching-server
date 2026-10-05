@@ -117,6 +117,10 @@
 - A conditional `GET` of a Resource or a chunk that answered 304 went on to open
   the byte stream and send a second time. The 304 reached the client, and the
   server logged `FST_ERR_REP_ALREADY_SENT`. The handler now stops at the 304.
+- A create admitted by a provisioning grant records no `createdBy`. Create Space
+  by Id could record one taken from an unverified `Signature` `keyId`, when a
+  Space deleted after the provisioning gate's check sent the request to the
+  policy late and a custom `authorizeProvisioning` granted it.
 
 ## 0.41.1 - 2026-10-04
 

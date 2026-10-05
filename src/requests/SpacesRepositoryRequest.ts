@@ -331,8 +331,8 @@ export class SpacesRepositoryRequest {
       written = await storage.writeSpace({
         spaceId,
         spaceMetadata,
-        // A token-provisioned create carries no invocation, so it records
-        // no `createdBy`.
+        // A create the provisioning policy granted records no `createdBy`,
+        // since no signature was verified.
         createdBy: invokerDid(request),
         ifNoneMatch: '*'
       })

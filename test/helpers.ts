@@ -1,7 +1,7 @@
 import assert from 'node:assert'
 import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, LightMyRequestResponse } from 'fastify'
 import pino from 'pino'
 import { ZcapClient } from '@interop/ezcap'
 import { WasClient } from '@interop/was-client'
@@ -269,13 +269,15 @@ export const FULL_COVERED =
  * signature is verified (the digest gate, the body limit).
  * @param [options] {object}
  * @param [options.covered] {string}   the signed-headers list
+ * @param [options.keyId] {string}   the signing key id the header names
  * @returns {string}
  */
 export function placeholderAuthHeader({
-  covered = FULL_COVERED
-}: { covered?: string } = {}): string {
+  covered = FULL_COVERED,
+  keyId = ALICE_KEY_ID
+}: { covered?: string; keyId?: string } = {}): string {
   return (
-    `Signature keyId="${ALICE_KEY_ID}",headers="${covered}",` +
+    `Signature keyId="${keyId}",headers="${covered}",` +
     'signature="cGxhY2Vob2xkZXI=",created="1758150502",expires="9999999999"'
   )
 }
@@ -948,7 +950,7 @@ export async function signedInject({
   json?: object
   body?: Uint8Array
   contentType?: string
-}) {
+}): Promise<LightMyRequestResponse> {
   const url = new URL(path, server.serverUrl).toString()
   const spaceUrl = new URL(
     `/space/${path.split('/')[2]}/`,

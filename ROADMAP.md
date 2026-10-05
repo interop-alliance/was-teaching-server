@@ -31,8 +31,6 @@ Ready:
 - WAS-65 [M] Response hardening on public resource serving (helmet, CSP,
   nosniff)
 - WAS-139 [M] Keystore config validation and listing completeness
-- WAS-208 [L] `createdBy` under a provisioning grant comes from an unverified
-  keyId
 
 Chains:
 
@@ -655,24 +653,6 @@ remains here is the rest of the helmet header set.
         alphabet rather than signing over silently dropped bytes
   - [ ] Decide whether Create Keystore takes a client idempotence key (a re-run
         mints a second keystore today; wire-level, ask first)
-
-### WAS-208: [L] `createdBy` under a provisioning grant comes from an unverified keyId
-
-- status: todo
-- priority: low
-- labels: provenance, provisioning, security
-- discovered-from: WAS-177 (2026-10-04)
-- acceptance:
-  - [ ] A create admitted by a provisioning token alone records no `createdBy`,
-        or records one only from a signature the server verified
-  - [ ] A test creates under a token with a `keyId` naming another party's DID
-        and asserts that DID is not recorded
-
-Context: `invokerDid` narrows the signing `keyId` by shape and leaves the
-verification to the authorization that ran before it. A create admitted by the
-provisioning token runs no signature verification, so the recorded DID is the
-caller's claim. That held for a `did:key` before. The shape check now also
-admits any `did:webvh`, so the claim can name those too.
 
 ---
 

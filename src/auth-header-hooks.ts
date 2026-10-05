@@ -89,11 +89,15 @@ export async function parseAuthHeaders(
  * controller.
  *
  * Resolves to `undefined` when the request carries no parsed invocation (an
- * anonymous read of a public Resource, or a provisioning-token request), or
- * when the stripped `keyId` is neither a syntactically valid `did:key` nor a
- * `did:webvh` this server could have verified. That is a self-hosted one (the
- * second accepted controller shape -- recognized here so `createdBy`
- * provenance keeps being recorded once a Space is promoted to one), a
+ * anonymous read of a public Resource, or a provisioning-token request). It
+ * does so too when the provisioning policy granted the request. A grant skips
+ * signature verification, and a `keyId` parsed before the grant was decided
+ * (Create Space by Id, when the policy is consulted late) is then only the
+ * caller's claim. It also resolves to `undefined` when the stripped `keyId` is
+ * neither a syntactically valid `did:key` nor a `did:webvh` this server could
+ * have verified. That is a self-hosted one (the second accepted controller
+ * shape -- recognized here so `createdBy` provenance keeps being recorded once
+ * a Space is promoted to one), a
  * replicated one whose log a replica registration copies here (so a wallet's
  * creates on a replica under its origin-hosted DID keep their provenance), or
  * a foreign one invoking a delegated capability, whose log was fetched. The
@@ -106,6 +110,9 @@ export async function parseAuthHeaders(
  * @returns {IDID | undefined}
  */
 export function invokerDid(request: FastifyRequest): IDID | undefined {
+  if (request.provisioningAuthorized) {
+    return undefined
+  }
   const did = request.zcap?.keyId.split('#')[0]
   if (isValidController(did)) {
     return did

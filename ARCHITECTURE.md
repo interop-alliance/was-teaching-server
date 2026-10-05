@@ -703,7 +703,9 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   controller, a keystore controller, a delegator, and the `createdBy` of a
   write. `lib/serverIdentity.ts`, `lib/syncIdentity.ts` and import provenance
   stay native-only. `invokerDid` (`createdBy`) also records a DID resolved over
-  the network, since the authorization that ran before decided its key.
+  the network, since the authorization that ran before decided its key. A create
+  the provisioning policy granted verifies no signature, so it records no
+  `createdBy`.
 - **`src/lib/replicaApply.ts`** -- the rules the apply path stores a replicated
   record by. A storage backend's `apply*` methods take a record a pull loop read
   from a peer and store it under the peer's write stamp and generation, so the

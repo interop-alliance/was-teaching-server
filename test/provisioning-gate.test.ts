@@ -15,7 +15,14 @@ import type { FastifyInstance } from 'fastify'
 import { createApp } from '../src/server.js'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import type { AuthorizeProvisioning } from '../src/types.js'
-import { openTempBackend, startTestServer, zcapClients } from './helpers.js'
+import {
+  digestHeaderFor,
+  openTempBackend,
+  placeholderAuthHeader,
+  rootInvocation,
+  startTestServer,
+  zcapClients
+} from './helpers.js'
 
 describe('Provisioning gate', () => {
   let alice: any
@@ -472,6 +479,66 @@ describe('Provisioning gate', () => {
       assert.equal(policyCalls, 1)
       assert.equal(await getSpaceMetadata({ spaceId }), undefined)
     })
+
+    it.each([
+      [
+        'a did:key',
+        'did:key:z6MkgpJp9jpAsqFCKqKMvHsAL5VEnkcd8FhhZdwnX33BFDgs' +
+          '#z6MkgpJp9jpAsqFCKqKMvHsAL5VEnkcd8FhhZdwnX33BFDgs'
+      ],
+      [
+        'a foreign did:webvh',
+        'did:webvh:QmfZTTAnvwFDEU4Z37Cpx8zJBpPvC1JGjprQEkqkV4cH3j:' +
+          'peer.example.com#key-1'
+      ]
+    ])(
+      "a 'grant' reached after the gate took the PUT for an update records no createdBy from an unverified keyId naming %s",
+      async (_label, keyId) => {
+        // The callback grants on anything, standing in for one that grants
+        // on some header other than the `Signature` Authorization.
+        const { backend } = await boot({
+          authorizeProvisioning: async () => 'grant' as const
+        })
+        const spaceId = `late-grant-${crypto.randomUUID()}`
+        await backend.writeSpace({
+          spaceId,
+          spaceMetadata: { id: spaceId, type: ['Space'], controller: alice.did }
+        })
+        // The gate's existence check sees the Space, so the auth hooks parse
+        // the `Signature` header. Deleting the Space right after that read
+        // sends the handler down the create branch, where it consults the
+        // policy late.
+        const getSpaceMetadata = backend.getSpaceMetadata.bind(backend)
+        let reads = 0
+        backend.getSpaceMetadata = async options => {
+          const found = await getSpaceMetadata(options)
+          if (options.spaceId === spaceId && reads++ === 0) {
+            await backend.deleteSpace({ spaceId })
+          }
+          return found
+        }
+        const metaUrl = new URL(`/space/${spaceId}/meta`, serverUrl).toString()
+        // The signature is never verified. The digest hook still needs the
+        // `digest` header covered and a `Digest` that matches the body.
+        const body = JSON.stringify(createSpaceBody(spaceId))
+        const response = await fetch(metaUrl, {
+          method: 'PUT',
+          headers: {
+            authorization: placeholderAuthHeader({ keyId }),
+            'capability-invocation': rootInvocation({ target: metaUrl }),
+            'content-type': 'application/json',
+            digest: digestHeaderFor(body)
+          },
+          body
+        })
+        assert.equal(response.status, 201)
+        const echoed = (await response.json()) as Record<string, unknown>
+        assert.equal('createdBy' in echoed, false)
+        const stored = await getSpaceMetadata({ spaceId })
+        assert.equal(stored?.controller, alice.did)
+        assert.equal(stored?.createdBy, undefined)
+      }
+    )
 
     it("a 'verify' decision leaves the normal zcap create-space path working (201)", async () => {
       await boot({ authorizeProvisioning: async () => 'verify' as const })

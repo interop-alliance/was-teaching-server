@@ -5435,3 +5435,30 @@ Spaces map through their registrations resolves from neither copy; a replicated
 log that declares witnesses is refused; the blocklist covers the network path
 only; `createdBy` records a network-resolved invoker. Follow-ups: WAS-205 to
 WAS-209.
+
+---
+
+### WAS-208: [L] `createdBy` under a provisioning grant comes from an unverified keyId
+
+- status: done
+- done: 2026-10-04
+- priority: low
+- labels: provenance, provisioning, security
+- discovered-from: WAS-177 (2026-10-04)
+- acceptance:
+  - [x] A create admitted by a provisioning token alone records no `createdBy`,
+        or records one only from a signature the server verified
+  - [x] A test creates under a token with a `keyId` naming another party's DID
+        and asserts that DID is not recorded
+
+Context: `invokerDid` narrows the signing `keyId` by shape and leaves the
+verification to the authorization that ran before it. A create admitted by the
+provisioning token runs no signature verification, so the recorded DID is the
+caller's claim. That held for a `did:key` before. The shape check now also
+admits any `did:webvh`, so the claim can name those too.
+
+Shipped 2026-10-04. `invokerDid` returns no DID when the provisioning policy
+granted the request, so every create path records no `createdBy` under a grant.
+The reachable case was Create Space by Id with the policy consulted late, after
+a Space deleted past the gate's check, under a custom `authorizeProvisioning`.
+The test covers a `did:key` and a foreign `did:webvh` `keyId`.
