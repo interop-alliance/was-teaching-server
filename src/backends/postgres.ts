@@ -42,6 +42,7 @@ import {
   CountQuotaExceededError,
   PayloadTooLargeError,
   PreconditionFailedError,
+  IdConflictError,
   KeystoreStateConflictError,
   KeyIdConflictError,
   DuplicateRevocationError
@@ -76,6 +77,20 @@ import {
 } from '../lib/metaSidecar.js'
 import { HybridLogicalClock, stampOf, withoutStampMembers } from '../lib/hlc.js'
 import {
+  type ApplyResult,
+  assertReceivableStamps,
+  decideCollectionApply,
+  decideCollectionTombstoneApply,
+  decideLogApply,
+  decideResourceApply,
+  guardApply,
+  heldCollection,
+  logForkResult,
+  mergeAppliedCollectionMetadata,
+  stampWins
+} from '../lib/replicaApply.js'
+import { WEBVH_LOG_RESOURCE_ID } from '../lib/validateDid.js'
+import {
   sanitizeBackendRecord,
   serverBackendDescriptor
 } from '../lib/backends.js'
@@ -98,6 +113,8 @@ import {
   collectionTombstoneSummary
 } from '../lib/collectionTombstone.js'
 import {
+  hasCustomMembers,
+  normalizeMetadataWrite,
   restampImportedMetadata,
   stampCollectionMetadata,
   stampSpaceMetadata
@@ -215,7 +232,10 @@ import type {
   ServiceDescription,
   ResourceMetaStamp,
   WriteStamp,
-  FeedDocument
+  FeedDocument,
+  ReplicaRegistration,
+  ReplicaLoopState,
+  StoredReplica
 } from '../types.js'
 
 /** Pool sizing and per-connection statement timeout (operational defaults). */
@@ -591,6 +611,34 @@ function logResultFromRow(
 ): CollectionLogResult | undefined {
   const stored = storedLogFromRow(row)
   return stored && collectionLogResultOf(stored)
+}
+
+/**
+ * A `replicas` row as `REPLICA_COLUMNS` selects it.
+ */
+interface ReplicaRow {
+  record: ReplicaRegistration
+  generation: string
+  space_generation: string
+}
+
+/**
+ * The column list `ReplicaRow` is selected by. The loop state is read on its
+ * own.
+ */
+const REPLICA_COLUMNS = 'record, generation, space_generation'
+
+/**
+ * The stored registration a `replicas` row holds.
+ * @param row {ReplicaRow}
+ * @returns {StoredReplica}
+ */
+function storedReplicaFromRow(row: ReplicaRow): StoredReplica {
+  return {
+    record: row.record,
+    generation: row.generation,
+    spaceGeneration: row.space_generation
+  }
 }
 
 /**
@@ -2169,43 +2217,7 @@ export class PostgresBackend implements StorageBackend {
         return 'already-deleted'
       }
       const prior = storedMetadataFromRow(row)
-      // The Collection's freed bytes are its Resource content plus its chunk
-      // bytes (the `chunked-streams` feature). Both are removed HERE, by
-      // `DELETE ... RETURNING` statements that total exactly the rows they
-      // remove, rather than letting the Collection row's cascade remove them
-      // behind a prior `SUM`: a `SUM` taken before the delete misses anything
-      // committed in between, which the cascade would then remove without
-      // ever returning its bytes to the counter -- inflating `usage_bytes`
-      // permanently, with no recompute path. `chunks` cascades from
-      // `resources`, so the chunks go first or their rows would be gone
-      // (and unmeasured) by the time we asked.
-      const { rows: deletedChunkRows } = await client.query<{ size: string }>(
-        `DELETE FROM chunks WHERE space_id = $1 AND collection_id = $2
-          RETURNING size`,
-        [spaceId, collectionId]
-      )
-      const { rows: deletedResourceRows } = await client.query<{
-        size_bytes: string
-      }>(
-        `DELETE FROM resources WHERE space_id = $1 AND collection_id = $2
-          RETURNING size_bytes`,
-        [spaceId, collectionId]
-      )
-      const freedBytes =
-        deletedChunkRows.reduce((total, row) => total + Number(row.size), 0) +
-        deletedResourceRows.reduce(
-          (total, row) => total + Number(row.size_bytes),
-          0
-        )
-      // Collection- and Resource-level policies live under the Collection (the
-      // filesystem removes them with the dir; here they key off collection_id).
-      await client.query(
-        `DELETE FROM policies WHERE space_id = $1 AND collection_id = $2`,
-        [spaceId, collectionId]
-      )
-      if (freedBytes > 0) {
-        await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
-      }
+      await this.#removeCollectionMembers({ client, spaceId, collectionId })
       if (prior === undefined) {
         // A row with no Metadata object is no Collection: it goes with its
         // member rows, and no tombstone is left.
@@ -2221,29 +2233,131 @@ export class PostgresBackend implements StorageBackend {
         clock: this.#clock,
         prior: { generation: prior.metaGeneration, ...stampOf(prior) }
       })
-      await client.query(
-        `UPDATE collections SET
-           deleted                = true,
-           metadata               = NULL,
-           meta_generation        = $3,
-           meta_local             = 0,
-           updated_at             = $4,
-           updated_at_counter     = $5,
-           origin_id              = $6,
-           log_body               = NULL,
-           log_generation         = NULL,
-           log_updated_at         = NULL,
-           log_updated_at_counter = NULL,
-           log_origin_id          = NULL,
-           feed_position          = 0,
-           feed_generation        = NULL,
-           metadata_feed_position = NULL,
-           log_feed_position      = NULL
-         WHERE space_id = $1 AND collection_id = $2`,
-        [spaceId, collectionId, generation, ...stampValues(stamp)]
-      )
+      await this.#tombstoneCollectionRow({
+        client,
+        spaceId,
+        collectionId,
+        generation,
+        stamp
+      })
       return 'deleted'
     })
+  }
+
+  /**
+   * Removes a Collection's member rows inside the caller's transaction: its
+   * chunks and Resources, then its policies. The freed bytes are subtracted
+   * from the Space usage counter. The `collections` row is left to the
+   * caller. Shared by Delete Collection and by the apply path, which deletes
+   * a Collection on a received tombstone and before it replaces one life of
+   * a Collection id with another.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}   the caller's transaction, which
+   *   holds the Space row and the Collection row
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<void>}
+   */
+  async #removeCollectionMembers({
+    client,
+    spaceId,
+    collectionId
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId: string
+  }): Promise<void> {
+    // The Collection's freed bytes are its Resource content plus its chunk
+    // bytes (the `chunked-streams` feature). Both are removed HERE, by
+    // `DELETE ... RETURNING` statements that total exactly the rows they
+    // remove, rather than letting the Collection row's cascade remove them
+    // behind a prior `SUM`: a `SUM` taken before the delete misses anything
+    // committed in between, which the cascade would then remove without
+    // ever returning its bytes to the counter -- inflating `usage_bytes`
+    // permanently, with no recompute path. `chunks` cascades from
+    // `resources`, so the chunks go first or their rows would be gone
+    // (and unmeasured) by the time we asked.
+    const { rows: deletedChunkRows } = await client.query<{ size: string }>(
+      `DELETE FROM chunks WHERE space_id = $1 AND collection_id = $2
+        RETURNING size`,
+      [spaceId, collectionId]
+    )
+    const { rows: deletedResourceRows } = await client.query<{
+      size_bytes: string
+    }>(
+      `DELETE FROM resources WHERE space_id = $1 AND collection_id = $2
+        RETURNING size_bytes`,
+      [spaceId, collectionId]
+    )
+    const freedBytes =
+      deletedChunkRows.reduce((total, row) => total + Number(row.size), 0) +
+      deletedResourceRows.reduce(
+        (total, row) => total + Number(row.size_bytes),
+        0
+      )
+    // Collection- and Resource-level policies live under the Collection (the
+    // filesystem removes them with the dir; here they key off collection_id).
+    await client.query(
+      `DELETE FROM policies WHERE space_id = $1 AND collection_id = $2`,
+      [spaceId, collectionId]
+    )
+    if (freedBytes > 0) {
+      await this.#applyUsageDelta({ client, spaceId, delta: -freedBytes })
+    }
+  }
+
+  /**
+   * Leaves a Collection tombstone on the `collections` row: the `deleted`
+   * mark, `generation` and `stamp`, with the Metadata object, the governing
+   * history log and the changes-feed counter dropped. Inserts the row when
+   * the Collection id has none, which only the apply path needs, for a
+   * tombstone received before the Collection ever existed here. The caller
+   * removes the member rows first (`#removeCollectionMembers`).
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.generation {string}   the generation the tombstone keeps
+   * @param options.stamp {WriteStamp}   the delete's stamp
+   * @returns {Promise<void>}
+   */
+  async #tombstoneCollectionRow({
+    client,
+    spaceId,
+    collectionId,
+    generation,
+    stamp
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId: string
+    generation: string
+    stamp: WriteStamp
+  }): Promise<void> {
+    await client.query(
+      `INSERT INTO collections (space_id, collection_id, metadata, deleted,
+                                meta_generation, meta_local, updated_at,
+                                updated_at_counter, origin_id)
+       VALUES ($1, $2, NULL, true, $3, 0, $4, $5, $6)
+       ON CONFLICT (space_id, collection_id) DO UPDATE SET
+         deleted                = true,
+         metadata               = NULL,
+         meta_generation        = EXCLUDED.meta_generation,
+         meta_local             = 0,
+         updated_at             = EXCLUDED.updated_at,
+         updated_at_counter     = EXCLUDED.updated_at_counter,
+         origin_id              = EXCLUDED.origin_id,
+         log_body               = NULL,
+         log_generation         = NULL,
+         log_updated_at         = NULL,
+         log_updated_at_counter = NULL,
+         log_origin_id          = NULL,
+         feed_position          = 0,
+         feed_generation        = NULL,
+         metadata_feed_position = NULL,
+         log_feed_position      = NULL`,
+      [spaceId, collectionId, generation, ...stampValues(stamp)]
+    )
   }
 
   /**
@@ -4654,6 +4768,982 @@ export class PostgresBackend implements StorageBackend {
       if (rowCount) {
         await this.#advanceSpaceMetaLocal({ client, spaceId })
       }
+    })
+  }
+
+  // Replica registrations (the replication specification)
+
+  /**
+   * Stores a replica registration, create-only, in one transaction under the
+   * Space Metadata advisory lock and the Space row lock, the two locks Delete
+   * Space and a Space Metadata write take. The Space must have a Metadata
+   * object. The record's generation is minted here, and the Space Metadata
+   * object's current generation is recorded beside it. The object's local
+   * validator segment advances, since its served `replicas` member changed.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.record {ReplicaRegistration}
+   * @returns {Promise<StoredReplica>}
+   * @throws {SpaceNotFoundError}   the Space has no Metadata object (404)
+   * @throws {IdConflictError}   the Space holds a registration under
+   *   `record.id` (409)
+   */
+  async createReplica({
+    spaceId,
+    record
+  }: {
+    spaceId: string
+    record: ReplicaRegistration
+  }): Promise<StoredReplica> {
+    return this.#withTransaction(async client => {
+      // The Space Metadata advisory lock ahead of the row lock, as the lock
+      // order requires: the local-segment advance below writes the Space's
+      // Metadata row.
+      await client.query(SPACE_META_LOCK_SQL, [spaceId])
+      const { rows } = await client.query<{ meta_generation: string | null }>(
+        `SELECT meta_generation FROM spaces
+          WHERE space_id = $1 AND metadata IS NOT NULL FOR UPDATE`,
+        [spaceId]
+      )
+      const spaceGeneration = rows[0]?.meta_generation
+      if (spaceGeneration === undefined || spaceGeneration === null) {
+        throw new SpaceNotFoundError({ requestName: 'Register Replica' })
+      }
+      const generation = newGeneration()
+      // The primary key is the guard: a second registration under the id
+      // inserts nothing.
+      const { rowCount } = await client.query(
+        `INSERT INTO replicas (space_id, replica_id, record, generation,
+                               space_generation)
+         VALUES ($1, $2, $3::jsonb, $4, $5)
+         ON CONFLICT (space_id, replica_id) DO NOTHING`,
+        [
+          spaceId,
+          record.id,
+          JSON.stringify(record),
+          generation,
+          spaceGeneration
+        ]
+      )
+      if (!rowCount) {
+        throw new IdConflictError({ kind: 'Replica' })
+      }
+      await this.#advanceSpaceMetaLocal({ client, spaceId })
+      return { record, generation, spaceGeneration }
+    })
+  }
+
+  /**
+   * The stored registration, capability included, or `undefined`.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @returns {Promise<StoredReplica | undefined>}
+   */
+  async getReplica({
+    spaceId,
+    replicaId
+  }: {
+    spaceId: string
+    replicaId: string
+  }): Promise<StoredReplica | undefined> {
+    const { rows } = await this.#reader().query<ReplicaRow>(
+      `SELECT ${REPLICA_COLUMNS} FROM replicas
+        WHERE space_id = $1 AND replica_id = $2`,
+      [spaceId, replicaId]
+    )
+    return rows[0] && storedReplicaFromRow(rows[0])
+  }
+
+  /**
+   * The Space's registrations in ascending id order.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @returns {Promise<StoredReplica[]>}
+   */
+  async listReplicas({
+    spaceId
+  }: {
+    spaceId: string
+  }): Promise<StoredReplica[]> {
+    const { rows } = await this.#reader().query<ReplicaRow>(
+      `SELECT ${REPLICA_COLUMNS} FROM replicas
+        WHERE space_id = $1 ORDER BY replica_id`,
+      [spaceId]
+    )
+    return rows.map(storedReplicaFromRow)
+  }
+
+  /**
+   * Every registration in the store, by Space id then registration id.
+   * @returns {Promise<Array<StoredReplica & { spaceId: string }>>}
+   */
+  async listAllReplicas(): Promise<Array<StoredReplica & { spaceId: string }>> {
+    const { rows } = await this.#reader().query<
+      ReplicaRow & { space_id: string }
+    >(
+      `SELECT space_id, ${REPLICA_COLUMNS} FROM replicas
+        ORDER BY space_id, replica_id`
+    )
+    return rows.map(row => ({
+      ...storedReplicaFromRow(row),
+      spaceId: row.space_id
+    }))
+  }
+
+  /**
+   * Removes a registration, its loop state with it. A removal that found the
+   * row advances the Space Metadata object's local validator segment.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @returns {Promise<boolean>}   `false` when none was stored
+   */
+  async deleteReplica({
+    spaceId,
+    replicaId
+  }: {
+    spaceId: string
+    replicaId: string
+  }): Promise<boolean> {
+    return this.#withTransaction(async client => {
+      await client.query(SPACE_META_LOCK_SQL, [spaceId])
+      const { rowCount } = await client.query(
+        `DELETE FROM replicas WHERE space_id = $1 AND replica_id = $2`,
+        [spaceId, replicaId]
+      )
+      if (!rowCount) {
+        return false
+      }
+      await this.#advanceSpaceMetaLocal({ client, spaceId })
+      return true
+    })
+  }
+
+  /**
+   * The registration's stored loop state, or `undefined` when it has none
+   * yet or the registration is gone.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @returns {Promise<ReplicaLoopState | undefined>}
+   */
+  async getReplicaState({
+    spaceId,
+    replicaId
+  }: {
+    spaceId: string
+    replicaId: string
+  }): Promise<ReplicaLoopState | undefined> {
+    const { rows } = await this.#reader().query<{
+      state: ReplicaLoopState | null
+    }>(`SELECT state FROM replicas WHERE space_id = $1 AND replica_id = $2`, [
+      spaceId,
+      replicaId
+    ])
+    return rows[0]?.state ?? undefined
+  }
+
+  /**
+   * Replaces the registration's loop state. The `UPDATE` matches no row once
+   * the registration is gone, so nothing is written then.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param options.state {ReplicaLoopState}
+   * @returns {Promise<boolean>}   `false` when the registration is gone
+   */
+  async writeReplicaState({
+    spaceId,
+    replicaId,
+    state
+  }: {
+    spaceId: string
+    replicaId: string
+    state: ReplicaLoopState
+  }): Promise<boolean> {
+    const { rowCount } = await this.#reader().query(
+      `UPDATE replicas SET state = $3::jsonb
+        WHERE space_id = $1 AND replica_id = $2`,
+      [spaceId, replicaId, JSON.stringify(state)]
+    )
+    return Boolean(rowCount)
+  }
+
+  // The apply path (replication)
+
+  /**
+   * The checks every apply method makes first, inside its transaction, in
+   * the order the `StorageBackend` contract gives. It takes the Space row
+   * lock, the first lock of the backend-wide order (`#lockSpaceRow`), and
+   * holds it to commit, so neither a Delete Space nor a Delete Collection
+   * lands under the apply. Where the record names a Collection it locks the
+   * `collections` row too, ahead of any `resources` row.
+   *
+   * Resolves the result that ends the apply, or `undefined` when the apply
+   * goes on to its comparison:
+   *
+   * - `unregistered` when the Space has no Metadata object, the registration
+   *   is not stored, or it was made under another generation of the Space.
+   * - `refused` with reason `clock-bound` when the clock does not take a
+   *   received stamp in.
+   * - `skipped` when `collectionId` is given and that Collection is absent
+   *   or tombstoned.
+   *
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param [options.collectionId] {string}   a Collection that must be live
+   * @param options.stamps {WriteStamp[]}   every stamp the record carries
+   * @returns {Promise<ApplyResult | undefined>}
+   * @throws {StorageError}   a stamp is not one a store can hold; the caller
+   *   validates received stamps before it applies
+   */
+  async #beginApply({
+    client,
+    spaceId,
+    replicaId,
+    collectionId,
+    stamps
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    replicaId: string
+    collectionId?: string
+    stamps: unknown[]
+  }): Promise<ApplyResult | undefined> {
+    assertReceivableStamps(stamps)
+    const { rows: spaceRows } = await client.query<{
+      meta_generation: string | null
+    }>(
+      `SELECT meta_generation FROM spaces
+        WHERE space_id = $1 AND metadata IS NOT NULL FOR UPDATE`,
+      [spaceId]
+    )
+    const { rows: replicaRows } = await client.query<{
+      space_generation: string
+    }>(
+      `SELECT space_generation FROM replicas
+        WHERE space_id = $1 AND replica_id = $2`,
+      [spaceId, replicaId]
+    )
+    const stopped = guardApply({
+      registeredUnder: replicaRows[0]?.space_generation,
+      spaceGeneration: spaceRows[0]?.meta_generation,
+      clock: this.#clock,
+      stamps
+    })
+    if (stopped !== undefined || collectionId === undefined) {
+      return stopped
+    }
+    // A tombstoned Collection has no Metadata object.
+    const { rows: collectionRows } = await client.query<{ live: boolean }>(
+      `SELECT metadata IS NOT NULL AND NOT deleted AS live FROM collections
+        WHERE space_id = $1 AND collection_id = $2 FOR UPDATE`,
+      [spaceId, collectionId]
+    )
+    return collectionRows[0]?.live ? undefined : { outcome: 'skipped' }
+  }
+
+  /**
+   * Applies the Space Metadata object's `name`, the one member of it that
+   * replicates, when `stamp` wins over the object's own. Every other stored
+   * member is kept, the generation and `controller` included. The object
+   * takes `stamp`, and its local validator segment is reset to 0, as every
+   * stamped write resets it.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param [options.name] {string}   absent removes the stored name
+   * @param options.stamp {WriteStamp}
+   * @returns {Promise<ApplyResult>}
+   */
+  async applySpaceName({
+    spaceId,
+    replicaId,
+    name,
+    stamp
+  }: {
+    spaceId: string
+    replicaId: string
+    name?: string
+    stamp: WriteStamp
+  }): Promise<ApplyResult> {
+    return this.#withTransaction(async client => {
+      // The lock a Space Metadata write serializes on, ahead of the row lock.
+      await client.query(SPACE_META_LOCK_SQL, [spaceId])
+      const ended = await this.#beginApply({
+        client,
+        spaceId,
+        replicaId,
+        stamps: [stamp]
+      })
+      if (ended !== undefined) {
+        return ended
+      }
+      const prior = (await this.#readSpaceRow({ queryable: client, spaceId }))!
+      if (!stampWins({ incoming: stamp, held: stampOf(prior) })) {
+        return { outcome: 'skipped' }
+      }
+      const { name: _heldName, ...body } = withoutStampMembers(
+        stripMetadataValidator(prior)
+      )
+      await client.query(
+        `UPDATE spaces SET
+           metadata           = $2::jsonb,
+           meta_local         = 0,
+           updated_at         = $3,
+           updated_at_counter = $4,
+           origin_id          = $5
+         WHERE space_id = $1`,
+        [
+          spaceId,
+          JSON.stringify({ ...body, ...(name !== undefined && { name }) }),
+          ...stampValues(stamp)
+        ]
+      )
+      return { outcome: 'applied' }
+    })
+  }
+
+  /**
+   * Applies a Collection Metadata object or a Collection tombstone in one
+   * transaction, by `decideCollectionApply` / `decideCollectionTombstoneApply`
+   * over the `collections` row read under its lock.
+   *
+   * A `create` and an `update` go through the Metadata upsert a request-layer
+   * write uses, so they take the feed position such a write takes and reset
+   * the local validator segment. A `replace` and a `delete` remove the held
+   * Collection's member rows as Delete Collection does. A `replace` then
+   * leaves the row tombstoned for the upsert, which treats it as a create
+   * over a tombstone: a fresh feed counter and no governing history log.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param options.collectionId {string}
+   * @param options.collection {object}   the received object, or the
+   *   received tombstone's stamp
+   * @returns {Promise<ApplyResult>}
+   * @throws {CountQuotaExceededError}   a create would exceed the Collection
+   *   count quota
+   */
+  async applyCollection({
+    spaceId,
+    replicaId,
+    collectionId,
+    collection
+  }: {
+    spaceId: string
+    replicaId: string
+    collectionId: string
+    collection:
+      | { deleted: false; generation: string; metadata: CollectionMetadata }
+      | { deleted: true; stamp: WriteStamp }
+  }): Promise<ApplyResult> {
+    return this.#withTransaction(async client => {
+      const ended = await this.#beginApply({
+        client,
+        spaceId,
+        replicaId,
+        stamps: collection.deleted
+          ? [collection.stamp]
+          : [stampOf(collection.metadata), collection.metadata.created]
+      })
+      if (ended !== undefined) {
+        return ended
+      }
+      const { rows } = await client.query<
+        MetadataRow<CollectionMetadata> & { deleted: boolean }
+      >(
+        `SELECT ${METADATA_COLUMNS}, deleted
+           FROM collections
+          WHERE space_id = $1 AND collection_id = $2 FOR UPDATE`,
+        [spaceId, collectionId]
+      )
+      const row = rows[0]
+      const prior = storedMetadataFromRow(row)
+      const held =
+        row &&
+        heldCollection({
+          deleted: row.deleted,
+          // A row with no Metadata object holds no live Collection.
+          generation:
+            prior === undefined
+              ? undefined
+              : (row.meta_generation ?? undefined),
+          stamp: stampOfRow(row),
+          created: prior?.created
+        })
+
+      if (collection.deleted) {
+        const { stamp } = collection
+        const decision = decideCollectionTombstoneApply({ held, stamp })
+        if (decision === 'skip') {
+          return { outcome: 'skipped' }
+        }
+        if (decision !== 'restamp') {
+          // A row with no Metadata object can still hold member rows.
+          await this.#removeCollectionMembers({ client, spaceId, collectionId })
+        }
+        await this.#tombstoneCollectionRow({
+          client,
+          spaceId,
+          collectionId,
+          // The tombstone keeps the held generation. One received before the
+          // Collection existed here has none to keep.
+          generation: resolveGeneration(row?.meta_generation),
+          stamp
+        })
+        return { outcome: 'applied' }
+      }
+
+      const { generation } = collection
+      const incoming = normalizeMetadataWrite({
+        metadata: collection.metadata
+      }).body
+      const stamp = stampOf(collection.metadata) as WriteStamp
+      const decision = decideCollectionApply({
+        held,
+        incoming: { generation, stamp, created: collection.metadata.created! }
+      })
+      if (decision === 'skip') {
+        return { outcome: 'skipped' }
+      }
+      let body = incoming
+      if (decision === 'update') {
+        const merged = mergeAppliedCollectionMetadata({
+          held: stripMetadataValidator(prior!),
+          incoming
+        })
+        if ('fork' in merged) {
+          return { outcome: 'refused', reason: 'fork', detail: merged.fork }
+        }
+        body = merged.metadata
+      } else {
+        if (decision === 'replace') {
+          // The held life goes as Delete Collection removes one. The row is
+          // left tombstoned under its own generation and stamp, so the
+          // upsert below starts the received life over a tombstone.
+          await this.#removeCollectionMembers({ client, spaceId, collectionId })
+          await this.#tombstoneCollectionRow({
+            client,
+            spaceId,
+            collectionId,
+            generation: resolveGeneration(row?.meta_generation),
+            stamp: stampOfRow(row!)
+          })
+        }
+        // Count quota, as on a request-layer create. A replace has just
+        // freed the place it takes.
+        if (this.maxCollectionsPerSpace !== undefined) {
+          const { rows: countRows } = await client.query<{ count: number }>(
+            `SELECT COUNT(*)::int AS count FROM collections
+              WHERE space_id = $1 AND NOT deleted`,
+            [spaceId]
+          )
+          if (countRows[0]!.count >= this.maxCollectionsPerSpace) {
+            throw new CountQuotaExceededError({
+              scope: 'Collections per Space',
+              limit: this.maxCollectionsPerSpace
+            })
+          }
+        }
+      }
+      await this.#upsertCollection({
+        queryable: client,
+        spaceId,
+        collectionId,
+        body,
+        generation,
+        stamp
+      })
+      return { outcome: 'applied' }
+    })
+  }
+
+  /**
+   * Applies a Resource's content record, live or a tombstone, in one
+   * transaction under the locks a Resource write takes. The row is stored
+   * under the received generation and stamp. A live Resource keeps the
+   * `/meta` record and `custom` of a live row it replaces. A tombstone drops
+   * them with the chunks, as Delete Resource does. A `did.jsonl` Resource is
+   * decided by `decideLogApply` in place of the stamp comparison.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.generation {string}
+   * @param options.stamp {WriteStamp}
+   * @param [options.createdAt] {string}
+   * @param [options.createdBy] {IDID}
+   * @param [options.writerId] {string}
+   * @param options.resource {object}   the received representation, or the
+   *   tombstone's last-known content type
+   * @returns {Promise<ApplyResult>}
+   * @throws {PayloadTooLargeError}   the body exceeds the upload cap
+   * @throws {QuotaExceededError}   the write would exceed the Space quota
+   * @throws {CountQuotaExceededError}   a create would exceed the Resource
+   *   count quota
+   */
+  async applyResource({
+    spaceId,
+    replicaId,
+    collectionId,
+    resourceId,
+    generation,
+    stamp,
+    createdAt,
+    createdBy,
+    writerId,
+    resource
+  }: {
+    spaceId: string
+    replicaId: string
+    collectionId: string
+    resourceId: string
+    generation: string
+    stamp: WriteStamp
+    createdAt?: string
+    createdBy?: IDID
+    writerId?: string
+    resource:
+      | { deleted: false; input: ResourceInput; epoch?: string }
+      | { deleted: true; contentType: string }
+  }): Promise<ApplyResult> {
+    // Buffered before the transaction, so a slow body holds no row lock.
+    const content = resource.deleted
+      ? null
+      : await this.#bufferInputCapped(resource.input)
+    const contentType = resource.deleted
+      ? resource.contentType
+      : resource.input.contentType
+    const isLog = resourceId === WEBVH_LOG_RESOURCE_ID && content !== null
+
+    return this.#withTransaction(async client => {
+      const ended = await this.#beginApply({
+        client,
+        spaceId,
+        replicaId,
+        collectionId,
+        stamps: [stamp]
+      })
+      if (ended !== undefined) {
+        return ended
+      }
+      // A history log is never deleted by a peer (`decideResourceApply`).
+      // The refusal is answered here, ahead of the row lock, so it locks
+      // nothing.
+      if (resource.deleted && resourceId === WEBVH_LOG_RESOURCE_ID) {
+        return { outcome: 'skipped' }
+      }
+      // The held bytes are read only for a history log, which is compared
+      // by them.
+      type PriorRow = StampColumns &
+        Pick<ResourceRow, 'deleted' | 'created_at' | 'created_by' | 'content'>
+      const prior = await this.#lockRowForWrite<PriorRow>({
+        client,
+        spaceId,
+        rowKey: `${collectionId}/${resourceId}`,
+        lockingSelect: async () => {
+          const { rows } = await client.query<PriorRow>(
+            `SELECT updated_at, updated_at_counter, origin_id, deleted,
+                    created_at, created_by,
+                    ${isLog ? 'content' : 'NULL::bytea AS content'}
+               FROM resources
+              WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+              FOR UPDATE`,
+            [spaceId, collectionId, resourceId]
+          )
+          return rows[0]
+        }
+      })
+      const live = prior !== undefined && !prior.deleted
+      const stopped = decideResourceApply({
+        resourceId,
+        deleted: resource.deleted,
+        stamp,
+        held: prior && stampOfRow(prior),
+        log: isLog
+          ? {
+              held: live ? (prior.content ?? undefined) : undefined,
+              incoming: content
+            }
+          : undefined
+      })
+      if (stopped !== undefined) {
+        return stopped
+      }
+
+      // Count quota, as on a request-layer create: a live Resource where
+      // none was, a tombstone included.
+      if (
+        content !== null &&
+        !live &&
+        this.maxResourcesPerSpace !== undefined
+      ) {
+        const { rows: countRows } = await client.query<{ count: number }>(
+          `SELECT COUNT(*)::int AS count FROM resources
+            WHERE space_id = $1 AND NOT deleted`,
+          [spaceId]
+        )
+        if (countRows[0]!.count >= this.maxResourcesPerSpace) {
+          throw new CountQuotaExceededError({
+            scope: 'Resources per Space',
+            limit: this.maxResourcesPerSpace
+          })
+        }
+      }
+
+      // A tombstone takes the chunks with it, as Delete Resource does. A
+      // soft delete is an UPDATE, so the foreign key's cascade does not fire.
+      let freedChunkBytes = 0
+      if (content === null && prior !== undefined) {
+        const { rows: deletedChunkRows } = await client.query<{
+          size: string
+        }>(
+          `DELETE FROM chunks
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+            RETURNING size`,
+          [spaceId, collectionId, resourceId]
+        )
+        freedChunkBytes = deletedChunkRows.reduce(
+          (total, row) => total + Number(row.size),
+          0
+        )
+      }
+
+      // The Collection row is locked already (`#beginApply`), so the
+      // position is taken only by a record that is stored.
+      const feedPosition = (await this.#takeFeedPosition({
+        client,
+        spaceId,
+        collectionId
+      }))!
+      const size = content?.length ?? 0
+      // The members the origin's content write set. A live Resource takes
+      // them as received, `createdBy` cleared when absent. A tombstone keeps
+      // the held creator when none is received, as a local delete keeps it.
+      const storedCreatedAt = createdAt ?? prior?.created_at ?? stamp.updatedAt
+      const storedCreatedBy =
+        createdBy ?? (content === null ? (prior?.created_by ?? null) : null)
+      // The `/meta` record and `custom` stay as they stand on a live row a
+      // live Resource replaces. A tombstone on either side has none.
+      const written = await this.#insertOrUpsertVersioned({
+        client,
+        insertSql: `
+          INSERT INTO resources (
+            space_id, collection_id, resource_id, content_type, content,
+            is_json, size_bytes, generation, custom, deleted, created_at,
+            updated_at, updated_at_counter, origin_id, created_by, epoch,
+            writer_id, feed_position
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, $10, $11, $12,
+                    $13, $14, $15, $16, $17)`,
+        priorSizeSql: `SELECT size_bytes AS prior_size, deleted AS prior_deleted
+             FROM resources
+            WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
+        conflictSql: `
+           ON CONFLICT (space_id, collection_id, resource_id) DO UPDATE SET
+             content_type = EXCLUDED.content_type,
+             content = EXCLUDED.content,
+             is_json = EXCLUDED.is_json,
+             size_bytes = EXCLUDED.size_bytes,
+             generation = EXCLUDED.generation,
+             meta_generation = CASE
+               WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
+               ELSE resources.meta_generation END,
+             meta_updated_at = CASE
+               WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
+               ELSE resources.meta_updated_at END,
+             meta_updated_at_counter = CASE
+               WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
+               ELSE resources.meta_updated_at_counter END,
+             meta_origin_id = CASE
+               WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
+               ELSE resources.meta_origin_id END,
+             custom = CASE
+               WHEN EXCLUDED.deleted OR resources.deleted THEN NULL
+               ELSE resources.custom END,
+             deleted = EXCLUDED.deleted,
+             created_at = EXCLUDED.created_at,
+             updated_at = EXCLUDED.updated_at,
+             updated_at_counter = EXCLUDED.updated_at_counter,
+             origin_id = EXCLUDED.origin_id,
+             created_by = EXCLUDED.created_by,
+             epoch = EXCLUDED.epoch,
+             writer_id = EXCLUDED.writer_id,
+             feed_position = EXCLUDED.feed_position`,
+        values: [
+          spaceId,
+          collectionId,
+          resourceId,
+          contentType,
+          content,
+          content !== null && isJsonContentType(contentType),
+          size,
+          generation,
+          content === null,
+          storedCreatedAt,
+          ...stampValues(stamp),
+          storedCreatedBy,
+          resource.deleted ? null : (resource.epoch ?? null),
+          writerId ?? null,
+          feedPosition
+        ],
+        createOnly: false,
+        generation,
+        conflictDetail: `Resource '${resourceId}' already exists.`
+      })
+      // Usage delta after the write, from the size the write replaced, so a
+      // `QuotaExceededError` rolls the whole apply back.
+      const delta = size - written.priorSizeBytes - freedChunkBytes
+      if (delta !== 0) {
+        await this.#applyUsageDelta({ client, spaceId, delta })
+      }
+      return { outcome: 'applied' }
+    })
+  }
+
+  /**
+   * Applies a Resource's `/meta` record when `meta` wins over the held
+   * `/meta` record's stamp: the record takes the received generation and
+   * stamp, and `custom` replaces the stored one. The content record, the key
+   * epoch and the writer label are not touched. The apply takes a feed
+   * position, as a metadata write does.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.meta {ResourceMetaStamp}   the `/meta` record's stamp and
+   *   generation
+   * @param [options.custom] {ResourceMetadataCustom | Record<string, unknown>}
+   *   absent or empty clears the stored one
+   * @returns {Promise<ApplyResult>}
+   */
+  async applyResourceMetadata({
+    spaceId,
+    replicaId,
+    collectionId,
+    resourceId,
+    meta,
+    custom
+  }: {
+    spaceId: string
+    replicaId: string
+    collectionId: string
+    resourceId: string
+    meta: ResourceMetaStamp
+    custom?: ResourceMetadataCustom | Record<string, unknown>
+  }): Promise<ApplyResult> {
+    return this.#withTransaction(async client => {
+      const { generation, ...stamp } = meta
+      const ended = await this.#beginApply({
+        client,
+        spaceId,
+        replicaId,
+        collectionId,
+        stamps: [stamp]
+      })
+      if (ended !== undefined) {
+        return ended
+      }
+      const { rows } = await client.query<
+        Pick<
+          ResourceRow,
+          | 'meta_generation'
+          | 'meta_updated_at'
+          | 'meta_updated_at_counter'
+          | 'meta_origin_id'
+          | 'deleted'
+        >
+      >(
+        `SELECT meta_generation, meta_updated_at, meta_updated_at_counter,
+                meta_origin_id, deleted
+           FROM resources
+          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+          FOR UPDATE`,
+        [spaceId, collectionId, resourceId]
+      )
+      const prior = rows[0]
+      if (
+        prior === undefined ||
+        prior.deleted ||
+        !stampWins({ incoming: stamp, held: metaStampOfRow(prior) })
+      ) {
+        return { outcome: 'skipped' }
+      }
+      const feedPosition = (await this.#takeFeedPosition({
+        client,
+        spaceId,
+        collectionId
+      }))!
+      const hasCustom = hasCustomMembers(custom)
+      await client.query(
+        `UPDATE resources SET
+           meta_generation = $4,
+           custom = $5::jsonb,
+           feed_position = $6,
+           meta_updated_at = $7,
+           meta_updated_at_counter = $8,
+           meta_origin_id = $9
+         WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3`,
+        [
+          spaceId,
+          collectionId,
+          resourceId,
+          generation,
+          hasCustom ? JSON.stringify(custom) : null,
+          feedPosition,
+          ...stampValues(stamp)
+        ]
+      )
+      return { outcome: 'applied' }
+    })
+  }
+
+  /**
+   * Applies an access-control policy, live or a tombstone, at the level the
+   * ids select, when `stamp` wins over the held policy record's. The record
+   * goes through the upsert every policy write uses, so a Collection- or
+   * Resource-level one takes the Collection's next feed position.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @param options.generation {string}
+   * @param options.stamp {WriteStamp}
+   * @param [options.policy] {PolicyDocument}   absent for a tombstone
+   * @returns {Promise<ApplyResult>}
+   */
+  async applyPolicy({
+    spaceId,
+    replicaId,
+    collectionId,
+    resourceId,
+    generation,
+    stamp,
+    policy
+  }: {
+    spaceId: string
+    replicaId: string
+    collectionId?: string
+    resourceId?: string
+    generation: string
+    stamp: WriteStamp
+    policy?: PolicyDocument
+  }): Promise<ApplyResult> {
+    return this.#withTransaction(async client => {
+      const ended = await this.#beginApply({
+        client,
+        spaceId,
+        replicaId,
+        collectionId,
+        stamps: [stamp]
+      })
+      if (ended !== undefined) {
+        return ended
+      }
+      const prior = await this.getPolicyRecord({
+        spaceId,
+        collectionId,
+        resourceId,
+        queryable: client
+      })
+      if (!stampWins({ incoming: stamp, held: prior?.validator?.stamp })) {
+        return { outcome: 'skipped' }
+      }
+      await this.#upsertPolicy({
+        client,
+        spaceId,
+        collectionId,
+        resourceId,
+        body: policy === undefined ? null : normalizePolicyWrite(policy),
+        validator: stampedValidator({ generation, stamp })
+      })
+      return { outcome: 'applied' }
+    })
+  }
+
+  /**
+   * Applies a Collection's governing history log by `decideLogApply` over
+   * the log read under the `collections` row lock. An applied log is stored
+   * under the received generation and stamp, takes the Collection's next
+   * feed position as the log's own, and advances the Collection Metadata
+   * object's local validator segment, as a log write does.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param options.collectionId {string}
+   * @param options.body {string}   the received JSON Lines body
+   * @param options.generation {string}
+   * @param options.stamp {WriteStamp}
+   * @returns {Promise<ApplyResult>}
+   */
+  async applyCollectionLog({
+    spaceId,
+    replicaId,
+    collectionId,
+    body,
+    generation,
+    stamp
+  }: {
+    spaceId: string
+    replicaId: string
+    collectionId: string
+    body: string
+    generation: string
+    stamp: WriteStamp
+  }): Promise<ApplyResult> {
+    return this.#withTransaction(async client => {
+      const ended = await this.#beginApply({
+        client,
+        spaceId,
+        replicaId,
+        collectionId,
+        stamps: [stamp]
+      })
+      if (ended !== undefined) {
+        return ended
+      }
+      const { rows } = await client.query<LogRow>(
+        `SELECT ${LOG_COLUMNS}
+           FROM collections
+          WHERE space_id = $1 AND collection_id = $2`,
+        [spaceId, collectionId]
+      )
+      const decision = decideLogApply({
+        held: storedLogFromRow(rows[0])?.body,
+        incoming: body
+      })
+      if (decision === 'fork') {
+        return logForkResult('governing history log')
+      }
+      if (decision === 'skip') {
+        return { outcome: 'skipped' }
+      }
+      await client.query(
+        `UPDATE collections SET
+           log_body               = $3,
+           log_generation         = $4,
+           log_updated_at         = $5,
+           log_updated_at_counter = $6,
+           log_origin_id          = $7,
+           meta_local             = meta_local + 1,
+           ${TAKE_LOG_FEED_POSITION_SQL}
+         WHERE space_id = $1 AND collection_id = $2`,
+        [
+          spaceId,
+          collectionId,
+          body,
+          generation,
+          ...stampValues(stamp),
+          newGeneration()
+        ]
+      )
+      return { outcome: 'applied' }
     })
   }
 

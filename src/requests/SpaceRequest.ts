@@ -515,6 +515,9 @@ export class SpaceRequest {
     try {
       await storage.deleteSpace({ spaceId })
     } finally {
+      // The Space's replica registrations went with it, so their pull loops
+      // stop. A cycle in flight applies nothing more.
+      request.server.replication.unregisterSpace({ spaceId })
       // Invalidate in `finally` because a recursive delete is not atomic: a
       // failure partway through has already removed some of what the caches
       // describe.

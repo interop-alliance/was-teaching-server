@@ -39,6 +39,11 @@ An unsafe method at a container URL (a Space or a Collection) passes the
 `containerRule` option through `fetchSpaceAndVerify` / `handleZcapVerify`; see
 `src/lib/containerRule.ts` for which rule each operation carries.
 
+The replication facet (`src/sync/`) writes replicated records through the
+backend's `apply*` methods only. Never give a request route a way to supply a
+write stamp, and never store a peer's record through `writeResource` or the
+other request-layer writes, which mint a local stamp.
+
 Two facets sit outside that structure, each in its own self-contained module
 with no auth hooks and no storage access: the CORS proxy (`src/corsProxy.ts`,
 `/api/cors`) and the ephemeral exchanges rendezvous (`src/exchanges.ts`,

@@ -15,6 +15,7 @@ import {
   QUOTA_LINK_RELATION,
   BACKENDS_AVAILABLE_LINK_RELATION,
   QUOTAS_LINK_RELATION,
+  REPLICAS_LINK_RELATION,
   SERVICE_LINK_RELATION
 } from './config.default.js'
 import {
@@ -24,7 +25,8 @@ import {
   backendPath,
   quotaPath,
   backendsPath,
-  quotasPath
+  quotasPath,
+  replicasPath
 } from './lib/paths.js'
 import { getCachedPolicy } from './lib/policyCache.js'
 import { serviceDescriptionUrl } from './serviceDescription.js'
@@ -124,8 +126,9 @@ export function policyGrants({
  *   and `quota` (`QUOTA_LINK_RELATION`), advertised unconditionally (every
  *   Collection has a selected backend and a quota report endpoint).
  * - On a Space (`collectionId` absent): `backends-available`
- *   (`BACKENDS_AVAILABLE_LINK_RELATION`) and `quotas` (`QUOTAS_LINK_RELATION`),
- *   advertised unconditionally (both endpoints always exist).
+ *   (`BACKENDS_AVAILABLE_LINK_RELATION`), `quotas` (`QUOTAS_LINK_RELATION`)
+ *   and `replicas` (`REPLICAS_LINK_RELATION`), advertised unconditionally
+ *   (the endpoints always exist).
  * - `service` (`SERVICE_LINK_RELATION`) -- the server-wide service
  *   description, advertised on both, by absolute URL since it is not a
  *   sub-resource of the container.
@@ -179,6 +182,9 @@ export async function buildLinkset({
     ]
     entry[QUOTAS_LINK_RELATION] = [
       { href: quotasPath({ spaceId }), type: 'application/json' }
+    ]
+    entry[REPLICAS_LINK_RELATION] = [
+      { href: replicasPath({ spaceId }), type: 'application/json' }
     ]
   }
   entry[SERVICE_LINK_RELATION] = [

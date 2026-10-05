@@ -940,30 +940,15 @@ export class CollectionRequest {
     } = request
     const requestName = 'Collection Query'
 
-    // Reject path-traversal / non-URL-safe ids before any storage access.
-    assertValidIds({ spaceId, collectionId }, { requestName })
-
-    // Authorize (capability-or-policy): readable by whoever may read the
-    // Collection (capability invocation, else the effective policy). The signed
-    // body is covered by the Digest, so the bare `/query` target authorizes it.
-    await fetchSpaceAndAuthorize({
-      request,
-      spaceId,
-      collectionId,
-      targetPath: queryPath({ spaceId, collectionId }),
-      requestName
-    })
-
-    // Fetch collection by id, and serve the query from the Collection's
-    // selected (data-plane) backend.
-    const { collectionMetadata, dataBackend } = await fetchCollectionAndBackend(
-      {
+    // The signed body is covered by the Digest, so the bare `/query` target
+    // authorizes it.
+    const { collectionMetadata, dataBackend } =
+      await CollectionRequest.#authorizeQuery({
         request,
         spaceId,
         collectionId,
         requestName
-      }
-    )
+      })
 
     // "You did not say which profile" is a malformed request (the Query
     // Profile Registry marks `profile` REQUIRED), not an unsupported feature:
@@ -1028,6 +1013,114 @@ export class CollectionRequest {
 
     // Any other profile, or a backend without the profile's method.
     throw new UnsupportedOperationError({ requestName })
+  }
+
+  /**
+   * GET /space/:spaceId/:collectionId/query?profile=changes
+   * The read-only form of the `changes` profile: the same feed `POST` serves,
+   * with `profile`, `checkpoint` and `limit` carried in the query string and
+   * the invocation verified under the `GET` action. It exists so a
+   * capability limited to `GET` can read the feed, which is what a
+   * replication peer holds. The other profiles carry a body and are served
+   * by `POST` alone, so any other `profile` here is `unsupported-operation`
+   * (501), and a missing one is `invalid-request-body` (400). The response
+   * is the `POST` form's, byte for byte.
+   *
+   * @param request {import('fastify').FastifyRequest}
+   * @param reply {import('fastify').FastifyReply}
+   * @returns {Promise<FastifyReply>}
+   */
+  static async queryChangesByGet(
+    request: FastifyRequest<{
+      Params: { spaceId: string; collectionId: string }
+      Querystring: { profile?: string; checkpoint?: string; limit?: string }
+    }>,
+    reply: FastifyReply
+  ): Promise<FastifyReply> {
+    const {
+      params: { spaceId, collectionId },
+      query: { profile, checkpoint, limit }
+    } = request
+    const requestName = 'Collection Query'
+
+    // The query string is part of the signed request target.
+    const { dataBackend } = await CollectionRequest.#authorizeQuery({
+      request,
+      spaceId,
+      collectionId,
+      requestName,
+      allowTargetQuery: true
+    })
+
+    if (typeof profile !== 'string') {
+      throw new InvalidRequestBodyError({
+        requestName,
+        detail: "The query is missing the required 'profile' parameter.",
+        pointer: '#/profile'
+      })
+    }
+    if (profile !== 'changes' || !dataBackend.changesSince) {
+      throw new UnsupportedOperationError({ requestName })
+    }
+    return CollectionRequest.#queryChanges({
+      reply,
+      serverUrl: request.server.serverUrl,
+      dataBackend,
+      spaceId,
+      collectionId,
+      body: {
+        ...(typeof checkpoint === 'string' && { checkpoint }),
+        ...(typeof limit === 'string' && { limit })
+      },
+      requestName
+    })
+  }
+
+  /**
+   * The prelude both forms of the Collection `query` endpoint share, in this
+   * order so the masking is the same: reject a non-URL-safe id, authorize
+   * (capability-or-policy: readable by whoever may read the Collection), then
+   * fetch the Collection and its selected (data-plane) backend.
+   *
+   * @param options {object}
+   * @param options.request {import('fastify').FastifyRequest}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.requestName {string}
+   * @param [options.allowTargetQuery] {boolean}   tolerate query parameters
+   *   on the signed target (the `GET` form)
+   * @returns {Promise<{ collectionMetadata: StoredCollectionMetadata,
+   *   dataBackend: StorageBackend }>}
+   */
+  static async #authorizeQuery({
+    request,
+    spaceId,
+    collectionId,
+    requestName,
+    allowTargetQuery
+  }: {
+    request: FastifyRequest
+    spaceId: string
+    collectionId: string
+    requestName: string
+    allowTargetQuery?: boolean
+  }): ReturnType<typeof fetchCollectionAndBackend> {
+    // Reject path-traversal / non-URL-safe ids before any storage access.
+    assertValidIds({ spaceId, collectionId }, { requestName })
+    await fetchSpaceAndAuthorize({
+      request,
+      spaceId,
+      collectionId,
+      targetPath: queryPath({ spaceId, collectionId }),
+      requestName,
+      allowTargetQuery
+    })
+    return await fetchCollectionAndBackend({
+      request,
+      spaceId,
+      collectionId,
+      requestName
+    })
   }
 
   /**

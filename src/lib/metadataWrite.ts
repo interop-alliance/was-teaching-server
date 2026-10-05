@@ -23,6 +23,21 @@ import type { EmbeddedMetadataValidator } from './metadataValidator.js'
 import { withoutStampMembers } from './hlc.js'
 
 /**
+ * Whether a `custom` member holds anything to store. An absent or empty
+ * object is stored as no `custom` at all.
+ * @param custom {unknown}
+ * @returns {boolean}
+ */
+export function hasCustomMembers(custom: unknown): boolean {
+  return (
+    custom !== undefined &&
+    custom !== null &&
+    typeof custom === 'object' &&
+    Object.keys(custom).length > 0
+  )
+}
+
+/**
  * Strips the validator-bearing and stamp members an incoming Space or
  * Collection Metadata object may carry, leaving the body to persist: the
  * embedded `_generation` / `_local` (the filesystem file layout; an archived
@@ -53,9 +68,9 @@ export function normalizeMetadataWrite<
 }
 
 /**
- * Re-stamps a Metadata object an import is about to store: the body without
- * any archived stamp or validator member, carrying this server's freshly
- * minted `stamp` instead, and the generation it is stored under (the
+ * Re-stamps a Collection Metadata object an import is about to store: the
+ * body without any archived stamp or validator member, carrying this server's
+ * freshly minted `stamp` instead, as its write stamp and its creating stamp, and the generation it is stored under (the
  * archived `_generation` when the object carries one this server could have
  * minted, else a fresh one). The
  * archived stamp is read for provenance verification only, before this runs;
@@ -63,22 +78,22 @@ export function normalizeMetadataWrite<
  * of every peer.
  *
  * @param options {object}
- * @param options.metadata {T}   the archived object
+ * @param options.metadata {CollectionMetadata}   the archived object
  * @param options.stamp {WriteStamp}   minted by the importing backend's clock
- * @returns {{ body: T, generation: string }}
+ * @returns {{ body: CollectionMetadata, generation: string }}
  */
-export function restampImportedMetadata<
-  T extends CollectionMetadata | SpaceMetadata
->({
+export function restampImportedMetadata({
   metadata,
   stamp
 }: {
-  metadata: T
+  metadata: CollectionMetadata
   stamp: WriteStamp
-}): { body: T; generation: string } {
+}): { body: CollectionMetadata; generation: string } {
   const { body, embeddedGeneration } = normalizeMetadataWrite({ metadata })
   return {
-    body: { ...body, ...stamp },
+    // The creating stamp is the import's too. An archived one would let an
+    // archive date a Collection's life ahead of every peer's.
+    body: { ...body, ...stamp, created: stamp },
     generation: importedGeneration(embeddedGeneration)
   }
 }
@@ -122,6 +137,7 @@ export function stampSpaceMetadata({
     url: _suppliedUrl,
     linkset: _suppliedLinkset,
     backends: _suppliedBackends,
+    replicas: _suppliedReplicas,
     ...rest
   } = spaceMetadata
   const creator = prior ? prior.createdBy : createdBy
@@ -150,7 +166,9 @@ export function stampSpaceMetadata({
  * preserved-as-absent, so a Collection stored without one (an object imported
  * from a pre-v0.5 archive, say) is never given a creation time later than its
  * own contents. The write stamp is this write's `stamp`, and a creating
- * write's `createdAt` is the stamp's `updatedAt`.
+ * write's `createdAt` is the stamp's `updatedAt`. `created`, the creating
+ * stamp, is resolved the same way: this write's whole stamp when it creates
+ * the Collection, and the prior object's afterward.
  *
  * `custom` is kept verbatim only when it is a non-empty object (`{ name, tags }`
  * on a plaintext Collection, the opaque envelope on an encrypted one); an
@@ -179,21 +197,20 @@ export function stampCollectionMetadata({
   const {
     createdBy: _suppliedCreatedBy,
     createdAt: _suppliedCreatedAt,
+    created: _suppliedCreated,
     custom,
     epoch,
     ...rest
   } = normalizeMetadataWrite({ metadata: collectionMetadata }).body
   const creator = prior ? prior.createdBy : createdBy
   const createdAt = prior ? prior.createdAt : stamp.updatedAt
-  const hasCustom =
-    custom !== undefined &&
-    custom !== null &&
-    typeof custom === 'object' &&
-    Object.keys(custom).length > 0
+  const created = prior ? prior.created : stamp
+  const hasCustom = hasCustomMembers(custom)
   return {
     ...rest,
     ...(creator !== undefined && { createdBy: creator }),
     ...(createdAt !== undefined && { createdAt }),
+    ...(created !== undefined && { created }),
     ...stamp,
     ...(hasCustom && { custom }),
     ...(epoch !== undefined && { epoch })

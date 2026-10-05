@@ -63,7 +63,9 @@ import type {
   ImportStats,
   WriteStamp,
   FeedDocument,
-  ResourceWriteResult
+  ResourceWriteResult,
+  ReplicaRegistration,
+  ReplicaLoopState
 } from '../src/types.js'
 
 /** A backend instance plus its teardown, as produced by the suite factory. */
@@ -335,6 +337,68 @@ function revocationRecord({
  * Registers the shared StorageBackend contract suite for one backend.
  * @param options {ContractOptions}
  */
+/**
+ * The id of the stand-in pull capability a contract registration carries, so
+ * a test can look for it where it must not appear.
+ */
+const REPLICA_CAPABILITY_ID = 'urn:uuid:contract-suite-pull-capability'
+
+/**
+ * A replica registration for a contract test. The capability is a stand-in:
+ * a backend stores it and never reads it.
+ * @param options {object}
+ * @param options.id {string}
+ * @param options.spaceId {string}   the local Space
+ * @returns {ReplicaRegistration}
+ */
+function replicaRegistration({
+  id,
+  spaceId
+}: {
+  id: string
+  spaceId: string
+}): ReplicaRegistration {
+  const fromSpace = `https://peer.example/space/${spaceId}/`
+  return {
+    id,
+    fromSpace,
+    toSpace: `https://was.example/space/${spaceId}/`,
+    capability: {
+      '@context': ['https://w3id.org/zcap/v1'],
+      id: REPLICA_CAPABILITY_ID,
+      parentCapability: `urn:zcap:root:${encodeURIComponent(fromSpace)}`,
+      controller: 'did:webvh:scid:was.example:space:server:id',
+      invocationTarget: fromSpace,
+      allowedAction: ['GET', 'HEAD'],
+      expires: '2099-01-01T00:00:00Z',
+      proof: {}
+    } as unknown as ReplicaRegistration['capability'],
+    collections: [{ id: 'col' }],
+    role: 'source'
+  }
+}
+
+/**
+ * A write stamp as a peer would serve it, minted by another origin.
+ * @param options {object}
+ * @param options.ms {number}   epoch milliseconds
+ * @param [options.counter] {number}
+ * @returns {WriteStamp}
+ */
+function peerStamp({
+  ms,
+  counter = 0
+}: {
+  ms: number
+  counter?: number
+}): WriteStamp {
+  return {
+    updatedAt: new Date(ms).toISOString(),
+    updatedAtCounter: counter,
+    originId: 'peer-origin'
+  }
+}
+
 export function describeStorageBackendContract(options: ContractOptions): void {
   const { name, makeBackend, hardQuota, exactUsage } = options
 
@@ -6916,6 +6980,1809 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const unchanged = (await backend.getSpaceMetadata({ spaceId }))!
         assert.equal(unchanged.metaLocal, afterDelete.metaLocal)
         assert.equal(metadataEtagOf(unchanged), metadataEtagOf(afterDelete))
+      })
+    })
+
+    describe('replica registrations', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-replicas'
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId)
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('creates a registration once, and reads it back whole', async () => {
+        const { backend } = harness
+        const record = replicaRegistration({ id: 'peer-a', spaceId })
+        const space = (await backend.getSpaceMetadata({ spaceId }))!
+        const stored = await backend.createReplica({ spaceId, record })
+        assert.deepEqual(stored.record, record)
+        assert.ok(isMintedGeneration(stored.generation))
+        assert.equal(stored.spaceGeneration, space.metaGeneration)
+        assert.deepEqual(
+          await backend.getReplica({ spaceId, replicaId: 'peer-a' }),
+          stored
+        )
+        await assert.rejects(
+          backend.createReplica({ spaceId, record }),
+          (err: unknown) =>
+            err instanceof ProblemError && err.statusCode === 409
+        )
+        // The refused create left the stored record as it was.
+        assert.deepEqual(
+          await backend.getReplica({ spaceId, replicaId: 'peer-a' }),
+          stored
+        )
+      })
+
+      it('refuses a registration on a Space with no Metadata object', async () => {
+        const { backend } = harness
+        await assert.rejects(
+          backend.createReplica({
+            spaceId: 'space-replicas-absent',
+            record: replicaRegistration({
+              id: 'peer-a',
+              spaceId: 'space-replicas-absent'
+            })
+          }),
+          isNotFound
+        )
+        assert.deepEqual(
+          await backend.listReplicas({ spaceId: 'space-replicas-absent' }),
+          []
+        )
+      })
+
+      it('lists a Space registrations by id, and every registration in the store', async () => {
+        const { backend } = harness
+        const otherSpace = 'space-replicas-other'
+        await provisionSpace(backend, otherSpace)
+        await backend.createReplica({
+          spaceId,
+          record: replicaRegistration({ id: 'peer-0', spaceId })
+        })
+        await backend.createReplica({
+          spaceId: otherSpace,
+          record: replicaRegistration({ id: 'peer-z', spaceId: otherSpace })
+        })
+        assert.deepEqual(
+          (await backend.listReplicas({ spaceId })).map(
+            replica => replica.record.id
+          ),
+          ['peer-0', 'peer-a']
+        )
+        const all = await backend.listAllReplicas()
+        assert.deepEqual(
+          all
+            .map(replica => `${replica.spaceId}/${replica.record.id}`)
+            .filter(key => key.startsWith('space-replicas'))
+            .sort(),
+          [
+            `${spaceId}/peer-0`,
+            `${spaceId}/peer-a`,
+            `${otherSpace}/peer-z`
+          ].sort()
+        )
+        assert.equal(
+          all.find(replica => replica.record.id === 'peer-z')!.record.capability
+            .id,
+          REPLICA_CAPABILITY_ID
+        )
+      })
+
+      it('a registration and a removal each advance the Space Metadata local segment', async () => {
+        const { backend } = harness
+        const before = (await backend.getSpaceMetadata({ spaceId }))!
+        await backend.createReplica({
+          spaceId,
+          record: replicaRegistration({ id: 'peer-local', spaceId })
+        })
+        const afterCreate = (await backend.getSpaceMetadata({ spaceId }))!
+        assert.equal(afterCreate.metaLocal, before.metaLocal! + 1)
+        assert.equal(afterCreate.metaGeneration, before.metaGeneration)
+        assert.deepEqual(stampOf(afterCreate), stampOf(before))
+
+        assert.equal(
+          await backend.deleteReplica({ spaceId, replicaId: 'peer-local' }),
+          true
+        )
+        const afterDelete = (await backend.getSpaceMetadata({ spaceId }))!
+        assert.equal(afterDelete.metaLocal, before.metaLocal! + 2)
+        assert.deepEqual(stampOf(afterDelete), stampOf(before))
+        assert.equal(
+          await backend.getReplica({ spaceId, replicaId: 'peer-local' }),
+          undefined
+        )
+
+        // Removing an absent registration changes nothing.
+        assert.equal(
+          await backend.deleteReplica({ spaceId, replicaId: 'peer-local' }),
+          false
+        )
+        const unchanged = (await backend.getSpaceMetadata({ spaceId }))!
+        assert.equal(metadataEtagOf(unchanged), metadataEtagOf(afterDelete))
+      })
+
+      it('keeps loop state beside the record, and drops it with the record', async () => {
+        const { backend } = harness
+        const replicaId = 'peer-state'
+        const record = replicaRegistration({ id: replicaId, spaceId })
+        const created = await backend.createReplica({ spaceId, record })
+        assert.equal(
+          await backend.getReplicaState({ spaceId, replicaId }),
+          undefined
+        )
+        const state: ReplicaLoopState = {
+          lastPullAt: '2026-10-04T00:00:00.000Z',
+          failures: 2,
+          collections: {
+            col: {
+              state: 'stalled',
+              checkpoint: 'opaque',
+              generation: 'gen',
+              stall: {
+                reason: 'fork',
+                since: '2026-10-04T00:00:00.000Z',
+                detail: 'a fork'
+              }
+            }
+          }
+        }
+        assert.equal(
+          await backend.writeReplicaState({ spaceId, replicaId, state }),
+          true
+        )
+        assert.deepEqual(
+          await backend.getReplicaState({ spaceId, replicaId }),
+          state
+        )
+        // A state write leaves the record as it was.
+        assert.deepEqual(
+          await backend.getReplica({ spaceId, replicaId }),
+          created
+        )
+
+        assert.equal(await backend.deleteReplica({ spaceId, replicaId }), true)
+        assert.equal(
+          await backend.writeReplicaState({ spaceId, replicaId, state }),
+          false
+        )
+        assert.equal(
+          await backend.getReplicaState({ spaceId, replicaId }),
+          undefined
+        )
+        // A registration made again under the id starts with no state.
+        await backend.createReplica({ spaceId, record })
+        assert.equal(
+          await backend.getReplicaState({ spaceId, replicaId }),
+          undefined
+        )
+        assert.equal(
+          (await backend.listReplicas({ spaceId })).filter(
+            replica => replica.record.id === replicaId
+          ).length,
+          1
+        )
+      })
+
+      it('leaves registrations and their state out of an export', async () => {
+        const { backend } = harness
+        const replicaId = 'peer-export'
+        await backend.createReplica({
+          spaceId,
+          record: replicaRegistration({ id: replicaId, spaceId })
+        })
+        await backend.writeReplicaState({
+          spaceId,
+          replicaId,
+          state: { collections: { col: { state: 'synced' } } }
+        })
+        const archive = Buffer.from(
+          await collectBytes(await backend.exportSpace({ spaceId }))
+        ).toString('latin1')
+        assert.equal(archive.includes(REPLICA_CAPABILITY_ID), false)
+        assert.equal(archive.includes('.replica.'), false)
+        assert.equal(archive.includes(replicaId), false)
+        // The Space still lists its Collection only.
+        assert.deepEqual(
+          (await backend.listCollections({ spaceId })).items.map(
+            item => item.id
+          ),
+          ['col']
+        )
+      })
+
+      it('Delete Space removes the registrations and their state', async () => {
+        const { backend } = harness
+        const doomed = 'space-replicas-doomed'
+        await provisionSpace(backend, doomed)
+        const record = replicaRegistration({ id: 'peer-a', spaceId: doomed })
+        const first = await backend.createReplica({ spaceId: doomed, record })
+        await backend.writeReplicaState({
+          spaceId: doomed,
+          replicaId: 'peer-a',
+          state: { collections: {} }
+        })
+        await backend.deleteSpace({ spaceId: doomed })
+        assert.equal(
+          await backend.getReplica({ spaceId: doomed, replicaId: 'peer-a' }),
+          undefined
+        )
+        assert.deepEqual(await backend.listReplicas({ spaceId: doomed }), [])
+        assert.equal(
+          (await backend.listAllReplicas()).some(
+            replica => replica.spaceId === doomed
+          ),
+          false
+        )
+        // A Space made again under the id takes a registration afresh, under
+        // the new Space generation.
+        await provisionSpace(backend, doomed)
+        const second = await backend.createReplica({ spaceId: doomed, record })
+        assert.notEqual(second.spaceGeneration, first.spaceGeneration)
+        assert.equal(
+          await backend.getReplicaState({
+            spaceId: doomed,
+            replicaId: 'peer-a'
+          }),
+          undefined
+        )
+      })
+    })
+
+    describe('the creating stamp of a Collection', () => {
+      let harness: BackendHarness
+      const spaceId = 'space-created'
+      beforeAll(async () => {
+        harness = await makeBackend()
+        await provisionSpace(harness.backend, spaceId)
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('is the first write stamp, kept across an update and renewed by a re-create', async () => {
+        const { backend } = harness
+        const collectionId = 'lives'
+        const collectionMetadata = {
+          id: collectionId,
+          type: ['Collection'],
+          name: 'first'
+        }
+        const first = await backend.writeCollection({
+          spaceId,
+          collectionId,
+          // A body cannot set the creating stamp.
+          collectionMetadata: {
+            ...collectionMetadata,
+            created: peerStamp({ ms: 1 })
+          }
+        })
+        assert.deepEqual(first.metadata.created, first.validator.stamp)
+
+        const updated = await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: { ...collectionMetadata, name: 'second' }
+        })
+        assert.deepEqual(updated.metadata.created, first.validator.stamp)
+        assert.notDeepEqual(updated.validator.stamp, first.validator.stamp)
+        const read = (await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        }))!
+        assert.deepEqual(read.created, first.validator.stamp)
+
+        await backend.deleteCollection({ spaceId, collectionId })
+        const again = await backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata
+        })
+        assert.deepEqual(again.metadata.created, again.validator.stamp)
+        assert.ok(
+          compareStamps(again.metadata.created!, first.validator.stamp) > 0
+        )
+      })
+    })
+
+    describe('the apply path', () => {
+      let harness: BackendHarness
+      const clock = frozenClock()
+      const spaceId = 'space-apply'
+      const replicaId = 'peer'
+      // Each test works in a Collection of its own.
+      let collections = 0
+      async function freshCollection(): Promise<string> {
+        const collectionId = `col-${++collections}`
+        await harness.backend.writeCollection({
+          spaceId,
+          collectionId,
+          collectionMetadata: { id: collectionId, type: ['Collection'] }
+        })
+        return collectionId
+      }
+      // A stamp `offset` ms from the store's frozen physical time.
+      function stampAt(offset: number, counter = 0): WriteStamp {
+        return peerStamp({ ms: clock.now + offset, counter })
+      }
+      async function feedOf(collectionId: string): Promise<FeedDocument[]> {
+        const { documents } = await harness.backend.changesSince!({
+          spaceId,
+          collectionId,
+          limit: 100
+        })
+        return documents
+      }
+      function liveCollection({
+        collectionId,
+        generation,
+        stamp,
+        created = stamp,
+        members = {}
+      }: {
+        collectionId: string
+        generation: string
+        stamp: WriteStamp
+        created?: WriteStamp
+        members?: Partial<CollectionMetadata>
+      }) {
+        return {
+          deleted: false as const,
+          generation,
+          metadata: {
+            id: collectionId,
+            type: ['Collection'],
+            createdAt: created.updatedAt,
+            created,
+            ...members,
+            ...stamp
+          } as CollectionMetadata
+        }
+      }
+
+      beforeAll(async () => {
+        harness = await makeBackend({ physicalClock: clock.read })
+        await provisionSpace(harness.backend, spaceId)
+        await harness.backend.createReplica({
+          spaceId,
+          record: replicaRegistration({ id: replicaId, spaceId })
+        })
+      })
+      afterAll(async () => {
+        await harness.cleanup()
+      })
+
+      it('applies nothing under a registration the Space does not hold', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        const stamp = stampAt(1000)
+        const unknown = { spaceId, replicaId: 'no-such-peer' }
+        const results = [
+          await backend.applySpaceName({ ...unknown, name: 'x', stamp }),
+          await backend.applyCollection({
+            ...unknown,
+            collectionId,
+            collection: { deleted: true, stamp }
+          }),
+          await backend.applyResource({
+            ...unknown,
+            collectionId,
+            resourceId: 'r1',
+            generation: 'gen1',
+            stamp,
+            resource: { deleted: false, input: jsonInput({ a: 1 }) }
+          }),
+          await backend.applyResourceMetadata({
+            ...unknown,
+            collectionId,
+            resourceId: 'r1',
+            meta: { ...stamp, generation: 'meta1' },
+            custom: { name: 'x' }
+          }),
+          await backend.applyPolicy({
+            ...unknown,
+            generation: 'pol1',
+            stamp,
+            policy: { type: 'PublicCanRead' }
+          }),
+          await backend.applyCollectionLog({
+            ...unknown,
+            collectionId,
+            body: '{"state":{}}\n',
+            generation: 'log1',
+            stamp
+          })
+        ]
+        for (const result of results) {
+          assert.deepEqual(result, { outcome: 'unregistered' })
+        }
+        assert.ok(
+          await backend.getCollectionMetadata({ spaceId, collectionId })
+        )
+        assert.equal(
+          await backend.getResourceMetadata({
+            spaceId,
+            collectionId,
+            resourceId: 'r1'
+          }),
+          undefined
+        )
+        assert.equal(await backend.getPolicy({ spaceId }), undefined)
+      })
+
+      it('refuses a stamp dated past the clock bound, and stores nothing', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        const result = await backend.applyResource({
+          spaceId,
+          replicaId,
+          collectionId,
+          resourceId: 'future',
+          generation: 'gen1',
+          stamp: stampAt(10 * 60 * 1000),
+          resource: { deleted: false, input: jsonInput({ a: 1 }) }
+        })
+        assert.equal(result.outcome, 'refused')
+        assert.equal(
+          result.outcome === 'refused' && result.reason,
+          'clock-bound'
+        )
+        await assert.rejects(
+          backend.getResource({ spaceId, collectionId, resourceId: 'future' }),
+          ResourceNotFoundError
+        )
+        // A local write afterward is still stamped at local time.
+        const written = await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'local',
+          input: jsonInput({ a: 1 })
+        })
+        assert.ok(
+          Date.parse(written.validator.stamp.updatedAt) <
+            clock.now + 5 * 60 * 1000
+        )
+      })
+
+      it('rejects a malformed stamp as a server fault', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        await assert.rejects(
+          backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId: 'bad',
+            generation: 'gen1',
+            stamp: { ...stampAt(1000), originId: 'not an origin id' },
+            resource: { deleted: false, input: jsonInput({ a: 1 }) }
+          }),
+          StorageError
+        )
+      })
+
+      it('applies the Space name under the received stamp and keeps every other member', async () => {
+        const { backend } = harness
+        const before = (await backend.getSpaceMetadata({ spaceId }))!
+        const stamp = stampAt(2000)
+        assert.deepEqual(
+          await backend.applySpaceName({
+            spaceId,
+            replicaId,
+            name: 'From the peer',
+            stamp
+          }),
+          { outcome: 'applied' }
+        )
+        const applied = (await backend.getSpaceMetadata({ spaceId }))!
+        assert.equal(applied.name, 'From the peer')
+        assert.deepEqual(stampOf(applied), stamp)
+        assert.equal(applied.metaGeneration, before.metaGeneration)
+        assert.equal(applied.metaLocal, 0)
+        assert.equal(applied.controller, before.controller)
+        assert.deepEqual(applied.type, before.type)
+
+        // The same stamp again, and a lower one, are skipped.
+        for (const lost of [stamp, stampAt(1500)]) {
+          assert.deepEqual(
+            await backend.applySpaceName({
+              spaceId,
+              replicaId,
+              name: 'Lost',
+              stamp: lost
+            }),
+            { outcome: 'skipped' }
+          )
+        }
+        assert.equal(
+          (await backend.getSpaceMetadata({ spaceId }))!.name,
+          'From the peer'
+        )
+
+        // An absent name removes the stored one.
+        assert.deepEqual(
+          await backend.applySpaceName({
+            spaceId,
+            replicaId,
+            stamp: stampAt(2000, 1)
+          }),
+          { outcome: 'applied' }
+        )
+        const cleared = (await backend.getSpaceMetadata({ spaceId }))!
+        assert.equal('name' in cleared, false)
+        // The registration still applies: the Space generation did not move.
+        assert.equal(cleared.metaGeneration, before.metaGeneration)
+      })
+
+      it('applies a Resource under the peer stamp and generation, at a new feed position', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        const resourceId = 'doc'
+        const stamp = stampAt(3000)
+        const positionsBefore = (await feedOf(collectionId)).map(
+          document => document.feedPosition
+        )
+        assert.deepEqual(
+          await backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId,
+            generation: 'peerGen1',
+            stamp,
+            createdAt: '2026-01-02T03:04:05.000Z',
+            createdBy: CREATOR_ONE,
+            writerId: 'writer-1',
+            resource: {
+              deleted: false,
+              input: jsonInput({ hello: 'peer' }),
+              epoch: 'epoch-1'
+            }
+          }),
+          { outcome: 'applied' }
+        )
+        const result = await backend.getResource({
+          spaceId,
+          collectionId,
+          resourceId
+        })
+        assert.deepEqual(
+          JSON.parse(await streamToString(result.resourceStream)),
+          { hello: 'peer' }
+        )
+        const metadata = (await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId
+        }))!
+        assert.deepEqual(stampOf(metadata), stamp)
+        assert.equal(metadata.generation, 'peerGen1')
+        assert.equal(metadata.createdAt, '2026-01-02T03:04:05.000Z')
+        assert.equal(metadata.createdBy, CREATOR_ONE)
+        assert.equal(metadata.epoch, 'epoch-1')
+        assert.equal(metadata.writerId, 'writer-1')
+        // The validator is the peer's, so the `ETag` is byte-identical.
+        assert.equal(
+          etagOf({ generation: metadata.generation, ...stampOf(metadata) }),
+          formatEtag({ generation: 'peerGen1', stamp })
+        )
+
+        const document = (await feedOf(collectionId)).find(
+          candidate =>
+            candidate.kind === 'resource' && candidate.resourceId === resourceId
+        )!
+        assert.ok(document)
+        assert.ok(
+          positionsBefore.every(position => position < document.feedPosition)
+        )
+        assert.deepEqual(stampOf(document), stamp)
+        assert.equal(
+          document.kind === 'resource' && document.createdBy,
+          CREATOR_ONE
+        )
+
+        // An equal stamp and a lower one are skipped, and take no position.
+        for (const lost of [stamp, stampAt(2500)]) {
+          assert.deepEqual(
+            await backend.applyResource({
+              spaceId,
+              replicaId,
+              collectionId,
+              resourceId,
+              generation: 'peerGen1',
+              stamp: lost,
+              resource: { deleted: false, input: jsonInput({ hello: 'lost' }) }
+            }),
+            { outcome: 'skipped' }
+          )
+        }
+        const after = (await feedOf(collectionId)).find(
+          candidate =>
+            candidate.kind === 'resource' && candidate.resourceId === resourceId
+        )!
+        assert.equal(after.feedPosition, document.feedPosition)
+
+        // A greater stamp replaces the bytes, the type and the members.
+        const next = stampAt(3000, 1)
+        assert.deepEqual(
+          await backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId,
+            generation: 'peerGen1',
+            stamp: next,
+            createdAt: '2026-01-02T03:04:05.000Z',
+            resource: {
+              deleted: false,
+              input: binaryInput(Buffer.from('bytes'), {
+                contentType: 'text/plain'
+              })
+            }
+          }),
+          { outcome: 'applied' }
+        )
+        const replaced = (await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId
+        }))!
+        assert.equal(replaced.contentType, 'text/plain')
+        assert.equal(replaced.size, 5)
+        assert.deepEqual(stampOf(replaced), next)
+        assert.equal(replaced.createdBy, undefined)
+        assert.equal(replaced.epoch, undefined)
+        assert.equal(replaced.writerId, undefined)
+        const moved = (await feedOf(collectionId)).find(
+          candidate =>
+            candidate.kind === 'resource' && candidate.resourceId === resourceId
+        )!
+        assert.ok(moved.feedPosition > document.feedPosition)
+      })
+
+      it('skips a Resource whose stamp is below a local write, and applies one above it', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        const resourceId = 'contested'
+        const local = await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId,
+          input: jsonInput({ from: 'local' })
+        })
+        const localMs = Date.parse(local.validator.stamp.updatedAt)
+        assert.deepEqual(
+          await backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId,
+            generation: 'peerGen',
+            stamp: peerStamp({ ms: localMs - 1 }),
+            resource: { deleted: false, input: jsonInput({ from: 'peer' }) }
+          }),
+          { outcome: 'skipped' }
+        )
+        const kept = (await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId
+        }))!
+        assert.equal(kept.generation, local.validator.generation)
+        assert.deepEqual(stampOf(kept), local.validator.stamp)
+
+        const winning = peerStamp({ ms: localMs + 5000 })
+        assert.deepEqual(
+          await backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId,
+            generation: 'peerGen',
+            stamp: winning,
+            resource: { deleted: false, input: jsonInput({ from: 'peer' }) }
+          }),
+          { outcome: 'applied' }
+        )
+        // A local write afterward is stamped above the applied one.
+        const rewritten = await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId,
+          input: jsonInput({ from: 'local again' })
+        })
+        assert.ok(compareStamps(rewritten.validator.stamp, winning) > 0)
+        assert.equal(rewritten.validator.generation, 'peerGen')
+      })
+
+      it('applies a `/meta` record on its own stamp, and keeps it across a content apply', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        const resourceId = 'annotated'
+        const contentStamp = stampAt(4000)
+        await backend.applyResource({
+          spaceId,
+          replicaId,
+          collectionId,
+          resourceId,
+          generation: 'peerGen',
+          stamp: contentStamp,
+          resource: { deleted: false, input: jsonInput({ a: 1 }) }
+        })
+        const meta = { ...stampAt(4100), generation: 'peerMeta' }
+        const positionBefore = (await feedOf(collectionId)).find(
+          candidate =>
+            candidate.kind === 'resource' && candidate.resourceId === resourceId
+        )!.feedPosition
+        assert.deepEqual(
+          await backend.applyResourceMetadata({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId,
+            meta,
+            custom: { name: 'A name', tags: ['one'] }
+          }),
+          { outcome: 'applied' }
+        )
+        const applied = (await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId
+        }))!
+        assert.deepEqual(applied.meta, meta)
+        assert.deepEqual(applied.custom, { name: 'A name', tags: ['one'] })
+        // The content record is untouched.
+        assert.deepEqual(stampOf(applied), contentStamp)
+        assert.equal(applied.generation, 'peerGen')
+        const document = (await feedOf(collectionId)).find(
+          candidate =>
+            candidate.kind === 'resource' && candidate.resourceId === resourceId
+        )!
+        assert.ok(document.feedPosition > positionBefore)
+
+        for (const lost of [meta, { ...stampAt(4050), generation: 'other' }]) {
+          assert.deepEqual(
+            await backend.applyResourceMetadata({
+              spaceId,
+              replicaId,
+              collectionId,
+              resourceId,
+              meta: lost,
+              custom: { name: 'Lost' }
+            }),
+            { outcome: 'skipped' }
+          )
+        }
+
+        // A content apply keeps the `/meta` record and `custom`.
+        await backend.applyResource({
+          spaceId,
+          replicaId,
+          collectionId,
+          resourceId,
+          generation: 'peerGen',
+          stamp: stampAt(4200),
+          resource: { deleted: false, input: jsonInput({ a: 2 }) }
+        })
+        const afterContent = (await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId
+        }))!
+        assert.deepEqual(afterContent.meta, meta)
+        assert.deepEqual(afterContent.custom, {
+          name: 'A name',
+          tags: ['one']
+        })
+
+        // An empty `custom` clears it.
+        const cleared = { ...stampAt(4300), generation: 'peerMeta' }
+        await backend.applyResourceMetadata({
+          spaceId,
+          replicaId,
+          collectionId,
+          resourceId,
+          meta: cleared
+        })
+        const afterClear = (await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId
+        }))!
+        assert.equal(afterClear.custom, undefined)
+        assert.deepEqual(afterClear.meta, cleared)
+
+        // No `/meta` is applied to an absent Resource.
+        assert.deepEqual(
+          await backend.applyResourceMetadata({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId: 'absent',
+            meta: { ...stampAt(4400), generation: 'm' },
+            custom: { name: 'x' }
+          }),
+          { outcome: 'skipped' }
+        )
+      })
+
+      it('applies a Resource tombstone, skips a `/meta` under it, and re-creates over it', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        const resourceId = 'doomed'
+        await backend.applyResource({
+          spaceId,
+          replicaId,
+          collectionId,
+          resourceId,
+          generation: 'peerGen',
+          stamp: stampAt(5000),
+          createdBy: CREATOR_ONE,
+          resource: { deleted: false, input: jsonInput({ a: 1 }) }
+        })
+        await backend.applyResourceMetadata({
+          spaceId,
+          replicaId,
+          collectionId,
+          resourceId,
+          meta: { ...stampAt(5050), generation: 'peerMeta' },
+          custom: { name: 'gone soon' }
+        })
+        await backend.writeChunk({
+          spaceId,
+          collectionId,
+          resourceId,
+          chunkIndex: 0,
+          input: binaryInput(Buffer.from('chunk'))
+        })
+
+        // A tombstone below the held stamp is skipped.
+        assert.deepEqual(
+          await backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId,
+            generation: 'peerGen',
+            stamp: stampAt(4900),
+            resource: { deleted: true, contentType: 'application/json' }
+          }),
+          { outcome: 'skipped' }
+        )
+        const tombstone = stampAt(5100)
+        assert.deepEqual(
+          await backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId,
+            generation: 'peerGen',
+            stamp: tombstone,
+            createdBy: CREATOR_ONE,
+            writerId: 'deleter',
+            resource: { deleted: true, contentType: 'application/json' }
+          }),
+          { outcome: 'applied' }
+        )
+        await assert.rejects(
+          backend.getResource({ spaceId, collectionId, resourceId }),
+          ResourceNotFoundError
+        )
+        assert.deepEqual(
+          (await backend.listChunks({ spaceId, collectionId, resourceId }))
+            .chunks,
+          []
+        )
+        const document = (await feedOf(collectionId)).find(
+          candidate =>
+            candidate.kind === 'resource' && candidate.resourceId === resourceId
+        )!
+        assert.equal(document.kind === 'resource' && document.deleted, true)
+        assert.equal(
+          document.kind === 'resource' && document.contentType,
+          'application/json'
+        )
+        assert.equal(
+          document.kind === 'resource' && document.writerId,
+          'deleter'
+        )
+        assert.equal(document.kind === 'resource' && document.meta, undefined)
+        assert.deepEqual(stampOf(document), tombstone)
+        assert.equal(document.validator!.generation, 'peerGen')
+
+        // A `/meta` stamped after the tombstone is skipped while it holds.
+        assert.deepEqual(
+          await backend.applyResourceMetadata({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId,
+            meta: { ...stampAt(5200), generation: 'peerMeta' },
+            custom: { name: 'too late' }
+          }),
+          { outcome: 'skipped' }
+        )
+        // A live record below the tombstone is skipped, one above it applies.
+        assert.deepEqual(
+          await backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId,
+            generation: 'peerGen',
+            stamp: stampAt(5080),
+            resource: { deleted: false, input: jsonInput({ a: 'stale' }) }
+          }),
+          { outcome: 'skipped' }
+        )
+        assert.deepEqual(
+          await backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId,
+            generation: 'peerGen',
+            stamp: stampAt(5300),
+            resource: { deleted: false, input: jsonInput({ a: 'back' }) }
+          }),
+          { outcome: 'applied' }
+        )
+        const recreated = (await backend.getResourceMetadata({
+          spaceId,
+          collectionId,
+          resourceId
+        }))!
+        assert.equal(recreated.custom, undefined)
+        assert.equal(recreated.meta, undefined)
+      })
+
+      it('stores a tombstone for a Resource it never held', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        const stamp = stampAt(5500)
+        assert.deepEqual(
+          await backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId: 'never-here',
+            generation: 'peerGen',
+            stamp,
+            resource: { deleted: true, contentType: 'image/png' }
+          }),
+          { outcome: 'applied' }
+        )
+        // A stale copy arriving afterward is not created.
+        assert.deepEqual(
+          await backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId: 'never-here',
+            generation: 'peerGen',
+            stamp: stampAt(5400),
+            resource: { deleted: false, input: jsonInput({ a: 1 }) }
+          }),
+          { outcome: 'skipped' }
+        )
+      })
+
+      it('fast-forwards a did.jsonl whatever its stamp, and refuses a fork', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        const resourceId = 'did.jsonl'
+        const apply = (body: string, stamp: WriteStamp) =>
+          backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId,
+            generation: 'logGen',
+            stamp,
+            resource: {
+              deleted: false,
+              input: binaryInput(Buffer.from(body), {
+                contentType: 'text/jsonl'
+              })
+            }
+          })
+        const read = async () =>
+          streamToString(
+            (await backend.getResource({ spaceId, collectionId, resourceId }))
+              .resourceStream
+          )
+        assert.deepEqual(await apply('{"n":1}\n', stampAt(6000)), {
+          outcome: 'applied'
+        })
+        // A longer log applies even under a lower stamp.
+        const longer = stampAt(5900)
+        assert.deepEqual(await apply('{"n":1}\n{"n":2}\n', longer), {
+          outcome: 'applied'
+        })
+        assert.equal(await read(), '{"n":1}\n{"n":2}\n')
+        assert.deepEqual(
+          stampOf(
+            (await backend.getResourceMetadata({
+              spaceId,
+              collectionId,
+              resourceId
+            }))!
+          ),
+          longer
+        )
+        // The same log and a prefix of it are skipped, whatever the stamp.
+        assert.deepEqual(await apply('{"n":1}\n{"n":2}\n', stampAt(6100)), {
+          outcome: 'skipped'
+        })
+        assert.deepEqual(await apply('{"n":1}\n', stampAt(6200)), {
+          outcome: 'skipped'
+        })
+        const forked = await apply('{"n":1}\n{"n":"other"}\n', stampAt(6300))
+        assert.equal(forked.outcome, 'refused')
+        assert.equal(forked.outcome === 'refused' && forked.reason, 'fork')
+        assert.equal(await read(), '{"n":1}\n{"n":2}\n')
+        // A peer never deletes a history log.
+        assert.deepEqual(
+          await backend.applyResource({
+            spaceId,
+            replicaId,
+            collectionId,
+            resourceId,
+            generation: 'logGen',
+            stamp: stampAt(6400),
+            resource: { deleted: true, contentType: 'text/jsonl' }
+          }),
+          { outcome: 'skipped' }
+        )
+        assert.equal(await read(), '{"n":1}\n{"n":2}\n')
+      })
+
+      it('fast-forwards a governing history log and advances the Collection Metadata local segment', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        const first = '{"parameters":{"method":"m"},"state":{}}\n'
+        const second = `${first}{"state":{}}\n`
+        const before = (await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        }))!
+        const stamp = stampAt(7000)
+        assert.deepEqual(
+          await backend.applyCollectionLog({
+            spaceId,
+            replicaId,
+            collectionId,
+            body: first,
+            generation: 'logGen',
+            stamp
+          }),
+          { outcome: 'applied' }
+        )
+        const log = (await backend.getCollectionLog({ spaceId, collectionId }))!
+        assert.equal(log.body, first)
+        assert.equal(
+          formatEtag(log.validator),
+          formatEtag({ generation: 'logGen', stamp })
+        )
+        const afterCreate = (await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        }))!
+        assert.equal(afterCreate.metaLocal, before.metaLocal! + 1)
+        assert.deepEqual(stampOf(afterCreate), stampOf(before))
+        const document = (await feedOf(collectionId)).find(
+          candidate => candidate.kind === 'log'
+        )!
+        assert.deepEqual(stampOf(document), stamp)
+
+        // An append applies under a lower stamp; a prefix is skipped.
+        const appended = stampAt(6900)
+        assert.deepEqual(
+          await backend.applyCollectionLog({
+            spaceId,
+            replicaId,
+            collectionId,
+            body: second,
+            generation: 'logGen',
+            stamp: appended
+          }),
+          { outcome: 'applied' }
+        )
+        const grown = (await backend.getCollectionLog({
+          spaceId,
+          collectionId
+        }))!
+        assert.equal(grown.body, second)
+        assert.deepEqual(grown.validator.stamp, appended)
+        assert.equal(
+          (await backend.getCollectionMetadata({ spaceId, collectionId }))!
+            .metaLocal,
+          before.metaLocal! + 2
+        )
+        const moved = (await feedOf(collectionId)).find(
+          candidate => candidate.kind === 'log'
+        )!
+        assert.ok(moved.feedPosition > document.feedPosition)
+        for (const body of [second, first]) {
+          assert.deepEqual(
+            await backend.applyCollectionLog({
+              spaceId,
+              replicaId,
+              collectionId,
+              body,
+              generation: 'logGen',
+              stamp: stampAt(7100)
+            }),
+            { outcome: 'skipped' }
+          )
+        }
+        const forked = await backend.applyCollectionLog({
+          spaceId,
+          replicaId,
+          collectionId,
+          body: `${first}{"state":{"other":true}}\n`,
+          generation: 'logGen',
+          stamp: stampAt(7200)
+        })
+        assert.equal(forked.outcome, 'refused')
+        assert.equal(forked.outcome === 'refused' && forked.reason, 'fork')
+        assert.equal(
+          (await backend.getCollectionLog({ spaceId, collectionId }))!.body,
+          second
+        )
+      })
+
+      it('applies a policy and its tombstone at each level', async () => {
+        const { backend } = harness
+        const collectionId = await freshCollection()
+        const levels = [
+          {},
+          { collectionId },
+          { collectionId, resourceId: 'with-policy' }
+        ]
+        let offset = 8000
+        for (const level of levels) {
+          const stamp = stampAt((offset += 100))
+          assert.deepEqual(
+            await backend.applyPolicy({
+              spaceId,
+              replicaId,
+              ...level,
+              generation: 'polGen',
+              stamp,
+              policy: { type: 'PublicCanRead' }
+            }),
+            { outcome: 'applied' }
+          )
+          const record = (await backend.getPolicyRecord({ spaceId, ...level }))!
+          assert.equal(record.deleted, false)
+          assert.equal(
+            formatEtag(record.validator!),
+            formatEtag({ generation: 'polGen', stamp })
+          )
+          const served = (await backend.getPolicy({ spaceId, ...level }))!
+          assert.equal(served.type, 'PublicCanRead')
+          assert.deepEqual(stampOf(served), stamp)
+
+          // An equal stamp and a lower one are skipped.
+          for (const lost of [stamp, stampAt(offset - 50)]) {
+            assert.deepEqual(
+              await backend.applyPolicy({
+                spaceId,
+                replicaId,
+                ...level,
+                generation: 'polGen',
+                stamp: lost
+              }),
+              { outcome: 'skipped' }
+            )
+          }
+          assert.ok(await backend.getPolicy({ spaceId, ...level }))
+
+          const deleted = stampAt((offset += 100))
+          assert.deepEqual(
+            await backend.applyPolicy({
+              spaceId,
+              replicaId,
+              ...level,
+              generation: 'polGen',
+              stamp: deleted
+            }),
+            { outcome: 'applied' }
+          )
+          assert.equal(
+            await backend.getPolicy({ spaceId, ...level }),
+            undefined
+          )
+          const tombstone = (await backend.getPolicyRecord({
+            spaceId,
+            ...level
+          }))!
+          assert.equal(tombstone.deleted, true)
+          assert.equal(
+            formatEtag(tombstone.validator!),
+            formatEtag({ generation: 'polGen', stamp: deleted })
+          )
+          // A live policy below the tombstone is skipped.
+          assert.deepEqual(
+            await backend.applyPolicy({
+              spaceId,
+              replicaId,
+              ...level,
+              generation: 'polGen',
+              stamp: stampAt(offset - 10),
+              policy: { type: 'PublicCanRead' }
+            }),
+            { outcome: 'skipped' }
+          )
+        }
+        // The Collection's two policies are in its feed, as tombstones.
+        const policies = (await feedOf(collectionId)).filter(
+          document => document.kind === 'policy'
+        )
+        assert.equal(policies.length, 2)
+        assert.ok(
+          policies.every(
+            document => document.kind === 'policy' && document.deleted
+          )
+        )
+      })
+
+      it('skips every member record under an absent or tombstoned Collection', async () => {
+        const { backend } = harness
+        const tombstoned = await freshCollection()
+        await backend.deleteCollection({ spaceId, collectionId: tombstoned })
+        for (const collectionId of ['never-created', tombstoned]) {
+          const stamp = stampAt(9000)
+          const results = [
+            await backend.applyResource({
+              spaceId,
+              replicaId,
+              collectionId,
+              resourceId: 'r1',
+              generation: 'gen',
+              stamp,
+              resource: { deleted: false, input: jsonInput({ a: 1 }) }
+            }),
+            await backend.applyResource({
+              spaceId,
+              replicaId,
+              collectionId,
+              resourceId: 'r2',
+              generation: 'gen',
+              stamp,
+              resource: { deleted: true, contentType: 'application/json' }
+            }),
+            await backend.applyResourceMetadata({
+              spaceId,
+              replicaId,
+              collectionId,
+              resourceId: 'r1',
+              meta: { ...stamp, generation: 'meta' },
+              custom: { name: 'x' }
+            }),
+            await backend.applyPolicy({
+              spaceId,
+              replicaId,
+              collectionId,
+              generation: 'pol',
+              stamp,
+              policy: { type: 'PublicCanRead' }
+            }),
+            await backend.applyCollectionLog({
+              spaceId,
+              replicaId,
+              collectionId,
+              body: '{"state":{}}\n',
+              generation: 'log',
+              stamp
+            })
+          ]
+          for (const result of results) {
+            assert.deepEqual(result, { outcome: 'skipped' })
+          }
+          assert.equal(
+            await backend.getCollectionMetadata({ spaceId, collectionId }),
+            undefined
+          )
+          assert.equal(
+            await backend.getPolicyRecord({ spaceId, collectionId }),
+            undefined
+          )
+        }
+        // Neither id became a Collection.
+        const listed = (await backend.listCollections({ spaceId })).items.map(
+          item => item.id
+        )
+        assert.equal(listed.includes('never-created'), false)
+        assert.equal(listed.includes(tombstoned), false)
+      })
+
+      it('creates a Collection under the peer generation, stamp and creating stamp', async () => {
+        const { backend } = harness
+        const collectionId = 'applied-create'
+        const stamp = stampAt(10_000)
+        const created = stampAt(9_500)
+        assert.deepEqual(
+          await backend.applyCollection({
+            spaceId,
+            replicaId,
+            collectionId,
+            collection: liveCollection({
+              collectionId,
+              generation: 'colGen1',
+              stamp,
+              created,
+              members: { name: 'From the peer', createdBy: CREATOR_ONE }
+            })
+          }),
+          { outcome: 'applied' }
+        )
+        const stored = (await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        }))!
+        assert.equal(stored.metaGeneration, 'colGen1')
+        assert.equal(stored.metaLocal, 0)
+        assert.deepEqual(stampOf(stored), stamp)
+        assert.deepEqual(stored.created, created)
+        assert.equal(stored.createdAt, created.updatedAt)
+        assert.equal(stored.createdBy, CREATOR_ONE)
+        assert.equal(stored.name, 'From the peer')
+        assert.equal(
+          metadataEtagOf(stored),
+          formatEtag({ generation: 'colGen1', stamp, local: 0 })
+        )
+        const feed = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          limit: 10
+        })
+        assert.deepEqual(
+          feed.documents.map(document => [
+            document.kind,
+            document.feedPosition
+          ]),
+          [['collection-metadata', 1]]
+        )
+        // The Collection takes ordinary writes.
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'r1',
+          input: jsonInput({ a: 1 })
+        })
+        assert.ok(
+          (await backend.listCollections({ spaceId })).items.some(
+            item => item.id === collectionId
+          )
+        )
+      })
+
+      it('updates a Collection of the same life by stamp, merging the immutable members forward', async () => {
+        const { backend } = harness
+        const collectionId = 'applied-update'
+        const created = stampAt(11_000)
+        await backend.applyCollection({
+          spaceId,
+          replicaId,
+          collectionId,
+          collection: liveCollection({
+            collectionId,
+            generation: 'colGen',
+            stamp: created,
+            members: { name: 'one', revisions: { immutable: true } }
+          })
+        })
+        const positionOf = async () =>
+          (await feedOf(collectionId)).find(
+            document => document.kind === 'collection-metadata'
+          )!.feedPosition
+        const firstPosition = await positionOf()
+
+        // A lower and an equal stamp are skipped.
+        for (const lost of [created, stampAt(10_900)]) {
+          assert.deepEqual(
+            await backend.applyCollection({
+              spaceId,
+              replicaId,
+              collectionId,
+              collection: liveCollection({
+                collectionId,
+                generation: 'colGen',
+                stamp: lost,
+                created,
+                members: { name: 'lost' }
+              })
+            }),
+            { outcome: 'skipped' }
+          )
+        }
+
+        // The update omits `revisions.immutable`, which is kept.
+        const updated = stampAt(11_100)
+        assert.deepEqual(
+          await backend.applyCollection({
+            spaceId,
+            replicaId,
+            collectionId,
+            collection: liveCollection({
+              collectionId,
+              generation: 'colGen',
+              stamp: updated,
+              created,
+              members: { name: 'two' }
+            })
+          }),
+          { outcome: 'applied' }
+        )
+        const stored = (await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        }))!
+        assert.equal(stored.name, 'two')
+        assert.deepEqual(stored.revisions, { immutable: true })
+        assert.deepEqual(stampOf(stored), updated)
+        assert.deepEqual(stored.created, created)
+        assert.equal(stored.metaGeneration, 'colGen')
+        assert.ok((await positionOf()) > firstPosition)
+
+        // A different set value is a fork, and nothing is stored.
+        const forked = await backend.applyCollection({
+          spaceId,
+          replicaId,
+          collectionId,
+          collection: liveCollection({
+            collectionId,
+            generation: 'colGen',
+            stamp: stampAt(11_200),
+            created,
+            members: { name: 'three', revisions: { immutable: false } }
+          })
+        })
+        assert.equal(forked.outcome, 'refused')
+        assert.equal(forked.outcome === 'refused' && forked.reason, 'fork')
+        assert.equal(
+          (await backend.getCollectionMetadata({ spaceId, collectionId }))!
+            .name,
+          'two'
+        )
+      })
+
+      it('replaces a life created earlier, with its members, and skips one created earlier than the held life', async () => {
+        const { backend } = harness
+        const collectionId = 'applied-replace'
+        const heldCreated = stampAt(12_000)
+        await backend.applyCollection({
+          spaceId,
+          replicaId,
+          collectionId,
+          collection: liveCollection({
+            collectionId,
+            generation: 'oldGen',
+            stamp: heldCreated,
+            members: { name: 'old life' }
+          })
+        })
+        await backend.writeResource({
+          spaceId,
+          collectionId,
+          resourceId: 'old-member',
+          input: jsonInput({ a: 1 })
+        })
+        await backend.writePolicy({
+          spaceId,
+          collectionId,
+          policy: { type: 'PublicCanRead' }
+        })
+
+        // A life created before the held one loses, whatever its stamp.
+        assert.deepEqual(
+          await backend.applyCollection({
+            spaceId,
+            replicaId,
+            collectionId,
+            collection: liveCollection({
+              collectionId,
+              generation: 'olderGen',
+              stamp: stampAt(13_000),
+              created: stampAt(11_900),
+              members: { name: 'older life' }
+            })
+          }),
+          { outcome: 'skipped' }
+        )
+        assert.equal(
+          (await backend.getCollectionMetadata({ spaceId, collectionId }))!
+            .metaGeneration,
+          'oldGen'
+        )
+
+        const newCreated = stampAt(12_500)
+        assert.deepEqual(
+          await backend.applyCollection({
+            spaceId,
+            replicaId,
+            collectionId,
+            collection: liveCollection({
+              collectionId,
+              generation: 'newGen',
+              stamp: newCreated,
+              members: { name: 'new life' }
+            })
+          }),
+          { outcome: 'applied' }
+        )
+        const stored = (await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        }))!
+        assert.equal(stored.metaGeneration, 'newGen')
+        assert.equal(stored.name, 'new life')
+        assert.deepEqual(stored.created, newCreated)
+        // The old life's members are gone, and the feed starts again.
+        await assert.rejects(
+          backend.getResource({
+            spaceId,
+            collectionId,
+            resourceId: 'old-member'
+          }),
+          ResourceNotFoundError
+        )
+        assert.equal(
+          await backend.getPolicyRecord({ spaceId, collectionId }),
+          undefined
+        )
+        const feed = await backend.changesSince!({
+          spaceId,
+          collectionId,
+          limit: 10
+        })
+        assert.deepEqual(
+          feed.documents.map(document => [
+            document.kind,
+            document.feedPosition
+          ]),
+          [['collection-metadata', 1]]
+        )
+      })
+
+      it('applies a Collection tombstone over a life created before it, whatever the later stamps', async () => {
+        const { backend } = harness
+        const collectionId = 'applied-delete'
+        const created = stampAt(14_000)
+        await backend.applyCollection({
+          spaceId,
+          replicaId,
+          collectionId,
+          collection: liveCollection({
+            collectionId,
+            generation: 'colGen',
+            stamp: stampAt(14_500),
+            created
+          })
+        })
+        await backend.applyResource({
+          spaceId,
+          replicaId,
+          collectionId,
+          resourceId: 'member',
+          generation: 'gen',
+          stamp: stampAt(14_600),
+          resource: { deleted: false, input: jsonInput({ a: 1 }) }
+        })
+
+        // A tombstone older than the life's creation is skipped.
+        assert.deepEqual(
+          await backend.applyCollection({
+            spaceId,
+            replicaId,
+            collectionId,
+            collection: { deleted: true, stamp: stampAt(13_900) }
+          }),
+          { outcome: 'skipped' }
+        )
+        assert.ok(
+          await backend.getCollectionMetadata({ spaceId, collectionId })
+        )
+
+        // One after the creation wins, though the object and a member carry
+        // later stamps.
+        const deleted = stampAt(14_100)
+        assert.deepEqual(
+          await backend.applyCollection({
+            spaceId,
+            replicaId,
+            collectionId,
+            collection: { deleted: true, stamp: deleted }
+          }),
+          { outcome: 'applied' }
+        )
+        assert.equal(
+          await backend.getCollectionMetadata({ spaceId, collectionId }),
+          undefined
+        )
+        const tombstoneOf = async () =>
+          (
+            await backend.listCollections({ spaceId, includeDeleted: true })
+          ).items.find(item => item.id === collectionId)!
+        const tombstone = await tombstoneOf()
+        assert.ok(isCollectionTombstoneSummary(tombstone))
+        assert.deepEqual(stampOf(tombstone), deleted)
+        await assert.rejects(
+          backend.getResource({ spaceId, collectionId, resourceId: 'member' }),
+          isNotFound
+        )
+
+        // An older tombstone is skipped, a newer one restamps the held one.
+        assert.deepEqual(
+          await backend.applyCollection({
+            spaceId,
+            replicaId,
+            collectionId,
+            collection: { deleted: true, stamp: stampAt(14_050) }
+          }),
+          { outcome: 'skipped' }
+        )
+        const later = stampAt(14_200)
+        assert.deepEqual(
+          await backend.applyCollection({
+            spaceId,
+            replicaId,
+            collectionId,
+            collection: { deleted: true, stamp: later }
+          }),
+          { outcome: 'applied' }
+        )
+        assert.deepEqual(stampOf((await tombstoneOf()) as WriteStamp), later)
+
+        // A life created before the tombstone stays deleted; one created
+        // after it is created.
+        assert.deepEqual(
+          await backend.applyCollection({
+            spaceId,
+            replicaId,
+            collectionId,
+            collection: liveCollection({
+              collectionId,
+              generation: 'colGen',
+              stamp: stampAt(14_900),
+              created
+            })
+          }),
+          { outcome: 'skipped' }
+        )
+        const reborn = stampAt(14_300)
+        assert.deepEqual(
+          await backend.applyCollection({
+            spaceId,
+            replicaId,
+            collectionId,
+            collection: liveCollection({
+              collectionId,
+              generation: 'rebornGen',
+              stamp: reborn
+            })
+          }),
+          { outcome: 'applied' }
+        )
+        const stored = (await backend.getCollectionMetadata({
+          spaceId,
+          collectionId
+        }))!
+        assert.equal(stored.metaGeneration, 'rebornGen')
+        assert.deepEqual(stored.created, reborn)
+      })
+
+      it('stores a tombstone for a Collection it never held', async () => {
+        const { backend } = harness
+        const collectionId = 'applied-tombstone-only'
+        const stamp = stampAt(15_000)
+        assert.deepEqual(
+          await backend.applyCollection({
+            spaceId,
+            replicaId,
+            collectionId,
+            collection: { deleted: true, stamp }
+          }),
+          { outcome: 'applied' }
+        )
+        assert.equal(
+          await backend.getCollectionMetadata({ spaceId, collectionId }),
+          undefined
+        )
+        const listing = await backend.listCollections({
+          spaceId,
+          includeDeleted: true
+        })
+        const item = listing.items.find(
+          candidate => candidate.id === collectionId
+        )!
+        assert.ok(isCollectionTombstoneSummary(item))
+        assert.deepEqual(stampOf(item), stamp)
+        assert.equal(
+          (await backend.listCollections({ spaceId })).items.some(
+            candidate => candidate.id === collectionId
+          ),
+          false
+        )
+        // A stale copy of the Collection arriving later is not created.
+        assert.deepEqual(
+          await backend.applyCollection({
+            spaceId,
+            replicaId,
+            collectionId,
+            collection: liveCollection({
+              collectionId,
+              generation: 'staleGen',
+              stamp: stampAt(15_500),
+              created: stampAt(14_999)
+            })
+          }),
+          { outcome: 'skipped' }
+        )
+      })
+
+      it('counts an applied Collection create against the Collection quota', async () => {
+        const limited = await makeBackend({
+          physicalClock: clock.read,
+          maxCollectionsPerSpace: 1
+        })
+        try {
+          const { backend } = limited
+          await provisionSpace(backend, spaceId)
+          await backend.createReplica({
+            spaceId,
+            record: replicaRegistration({ id: replicaId, spaceId })
+          })
+          await assert.rejects(
+            backend.applyCollection({
+              spaceId,
+              replicaId,
+              collectionId: 'over-quota',
+              collection: liveCollection({
+                collectionId: 'over-quota',
+                generation: 'colGen',
+                stamp: stampAt(16_000)
+              })
+            }),
+            CountQuotaExceededError
+          )
+          assert.equal(
+            await backend.getCollectionMetadata({
+              spaceId,
+              collectionId: 'over-quota'
+            }),
+            undefined
+          )
+          // An update of the Collection the Space holds is not a create.
+          const held = (await backend.getCollectionMetadata({
+            spaceId,
+            collectionId: 'col'
+          }))!
+          assert.deepEqual(
+            await backend.applyCollection({
+              spaceId,
+              replicaId,
+              collectionId: 'col',
+              collection: liveCollection({
+                collectionId: 'col',
+                generation: held.metaGeneration!,
+                stamp: stampAt(16_100),
+                created: held.created!,
+                members: { name: 'renamed by the peer' }
+              })
+            }),
+            { outcome: 'applied' }
+          )
+        } finally {
+          await limited.cleanup()
+        }
       })
     })
 

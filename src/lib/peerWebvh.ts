@@ -563,10 +563,43 @@ export function assertPublicAddresses({
 }
 
 /**
- * The default {@link PeerLogFetcher}. Checks the URL, resolves its host and
- * checks every address, then makes the GET through an agent that connects
- * only to those addresses, so a DNS answer that changes after the check is
- * never used. The agent is closed after the one fetch.
+ * The shared setup of an outbound request to a peer: checks the URL, resolves
+ * its host and checks every address, then builds an agent that connects only
+ * to those addresses, so a DNS answer that changes after the check is never
+ * used. Both peer fetchers (the log fetch below and `sync/peerFetch.ts`) go
+ * through it, so this safety code exists once. A refused URL or address
+ * rejects with `PeerLogFetchError`. Any other rejection is the lookup's own
+ * failure, which the caller words.
+ * @param options {object}
+ * @param options.url {string}
+ * @returns {Promise<{ href: string, agent: Agent, release: () => void }>}
+ *   `release` closes the one-request agent, and is called once the response
+ *   has been read or abandoned
+ */
+export async function openPinnedAgent({ url }: { url: string }): Promise<{
+  href: string
+  agent: Agent
+  release: () => void
+}> {
+  const parsed = checkPeerLogUrl({ url })
+  // Brackets off an IPv6 literal, so the lookup and the pin see the address.
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  const addresses = await dnsLookup(hostname, { all: true })
+  assertPublicAddresses({ url, addresses })
+  const agent = new Agent({
+    connect: { lookup: createPinnedLookup(new Map([[hostname, addresses]])) }
+  })
+  const release = (): void => {
+    agent.destroy().catch(() => {
+      // best-effort teardown of a one-request agent
+    })
+  }
+  return { href: parsed.href, agent, release }
+}
+
+/**
+ * The default {@link PeerLogFetcher}. Makes the GET through the agent
+ * {@link openPinnedAgent} builds. The agent is closed after the one fetch.
  * @param options {object}
  * @param options.url {string}
  * @param options.maxBytes {number}
@@ -582,34 +615,28 @@ export async function fetchPeerLog({
   maxBytes: number
   signal: AbortSignal
 }): Promise<Uint8Array> {
-  const parsed = checkPeerLogUrl({ url })
-  // Brackets off an IPv6 literal, so the lookup and the pin see the address.
-  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  let addresses: { address: string; family: number }[]
+  let pinned: Awaited<ReturnType<typeof openPinnedAgent>>
   try {
-    addresses = await dnsLookup(hostname, { all: true })
+    pinned = await openPinnedAgent({ url })
   } catch (err) {
+    if (err instanceof PeerLogFetchError) {
+      throw err
+    }
     throw new PeerLogFetchError({
       url,
       detail: 'the host does not resolve.',
       cause: err
     })
   }
-  assertPublicAddresses({ url, addresses })
-  const agent = new Agent({
-    connect: { lookup: createPinnedLookup(new Map([[hostname, addresses]])) }
-  })
   try {
     return await readBoundedResponse({
-      url: parsed.href,
-      dispatcher: agent,
+      url: pinned.href,
+      dispatcher: pinned.agent,
       maxBytes,
       signal
     })
   } finally {
-    agent.destroy().catch(() => {
-      // best-effort teardown of a one-fetch agent
-    })
+    pinned.release()
   }
 }
 

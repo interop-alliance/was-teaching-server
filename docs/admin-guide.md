@@ -425,6 +425,12 @@ A controller delegates to `serverDid`, not to the key. Rotating the seed
 therefore needs no re-delegation: existing grants verify against the new key
 once the log lists it.
 
+The registration itself is the controller's to make, at
+`POST /space/<id>/replicas` on the server that pulls. That server reaches its
+peer over `https` on the default port only, and only at public addresses. Two
+servers that replicate need different origin ids. The state of a registration's
+pull loop is served to the controller at `/space/<id>/replicas/<id>/status`.
+
 ### Rotating the update key
 
 Rotate the update key on a schedule, or after a suspected leak:
@@ -583,9 +589,9 @@ object appends a fifth, local segment.
 
 ### Configuration surface
 
-| variable                         | role                                                                                                                                                                                                                            |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WAS_REPLICATION_CLOCK_BOUND_MS` | How far ahead of this server's physical clock, in milliseconds, a stamp received from a peer may be dated. Default 60000. A value that is not a positive integer fails the deploy. No request path receives a peer's stamp yet. |
+| variable                         | role                                                                                                                                                                                                                                                                          |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WAS_REPLICATION_CLOCK_BOUND_MS` | How far ahead of this server's physical clock, in milliseconds, a stamp received from a peer may be dated. Default 60000. A value that is not a positive integer fails the deploy. A stamp dated further ahead stalls the pull of its Collection until local time catches up. |
 
 The clock persists a high-water mark of its physical part, at most about once a
 second. The filesystem backend keeps it as `clockHighWater` in the data

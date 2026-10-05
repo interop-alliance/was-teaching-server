@@ -1,14 +1,16 @@
 /**
  * The service description (spec "Service Description"): the server-wide JSON
  * document naming the specification versions this server speaks, its Spaces
- * Repository URL, and the optional sections it implements. It lists four
+ * Repository URL, and the optional sections it implements. It lists five
  * entries: the core specification, whose entry also carries the store's origin
  * id (`lib/originId.ts`); the zCap authorization profile, whose entry
  * carries the signature algorithms and delegation cryptosuites this server
  * verifies; the Encrypted Collections profile, whose entry claims the chunk
  * endpoints and names the two optional affordances of that profile this server
- * serves; and the client annex profile, whose entry claims the client-annex
- * delegation clause and carries `version` alone. It is served unauthenticated at
+ * serves; the client annex profile, whose entry claims the client-annex
+ * delegation clause and carries `version` alone; and the replication
+ * specification, whose entry claims the `replicas` registration, the pull
+ * loop and the apply path, and carries `version` alone too. It is served unauthenticated at
  * `/service`, and every response the server sends links to it with a
  * `Link: <...>; rel="service"` header, which is how a client finds it from any
  * URL it holds. The document has no auth hooks; it depends on `serverUrl`, the
@@ -32,6 +34,8 @@ import {
   ENCRYPTED_COLLECTIONS_URL,
   ENCRYPTED_COLLECTIONS_VERSION,
   PACKAGE_INSTANCE,
+  REPLICATION_IDENTIFIER,
+  REPLICATION_VERSION,
   SERVER_VERSION,
   SERVICE_DESCRIPTION_MAX_AGE,
   SERVICE_LINK_RELATION,
@@ -157,6 +161,13 @@ export function buildServiceDescription({
       [CLIENT_ANNEX_IDENTIFIER]: [
         {
           version: CLIENT_ANNEX_VERSION
+        } satisfies ServiceDescriptionVersionEntry
+      ],
+      // Listing the entry is the claim that replication is served. A peer's
+      // registration check reads it, beside `originId` on the core entry.
+      [REPLICATION_IDENTIFIER]: [
+        {
+          version: REPLICATION_VERSION
         } satisfies ServiceDescriptionVersionEntry
       ]
     },

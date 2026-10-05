@@ -10,7 +10,7 @@ import { pipeline } from 'node:stream/promises'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
-import { Readable, Transform } from 'node:stream'
+import { Readable, Transform, Writable } from 'node:stream'
 import fs from 'node:fs'
 import jsonfs from 'fs-json-store'
 import pino from 'pino'
@@ -26,7 +26,8 @@ import {
   PayloadTooLargeError,
   KeystoreStateConflictError,
   KeyIdConflictError,
-  DuplicateRevocationError
+  DuplicateRevocationError,
+  IdConflictError
 } from '../errors.js'
 import {
   DEFAULT_MAX_UPLOAD_BYTES,
@@ -98,9 +99,27 @@ import {
   writeClockHighWater
 } from './filesystemStore.js'
 import { HybridLogicalClock, stampOf } from '../lib/hlc.js'
+import {
+  type ApplyResult,
+  type HeldCollection,
+  assertReceivableStamps,
+  decideCollectionApply,
+  decideCollectionTombstoneApply,
+  decideLogApply,
+  decideResourceApply,
+  guardApply,
+  heldCollection,
+  logForkResult,
+  mergeAppliedCollectionMetadata,
+  stampWins
+} from '../lib/replicaApply.js'
+import { WEBVH_LOG_RESOURCE_ID } from '../lib/validateDid.js'
+import { isReplicaId } from '../lib/validateId.js'
 import { policyGrants } from '../policy.js'
 import { KeyedMutex, KeyedReadWriteLock } from '../lib/keyedMutex.js'
 import {
+  hasCustomMembers,
+  normalizeMetadataWrite,
   restampImportedMetadata,
   stampCollectionMetadata,
   stampSpaceMetadata
@@ -226,7 +245,11 @@ import type {
   CapabilitySummary,
   IDID,
   ServiceDescription,
-  WriteStamp
+  WriteStamp,
+  ResourceMetaStamp,
+  ReplicaRegistration,
+  ReplicaLoopState,
+  StoredReplica
 } from '../types.js'
 
 const { Store: MetadataJsonStore } = jsonfs
@@ -386,6 +409,12 @@ async function digestOfStream({
   ])
   return hash.digest()
 }
+
+/**
+ * The epoch as an `updatedAt` value: the time of a stand-in stamp that sorts
+ * below every stamp a clock mints.
+ */
+const EPOCH_ISO_STRING = new Date(0).toISOString()
 
 /**
  * Whether a file exists. `ENOENT` (and `ENOTDIR`, a missing parent) resolve
@@ -2084,7 +2113,15 @@ export class FileSystemBackend implements StorageBackend {
       // connection material and do NOT travel in a Space export; after import
       // the user re-registers (re-runs consent + POST /backends). importSpace
       // ignores unrecognized space-level files, so this is symmetric.
-      entry => !(entry.isFile() && entry.name.startsWith('.backend.'))
+      // Replica registrations and their loop state (.replica.<id>.json,
+      // .replica.<id>.state.json) are this server's own and do not travel
+      // either.
+      entry =>
+        !(
+          entry.isFile() &&
+          (entry.name.startsWith('.backend.') ||
+            entry.name.startsWith('.replica.'))
+        )
     )
     spaceEntries.sort((a, b) => a.name.localeCompare(b.name))
 
@@ -3664,47 +3701,68 @@ export class FileSystemBackend implements StorageBackend {
                 prior
               })
               const { generation, stamp } = validator
-              // The log takes the Collection's next feed position, and both
-              // files below are written inside that critical section, so a
-              // feed read sees either neither change or both.
-              await this.#takeFeedPosition({
+              await this.#persistCollectionLog({
                 spaceId,
                 collectionId,
-                collectionDir: this.#collectionDir({ spaceId, collectionId }),
-                record: { kind: 'log' },
-                write: async () => {
-                  await atomicWriteFile({
-                    filePath: this.#collectionLogPath({
-                      spaceId,
-                      collectionId
-                    }),
-                    data: JSON.stringify({
-                      generation,
-                      ...stamp,
-                      body
-                    } satisfies StoredCollectionLog)
-                  })
-                  // The served Collection Metadata object changed with its
-                  // derived member, so its local validator segment advances
-                  // (generation and stamp kept); the stored body is carried
-                  // verbatim. It is not a write of the object, so it takes
-                  // no feed position of its own.
-                  await this.#persistCollection({
-                    spaceId,
-                    collectionId,
-                    body: stripMetadataValidator(collectionMetadata),
-                    generation: resolveGeneration(
-                      collectionMetadata.metaGeneration
-                    ),
-                    local: (collectionMetadata.metaLocal ?? 0) + 1
-                  })
-                }
+                collectionMetadata,
+                log: { generation, ...stamp, body }
               })
               return validator
             }
           )
       )
     )
+  }
+
+  /**
+   * Stores a Collection's governing history log and advances the Collection
+   * Metadata object's local validator segment, in one feed critical section.
+   * The log takes the Collection's next feed position, and both files are
+   * written inside that section, so a feed read sees either neither change or
+   * both. The caller holds the `cmeta:` and `clog:` keys.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.collectionMetadata {StoredCollectionMetadata}   the object
+   *   as read under the `cmeta:` key
+   * @param options.log {StoredCollectionLog}   the log to store, with its
+   *   generation and stamp
+   * @returns {Promise<void>}
+   */
+  async #persistCollectionLog({
+    spaceId,
+    collectionId,
+    collectionMetadata,
+    log
+  }: {
+    spaceId: string
+    collectionId: string
+    collectionMetadata: StoredCollectionMetadata
+    log: StoredCollectionLog
+  }): Promise<void> {
+    await this.#takeFeedPosition({
+      spaceId,
+      collectionId,
+      collectionDir: this.#collectionDir({ spaceId, collectionId }),
+      record: { kind: 'log' },
+      write: async () => {
+        await atomicWriteFile({
+          filePath: this.#collectionLogPath({ spaceId, collectionId }),
+          data: JSON.stringify(log)
+        })
+        // The served Collection Metadata object changed with its derived
+        // member, so its local validator segment advances (generation and
+        // stamp kept); the stored body is carried verbatim. It is not a
+        // write of the object, so it takes no feed position of its own.
+        await this.#persistCollection({
+          spaceId,
+          collectionId,
+          body: stripMetadataValidator(collectionMetadata),
+          generation: resolveGeneration(collectionMetadata.metaGeneration),
+          local: (collectionMetadata.metaLocal ?? 0) + 1
+        })
+      }
+    })
   }
 
   /**
@@ -7098,6 +7156,1149 @@ export class FileSystemBackend implements StorageBackend {
           throw err
         }
         await this.#advanceSpaceMetaLocal({ spaceId })
+      }
+    })
+  }
+
+  // Replica registrations (the replication specification)
+
+  /**
+   * Defense in depth: asserts that a replica id passes the replica id rule
+   * (`isReplicaId`), so a registration's files stay in its own Space dir and
+   * name no other registration's files. The request layer refuses any other
+   * id first.
+   * @param replicaId {string}
+   * @returns {void}
+   */
+  #assertReplicaId(replicaId: string): void {
+    if (!isReplicaId(replicaId)) {
+      throw new StorageError({
+        cause: new Error(
+          `Replica id "${replicaId}" is not a single, URL-safe path segment ` +
+            'that does not end in ".state".'
+        )
+      })
+    }
+  }
+
+  /**
+   * Builds the on-disk path for a replica registration: a
+   * `.replica.<replicaId>.json` dot-file in the Space dir, beside the
+   * `.backend.` records. It holds the registration's members with the
+   * record's generation and the Space generation it was made under embedded
+   * as `_generation` and `_spaceGeneration`.
+   *
+   * The loop state file is named `.replica.<replicaId>.state.json`, so a
+   * replica id ending in `.state` would name another registration's state
+   * file. Such an id is refused here (`#assertReplicaId`), and so is one that
+   * is not a single URL-safe path segment, which could name a file outside
+   * the Space dir.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @returns {string}
+   */
+  #replicaFile({
+    spaceId,
+    replicaId
+  }: {
+    spaceId: string
+    replicaId: string
+  }): string {
+    this.#assertReplicaId(replicaId)
+    const filePath = path.join(
+      this.#spaceDir(spaceId),
+      `.replica.${replicaId}.json`
+    )
+    this.#assertContained(filePath)
+    return filePath
+  }
+
+  /**
+   * Builds the on-disk path for a registration's loop state
+   * (`.replica.<replicaId>.state.json`), beside its record.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @returns {string}
+   */
+  #replicaStateFile({
+    spaceId,
+    replicaId
+  }: {
+    spaceId: string
+    replicaId: string
+  }): string {
+    this.#assertReplicaId(replicaId)
+    const filePath = path.join(
+      this.#spaceDir(spaceId),
+      `.replica.${replicaId}.state.json`
+    )
+    this.#assertContained(filePath)
+    return filePath
+  }
+
+  /**
+   * The mutex key (`replica:` prefix, its own key domain) that serializes a
+   * registration's create, its delete and its loop state writes, so a state
+   * write cannot land after the delete that removes the state file. Nothing
+   * is acquired while it is held except the `spacemeta:` key.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @returns {string}
+   */
+  #replicaLockKey({
+    spaceId,
+    replicaId
+  }: {
+    spaceId: string
+    replicaId: string
+  }): string {
+    return `replica:${spaceId}/${replicaId}`
+  }
+
+  /**
+   * Stores a registration, create-only, under the Space gate and only into a
+   * Space that still has its Metadata object. The create is a hard link, so
+   * two racing creates under one id cannot both succeed.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.record {ReplicaRegistration}
+   * @returns {Promise<StoredReplica>}
+   */
+  async createReplica({
+    spaceId,
+    record
+  }: {
+    spaceId: string
+    record: ReplicaRegistration
+  }): Promise<StoredReplica> {
+    const replicaId = record.id
+    const filePath = this.#replicaFile({ spaceId, replicaId })
+    return this.#underSpaceWrite({
+      spaceId,
+      container: { requestName: 'Register Replica' },
+      write: () =>
+        this.#writeMutex.run(
+          this.#replicaLockKey({ spaceId, replicaId }),
+          async () => {
+            const spaceMetadata = await this.getSpaceMetadata({ spaceId })
+            const stored: StoredReplica = {
+              record,
+              generation: newGeneration(),
+              spaceGeneration: resolveGeneration(spaceMetadata?.metaGeneration)
+            }
+            try {
+              await atomicCreateFile({
+                filePath,
+                data: JSON.stringify({
+                  ...record,
+                  _generation: stored.generation,
+                  _spaceGeneration: stored.spaceGeneration
+                })
+              })
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+                throw new IdConflictError({ kind: 'Replica' })
+              }
+              throw err
+            }
+            // A state file left by an earlier registration under this id
+            // belongs to that registration.
+            await rm(this.#replicaStateFile({ spaceId, replicaId }), {
+              force: true
+            })
+            // The served Space Metadata object lists this record under
+            // `replicas`, so its validator advances with the registration.
+            await this.#advanceSpaceMetaLocal({ spaceId })
+            return stored
+          }
+        )
+    })
+  }
+
+  /**
+   * Reads a registration file into its stored form, `undefined` when the
+   * file is absent or carries no generation.
+   * @param filePath {string}
+   * @returns {Promise<StoredReplica | undefined>}
+   */
+  async #readReplicaFile(filePath: string): Promise<StoredReplica | undefined> {
+    const raw = await this.#readJsonFile<
+      ReplicaRegistration & { _generation?: string; _spaceGeneration?: string }
+    >(filePath)
+    if (
+      raw === undefined ||
+      typeof raw._generation !== 'string' ||
+      typeof raw._spaceGeneration !== 'string'
+    ) {
+      return undefined
+    }
+    const {
+      _generation: generation,
+      _spaceGeneration: spaceGeneration,
+      ...record
+    } = raw
+    return { record, generation, spaceGeneration }
+  }
+
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @returns {Promise<StoredReplica | undefined>}
+   */
+  async getReplica({
+    spaceId,
+    replicaId
+  }: {
+    spaceId: string
+    replicaId: string
+  }): Promise<StoredReplica | undefined> {
+    return this.#readReplicaFile(this.#replicaFile({ spaceId, replicaId }))
+  }
+
+  /**
+   * Enumerates the Space's registrations, sorted by id. An absent Space dir
+   * holds none.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @returns {Promise<StoredReplica[]>}
+   */
+  async listReplicas({
+    spaceId
+  }: {
+    spaceId: string
+  }): Promise<StoredReplica[]> {
+    const spaceDir = this.#spaceDir(spaceId)
+    const entries = await this.#readDirEntries(spaceDir)
+    const reads = entries
+      .filter(
+        entry =>
+          entry.isFile() &&
+          /^\.replica\..+\.json$/.test(entry.name) &&
+          !entry.name.endsWith('.state.json')
+      )
+      .map(entry => this.#readReplicaFile(path.join(spaceDir, entry.name)))
+    const replicas = (await Promise.all(reads)).filter(
+      (replica): replica is StoredReplica => replica !== undefined
+    )
+    replicas.sort((left, right) =>
+      compareCodeUnits(left.record.id, right.record.id)
+    )
+    return replicas
+  }
+
+  /**
+   * Enumerates every registration in the store, Space by Space. An absent
+   * spaces root holds none.
+   * @returns {Promise<Array<StoredReplica & { spaceId: string }>>}
+   */
+  async listAllReplicas(): Promise<Array<StoredReplica & { spaceId: string }>> {
+    let rootEntries: fs.Dirent[]
+    try {
+      rootEntries = await fs.promises.readdir(this.spacesDir, {
+        withFileTypes: true
+      })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return []
+      }
+      throw new StorageError({ cause: err as Error })
+    }
+    const spaceIds = rootEntries
+      .filter(entry => entry.isDirectory())
+      .map(entry => entry.name)
+      .sort(compareCodeUnits)
+    const perSpace = await mapInBatches({
+      items: spaceIds,
+      map: async spaceId =>
+        (await this.listReplicas({ spaceId })).map(replica => ({
+          ...replica,
+          spaceId
+        }))
+    })
+    return perSpace.flat()
+  }
+
+  /**
+   * Removes a registration and its loop state. A removal that found the
+   * record advances the Space Metadata object's local validator segment,
+   * since its `replicas` listing changed.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @returns {Promise<boolean>}   whether a registration was removed
+   */
+  async deleteReplica({
+    spaceId,
+    replicaId
+  }: {
+    spaceId: string
+    replicaId: string
+  }): Promise<boolean> {
+    const filePath = this.#replicaFile({ spaceId, replicaId })
+    return this.#underSpaceWrite({
+      spaceId,
+      write: () =>
+        this.#writeMutex.run(
+          this.#replicaLockKey({ spaceId, replicaId }),
+          async () => {
+            try {
+              await unlink(filePath)
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+                return false
+              }
+              throw err
+            }
+            await rm(this.#replicaStateFile({ spaceId, replicaId }), {
+              force: true
+            })
+            await this.#advanceSpaceMetaLocal({ spaceId })
+            return true
+          }
+        )
+    })
+  }
+
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @returns {Promise<ReplicaLoopState | undefined>}
+   */
+  async getReplicaState({
+    spaceId,
+    replicaId
+  }: {
+    spaceId: string
+    replicaId: string
+  }): Promise<ReplicaLoopState | undefined> {
+    if (!(await fileExists(this.#replicaFile({ spaceId, replicaId })))) {
+      return undefined
+    }
+    return this.#readJsonFile<ReplicaLoopState>(
+      this.#replicaStateFile({ spaceId, replicaId })
+    )
+  }
+
+  /**
+   * Replaces a registration's loop state, under the key its delete takes, so
+   * no state file is left behind a removed registration.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param options.state {ReplicaLoopState}
+   * @returns {Promise<boolean>}   `false` when the registration is gone
+   */
+  async writeReplicaState({
+    spaceId,
+    replicaId,
+    state
+  }: {
+    spaceId: string
+    replicaId: string
+    state: ReplicaLoopState
+  }): Promise<boolean> {
+    const recordPath = this.#replicaFile({ spaceId, replicaId })
+    return this.#underSpaceWrite({
+      spaceId,
+      write: () =>
+        this.#writeMutex.run(
+          this.#replicaLockKey({ spaceId, replicaId }),
+          async () => {
+            if (!(await fileExists(recordPath))) {
+              return false
+            }
+            await atomicWriteFile({
+              filePath: this.#replicaStateFile({ spaceId, replicaId }),
+              data: JSON.stringify(state)
+            })
+            return true
+          }
+        )
+    })
+  }
+
+  // The apply path (records a pull loop read from a peer)
+
+  /**
+   * Runs an apply's critical section: on the Space gate's shared side, or its
+   * exclusive side when `exclusive` is set, then under each `#writeMutex` key
+   * in `lockKeys`, outermost first. Inside, it makes the two checks every
+   * apply makes first (`guardApply`). The registration must be stored, and
+   * made under the Space Metadata object's current generation. Then the
+   * store's clock takes in each received stamp. Holding the Space gate keeps
+   * the Space from being removed between the checks and the write. The
+   * caller asserts the stamps receivable (`assertReceivableStamps`) first.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param options.stamps {WriteStamp[]}   every stamp the record carries
+   * @param options.lockKeys {string[]}   the keys the matching request-layer
+   *   write takes
+   * @param [options.exclusive] {boolean}   whether the apply runs on the Space
+   *   gate's exclusive side
+   * @param options.run {Function}   the rest of the apply, handed the Space
+   *   Metadata object the checks read
+   * @returns {Promise<ApplyResult>}
+   */
+  async #runApply({
+    spaceId,
+    replicaId,
+    stamps,
+    lockKeys,
+    exclusive = false,
+    run
+  }: {
+    spaceId: string
+    replicaId: string
+    stamps: WriteStamp[]
+    lockKeys: string[]
+    exclusive?: boolean
+    run: (context: {
+      spaceMetadata: StoredSpaceMetadata
+    }) => Promise<ApplyResult>
+  }): Promise<ApplyResult> {
+    const checkedApply = async (): Promise<ApplyResult> => {
+      const replica = await this.getReplica({ spaceId, replicaId })
+      const spaceMetadata = await this.getSpaceMetadata({ spaceId })
+      const stopped = guardApply({
+        registeredUnder: replica?.spaceGeneration,
+        spaceGeneration: spaceMetadata?.metaGeneration,
+        clock: this.#clock,
+        stamps
+      })
+      if (stopped) {
+        return stopped
+      }
+      // `guardApply` refuses a Space with no Metadata object.
+      return run({ spaceMetadata: spaceMetadata! })
+    }
+    const locked = lockKeys.reduceRight<() => Promise<ApplyResult>>(
+      (inner, lockKey) => () => this.#writeMutex.run(lockKey, inner),
+      checkedApply
+    )
+    return exclusive
+      ? this.#underSpaceRemoval({ spaceId, remove: locked })
+      : this.#underSpaceWrite({ spaceId, write: locked })
+  }
+
+  /**
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param [options.name] {string}
+   * @param options.stamp {WriteStamp}
+   * @returns {Promise<ApplyResult>}
+   */
+  async applySpaceName({
+    spaceId,
+    replicaId,
+    name,
+    stamp
+  }: {
+    spaceId: string
+    replicaId: string
+    name?: string
+    stamp: WriteStamp
+  }): Promise<ApplyResult> {
+    assertReceivableStamps([stamp])
+    return this.#runApply({
+      spaceId,
+      replicaId,
+      stamps: [stamp],
+      lockKeys: [this.#spaceMetaLockKey({ spaceId })],
+      // The checks read the Space Metadata object under this write's lock.
+      run: async ({ spaceMetadata: prior }) => {
+        if (!stampWins({ incoming: stamp, held: stampOf(prior) })) {
+          return { outcome: 'skipped' }
+        }
+        const { name: _heldName, ...kept } = stripMetadataValidator(prior)
+        const { updatedAt, updatedAtCounter, originId } = stamp
+        await atomicWriteFile({
+          filePath: path.join(
+            this.#spaceDir(spaceId),
+            spaceMetadataFileName(spaceId)
+          ),
+          data: JSON.stringify(
+            embedMetadataValidator({
+              body: {
+                ...kept,
+                ...(name !== undefined && { name }),
+                updatedAt,
+                updatedAtCounter,
+                originId
+              },
+              generation: resolveGeneration(prior.metaGeneration),
+              local: 0
+            })
+          )
+        })
+        return { outcome: 'applied' }
+      }
+    })
+  }
+
+  /**
+   * Applies a Collection Metadata object or a Collection tombstone. It runs
+   * on the exclusive side of the Space gate, since a `replace` and a `delete`
+   * remove the Collection's members, as Delete Collection does.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param options.collectionId {string}
+   * @param options.collection {object}   the received object, or tombstone
+   * @returns {Promise<ApplyResult>}
+   */
+  async applyCollection({
+    spaceId,
+    replicaId,
+    collectionId,
+    collection
+  }: {
+    spaceId: string
+    replicaId: string
+    collectionId: string
+    collection:
+      | { deleted: false; generation: string; metadata: CollectionMetadata }
+      | { deleted: true; stamp: WriteStamp }
+  }): Promise<ApplyResult> {
+    const stamps = collection.deleted
+      ? [collection.stamp]
+      : [stampOf(collection.metadata), collection.metadata.created]
+    assertReceivableStamps(stamps)
+    return this.#runApply({
+      spaceId,
+      replicaId,
+      stamps,
+      lockKeys: [this.#collectionMetaLockKey({ spaceId, collectionId })],
+      exclusive: true,
+      run: async () => {
+        const record = await this.#readCollectionRecord({
+          spaceId,
+          collectionId
+        })
+        const held =
+          record &&
+          heldCollection({
+            deleted: isCollectionTombstone(record),
+            generation: resolveGeneration(record.metaGeneration),
+            stamp: stampOf(record),
+            created: 'created' in record ? record.created : undefined
+          })
+        if (held?.kind === 'tombstone') {
+          // A delete cut short is finished whatever the received record
+          // does next.
+          await this.#removeCollectionMembers({ spaceId, collectionId })
+        }
+        if (collection.deleted) {
+          return this.#applyCollectionTombstone({
+            spaceId,
+            collectionId,
+            record,
+            held,
+            stamp: collection.stamp
+          })
+        }
+        return this.#applyLiveCollection({
+          spaceId,
+          collectionId,
+          record,
+          held,
+          generation: collection.generation,
+          metadata: collection.metadata
+        })
+      }
+    })
+  }
+
+  /**
+   * `applyCollection` for a received tombstone. The caller holds the Space
+   * gate's exclusive side and the `cmeta:` key.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param [options.record] {StoredCollectionMetadata | StoredCollectionTombstone}
+   *   the held record
+   * @param [options.held] {HeldCollection}   the held record, as the rule
+   *   reads it
+   * @param options.stamp {WriteStamp}   the received tombstone's stamp
+   * @returns {Promise<ApplyResult>}
+   */
+  async #applyCollectionTombstone({
+    spaceId,
+    collectionId,
+    record,
+    held,
+    stamp
+  }: {
+    spaceId: string
+    collectionId: string
+    record?: StoredCollectionMetadata | StoredCollectionTombstone
+    held?: HeldCollection
+    stamp: WriteStamp
+  }): Promise<ApplyResult> {
+    const decision = decideCollectionTombstoneApply({ held, stamp })
+    if (decision === 'skip') {
+      return { outcome: 'skipped' }
+    }
+    if (decision === 'write') {
+      // A directory left without a Metadata file is no Collection. It goes
+      // first, so the tombstone stands alone.
+      await rm(this.#collectionDir({ spaceId, collectionId }), {
+        recursive: true,
+        force: true
+      })
+      await this.#ensureCollectionDir({ spaceId, collectionId })
+    }
+    // The tombstone is durable before the members go, as in Delete
+    // Collection, so a cascade cut short is finished from the disk alone.
+    await this.#persistCollectionTombstone({
+      spaceId,
+      collectionId,
+      stamp,
+      generation: resolveGeneration(record?.metaGeneration)
+    })
+    if (decision === 'delete') {
+      await this.#removeCollectionMembers({ spaceId, collectionId })
+    }
+    return { outcome: 'applied' }
+  }
+
+  /**
+   * `applyCollection` for a received live object. The caller holds the Space
+   * gate's exclusive side and the `cmeta:` key.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param [options.record] {StoredCollectionMetadata | StoredCollectionTombstone}
+   *   the held record
+   * @param [options.held] {HeldCollection}   the held record, as the rule
+   *   reads it
+   * @param options.generation {string}   the received life's generation
+   * @param options.metadata {CollectionMetadata}   the received object
+   * @returns {Promise<ApplyResult>}
+   */
+  async #applyLiveCollection({
+    spaceId,
+    collectionId,
+    record,
+    held,
+    generation,
+    metadata
+  }: {
+    spaceId: string
+    collectionId: string
+    record?: StoredCollectionMetadata | StoredCollectionTombstone
+    held?: HeldCollection
+    generation: string
+    metadata: CollectionMetadata
+  }): Promise<ApplyResult> {
+    const stamp = stampOf(metadata) as WriteStamp
+    const decision = decideCollectionApply({
+      held,
+      incoming: { generation, stamp, created: metadata.created as WriteStamp }
+    })
+    if (decision === 'skip') {
+      return { outcome: 'skipped' }
+    }
+    // The body as received, without any validator member, under the
+    // received stamp.
+    const received: CollectionMetadata = {
+      ...normalizeMetadataWrite({ metadata }).body,
+      ...stamp
+    }
+    if (decision === 'update') {
+      const merged = mergeAppliedCollectionMetadata({
+        held: stripMetadataValidator(record as StoredCollectionMetadata),
+        incoming: received
+      })
+      if ('fork' in merged) {
+        return { outcome: 'refused', reason: 'fork', detail: merged.fork }
+      }
+      await this.#persistCollection({
+        spaceId,
+        collectionId,
+        body: merged.metadata,
+        generation,
+        local: 0,
+        feedPosition: 'next'
+      })
+      return { outcome: 'applied' }
+    }
+    if (decision === 'replace') {
+      // The held life ends as a delete does: its tombstone first, then its
+      // members. The tombstone takes the held life's creating stamp, which
+      // the received life's is above, so a replace cut short here is
+      // finished as a create by the next apply.
+      const live = held as Extract<HeldCollection, { kind: 'live' }>
+      // A life stored before creating stamps existed has none. The epoch
+      // sorts below every received creating stamp.
+      const createdAtEpoch: WriteStamp = {
+        updatedAt: EPOCH_ISO_STRING,
+        updatedAtCounter: 0,
+        originId: this.originId
+      }
+      await this.#persistCollectionTombstone({
+        spaceId,
+        collectionId,
+        stamp: live.created ?? createdAtEpoch,
+        generation: live.generation
+      })
+      await this.#removeCollectionMembers({ spaceId, collectionId })
+    }
+    // A create counts against the Collection quota. A replace does not
+    // change the count.
+    if (
+      decision === 'create' &&
+      this.maxCollectionsPerSpace !== undefined &&
+      (await this.#liveCollectionIds({ spaceId })).length >=
+        this.maxCollectionsPerSpace
+    ) {
+      throw new CountQuotaExceededError({
+        scope: 'Collections per Space',
+        limit: this.maxCollectionsPerSpace
+      })
+    }
+    await this.#persistCollection({
+      spaceId,
+      collectionId,
+      body: received,
+      generation,
+      local: 0,
+      feedPosition: 'first'
+    })
+    return { outcome: 'applied' }
+  }
+
+  /**
+   * Applies a Resource's content record, live or a tombstone, under the
+   * per-Resource lock a content write takes.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.generation {string}
+   * @param options.stamp {WriteStamp}
+   * @param [options.createdAt] {string}
+   * @param [options.createdBy] {string}
+   * @param [options.writerId] {string}
+   * @param options.resource {object}   the received representation, or the
+   *   tombstone's last-known content type
+   * @returns {Promise<ApplyResult>}
+   */
+  async applyResource({
+    spaceId,
+    replicaId,
+    collectionId,
+    resourceId,
+    generation,
+    stamp,
+    createdAt,
+    createdBy,
+    writerId,
+    resource
+  }: {
+    spaceId: string
+    replicaId: string
+    collectionId: string
+    resourceId: string
+    generation: string
+    stamp: WriteStamp
+    createdAt?: string
+    createdBy?: IDID
+    writerId?: string
+    resource:
+      | { deleted: false; input: ResourceInput; epoch?: string }
+      | { deleted: true; contentType: string }
+  }): Promise<ApplyResult> {
+    assertReceivableStamps([stamp])
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
+    const { updatedAt, updatedAtCounter, originId } = stamp
+    // The content record's members as the origin's write set them.
+    const contentRecord = {
+      createdAt: createdAt ?? updatedAt,
+      updatedAt,
+      updatedAtCounter,
+      originId,
+      ...(createdBy !== undefined && { createdBy }),
+      generation
+    }
+    return this.#runApply({
+      spaceId,
+      replicaId,
+      stamps: [stamp],
+      lockKeys: [this.#resourceLockKey({ spaceId, collectionId, resourceId })],
+      run: async () => {
+        if (!(await this.#readLiveCollection({ spaceId, collectionId }))) {
+          return { outcome: 'skipped' }
+        }
+        const entries = await this.#readDirEntries(collectionDir)
+        const livePath = await this.#findFile({
+          collectionDir,
+          resourceId,
+          entries
+        })
+        const prior = await this.readMetaSidecar({
+          collectionDir,
+          resourceId
+        })
+        // A live history log is decided by its bytes, so both are read
+        // before the decision.
+        let log: { held?: Buffer; incoming: Buffer } | undefined
+        if (resourceId === WEBVH_LOG_RESOURCE_ID && !resource.deleted) {
+          const incoming = await this.#bufferInput(resource.input)
+          log = {
+            held: livePath === undefined ? undefined : await readFile(livePath),
+            incoming
+          }
+        }
+        const stopped = decideResourceApply({
+          resourceId,
+          deleted: resource.deleted,
+          stamp,
+          held: stampOf(prior),
+          log
+        })
+        if (stopped) {
+          return stopped
+        }
+
+        if (resource.deleted) {
+          const files = await this.#resourceFilesFor({
+            collectionDir,
+            resourceId,
+            entries
+          })
+          await Promise.all(files.map(filename => rm(filename)))
+          this.#dropQuotaCaches({ spaceId })
+          await rm(this.#chunkDir({ collectionDir, resourceId }), {
+            recursive: true,
+            force: true
+          })
+          // The `/meta` record and `custom` go with the Resource, as on
+          // Delete Resource.
+          await this.#writeFeedSidecar({
+            spaceId,
+            collectionId,
+            collectionDir,
+            resourceId,
+            sidecar: {
+              ...contentRecord,
+              deleted: true,
+              contentType: resource.contentType,
+              ...(writerId !== undefined && { writerId })
+            }
+          })
+          return { outcome: 'applied' }
+        }
+
+        // A history log's bytes were read for the decision, so they are
+        // written from the buffer.
+        const input: ResourceInput =
+          log === undefined
+            ? resource.input
+            : {
+                kind: 'binary',
+                contentType: resource.input.contentType,
+                stream: Readable.from([log.incoming]),
+                declaredBytes: log.incoming.length
+              }
+
+        const filePath = path.join(
+          collectionDir,
+          fileNameFor({ resourceId, contentType: input.contentType })
+        )
+        this.#assertContained(filePath)
+        // The Resource count quota binds a create, as on a content write.
+        let releaseCountReservation: (() => void) | undefined
+        if (this.maxResourcesPerSpace !== undefined && !livePath) {
+          releaseCountReservation = await this.#assertResourceHeadroom({
+            spaceId,
+            maxResourcesPerSpace: this.maxResourcesPerSpace
+          })
+        }
+        try {
+          await this.#writeRepresentationBytes({ spaceId, filePath, input })
+        } catch (err) {
+          releaseCountReservation?.()
+          throw err
+        }
+        await this.#pruneStaleRepresentations({
+          collectionDir,
+          resourceId,
+          keepPath: filePath,
+          entries
+        })
+        // The `/meta` record and `custom` are kept as held. A tombstone
+        // has neither.
+        const heldLive = prior?.deleted === true ? undefined : prior
+        await this.#writeFeedSidecar({
+          spaceId,
+          collectionId,
+          collectionDir,
+          resourceId,
+          sidecar: {
+            ...contentRecord,
+            ...(heldLive?.meta !== undefined && { meta: heldLive.meta }),
+            ...(heldLive?.custom && { custom: heldLive.custom }),
+            ...(resource.epoch !== undefined && { epoch: resource.epoch }),
+            ...(writerId !== undefined && { writerId })
+          }
+        })
+        return { outcome: 'applied' }
+      }
+    })
+  }
+
+  /**
+   * Reads a received representation into memory, for a history log, whose
+   * bytes are compared with the stored ones before anything is written. The
+   * upload cap bounds the read.
+   * @param input {ResourceInput}
+   * @returns {Promise<Buffer>}
+   */
+  async #bufferInput(input: ResourceInput): Promise<Buffer> {
+    if (input.kind === 'json') {
+      return Buffer.from(JSON.stringify(input.data))
+    }
+    this.#assertUploadSize({
+      maxUploadBytes: this.maxUploadBytes,
+      uploadBytes: input.declaredBytes
+    })
+    const chunks: Buffer[] = []
+    await pipeline([
+      input.stream,
+      ...this.#uploadCapGuards(),
+      new Writable({
+        write(chunk: Buffer, _encoding, callback) {
+          chunks.push(Buffer.from(chunk))
+          callback()
+        }
+      })
+    ])
+    return Buffer.concat(chunks)
+  }
+
+  /**
+   * Applies a Resource's `/meta` record, under the per-Resource lock a
+   * metadata write takes. The content record is carried over as stored.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.meta {ResourceMetaStamp}   the record's stamp and
+   *   generation
+   * @param [options.custom] {object}
+   * @returns {Promise<ApplyResult>}
+   */
+  async applyResourceMetadata({
+    spaceId,
+    replicaId,
+    collectionId,
+    resourceId,
+    meta,
+    custom
+  }: {
+    spaceId: string
+    replicaId: string
+    collectionId: string
+    resourceId: string
+    meta: ResourceMetaStamp
+    custom?: ResourceMetadataCustom | Record<string, unknown>
+  }): Promise<ApplyResult> {
+    assertReceivableStamps([meta])
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
+    return this.#runApply({
+      spaceId,
+      replicaId,
+      stamps: [meta],
+      lockKeys: [this.#resourceLockKey({ spaceId, collectionId, resourceId })],
+      run: async () => {
+        if (!(await this.#readLiveCollection({ spaceId, collectionId }))) {
+          return { outcome: 'skipped' }
+        }
+        const filePath = await this.#findFile({ collectionDir, resourceId })
+        const prior = await this.readMetaSidecar({
+          collectionDir,
+          resourceId
+        })
+        if (
+          !filePath ||
+          prior?.deleted === true ||
+          !stampWins({ incoming: meta, held: prior?.meta })
+        ) {
+          return { outcome: 'skipped' }
+        }
+        const {
+          custom: _heldCustom,
+          meta: _heldMeta,
+          ...contentRecord
+        } = prior ?? {}
+        const { updatedAt, updatedAtCounter, originId, generation } = meta
+        const hasCustom = hasCustomMembers(custom)
+        await this.#writeFeedSidecar({
+          spaceId,
+          collectionId,
+          collectionDir,
+          resourceId,
+          sidecar: {
+            ...(contentRecord as MetaSidecar),
+            createdAt: prior?.createdAt ?? updatedAt,
+            meta: { updatedAt, updatedAtCounter, originId, generation },
+            ...(hasCustom && { custom })
+          }
+        })
+        return { outcome: 'applied' }
+      }
+    })
+  }
+
+  /**
+   * Applies an access-control policy, live or a tombstone, under the key a
+   * policy write takes.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @param options.generation {string}
+   * @param options.stamp {WriteStamp}
+   * @param [options.policy] {PolicyDocument}   absent for a tombstone
+   * @returns {Promise<ApplyResult>}
+   */
+  async applyPolicy({
+    spaceId,
+    replicaId,
+    collectionId,
+    resourceId,
+    generation,
+    stamp,
+    policy
+  }: {
+    spaceId: string
+    replicaId: string
+    collectionId?: string
+    resourceId?: string
+    generation: string
+    stamp: WriteStamp
+    policy?: PolicyDocument
+  }): Promise<ApplyResult> {
+    assertReceivableStamps([stamp])
+    return this.#runApply({
+      spaceId,
+      replicaId,
+      stamps: [stamp],
+      lockKeys: [this.#policyLockKey({ spaceId, collectionId, resourceId })],
+      run: async () => {
+        if (
+          collectionId !== undefined &&
+          !(await this.#readLiveCollection({ spaceId, collectionId }))
+        ) {
+          return { outcome: 'skipped' }
+        }
+        const prior = await this.getPolicyRecord({
+          spaceId,
+          collectionId,
+          resourceId
+        })
+        if (!stampWins({ incoming: stamp, held: priorPolicyParts(prior) })) {
+          return { outcome: 'skipped' }
+        }
+        await this.#persistPolicy({
+          spaceId,
+          collectionId,
+          resourceId,
+          body:
+            policy === undefined
+              ? policyTombstoneBody(stamp)
+              : stampedPolicy({
+                  body: normalizePolicyWrite(policy),
+                  stamp
+                }),
+          generation
+        })
+        return { outcome: 'applied' }
+      }
+    })
+  }
+
+  /**
+   * Applies a Collection's governing history log, under the keys a log write
+   * takes. A log that does not exist yet is created on the exclusive side of
+   * the Space gate, as a guarded create is (see `writeCollectionLog`).
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.replicaId {string}
+   * @param options.collectionId {string}
+   * @param options.body {string}   the received JSON Lines body
+   * @param options.generation {string}
+   * @param options.stamp {WriteStamp}
+   * @returns {Promise<ApplyResult>}
+   */
+  async applyCollectionLog({
+    spaceId,
+    replicaId,
+    collectionId,
+    body,
+    generation,
+    stamp
+  }: {
+    spaceId: string
+    replicaId: string
+    collectionId: string
+    body: string
+    generation: string
+    stamp: WriteStamp
+  }): Promise<ApplyResult> {
+    assertReceivableStamps([stamp])
+    const logExists = await fileExists(
+      this.#collectionLogPath({ spaceId, collectionId })
+    )
+    return this.#runApply({
+      spaceId,
+      replicaId,
+      stamps: [stamp],
+      lockKeys: [
+        this.#collectionMetaLockKey({ spaceId, collectionId }),
+        this.#collectionLogLockKey({ spaceId, collectionId })
+      ],
+      exclusive: !logExists,
+      run: async () => {
+        const collectionMetadata = await this.#readLiveCollection({
+          spaceId,
+          collectionId
+        })
+        if (!collectionMetadata) {
+          return { outcome: 'skipped' }
+        }
+        const prior = await this.#readCollectionLog({
+          spaceId,
+          collectionId
+        })
+        const decision = decideLogApply({
+          held: prior?.body,
+          incoming: body
+        })
+        if (decision === 'fork') {
+          return logForkResult('governing history log')
+        }
+        if (decision === 'skip') {
+          return { outcome: 'skipped' }
+        }
+        const { updatedAt, updatedAtCounter, originId } = stamp
+        await this.#persistCollectionLog({
+          spaceId,
+          collectionId,
+          collectionMetadata,
+          log: { generation, updatedAt, updatedAtCounter, originId, body }
+        })
+        return { outcome: 'applied' }
       }
     })
   }

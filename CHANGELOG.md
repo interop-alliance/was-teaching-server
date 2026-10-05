@@ -2,7 +2,49 @@
 
 ## 0.42.0 - TBD
 
+### Added
+
+- Replica registrations. `POST /space/:spaceId/replicas` registers one source
+  peer of a Space: `id`, `fromSpace`, `toSpace`, `capability`, an optional
+  `collections` list and `role` (`source`). `GET` there lists the records as
+  `{ url, totalItems, items }`. `GET` and `DELETE` of
+  `/space/:spaceId/replicas/:replicaId` read and remove one. Every method is
+  controller-only. A record goes with Delete Space, and is not exported.
+- A registration is checked against the peer before it is stored. The peer must
+  list the replication specification and an `originId` that is not this
+  server's, and the peer Space must have the local Space's `controller` and
+  `type` set. A refusal is the new `replica-refused` problem type (409). A
+  malformed body is `invalid-request-body` (400).
+- A pull loop per registration. It reads the peer Space's Metadata object,
+  policy and Collection listing, then each selected Collection's changes feed,
+  and stores every record under the peer's write stamp and generation, so a
+  replicated Resource has the same bytes, `ETag` and `updatedAt` on both
+  servers. A record is applied when its stamp is greater than the held one. A
+  history log fast-forwards. A Collection delete removes its members whatever
+  their stamps.
+- `GET /space/:spaceId/replicas/:replicaId/status` serves a loop's state, its
+  pull times, and one item per Collection. A stalled Collection carries a
+  `stall` with a `reason` from `clock-bound`, `fork`, `quota-exceeded`,
+  `unsupported-backend` and `container-refused`.
+- A read-only form of the `changes` query profile:
+  `GET /space/:spaceId/:collectionId/query?profile=changes`, with `checkpoint`
+  and `limit` in the query string, verified under the `GET` action.
+- The Space Metadata object carries a server-derived `replicas` member, each
+  registration's `fromSpace`, `toSpace` and `role`. The Space linkset lists the
+  registrations under `https://w3id.org/pws#replicas`.
+- The Collection Metadata object carries a server-managed `created` member, the
+  write stamp of the write that created the Collection.
+- `/service` lists the replication specification,
+  `https://w3id.org/pws/replication`, at version `0.1`.
+- Plugin options `peerFetch` and `replicationPullIntervalMs`.
+
 ### Changed
+
+- **BREAKING**: `replicas` and `zcaps` are reserved Collection ids. Creating a
+  Collection under either answers `reserved-id` (409).
+- `GET /space/:spaceId/:collectionId/query` no longer answers 405.
+- `@interop/http-signature-zcap-invoke` is a runtime dependency. The pull loop
+  signs its reads of a peer with it.
 
 - **BREAKING**: an access-control policy is a versioned record at all three
   levels. Get Policy serves `updatedAt`, `updatedAtCounter` and `originId`

@@ -43,6 +43,8 @@ import {
   PeerWebvhResolver,
   type PeerLogFetcher
 } from './lib/peerWebvh.js'
+import { fetchFromPeer, type PeerFetch } from './sync/peerFetch.js'
+import { ReplicationManager } from './sync/replication.js'
 import {
   createServerSigningKey,
   provisionServerSpace,
@@ -229,6 +231,20 @@ export interface FastifyWasOptions {
    * configuration setting reaches it.
    */
   peerLogFetcher?: PeerLogFetcher
+  /**
+   * Makes the requests a replica registration's pull loop sends its source
+   * peer (see `sync/peerFetch.ts`). `undefined` means `fetchFromPeer`:
+   * `https` on the default port, no redirects, public addresses only. A test
+   * injects one to reach a peer booted in the same process. No configuration
+   * setting reaches it.
+   */
+  peerFetch?: PeerFetch
+  /**
+   * The delay between two pull cycles of a replica registration that both
+   * reached the peer, in milliseconds. `undefined` means
+   * `REPLICATION_PULL_INTERVAL_MS`.
+   */
+  replicationPullIntervalMs?: number
 }
 
 /**
@@ -264,7 +280,9 @@ async function wasPlugin(
     originId,
     replicationClockBoundMs,
     physicalClock,
-    peerLogFetcher
+    peerLogFetcher,
+    peerFetch,
+    replicationPullIntervalMs
   } = options
 
   // Fail fast on a missing or malformed base URL: without one no ZCap
@@ -332,11 +350,16 @@ async function wasPlugin(
   // startup work), so only the optional shutdown hook (pool drain) is wired,
   // to Fastify's close. Wired before anything below can throw, so a failed
   // registration still releases the backend when the app is closed.
-  if (ownsBackend && storage.close) {
-    fastify.addHook('onClose', async () => {
-      await storage.close!()
-    })
-  }
+  // The pull loops stop first, in the same hook, so no cycle applies into a
+  // closed backend.
+  fastify.addHook('onClose', async () => {
+    if (fastify.hasDecorator('replication')) {
+      await fastify.replication.stop()
+    }
+    if (ownsBackend && storage.close) {
+      await storage.close()
+    }
+  })
 
   // A backend that never ran its async factory has no settled origin id, and
   // `/service` would advertise none to a replication peer. Refuse it here
@@ -386,6 +409,22 @@ async function wasPlugin(
       logger: fastify.log
     })
   )
+  // One pull loop per stored replica registration, started once the routes
+  // are ready so a peer that pulls back finds this server serving.
+  const replication = new ReplicationManager({
+    storage,
+    getServerUrl: () => fastify.serverUrl,
+    signingKey: serverSigningKey,
+    peerFetch: peerFetch ?? fetchFromPeer,
+    logger: fastify.log,
+    ...(replicationPullIntervalMs !== undefined && {
+      pullIntervalMs: replicationPullIntervalMs
+    })
+  })
+  fastify.decorate('replication', replication)
+  fastify.addHook('onReady', async function startReplication() {
+    await replication.start()
+  })
   if (serverSigningKey !== undefined) {
     fastify.addHook('onListen', async function warnWithoutServerDid() {
       const did = await resolveServerDid({

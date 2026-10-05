@@ -213,6 +213,39 @@ export const GOVERNED_DESCRIPTORS_CACHE_MAX = 1_000
 export const REPLICATION_CLOCK_BOUND_MS = 60_000
 
 /**
+ * How long a registration's pull loop waits between two cycles that both
+ * reached the peer (see src/sync/replication.ts).
+ */
+export const REPLICATION_PULL_INTERVAL_MS = 5_000
+/**
+ * The delay before the first retry of a cycle that failed to reach the peer.
+ * It doubles with each further failure, up to
+ * {@link REPLICATION_BACKOFF_MAX_MS}.
+ */
+export const REPLICATION_BACKOFF_BASE_MS = 5_000
+/** The longest a failing pull loop waits between two cycles. */
+export const REPLICATION_BACKOFF_MAX_MS = 600_000
+/**
+ * How many change documents one feed request asks a peer for. A page too
+ * large to buffer is asked for again at half the size.
+ */
+export const REPLICATION_FEED_PAGE_SIZE = 100
+/**
+ * The timeout of one request a pull loop makes to a peer. For a Resource
+ * representation it bounds the wait for the response and for each chunk of
+ * the body, not the whole transfer.
+ */
+export const REPLICATION_REQUEST_TIMEOUT_MS = 30_000
+/**
+ * The most bytes a pull loop reads of a peer response that is not a Resource
+ * representation: a Metadata object, a listing, a feed page, a policy, the
+ * service description. A Resource representation is bounded by the backend's
+ * upload cap instead, as an upload is. So is a feed page of one document,
+ * which may inline a JSON body of that size.
+ */
+export const REPLICATION_DOCUMENT_MAX_BYTES = 4 * 1024 * 1024
+
+/**
  * `Access-Control-Max-Age` (seconds) on CORS preflight responses. Without it
  * browsers re-preflight the same URL every few seconds (Chrome's default is
  * 5 s), and a signed-request client preflights nearly every call, so about
@@ -367,6 +400,23 @@ export const CLIENT_ANNEX_IDENTIFIER = 'https://w3id.org/pws/client-annex'
 export const CLIENT_ANNEX_VERSION = '0.1'
 
 /**
+ * The replication specification's persistent identifier, the key of its entry
+ * in the service description's `specs` object. Listing it claims this server
+ * serves the `replicas` registration sub-resource, the pull loop and the
+ * apply path. A registration reads the peer's entry and refuses a peer that
+ * lists none at a version this server speaks. Provisional until the `pws`
+ * namespace is registered.
+ */
+export const REPLICATION_IDENTIFIER = 'https://w3id.org/pws/replication'
+
+/**
+ * The version of the replication specification this server implements
+ * (`major.minor`, no patch level). A change to what the pull loop accepts is
+ * a new version. The entry carries no `url` until the text is published.
+ */
+export const REPLICATION_VERSION = '0.1'
+
+/**
  * `Cache-Control` `max-age` (seconds) on the service description. The document
  * changes only when the server is redeployed with a different configuration,
  * and its `ETag` lets a client revalidate cheaply once the age runs out.
@@ -403,6 +453,12 @@ export const QUOTA_LINK_RELATION = `${SPEC_IDENTIFIER}#quota`
  * (RFC9264 linkset discovery; advertised at `/space/{id}/backends`).
  */
 export const BACKENDS_AVAILABLE_LINK_RELATION = `${SPEC_IDENTIFIER}#backends-available`
+
+/**
+ * Linkset relation URI for a Space's `replicas` registration listing
+ * (RFC9264 linkset discovery; advertised at `/space/{id}/replicas`).
+ */
+export const REPLICAS_LINK_RELATION = `${SPEC_IDENTIFIER}#replicas`
 
 /**
  * Linkset relation URI for a Space's `quotas` report auxiliary resource

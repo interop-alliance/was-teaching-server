@@ -5299,3 +5299,86 @@ its own policy file, as `_feedPosition`. The counter file keeps the Collection
 Metadata object's and the log's positions in one `records` map, and `FeedRecord`
 is a flat tagged union. The layout is filesystem store version 4, a refusal step
 with no conversion.
+
+---
+
+### WAS-176: [M] [blocks 4] Replica registration, pull loop, and the apply path
+
+- status: done
+- done: 2026-10-04
+- priority: medium
+- labels: replication, routes, filesystem-backend, postgres-backend,
+  space-metadata
+- blocks: WAS-96, WAS-177, WAS-179, WAS-184
+- touches:
+  - wallet-attached-storage-spec: the replication specification (registration
+    object, pull loop, apply rule, clock bound; its own document and version),
+    the Space Metadata object's `replicas` member, the `replication` entry on
+    `/service`. Filed there as acceptance lines on WASS-50 (the wire details
+    decided 2026-10-04) and WASS-51 (the `GET` form of the changes query).
+    Decisions 0011 and 0013 were amended in place the same day
+  - storage-core: `SpaceMetadata.replicas`, the registration type. Shipped
+    2026-10-04, unpublished (0.35.0), as its SC-10: `ReplicaRegistration`,
+    `ReplicaSummary`, `ReplicaStatus`, `ReplicaListing`, `ReplicaStallReason`,
+    `ProblemTypes.REPLICA_REFUSED`, `CollectionMetadata.created`, and `replicas`
+    and `zcaps` in `RESERVED_COLLECTION_IDS`. Consumed here by `link:` until
+    0.35.0 is published
+  - was-teaching-server: `routes.ts`, a `*Request` class for the registration,
+    `src/lib/containerRule.ts`, a sync module, `StorageBackend` (apply methods),
+    `src/lib/spaceProjection.ts`, ARCHITECTURE.md. Shipped 2026-10-04
+  - was-client: the `replicas` member; a registration API. Filed as WCL-127
+  - freewallet: the registration flow. Filed as acceptance lines on FW-638
+  - conformance-suite: the registration endpoints. Filed as PWSCS-23, which also
+    names the eight cases that fail against this server until the suite follows
+    the `replicas` and `created` members and the `GET` query form
+- acceptance:
+  - [x] A controller-only, per-server registration sub-resource of the Space
+        (`/space/:spaceId/replicas`) holds one source peer as a directed edge:
+        `fromSpace`, `toSpace`, the delegated pull capability, an optional
+        `collections` list of `{ id }` objects and a `role`; a `status`
+        sub-resource serves the loop's runtime state per Collection; registering
+        reads the peer's `/service` for its `originId` and its replication entry
+        at a version this server speaks, refuses a peer lacking either or
+        advertising this server's own id, and refuses a peer whose Space `type`
+        set differs
+  - [x] The registration is not replicated and is removed with Delete Space
+  - [x] A pull loop per registration lists the peer's Space (tombstones
+        included), filters by the Collection list with Space-level state and the
+        controller's log Collection always included, pulls each Collection's
+        changes feed under the per-peer opaque checkpoint, fetches each
+        representation by `GET`, and applies through backend `apply*` methods
+        that store the stamp verbatim and take a local feed position
+  - [x] Apply is one comparison on `(ms, counter, origin)`: greater than the
+        held revision applies, else skipped (dedup and loop check included);
+        logs fast-forward or stall; revocations are not replicated; a received
+        stamp more than the configured bound ahead of local time stalls the pull
+        with a `warn`
+  - [x] The served Space Metadata object carries a server-derived `replicas`
+        member listing each registered peer's Space URL and role
+  - [x] A peer answering 404 for the Space ends the cycle with one `warn`, and
+        the loop backs off (reworded 2026-10-04 to follow the design's review:
+        nothing stops a loop but the removal of its registration)
+  - [x] Tests: the two-server test named on WAS-96
+
+Context (discovered-from: WAS-96, decisions 4 to 6). Pull only, because a
+replicated write must arrive with its origin stamp and no ordinary write route
+can accept one without a new kind of trust. The replica is the Space so that
+Space-level state, Collection lifecycle, and discovery ride one loop; the
+Collection list gives per-peer selectivity. One-way replication is the default
+shape: a registration names a source, and nothing flows back without a
+counterpart registration on the other side.
+
+The apply path also inherits the creating stamp from section 5.4 of the WAS-96
+design: the stamp of a Collection's first write under its generation, stored
+beside the generation, which decides a received generation change.
+
+Shipped 2026-10-04. Wire details decided with the maintainer that day, beyond
+the design: the `replica-refused` problem type (409), the `stall.reason` tokens,
+the listing object, the `https://w3id.org/pws#replicas` linkset relation, the
+Collection Metadata object's nested `created` stamp, and the read-only
+`GET .../query?profile=changes` form of the feed (the pull capability carries no
+`POST`). Two departures from the design text. The apply path checks the
+registration on every apply, where the design said once per batch. A received
+stamp that carries this server's own origin id goes through the one comparison
+like any other, where section 5.2 said to refuse it. Follow-ups: WAS-201 and
+WAS-202.

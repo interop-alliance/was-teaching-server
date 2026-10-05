@@ -333,6 +333,36 @@ export class UnsupportedBackendError extends ProblemError {
 }
 
 /**
+ * 409 — a replica registration refused over the state of the peer or of this
+ * server, as opposed to a malformed body: no sync identity, a peer that does
+ * not serve replication, a peer carrying this server's origin id, a differing
+ * `controller` or `type`, a differing immutable Collection member, or the
+ * `server` Space. Only a caller already authorized as the Space controller
+ * sees it.
+ * @param options {object}
+ * @param options.detail {string}   the cause, for a person to read
+ * @param [options.pointer] {string}   RFC 6901 JSON Pointer to the member of
+ *   the registration the refusal is about; defaults to `#/fromSpace`
+ */
+export class ReplicaRefusedError extends ProblemError {
+  constructor({
+    detail,
+    pointer = '#/fromSpace'
+  }: {
+    detail: string
+    pointer?: string
+  }) {
+    super({
+      type: ProblemTypes.REPLICA_REFUSED,
+      title: 'The replica registration was refused.',
+      detail,
+      statusCode: 409,
+      problems: [{ detail, pointer }]
+    })
+  }
+}
+
+/**
  * 409 — a Collection update tried to change or clear an existing client-side
  * `encryption` descriptor, or move its scheme `version` backwards. The
  * descriptor is set-once, version-monotonic (spec): declaring it on a
@@ -689,6 +719,44 @@ export class PeerLogFetchError extends Error {
 }
 
 /**
+ * Internal signal, never sent: a request a pull loop made to a peer failed.
+ * The URL was refused before any connection, the host did not resolve or
+ * resolved to a non-public address, the request timed out, or the peer
+ * answered a status the loop cannot use. The loop ends its cycle on it and
+ * backs off.
+ * @param options {object}
+ * @param options.url {string}   the requested URL
+ * @param options.detail {string}   what went wrong
+ * @param [options.status] {number}   the status the peer answered, if any
+ * @param [options.bodyTooLarge] {boolean}   the body was larger than the
+ *   reader's bound, so a smaller request may still succeed
+ * @param [options.cause] {unknown}   the underlying failure
+ */
+export class PeerRequestError extends Error {
+  status?: number
+  bodyTooLarge: boolean
+
+  constructor({
+    url,
+    detail,
+    status,
+    bodyTooLarge = false,
+    cause
+  }: {
+    url: string
+    detail: string
+    status?: number
+    bodyTooLarge?: boolean
+    cause?: unknown
+  }) {
+    super(`The request to the peer at "${url}" failed: ${detail}`, { cause })
+    this.name = 'PeerRequestError'
+    this.status = status
+    this.bodyTooLarge = bodyTooLarge
+  }
+}
+
+/**
  * Internal signal, never sent: a peer server's `did:webvh` could not be
  * resolved over the network. The fetch was refused or failed, the log did not
  * verify, or the document does not list the requested key. The capability
@@ -822,6 +890,18 @@ export class CollectionNotFoundError extends NotFoundError {
  * @param [options.requestName] {string}   request name used in the error title
  */
 export class ResourceNotFoundError extends NotFoundError {
+  constructor({ requestName }: { requestName?: string } = {}) {
+    super({ requestName })
+  }
+}
+
+/**
+ * 404 — no replica registration is stored on the Space under the id. Only
+ * the Space controller reaches it, and it carries the masked body.
+ * @param options {object}
+ * @param [options.requestName] {string}   request name used in the error title
+ */
+export class ReplicaNotFoundError extends NotFoundError {
   constructor({ requestName }: { requestName?: string } = {}) {
     super({ requestName })
   }

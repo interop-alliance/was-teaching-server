@@ -728,7 +728,13 @@ Review 2026-10-01, four amendments:
   "Whatever the stamps" would not terminate: two replicas that each re-created
   the Collection during a partition would swap generations every cycle,
   cascading the members away each time. The creating stamp is stored beside the
-  generation (one more sidecar and row member, internal).
+  generation (one more sidecar and row member, internal). Refined 2026-10-04:
+  the puller has to read it, so it is a served, server-managed member of the
+  Collection Metadata object, `created`, holding the creating write's stamp
+  (`{ updatedAt, updatedAtCounter, originId }`). A Collection tombstone carries
+  no generation and no creating stamp, so a received tombstone removes any life
+  created before its own stamp, and a received life is created over a held
+  tombstone only when its creating stamp is greater than the tombstone's.
 - Delete wins. The cascade removes members whose stamps are newer than the
   tombstone (a write on B at t11 against a delete on A at t10), and a member
   write refused under a tombstone advances the checkpoint rather than stalling.
@@ -1160,7 +1166,22 @@ are proposals:
    `synced | syncing | stalled | skipped` and `stall` as
    `{ reason, since, detail }`. No `lastError`; an errors feed can join the
    status endpoint later. `replicas` and `zcaps` join the reserved registry and
-   `replicas` the Space linkset.
+   `replicas` the Space linkset. Refined 2026-10-04, with the implementation:
+   `GET /space/:spaceId/replicas` answers a listing object,
+   `{ url, totalItems, items }`. The linkset relation is
+   `https://w3id.org/pws#replicas`. A registration refused over the state of the
+   peer or of this server is a new problem type, `replica-refused` (409), and a
+   malformed body stays `invalid-request-body` (400). `stall.reason` is one of
+   `clock-bound`, `fork`, `quota-exceeded`, `unsupported-backend`,
+   `container-refused`. The record is stored apart from its loop state: in the
+   filesystem Space dir as `.replica.<id>.json` (with reserved `_generation` and
+   `_spaceGeneration` members) beside `.replica.<id>.state.json`, and as a row
+   of a Postgres `replicas` table, with no layout version bump. A peer answering
+   404 ends the cycle and the loop backs off, as section 5.5's review says. The
+   pull capability is limited to `GET` and `HEAD`, which the `POST` form of the
+   changes query does not verify under, so the feed gained a read-only form:
+   `GET /space/:spaceId/:collectionId/query?profile=changes`, with `checkpoint`
+   and `limit` in the query string.
 7. The `replicas` member on the served Space Metadata object
    (`[{ url, role }]`), or its removal from the object in favor of the
    sub-resource (open point 13). Decided 2026-10-02: stays on the object, as

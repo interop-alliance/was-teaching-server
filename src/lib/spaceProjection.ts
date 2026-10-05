@@ -7,9 +7,13 @@
  * filesystem backend's on-disk layout (the generation embedded and the stamp
  * members bare, no local validator segment, no `url` or `linkset`) and adds
  * only `backends`. Both derive `backends` here, so the
- * paths that materialize the object cannot drift on it.
+ * paths that materialize the object cannot drift on it. The served object
+ * also carries `replicas`, the Space's replica registrations on this server.
+ * An archive carries no `replicas`: a registration is this server's own and
+ * is not exported.
  *
- * The server-derived members are `url`, `linkset` and `backends`; `createdBy`
+ * The server-derived members are `url`, `linkset`, `backends` and `replicas`;
+ * `createdBy`
  * is resolved earlier, on the write path (`lib/metadataWrite.ts`). `type` is
  * served lexically sorted (spec SHOULD), so the object has a canonical, stable
  * serialization.
@@ -17,6 +21,7 @@
 import type {
   BackendDescriptor,
   IDID,
+  ReplicaSummary,
   SpaceMetadata,
   StorageBackend,
   StoredSpaceMetadata
@@ -60,9 +65,33 @@ export function writableSpaceMetadata({
 }
 
 /**
+ * The Space's replica registrations as the Space Metadata object lists them:
+ * each record's `fromSpace`, `toSpace` and `role`, in registration id order.
+ * The registration id, the capability and the loop state stay out.
+ * @param options {object}
+ * @param options.storage {StorageBackend}
+ * @param options.spaceId {string}
+ * @returns {Promise<ReplicaSummary[]>}
+ */
+export async function listReplicaSummaries({
+  storage,
+  spaceId
+}: {
+  storage: StorageBackend
+  spaceId: string
+}): Promise<ReplicaSummary[]> {
+  const replicas = await storage.listReplicas({ spaceId })
+  return replicas.map(({ record: { fromSpace, toSpace, role } }) => ({
+    fromSpace,
+    toSpace,
+    role
+  }))
+}
+
+/**
  * Projects a stored Space record into the served Space Metadata object: the
  * stored body without its out-of-band `ETag` validator, `type` sorted, and the
- * server-derived `url`, `linkset` and `backends` stamped on.
+ * server-derived `url`, `linkset`, `backends` and `replicas` stamped on.
  *
  * @param options {object}
  * @param options.storage {StorageBackend}   the request's storage backend,
@@ -70,10 +99,12 @@ export function writableSpaceMetadata({
  * @param options.spaceId {string}
  * @param options.spaceMetadata {SpaceMetadata}   the stored object (a
  *   validator-bearing read result is accepted; the validator is stripped)
- * @param [options.backends] {BackendDescriptor[]}   the listing, when the
- *   caller knows it without a read: a create echo, since a Space that did not
- *   exist before the write has no registrations (registering one needs the
- *   Space Metadata object to authorize against). Read from storage otherwise.
+ * @param [options.backends] {BackendDescriptor[]}   passed only by a create
+ *   echo, which marks the Space as just created: it did not exist before the
+ *   write, so it has no registrations (registering one needs the Space
+ *   Metadata object to authorize against). The listing is then used as given
+ *   and `replicas` is empty, with no storage read for either. Without it, both
+ *   are read from storage.
  * @returns {Promise<SpaceMetadata>}
  */
 export async function projectSpaceMetadata({
@@ -88,12 +119,20 @@ export async function projectSpaceMetadata({
   backends?: BackendDescriptor[]
 }): Promise<SpaceMetadata> {
   const body = stripMetadataValidator(spaceMetadata)
+  const isCreateEcho = backends !== undefined
+  const [listedBackends, replicas] = isCreateEcho
+    ? [backends, []]
+    : await Promise.all([
+        listRegisteredBackends({ storage, spaceId }),
+        listReplicaSummaries({ storage, spaceId })
+      ])
   return {
     ...body,
     type: [...body.type].sort(),
     url: spacePath({ spaceId, trailingSlash: true }),
     linkset: linksetPath({ spaceId }),
-    backends: backends ?? (await listRegisteredBackends({ storage, spaceId }))
+    backends: listedBackends,
+    replicas
   }
 }
 

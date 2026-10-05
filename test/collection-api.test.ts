@@ -7,6 +7,7 @@ import type { FastifyInstance } from 'fastify'
 
 import { NotFoundError } from '@interop/was-client'
 import type { Space } from '@interop/was-client'
+import type { CollectionMetadata } from '@interop/storage-core'
 
 import type { TempFileSystemBackend } from '../src/testing.js'
 import {
@@ -142,10 +143,13 @@ describe('Collections API', () => {
       updatedAtCounter,
       originId,
       etag,
+      created,
       ...description
-    } = (await collection.describe())!
+    } = (await collection.describe())! as CollectionMetadata & { etag?: string }
     assert.ok(!Number.isNaN(Date.parse(createdAt!)))
     assert.equal(updatedAt, createdAt)
+    // The creating stamp is the first write's whole stamp.
+    assert.deepStrictEqual(created, { updatedAt, updatedAtCounter, originId })
     assert.equal(updatedAtCounter, 0)
     assert.equal(typeof originId, 'string')
     parseEtagSegments(etag ?? null, { container: true })
@@ -244,8 +248,12 @@ describe('Collections API', () => {
       updatedAtCounter,
       originId,
       etag,
+      created,
       ...description
-    } = (await aliceSpace.collection('credentials').describe())!
+    } = (await aliceSpace
+      .collection('credentials')
+      .describe())! as CollectionMetadata & { etag?: string }
+    assert.equal(created?.updatedAt, createdAt)
     assert.ok(!Number.isNaN(Date.parse(createdAt!)))
     assert.ok(!Number.isNaN(Date.parse(updatedAt!)))
     assert.equal(typeof updatedAtCounter, 'number')

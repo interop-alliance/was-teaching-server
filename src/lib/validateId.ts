@@ -48,6 +48,17 @@ export function isUrlSafeSegment(id: string): boolean {
 }
 
 /**
+ * Whether `id` can name a replica registration: a single, URL-safe path
+ * segment that does not end in `.state`. An id ending in `.state` would name
+ * another registration's state record.
+ * @param id {string}
+ * @returns {boolean}
+ */
+export function isReplicaId(id: string): boolean {
+  return isUrlSafeSegment(id) && !id.endsWith('.state')
+}
+
+/**
  * Reserved path segments from the spec's Reserved Path Segment Registry (plus
  * the server's own non-spec `import` endpoint). A client-chosen Collection or
  * Resource id matching one of these would shadow the reserved route at that
@@ -77,7 +88,11 @@ export const RESERVED_COLLECTION_IDS = new Set([
   'meta',
   'policy',
   'query',
-  'quotas'
+  'quotas',
+  // The Space's replica registrations (`/space/{id}/replicas`).
+  'replicas',
+  // The Space's revocation endpoint sits under `/space/{id}/zcaps`.
+  'zcaps'
 ])
 /**
  * Space ids no client may create a Space under. Unlike the two registries

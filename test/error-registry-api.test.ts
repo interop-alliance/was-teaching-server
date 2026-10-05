@@ -199,7 +199,8 @@ describe('Error registry wire coverage', () => {
         allow: 'GET, HEAD, PUT, DELETE'
       },
       { method: 'PUT', path: '/space/:s/c/quota', allow: 'GET, HEAD' },
-      { method: 'GET', path: '/space/:s/c/query', allow: 'POST' },
+      { method: 'PUT', path: '/space/:s/c/query', allow: 'GET, HEAD, POST' },
+      { method: 'PUT', path: '/space/:s/replicas', allow: 'GET, HEAD, POST' },
       { method: 'DELETE', path: '/space/:s/c/backend', allow: 'GET, HEAD' },
       {
         method: 'DELETE',

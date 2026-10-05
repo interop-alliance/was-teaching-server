@@ -191,6 +191,52 @@ export function registeredBackendPath({
 }
 
 /**
+ * `/space/:spaceId/replicas` -- the Space's replica registrations: `GET`
+ * lists them and `POST` adds one.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @returns {string}
+ */
+export function replicasPath({ spaceId }: { spaceId: string }): string {
+  return `${spacePath({ spaceId })}/replicas`
+}
+
+/**
+ * `/space/:spaceId/replicas/:replicaId` -- one replica registration.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.replicaId {string}
+ * @returns {string}
+ */
+export function replicaPath({
+  spaceId,
+  replicaId
+}: {
+  spaceId: string
+  replicaId: string
+}): string {
+  return `${replicasPath({ spaceId })}/${replicaId}`
+}
+
+/**
+ * `/space/:spaceId/replicas/:replicaId/status` -- the runtime state of one
+ * registration's pull loop.
+ * @param options {object}
+ * @param options.spaceId {string}
+ * @param options.replicaId {string}
+ * @returns {string}
+ */
+export function replicaStatusPath({
+  spaceId,
+  replicaId
+}: {
+  spaceId: string
+  replicaId: string
+}): string {
+  return `${replicaPath({ spaceId, replicaId })}/status`
+}
+
+/**
  * `/space/:spaceId/quotas` -- the Space Quota report path (spec "Quotas").
  * @param options {object}
  * @param options.spaceId {string}
@@ -465,18 +511,11 @@ export function kmsRevocationsPath({
  * convention. `revocationId` is the *to-be-revoked capability's id*,
  * URL-encoded into the single path segment the route expects.
  *
- * `zcaps` needs no reserved-id entry. Depth is not the reason: this route is
- * four segments under `/space`, the same as
- * `/space/:spaceId/:collectionId/:resourceId/meta`, and one shallower than the
- * chunk routes. The method is. Only `POST` is registered here, and WAS defines
- * no `POST` at that depth. find-my-way falls back to the parametric branch for
- * a method the static branch does not serve, so `GET`, `PUT` and `DELETE` at
- * this shape resolve to the Collection and Resource routes. A Collection
- * genuinely named `zcaps` therefore still lists, adds, reads and writes
- * normally. One overlap remains: `POST /space/:spaceId/zcaps/revocations/:x`
- * answers as a revocation, not as the 405 `refuseUnimplementedMethods`
- * synthesizes for Resource metadata. `test/space-revocation-api.test.ts` pins
- * all of this.
+ * `zcaps` is a reserved Collection id (`lib/validateId.ts`), so no Collection
+ * is created under it. Only `POST` is registered here. find-my-way falls back
+ * to the parametric branch for a method the static branch does not serve, so
+ * `GET`, `PUT` and `DELETE` at this shape resolve to the Collection and
+ * Resource routes, which answer for a Collection that cannot exist.
  * @param options {object}
  * @param options.spaceId {string}
  * @param options.revocationId {string}   the to-be-revoked capability's id

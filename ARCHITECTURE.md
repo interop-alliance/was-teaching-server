@@ -264,12 +264,14 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   does not fail the write that minted. The clock also has a receive rule for a
   stamp from a peer, which refuses one dated more than the clock bound ahead of
   physical time (`WAS_REPLICATION_CLOCK_BOUND_MS`, default 60000 ms). No request
-  path receives a peer's stamp yet. A stamp enters a store only from that
-  store's own clock: an import re-stamps every record it writes. One server
-  process per store is an assumption the stamps rest on. Two processes over one
-  store would share its origin id and could mint the same stamp for two
-  different writes, which would give different bytes one strong validator. The
-  read caches below rest on the same assumption.
+  route receives a peer's stamp. A peer's stamp enters a store through the apply
+  path alone (`lib/replicaApply.ts`, below), which takes each one in by that
+  receive rule. Every other stamp comes from the store's own clock: an import
+  re-stamps every record it writes. One server process per store is an
+  assumption the stamps rest on. Two processes over one store would share its
+  origin id and could mint the same stamp for two different writes, which would
+  give different bytes one strong validator. The read caches below rest on the
+  same assumption.
 - **`src/lib/changesCheckpoint.ts`** -- the `changes` query profile's wire
   checkpoint. The feed is ordered by a per-Collection feed position, a positive
   integer sequence. Every Resource-level write takes the next one: a content
@@ -526,7 +528,7 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
 
 - **`src/serviceDescription.ts`** -- the service description (spec "Service
   Description"): `GET /service`, unauthenticated, serving the JSON document that
-  lists four entries in its `specs`. The core entry, under the
+  lists five entries in its `specs`. The core entry, under the
   `https://w3id.org/pws` identifier, names the spec version this server speaks
   (`0.5`), the Spaces Repository URL, and the `features` tokens naming the
   optional sections of the core spec this server serves, `changes-query` among
@@ -571,12 +573,17 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `https://w3id.org/pws/client-annex`, is the client annex profile (version
   `0.1`). Listing it is this server's claim that it enforces the client-annex
   delegation clause described below. It carries `version` alone, since it is a
-  conformance claim with nothing further to advertise. A client ignores a member
-  it does not know, and treats an entry whose `version` it does not speak, or
-  whose `url` is not a string, as absent. The document is built per `serverUrl`
-  and served with `Cache-Control: public` and a content-hash `ETag`. The module
-  also installs the one hook every response passes through: a root-level
-  `onSend` hook (`addServiceLinkHook`, added by the plugin) that appends
+  conformance claim with nothing further to advertise. The fifth entry, under
+  `https://w3id.org/pws/replication`, is the replication specification (version
+  `0.1`). Listing it is this server's claim that it serves the `replicas`
+  registration sub-resource, the pull loop and the apply path. A registration
+  reads the peer's entry and refuses a peer that lists none at this version. It
+  carries `version` alone too. A client ignores a member it does not know, and
+  treats an entry whose `version` it does not speak, or whose `url` is not a
+  string, as absent. The document is built per `serverUrl` and served with
+  `Cache-Control: public` and a content-hash `ETag`. The module also installs
+  the one hook every response passes through: a root-level `onSend` hook
+  (`addServiceLinkHook`, added by the plugin) that appends
   `Link: <{serverUrl}/service>; rel="service"` to every response -- successes,
   errors, 404s for unmatched routes, 308 redirects, 405 refusals, CORS
   preflights, and the teaching-server extras. It appends to a `Link` header a
@@ -632,8 +639,8 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   its 5xx and is not a refusal. A controller delegates the pull capability to
   `serverDid`, so a peer verifies the invocation against the server's log. There
   is no second key and no `/service` member. Listing the relationship is the
-  switch that enables replication. Replication itself is not built yet, and
-  nothing calls the signer.
+  switch that enables replication. Every read a pull loop makes of a peer Space
+  is signed with it (`sync/peerClient.ts`).
 - **`src/lib/peerWebvh.ts`** -- the one network resolution of a foreign
   `did:webvh`: a peer server's DID, `did:webvh:<scid>:<host>:space:server:id`,
   as the invoker of a delegated capability on the WAS routes (see "The
@@ -659,6 +666,113 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   in tests, since the host bound keeps a real fetch out of the suite. No
   environment variable reaches it. The resolver is one per app, decorated as
   `peerWebvh`.
+- **`src/lib/replicaApply.ts`** -- the rules the apply path stores a replicated
+  record by. A storage backend's `apply*` methods take a record a pull loop read
+  from a peer and store it under the peer's write stamp and generation, so the
+  record's `ETag` here equals the peer's. No request route reaches them. Both
+  backends decide through this module. A record is applied when its stamp sorts
+  above the held one by `(ms, counter, originId)`, and skipped otherwise. An
+  equal stamp is a record this server already holds, which is also what stops a
+  record from travelling round a two-way pair. Three records follow other rules.
+  A history log (a Collection's governing log, or a `did.jsonl`) fast-forwards:
+  the held bytes must be a prefix of the received ones, a prefix of the held
+  bytes is skipped, and anything else is a fork. A Collection tombstone carries
+  no generation. It removes any life of the Collection created before its stamp,
+  with its members, whatever their stamps, so a delete wins over a later member
+  write. Two lives of one Collection id are ordered by their creating stamps
+  (see the Glossary): a received life created after the held one replaces it,
+  members included, and one created before it is skipped. An update of a held
+  life replaces the object except for the members that are immutable once set
+  (`encryption`, `revisions.resolution`, `revisions.immutable`). One the
+  received object omits is kept, and two different set values are a fork.
+
+  Each apply method runs inside the critical section the matching request-layer
+  write takes, and checks there, in order: that the registration is still stored
+  and was made for the Space's current generation (else `unregistered`), that
+  the backend's clock takes the received stamps in (else `refused` with reason
+  `clock-bound`), and that the record's Collection is live (else `skipped`). An
+  applied record takes a local feed position, so it appears in this server's own
+  `changes` feed and a third server can pull it from here. Preconditions, the
+  encrypted-Collection envelope rule, the write-once rule and the
+  unique-attribute claims are not evaluated, since the origin server admitted
+  the write. Quotas and the upload cap are. The Space Metadata object replicates
+  its `name` alone: `controller`, `type` and the server-derived members stay per
+  server. Revocations, backend registrations, keystores and chunks are not
+  replicated.
+
+- **`src/sync/`** -- the replication facet: replica registrations and their pull
+  loops. A registration is one source peer of a Space, a directed edge the
+  controller writes at `POST /space/:spaceId/replicas`
+  (`requests/ReplicaRequest.ts`): `id`, `fromSpace` (the peer Space's URL),
+  `toSpace` (this Space's URL), `capability` (the pull capability, delegated to
+  this server's DID with `allowedAction` within `GET` and `HEAD`), an optional
+  `collections` list, and `role` (`source`). `GET` there lists the records as
+  `{ url, totalItems, items }`. `GET` and `DELETE` of
+  `/space/:spaceId/replicas/:replicaId` read and remove one, and there is no
+  `PUT`. Every method is controller-only, the reads included, through the
+  container rule's `controller-only`. A record is stored inside the Space
+  (`.replica.<id>.json` beside `.replica.<id>.state.json` in the filesystem
+  Space dir, a row of the Postgres `replicas` table), so Delete Space removes
+  it. It is not replicated and not exported. Storing or removing one advances
+  the Space Metadata object's local segment, since the served `replicas` member
+  changed.
+
+  `sync/registration.ts` holds the checks a registration passes before it is
+  stored. A malformed body is `invalid-request-body` (400). The rest read the
+  peer, and a break of one is `replica-refused` (409). The local Space is not
+  the `server` Space. This server has a sync signer, and the capability is
+  delegated to its DID. The peer's `/service` lists the replication entry at
+  this server's version and an `originId` that is not this server's. The peer
+  Space, read through the capability, has the local Space's `controller` and
+  `type` set. Without the controller check, a holder of any readable pull
+  capability could register another user's Space as a source and read the copy
+  through root invocations. Each Collection both sides hold agrees on the
+  immutable members. The peer Space's id need not equal the local one.
+
+  `sync/replication.ts` is the `ReplicationManager`, one per app, decorated as
+  `replication`. It runs one pull loop per stored registration, started at
+  `onReady` and on registration. A cycle reads the peer Space's Metadata object
+  and policy (conditional reads), then its Collection listing under
+  `?include=deleted`. The registration's `collections` list selects among the
+  listed Collections, live and tombstoned, and the Collection that holds the
+  controller's history log is always selected. A selected tombstone is applied.
+  One for a Collection the registration does not pull is ignored, so it cannot
+  remove a local Collection that shares its id. For each selected live
+  Collection the loop applies the Collection Metadata object when this server
+  does not hold that life of the Collection, then reads its `changes` feed from
+  the stored checkpoint and applies each document by `kind`. A Resource's
+  content is read by `GET`, or taken from the document's inline `data`, and its
+  `/meta` object is read for the members the content write set. An `ETag` that
+  no longer equals the one the feed named means the record moved, and the
+  Collection is read again next cycle. The checkpoint advances past a document
+  once it is applied or skipped. A feed page too large to buffer is asked for
+  again at half the size, down to one document, which is read up to the upload
+  cap. A binary Resource's read times out on the wait for the response and for
+  each chunk, so a long transfer is not cut off.
+
+  A `refused` apply stalls that Collection alone. The checkpoint holds and the
+  reason (`clock-bound`, `fork`, `quota-exceeded`, `unsupported-backend`,
+  `container-refused`) is stored with the loop state, which
+  `GET .../replicas/:replicaId/status` serves beside the loop `state` and the
+  pull times. The Collection is retried each cycle while the others go on, and a
+  clock-bound stall clears itself as local time catches up. A Collection stored
+  on a registered external backend on the peer stalls as `unsupported-backend`:
+  this server replicates into its own default backend only. A request to the
+  peer that fails, a 404 for the Space included, ends the cycle. The loop then
+  backs off, doubling its delay up to a limit, and logs one `warn` when the
+  failures begin. Nothing stops a loop but the removal of its registration. The
+  manager stops every loop in the same `onClose` hook that closes the backend,
+  ahead of it.
+
+  `sync/peerFetch.ts` is the transport. `fromSpace` is a URL the controller
+  supplies, so every request to it is bound as the peer log fetch is: `https`
+  only, the default port, no redirect followed, and a connection only to the
+  public addresses checked after DNS. The plugin's `peerFetch` option replaces
+  it in tests. The feed has a read-only form for the loop,
+  `GET /space/:spaceId/:collectionId/query?profile=changes`, with `checkpoint`
+  and `limit` in the query string, verified under the `GET` action. The `POST`
+  form needs a `POST` capability, which a pull capability does not carry.
+
 - **`src/lib/provenanceStatement.ts`** -- the provenance statement contract,
   shared by the two halves below and owned by neither. It holds the statement
   `type` (`STORAGE_ATTESTATION_TYPE`), the members a statement attests
@@ -949,22 +1063,24 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   wallet tells an auxiliary Space from a data Space without a Read Space per
   item. Its `url`, and the `Location` of a newly created Space, carry the
   trailing slash. The object splits in two: its user-writable members are `type`
-  and `name`, and its server-derived members are `createdBy`, `url`, `linkset`
-  and `backends` (the same listing `GET /space/:spaceId/backends` serves,
-  carried here so a reader learns it without a second request). The object also
-  carries the write stamp of its last write (`updatedAt`, `updatedAtCounter`,
-  `originId`), which the server sets. A server-derived or stamp member supplied
-  in a write body is ignored, and an unknown member is not stored. A `PUT` of
-  the Space Metadata object on an existing Space replaces its user-writable
-  members in full, so an omitted `name` is removed. `src/lib/spaceProjection.ts`
-  holds the two projections from the stored record: the served object, which
-  Read Space and the two create responses go through, and the export archive's
-  `.space.<id>.json` entry, which keeps the on-disk layout and stamps only
-  `backends`; both derive `backends` there, so no path drifts on it. A create
-  response projects the object `writeSpace` returns, as the write stored it. It
-  hands the projection the listing instead of having it read one: a Space that
-  did not exist before the write has no registrations, since registering one
-  needs the Space Metadata object to authorize against.
+  and `name`, and its server-derived members are `createdBy`, `url`, `linkset`,
+  `backends` (the same listing `GET /space/:spaceId/backends` serves, carried
+  here so a reader learns it without a second request) and `replicas` (each
+  replica registration's `fromSpace`, `toSpace` and `role`, with no registration
+  id and no capability). The object also carries the write stamp of its last
+  write (`updatedAt`, `updatedAtCounter`, `originId`), which the server sets. A
+  server-derived or stamp member supplied in a write body is ignored, and an
+  unknown member is not stored. A `PUT` of the Space Metadata object on an
+  existing Space replaces its user-writable members in full, so an omitted
+  `name` is removed. `src/lib/spaceProjection.ts` holds the two projections from
+  the stored record: the served object, which Read Space and the two create
+  responses go through, and the export archive's `.space.<id>.json` entry, which
+  keeps the on-disk layout and stamps only `backends`; both derive `backends`
+  there, so no path drifts on it. A create response projects the object
+  `writeSpace` returns, as the write stored it. It hands the projection the
+  listing instead of having it read one: a Space that did not exist before the
+  write has no registrations, since registering one needs the Space Metadata
+  object to authorize against.
 - **`server` Space** -- the auxiliary Space that hosts this server's own
   identity: its `id` Collection holds the `did.jsonl` history log of the
   server's `did:webvh`. Provisioned at startup under the administrator's
@@ -1018,9 +1134,27 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   there is a full replacement that creates the Collection when absent. It also
   carries the optional `revisions` descriptor: the conflict `resolution`, the
   write-once `immutable` flag, and a verbatim `merge` object (see
-  `lib/revisions.ts`). Its `url`, and the `Location` of a newly created
-  Collection, carry the trailing slash. Deleting it leaves a Collection
-  tombstone.
+  `lib/revisions.ts`). It carries `created`, its creating stamp. Its `url`, and
+  the `Location` of a newly created Collection, carry the trailing slash.
+  Deleting it leaves a Collection tombstone.
+- **Creating stamp** -- the write stamp of the write that created a Collection,
+  served as the Collection Metadata object's `created` member and kept for the
+  Collection's life. A create over a tombstone records a new one, and an import
+  records its own stamp. The apply path orders two lives of one Collection id by
+  it, since their generations are random and cannot be ordered. Server-managed:
+  a value in a write body is ignored. Avoid: creation time (`createdAt` is one
+  member's worth of it), generation stamp.
+- **Replica registration** -- one source peer of a Space, stored on the server
+  that pulls: a directed edge from `fromSpace` (the peer's Space) to `toSpace`
+  (this one), with the pull capability the controller delegated to this server's
+  DID. Replication is one-way per registration. A two-way pair is two
+  registrations, one on each server. This server's own, like a backend
+  registration: it is not replicated and not exported. Avoid: peer (the other
+  server), subscription, sync config.
+- **Pull loop** -- the loop that reads one replica registration's source and
+  stores what it reads through the apply path (`sync/replication.ts`). Its state
+  per Collection is `synced`, `syncing`, `stalled` or `skipped`. Avoid: sync
+  job, replicator.
 - **Collection tombstone** -- what Delete Collection leaves in place of the
   Collection Metadata object: `deleted: true`, the Collection's generation, and
   the delete's write stamp, and nothing else of the old body. It reads as absent

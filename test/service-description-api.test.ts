@@ -107,7 +107,8 @@ describe('Service description API', () => {
               features: ['blinded-index-query', 'governed-history-logs']
             }
           ],
-          'https://w3id.org/pws/client-annex': [{ version: '0.1' }]
+          'https://w3id.org/pws/client-annex': [{ version: '0.1' }],
+          'https://w3id.org/pws/replication': [{ version: '0.1' }]
         },
         instance: {
           name: packageJson.name,

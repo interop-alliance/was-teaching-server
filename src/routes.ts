@@ -32,6 +32,7 @@ import { sandboxHostedPage } from './lib/hostedPageSandbox.js'
 import { CollectionRequest } from './requests/CollectionRequest.js'
 import { PolicyRequest, type PolicyParams } from './requests/PolicyRequest.js'
 import { BackendRequest } from './requests/BackendRequest.js'
+import { ReplicaRequest } from './requests/ReplicaRequest.js'
 import { KeystoreRequest } from './requests/KeystoreRequest.js'
 import { KeyRequest } from './requests/KeyRequest.js'
 import { RevocationRequest } from './requests/RevocationRequest.js'
@@ -471,6 +472,27 @@ export async function initSpaceRoutes(
   app.put('/space/:spaceId/backends/:backendId', BackendRequest.put)
   app.delete('/space/:spaceId/backends/:backendId', BackendRequest.delete)
 
+  // Replica registrations (reserved segment). Every method is controller-only,
+  // the reads included, so each `GET` demands the auth headers (401) rather
+  // than passing as a public read.
+  app.get<{ Params: { spaceId: string } }>(
+    '/space/:spaceId/replicas',
+    { onRequest: requireAuthHeaders },
+    ReplicaRequest.list
+  )
+  app.post('/space/:spaceId/replicas', ReplicaRequest.post)
+  app.get<{ Params: { spaceId: string; replicaId: string } }>(
+    '/space/:spaceId/replicas/:replicaId',
+    { onRequest: requireAuthHeaders },
+    ReplicaRequest.get
+  )
+  app.delete('/space/:spaceId/replicas/:replicaId', ReplicaRequest.delete)
+  app.get<{ Params: { spaceId: string; replicaId: string } }>(
+    '/space/:spaceId/replicas/:replicaId/status',
+    { onRequest: requireAuthHeaders },
+    ReplicaRequest.status
+  )
+
   // Space Quota report (reserved segment; static-beats-parametric routing keeps
   // this ahead of the `:collectionId` parameter). The per-Collection breakdown
   // (spec's `?include=collections`) is opt-in via that query string -- see the
@@ -479,9 +501,8 @@ export async function initSpaceRoutes(
 
   // Revoke a zcap delegated from this Space (`:revocationId` = the URL-encoded
   // id of the capability being revoked, which is also the request body).
-  // `POST`-only, and WAS registers no other `POST` at this depth, which is what
-  // keeps a Collection named `zcaps` reachable through the parametric routes --
-  // see `spaceRevocationsPath` for the full argument.
+  // `POST`-only. `zcaps` is a reserved Collection id, so no Collection is
+  // created under it; see `spaceRevocationsPath` for the other methods.
   app.post(
     '/space/:spaceId/zcaps/revocations/:revocationId',
     RevocationRequest.postSpace
@@ -514,7 +535,16 @@ export async function initSpaceRoutes(
     { url: '/space/:spaceId/import', targetName: 'Space import' },
     { url: '/space/:spaceId/linkset', targetName: 'Space linkset' },
     { url: '/space/:spaceId/query', targetName: 'Space query' },
-    { url: '/space/:spaceId/quotas', targetName: 'Space quotas' }
+    { url: '/space/:spaceId/quotas', targetName: 'Space quotas' },
+    { url: '/space/:spaceId/replicas', targetName: 'Space replicas' },
+    {
+      url: '/space/:spaceId/replicas/:replicaId',
+      targetName: 'Space replica'
+    },
+    {
+      url: '/space/:spaceId/replicas/:replicaId/status',
+      targetName: 'Space replica status'
+    }
   ])
 }
 
@@ -602,6 +632,12 @@ export async function initCollectionRoutes(
     '/space/:spaceId/:collectionId/query',
     safeRoute,
     CollectionRequest.query
+  )
+  // The read-only form of the `changes` profile, with its parameters in the
+  // query string, so a `GET`-only capability can read the feed.
+  app.get(
+    '/space/:spaceId/:collectionId/query',
+    CollectionRequest.queryChangesByGet
   )
 
   // Every Collection-level reserved endpoint refuses the methods it does not

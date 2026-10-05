@@ -40,8 +40,10 @@ import type {
 import type { EtagValidator, HeldValidators } from './lib/etag.js'
 import type { ServerSigningKey } from './lib/serverIdentity.js'
 import type { PeerWebvhResolver } from './lib/peerWebvh.js'
+import type { ReplicationManager } from './sync/replication.js'
 import type { ExportAttestor } from './lib/exportProvenance.js'
 import type { ImportPlan } from './lib/importTar.js'
+import type { ApplyResult } from './lib/replicaApply.js'
 import type {
   BlindedIndexQuery,
   BlindedIndexQueryPage
@@ -74,7 +76,9 @@ import type {
   ServiceDescription,
   ServiceDescriptionVersionEntry,
   WriteStamp,
-  ResourceMetaStamp
+  ResourceMetaStamp,
+  ReplicaRegistration,
+  ReplicaCollectionStatus
 } from '@interop/storage-core'
 
 // Surface the blinded-index query shapes referenced by the `StorageBackend`
@@ -148,7 +152,14 @@ export type {
   PwsVersionEntry,
   AuthzProfileVersionEntry,
   WriteStamp,
-  ResourceMetaStamp
+  ResourceMetaStamp,
+  ReplicaRegistration,
+  ReplicaSummary,
+  ReplicaRole,
+  ReplicaStatus,
+  ReplicaCollectionStatus,
+  ReplicaStallReason,
+  ReplicaListing
 } from '@interop/storage-core'
 
 /**
@@ -726,6 +737,50 @@ export type FeedDocument = WriteStamp & {
     // (`resourceId` absent) or a Resource's, live or a tombstone.
     | { kind: 'policy'; resourceId?: string; deleted: boolean }
   )
+
+/**
+ * A replica registration as a backend stores it: the record the controller
+ * wrote, the generation its `ETag` is made of, and the generation of the
+ * Space Metadata object at the time it was made. An apply runs only while
+ * the Space still carries that generation, so a registration that outlived a
+ * Delete Space and a re-create under the same id applies nothing.
+ */
+export interface StoredReplica {
+  record: ReplicaRegistration
+  generation: string
+  spaceGeneration: string
+}
+
+/**
+ * A registration's pull-loop state for one Collection, as stored: what the
+ * `status` sub-resource serves for it, beside the peer's opaque changes
+ * checkpoint and the peer Collection generation that checkpoint was read
+ * under. The key in {@link ReplicaLoopState.collections} is the Collection
+ * id.
+ */
+export type ReplicaCollectionState = Omit<ReplicaCollectionStatus, 'id'> & {
+  checkpoint?: string
+  generation?: string
+}
+
+/**
+ * A registration's pull-loop state as stored beside the record, apart from
+ * it, so a checkpoint advance never rewrites the record that holds the
+ * capability. It is this server's own, like the registration: it is not
+ * replicated and not exported, and Delete Space and Delete Replica remove it.
+ */
+export interface ReplicaLoopState {
+  lastPullAt?: string
+  lastSuccessAt?: string
+  nextPullAt?: string
+  // Consecutive failed cycles, which the back-off delay grows with.
+  failures?: number
+  // The peer's `ETag`s of the Space Metadata object and the Space policy as
+  // last read, for the next cycle's conditional reads.
+  spaceMetaEtag?: string
+  spacePolicyEtag?: string
+  collections: Record<string, ReplicaCollectionState>
+}
 
 export interface StorageBackend {
   /**
@@ -1588,6 +1643,222 @@ export interface StorageBackend {
   deleteBackend(options: { spaceId: string; backendId: string }): Promise<void>
 
   /**
+   * Replica registrations (the replication specification): one source peer
+   * of a Space per record, stored inside the Space, so Delete Space removes
+   * them with it. They are this server's own. Export does not carry them and
+   * import never creates one.
+   *
+   * `createReplica` stores a registration, create-only: it rejects with
+   * `IdConflictError` (409) when the Space already holds one under
+   * `record.id`, atomically with the write, and with `SpaceNotFoundError`
+   * (404) when the Space has no Metadata object, under the lock Delete Space
+   * takes. It mints the record's generation, records the Space Metadata
+   * object's current generation as `spaceGeneration`, and advances that
+   * object's local validator segment, since its served `replicas` member
+   * changed.
+   */
+  createReplica(options: {
+    spaceId: string
+    record: ReplicaRegistration
+  }): Promise<StoredReplica>
+  /**
+   * The stored registration, capability included, or `undefined`.
+   */
+  getReplica(options: {
+    spaceId: string
+    replicaId: string
+  }): Promise<StoredReplica | undefined>
+  /**
+   * The Space's registrations in ascending id order. Resolves an empty array
+   * for a Space with none, an absent Space included.
+   */
+  listReplicas(options: { spaceId: string }): Promise<StoredReplica[]>
+  /**
+   * Every registration in the store, for the boot that starts one pull loop
+   * each. Resolves an empty array when nothing is stored yet.
+   */
+  listAllReplicas(): Promise<Array<StoredReplica & { spaceId: string }>>
+  /**
+   * Removes a registration and its loop state. Resolves `false` when none
+   * was stored. A removal advances the Space Metadata object's local
+   * validator segment.
+   */
+  deleteReplica(options: {
+    spaceId: string
+    replicaId: string
+  }): Promise<boolean>
+  /**
+   * The registration's stored loop state, or `undefined` when it has none
+   * yet or the registration is gone.
+   */
+  getReplicaState(options: {
+    spaceId: string
+    replicaId: string
+  }): Promise<ReplicaLoopState | undefined>
+  /**
+   * Replaces the registration's loop state. Writes nothing and resolves
+   * `false` when the registration is gone, so a loop that outlived its
+   * registration leaves no state behind.
+   */
+  writeReplicaState(options: {
+    spaceId: string
+    replicaId: string
+    state: ReplicaLoopState
+  }): Promise<boolean>
+
+  /**
+   * The apply path: how a record a pull loop read from a peer is stored. No
+   * request route reaches these methods. Each stores the received record
+   * under the stamp the peer served, verbatim, after the one comparison
+   * `lib/replicaApply.ts` defines, and resolves an `ApplyResult` saying what
+   * it did.
+   *
+   * Every apply method runs inside the critical section the matching
+   * request-layer write takes, and makes these checks there, in this order:
+   *
+   * - The registration `replicaId` is stored on the Space and its
+   *   `spaceGeneration` is the Space Metadata object's current generation.
+   *   Otherwise the result is `unregistered`.
+   * - The received stamps are taken in by the backend's clock
+   *   (`HybridLogicalClock.observe`). A stamp dated more than the clock
+   *   bound ahead of local time is not applied, and the result is `refused`
+   *   with reason `clock-bound`.
+   * - The record's Collection, where it names one, is live. Under an absent
+   *   or tombstoned Collection the result is `skipped`. `applyCollection`
+   *   is the only method that creates, replaces or deletes a Collection.
+   * - The comparison. A record that loses is `skipped`.
+   *
+   * An applied record takes the next local feed position where the matching
+   * request-layer write takes one, and the same derived state is maintained
+   * (index entries, the Collection Metadata object's local segment on a log
+   * write, the cascade of a delete). The received generation is stored with
+   * the stamp, so the record's `ETag` here equals the peer's. Preconditions,
+   * the encrypted-Collection envelope rule, the write-once rule and the
+   * unique-attribute claims are not evaluated: the origin server admitted
+   * the write. Quotas and the upload cap are, and reject as they do on a
+   * request-layer write (`QuotaExceededError`, `PayloadTooLargeError`).
+   *
+   * The caller drops the request-layer caches an applied record affects.
+   *
+   * `applySpaceName` applies the one replicated member of the Space Metadata
+   * object. `name` replaces the stored one, or removes it when absent, and
+   * the object takes `stamp`, with its local validator segment reset to 0.
+   * Every other member is kept, the generation included.
+   */
+  applySpaceName(options: {
+    spaceId: string
+    replicaId: string
+    name?: string
+    stamp: WriteStamp
+  }): Promise<ApplyResult>
+  /**
+   * Applies a Collection Metadata object or a Collection tombstone, by
+   * `decideCollectionApply` / `decideCollectionTombstoneApply`.
+   *
+   * A live `collection` is the stored projection of the peer's object:
+   * `metadata` carries its write stamp and its creating stamp (`created`)
+   * beside the stored members, `createdAt` and `createdBy` included, and no
+   * derived or validator member. A `create` stores it under `generation`.
+   * An `update` stores it merged over the held object by
+   * `mergeAppliedCollectionMetadata`, and a fork there is `refused` with
+   * reason `fork`. A `replace` deletes the held life with its members, as
+   * Delete Collection does, then creates the received one. A create counts
+   * against the Collection quota.
+   *
+   * A tombstone carries its stamp alone. A `delete` removes the held
+   * Collection's members as Delete Collection does and leaves the tombstone
+   * under the held generation and the received stamp. A `write` stores a
+   * tombstone under a new generation. A cascade a delete cut short is
+   * finished even when the received stamp is skipped.
+   */
+  applyCollection(options: {
+    spaceId: string
+    replicaId: string
+    collectionId: string
+    collection:
+      | { deleted: false; generation: string; metadata: CollectionMetadata }
+      | { deleted: true; stamp: WriteStamp }
+  }): Promise<ApplyResult>
+  /**
+   * Applies a Resource's content record, live or a tombstone, when `stamp`
+   * wins over the held content record's (a held tombstone's included).
+   *
+   * A live `resource` stores `input` under `generation` and `stamp`, with
+   * the members the origin's content write set: `createdAt`, `createdBy`,
+   * `epoch` and `writerId`, each cleared when absent. The `/meta` record and
+   * `custom` are kept as held, unless the held record is a tombstone, which
+   * has none. A tombstone removes the representation, the `/meta` record,
+   * `custom` and the chunks, as Delete Resource does, and keeps `contentType`
+   * as the last-known type.
+   *
+   * A `did.jsonl` Resource follows `decideLogApply` in place of the stamp
+   * comparison: the held bytes must be a prefix of the received ones. A fork
+   * is `refused` with reason `fork`. A received tombstone of one is always
+   * `skipped`, since a history log is never deleted by a peer.
+   *
+   * A received `createdAt` or `createdBy` that is absent leaves the held one
+   * in place where the store requires the member.
+   */
+  applyResource(options: {
+    spaceId: string
+    replicaId: string
+    collectionId: string
+    resourceId: string
+    generation: string
+    stamp: WriteStamp
+    createdAt?: string
+    createdBy?: IDID
+    writerId?: string
+    resource:
+      | { deleted: false; input: ResourceInput; epoch?: string }
+      | { deleted: true; contentType: string }
+  }): Promise<ApplyResult>
+  /**
+   * Applies a Resource's `/meta` record when `meta` (its stamp and
+   * generation) wins over the held `/meta` record's stamp. `custom` replaces
+   * the stored one, and an absent or empty one clears it. The content record
+   * is not touched. `skipped` when the Resource is absent or a tombstone.
+   */
+  applyResourceMetadata(options: {
+    spaceId: string
+    replicaId: string
+    collectionId: string
+    resourceId: string
+    meta: ResourceMetaStamp
+    custom?: ResourceMetadataCustom | Record<string, unknown>
+  }): Promise<ApplyResult>
+  /**
+   * Applies an access-control policy, live or a tombstone, at the level the
+   * ids select, when `stamp` wins over the held policy record's (a held
+   * tombstone's included). The record is stored under `generation` and
+   * `stamp`. An absent `policy` is a tombstone.
+   */
+  applyPolicy(options: {
+    spaceId: string
+    replicaId: string
+    collectionId?: string
+    resourceId?: string
+    generation: string
+    stamp: WriteStamp
+    policy?: PolicyDocument
+  }): Promise<ApplyResult>
+  /**
+   * Applies a Collection's governing history log by `decideLogApply`: the
+   * held log must be a prefix of `body`. An applied log is stored under
+   * `generation` and `stamp` and advances the Collection Metadata object's
+   * local validator segment, as a log write does. A fork is `refused` with
+   * reason `fork`.
+   */
+  applyCollectionLog(options: {
+    spaceId: string
+    replicaId: string
+    collectionId: string
+    body: string
+    generation: string
+    stamp: WriteStamp
+  }): Promise<ApplyResult>
+
+  /**
    * WebKMS keystore configs (the `/kms` facet).
    * Keystores are a sibling tree to Spaces (`data/keystores/<localId>/`),
    * keyed by `keystoreId` -- the server-generated *local* id, i.e. the last
@@ -1773,6 +2044,13 @@ declare module 'fastify' {
      * families. Set by `fastify.decorate` in plugin.ts.
      */
     peerWebvh: PeerWebvhResolver
+    /**
+     * The pull loops of the Space replica registrations
+     * (`sync/replication.ts`). The registration handlers start and stop a
+     * loop through it and read a loop's status from it. Set by
+     * `fastify.decorate` in plugin.ts.
+     */
+    replication: ReplicationManager
     /**
      * The optional provisioning gate for the open provisioning endpoints
      * (`POST /spaces/`, Create Space by Id, `POST /kms/keystores`).

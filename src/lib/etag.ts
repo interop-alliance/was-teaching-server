@@ -152,6 +152,20 @@ export function formatEtag({
 }
 
 /**
+ * The generation a served `ETag` carries: its first segment. A pull loop reads
+ * it off a peer's `ETag` for the records whose generation the peer serves
+ * nowhere else. A client still treats the value as opaque. This reader is the
+ * replication specification's, which fixes the layout between two servers.
+ * @param etag {string | undefined}   the quoted header value
+ * @returns {string | undefined}   `undefined` for a value that is not a
+ *   quoted, dot-separated validator
+ */
+export function generationOfEtag(etag: string | undefined): string | undefined {
+  const match = /^"([^".]+)\.[^"]+"$/.exec(etag ?? '')
+  return match === null ? undefined : match[1]
+}
+
+/**
  * The validator of a record whose generation and stamp are both known: the
  * value a backend returns from a write. Only the three stamp members are
  * kept, so a whole stored record may be passed as the `stamp`.

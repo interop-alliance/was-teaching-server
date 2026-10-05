@@ -105,7 +105,8 @@ describe('Spaces', () => {
         createdBy: alice.did,
         url: `/space/${alice.space1.id}/`,
         linkset: `/space/${alice.space1.id}/linkset`,
-        backends: SERVED_BACKENDS
+        backends: SERVED_BACKENDS,
+        replicas: []
       })
     })
 
@@ -319,7 +320,8 @@ describe('Spaces', () => {
         createdBy: alice.did,
         url: `/space/${alice.space1.id}/`,
         linkset: `/space/${alice.space1.id}/linkset`,
-        backends: SERVED_BACKENDS
+        backends: SERVED_BACKENDS,
+        replicas: []
       })
     })
 
@@ -349,7 +351,8 @@ describe('Spaces', () => {
         createdBy: alice.did,
         url: `/space/${alice.space1.id}/`,
         linkset: `/space/${alice.space1.id}/linkset`,
-        backends: SERVED_BACKENDS
+        backends: SERVED_BACKENDS,
+        replicas: []
       })
     })
 

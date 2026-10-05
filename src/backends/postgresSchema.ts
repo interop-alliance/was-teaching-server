@@ -398,7 +398,29 @@ export const MIGRATIONS: Migration[] = [
   // policy row is refused, every boot, until it is wiped or each Space is
   // restored from an export archive (whose policies an import re-stamps):
   // there is no stamping step. An empty 'policies' table is reshaped.
-  reshapePoliciesForWriteStamps
+  reshapePoliciesForWriteStamps,
+  // v13: replica registrations (the replication specification), one source
+  // peer of a Space per row. 'record' is the registration as the controller
+  // wrote it, the delegated pull capability included (the same custody
+  // posture as 'backend_records'). 'generation' is what the record's ETag is
+  // made of. 'space_generation' is the Space Metadata object's generation at
+  // the time the registration was made: the apply path stores a replicated
+  // record only while the Space still carries it. 'state' is the pull loop's
+  // own state (per-Collection checkpoints and stalls, pull times), NULL until
+  // the loop first writes it, kept apart from 'record' so a checkpoint
+  // advance never rewrites the capability. The rows go with the Space.
+  `
+  CREATE TABLE replicas (
+    space_id         text COLLATE "C" NOT NULL
+                     REFERENCES spaces ON DELETE CASCADE,
+    replica_id       text COLLATE "C" NOT NULL,
+    record           jsonb NOT NULL,
+    generation       text NOT NULL,
+    space_generation text NOT NULL,
+    state            jsonb,
+    PRIMARY KEY (space_id, replica_id)
+  );
+  `
 ]
 
 /**

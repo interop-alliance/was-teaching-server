@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 201
+nextAvailableId: 205
 
 <!-- roadmap-order:index:start -->
 
@@ -104,19 +104,15 @@ Chains:
 Ready:
 
 - WAS-180 [M] Delete Space removes revocations before the Space directory
-- WAS-176 [M] Replica registration, pull loop, and the apply path (blocks 4)
+- WAS-177 [M] Resolve a replicated peer-hosted `did:webvh` controller from
+  storage (blocks 1)
+- WAS-201 [L] Replicate a Collection stored on a registered external backend
 - WAS-198 [L] Keep peer did:webvh head records and fetch bounds across eviction
   and restart
+- WAS-184 [L] Write-time creation and revision statements
 
 Chains:
 
-- WAS-176 [M] Replica registration, pull loop, and the apply path
-  - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
-    model)
-  - WAS-177 [M] Resolve a replicated peer-hosted `did:webvh` controller from
-    storage
-  - WAS-179 [L] Read-only replica switch (in "Someday / Maybe")
-  - WAS-184 [L] Write-time creation and revision statements
 - WAS-177 [M] Resolve a replicated peer-hosted `did:webvh` controller from
   storage
   - WAS-96 [M] Multi-primary Spaces (replicated write identity and conflict
@@ -127,6 +123,10 @@ Chains:
 Ready:
 
 - WAS-196 [M] Bound the cost of accumulated Collection tombstones
+- WAS-203 [M] Skip a feed document the puller already holds before reading its
+  body
+- WAS-204 [L] Stop re-applying a peer's Collection tombstones on every pull
+  cycle
 - WAS-199 [L] Verify a peer invoker's delegation chain once
 - WAS-77 [L] Per-Collection filename cache on the filesystem backend
 - WAS-86 [L] Backend-evaluated `If-None-Match` on Resource and chunk reads
@@ -143,6 +143,7 @@ Ready:
   URL by default
 - WAS-168 [L] `SERVER_URL` move runbook for the server DID log (portable domain
   move)
+- WAS-202 [L] Pull-loop tests beyond the two-server filesystem case
 
 **Someday / Maybe**
 
@@ -162,6 +163,7 @@ Ready:
 - WAS-24 [L] Server-enforced JSON Schema per Collection
 - WAS-25 [L] Equality-index extensions
 - WAS-36 [L] Server-signed changes-feed checkpoints (split-view detection)
+- WAS-179 [L] Read-only replica switch
 
 **Parking**
 
@@ -1542,67 +1544,7 @@ pull; it is an existing defect independent of replication.
 
 ---
 
-### WAS-176: [M] [blocks 4] Replica registration, pull loop, and the apply path
-
-- status: todo
-- priority: medium
-- labels: replication, routes, filesystem-backend, postgres-backend,
-  space-metadata
-- blocks: WAS-96, WAS-177, WAS-179, WAS-184
-- touches:
-  - wallet-attached-storage-spec: the replication specification (registration
-    object, pull loop, apply rule, clock bound; its own document and version),
-    the Space Metadata object's `replicas` member, the `replication` entry on
-    `/service`
-  - storage-core: `SpaceMetadata.replicas`, the registration type
-  - was-teaching-server: `routes.ts`, a `*Request` class for the registration,
-    `src/lib/containerRule.ts`, a sync module, `StorageBackend` (apply methods),
-    `src/lib/spaceProjection.ts`, ARCHITECTURE.md
-  - was-client: the `replicas` member; a registration API
-  - freewallet: the registration flow
-  - conformance-suite: the registration endpoints
-- acceptance:
-  - [ ] A controller-only, per-server registration sub-resource of the Space
-        (`/space/:spaceId/replicas`) holds one source peer as a directed edge:
-        `fromSpace`, `toSpace`, the delegated pull capability, an optional
-        `collections` list of `{ id }` objects and a `role`; a `status`
-        sub-resource serves the loop's runtime state per Collection; registering
-        reads the peer's `/service` for its `originId` and its replication entry
-        at a version this server speaks, refuses a peer lacking either or
-        advertising this server's own id, and refuses a peer whose Space `type`
-        set differs
-  - [ ] The registration is not replicated and is removed with Delete Space
-  - [ ] A pull loop per registration lists the peer's Space (tombstones
-        included), filters by the Collection list with Space-level state and the
-        controller's log Collection always included, pulls each Collection's
-        changes feed under the per-peer opaque checkpoint, fetches each
-        representation by `GET`, and applies through backend `apply*` methods
-        that store the stamp verbatim and take a local feed position
-  - [ ] Apply is one comparison on `(ms, counter, origin)`: greater than the
-        held revision applies, else skipped (dedup and loop check included);
-        logs fast-forward or stall; revocations are not replicated; a received
-        stamp more than the configured bound ahead of local time stalls the pull
-        with a `warn`
-  - [ ] The served Space Metadata object carries a server-derived `replicas`
-        member listing each registered peer's Space URL and role
-  - [ ] A peer answering 404 for the Space stops the loop with one `warn`
-  - [ ] Tests: the two-server test named on WAS-96
-
-Context (discovered-from: WAS-96, decisions 4 to 6). Pull only, because a
-replicated write must arrive with its origin stamp and no ordinary write route
-can accept one without a new kind of trust. The replica is the Space so that
-Space-level state, Collection lifecycle, and discovery ride one loop; the
-Collection list gives per-peer selectivity. One-way replication is the default
-shape: a registration names a source, and nothing flows back without a
-counterpart registration on the other side.
-
-The apply path also inherits the creating stamp from section 5.4 of the WAS-96
-design: the stamp of a Collection's first write under its generation, stored
-beside the generation, which decides a received generation change.
-
----
-
-### WAS-177: [M] [blocks 1] [after WAS-176] Resolve a replicated peer-hosted `did:webvh` controller from storage
+### WAS-177: [M] [blocks 1] Resolve a replicated peer-hosted `did:webvh` controller from storage
 
 - status: todo
 - priority: medium
@@ -1636,7 +1578,7 @@ alive on the surviving server, where the wallet can keep appending.
 
 ---
 
-### WAS-96: [M] [after WAS-176, WAS-177] Multi-primary Spaces (replicated write identity and conflict model)
+### WAS-96: [M] [after WAS-177] Multi-primary Spaces (replicated write identity and conflict model)
 
 - status: todo
 - priority: medium
@@ -1767,6 +1709,28 @@ interact with per-source checkpoints; a read-only replica switch (WAS-179);
 
 ---
 
+### WAS-201: [L] Replicate a Collection stored on a registered external backend
+
+- status: todo
+- priority: low
+- labels: replication, backends
+- discovered-from: WAS-176 (2026-10-04)
+- acceptance:
+  - [ ] A pull loop applies the Resources of a Collection whose `backend` names
+        a registered external backend through that backend's adapter
+  - [ ] A Collection whose `backend` this server has no registration for still
+        stalls as `unsupported-backend`
+  - [ ] Test: a two-server pull of a Collection on a non-default backend
+
+Context: the pull loop stalls every Collection whose `backend` is not the
+default one, with reason `unsupported-backend`. The apply methods exist on the
+two primary backends only, and the loop always applies into the primary store. A
+data-plane adapter would need `applyResource` and `applyResourceMetadata`, and
+the loop would need to resolve the Collection's data backend as the request
+layer does (`fetchCollectionAndBackend`).
+
+---
+
 ### WAS-198: [L] Keep peer did:webvh head records and fetch bounds across eviction and restart
 
 - status: todo
@@ -1810,7 +1774,7 @@ and is the part to design first.
 
 ---
 
-### WAS-184: [L] [after WAS-176] Write-time creation and revision statements
+### WAS-184: [L] Write-time creation and revision statements
 
 - status: todo
 - priority: low
@@ -1905,6 +1869,77 @@ naming the tombstoned ids), so a live listing skips them without opening each
 Metadata file. Another is moving a tombstone out of the Collection directory
 namespace. The Postgres backend filters on the `deleted` column in SQL, so its
 per-request cost is an index question, but its row count grows the same way.
+
+### WAS-203: [M] Skip a feed document the puller already holds before reading its body
+
+- status: todo
+- priority: medium
+- labels: performance, replication, filesystem-backend, postgres-backend
+- discovered-from: simplify pass over the replication change (2026-10-04)
+- acceptance:
+  - [ ] Before the pull loop reads a `resource` document's `/meta` object or
+        content from the peer, it compares the document's write stamp with the
+        stamp this server holds for that Resource. When the document's stamp
+        does not sort above the held one, the loop skips the document and
+        advances the checkpoint with no peer request
+  - [ ] The comparison is a read-only backend call that takes no write lock.
+        `applyResource` keeps its own check inside the critical section, so a
+        record that moves between the two is still decided there
+  - [ ] A `did.jsonl` is not skipped on its stamp, since the apply path decides
+        a history log by its bytes
+  - [ ] The Postgres backend does not buffer a body for a document the
+        comparison skips
+  - [ ] Tests in `test/`: in a two-way pair, a Resource written on one server is
+        read from the peer once in total (observable through the `peerFetch`
+        seam), and a checkpoint reset re-reads no body the puller already holds
+
+Context: `#applyResourceChange` in `src/sync/replication.ts` reads the peer's
+`/meta` object, then the content (a stream, or the document's inline `data`),
+and only then calls `applyResource`. The backend decides inside its lock that
+the stamp does not win and answers `skipped`. On Postgres the body is fully
+buffered before the transaction opens. This happens for every record the puller
+already holds. The common case is an echo. An applied record takes a local feed
+position, so in a two-way pair each server pulls back what it just applied, and
+every replicated byte crosses the wire twice. It also happens after a checkpoint
+the peer refuses (the loop re-reads the feed from the start) and on every retry
+of a Collection.
+
+The feed document already carries the record's stamp, so the decision needs no
+peer request. The local read is the sidecar on the filesystem backend and the
+stamp columns in Postgres.
+
+### WAS-204: [L] Stop re-applying a peer's Collection tombstones on every pull cycle
+
+- status: todo
+- priority: low
+- labels: performance, replication, filesystem-backend, postgres-backend
+- discovered-from: simplify pass over the replication change (2026-10-04)
+- acceptance:
+  - [ ] A pull cycle calls `applyCollection` for a selected tombstone only when
+        this server does not already hold a tombstone at that stamp or a later
+        one for the Collection id
+  - [ ] An idle cycle over a peer Space with tombstones takes neither the
+        exclusive side of the filesystem Space gate nor a Postgres `spaces` row
+        lock for them
+  - [ ] A new tombstone, and a tombstone for a Collection re-created and deleted
+        again on the peer, is still applied in the cycle that first lists it
+  - [ ] Tests in `test/`: after a tombstone is applied, later cycles make no
+        `applyCollection` call for it (observable through a counter on the
+        backend), and a later delete of a re-created Collection is applied
+
+Context: the pull loop lists the peer Space under `?include=deleted` and calls
+`applyCollection` for each selected tombstone, every cycle. Tombstones are never
+reaped (WAS-13), so the count only grows. Each call answers `skipped` after the
+first. On the filesystem backend the call runs on the exclusive side of the
+Space gate, which blocks every other write on the Space while it holds. On
+Postgres it opens a transaction and locks the `spaces` row. The cost per cycle
+and per registration is one such acquisition for every tombstone the peer has
+ever made.
+
+Two ways to decide without the lock: a read of the local Collection record
+before the call, or the stamps of the tombstones already applied kept in the
+registration's loop state. WAS-196 bounds what tombstones cost a request. This
+item is the pull loop's share of the same growth.
 
 ### WAS-199: [L] Verify a peer invoker's delegation chain once
 
@@ -2216,6 +2251,33 @@ resolve as this server's and `/service` drops `serverDid` after the move; a
 domain-move entry appended to a portable log re-addresses it under the new host
 with the same SCID. Not scheduled for implementation yet.
 
+---
+
+### WAS-202: [L] Pull-loop tests beyond the two-server filesystem case
+
+- status: todo
+- priority: low
+- labels: tests, replication
+- discovered-from: WAS-176 (2026-10-04)
+- acceptance:
+  - [ ] A two-server test pulls a governed Collection: the log fast-forwards on
+        the replica, and a forked log stalls the Collection as `fork`
+  - [ ] A test covers the Collection list on a registration, with the
+        controller's log Collection pulled although it is not listed
+  - [ ] A test covers the registration refusal over a differing immutable
+        Collection member
+  - [ ] A test covers a Collection deleted and created again on the source
+        between two pulls
+  - [ ] The two-server test runs over the Postgres backend too
+
+Context: `test/replication-api.test.ts` drives two filesystem servers through
+registration, a pull, last-writer-wins both ways, the clock-bound stall, a
+Collection tombstone and the back-off. The cases above are covered at the
+backend level only (`test/storage-backend-contract.ts`, both backends), or not
+at all for the first two loop branches.
+
+---
+
 ## Someday / Maybe
 
 Items with no current trigger: blocked on the spec, or on a deployment shape
@@ -2516,7 +2578,7 @@ direction (a reader detecting a server serving stale ciphertext); this item is
 the server-attested direction. Interlocks with WAS-12 (the SSE `checkpoint`
 batch is a natural carrier).
 
-### WAS-179: [L] [after WAS-176] Read-only replica switch
+### WAS-179: [L] Read-only replica switch
 
 - status: todo
 - priority: low

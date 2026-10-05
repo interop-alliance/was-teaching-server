@@ -498,7 +498,8 @@ if (!connectionString) {
 
     /**
      * Rolls the test schema back to the version before policies carried
-     * write stamps, keeping its other tables as they are.
+     * write stamps, keeping its other tables as they are. The steps after
+     * that one are rolled back with it, since the runner applies them again.
      * @returns {Promise<void>}
      */
     async function rollBackPolicyStamps(): Promise<void> {
@@ -512,8 +513,9 @@ if (!connectionString) {
            DROP COLUMN feed_position,
            ALTER COLUMN policy SET NOT NULL`
       )
+      await adminQuery(`DROP TABLE "${schema}".replicas`)
       await adminQuery(
-        `DELETE FROM "${schema}".schema_migrations WHERE version = $1`,
+        `DELETE FROM "${schema}".schema_migrations WHERE version >= $1`,
         [POLICY_STAMP_VERSION]
       )
     }

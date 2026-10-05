@@ -164,10 +164,10 @@ if (!connectionString) {
 
     /**
      * A parsed archive dot-file without its write stamps: the stamp members
-     * at the top level, and the stamp members of a nested `meta` record,
-     * whose `generation` is kept. An import re-stamps every record with the
-     * importing store's clock and origin, so only the stamps may differ
-     * across a round trip.
+     * at the top level, the stamp members of a nested `meta` record, whose
+     * `generation` is kept, and a Collection's creating stamp (`created`).
+     * An import re-stamps every record with the importing store's clock and
+     * origin, so only the stamps may differ across a round trip.
      * @param document {unknown}
      * @returns {unknown}
      */
@@ -179,6 +179,7 @@ if (!connectionString) {
         updatedAt: _updatedAt,
         updatedAtCounter: _updatedAtCounter,
         originId: _originId,
+        created: _created,
         ...rest
       } = document as Record<string, unknown>
       const meta = rest.meta as { generation?: string } | undefined
