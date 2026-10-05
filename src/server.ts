@@ -122,7 +122,11 @@ export function composeApp({
   // and build time -- so a `curl /health` after a deploy verifies the exact
   // build is live. A deployment that withholds the version gets neither the
   // version nor the commit and build time, which identify the build as well.
-  fastify.get('/health', async (request, reply) => {
+  // The route's own logger is silent: an uptime monitor polls it every few
+  // seconds, and each poll would otherwise add a request and response line to
+  // the deployment log. The implicit HEAD route clones these options, so it is
+  // silent too. Every other route keeps the instance logger's level.
+  fastify.get('/health', { logLevel: 'silent' }, async (request, reply) => {
     return reply.type('application/health+json').send({
       status: 'pass',
       ...(version !== undefined && {

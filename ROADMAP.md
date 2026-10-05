@@ -1592,35 +1592,50 @@ pull; it is an existing defect independent of replication.
     Metadata object (`revisions`), Collection tombstones, and `originId` on the
     core service description entry; a separate replication specification,
     versioned on its own (`https://w3id.org/pws/replication`, `0.1`), for the
-    registration, the pull loop, the apply rule and the clock bound
+    registration, the pull loop, the apply rule and the clock bound. Filed:
+    WASS-47 (stamps and validator), WASS-48 (tombstones), WASS-49 (`revisions`),
+    WASS-50 (replication spec), WASS-51 (widened `changes` profile), WASS-52
+    (stamped policies), WASS-53 (replicated `did:webvh` resolution); all open as
+    of 2026-10-05
   - storage-core: `ChangeDocument`, the Resource and Metadata models (stamp
-    members), `CollectionMetadata.revisions`
+    members), `CollectionMetadata.revisions`. Shipped in 0.32.0 through 0.35.0;
+    the publishes are pending and the server consumes them by `link:`
   - was-teaching-server: every item in `blocked-by`; ARCHITECTURE.md's
-    validator, hard-delete, resolver, and container-rule sections
+    validator, hard-delete, resolver, and container-rule sections. Shipped:
+    WAS-171 to WAS-177, WAS-182, WAS-183 archived by 2026-10-04, and
+    ARCHITECTURE.md records the stamp and validator rules, Collection
+    tombstones, the resolver clause and the `src/sync/` facet
   - was-client: `Collection.changes()` document type; the `replicas` member on
-    the Space Metadata object
+    the Space Metadata object. Filed: WCL-122 (change document, 0.89.0 pending
+    publish), WCL-123 (stamped policies), WCL-127 (`replicas` member)
   - was-sync: the apply comparison (stamp order replaces the `writerId` echo
-    check as the deciding rule; `writerId` stays a fast path)
+    check as the deciding rule; `writerId` stays a fast path). Filed: WS-23
+    (stamp comparison), WS-24 (docs for the widened feed)
   - freewallet: controller delegations per replica (one per server), the replica
-    registration flow, and a controller log that now replicates
+    registration flow, and a controller log that now replicates. Filed: FW-638
+    (registration flow and per-replica delegations), FW-648 (replicated
+    controller log)
   - conformance-suite: stamp members and validator layout, `revisions` refusals,
-    Collection tombstone listing
+    Collection tombstone listing. Filed: PWSCS-18 (stamps and validator),
+    PWSCS-20 (widened feed), PWSCS-22 (policies), PWSCS-23 (replication routes);
+    the suite fails the affected cases until they land
 - acceptance:
   - [x] The design doc is reviewed and approved, and every wire-level convention
         it flags is individually signed off (2026-10-02; the read-only-switch
         problem type is WAS-179's)
   - [x] Each `blocked-by` item is done (WAS-176 and WAS-177, 2026-10-04)
-  - [ ] A test boots two in-process servers over separate data dirs, registers
+  - [x] A test boots two in-process servers over separate data dirs, registers
         one as the other's source for a Space, writes on the source, and asserts
         the replica serves the same bytes, the same `ETag`, and the same
         `updatedAt`; then writes the same Resource on both while the pull is
         paused and asserts both converge on the write with the greater stamp
-  - [ ] The same test covers a one-way (backup-only) registration: nothing
-        written on the replica reaches the source
+        (`test/replication-api.test.ts`, 2026-10-04)
+  - [x] The same test covers a one-way (backup-only) registration: nothing
+        written on the replica reaches the source (2026-10-04)
   - [ ] The spec gains the server-to-server replication section and the revised
         data-model text, and the conformance suite covers the wire changes
-  - [ ] ARCHITECTURE.md records the new resolver clause, the stamp and validator
-        rules, Collection tombstones, and the replication facet
+  - [x] ARCHITECTURE.md records the new resolver clause, the stamp and validator
+        rules, Collection tombstones, and the replication facet (2026-10-04)
 
 Context: a Space lives on one server today, because every capability's
 `invocationTarget` embeds that server's URL, and the only multi-writer case is
