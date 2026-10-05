@@ -719,7 +719,8 @@ export class CollectionRequest {
    * bytes carried verbatim plus the new line), `412` on a lost race. The
    * guarded create is the declaration that makes the Collection log-governed;
    * it is refused with `encryption-immutable` (409) on a Collection whose
-   * Metadata object already holds a client-written `encryption` member. It may
+   * Metadata object already holds a client-written `encryption` member, or a
+   * `plaintext` member, which the derived `encryption` would exclude. It may
    * declare a `revisions` slot in its `state`, but must keep the `resolution`
    * and `immutable` the stored object already sets (`revisions-immutable`,
    * 409). Each write checks the line contract (`invalid-request-body`, 400)
@@ -792,6 +793,18 @@ export class CollectionRequest {
               detail:
                 "A history log cannot govern a Collection whose 'encryption' " +
                 'descriptor was written on its Metadata object.'
+            })
+          }
+          // A stored `plaintext` member is refused on the same terms. The
+          // derived `encryption` and `plaintext` exclude each other, and
+          // `plaintext` has no removal path, so a log over it would leave
+          // every later Metadata write refused by the exclusion rule.
+          if (prior === undefined && collectionMetadata.plaintext) {
+            throw new EncryptionImmutableError({
+              detail:
+                "A history log cannot govern a Collection whose 'plaintext' " +
+                'member was written on its Metadata object.',
+              pointer: '#/plaintext'
             })
           }
           const { revisions } = assertGoverningLogAppend({

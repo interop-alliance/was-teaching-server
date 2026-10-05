@@ -5547,3 +5547,27 @@ Resolution (2026-10-05): refuse everywhere. A log that declares witnesses does
 not verify at this server on any path, and no proof-supply path was added. A
 stored `did-witness.json` beside the log would be a new wire artifact and gets
 its own item if a wallet ever needs witnesses.
+
+### WAS-128: [H] Refuse a governing log on a Collection that declares `plaintext`
+
+- status: done
+- done: 2026-10-05
+- priority: high
+- labels: governed-history-logs, encryption, consistency
+- discovered-from: whole-codebase review (2026-09-17), verified
+- acceptance:
+  - [x] The guarded create in `CollectionRequest.putLog`'s `assertTransition`
+        refuses when the stored Metadata object carries `plaintext`, on the same
+        terms as a stored `encryption`
+  - [x] A test declares `plaintext.indexes`, attempts the log create, and
+        asserts the refusal and that a later `PUT /meta` rename still works
+  - [x] `test/governed-log-api.test.ts` covers both orders (it covers only "add
+        `plaintext` to a governed Collection" today)
+
+The declaration check reads `collectionMetadata.encryption` only. After the log
+lands, the served object carries both `plaintext` and the derived `encryption`,
+and every later `PUT /meta`, including a bare rename or a `custom` write, is
+refused 400 by the exclusion rule. `plaintext` has no removal path and the log
+is append-only, so the Collection's Metadata object is permanently unwritable;
+the only remedy is Delete Collection. `POST .../query` answers 501 on such a
+Collection while `GET ?filter[...]` still runs the equality machinery.

@@ -386,14 +386,16 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   trailing-slash URL. The guarded create is the declaration that puts the
   Collection under log governance, and is refused with `encryption-immutable`
   (409) on a Collection whose Metadata object already carries a client-written
-  `encryption` member. From then on, the Collection's served `encryption` member
-  -- read by Get Collection and by every handler that loads the Collection
-  Metadata object through `getCollectionOrThrow`, so the write-time envelope
-  check sees it too -- is derived from the log's last line's `state`, with a
-  `history: { method, resource }` member always stamped on (`method` from the
-  genesis line's `parameters.method`, `resource` the log's own URL); the stored
-  Collection Metadata object never carries that derived member, a direct
-  `encryption` write against it is refused with
+  `encryption` member, or a `plaintext` member. The derived `encryption` and a
+  stored `plaintext` would exclude each other on every later Metadata write, and
+  `plaintext` has no removal path. From then on, the Collection's served
+  `encryption` member -- read by Get Collection and by every handler that loads
+  the Collection Metadata object through `getCollectionOrThrow`, so the
+  write-time envelope check sees it too -- is derived from the log's last line's
+  `state`, with a `history: { method, resource }` member always stamped on
+  (`method` from the genesis line's `parameters.method`, `resource` the log's
+  own URL); the stored Collection Metadata object never carries that derived
+  member, a direct `encryption` write against it is refused with
   `encryption-history-log-governed` (409), and its other fields still update
   normally. The `state` has one reserved slot, `revisions`. It is taken out of
   the derived `encryption` member and served as the Collection's `revisions`
