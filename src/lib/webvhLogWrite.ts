@@ -30,7 +30,7 @@ import { etagOf } from './etag.js'
 import { isFastForward } from './governedLog.js'
 import { assertWritePrecondition } from './preconditions.js'
 import { verifyWebvhLog } from './webvhController.js'
-import { parseSelfHostedWebvh, WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
+import { WEBVH_LOG_RESOURCE_ID } from './validateDid.js'
 import type { ResourceInput, StorageBackend } from '../types.js'
 
 /**
@@ -133,12 +133,7 @@ export async function guardWebvhLogWrite({
     prior,
     requestName
   })
-  await assertAppendVerifies({
-    prior,
-    body,
-    serverUrl: request.server.serverUrl,
-    requestName
-  })
+  await assertAppendVerifies({ prior, body, requestName })
   return { input: guarded, ifMatch: currentEtag }
 }
 
@@ -195,28 +190,21 @@ async function assertExtends({
  * the new body carries it verbatim, so a broken stored log fails here too,
  * and a stored `did.jsonl` that names no DID cannot be appended to.
  *
- * A log naming a DID on another host (a replicated copy, which a wallet
- * appends to on the surviving replica, or any log a writer put here) is
- * verified with no witness proofs. The library would otherwise fetch the
- * DID's `did-witness.json` from that host for a log that declares
- * witnesses, so such a log is refused instead.
+ * A log that declares witnesses is refused, whatever host its DID names.
  *
  * @param options {object}
  * @param options.prior {Buffer}   the stored log bytes
  * @param options.body {Buffer}   the extended log bytes
- * @param options.serverUrl {string}   this server's base URL
  * @param options.requestName {string}
  * @returns {Promise<void>}
  */
 async function assertAppendVerifies({
   prior,
   body,
-  serverUrl,
   requestName
 }: {
   prior: Buffer
   body: Buffer
-  serverUrl: string
   requestName: string
 }): Promise<void> {
   const refuse = (detail: string) =>
@@ -237,13 +225,7 @@ async function assertAppendVerifies({
     throw refuse('The did.jsonl body is not valid JSON Lines.')
   }
   try {
-    await verifyWebvhLog({
-      did,
-      log,
-      ...(parseSelfHostedWebvh(did, { serverUrl }) === undefined && {
-        witnessProofs: []
-      })
-    })
+    await verifyWebvhLog({ did, log })
   } catch (err) {
     throw refuse(
       `The did.jsonl body does not verify as the history log of "${did}": ` +

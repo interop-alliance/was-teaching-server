@@ -77,11 +77,7 @@ import {
   readLogFromString,
   resolveDID
 } from '@interop/did-method-webvh'
-import type {
-  DIDDoc,
-  DIDLog,
-  WitnessProofFileEntry
-} from '@interop/did-method-webvh'
+import type { DIDDoc, DIDLog } from '@interop/did-method-webvh'
 import {
   WEBVH_DOCUMENT_CACHE_MAX,
   WEBVH_DOCUMENT_CACHE_TTL,
@@ -562,9 +558,8 @@ async function resolveVerifiedEntry(
  * read that was verified.
  *
  * The verification itself is {@link verifyWebvhLog}; a deactivated DID is
- * refused here, since it can no longer authorize anything. A replicated log is
- * verified with no witness proofs, so one that declares witnesses is refused
- * rather than sending the library to fetch `did-witness.json` from the peer.
+ * refused here, since it can no longer authorize anything. A log that
+ * declares witnesses is refused, self-hosted or replicated.
  *
  * @param options {WebvhFetchContext}
  * @returns {Promise<{ doc: DIDDoc, etag: string | undefined }>}
@@ -622,11 +617,7 @@ async function resolveVerifiedDocument({
     )
   }
 
-  const { doc, deactivated } = await verifyWebvhLog({
-    did,
-    log,
-    ...(!selfHosted && { witnessProofs: [] })
-  })
+  const { doc, deactivated } = await verifyWebvhLog({ did, log })
   if (deactivated) {
     throw new Error(`The DID "${did}" has been deactivated.`)
   }
@@ -648,7 +639,12 @@ async function resolveVerifiedDocument({
  * rule, which verifies an append before it is stored.
  *
  * The log is handed to `resolveDID` through its `resolveControlledDid` hook,
- * so nothing is fetched over the network. `resolveDID` reports failures in
+ * and the witness proofs are an empty list, so nothing is fetched over the
+ * network on any path. Left out, the library would fetch the DID's
+ * `did-witness.json` from the host the log names for a log that declares
+ * witnesses, with the global `fetch`, no address check, no timeout and no
+ * size bound. That host is chosen by whoever wrote the log, so a log that
+ * declares witnesses is refused instead. `resolveDID` reports failures in
  * the result envelope rather than throwing; they are rethrown here so callers
  * see one error channel. A deactivated DID still verifies; the caller decides
  * what that means.
@@ -656,26 +652,19 @@ async function resolveVerifiedDocument({
  * @param options {object}
  * @param options.did {string}   the DID the log must resolve to
  * @param options.log {DIDLog}
- * @param [options.witnessProofs] {WitnessProofFileEntry[]}   the witness
- *   proofs to check the log against. Absent, the library fetches the DID's
- *   `did-witness.json` for a log that declares witnesses. A fetched foreign
- *   log, a replicated copy, and an append to a log that is not self-hosted
- *   pass `[]`, so their verification makes no request of its own.
  * @returns {Promise<{ doc: DIDDoc, deactivated: boolean }>}
  */
 export async function verifyWebvhLog({
   did,
-  log,
-  witnessProofs
+  log
 }: {
   did: string
   log: DIDLog
-  witnessProofs?: WitnessProofFileEntry[]
 }): Promise<{ doc: DIDDoc; deactivated: boolean }> {
   const resolved = await resolveDID(did, {
     verifier: defaultWebvhLogVerifier,
     resolveControlledDid: async () => log,
-    ...(witnessProofs !== undefined && { witnessProofs })
+    witnessProofs: []
   })
   const { error, message } = resolved.didResolutionMetadata
   if (error) {

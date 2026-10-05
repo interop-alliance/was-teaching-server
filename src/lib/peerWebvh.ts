@@ -351,11 +351,7 @@ export class PeerWebvhResolver {
           detail: 'the log does not extend the last version verified here.'
         })
       }
-      const { doc, deactivated } = await verifyWebvhLog({
-        did,
-        log,
-        witnessProofs: []
-      })
+      const { doc, deactivated } = await verifyWebvhLog({ did, log })
       if (deactivated) {
         throw new PeerWebvhResolutionError({
           did,

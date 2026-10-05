@@ -526,8 +526,7 @@ async function assertLocalControllerIsPeerKey({
     const log = readLogFromString(body.toString('utf8'))
     const verified = await verifyWebvhLog({
       did: peerController as string,
-      log,
-      witnessProofs: []
+      log
     })
     if (verified.deactivated) {
       throw new Error('the DID has been deactivated.')

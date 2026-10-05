@@ -19,7 +19,14 @@
  * Logs are built in-test with the same `@interop/did-method-webvh` the server
  * resolves with, signed by a locally generated update key.
  */
-import { it, describe, beforeAll, afterAll } from 'vitest'
+import {
+  it,
+  describe,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach
+} from 'vitest'
 import assert from 'node:assert'
 import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
@@ -44,6 +51,7 @@ import {
   rootZcap,
   startTestServer,
   wasClient,
+  watchWitnessFetches,
   zcapClients,
   webvhLogSigner
 } from './helpers.js'
@@ -87,16 +95,19 @@ describe('did:webvh Space controller', () => {
    *   published in (any URL-safe Collection name; defaults to `id`)
    * @param [options.address] {string}   override the anchoring address (used by
    *   the cross-host case)
+   * @param [options.witness] {object}   the log's `witness` parameter
    * @returns {Promise<object>}
    */
   async function mintWebvhDid({
     spaceId,
     collectionId = 'id',
-    address
+    address,
+    witness
   }: {
     spaceId: string
     collectionId?: string
     address?: string
+    witness?: { threshold: number; witnesses: { id: string }[] }
   }) {
     const updateKeyPair = await Ed25519VerificationKey.generate()
     const logSigner = webvhLogSigner({ keyPair: updateKeyPair })
@@ -118,7 +129,8 @@ describe('did:webvh Space controller', () => {
             'capabilityDelegation'
           ]
         }
-      ]
+      ],
+      ...(witness !== undefined && { witness })
     })
     // The wallet client signs invocations with `<did:webvh>#<multibase>`.
     clientKeyPair.id = `${created.did}#${clientKeyPair.publicKeyMultibase}`
@@ -127,6 +139,7 @@ describe('did:webvh Space controller', () => {
     return {
       did: created.did,
       log: created.log,
+      meta: created.meta,
       logSigner,
       clientKeyPair,
       updateKeyPair
@@ -497,6 +510,90 @@ describe('did:webvh Space controller', () => {
       )
       assert.equal(err.status, 400)
       assert.equal(err.data.errors[0].pointer, '#/controller')
+    })
+  })
+
+  describe('a log that declares witnesses', () => {
+    // Verifying such a log needs witness proofs. The server verifies with
+    // none rather than fetch the DID's `did-witness.json`, so the log is
+    // refused and nothing is fetched.
+    let watch: ReturnType<typeof watchWitnessFetches>
+
+    beforeEach(() => {
+      watch = watchWitnessFetches()
+    })
+    afterEach(() => {
+      watch.restore()
+    })
+
+    /**
+     * Provisions a Space under Alice's `did:key` with an `id` Collection
+     * holding the log of a DID that declares one witness. The create of a
+     * `did.jsonl` is not verified, so the log is stored.
+     *
+     * @returns {Promise<object>}
+     */
+    async function provisionWitnessedLog() {
+      const spaceId = randomUUID()
+      const space = alice.was.space(spaceId)
+      await space.configure({ name: 'Witnessed', controller: alice.did })
+      await space.collection('id').configure({ force: true })
+      const witnessKey = await Ed25519VerificationKey.generate()
+      const minted = await mintWebvhDid({
+        spaceId,
+        witness: {
+          threshold: 1,
+          witnesses: [{ id: `did:key:${witnessKey.fingerprint()}` }]
+        }
+      })
+      const published = await publishLog({
+        signerClient: alice.was,
+        spaceId,
+        jsonl: logToJsonlString(minted.log)
+      })
+      assert.equal(published.status, 201)
+      return { spaceId, ...minted }
+    }
+
+    it('refuses a promotion to it (400, #/controller), fetching nothing', async () => {
+      const { spaceId, did } = await provisionWitnessedLog()
+      const err = await requestError(
+        promote({ signerClient: alice.was, spaceId, controller: did })
+      )
+      assert.equal(err.status, 400)
+      assert.equal(err.data.errors[0].pointer, '#/controller')
+      const description = await alice.was.space(spaceId).describe()
+      assert.equal(description.controller, alice.did)
+      assert.deepStrictEqual(watch.witnessFetches, [])
+    })
+
+    it('refuses an append to it (400 invalid-request-body), fetching nothing', async () => {
+      const { spaceId, log, meta, logSigner } = await provisionWitnessedLog()
+      // `priorMeta` spares the library its own resolution of the witnessed
+      // log, which would fetch witness proofs too.
+      const appended = await updateDID({
+        log,
+        signer: logSigner,
+        priorMeta: meta,
+        services: [
+          {
+            id: '#files',
+            type: 'LinkedDomains',
+            serviceEndpoint: 'https://example.com/'
+          }
+        ]
+      })
+      assert.equal(appended.log.length, 2)
+      const err = await requestError(
+        publishLog({
+          signerClient: alice.was,
+          spaceId,
+          jsonl: logToJsonlString(appended.log)
+        })
+      )
+      assert.equal(err.status, 400)
+      assert.match(err.data.type, /invalid-request-body$/)
+      assert.deepStrictEqual(watch.witnessFetches, [])
     })
   })
 

@@ -651,19 +651,19 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   (`https://<host>/<path>/did.jsonl`, or `https://<host>/.well-known/did.jsonl`
   for a host-only DID), by `getFileUrl` of `@interop/did-method-webvh`. A DID
   whose host carries a port, or is an IP address, is refused. The log is
-  verified like any log, with no witness fetch. A log that carries witnesses is
-  refused. It must extend the last head verified for the DID, so a host cannot
-  serve an older prefix to restore a retired key. A verified document is cached
-  per DID in an LRU for a TTL, then fetched and verified again. A signature that
-  names a key the cached document lacks forces one fetch per DID per interval. A
-  failure is remembered briefly, so a failing host is not asked on every
-  request. A first-contact fetch is one for a DID with no verified head here.
-  Those are counted per host over a window and refused past a limit. A refresh
-  of a DID that already verified does not draw on that window, so other DIDs on
-  its host cannot starve it. Each of the two kinds also has its own limit on
-  fetches in flight, and a fetch past it is refused, not queued. The body is
-  size-bounded and the fetch has a timeout. The `PEER_WEBVH_*` constants in
-  `config.default.ts` set these bounds. The default fetcher, `fetchPeerLog`,
+  verified like any log (see the Glossary's Self-hosted `did:webvh` on
+  witnesses). It must extend the last head verified for the DID, so a host
+  cannot serve an older prefix to restore a retired key. A verified document is
+  cached per DID in an LRU for a TTL, then fetched and verified again. A
+  signature that names a key the cached document lacks forces one fetch per DID
+  per interval. A failure is remembered briefly, so a failing host is not asked
+  on every request. A first-contact fetch is one for a DID with no verified head
+  here. Those are counted per host over a window and refused past a limit. A
+  refresh of a DID that already verified does not draw on that window, so other
+  DIDs on its host cannot starve it. Each of the two kinds also has its own
+  limit on fetches in flight, and a fetch past it is refused, not queued. The
+  body is size-bounded and the fetch has a timeout. The `PEER_WEBVH_*` constants
+  in `config.default.ts` set these bounds. The default fetcher, `fetchPeerLog`,
   speaks `https` only, on the default port, follows no redirect, and connects
   only to the public addresses it checked after DNS. `lib/outboundAddress.ts`
   holds those address checks, the pinned lookup and the size-bounded body
@@ -696,12 +696,10 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   every stored registration, cached per backend for `REPLICA_INDEX_CACHE_TTL`.
   Storing or removing a registration drops it, and so does Delete Space. The
   head record of a replicated DID is keyed by the DID alone, so it survives a
-  change of the local Space that keeps the copy. A replicated log, or an append
-  to a log that is not self-hosted, is verified with no witness proofs, so one
-  that declares witnesses is refused. The apply path's write of a `did.jsonl`
-  drops the cached document, so a key retired at the origin stops authorizing
-  after the next pull. Such a DID may be a Space controller, a keystore
-  controller, a delegator, and the `createdBy` of a write.
+  change of the local Space that keeps the copy. The apply path's write of a
+  `did.jsonl` drops the cached document, so a key retired at the origin stops
+  authorizing after the next pull. Such a DID may be a Space controller, a
+  keystore controller, a delegator, and the `createdBy` of a write.
   `lib/serverIdentity.ts`, `lib/syncIdentity.ts` and import provenance stay
   native-only. `invokerDid` (`createdBy`) also records a DID resolved over the
   network, since the authorization that ran before decided its key. A create the
@@ -773,22 +771,21 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   account's enrolled client keys. The local Space cannot be promoted first,
   since the DID resolves here only through the registration. For that branch the
   check reads the peer's `did.jsonl` through the pull capability, verifies it
-  offline with no witness proofs, as a replicated copy is, and requires the
-  registration to pull the log's Collection, so the copy the promotion needs
-  arrives with the first pull. The DID is never fetched by itself. Once the
-  first pull lands, Update Space moves the local Space to the DID, and the
-  controllers are equal from then on. Without the controller check, a holder of
-  any readable pull capability could register another user's Space as a source
-  and read the copy through root invocations. A key the document lists under
-  `capabilityDelegation` alone, a ladder method, does not pass. Each Collection
-  both sides hold agrees on the immutable members. The peer Space's id need not
-  equal the local one. One check reads no peer. A registration is refused when
-  another local Space already replicates the same peer Space with a Collection
-  in common, since a `did:webvh` hosted in a Collection two local Spaces
-  replicate resolves from neither copy (`lib/webvhLogLocation.ts`). Two
-  registrations on one local Space may overlap. The check is not atomic with the
-  write, so two concurrent registrations can both pass, and the resolver then
-  refuses the DID.
+  offline, as a replicated copy is, and requires the registration to pull the
+  log's Collection, so the copy the promotion needs arrives with the first pull.
+  The DID is never fetched by itself. Once the first pull lands, Update Space
+  moves the local Space to the DID, and the controllers are equal from then on.
+  Without the controller check, a holder of any readable pull capability could
+  register another user's Space as a source and read the copy through root
+  invocations. A key the document lists under `capabilityDelegation` alone, a
+  ladder method, does not pass. Each Collection both sides hold agrees on the
+  immutable members. The peer Space's id need not equal the local one. One check
+  reads no peer. A registration is refused when another local Space already
+  replicates the same peer Space with a Collection in common, since a
+  `did:webvh` hosted in a Collection two local Spaces replicate resolves from
+  neither copy (`lib/webvhLogLocation.ts`). Two registrations on one local Space
+  may overlap. The check is not atomic with the write, so two concurrent
+  registrations can both pass, and the resolver then refuses the DID.
 
   Delete Replica is refused with the same `replica-refused` (409) while the
   registration is the only one that maps a local Space's `did:webvh` controller
@@ -1322,9 +1319,11 @@ Containment: **SpacesRepository ⊃ Space ⊃ Collection ⊃ Resource**.
   log stays unreadable without a capability. The log is verified, not trusted
   (SCID pinning plus full hash-chain / update-key verification via
   `@interop/did-method-webvh`), because after promotion the writes to that log
-  are authorized by the very document being resolved. The proposed controller
-  must resolve _before_ it is stored, or the Space would be deadlocked. Key
-  validity is the **current-key-set rule** (profile
+  are authorized by the very document being resolved. The server verifies a log
+  against no witness proofs, on every path. A log that declares witnesses does
+  not verify here, self-hosted or not, and nothing fetches `did-witness.json`.
+  The proposed controller must resolve _before_ it is stored, or the Space would
+  be deadlocked. Key validity is the **current-key-set rule** (profile
   ["Current-key-set rule"](https://w3c-ccg.github.io/wallet-attached-storage-spec/authz-profile/#current-key-set-rule)):
   an invocation or delegation verifies iff its verification method is in the
   currently resolved document, under the right verification relationship. One

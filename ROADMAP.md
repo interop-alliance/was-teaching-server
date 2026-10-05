@@ -14,8 +14,6 @@ item others wait on with its dependents beneath it.
 
 Ready:
 
-- WAS-197 [H] verifyWebvhLog fetches a log's witness file from any host the log
-  names
 - WAS-59 [H] Enforce the reserved-path authorization classes (bounded target
   attenuation)
 - WAS-61 [H] Separate `/policy` control from data writes (exposure test +
@@ -229,38 +227,6 @@ derived. `--check` reports without writing.
 An authorization or integrity bound that is weaker than ARCHITECTURE.md or the
 spec claims: a grant that reaches more than it should, an input the server
 trusts without checking, or a configuration that fails open.
-
-### WAS-197: [H] verifyWebvhLog fetches a log's witness file from any host the log names
-
-- status: todo
-- priority: high
-- labels: security, webvh, ssrf, import
-- discovered-from: WAS-175 (adversarial review, 2026-10-03)
-- touches:
-  - was-teaching-server: `src/lib/webvhController.ts` (`verifyWebvhLog`),
-    `src/lib/importProvenance.ts`, `src/lib/webvhLogWrite.ts`, ARCHITECTURE.md
-  - did-method-webvh: filed WEBVH-29 (a no-network setting and bounds on the
-    default witness fetch). The library already takes `fetch` and
-    `witnessProofs`, so this item does not wait on it
-- acceptance:
-  - [ ] `verifyWebvhLog` makes no network request on any path: a log that
-        declares witnesses is verified against proofs the caller supplies, or
-        refused
-  - [ ] The three callers that pass no proofs are covered by a regression test
-        each: the import statement check, the `did.jsonl` append check, and the
-        local controller path
-  - [ ] ARCHITECTURE.md says what a witnessed log does at this server
-
-Context: when `witnessProofs` is omitted, `@interop/did-method-webvh` fetches
-`did-witness.json` with the global `fetch` for a log whose parameters declare a
-witness. That request has no address check, no timeout and no size bound, and it
-follows redirects. The host comes from the DID the log names. An Import Space
-archive carries its own `did.jsonl`, and a `did.jsonl` create is not verified,
-so a Space controller chooses that host in both cases. The peer server path
-already passes an empty proof list, which fails closed. Whether a witnessed
-self-hosted log should verify at all is the decision this item needs.
-
----
 
 ### WAS-59: [H] Enforce the reserved-path authorization classes (bounded target attenuation)
 
@@ -1836,7 +1802,6 @@ and is the part to design first.
 - status: todo
 - priority: low
 - labels: security, replication, provenance, wire-contract
-- blocked-by: WAS-176
 - touches:
   - wallet-attached-storage-spec: the provenance statement shape (two statements
     per object), the archive's per-origin log snapshots
@@ -2667,7 +2632,6 @@ batch is a natural carrier).
 - status: todo
 - priority: low
 - labels: someday, replication
-- blocked-by: WAS-176
 - acceptance:
   - [ ] A per-server, controller-only switch on a replicated Space refuses every
         unsafe method except the apply path and the controller's own

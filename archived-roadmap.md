@@ -5505,3 +5505,45 @@ registration must pull the log's Collection. After the first pull, Update Space
 moves the local Space to the DID. The test registers a Space the origin promoted
 first, pulls, promotes the copy, and refuses a stranger's key and a key listed
 under `capabilityDelegation` alone.
+
+---
+
+### WAS-197: [H] verifyWebvhLog fetches a log's witness file from any host the log names
+
+- status: done
+- done: 2026-10-05
+- priority: high
+- labels: security, webvh, ssrf, import
+- discovered-from: WAS-175 (adversarial review, 2026-10-03)
+- touches:
+  - was-teaching-server: `src/lib/webvhController.ts` (`verifyWebvhLog`),
+    `src/lib/importProvenance.ts`, `src/lib/webvhLogWrite.ts`, ARCHITECTURE.md
+    (shipped: `verifyWebvhLog` passes an empty proof list on every path; the
+    three callers and the per-caller conditionals are gone)
+  - did-method-webvh: filed WEBVH-29 (a no-network setting and bounds on the
+    default witness fetch). The library already takes `fetch` and
+    `witnessProofs`, so this item does not wait on it (WEBVH-29 still open)
+- acceptance:
+  - [x] `verifyWebvhLog` makes no network request on any path: a log that
+        declares witnesses is verified against proofs the caller supplies, or
+        refused
+  - [x] The three callers that pass no proofs are covered by a regression test
+        each: the import statement check, the `did.jsonl` append check, and the
+        local controller path
+  - [x] ARCHITECTURE.md says what a witnessed log does at this server
+
+Context: when `witnessProofs` is omitted, `@interop/did-method-webvh` fetches
+`did-witness.json` with the global `fetch` for a log whose parameters declare a
+witness. That request has no address check, no timeout and no size bound, and it
+follows redirects. The host comes from the DID the log names. An Import Space
+archive carries its own `did.jsonl`, and a `did.jsonl` create is not verified,
+so a Space controller chooses that host in both cases. The peer server path
+already passes an empty proof list, which fails closed. Whether a witnessed
+self-hosted log should verify at all is the decision this item needs.
+
+---
+
+Resolution (2026-10-05): refuse everywhere. A log that declares witnesses does
+not verify at this server on any path, and no proof-supply path was added. A
+stored `did-witness.json` beside the log would be a new wire artifact and gets
+its own item if a wallet ever needs witnesses.
