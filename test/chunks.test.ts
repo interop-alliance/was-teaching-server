@@ -441,6 +441,12 @@ describe('Chunk API (chunked-streams)', () => {
         path.join(chunkDir, 'r.0.application%2Foctet-stream.bin'),
         new Uint8Array([1, 2, 3])
       )
+      // A chunk is located from its sidecar, so the orphan carries one, and
+      // the read opens its stream before the parent gate 404s.
+      await writeFile(
+        path.join(chunkDir, '.meta.0.json'),
+        JSON.stringify({ contentType: 'application/octet-stream' })
+      )
 
       // Capture every stream the backend hands the handler.
       const { storage } = fastify

@@ -15,7 +15,11 @@ import { Readable } from 'node:stream'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import type { TempFileSystemBackend } from '../src/testing.js'
 import { formatEtag } from '../src/lib/etag.js'
-import { ResourceImmutableError, ResourceNotFoundError } from '../src/errors.js'
+import {
+  ResourceImmutableError,
+  ResourceNotFoundError,
+  StorageError
+} from '../src/errors.js'
 import { importArchive, openTempBackend } from './helpers.js'
 
 const controller = 'did:key:z6MkRacesTestController'
@@ -519,15 +523,23 @@ describe('FileSystemBackend races', () => {
     const files = await readdir(collectionDir)
     const representation = files.find(name => name.startsWith('r.vanishing'))
     assert.ok(representation)
-    // Land the delete in the exact window the read path leaves open: the read
-    // looks the file up, reads the sidecar, then opens the stream. Removing the
-    // file during the sidecar read means the lookup succeeded and the open is
-    // what discovers the removal -- the case this path relies on the stream's
-    // own `open` to surface.
+    // Land a real delete in the exact window the read path leaves open: the
+    // read takes the live sidecar, then opens the file it names. The delete
+    // commits its tombstone and removes the file in between, so the open is
+    // what discovers the removal, and the read's second look at the sidecar
+    // finds the tombstone.
     const sidecarRead = backend.readMetaSidecar.bind(backend)
+    let deleted = false
     vi.spyOn(backend, 'readMetaSidecar').mockImplementation(async options => {
       const sidecar = await sidecarRead(options)
-      await rm(path.join(collectionDir, representation), { force: true })
+      if (!deleted) {
+        deleted = true
+        await backend.deleteResource({
+          spaceId,
+          collectionId,
+          resourceId: 'vanishing'
+        })
+      }
       return sidecar
     })
     await assert.rejects(
@@ -535,6 +547,42 @@ describe('FileSystemBackend races', () => {
       (err: unknown) => err instanceof ResourceNotFoundError
     )
     vi.restoreAllMocks()
+  })
+
+  it('a live sidecar naming a missing file is a storage fault, not a 404', async () => {
+    // No committed write leaves this state: the sidecar is written after the
+    // representation and before any prior one is removed. A file gone from
+    // under an unchanged live sidecar is damage, so it surfaces as a 500
+    // rather than reading as an absent Resource.
+    await backend.writeResource({
+      spaceId,
+      collectionId,
+      resourceId: 'damaged',
+      input: { kind: 'json', contentType: 'application/json', data: { a: 1 } }
+    })
+    const collectionDir = path.join(
+      backend.dataDir,
+      'spaces',
+      spaceId,
+      collectionId
+    )
+    const representation = (await readdir(collectionDir)).find(name =>
+      name.startsWith('r.damaged')
+    )
+    assert.ok(representation)
+    await rm(path.join(collectionDir, representation))
+    await assert.rejects(
+      backend.getResource({ spaceId, collectionId, resourceId: 'damaged' }),
+      (err: unknown) => err instanceof StorageError
+    )
+    await assert.rejects(
+      backend.getResourceMetadata({
+        spaceId,
+        collectionId,
+        resourceId: 'damaged'
+      }),
+      (err: unknown) => err instanceof StorageError
+    )
   })
 })
 
