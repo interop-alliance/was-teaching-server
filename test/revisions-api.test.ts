@@ -16,7 +16,7 @@ import type { FastifyInstance } from 'fastify'
 
 import { chunkDirName, metaSidecarFileName } from '@interop/space-archive'
 
-import type { RequestFaults, TempFileSystemBackend } from '../src/testing.js'
+import type { TempFileSystemBackend } from '../src/testing.js'
 
 import {
   entryLine,
@@ -50,11 +50,10 @@ describe('revisions descriptor API', () => {
   const spaceId = `revisions-space-${crypto.randomUUID()}`
 
   let backend: TempFileSystemBackend
-  let faults: RequestFaults
 
   beforeAll(async () => {
     backend = await openTempBackend()
-    ;({ fastify, serverUrl, faults } = await startTestServer({ backend }))
+    ;({ fastify, serverUrl } = await startTestServer({ backend }))
     ;({ alice } = await zcapClients({ serverUrl }))
     await alice.was.createSpace({
       id: spaceId,
@@ -620,7 +619,7 @@ describe('revisions descriptor API', () => {
       assert.equal(repeated.headers.get('etag'), created.headers.get('etag'))
     })
 
-    it('a repeat over a Resource whose sidecar is missing stamps it', async () => {
+    it('a write over a Resource whose sidecar is missing is a create', async () => {
       const collectionId = await createCollection({
         revisions: { immutable: true }
       })
@@ -630,67 +629,38 @@ describe('revisions descriptor API', () => {
       const chunkPath = `${docPath}/chunks/0`
       await putRaw(docPath, '{"v":1}')
       await putRaw(chunkPath, 'chunk zero', 'application/octet-stream')
-      // A write torn between the bytes and the sidecar leaves this state.
+      // A write torn between the bytes and the sidecar leaves this state. A
+      // file no sidecar names never committed, so it is not a stored
+      // Resource or chunk, and the write-once rule does not bind it.
       await rm(path.join(chunkDir, metaSidecarFileName('0')))
       await rm(path.join(collectionDir, metaSidecarFileName('doc')))
 
-      // A different body is still refused, and stamps nothing.
-      assertProblem(await requestError(putRaw(docPath, '{"v":2}')), {
+      const created = await putRaw(docPath, '{"v":2}')
+      assert.equal(created.status, 201)
+      const etag = created.headers.get('etag')
+      assert.ok(etag, 'expected the create to answer a validator')
+      const read = await alice.was.request({ path: docPath, method: 'GET' })
+      assert.deepEqual(read.data, { v: 2 })
+      assert.equal(read.headers.get('etag'), etag)
+      // The create committed, so the rule binds from here on.
+      assertProblem(await requestError(putRaw(docPath, '{"v":3}')), {
         status: 409,
         type: 'resource-immutable'
       })
-      const healed = await putRaw(docPath, '{"v":1}')
-      assert.equal(healed.status, 200)
-      const etag = healed.headers.get('etag')
-      assert.ok(etag, 'expected the repeat to answer a validator')
-      const read = await alice.was.request({ path: docPath, method: 'GET' })
-      assert.deepEqual(read.data, { v: 1 })
-      assert.equal(read.headers.get('etag'), etag)
-      assert.equal((await putRaw(docPath, '{"v":1}')).headers.get('etag'), etag)
 
-      const healedChunk = await putRaw(
+      const chunk = await putRaw(
         chunkPath,
-        'chunk zero',
+        'chunk one',
         'application/octet-stream'
       )
-      assert.equal(healedChunk.status, 204)
-      const chunkEtag = healedChunk.headers.get('etag')
-      assert.ok(chunkEtag, 'expected the chunk repeat to answer a validator')
-      const again = await putRaw(
-        chunkPath,
-        'chunk zero',
-        'application/octet-stream'
+      assert.equal(chunk.status, 204)
+      assert.ok(chunk.headers.get('etag'), 'expected a chunk validator')
+      assertProblem(
+        await requestError(
+          putRaw(chunkPath, 'chunk two', 'application/octet-stream')
+        ),
+        { status: 409, type: 'resource-immutable' }
       )
-      assert.equal(again.headers.get('etag'), chunkEtag)
-    })
-
-    it('a repeat with a media type parameter stamps a Resource whose sidecar is missing', async () => {
-      const collectionId = await createCollection({
-        revisions: { immutable: true }
-      })
-      const collectionDir = path.join(backend.spacesDir, spaceId, collectionId)
-      const docPath = `/space/${spaceId}/${collectionId}/doc`
-      await putRaw(docPath, 'plain text', 'text/plain')
-      await rm(path.join(collectionDir, metaSidecarFileName('doc')))
-
-      const healed = await putRaw(
-        docPath,
-        'plain text',
-        'text/plain; charset=utf-8'
-      )
-      assert.equal(healed.status, 200)
-      // The client retries a 5xx, so check the server answered no request
-      // with one.
-      assert.deepEqual(
-        faults.requests
-          .filter(record => record.path === docPath)
-          .map(record => record.status),
-        [201, 200]
-      )
-      assert.equal(healed.data.contentType, 'text/plain')
-      assert.equal(healed.data.size, 'plain text'.length)
-      const read = await alice.was.request({ path: docPath, method: 'GET' })
-      assert.equal(read.headers.get('etag'), healed.headers.get('etag'))
     })
 
     it('a repeat over a re-create torn before its sidecar answers 201 with fresh provenance', async () => {

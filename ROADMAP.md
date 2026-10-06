@@ -1,6 +1,6 @@
 # WAS Teaching Server Roadmap
 
-nextAvailableId: 213
+nextAvailableId: 214
 
 <!-- roadmap-order:index:start -->
 
@@ -39,6 +39,7 @@ Chains:
 
 Ready:
 
+- WAS-213 [M] Orphan representation files on the filesystem backend
 - WAS-92 [M] Filesystem GET can observe a Resource with no validator mid-write
 - WAS-132 [M] A present but unparseable `If-None-Match` on a write is a 400
 - WAS-134 [M] Compose Update Collection under the lock
@@ -629,6 +630,33 @@ remains here is the rest of the helmet header set.
 A wrong answer, a torn write, or two backends that disagree. Nothing here widens
 what a caller may do; it is the server answering incorrectly for a caller who is
 allowed to ask.
+
+### WAS-213: [M] Orphan representation files on the filesystem backend
+
+- status: todo
+- priority: medium
+- labels: filesystem-backend, consistency
+- discovered-from: the sidecar `fileName` change (2026-10-06)
+- acceptance:
+  - [ ] A representation file no live sidecar names (a torn write under a
+        different content-type, a delete that crashed after its tombstone, a
+        sidecar write that failed after the bytes landed) never appears in
+        `listResources`, the changes feed, `#countLiveResources`,
+        `#readEqualityCandidates` or `listChunks`, and never counts toward a
+        quota
+  - [ ] Either those listings decide liveness from the sidecar, or a sweep
+        removes such a file (at boot, or on the next write of its id), and
+        ARCHITECTURE.md says which
+  - [ ] A test in `test/` plants an orphan beside a live Resource of the same
+        id and asserts the id is listed once and counted once
+
+Context: since the sidecar records `fileName`, a write or delete removes only
+the file the prior sidecar named, and the next write of an id no longer prunes
+every stale `r.<id>.*` file in the Collection directory. Reads are unaffected,
+since they open the named file. The directory-driven listings still count every
+`r.`-prefixed file, so an orphan can list an id twice, under two content-types,
+and inflate the Resource count. The feed's live branch also does not check
+`sidecar.deleted`, which predates the change.
 
 ### WAS-92: [M] Filesystem GET can observe a Resource with no validator mid-write
 

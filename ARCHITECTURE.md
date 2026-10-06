@@ -262,20 +262,20 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   after authorization, so an under-authorized conditional read still gets the
   404 mask. A Resource or chunk GET consults the stored metadata first when the
   header is present and opens the byte stream only on a miss. A representation
-  with no validator (a Resource whose sidecar is missing, and so its `/meta`
-  object) is matched only by `*`, which RFC 9110 makes true for any current
-  representation; its 304 then carries no `ETag`, as its 200 would not. A
-  Collection Metadata read takes the object before the governing log, not beside
-  it. A log append advances the object's local segment, so a read in the other
-  order could serve the new `ETag` over the old descriptors, and a 304 would
-  then keep them. In this order the worst case is the old `ETag` over the new
-  descriptors, which the next revalidation replaces. Responses to non-idempotent
-  POSTs are marked `Cache-Control: no-store` by an `onSend` hook in `routes.ts`;
-  a slash-variant redirect and a POST route registered with `config.safe` (Query
-  and Export, reads that use POST to carry a body) stay cacheable. The spec
-  defers further `Cache-Control` semantics. The Metadata-object pieces (the
-  five-segment `ETag` and the reserved `_generation` / `_local` file members)
-  live in `src/lib/metadataValidator.ts`.
+  with no validator (a Resource whose sidecar carries no stamp, and so its
+  `/meta` object) is matched only by `*`, which RFC 9110 makes true for any
+  current representation; its 304 then carries no `ETag`, as its 200 would not.
+  A Collection Metadata read takes the object before the governing log, not
+  beside it. A log append advances the object's local segment, so a read in the
+  other order could serve the new `ETag` over the old descriptors, and a 304
+  would then keep them. In this order the worst case is the old `ETag` over the
+  new descriptors, which the next revalidation replaces. Responses to
+  non-idempotent POSTs are marked `Cache-Control: no-store` by an `onSend` hook
+  in `routes.ts`; a slash-variant redirect and a POST route registered with
+  `config.safe` (Query and Export, reads that use POST to carry a body) stay
+  cacheable. The spec defers further `Cache-Control` semantics. The
+  Metadata-object pieces (the five-segment `ETag` and the reserved `_generation`
+  / `_local` file members) live in `src/lib/metadataValidator.ts`.
 - **`src/lib/hlc.ts`** -- the write stamp. Each storage backend holds one hybrid
   logical clock for its store, and a versioned write mints its stamp with it
   inside the write's critical section. The stamp is the clock reading plus the
@@ -544,10 +544,12 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   binary body read through the upload cap. An over-cap body answers
   `payload-too-large` (413), as a write would. A repeat is a no-op answering the
   stored `ETag`, with no new stamp and no feed position. A byte-identical repeat
-  over a live Resource or chunk whose sidecar is missing or carries no validator
-  (a write torn between its bytes and its sidecar) stamps the sidecar and
-  answers the new `ETag`. Any other write is refused with `resource-immutable`
-  (409). Both backends decide the rule before the unique-claim scans (blinded
+  over a live Resource or chunk whose sidecar carries no validator stamps the
+  sidecar and answers the new `ETag`. Any other write is refused with
+  `resource-immutable` (409). A filesystem representation file no sidecar names
+  is a write torn between its bytes and its sidecar, which never committed. It
+  is not a stored Resource or chunk, so a write over it is a create, whatever
+  its body. Both backends decide the rule before the unique-claim scans (blinded
   `unique` attributes and `unique` plaintext indexes). A write the rule answers
   runs no Collection scan, and a changed body that also collides answers
   `resource-immutable`. A tombstone keeps no bytes, so a write over one is an
@@ -1109,6 +1111,14 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   entry over), or `'absent'` when the archive carried no such entry.
   `test/space-archive-fixture.test.ts` pins this server's entry trees against
   the archive fixture that package checks in.
+
+  The filesystem backend finds a live Resource or chunk through its
+  `.meta.<id>.json` sidecar, which records the basename of the representation
+  file the write created as `fileName`. Reads and writes open that name, with no
+  directory listing and no re-derivation from `contentType`, so a change in how
+  `fileNameFor` derives a name cannot strand a stored file. A representation
+  file no sidecar names is not a Resource. `fileName` is server-local: a
+  tombstone has none, export strips it, and import records the file it writes.
 
   Delete Collection leaves a tombstone in both backends. The filesystem backend
   keeps it as the Collection's `.collection.<id>.json`, now holding only
