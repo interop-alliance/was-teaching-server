@@ -1014,34 +1014,40 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `insertRevocation`, after the backend's `importSpace` has written the rest of
   the archive. A chain may carry a link signed by a `did:webvh` whose history
   log the archive itself restores, so a chain verified before that write would
-  not resolve. Each record passes two checks. Its capability chain verifies
-  under the destination Space, through the same `verifyRevocationChain` the
-  revocation route runs. And the import's own invocation could have submitted
-  that revocation on the route, under the route's dual-root rule. A root
-  invocation is the Space controller's and may revoke anything delegated from
-  the Space. An invoker the verified chain names as a controller may revoke its
-  own grant or one below it. A delegated capability may when its target reaches
-  the revocation URL by the zcap library's attenuation rule with `POST` among
-  its actions, which a `POST` grant on the whole Space does and a `POST` grant
-  on the import URL alone does not. The invocation's facts come off the verified
-  result (`verifiedInvocation` in `zcap.ts`), not off the header. The record's
-  `meta` is rebuilt server-side: the delegator from the proof, the destination
-  Space's URL as `rootTarget`, `created` now, `expires` the capability's plus
-  one day (the shared `revocationRecordFor`). A record that fails either check,
-  or names a root capability, is skipped with one `warn` line and the import
-  goes on. A revocation is a fact about a chain rooted in a Space URL. A chain
-  that does not root in the destination Space could not be invoked there. An
-  unverifiable record is also what a forged archive would carry, and there is no
-  un-revoke. A record whose capability has already expired is skipped with no
-  log line and no verification, since the chain could not verify and the record
-  would reach its GC horizon within a day. So is a second record of one
-  capability, and one the store already holds. Any other error the verifier
-  raises over an archived record is a skip too. A server-side fault met while
-  verifying or storing is thrown as its 5xx. The plan builder reads only each
-  record's `capability` (`archivedRevocations`), and refuses an archive carrying
-  more than `IMPORT_MAX_REVOCATIONS` records as `invalid-import` (400), since
-  each one costs a chain verification. Before this, a holder of a Space-subtree
-  `POST` grant could install arbitrary `(delegator, capabilityId)` records. A
+  not resolve. The restored data is therefore readable before its revocations
+  land. On a restore into a server that holds no record of a revocation, a
+  revoked grant whose chain still verifies can read for the moment the
+  installation takes, and for longer when the request dies between the two
+  phases. Importing the same archive again closes that gap: the data import
+  skips what the destination holds, and so does the revocation install. Each
+  record passes two checks. Its capability chain verifies under the destination
+  Space, through the same `verifyRevocationChain` the revocation route runs. And
+  the import's own invocation could have submitted that revocation on the route,
+  under the route's dual-root rule. A root invocation is the Space controller's
+  and may revoke anything delegated from the Space. An invoker the verified
+  chain names as a controller may revoke its own grant or one below it. A
+  delegated capability may when its target reaches the revocation URL by the
+  zcap library's attenuation rule with `POST` among its actions, which a `POST`
+  grant on the whole Space does and a `POST` grant on the import URL alone does
+  not. The invocation's facts come off the verified result (`verifiedInvocation`
+  in `zcap.ts`), not off the header. The record's `meta` is rebuilt server-side:
+  the delegator from the proof, the destination Space's URL as `rootTarget`,
+  `created` now, `expires` the capability's plus one day (the shared
+  `revocationRecordFor`). A record that fails either check, or names a root
+  capability, is skipped with one `warn` line and the import goes on. A
+  revocation is a fact about a chain rooted in a Space URL. A chain that does
+  not root in the destination Space could not be invoked there. An unverifiable
+  record is also what a forged archive would carry, and there is no un-revoke. A
+  record whose capability has already expired is skipped with no log line and no
+  verification, since the chain could not verify and the record would reach its
+  GC horizon within a day. So is a second record of one capability, and one the
+  store already holds. Any other error the verifier raises over an archived
+  record is a skip too. A server-side fault met while verifying or storing is
+  thrown as its 5xx. The plan builder reads only each record's `capability`
+  (`archivedRevocations`), and refuses an archive carrying more than
+  `IMPORT_MAX_REVOCATIONS` records as `invalid-import` (400), since each one
+  costs a chain verification. Before this, a holder of a Space-subtree `POST`
+  grant could install arbitrary `(delegator, capabilityId)` records. A
   revocation whose chain's first link was signed by a `did:webvh` controller is
   restored only into a Space that already carries that controller, since the
   chain roots in the destination's controller. A restore of a promoted Space
