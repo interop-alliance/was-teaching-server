@@ -14,6 +14,7 @@
  */
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import { fetchSpaceAndVerify } from './spaceContext.js'
+import { fetchCollectionAndBackend } from './collectionContext.js'
 import { notModifiedReply } from './notModified.js'
 import { assertValidIds } from '../lib/validateId.js'
 import { policyPath } from '../lib/paths.js'
@@ -141,6 +142,21 @@ export class PolicyRequest {
       requestName
     })
 
+    // A Resource-level policy is written only over a live Resource, which the
+    // backend checks under the write's lock. A Collection on a registered
+    // external backend keeps its Resources there, so the primary store has
+    // nothing to check and the write goes through.
+    let requireLiveResource: boolean | undefined
+    if (collectionId !== undefined && resourceId !== undefined) {
+      const { dataBackend } = await fetchCollectionAndBackend({
+        request,
+        spaceId,
+        collectionId,
+        requestName
+      })
+      requireLiveResource = dataBackend === storage
+    }
+
     const {
       validator,
       created,
@@ -150,6 +166,7 @@ export class PolicyRequest {
       collectionId,
       resourceId,
       policy,
+      requireLiveResource,
       ...parseWritePreconditions(request.headers)
     })
     // Bust the cached policy at this exact level so the next read sees this

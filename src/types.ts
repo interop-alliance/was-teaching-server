@@ -1208,7 +1208,13 @@ export interface StorageBackend {
    * atomically with the removal; a mismatch rejects with `precondition-failed`
    * (412). Without it, the delete is unconditional and idempotent. Deleting a
    * Resource cascade-deletes any chunks stored under it (the `chunked-streams`
-   * feature), so chunks never outlive their parent.
+   * feature), so chunks never outlive their parent. A delete that tombstones
+   * a live Resource also tombstones its live access-control policy, if any,
+   * atomically with it: the policy tombstone keeps its generation, takes a
+   * stamp above the live policy's, and takes the Collection's feed position
+   * after the Resource tombstone's. A no-op delete writes no policy
+   * tombstone. A data-plane backend that keeps no policies has nothing to
+   * tombstone.
    */
   deleteResource(options: {
     spaceId: string
@@ -1602,7 +1608,13 @@ export interface StorageBackend {
    * atomically with the write, against the live policy (412 otherwise). A
    * Collection- or Resource-level write takes the Collection's next feed
    * position. Refused with a 404 when the Space, or the named Collection,
-   * has no Metadata object.
+   * has no Metadata object. A Resource-level write is refused with
+   * `ResourceNotFoundError` (404) when the Resource is absent or a
+   * tombstone, checked atomically with the write so it serializes with
+   * `deleteResource`. The caller passes `requireLiveResource: false` when
+   * the Collection's Resources live on another backend, which this store
+   * cannot check; the caller decides that, since the data-plane routing is
+   * the request layer's.
    */
   writePolicy(options: {
     spaceId: string
@@ -1611,6 +1623,7 @@ export interface StorageBackend {
     policy: PolicyDocument
     ifMatch?: string
     ifNoneMatch?: HeldValidators
+    requireLiveResource?: boolean
   }): Promise<PolicyWriteResult>
   /**
    * Deletes the live policy at a level, leaving a tombstone that keeps its

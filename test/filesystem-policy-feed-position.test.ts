@@ -72,10 +72,13 @@ describe('FileSystemBackend policy feed positions', () => {
   }
 
   /**
-   * Writes a `PublicCanRead` policy on each of `count` Resources.
+   * Writes `count` Resources, each followed by a `PublicCanRead` policy on
+   * it, so each takes two feed positions: the Resource's, then its
+   * policy's.
    */
   async function writeResourcePolicies(count: number): Promise<void> {
     for (let index = 0; index < count; index++) {
+      await writeDoc(`doc-${index}`, 0)
       await backend.writePolicy({
         spaceId,
         collectionId,
@@ -125,7 +128,8 @@ describe('FileSystemBackend policy feed positions', () => {
     const before = await policyFileSnapshot()
     assert.equal(before.size, POLICY_COUNT + 1)
 
-    // Every kind of feed-visible write that is not a policy write.
+    // Every kind of feed-visible write that is not a policy write. The
+    // deleted Resource carries no policy, since a delete tombstones one.
     await writeDoc('doc-0', 1)
     await backend.writeResourceMetadata({
       spaceId,
@@ -133,8 +137,8 @@ describe('FileSystemBackend policy feed positions', () => {
       resourceId: 'doc-0',
       custom: { name: 'Renamed' }
     })
-    await writeDoc('doc-1', 1)
-    await backend.deleteResource({ spaceId, collectionId, resourceId: 'doc-1' })
+    await writeDoc('plain', 1)
+    await backend.deleteResource({ spaceId, collectionId, resourceId: 'plain' })
     await backend.writeCollection({
       spaceId,
       collectionId,
@@ -151,7 +155,8 @@ describe('FileSystemBackend policy feed positions', () => {
     // whatever the policy count.
     const text = await readFile(counterPath, 'utf8')
     const counter = JSON.parse(text)
-    const policyWrites = POLICY_COUNT + 1
+    // The policies, and the Resources they were written on.
+    const policyWrites = POLICY_COUNT + 1 + POLICY_COUNT
     assert.deepEqual(counter, {
       generation: counter.generation,
       // The create, the policies, then six more writes.
@@ -194,7 +199,7 @@ describe('FileSystemBackend policy feed positions', () => {
     )
     assert.equal(
       (await readCollectionFile(resourcePolicyFileName('doc-0')))._feedPosition,
-      3
+      4
     )
 
     for (const resourceId of [undefined, 'doc-0']) {
@@ -225,18 +230,18 @@ describe('FileSystemBackend policy feed positions', () => {
       collectionId,
       policy: { type: 'PublicCanRead' }
     })
-    // Positions 3 to 5: three Resource policies.
+    // Positions 3 to 8: three Resources, each followed by its policy.
     await writeResourcePolicies(3)
-    // Position 6: doc-0's policy is rewritten.
+    // Position 9: doc-0's policy is rewritten.
     await backend.writePolicy({
       spaceId,
       collectionId,
       resourceId: 'doc-0',
       policy: { type: 'PublicCanRead' }
     })
-    // Position 7: doc-1's policy is deleted, leaving a tombstone.
+    // Position 10: doc-1's policy is deleted, leaving a tombstone.
     await backend.deletePolicy({ spaceId, collectionId, resourceId: 'doc-1' })
-    // Position 8: a Resource write, which no policy follows.
+    // Position 11: a Resource write, which no policy follows.
     await writeDoc('doc-2', 1)
 
     const page = await backend.changesSince!({
@@ -256,22 +261,22 @@ describe('FileSystemBackend policy feed positions', () => {
       }))
     assert.deepEqual(policies, [
       { resourceId: undefined, feedPosition: 2, deleted: false },
-      { resourceId: 'doc-2', feedPosition: 5, deleted: false },
-      { resourceId: 'doc-0', feedPosition: 6, deleted: false },
-      { resourceId: 'doc-1', feedPosition: 7, deleted: true }
+      { resourceId: 'doc-2', feedPosition: 8, deleted: false },
+      { resourceId: 'doc-0', feedPosition: 9, deleted: false },
+      { resourceId: 'doc-1', feedPosition: 10, deleted: true }
     ])
-    assert.equal(page.checkpoint, 8)
+    assert.equal(page.checkpoint, 11)
 
     // A reader past a policy's position does not see it again.
     const later = await backend.changesSince!({
       spaceId,
       collectionId,
-      afterPosition: 5,
+      afterPosition: 8,
       limit: 100
     })
     assert.deepEqual(
       later.documents.map(document => document.feedPosition),
-      [6, 7, 8]
+      [9, 10, 11]
     )
   })
 
@@ -287,7 +292,7 @@ describe('FileSystemBackend policy feed positions', () => {
       collectionId,
       limit: 100
     })
-    assert.equal(checkpoint, 4)
+    assert.equal(checkpoint, 6)
 
     // A policy file that no longer parses fails any read of it.
     await writeFile(
@@ -299,7 +304,7 @@ describe('FileSystemBackend policy feed positions', () => {
       SyntaxError
     )
 
-    // The feed leaves that one policy (position 4) out and still serves the
+    // The feed leaves that one policy (position 6) out and still serves the
     // others, whether or not the reader is past them.
     for (const afterPosition of [undefined, 2]) {
       const page = await backend.changesSince!({
@@ -312,7 +317,7 @@ describe('FileSystemBackend policy feed positions', () => {
         page.documents
           .map(document => document.feedPosition)
           .filter(position => position > 2),
-        [3]
+        [3, 4, 5]
       )
     }
 

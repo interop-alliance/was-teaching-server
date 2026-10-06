@@ -4,6 +4,12 @@
 
 ### Changed
 
+- Delete Resource tombstones the Resource's access-control policy in the same
+  critical section, with its own stamp and feed position, so a `PublicCanRead`
+  written to publish one record no longer publishes whatever next occupies its
+  id, and the policy delete replicates. A Resource-level policy `PUT` is refused
+  with the Resource's 404 while the Resource is absent or a tombstone. Before,
+  the policy outlived the Resource and could be written for an id not yet used.
 - The filesystem backend records the basename of a Resource's or chunk's
   representation file in its `.meta.<id>.json` sidecar as `fileName`. Reads,
   writes, Resource deletes and the replication apply path open that name instead

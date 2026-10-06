@@ -583,10 +583,12 @@ export class FileSystemBackend implements StorageBackend {
    * Collection a Resource write nests `unique:` key, then the Resource key,
    * then the `feed:` key; a Collection Metadata write nests `cmeta:` then
    * `feed:`; a log write nests `cmeta:`, then `clog:`, then `feed:`; a policy
-   * write nests `policy:` then `feed:`. No path holds a `cmeta:` or `clog:`
-   * key together with a Resource or `unique:` key, and no path holds a
-   * `policy:` key together with any key but `feed:`. The `feed:` key is innermost: nothing is
-   * acquired while it is held.
+   * write nests `policy:` then `feed:`. A Resource-level policy write and a
+   * Resource delete nest the Resource key, then `policy:`, then `feed:`. No
+   * path holds a `cmeta:` or `clog:` key together with a Resource or
+   * `unique:` key, and no path takes a Resource key while holding a
+   * `policy:` key. The `feed:` key is innermost: nothing is acquired while it
+   * is held.
    */
   #writeMutex = new KeyedMutex()
 
@@ -5880,6 +5882,8 @@ export class FileSystemBackend implements StorageBackend {
    * per-Resource write lock so it serializes with concurrent writes. The delete
    * is idempotent: an already-absent Resource (never created, or an existing
    * tombstone) is a no-op, leaving any tombstone's change-feed entry stable.
+   * A delete that writes the Resource tombstone also tombstones the Resource's
+   * live access-control policy, if any, in the same critical section.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -5988,6 +5992,14 @@ export class FileSystemBackend implements StorageBackend {
         recursive: true,
         force: true
       })
+      // The Resource's access-control policy dies with it: a live policy is
+      // tombstoned here, under the policy's own key nested inside the
+      // Resource key, so a re-create under the same id starts with no policy.
+      // The tombstone takes the feed position after the Resource tombstone's.
+      await this.#writeMutex.run(
+        this.#policyLockKey({ spaceId, collectionId, resourceId }),
+        () => this.#tombstoneLivePolicy({ spaceId, collectionId, resourceId })
+      )
     }
     // The soft delete is a read-modify-write on the sidecar, so it always
     // serializes with concurrent writes under the per-Resource lock (not only
@@ -7203,7 +7215,8 @@ export class FileSystemBackend implements StorageBackend {
    * The per-policy mutex key (`policy:` prefix, its own key domain), held by
    * a policy write or delete for its read, precondition check and write. A
    * Collection- or Resource-level write nests the Collection's `feed:` key
-   * inside it, and nothing else.
+   * inside it, and nothing else. A Resource-level write, and the policy
+   * tombstone a Resource delete writes, take it inside the Resource key.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}
@@ -7283,9 +7296,76 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.policy {PolicyDocument}
    * @param [options.ifMatch] {string}
    * @param [options.ifNoneMatch] {HeldValidators}
+   * @param [options.requireLiveResource] {boolean}   `false` when the
+   *   Collection's Resources live on another backend; default `true`
    * @returns {Promise<PolicyWriteResult>}
    */
   async writePolicy({
+    spaceId,
+    collectionId,
+    resourceId,
+    policy,
+    ifMatch,
+    ifNoneMatch,
+    requireLiveResource = true
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+    policy: PolicyDocument
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+    requireLiveResource?: boolean
+  }): Promise<PolicyWriteResult> {
+    const write = {
+      spaceId,
+      collectionId,
+      resourceId,
+      policy,
+      ifMatch,
+      ifNoneMatch
+    }
+    // Under the Space gate, and only into a Space (and Collection) that still
+    // has its Metadata object, so a policy never materializes a container
+    // directory the listings would then report.
+    return this.#underSpaceWrite({
+      spaceId,
+      container: { collectionId },
+      write: () =>
+        collectionId !== undefined &&
+        resourceId !== undefined &&
+        requireLiveResource
+          ? // A Resource-level policy is written only over a live Resource,
+            // checked under the Resource key so it serializes with
+            // `deleteResource`, which tombstones the policy under the same key.
+            this.#writeMutex.run(
+              this.#resourceLockKey({ spaceId, collectionId, resourceId }),
+              async () => {
+                await this.#assertResourceLive({
+                  spaceId,
+                  collectionId,
+                  resourceId
+                })
+                return this.#writePolicyLocked(write)
+              }
+            )
+          : this.#writePolicyLocked(write)
+    })
+  }
+
+  /**
+   * The policy write proper, under the policy's own key: read, precondition
+   * check, stamp and persist. The caller holds the Space gate's shared side.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @param options.policy {PolicyDocument}
+   * @param [options.ifMatch] {string}
+   * @param [options.ifNoneMatch] {HeldValidators}
+   * @returns {Promise<PolicyWriteResult>}
+   */
+  async #writePolicyLocked({
     spaceId,
     collectionId,
     resourceId,
@@ -7300,50 +7380,74 @@ export class FileSystemBackend implements StorageBackend {
     ifMatch?: string
     ifNoneMatch?: HeldValidators
   }): Promise<PolicyWriteResult> {
-    // Under the Space gate, and only into a Space (and Collection) that still
-    // has its Metadata object, so a policy never materializes a container
-    // directory the listings would then report.
-    return this.#underSpaceWrite({
-      spaceId,
-      container: { collectionId },
-      write: () =>
-        this.#writeMutex.run(
-          this.#policyLockKey({ spaceId, collectionId, resourceId }),
-          async () => {
-            const prior = await this.getPolicyRecord({
-              spaceId,
-              collectionId,
-              resourceId
-            })
-            const live = livePolicyUnderPrecondition({
-              prior,
-              spaceId,
-              collectionId,
-              resourceId,
-              ifMatch,
-              ifNoneMatch
-            })
-            // A write over a tombstone is a create: a new generation, and a
-            // stamp above the tombstone's.
-            const validator = await mintValidator({
-              clock: this.#clock,
-              prior: priorPolicyParts(prior)
-            })
-            const body = stampedPolicy({
-              body: normalizePolicyWrite(policy),
-              stamp: validator.stamp
-            })
-            await this.#persistPolicy({
-              spaceId,
-              collectionId,
-              resourceId,
-              body,
-              generation: validator.generation
-            })
-            return { validator, created: live === undefined, policy: body }
-          }
-        )
+    return this.#writeMutex.run(
+      this.#policyLockKey({ spaceId, collectionId, resourceId }),
+      async () => {
+        const prior = await this.getPolicyRecord({
+          spaceId,
+          collectionId,
+          resourceId
+        })
+        const live = livePolicyUnderPrecondition({
+          prior,
+          spaceId,
+          collectionId,
+          resourceId,
+          ifMatch,
+          ifNoneMatch
+        })
+        // A write over a tombstone is a create: a new generation, and a
+        // stamp above the tombstone's.
+        const validator = await mintValidator({
+          clock: this.#clock,
+          prior: priorPolicyParts(prior)
+        })
+        const body = stampedPolicy({
+          body: normalizePolicyWrite(policy),
+          stamp: validator.stamp
+        })
+        await this.#persistPolicy({
+          spaceId,
+          collectionId,
+          resourceId,
+          body,
+          generation: validator.generation
+        })
+        return { validator, created: live === undefined, policy: body }
+      }
+    )
+  }
+
+  /**
+   * Refuses a Resource-level policy write when the Resource is absent or a
+   * tombstone (`ResourceNotFoundError`, 404). The caller holds the Resource
+   * key.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @returns {Promise<void>}
+   */
+  async #assertResourceLive({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+  }): Promise<void> {
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
+    // A tombstone keeps its sidecar but names no file, so a live sidecar is
+    // what marks the Resource live.
+    const { live } = await this.#readLiveFile({
+      collectionDir,
+      resourceId,
+      requestName: 'Update Policy'
     })
+    if (live === undefined) {
+      throw new ResourceNotFoundError({ requestName: 'Update Policy' })
+    }
   }
 
   /**
@@ -7377,40 +7481,74 @@ export class FileSystemBackend implements StorageBackend {
       write: () =>
         this.#writeMutex.run(
           this.#policyLockKey({ spaceId, collectionId, resourceId }),
-          async () => {
-            const prior = await this.getPolicyRecord({
-              spaceId,
-              collectionId,
-              resourceId
-            })
-            const live = livePolicyUnderPrecondition({
-              prior,
+          () =>
+            this.#tombstoneLivePolicy({
               spaceId,
               collectionId,
               resourceId,
               ifMatch,
               ifNoneMatch
             })
-            if (live === undefined) {
-              return undefined
-            }
-            // The tombstone keeps the generation and takes a stamp above
-            // the live policy's.
-            const validator = await mintValidator({
-              clock: this.#clock,
-              prior: priorPolicyParts(live)
-            })
-            await this.#persistPolicy({
-              spaceId,
-              collectionId,
-              resourceId,
-              body: policyTombstoneBody(validator.stamp),
-              generation: validator.generation
-            })
-            return validator
-          }
         )
     })
+  }
+
+  /**
+   * Tombstones the live policy at a level, after evaluating the preconditions
+   * against it. The tombstone keeps the generation and takes a stamp above
+   * the live policy's. Writes nothing when no live policy is stored. Shared by
+   * `deletePolicy` and the cascade in `deleteResource`. The caller holds the
+   * Space gate's shared side and the policy's own key.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @param [options.ifMatch] {string}
+   * @param [options.ifNoneMatch] {HeldValidators}
+   * @returns {Promise<EtagValidator | undefined>}   the tombstone's validator,
+   *   or `undefined` when nothing was written
+   */
+  async #tombstoneLivePolicy({
+    spaceId,
+    collectionId,
+    resourceId,
+    ifMatch,
+    ifNoneMatch
+  }: {
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+  }): Promise<EtagValidator | undefined> {
+    const prior = await this.getPolicyRecord({
+      spaceId,
+      collectionId,
+      resourceId
+    })
+    const live = livePolicyUnderPrecondition({
+      prior,
+      spaceId,
+      collectionId,
+      resourceId,
+      ifMatch,
+      ifNoneMatch
+    })
+    if (live === undefined) {
+      return undefined
+    }
+    const validator = await mintValidator({
+      clock: this.#clock,
+      prior: priorPolicyParts(live)
+    })
+    await this.#persistPolicy({
+      spaceId,
+      collectionId,
+      resourceId,
+      body: policyTombstoneBody(validator.stamp),
+      generation: validator.generation
+    })
+    return validator
   }
 
   /**

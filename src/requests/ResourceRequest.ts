@@ -29,6 +29,7 @@ import {
 import { parseKeyEpochHeader, parseMetaEpoch } from '../lib/keyEpoch.js'
 import { parseWriterIdHeader } from '../lib/writerAttribution.js'
 import { invalidateResolvedWebvhDid } from '../lib/webvhController.js'
+import { invalidatePolicy } from '../lib/policyCache.js'
 import { guardWebvhLogWrite } from '../lib/webvhLogWrite.js'
 import { WEBVH_LOG_RESOURCE_ID } from '../lib/validateDid.js'
 import {
@@ -652,6 +653,7 @@ export class ResourceRequest {
     const {
       params: { spaceId, collectionId, resourceId }
     } = request
+    const { storage } = request.server
     const requestName = 'Delete Resource'
 
     // Reject path-traversal / non-URL-safe ids before any storage access.
@@ -707,9 +709,18 @@ export class ResourceRequest {
         ifMatch,
         writerId
       })
+      // An external data-plane backend keeps no policies, so the Resource's
+      // policy is tombstoned in the control-plane store here. The two stores
+      // make this non-atomic: a fault between the two writes leaves the
+      // policy live over a deleted Resource, and a retried delete removes it.
+      if (dataBackend !== storage) {
+        await storage.deletePolicy({ spaceId, collectionId, resourceId })
+      }
     } catch (err) {
       rethrowOrWrapStorageError({ err, requestName })
     }
+    // The delete tombstoned the Resource's policy, so drop its cached grant.
+    invalidatePolicy({ storage, spaceId, collectionId, resourceId })
     return reply.status(204).send()
   }
 }

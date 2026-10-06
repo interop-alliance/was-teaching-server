@@ -500,8 +500,20 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   store's clock, and skips a level where the destination holds any policy
   record, a tombstone included, so an import does not undo a delete. An archived
   tombstone refuses the import as `invalid-import` (400). Delete Collection and
-  Delete Space still remove their policies outright. Delete Resource leaves the
-  Resource's policy in place.
+  Delete Space still remove their policies outright. Delete Resource tombstones
+  the Resource's policy, inside the delete's critical section, with its own
+  stamp and the feed position after the Resource tombstone's. So a
+  `PublicCanRead` written to publish one record does not publish whatever next
+  occupies its id, and the policy delete replicates and survives an import. A
+  Resource-level policy write is refused with the Resource's 404 while the
+  Resource is absent or a tombstone, checked under the same lock, so a policy
+  cannot be seeded for an id before it is written. A Collection stored on a
+  registered external backend keeps its Resources outside the primary store, so
+  that check is skipped there and the policy tombstone is written by the handler
+  after the data-plane delete, not atomically with it. The apply path and import
+  write a policy whatever the Resource's state. The Space listing's `public`
+  flag reports the Collection's own policy only, not one inherited from the
+  Space.
 - **`src/lib/revisions.ts`** -- the Collection `revisions` descriptor:
   `resolution` (a closed set, `last-writer-wins` only, which is also the
   default), `immutable` (a boolean, default `false`), and `merge` (an object the

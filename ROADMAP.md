@@ -18,7 +18,6 @@ Ready:
   attenuation)
 - WAS-61 [H] Separate `/policy` control from data writes (exposure test +
   enforcement)
-- WAS-127 [H] A Resource's access-control policy dies with the Resource
 - WAS-108 [M] Container rule for the policy and backend-registration writes
   (blocks 1)
 - WAS-137 [M] Bind the KMS record envelope to its record
@@ -313,37 +312,6 @@ Note 2026-09-17: the exposure test's premise is confirmed (a delegated data
 grant on the Collection wrote `PublicCanRead` and an anonymous read of the
 Collection's Resource then answered 200). The other half of policy hygiene, a
 Resource-level policy surviving the Resource's deletion, is WAS-127.
-
-### WAS-127: [H] A Resource's access-control policy dies with the Resource
-
-- status: todo
-- priority: high
-- labels: policy, security, consistency
-- discovered-from: whole-codebase review (2026-09-17), verified on both backends
-- touches:
-  - `src/backends/filesystem.ts` and `src/backends/postgres.ts`
-    (`deleteResource`), `src/backends/postgresSchema.ts` (no FK from `policies`
-    to `resources`), `src/requests/ResourceRequest.ts` (`delete`),
-    `src/lib/policyCache.ts`
-  - ARCHITECTURE.md's soft-delete sentence, which lists what a delete drops
-- acceptance:
-  - [ ] `deleteResource` removes the Resource-level policy on both backends and
-        the handler invalidates its cache entry
-  - [ ] A test publishes `r1` with `PublicCanRead`, deletes it, re-creates `r1`,
-        and asserts an anonymous GET is refused
-  - [ ] `PolicyRequest.put` at the Resource level refuses when the Resource does
-        not exist (no pre-seeding of a future id), or the pre-seeding behavior
-        is documented as intended
-  - [ ] The Collection listing's `public` flag reflects the effective policy (a
-        Space-level `PublicCanRead` shows every Collection as public), or its
-        doc states it reports the Collection level only
-
-Delete Resource drops content, chunks, and the `/meta` object but never the
-policy, so a `PublicCanRead` written to publish one record silently publishes
-whatever next occupies that id (client-chosen ids such as `keyring` or `index`
-collide routinely). No listing shows a Resource-level policy. Delete Collection
-and Delete Space do clean policies up; the Resource level is the lone gap. The
-container-rule half of policy control is WAS-61 / WAS-108.
 
 ### WAS-108: [M] [blocks 1] Container rule for the policy and backend-registration writes
 
@@ -689,12 +657,27 @@ default. The comment at the re-check claims the opposite.
   - [ ] Delete Collection and Delete Space delete the Collection's Resources
         through its data-plane backend before removing the control-plane record,
         or record the orphan for a sweep
+  - [ ] Delete Resource on a Collection stored on a registered external backend
+        tombstones the Resource's policy only when the data-plane delete removed
+        a live Resource: the adapter's `deleteResource` reports whether it
+        deleted anything (or the handler reads the Resource first), so a no-op
+        delete writes no policy tombstone, as the
+        `StorageBackend.deleteResource` contract in `src/types.ts` promises and
+        the default backend does
   - [ ] Body parsing and the allowlist check in `BackendRequest` run after
         `fetchSpaceAndVerify`; the duplicate-id check is under the write lock
 
 Latent while the production provider registry is empty, but each is a silent
 divergence between the record on disk and the adapter serving traffic, or data
 stranded on an external account with no server-side pointer to it.
+
+The policy-tombstone item: a Resource policy on such a Collection may be written
+for any id, since the Resource-liveness check a policy write runs is skipped
+where the Resources live outside the primary store. The handler in
+`ResourceRequest.delete` then tombstones the policy after every successful
+data-plane delete, a no-op one included, because `deleteResource` returns
+nothing. The effect is minor (a policy over an absent Resource grants a read of
+nothing), but the two backends disagree with the contract.
 
 ### WAS-144: [M] Ignore a non-`Signature` `Authorization` header on an anonymous read
 
