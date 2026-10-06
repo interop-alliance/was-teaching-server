@@ -161,6 +161,13 @@ function stageFixtureTree(dataDir: string): void {
       })}\n`
     })
   )
+  const resourceFileName = fileNameFor({
+    resourceId: RESOURCE_ID,
+    contentType: 'application/json'
+  })
+  // The sidecar names its file, as every write records it, so export counts
+  // the Resource live. Export strips `fileName`, so the archived sidecar
+  // matches the fixture's.
   fs.writeFileSync(
     path.join(collectionDir, `.meta.${RESOURCE_ID}.json`),
     JSON.stringify({
@@ -168,17 +175,12 @@ function stageFixtureTree(dataDir: string): void {
       ...FIXTURE_STAMP,
       generation: 'zFixtureNoteGeneration',
       meta: { ...FIXTURE_STAMP, generation: 'zFixtureNoteMetaGeneration' },
-      custom: { title: 'A note' }
+      custom: { title: 'A note' },
+      fileName: resourceFileName
     })
   )
   fs.writeFileSync(
-    path.join(
-      collectionDir,
-      fileNameFor({
-        resourceId: RESOURCE_ID,
-        contentType: 'application/json'
-      })
-    ),
+    path.join(collectionDir, resourceFileName),
     JSON.stringify({ note: 'hello' })
   )
 

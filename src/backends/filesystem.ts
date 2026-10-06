@@ -256,13 +256,15 @@ import type {
 const { Store: MetadataJsonStore } = jsonfs
 
 /**
- * How many Collection Metadata files `#collectionEntries` reads at once.
+ * How many files `mapInBatches` reads at once: Collection Metadata files in
+ * `#collectionEntries`, sidecars in `#liveRepresentationEntries`.
  */
 const COLLECTION_READ_BATCH = 32
 
 /**
  * Maps each item through an async function, `COLLECTION_READ_BATCH` items at
- * a time, so a Space with many Collections does not open every file at once.
+ * a time, so a Space with many Collections, or a dir with many Resources, does
+ * not open every file at once.
  * The result keeps the order of `items`.
  * @param options {object}
  * @param options.items {T[]}
@@ -1478,6 +1480,112 @@ export class FileSystemBackend implements StorageBackend {
   }
 
   /**
+   * The live representations in a directory listing: the `r.<id>...` files
+   * (`#representationEntries`) whose id's sidecar is live and names that exact
+   * file as its `fileName`, each with the sidecar it was judged by. A file no
+   * live sidecar names -- a write that never committed, or the prior file a
+   * crash left behind a write's sidecar or a delete's tombstone -- is left
+   * out, so every path that lists a directory agrees with the reads
+   * (`#liveFileOf`). Each sidecar is read once, even for an id with two files.
+   * A sidecar that does not parse leaves its file out (`#readListedSidecar`).
+   * @param options {object}
+   * @param options.dir {string}   a Collection dir, or a chunk dir
+   * @param options.entries {fs.Dirent[]}   that dir's listing
+   * @returns {Promise<Array<{ fileName: string, resourceId: string, contentType: string, sidecar: MetaSidecar }>>}
+   */
+  async #liveRepresentationEntries({
+    dir,
+    entries
+  }: {
+    dir: string
+    entries: fs.Dirent[]
+  }): Promise<
+    Array<{
+      fileName: string
+      resourceId: string
+      contentType: string
+      sidecar: MetaSidecar
+    }>
+  > {
+    const representations = this.#representationEntries(entries)
+    // One read per id, a bounded number at a time, so a large dir does not
+    // open every sidecar at once.
+    const resourceIds = [
+      ...new Set(representations.map(({ resourceId }) => resourceId))
+    ]
+    const sidecars = new Map(
+      await mapInBatches({
+        items: resourceIds,
+        map: async resourceId =>
+          [
+            resourceId,
+            await this.#readListedSidecar({ dir, resourceId })
+          ] as const
+      })
+    )
+    return representations.flatMap(entry => {
+      const sidecar = sidecars.get(entry.resourceId)
+      return sidecar !== undefined &&
+        sidecar.deleted !== true &&
+        sidecar.fileName === entry.fileName
+        ? [{ ...entry, sidecar }]
+        : []
+    })
+  }
+
+  /**
+   * The names of the live representation files in a directory listing
+   * (`#liveRepresentationEntries`), for a walk that keeps every other entry.
+   * @param options {object}
+   * @param options.dir {string}   a Collection dir, or a chunk dir
+   * @param options.entries {fs.Dirent[]}   that dir's listing
+   * @returns {Promise<Set<string>>}
+   */
+  async #liveFileNames({
+    dir,
+    entries
+  }: {
+    dir: string
+    entries: fs.Dirent[]
+  }): Promise<Set<string>> {
+    return new Set(
+      (await this.#liveRepresentationEntries({ dir, entries })).map(
+        ({ fileName }) => fileName
+      )
+    )
+  }
+
+  /**
+   * Reads a sidecar a directory listing found. A sidecar that does not parse
+   * is logged at `warn` and resolves `undefined`, so the listing leaves its
+   * Resource out instead of failing; any other read error is thrown.
+   * @param options {object}
+   * @param options.dir {string}   a Collection dir, or a chunk dir
+   * @param options.resourceId {string}
+   * @returns {Promise<MetaSidecar | undefined>}
+   */
+  async #readListedSidecar({
+    dir,
+    resourceId
+  }: {
+    dir: string
+    resourceId: string
+  }): Promise<MetaSidecar | undefined> {
+    try {
+      return await this.readMetaSidecar({ collectionDir: dir, resourceId })
+    } catch (err) {
+      if (!(err instanceof SyntaxError)) {
+        throw err
+      }
+      this.logger.warn(
+        { err },
+        `The sidecar of "${resourceId}" in ${dir} does not parse; it is left out.`
+      )
+      return undefined
+    }
+  }
+
+  /**
    * Lists every on-disk file belonging to a single Resource or chunk: the
    * representation(s) whose name starts with `r.<encodedResourceId>.` in the
    * dir. The trailing `.` anchors to the filename's segment boundary
@@ -1926,11 +2034,12 @@ export class FileSystemBackend implements StorageBackend {
   /**
    * Counts the live Resources across every Collection of a Space, for the
    * Resource count quota (`maxResourcesPerSpace`). Enumerates each Collection
-   * dir and counts distinct Resource ids that have a live representation file
-   * (`r.<id>...`); a tombstone (a `.meta.` sidecar with no `r.` file) does not
-   * count. An absent Space dir counts zero (not yet provisioned). Soft under
-   * concurrency, like the byte quota. The create path reads it through
-   * `#liveCountCache` (see `#assertResourceHeadroom`); import measures directly.
+   * dir and counts the Resources whose sidecar is live and names a file on
+   * disk (`#liveRepresentationEntries`); a tombstone, and a file no live
+   * sidecar names, do not count. An absent Space dir counts zero (not yet
+   * provisioned). Soft under concurrency, like the byte quota. The create
+   * path reads it through `#liveCountCache` (see `#assertResourceHeadroom`);
+   * import measures directly.
    * @param options {object}
    * @param options.spaceId {string}
    * @returns {Promise<number>}   the number of live Resources
@@ -1952,20 +2061,15 @@ export class FileSystemBackend implements StorageBackend {
       // A Collection deleted between the Space listing and this read counts
       // nothing, rather than failing an unrelated write in another Collection
       // with a raw `ENOENT` (which `handleError` would render as a 500).
-      const files = (await this.#readDirEntries(collectionDir)).map(
-        dirEntry => dirEntry.name
-      )
-      // A live Resource has one representation file; count distinct ids so a
-      // transient second representation (mid content-type swap) is not
-      // double-counted.
-      const liveIds = new Set<string>()
-      for (const fileName of files) {
-        if (!isRepresentationFileName(fileName)) {
-          continue
-        }
-        liveIds.add(parseResourceFileName(fileName).resourceId)
-      }
-      count += liveIds.size
+      // A live Resource has exactly one file its sidecar names, so a second
+      // representation (mid content-type swap, or left by a crash) is not
+      // counted.
+      count += (
+        await this.#liveRepresentationEntries({
+          dir: collectionDir,
+          entries: await this.#readDirEntries(collectionDir)
+        })
+      ).length
     }
     return count
   }
@@ -2259,10 +2363,21 @@ export class FileSystemBackend implements StorageBackend {
         // `_feedPosition` from every policy file (an importer assigns its own
         // positions and records the files it writes), and `_local` from the
         // Metadata file.
+        //
+        // A representation file travels only when a live sidecar names it: a
+        // file a crash left behind would otherwise be imported as a Resource.
+        const liveFileNames = await this.#liveFileNames({
+          dir: entryPath,
+          entries: collectionEntries
+        })
         const files: ArchiveEntry[] = collectionEntries
           .filter(
             child =>
               child.isFile() &&
+              !(
+                isRepresentationFileName(child.name) &&
+                !liveFileNames.has(child.name)
+              ) &&
               child.name !== feedCounterFileName(entry.name) &&
               !(
                 policyFiles.has(child.name) &&
@@ -2300,10 +2415,22 @@ export class FileSystemBackend implements StorageBackend {
           )
           .sort((a, b) => a.name.localeCompare(b.name))) {
           const chunkDir = path.join(entryPath, sub.name)
-          const chunkFiles = (
-            await fs.promises.readdir(chunkDir, { withFileTypes: true })
-          )
-            .filter(child => child.isFile())
+          const chunkEntries = await fs.promises.readdir(chunkDir, {
+            withFileTypes: true
+          })
+          const liveChunkNames = await this.#liveFileNames({
+            dir: chunkDir,
+            entries: chunkEntries
+          })
+          const chunkFiles = chunkEntries
+            .filter(
+              child =>
+                child.isFile() &&
+                !(
+                  isRepresentationFileName(child.name) &&
+                  !liveChunkNames.has(child.name)
+                )
+            )
             .map(child => child.name)
             .sort((a, b) => a.localeCompare(b))
             .map(name => {
@@ -3913,15 +4040,20 @@ export class FileSystemBackend implements StorageBackend {
 
     // Enumerate the Collection dir directly rather than globbing: glob v13 does
     // not sort, so its order is nondeterministic -- pagination needs a stable
-    // keyset. Keep only resource representations (`r.<id>.<type>.<ext>`), which
-    // drops the `.meta.` / `.collection.` / policy dot-files.
+    // keyset. Keep only the representations a live sidecar names
+    // (`#liveRepresentationEntries`), which drops the `.meta.` /
+    // `.collection.` / policy dot-files and any file a crash left behind.
+    // Every sidecar is read, so `totalItems` and each page count live
+    // Resources only.
     // An absent directory lists nothing (a Collection whose metadata file exists
     // but which holds no Resource yet). Any other failure -- `EACCES`, `EIO`,
     // `EMFILE` -- is a real fault and must surface: swallowing it would serve a
     // 200 with an empty listing for a Collection that provably exists, which a
     // replicating client reads as "every Resource was removed".
     const entries = await this.#readDirEntries(collectionDir)
-    const resources = this.#representationEntries(entries)
+    const resources = (
+      await this.#liveRepresentationEntries({ dir: collectionDir, entries })
+    )
       // Sort by `resourceId` ascending in code-unit order -- the SAME ordering
       // the cursor seek (`resourceId > after`) uses, so the keyset is consistent
       // (localeCompare could disagree with the `>` operator and break paging).
@@ -3943,26 +4075,19 @@ export class FileSystemBackend implements StorageBackend {
       keyOf: ({ resourceId }) => resourceId
     })
 
-    // Read `.meta` sidecars ONLY for the items on this page (the previous
-    // implementation read a sidecar for every resource on every list); the
-    // shared item builder projects each one onto the wire shape.
+    // The shared item builder projects each page entry, with the sidecar it
+    // was judged live by, onto the wire shape.
     const encrypted = suppressesItemNames({ collectionMetadata })
-    const items = await Promise.all(
-      pageEntries.map(async ({ resourceId, contentType }) => {
-        const sidecar = await this.readMetaSidecar({
-          collectionDir,
-          resourceId
-        })
-        return collectionListingItem({
-          spaceId,
-          collectionId,
-          resourceId,
-          contentType,
-          custom: sidecar?.custom as ResourceMetadataCustom | undefined,
-          epoch: sidecar?.epoch,
-          writerId: sidecar?.writerId,
-          encrypted
-        })
+    const items = pageEntries.map(({ resourceId, contentType, sidecar }) =>
+      collectionListingItem({
+        spaceId,
+        collectionId,
+        resourceId,
+        contentType,
+        custom: sidecar.custom as ResourceMetadataCustom | undefined,
+        epoch: sidecar.epoch,
+        writerId: sidecar.writerId,
+        encrypted
       })
     )
 
@@ -5034,7 +5159,8 @@ export class FileSystemBackend implements StorageBackend {
     return this.#readRepresentation({
       collectionDir,
       resourceId,
-      requestName: 'Get Resource'
+      requestName: 'Get Resource',
+      stillStands: () => this.#collectionStands({ spaceId, collectionId })
     })
   }
 
@@ -5048,10 +5174,12 @@ export class FileSystemBackend implements StorageBackend {
    * Reads take no lock, so a write that changes the content-type, or a delete,
    * can commit between the sidecar read and the open and remove the file the
    * read was about to open. On `ENOENT` the sidecar is read again: a changed
-   * sidecar is followed (up to three attempts), while an unchanged one names a
-   * file that is gone, which no committed write leaves behind, so it is a
-   * `StorageError` (500), as is a live sidecar with no usable `fileName`
-   * (`#namedFilePath`).
+   * sidecar is followed (up to three attempts). An unchanged one names a file
+   * that is gone. When the container no longer stands (`stillStands`), a
+   * Delete Collection or a parent Resource's delete is removing its members,
+   * which it does in no fixed order, so the Resource is absent. Otherwise no
+   * committed write leaves that state behind, so it is a `StorageError`
+   * (500), as is a live sidecar with no usable `fileName` (`#namedFilePath`).
    * @param options {object}
    * @param options.collectionDir {string}   the dir the representation lives in
    *   (a Collection dir, or a chunk dir for a chunk)
@@ -5060,18 +5188,23 @@ export class FileSystemBackend implements StorageBackend {
    * @param [options.requestName] {string}   used in the error title
    * @param options.open {(filePath: string) => Promise<T>}   opens the located
    *   file; an `ENOENT` it rejects with is handled here
+   * @param options.stillStands {() => Promise<boolean>}   whether the
+   *   container (the Collection, and for a chunk its parent Resource) still
+   *   stands, asked only once a file is found missing
    * @returns {Promise<{ sidecar: MetaSidecar, contentType: string, opened: T } | undefined>}
    */
   async #locateRepresentation<T>({
     collectionDir,
     resourceId,
     requestName,
-    open
+    open,
+    stillStands
   }: {
     collectionDir: string
     resourceId: string
     requestName?: string
     open: (filePath: string) => Promise<T>
+    stillStands: () => Promise<boolean>
   }): Promise<
     { sidecar: MetaSidecar; contentType: string; opened: T } | undefined
   > {
@@ -5102,6 +5235,12 @@ export class FileSystemBackend implements StorageBackend {
           attempt >= maxAttempts ||
           JSON.stringify(reread) === JSON.stringify(sidecar)
         ) {
+          // A container delete removes its members in no fixed order, so the
+          // file can go before its sidecar. When the container no longer
+          // stands, the Resource is gone, not damaged.
+          if (!(await stillStands())) {
+            return undefined
+          }
           throw new StorageError({
             cause: new Error(
               `The sidecar of "${resourceId}" names ${filePath}, which is missing.`,
@@ -5113,6 +5252,55 @@ export class FileSystemBackend implements StorageBackend {
         sidecar = reread
       }
     }
+  }
+
+  /**
+   * Whether a Collection still stands: its Metadata file is present and not a
+   * tombstone. Delete Collection writes its tombstone before it removes the
+   * members, so a read that finds a member's file gone while the Collection is
+   * being deleted sees the tombstone here. Reads the record only, so it
+   * finishes no cut-short delete.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @returns {Promise<boolean>}
+   */
+  async #collectionStands({
+    spaceId,
+    collectionId
+  }: {
+    spaceId: string
+    collectionId: string
+  }): Promise<boolean> {
+    const record = await this.#readCollectionRecord({ spaceId, collectionId })
+    return record !== undefined && !isCollectionTombstone(record)
+  }
+
+  /**
+   * Whether a chunk's container still stands: its Collection, and its parent
+   * Resource's live sidecar. Delete Resource writes the parent's tombstone
+   * before it removes the chunk directory.
+   * @param options {object}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}   the parent Resource
+   * @returns {Promise<boolean>}
+   */
+  async #chunkParentStands({
+    spaceId,
+    collectionId,
+    resourceId
+  }: {
+    spaceId: string
+    collectionId: string
+    resourceId: string
+  }): Promise<boolean> {
+    if (!(await this.#collectionStands({ spaceId, collectionId }))) {
+      return false
+    }
+    const collectionDir = this.#collectionDir({ spaceId, collectionId })
+    const parent = await this.readMetaSidecar({ collectionDir, resourceId })
+    return parent !== undefined && parent.deleted !== true
   }
 
   /**
@@ -5130,22 +5318,27 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.resourceId {string}   the representation id (a resourceId, or
    *   the stringified chunk index)
    * @param options.requestName {string}   used in the 404 error title
+   * @param options.stillStands {() => Promise<boolean>}   whether the
+   *   container still stands (see `#locateRepresentation`)
    * @returns {Promise<ResourceResult>}
    */
   async #readRepresentation({
     collectionDir,
     resourceId,
-    requestName
+    requestName,
+    stillStands
   }: {
     collectionDir: string
     resourceId: string
     requestName: string
+    stillStands: () => Promise<boolean>
   }): Promise<ResourceResult> {
     const located = await this.#locateRepresentation({
       collectionDir,
       resourceId,
       requestName,
-      open: filePath => openFileStream(filePath, this.logger)
+      open: filePath => openFileStream(filePath, this.logger),
+      stillStands
     })
     if (!located) {
       throw new ResourceNotFoundError({ requestName })
@@ -5168,22 +5361,27 @@ export class FileSystemBackend implements StorageBackend {
    * @param options.collectionDir {string}   the dir the representation lives in
    * @param options.resourceId {string}   the representation id (a resourceId, or
    *   the stringified chunk index)
+   * @param options.stillStands {() => Promise<boolean>}   whether the
+   *   container still stands (see `#locateRepresentation`)
    * @returns {Promise<{ stats: import('node:fs').Stats, contentType: string,
    *   sidecar?: MetaSidecar } | undefined>}
    */
   async #statRepresentation({
     collectionDir,
-    resourceId
+    resourceId,
+    stillStands
   }: {
     collectionDir: string
     resourceId: string
+    stillStands: () => Promise<boolean>
   }): Promise<
     { stats: fs.Stats; contentType: string; sidecar?: MetaSidecar } | undefined
   > {
     const located = await this.#locateRepresentation({
       collectionDir,
       resourceId,
-      open: filePath => fsStat(filePath)
+      open: filePath => fsStat(filePath),
+      stillStands
     })
     if (!located) {
       return undefined
@@ -5260,12 +5458,12 @@ export class FileSystemBackend implements StorageBackend {
 
   /**
    * Reads the metadata of a Resource's current representation: the REQUIRED
-   * server-managed fields (`contentType`, `size`, both derived from the stored
-   * file), plus the OPTIONAL `createdAt` / `updatedAt` timestamps and the
-   * user-writable `custom` object read from the sidecar. A member the sidecar
-   * does not carry is omitted, so a Resource with no sidecar reports only
-   * `contentType` and `size`. Resolves `undefined` when the Resource is absent
-   * (including a delete race on `stat`).
+   * server-managed fields (`contentType`, recorded in the sidecar, and `size`,
+   * from the stored file), plus the OPTIONAL `createdAt` / `updatedAt`
+   * timestamps and the user-writable `custom` object read from the sidecar. A
+   * member the sidecar does not carry is omitted. Resolves `undefined` when no
+   * live sidecar names the Resource (none, or a tombstone), so a file with no
+   * sidecar is absent, and when a delete of its Collection races the `stat`.
    *
    * Also surfaces the two records' stamps, so the request layer can set the
    * `ETag` header: HEAD / the resource itself pair the content `generation`
@@ -5288,7 +5486,11 @@ export class FileSystemBackend implements StorageBackend {
     resourceId: string
   }): Promise<(ResourceMetadata & { generation?: string }) | undefined> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
-    const stated = await this.#statRepresentation({ collectionDir, resourceId })
+    const stated = await this.#statRepresentation({
+      collectionDir,
+      resourceId,
+      stillStands: () => this.#collectionStands({ spaceId, collectionId })
+    })
     if (!stated) {
       return undefined
     }
@@ -5515,8 +5717,8 @@ export class FileSystemBackend implements StorageBackend {
    * (replication) still surfaces it until clients catch up (GC of tombstones is
    * future work). The tombstone names no file (`fileName` is dropped), so it is
    * invisible to every normal read path (`getResource` / `getResourceMetadata`
-   * locate the file from a live sidecar, and `listCollectionItems` lists
-   * representation files, of which none is left), making soft delete
+   * locate the file from a live sidecar, and `listCollectionItems` keeps only
+   * the files a live sidecar names), making soft delete
    * transparent to the existing API.
    *
    * When `ifMatch` is supplied (the `conditional-writes` feature), the delete
@@ -5913,7 +6115,9 @@ export class FileSystemBackend implements StorageBackend {
     return this.#readRepresentation({
       collectionDir: chunkDir,
       resourceId: String(chunkIndex),
-      requestName: 'Get Chunk'
+      requestName: 'Get Chunk',
+      stillStands: () =>
+        this.#chunkParentStands({ spaceId, collectionId, resourceId })
     })
   }
 
@@ -5944,7 +6148,9 @@ export class FileSystemBackend implements StorageBackend {
     // shared stat/sidecar reader applies with `chunkDir` as the collectionDir.
     const stated = await this.#statRepresentation({
       collectionDir: chunkDir,
-      resourceId: String(chunkIndex)
+      resourceId: String(chunkIndex),
+      stillStands: () =>
+        this.#chunkParentStands({ spaceId, collectionId, resourceId })
     })
     if (!stated) {
       return undefined
@@ -6014,9 +6220,10 @@ export class FileSystemBackend implements StorageBackend {
                 ifMatch
               })
             }
-            await Promise.all(files.map(name => rm(name)))
-            // Remove the validator sidecar too: a chunk keeps no tombstone, so its
-            // generation does not survive the delete.
+            // The sidecar goes first: it is the record that the chunk stands,
+            // so a read that already took it and then misses the file finds it
+            // gone on its second look and answers 404. A chunk keeps no
+            // tombstone, so its generation does not survive the delete.
             await rm(
               this.#metaSidecarPath({
                 collectionDir: chunkDir,
@@ -6024,6 +6231,7 @@ export class FileSystemBackend implements StorageBackend {
               }),
               { force: true }
             )
+            await Promise.all(files.map(name => rm(name)))
             // When that was the last chunk, remove the now-empty chunk directory
             // itself: a lingering empty `.chunks.<encId>/` would otherwise appear
             // in the export walk (diverging from a Postgres export of the same
@@ -6069,9 +6277,13 @@ export class FileSystemBackend implements StorageBackend {
     // as empty).
     const entries = await this.#readDirEntries(chunkDir)
 
-    // Keep only chunk representations (`r.<index>.<type>.<ext>`), dropping the
-    // `.meta.<index>.json` validator sidecars.
-    const chunkEntries = this.#representationEntries(entries)
+    // Keep only the chunk representations (`r.<index>.<type>.<ext>`) a live
+    // `.meta.<index>.json` sidecar names, dropping the sidecars themselves and
+    // any file a crash left behind.
+    const chunkEntries = await this.#liveRepresentationEntries({
+      dir: chunkDir,
+      entries
+    })
     // `listChunks` takes no lock, so a concurrent `deleteChunk` can remove a
     // file this listing already named. Such a chunk is simply omitted (its
     // `stat` resolves `undefined` below), as `#statRepresentation` does on the
@@ -6321,25 +6533,23 @@ export class FileSystemBackend implements StorageBackend {
       )
     }
 
-    // Index the dir: live content files by id, and the set of ids that have a
+    // Index the dir: the live Resources, each with the one file its sidecar
+    // names (`#liveRepresentationEntries`), and the set of ids that have a
     // `.meta.` sidecar (a sidecar with no live file is a tombstone candidate).
-    const liveFileById = new Map<
-      string,
-      { fileName: string; contentType: string }
-    >()
+    // A tombstone beside a file its delete did not get to remove is therefore
+    // a tombstone here, not a live Resource.
+    const liveEntries = await this.#liveRepresentationEntries({
+      dir: collectionDir,
+      entries
+    })
+    const liveIds = new Set(liveEntries.map(({ resourceId }) => resourceId))
     const sidecarIds = new Set<string>()
     for (const entry of entries) {
-      if (!entry.isFile()) {
-        continue
-      }
-      if (isRepresentationFileName(entry.name)) {
-        const { resourceId, contentType } = parseResourceFileName(entry.name)
-        liveFileById.set(resourceId, { fileName: entry.name, contentType })
-      } else {
-        const sidecarId = metaSidecarFileId(entry.name)
-        if (sidecarId !== undefined) {
-          sidecarIds.add(sidecarId)
-        }
+      const sidecarId = entry.isFile()
+        ? metaSidecarFileId(entry.name)
+        : undefined
+      if (sidecarId !== undefined) {
+        sidecarIds.add(sidecarId)
       }
     }
 
@@ -6353,22 +6563,18 @@ export class FileSystemBackend implements StorageBackend {
       document: FeedDocument
       bodyFile?: string
     }
-    const liveDescriptors = [...liveFileById].map(
-      async ([resourceId, live]): Promise<Descriptor | undefined> => {
-        const sidecar = await this.readMetaSidecar({
-          collectionDir,
-          resourceId
-        })
+    const liveDescriptors = liveEntries.map(
+      async ({
+        resourceId,
+        sidecar,
+        ...live
+      }): Promise<Descriptor | undefined> => {
         // The feed position and the content stamp come from the sidecar. A
         // Resource with no feed position in range, or no whole stamp, is
         // left out.
-        const feedPosition = sidecar?.feedPosition
+        const feedPosition = sidecar.feedPosition
         const stamp = stampOf(sidecar)
-        if (
-          sidecar === undefined ||
-          !inFeed(feedPosition) ||
-          !isWriteStamp(stamp)
-        ) {
+        if (!inFeed(feedPosition) || !isWriteStamp(stamp)) {
           return undefined
         }
         // The content and `/meta` validators ride beside the stamps, so the
@@ -6419,10 +6625,10 @@ export class FileSystemBackend implements StorageBackend {
     // A sidecar with no live file is a tombstone candidate; keep only the ones
     // that are actually tombstones (`deleted: true`).
     const tombstoneDescriptors = [...sidecarIds]
-      .filter(resourceId => !liveFileById.has(resourceId))
+      .filter(resourceId => !liveIds.has(resourceId))
       .map(async (resourceId): Promise<Descriptor | undefined> => {
-        const sidecar = await this.readMetaSidecar({
-          collectionDir,
+        const sidecar = await this.#readListedSidecar({
+          dir: collectionDir,
           resourceId
         })
         const stamp = stampOf(sidecar)
@@ -6664,21 +6870,22 @@ export class FileSystemBackend implements StorageBackend {
    * a JSON-typed representation (the blob content read is skipped, and
    * unparsable JSON is dropped; `#jsonCandidatesFrom` narrows the set to the
    * blinded-index candidates) and `custom` is the
-   * `.meta.` sidecar's `custom` when present. Tombstones are excluded naturally
-   * (no live `r.` content file); an optional excluded Resource is skipped. An
-   * absent Collection dir resolves empty.
+   * `.meta.` sidecar's `custom` when present. Only a file a live sidecar
+   * names is a candidate (`#liveRepresentationEntries`), so a tombstone and a
+   * file a crash left behind are excluded; an optional excluded Resource is
+   * skipped. A sidecar that does not parse leaves its Resource out rather than
+   * failing the scan. An absent Collection dir resolves empty.
    *
    * With `jsonOnly` the scan is the slimmer blinded-index one: blob Resources
-   * are skipped before any read and no sidecar is read, so each candidate is
-   * `{ resourceId, content? }` and a corrupt sidecar on any Resource cannot
-   * fail the scan.
+   * are skipped before any read, and each candidate is
+   * `{ resourceId, content? }`.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
    * @param [options.excludeResourceId] {string}   omit this Resource (a conflict
    *   scan excludes the Resource being written)
-   * @param [options.jsonOnly] {boolean}   JSON representations only, no
-   *   sidecar reads
+   * @param [options.jsonOnly] {boolean}   JSON representations only, with
+   *   no `custom`
    * @returns {Promise<EqualityCandidate[]>}
    */
   async #readEqualityCandidates({
@@ -6694,16 +6901,19 @@ export class FileSystemBackend implements StorageBackend {
   }): Promise<EqualityCandidate[]> {
     const collectionDir = this.#collectionDir({ spaceId, collectionId })
 
-    const entries = await this.#readDirEntries(collectionDir)
+    // A `jsonOnly` scan drops the blob files by name, before their sidecars
+    // are read.
+    const entries = (await this.#readDirEntries(collectionDir)).filter(
+      entry =>
+        !jsonOnly ||
+        !isRepresentationFileName(entry.name) ||
+        isJsonContentType(parseResourceFileName(entry.name).contentType)
+    )
 
     return await Promise.all(
-      this.#representationEntries(entries)
-        .filter(
-          ({ resourceId, contentType }) =>
-            resourceId !== excludeResourceId &&
-            (!jsonOnly || isJsonContentType(contentType))
-        )
-        .map(async ({ resourceId, fileName, contentType }) => {
+      (await this.#liveRepresentationEntries({ dir: collectionDir, entries }))
+        .filter(({ resourceId }) => resourceId !== excludeResourceId)
+        .map(async ({ resourceId, fileName, contentType, sidecar }) => {
           // Parse the content only for a JSON representation; a blob contributes
           // no content-sourced attributes (its `custom` still makes it
           // queryable). Unparsable JSON is treated as no content.
@@ -6720,13 +6930,11 @@ export class FileSystemBackend implements StorageBackend {
               content = undefined
             }
           }
-          const sidecar = jsonOnly
-            ? undefined
-            : await this.readMetaSidecar({ collectionDir, resourceId })
           return {
             resourceId,
             ...(content !== undefined && { content }),
-            ...(sidecar?.custom !== undefined && { custom: sidecar.custom })
+            ...(!jsonOnly &&
+              sidecar.custom !== undefined && { custom: sidecar.custom })
           }
         })
     )
