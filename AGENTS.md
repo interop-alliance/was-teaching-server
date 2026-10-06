@@ -16,12 +16,12 @@ the spec defines that this server doesn't implement yet) and the
 ## Tech Stack
 
 - TypeScript (strict, `target: ES2022`), compiled with `module`/
-  `moduleResolution: NodeNext` — so import specifiers keep their `.js` extension
-  even though the source files are `.ts` (e.g. `import './server.js'`)
+  `moduleResolution: NodeNext` -- so import specifiers keep their `.js`
+  extension even though the source files are `.ts` (e.g. `import './server.js'`)
 - Node.js 24.x, with `pnpm` as package manager
 - Fastify 5.x API framework
 - Dev runs via `tsx` (`pnpm dev`, no build step); production builds with `tsc`
-  to `dist/` (`pnpm build`, which also copies `src/views` → `dist/views`) and
+  to `dist/` (`pnpm build`, which also copies `src/views` to `dist/views`) and
   runs `node dist/start.js`
 - Tooling: ESLint (flat config) + Prettier, Vitest for `test/`
 
@@ -29,10 +29,15 @@ the spec defines that this server doesn't implement yet) and the
 
 The request-flow layer map, domain glossary (Space / Collection / Resource /
 Controller), and ZCap authorization structure live in @ARCHITECTURE.md -- read
-it before making changes.
+it before making changes. Each module entry there ends with a pointer to the
+topic doc under `docs/` that holds the full behavior description (validators and
+stamps, the changes feed, governed logs, replication, export/import, server
+identity, the client-annex clause, the storage layout, did:webvh controllers,
+the service description). Read the topic doc before changing the behavior it
+describes; the summary in ARCHITECTURE.md is not the whole rule.
 
 **When adding an endpoint:** add the route in `routes.ts` and a handler method
-on the matching `*Request` class. Always go through `request.server.storage` —
+on the matching `*Request` class. Always go through `request.server.storage` --
 never import or instantiate a backend directly from a handler.
 
 An unsafe method at a container URL (a Space or a Collection) passes the
@@ -58,79 +63,14 @@ Code style, refactoring, JSDoc, comment, and error-handling conventions live in
 Repo-specific addition: throw the custom error classes defined in
 `src/errors.ts` rather than generic `Error`.
 
-## Roadmap & Task Conventions
+## Roadmap
 
-All roadmap tracking lives in [ROADMAP.md](./ROADMAP.md): narrative context
-(section preambles, gap analysis) plus structured work items. Never create a
-parallel task list elsewhere (no `TODO.md`, no task lists in other docs).
-
-Each work item follows this schema:
-
-- A heading `### WAS-N: [P] Title`, then a field block, then free prose context.
-  `[P]` is the priority tag (`[H]`, `[M]`, `[L]`), computed from the `priority`
-  field by the ordering script, which may also add `[blocks N]` and
-  `[after WAS-X]` after it. No marker in a title is edited by hand.
-- Fields: `status` (`todo` / `in-progress` / `draft` / `done`), `priority`
-  (`high` / `medium` / `low`), `labels` (comma-separated), optional
-  `discovered-from` (the item, review, or question the item came out of, with
-  its date), optional `blocked-by` (other `WAS-N` ids, or an external id such as
-  `WASS-N` or `FW-N`), `blocks` (derived, written by the script), a `touches:`
-  list where it applies, and an `acceptance:` checklist.
-- `draft` marks items with no actionable done-state yet (spec-blocked or parking
-  records); a draft states _why_ instead of acceptance criteria and must gain
-  acceptance criteria when promoted to `todo`.
-- `touches:` is the field defined in the canonical schema in
-  isomorphic-lib-template's AGENTS.md ("Roadmap & Task Conventions"): required
-  for any item changing a spec, a wire contract, or a shared `@interop/*` API,
-  it lists the affected repos and their ARCHITECTURE/AGENTS files. Each entry is
-  a reminder to file follow-up work in that repo, annotated before `done` with
-  the item filed there, what already shipped, or `unaffected: <repo> (<why>)`;
-  it does not block `done`. See that file for the full definition.
-
-Sections are kinds of work, ordered by what an open item costs: Security,
-Correctness and consistency, Spec and protocol, Features, Multi-primary Spaces
-(the replication program), Performance, Docs/tests/cleanup, Someday / Maybe,
-Parking (every `draft`). An item goes in the section for what it is, not for
-where it was found; provenance is the `discovered-from` field.
-
-Rules:
-
-- After any edit to ROADMAP.md, run `pnpm roadmap`
-  (`node scripts/roadmap-order.mjs`). It orders each section so a dependency
-  precedes its dependents (ties broken by priority, then prior order; the
-  Someday / Maybe section is ordered by id), writes `blocks:` as the reverse of
-  the open `blocked-by` edges, rewrites the title markers, and regenerates the
-  "Index (generated)" block under the H1. It never moves an item between
-  sections. `--check` reports without writing; `--satisfied` lists `blocked-by`
-  entries that name archived items, which can be removed.
-- Item ids are permanent and never reused. The `nextAvailableId: <n>` line at
-  the top of ROADMAP.md is the sole source of the next id: filing an item takes
-  `n` and rewrites the line to `n + 1`, in the same edit. Never derive the next
-  id by scanning the roadmap; the highest id usually lives in
-  archived-roadmap.md, not in the open roadmap. If the counter's id already
-  appears in either file, the counter is stale: reset it to one past the highest
-  id across both files, then take it.
-- Every non-draft item needs acceptance criteria before it may be moved to
-  `in-progress`.
-- Statuses are edited in place (change the `status:` field); acceptance
-  checkboxes are ticked as they are met.
-- Completed items move **verbatim** (number, title, field block, prose, with
-  their `done` date) from ROADMAP.md to
-  [archived-roadmap.md](./archived-roadmap.md) once shipped, append-only -- this
-  keeps WAS-N references resolvable. CHANGELOG.md remains the permanent record
-  of what landed (existing convention). Do not rewrite or summarize items on the
-  way in, and do not fix old references.
-- Work discovered mid-implementation gets its own item immediately, with
-  `discovered-from: WAS-N` in its field block, plus a `blocked-by` link if it
-  blocks anything.
-- Reference item ids only in the roadmap documents (ROADMAP.md and
-  archived-roadmap.md). Do not put them in commit messages, PR descriptions, or
-  CHANGELOG.md entries -- those describe the change itself, not the tracking
-  item.
-- `blocked-by` links only express dependencies implied by the work itself; do
-  not invent orderings.
-- Never refer to invariants just by number, always include a brief description
-  in parentheses.
+All roadmap tracking lives in [ROADMAP.md](./ROADMAP.md); never create a
+parallel task list elsewhere. Before filing, editing, or closing an item, read
+the "Item format" section at the top of ROADMAP.md: it holds the item schema,
+the id counter rule, the status and archive rules, and the `pnpm roadmap`
+ordering step that follows every edit. Reference item ids only in the roadmap
+documents, not in commit messages, PR descriptions, or CHANGELOG.md entries.
 
 ## Ecosystem conventions
 
@@ -152,79 +92,35 @@ Rules:
 
 ## Test Suite
 
-Two separate test directories serve different purposes:
-
-- `test/` — integration tests that spin up a local Fastify server in-process;
-  use these to test the implementation. Run with **Vitest** (`pnpm test-node`,
-  i.e. `vitest run`); config in `vite.config.ts`.
-- Protocol conformance tests live in their own package,
-  `@interop/was-conformance-suite` (repo:
-  <https://github.com/interop-alliance/was-conformance-suite>), installed here
-  as a devDependency. Its `was-conformance` CLI runs against any WAS server by
-  URL (`pnpm conformance <url>`; `TEST_SERVER_URL` / `TEST_ONBOARDING_TOKEN` env
-  vars work as fallbacks). To run it against a freshly-spawned local server in
-  one step, use `pnpm conformance:local` (see Conformance Test Usage below).
+- `test/` holds integration tests that spin up a local Fastify server
+  in-process; use these to test the implementation. Run with Vitest
+  (`pnpm test-node`); config in `vite.config.ts`.
+- Protocol conformance tests live in `@interop/was-conformance-suite`, installed
+  as a devDependency. `pnpm conformance:local` runs it against a freshly spawned
+  local server; README.md's "Conformance Tests" section has the other
+  invocations and the CLI options.
 
 **Critical ZCap constraint**: ZCap capability `invocationTarget` URLs include
-the full host and port. The server's `SERVER_URL` environment variable and the
-URL the conformance CLI targets must be exactly identical strings — if they
-differ (even just `localhost` vs `127.0.0.1`, or different ports), the
-delegated-access tests will return 404. This is not a bug; it's how ZCap
-URL-based capabilities work.
+the full host and port. The server's `SERVER_URL` and the URL a client targets
+must be exactly identical strings (`localhost` vs `127.0.0.1`, or a different
+port, makes delegated-access requests 404). This is how URL-based capabilities
+work, not a bug.
 
-**Per-suite `dataDir`.** Each `test/` file injects its own storage backend into
-`createApp({ backend })` — a `FileSystemBackend` over a private `mkdtemp` temp
-dir — and removes it in `afterAll`. Suites therefore never share or leak the
-gitignored `data/` directory, and parallel Vitest workers can't collide on the
-filesystem. Each suite still self-provisions its Space/Collection in `beforeAll`
-(its temp dir starts empty).
+The test helpers (`startTestServer`, `openTempBackend`, `faults`) are documented
+in [docs/consuming-server-as-library.md](docs/consuming-server-as-library.md)
+under "Testing against the server". Rules a suite in `test/` follows:
 
-**Per-suite ephemeral port.** Suites boot their server with
-`startTestServer({ backend })`, never with a hardcoded port. The helper lives in
-`src/testing.ts`, the source of the `was-teaching-server/testing` export, and
-`test/helpers.ts` re-exports it. `openTempBackend()` from the same module opens
-the per-suite temp-dir backend. `startTestServer` listens on port `0` and
-returns the `serverUrl` the OS actually assigned, so parallel Vitest workers
-can't collide on a port either. Because ZCap `invocationTarget` URLs embed host
-and port, `serverUrl` is unknown until `listen()` resolves -- so build ZCap
-clients (and any URL derived from `serverUrl`) _after_ the `startTestServer`
-call, not before. `startTestServer` also returns `faults`
-(`src/lib/requestFaults.ts`): a record of every request, plus `refuse`,
-`dropResponse`, and `hold` to fail or pause a chosen one. Its hooks are added
-before the protocol plugin is registered, so they run ahead of every route
-group's own hooks. Use it for a torn or interleaved request in place of mocking
-`node:fs/promises`, unless the fault under test is the syscall itself.
-was-client retries a 5xx and a dropped connection, so pass `times` or refuse
-with a 4xx. A suite that tears its server down and boots a replacement over the
-same `dataDir` must pass the returned `port` back in, so ids minted by the first
-server still resolve (see `test/kms-record-encryption.test.ts`).
-
-### Conformance Test Usage
-
-```bash
-# Local one-shot (recommended for local runs): spins up the server on a fixed
-# local URL, waits for health, runs the was-conformance CLI against that same
-# URL, and tears the server down — so the two URLs can't drift. Implemented by
-# scripts/conformance-local.ts; override the port with PORT=...; extra
-# arguments are forwarded to the CLI (pnpm does that itself, so do not add a
-# `--` separator: it would reach the CLI as an argument and exit 2).
-pnpm conformance:local
-pnpm conformance:local --grep chunk
-
-# Against an already-running / external server. The server must be started with
-# SERVER_URL matching the CLI's target URL exactly (ZCap invocationTarget URLs
-# include host:port, so they must match).
-pnpm conformance https://was.example.com
-
-# With an onboarding token for servers that require one for POST /spaces/:
-pnpm conformance https://was.example.com --token abc123
-
-# TEST_SERVER_URL / TEST_ONBOARDING_TOKEN env vars still work as fallbacks.
-```
-
-Useful CLI options: `-s/--suite`, `-g/--grep`, `--include-optional` /
-`--skip-optional`, `-r json`, `--timeout`, `--fail-fast`. Exit codes: `0`
-conformant, `1` failures, `2` usage error / server unreachable.
+- Each suite opens its own temp-dir backend with `openTempBackend()`, injects it
+  into `startTestServer({ backend })`, and closes it in `afterAll`. Suites never
+  touch the gitignored `data/` directory and never hardcode a port.
+- Build ZCap clients, and any URL derived from `serverUrl`, after the
+  `startTestServer` call resolves, since the port is unknown before `listen()`.
+- A suite that reboots a server over the same `dataDir` passes the first
+  server's `port` back in, so ids minted by the first server still resolve.
+- Use `faults` (`refuse`, `dropResponse`, `hold`) for a torn or interleaved
+  request instead of mocking `node:fs/promises`, unless the fault under test is
+  the syscall itself. was-client retries a 5xx and a dropped connection, so pass
+  `times` or refuse with a 4xx.
 
 ## Logging
 
@@ -233,7 +129,7 @@ conformant, `1` failures, `2` usage error / server unreachable.
   Fastify's pino logger instead.
 - In request-layer code (handlers, hooks, the error handler) use `request.log`.
 - Backends and other non-request code take an injected logger typed as Fastify's
-  `FastifyBaseLogger` (reuse that type — do not hand-roll a logger interface).
+  `FastifyBaseLogger` (reuse that type -- do not hand-roll a logger interface).
   `FileSystemBackend` exposes a `logger` property defaulting to a silent
   `pino({ level: 'silent' })`; `createApp()` wires `fastify.log` into the active
   backend, so anything reached via `request.server.storage` logs to the same

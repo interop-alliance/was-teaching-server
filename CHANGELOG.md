@@ -4,6 +4,15 @@
 
 ### Changed
 
+- ARCHITECTURE.md is now the layer map and glossary alone. The per-module
+  behavior descriptions moved verbatim into topic docs under `docs/` (request
+  pipeline, validators and stamps, changes feed, governed logs, replication,
+  export/import, server identity and provenance, the client-annex clause,
+  storage layout, `did:webvh` controllers, service description), each entry in
+  ARCHITECTURE.md pointing at its doc. Historical notes about retired behavior
+  were dropped. AGENTS.md's roadmap conventions moved into ROADMAP.md's "Item
+  format" section, and its conformance and test-helper sections now point at
+  README.md and `docs/consuming-server-as-library.md`.
 - Delete Resource tombstones the Resource's access-control policy in the same
   critical section, with its own stamp and feed position, so a `PublicCanRead`
   written to publish one record no longer publishes whatever next occupies its

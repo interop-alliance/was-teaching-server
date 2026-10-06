@@ -1,0 +1,215 @@
+# Server Identity and Export Provenance
+
+How the server holds an identity of its own, and how it uses that identity to
+sign an export archive's provenance and to judge one on import. This doc covers
+`lib/serverIdentity.ts`, `lib/provenanceStatement.ts`, `lib/exportProvenance.ts`
+and `lib/importProvenance.ts`. [ARCHITECTURE.md](../ARCHITECTURE.md) holds the
+layer map and the glossary, including the entries for the `server` Space, Server
+identity and Provenance statement. The one-key rationale is in
+[decision 0003](../decisions/0003-one-server-key-for-export-and-sync.md).
+
+## Two keys, two holders
+
+The server's own identity is held by two keys with two holders. The server
+derives an Ed25519 export-signing key from `WAS_SERVER_KEY_SEED`, and that seed
+is its only secret. The administrator's `did:key` (`WAS_ADMIN_DID`) holds the
+update key of the server's `did:webvh` history log. The server therefore never
+mints or extends its own log, and a compromised server cannot take the DID over.
+
+The DID is the self-hosted `did:webvh:{scid}:{host}:space:server:id`. Its log is
+the `did.jsonl` Resource of the `id` Collection in the `server` Space. It
+resolves through the same `webvhController.ts` path as any Space controller, so
+the log gets the fast-forward and verify-on-append rules and the document cache
+with no code of its own. See [webvh-controllers.md](webvh-controllers.md) for
+those rules.
+
+The same seed key also signs sync invocations once the log lists it under
+`capabilityInvocation`. That signer is described in
+[replication.md](replication.md) (`lib/syncIdentity.ts`).
+
+## The `server` Space
+
+The plugin provisions the `server` Space at registration when `WAS_ADMIN_DID` is
+set. The create is a guarded create, typed
+`['AuxiliarySpace', 'ServerInstanceSpace', 'Space']`, with the admin DID as
+controller. The server refuses to start over a stored `server` Space that lacks
+the subtype or carries another controller.
+
+A create that loses the guarded write to another instance booting over the same
+storage re-reads and checks what the winner stored. One the Space count quota
+refuses fails naming `WAS_ADMIN_DID`.
+
+The Space id `server` is reserved on every client create
+(`assertCreatableSpaceId`, `reserved-id` 409), configured or not. The subtype is
+refused there too (`assertClientCreatableSpaceType`), while the shape check
+still admits it. The admin's own Update Space must restate the stored `type`
+set, so it goes through.
+
+The log is admin-custodied state. It dies with a data wipe, and the admin's copy
+is what restores it.
+
+## Resolving the server DID
+
+`resolveServerDid` reads the log's head for the DID, checks it is hosted at
+`server/id` of this server, resolves it, and requires the signing key to be
+listed under `assertionMethod`. It reads every method that carries the key and
+any method embedded in a relationship.
+
+The key may also be listed under `capabilityInvocation`, which is how the admin
+enables replication. It may not be listed under `capabilityDelegation`,
+`authentication` or `keyAgreement`. A key under `capabilityDelegation` without
+`capabilityInvocation` would read as a ladder verification method to the
+client-annex clause.
+
+One predicate, `signingKeyRelationshipProblem`, decides this for `/service`, the
+export snapshot check and the import statement check. See
+[service-description.md](service-description.md) for how `/service` advertises
+the result as `exportSigningKey` and `serverDid`.
+
+A log that is absent, does not verify, or lists the key otherwise leaves
+`serverDid` off `/service` with a `warn` line, logged once per log version
+rather than per request. The server signs nothing in that case.
+
+## The provenance statement
+
+`lib/provenanceStatement.ts` holds the provenance statement contract. It is
+shared by the signing half and the verifying half below, and owned by neither.
+It holds the statement `type` (`STORAGE_ATTESTATION_TYPE`), the members a
+statement attests (`Claims`, `CLAIM_MEMBERS`), and the rules for computing them
+from an archived object.
+
+- `serverFieldsOf` reads the server-managed members off an archived Metadata
+  file or `.meta.<id>.json` sidecar.
+- `fileDigest` digests a file's bytes in the `Digest` header's `mh=` form.
+- `chunkedDigest` computes a chunked Resource's composite digest.
+
+Export signs what these compute, and import recomputes the same values to judge
+a statement.
+
+## Signing on export
+
+`loadExportAttestor` in `lib/exportProvenance.ts` runs once per Export Space
+request. It takes the server DID from `resolveServerDid`, reads the log's bytes
+as the log Resource serves them, and checks that snapshot on its own terms. Its
+head names the same DID, it verifies as that DID's log, and its document lists
+the seed key as the method `{serverDid}#{publicKeyMultibase}`, under
+`assertionMethod` and at most `capabilityInvocation`.
+
+With no identity the handler logs one `warn` line naming the reason and the
+export carries no provenance. With one, the backend's `exportSpace` hands its
+finished entry tree to `attestArchiveEntries` before packing it. See
+[export-import.md](export-import.md) for the archive and its entry tree.
+
+### What a statement holds
+
+`attestArchiveEntries` emits one `StorageAttestation` statement per exported
+object in manifest order. Those objects are the Space Metadata object, each
+Collection Metadata object, and each Resource with a representation. A tombstone
+holds no content and gets none. A Collection tombstone is a Space-level file
+entry and gets no statement either.
+
+A statement is
+`{ id, type, createdBy, createdAt, updatedAt, updatedAtCounter, originId, meta, digest, didLogVersionId }`.
+
+- `id` is the object's absolute URL on this server.
+- The server-managed members are read back off the archived Metadata file or
+  `.meta.<id>.json` sidecar, and a member the record lacks is left out.
+- `digest` is the `Digest` header's `mh=` form over the representation's
+  archived bytes. A chunked Resource's `digest` is the same form over the JCS
+  serialization of its chunk digests in index order, so its parent
+  representation's bytes are not covered. These reading and digest rules live in
+  `lib/provenanceStatement.ts`.
+- `updatedAt`, `updatedAtCounter` and `originId` are the object's write stamp as
+  archived. See [validators-and-stamps.md](validators-and-stamps.md).
+- A Resource's `meta` is its `/meta` record's stamp and generation, present once
+  metadata was written. A Metadata statement carries no `meta` and no `digest`.
+- `didLogVersionId` is the snapshot head's `versionId`, since `proof.created` is
+  not trustworthy.
+
+### The proof
+
+Each statement carries one `eddsa-jcs-2022` proof, `proofPurpose`
+`assertionMethod`. It is made straight from the suite rather than through
+`jsigs.sign`, which would add a JSON-LD `@context` the statement does not carry.
+The proof has no `created`, and Ed25519 is deterministic, so signing the same
+statement again yields the same bytes. That keeps a later write-time signature
+interchangeable with an export-time one.
+
+### Where it lands
+
+The statements go into the archive's `provenance.jsonl` and the snapshot into
+its `did.jsonl`, both root entries ahead of `space/`. Each Resource is read
+twice, once to digest it and once to pack it.
+
+The export is not one transaction. A Resource written between the two reads
+leaves a statement that does not match its archived bytes. One deleted after the
+backend built the entry tree gets no statement, and the export goes on. Import
+verifies both entries, as described next.
+
+## Verifying on import
+
+`lib/importProvenance.ts` is the verifying half. The Import Space handler runs
+it through one call, `prepareImportPlan` in `lib/importPlan.ts`, which extracts
+the archive and builds the plan with `importTar.ts` first. It removes every
+`createdBy` the archive did not earn before the plan reaches a backend. A
+backend's `importSpace` takes the judged plan and the verdict counts, and
+persists what it is handed. See [export-import.md](export-import.md) for the
+import plan.
+
+### The signer
+
+The signer is the DID the `did.jsonl` snapshot's head names. The whole snapshot
+must verify offline as that DID's history log (`verifyWebvhLog`). Any server DID
+whose log verifies is accepted. There is no allowlist and no setting, and the
+importer's own `serverDid` gets no special treatment. The log, not the importer,
+establishes who signed.
+
+### Judging a statement
+
+A statement is judged on its own.
+
+1. Its `verificationMethod` must name the snapshot's DID, and that DID must be
+   the `server/id` DID of the host the statement's `id` names.
+2. The document is resolved at the log entry whose `versionId` equals the
+   statement's `didLogVersionId`, by verifying the log up to that entry. It must
+   list the method under `assertionMethod`, and at most `capabilityInvocation`.
+3. The `eddsa-jcs-2022` proof is verified.
+4. The statement's claims are compared with the archived object: `createdBy`,
+   `createdAt`, the write stamp (`updatedAt`, `updatedAtCounter`, `originId`),
+   and for a Resource its `meta` and its `digest` (the composite chunk digest
+   for a chunked Resource). `meta` is compared member by member.
+
+The archived object's members and digests are computed by the same
+`lib/provenanceStatement.ts` functions export signs with.
+
+### Verdicts
+
+Each object the archive carries an attestable entry for gets one verdict,
+whether or not the destination already holds it.
+
+- `verified`.
+- `unattested`: no statement, or no `provenance.jsonl`.
+- `proofInvalid`.
+- `contentMismatch`.
+- `unknownSigner`: no `did.jsonl`, a log that does not verify, a method outside
+  the snapshot's DID, a version the log lacks, or a method there that is not
+  under `assertionMethod` or is under any relationship besides
+  `capabilityInvocation`.
+
+The counts are the `provenance` member of the returned `ImportStats`. Outside
+`verified` the object is still imported, with its `createdBy` removed.
+
+A tombstone carries no statement and is not counted. Its sidecar loses
+`createdBy` too, since the tombstone's change document carries it. A Collection
+tombstone travels on the plan apart from the live Collections
+(`collectionTombstones`), so it is never judged or counted. The Space Metadata
+object's verdict is counted only, since an import never restores its
+`createdBy`.
+
+A `proofInvalid` and a `contentMismatch` are logged at `warn` with different
+messages, so damaged bytes are not read as a bad signature. `createdAt` keeps
+its import behavior whatever the verdict.
+
+The archived stamps are read for this comparison only. The importing backend
+re-stamps every record it writes with its own clock and origin id, and keeps
+each record's archived generation.
