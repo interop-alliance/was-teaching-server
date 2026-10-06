@@ -347,7 +347,11 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
     await assert.rejects(writeJson({ resourceId: 'live', data: { tag: 'y' } }))
   })
 
-  it('Delete Chunk answers absent for a chunk file with no sidecar, and leaves it', async () => {
+  /**
+   * Writes chunk 0 of the live Resource, and resolves its chunk dir.
+   * @returns {Promise<string>}
+   */
+  async function writeLiveChunk(): Promise<string> {
     await backend.writeChunk({
       spaceId,
       collectionId,
@@ -355,7 +359,11 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
       chunkIndex: 0,
       input: textInput('chunk')
     })
-    const chunkDir = path.join(collectionDir, chunkDirName('live'))
+    return path.join(collectionDir, chunkDirName('live'))
+  }
+
+  it('Delete Chunk answers absent for a chunk file with no sidecar, and leaves it', async () => {
+    const chunkDir = await writeLiveChunk()
     const orphan = await plantOrphan({ dir: chunkDir, resourceId: '1' })
     assert.equal(
       await backend.deleteChunk({
@@ -370,14 +378,7 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
   })
 
   it('Delete Chunk reclaims every file of the index, and the emptied chunk dir', async () => {
-    await backend.writeChunk({
-      spaceId,
-      collectionId,
-      resourceId: 'live',
-      chunkIndex: 0,
-      input: textInput('chunk')
-    })
-    const chunkDir = path.join(collectionDir, chunkDirName('live'))
+    const chunkDir = await writeLiveChunk()
     // A type change cut short before its prune left the prior file beside
     // the live one.
     await plantOrphan({ dir: chunkDir, resourceId: '0' })
@@ -394,14 +395,7 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
   })
 
   it('Delete Chunk cut short after removing the sidecar answers absent when retried', async () => {
-    await backend.writeChunk({
-      spaceId,
-      collectionId,
-      resourceId: 'live',
-      chunkIndex: 0,
-      input: textInput('chunk')
-    })
-    const chunkDir = path.join(collectionDir, chunkDirName('live'))
+    const chunkDir = await writeLiveChunk()
     // The first delete got as far as the sidecar.
     await rm(path.join(chunkDir, '.meta.0.json'))
     assert.equal(
@@ -423,14 +417,7 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
       chunkIndex: 0,
       input: { kind: 'json', contentType: 'application/json', data: {} }
     })
-    await backend.writeChunk({
-      spaceId,
-      collectionId,
-      resourceId: 'live',
-      chunkIndex: 0,
-      input: textInput('chunk')
-    })
-    const chunkDir = path.join(collectionDir, chunkDirName('live'))
+    const chunkDir = await writeLiveChunk()
     // The prior representation of chunk 0, and a chunk 1 torn before its
     // sidecar.
     await plantOrphan({ dir: chunkDir, resourceId: '0' })
