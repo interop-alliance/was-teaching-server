@@ -51,6 +51,34 @@ export function resolvePageSize(limit?: number): number {
 }
 
 /**
+ * The index in an array already sorted in ascending keyset order (code-unit)
+ * where a page resumes: the first item whose key is strictly greater than the
+ * cursor's anchor, the array's length when none is, and 0 with no cursor. A
+ * malformed cursor rejects with `invalid-cursor` (400), via `decodeCursor`.
+ * @param options {object}
+ * @param options.items {Item[]}   the full list, in keyset order
+ * @param [options.cursor] {string}   opaque cursor from a prior page
+ * @param options.keyOf {Function}   reads an item's keyset key
+ * @returns {number}
+ */
+export function seekStartIndex<Item>({
+  items,
+  cursor,
+  keyOf
+}: {
+  items: Item[]
+  cursor?: string
+  keyOf: (item: Item) => string
+}): number {
+  if (cursor === undefined) {
+    return 0
+  }
+  const { after } = decodeCursor(cursor)
+  const found = items.findIndex(item => keyOf(item) > after)
+  return found === -1 ? items.length : found
+}
+
+/**
  * Cuts one page out of an array already sorted in ascending keyset order
  * (code-unit, matching the `>` seek below), resuming strictly after a cursor's
  * anchor key. Keyset stability: a missing anchor (deleted between pages) does
@@ -80,13 +108,7 @@ export function seekPage<Item>({
   pageSize: number
   keyOf: (item: Item) => string
 }): { page: Item[]; hasMore: boolean } {
-  let startIndex = 0
-  if (cursor !== undefined) {
-    const { after } = decodeCursor(cursor)
-    const found = items.findIndex(item => keyOf(item) > after)
-    startIndex = found === -1 ? items.length : found
-  }
-
+  const startIndex = seekStartIndex({ items, cursor, keyOf })
   const window = items.slice(startIndex, startIndex + pageSize + 1)
   const hasMore = window.length > pageSize
   const page = hasMore ? window.slice(0, pageSize) : window

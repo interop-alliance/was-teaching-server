@@ -1125,22 +1125,34 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   a chunk's parent Resource is -- since a container delete removes its members
   in no fixed order, and a `StorageError` (500) otherwise. A read racing Delete
   Space can still answer 500: the Space dir is removed in no fixed order, and no
-  tombstone is left for the read to find. Delete Chunk removes the chunk's
-  sidecar before its file, so a read racing it finds the sidecar gone and
-  answers 404. A crash can leave a file no live sidecar names: bytes written
-  before their sidecar, the prior file of a write cut short before its prune, or
-  the file of a delete cut short after its tombstone. The paths that list a
-  directory -- the Resource count, the changes feed, export, the equality and
-  unique-claim scans, and the chunk listing -- keep a file only when its id's
+  tombstone is left for the read to find. Delete Chunk finds the chunk from its
+  sidecar, as a read does, and removes the sidecar before the file it names. A
+  read racing it finds the sidecar gone and answers 404. A retried delete that
+  was cut short between the two removals answers 404 too. A crash can leave a
+  file no live sidecar names: bytes written before their sidecar, the prior file
+  of a write cut short before its prune, or the file of a delete cut short after
+  its tombstone. Nothing removes such a file, and Delete Chunk leaves a chunk
+  file with no sidecar in place. The changes feed, export, the equality and
+  unique-claim scans, and the chunk listing keep a file only when its id's
   sidecar is live and names it (`#liveRepresentationEntries`), so they agree
-  with the reads. A tombstone beside such a file is a tombstone in the feed. The
-  Collection listing reads sidecars for its page only, so its cost stays that of
-  the page. It lists an id only when the id's sidecar is live and names one of
-  its files, and its `totalItems` counts, from the names alone, each id with a
-  representation file and a sidecar file beside it. An id whose delete a crash
-  cut short therefore still counts in `totalItems`, though no page lists it. A
-  sidecar that does not parse leaves its Resource out of those paths, with a
-  `warn` line, rather than failing them. Nothing removes such a file.
+  with the reads. A tombstone beside such a file is a tombstone in the feed.
+  Export archives a live Resource's sidecar from the object it was judged by, so
+  it reads each sidecar once. The Collection listing judges files the same way,
+  but reads only the sidecars it needs to fill the page. Its `totalItems` reads
+  no sidecar past the page's, and the Resource count quota reads none. Both
+  count, from the directory names alone, the ids that have both a sidecar and a
+  representation file. A file with no sidecar is not counted. A tombstone beside
+  a stray file is counted until the id is written again, except where
+  `totalItems` covers the ids its page judged. A sidecar that does not parse
+  leaves its Resource out of every path that lists a directory, with a `warn`
+  line. That covers the listings, the chunk listing, export, the changes feed,
+  the equality and blinded-index queries, the unique-claim scans a write runs,
+  and the check a new unique index declaration runs. Sidecar writes are atomic
+  (`atomicWriteFile`), so such a sidecar is disk damage or a hand edit, not a
+  torn write. The damaged Resource's own reads and writes still fail on it. One
+  damaged file must not take down every unique write and the whole feed of its
+  Collection. The Resource's repair is a rewrite, which runs its unique claims
+  again and takes a fresh feed position.
 
   Delete Collection leaves a tombstone in both backends. The filesystem backend
   keeps it as the Collection's `.collection.<id>.json`, now holding only
