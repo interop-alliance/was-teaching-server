@@ -5697,3 +5697,37 @@ the same DID neither Space can be repaired. The promotion is the step to guard:
 it already resolves the DID before storing it, and can refuse when the promoted
 Space's own registrations would select the log Collection another local Space
 maps.
+
+### WAS-213: [M] Orphan representation files on the filesystem backend
+
+- status: done
+- done: 2026-10-06
+- priority: medium
+- labels: filesystem-backend, consistency
+- discovered-from: the sidecar `fileName` change (2026-10-06)
+- acceptance:
+  - [x] A representation file no live sidecar names (a torn write under a
+        different content-type, a delete that crashed after its tombstone, a
+        sidecar write that failed after the bytes landed) never appears in
+        `listResources`, the changes feed, `#countLiveResources`,
+        `#readEqualityCandidates` or `listChunks`, and never counts toward a
+        quota
+  - [x] Either those listings decide liveness from the sidecar, or a sweep
+        removes such a file (at boot, or on the next write of its id), and
+        ARCHITECTURE.md says which
+  - [x] A test in `test/` plants an orphan beside a live Resource of the same id
+        and asserts the id is listed once and counted once
+
+Context: since the sidecar records `fileName`, a write or delete removes only
+the file the prior sidecar named, and the next write of an id no longer prunes
+every stale `r.<id>.*` file in the Collection directory. Reads are unaffected,
+since they open the named file. The directory-driven listings still count every
+`r.`-prefixed file, so an orphan can list an id twice, under two content-types,
+and inflate the Resource count. The feed's live branch also does not check
+`sidecar.deleted`, which predates the change.
+
+Shipped 2026-10-06: every path that lists a directory decides liveness from the
+sidecar, and Delete Resource and Delete Chunk remove every representation file
+of the id, so a delete is the one path that reclaims an orphan. The Collection
+listing's `totalItems` and the Resource count quota are exact.
+`test/filesystem-ghost-files.test.ts` plants the orphans.
