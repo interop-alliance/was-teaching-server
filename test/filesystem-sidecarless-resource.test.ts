@@ -15,11 +15,11 @@ import { readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import type { FastifyInstance } from 'fastify'
-import * as tar from 'tar-stream'
 
 import { fileNameFor, metaSidecarFileName } from '@interop/space-archive'
 import { isResourceChange } from '@interop/storage-core'
 
+import { extractTarEntries } from '../src/lib/importTar.js'
 import type { TempFileSystemBackend } from '../src/testing.js'
 import {
   importArchive,
@@ -325,14 +325,16 @@ describe('FileSystemBackend: the sidecar names its representation file', () => {
         stream: Readable.from([Buffer.from('abc')])
       }
     })
-    const archive = await archiveEntries(await source.exportSpace({ spaceId }))
+    const archive = await extractTarEntries(
+      await source.exportSpace({ spaceId })
+    )
     const sidecarEntries = [...archive].filter(([name]) =>
       path.basename(name).startsWith('.meta.')
     )
     // The Resource's sidecar and its chunk's.
     assert.equal(sidecarEntries.length, 2)
-    for (const [name, bytes] of sidecarEntries) {
-      const archived = JSON.parse(bytes.toString('utf8'))
+    for (const [name, entry] of sidecarEntries) {
+      const archived = JSON.parse(entry.body?.toString('utf8') ?? '')
       assert.equal('fileName' in archived, false, `${name} carries fileName`)
       assert.equal('feedPosition' in archived, false)
     }
@@ -365,32 +367,3 @@ describe('FileSystemBackend: the sidecar names its representation file', () => {
     assert.equal(chunk.storedResourceType, 'application/octet-stream')
   })
 })
-
-/**
- * Every file entry of an export archive, by name.
- * @param pack {Readable}   the export stream
- * @returns {Promise<Map<string, Buffer>>}
- */
-async function archiveEntries(pack: Readable): Promise<Map<string, Buffer>> {
-  const entries = new Map<string, Buffer>()
-  const extract = tar.extract()
-  await new Promise<void>((resolve, reject) => {
-    extract.on('entry', (header, stream, next) => {
-      const chunks: Buffer[] = []
-      stream.on('data', (chunk: unknown) =>
-        chunks.push(Buffer.from(chunk as Buffer))
-      )
-      stream.on('end', () => {
-        if (header.type === 'file') {
-          entries.set(header.name, Buffer.concat(chunks))
-        }
-        next()
-      })
-      stream.on('error', reject)
-    })
-    extract.on('finish', resolve)
-    extract.on('error', reject)
-    pack.pipe(extract)
-  })
-  return entries
-}
