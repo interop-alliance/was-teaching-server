@@ -307,8 +307,9 @@ describe('Collection blinded-index query profile', () => {
       envelope('alpha', [{ name: 'n1', value: 'v1' }]),
       envelope('beta', [{ name: 'n2', value: 'v2', unique: true }])
     ])
-    // The candidate scan reads JSON documents only, so a sidecar it never
-    // opens cannot fail it.
+    // The candidate scan reads each sidecar to decide that its Resource is
+    // live. One that does not parse leaves that Resource out, and the scan
+    // goes on for the rest.
     await writeFile(
       path.join(
         backend.dataDir,
@@ -320,13 +321,17 @@ describe('Collection blinded-index query profile', () => {
       'not json {'
     )
 
-    const { data } = await queryIndex(alice, 'vault-sidecar', {
-      equals: [{ n1: 'v1' }]
+    const { data: unrelated } = await queryIndex(alice, 'vault-sidecar', {
+      equals: [{ n2: 'v2' }]
     })
     assert.deepEqual(
-      data.documents.map((doc: any) => doc.id),
-      ['alpha']
+      unrelated.documents.map((doc: any) => doc.id),
+      ['beta']
     )
+    const { data: damaged } = await queryIndex(alice, 'vault-sidecar', {
+      equals: [{ n1: 'v1' }]
+    })
+    assert.deepEqual(damaged.documents, [])
 
     // The unique-blinded conflict scan takes the same JSON-only path.
     await collection.put(

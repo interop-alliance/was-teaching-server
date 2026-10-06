@@ -8,9 +8,18 @@
  */
 import { it, describe, beforeEach, afterEach, vi } from 'vitest'
 import assert from 'node:assert'
-import { rm, readdir, chmod } from 'node:fs/promises'
+import {
+  rm,
+  readdir,
+  chmod,
+  mkdir,
+  readFile,
+  writeFile
+} from 'node:fs/promises'
 import path from 'node:path'
 import { Readable } from 'node:stream'
+
+import { chunkDirName } from '@interop/space-archive'
 
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import type { TempFileSystemBackend } from '../src/testing.js'
@@ -545,6 +554,151 @@ describe('FileSystemBackend races', () => {
     await assert.rejects(
       backend.getResource({ spaceId, collectionId, resourceId: 'vanishing' }),
       (err: unknown) => err instanceof ResourceNotFoundError
+    )
+    vi.restoreAllMocks()
+  })
+
+  /**
+   * Runs `race` once, right after the read takes the target's sidecar, so the
+   * read holds a live sidecar whose file is about to go.
+   * @param options {object}
+   * @param options.dir {string}   the dir the target's sidecar lives in
+   * @param options.id {string}   the target's id in that dir
+   * @param options.race {() => Promise<void>}
+   * @returns {void}
+   */
+  function raceAfterSidecarRead({
+    dir,
+    id,
+    race
+  }: {
+    dir: string
+    id: string
+    race: () => Promise<void>
+  }): void {
+    const sidecarRead = backend.readMetaSidecar.bind(backend)
+    let raced = false
+    vi.spyOn(backend, 'readMetaSidecar').mockImplementation(async options => {
+      const sidecar = await sidecarRead(options)
+      if (
+        !raced &&
+        options.collectionDir === dir &&
+        options.resourceId === id
+      ) {
+        raced = true
+        await race()
+      }
+      return sidecar
+    })
+  }
+
+  it('a read that races Delete Collection resolves 404 while a member sidecar is left', async () => {
+    // Delete Collection writes its tombstone, then removes the members in no
+    // fixed order, so a read can hold a member's live sidecar while its file
+    // is already gone. The Collection no longer stands, so the member is
+    // absent, not damaged.
+    await backend.writeResource({
+      spaceId,
+      collectionId,
+      resourceId: 'member',
+      input: { kind: 'json', contentType: 'application/json', data: { a: 1 } }
+    })
+    const collectionDir = path.join(
+      backend.dataDir,
+      'spaces',
+      spaceId,
+      collectionId
+    )
+    const sidecarPath = path.join(collectionDir, '.meta.member.json')
+    raceAfterSidecarRead({
+      dir: collectionDir,
+      id: 'member',
+      race: async () => {
+        const sidecar = await readFile(sidecarPath)
+        await backend.deleteCollection({ spaceId, collectionId })
+        // The tombstone is committed and the member's file gone, but its
+        // sidecar is still in place: the moment the removal can leave.
+        await writeFile(sidecarPath, sidecar)
+      }
+    })
+    await assert.rejects(
+      backend.getResource({ spaceId, collectionId, resourceId: 'member' }),
+      (err: unknown) => err instanceof ResourceNotFoundError
+    )
+    assert.equal(
+      await backend.getResourceMetadata({
+        spaceId,
+        collectionId,
+        resourceId: 'member'
+      }),
+      undefined
+    )
+    vi.restoreAllMocks()
+  })
+
+  it("a chunk read that races its parent Resource's delete resolves 404", async () => {
+    // Delete Resource writes the parent's tombstone, then removes the chunk
+    // directory, so a chunk read can hold the chunk's live sidecar while its
+    // file is already gone. The parent no longer stands, so the chunk is
+    // absent, not damaged.
+    await backend.writeResource({
+      spaceId,
+      collectionId,
+      resourceId: 'parent',
+      input: { kind: 'json', contentType: 'application/json', data: { a: 1 } }
+    })
+    await backend.writeChunk({
+      spaceId,
+      collectionId,
+      resourceId: 'parent',
+      chunkIndex: 0,
+      input: {
+        kind: 'binary',
+        contentType: 'application/octet-stream',
+        stream: bufferStream(Buffer.from('chunk'))
+      }
+    })
+    const chunkDir = path.join(
+      backend.dataDir,
+      'spaces',
+      spaceId,
+      collectionId,
+      chunkDirName('parent')
+    )
+    const chunkSidecarPath = path.join(chunkDir, '.meta.0.json')
+    raceAfterSidecarRead({
+      dir: chunkDir,
+      id: '0',
+      race: async () => {
+        const chunkSidecar = await readFile(chunkSidecarPath)
+        await backend.deleteResource({
+          spaceId,
+          collectionId,
+          resourceId: 'parent'
+        })
+        // The parent's tombstone is committed and the chunk's file gone, but
+        // the chunk's sidecar is still in place.
+        await mkdir(chunkDir, { recursive: true })
+        await writeFile(chunkSidecarPath, chunkSidecar)
+      }
+    })
+    await assert.rejects(
+      backend.getChunk({
+        spaceId,
+        collectionId,
+        resourceId: 'parent',
+        chunkIndex: 0
+      }),
+      (err: unknown) => err instanceof ResourceNotFoundError
+    )
+    assert.equal(
+      await backend.getChunkMetadata({
+        spaceId,
+        collectionId,
+        resourceId: 'parent',
+        chunkIndex: 0
+      }),
+      undefined
     )
     vi.restoreAllMocks()
   })

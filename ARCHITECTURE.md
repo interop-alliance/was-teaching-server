@@ -1119,6 +1119,24 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   `fileNameFor` derives a name cannot strand a stored file. A representation
   file no sidecar names is not a Resource. `fileName` is server-local: a
   tombstone has none, export strips it, and import records the file it writes.
+  Reads take no lock. A read that finds its file gone reads the sidecar again
+  and follows a changed one. An unchanged sidecar over a missing file is absent
+  (404) when its container no longer stands -- the Collection is tombstoned, or
+  a chunk's parent Resource is -- since a container delete removes its members
+  in no fixed order, and a `StorageError` (500) otherwise. A read racing Delete
+  Space can still answer 500: the Space dir is removed in no fixed order, and no
+  tombstone is left for the read to find. Delete Chunk removes the chunk's
+  sidecar before its file, so a read racing it finds the sidecar gone and
+  answers 404. A crash can leave a file no live sidecar names: bytes written
+  before their sidecar, the prior file of a write cut short before its prune, or
+  the file of a delete cut short after its tombstone. The paths that list a
+  directory -- the Collection listing, the Resource count, the changes feed,
+  export, the equality and unique-claim scans, and the chunk listing -- keep a
+  file only when its id's sidecar is live and names it
+  (`#liveRepresentationEntries`), so they agree with the reads. A tombstone
+  beside such a file is a tombstone in the feed. A sidecar that does not parse
+  leaves its Resource out of those paths, with a `warn` line, rather than
+  failing them. Nothing removes such a file.
 
   Delete Collection leaves a tombstone in both backends. The filesystem backend
   keeps it as the Collection's `.collection.<id>.json`, now holding only
