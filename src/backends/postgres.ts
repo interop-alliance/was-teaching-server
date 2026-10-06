@@ -3119,7 +3119,11 @@ export class PostgresBackend implements StorageBackend {
    * its generation and stamp, so a re-create's first metadata write mints a
    * new generation and a pre-delete `/meta` ETag cannot pass `If-Match`
    * against it), and the freed bytes subtracted from the quota counter -- one
-   * transaction. Idempotent on an absent Resource or an existing tombstone.
+   * transaction. The Resource's live access-control policy, if any, is
+   * tombstoned in the same transaction (`#tombstoneLivePolicy`), after the
+   * Resource, so it takes the next feed position after the Resource
+   * tombstone's. Idempotent on an absent Resource or an existing tombstone,
+   * which writes nothing, the policy included.
    * @param options {object}
    * @param options.spaceId {string}
    * @param options.collectionId {string}
@@ -3240,6 +3244,14 @@ export class PostgresBackend implements StorageBackend {
           feedPosition
         ]
       )
+      // The Resource's policy dies with it. The cascade carries no
+      // preconditions: the delete's own `If-Match` named the Resource.
+      await this.#tombstoneLivePolicy({
+        client,
+        spaceId,
+        collectionId,
+        resourceId
+      })
     })
   }
 
@@ -3536,20 +3548,15 @@ export class PostgresBackend implements StorageBackend {
         collectionId,
         requestName: 'Write Chunk'
       })
-      // Parent Resource must exist (and not be a tombstone). `FOR SHARE`
-      // conflicts with the `FOR UPDATE` a concurrent `deleteResource` takes, so
-      // the two serialize on the parent row -- the parent cannot be deleted
-      // between this check and the chunk write.
-      const { rows: parentRows } = await client.query<{ deleted: boolean }>(
-        `SELECT deleted FROM resources
-          WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
-          FOR SHARE`,
-        [spaceId, collectionId, resourceId]
-      )
-      const parent = parentRows[0]
-      if (!parent || parent.deleted) {
-        throw new ResourceNotFoundError({ requestName: 'Write Chunk' })
-      }
+      // Parent Resource must exist (and not be a tombstone), so the parent
+      // cannot be deleted between this check and the chunk write.
+      await this.#assertResourceLive({
+        client,
+        spaceId,
+        collectionId,
+        resourceId,
+        requestName: 'Write Chunk'
+      })
 
       // Lock the chunk row (if any, re-reading under the create lock when it
       // does not exist yet) and read its current validator/size, so the
@@ -4401,7 +4408,12 @@ export class PostgresBackend implements StorageBackend {
    * so the read, the precondition check and the upsert are atomic without a
    * row lock of their own. A Collection- or Resource-level write takes the
    * Collection's next feed position (`#takeFeedPosition`) once its
-   * preconditions pass.
+   * preconditions pass. A Resource-level write is refused with
+   * `ResourceNotFoundError` (404) unless the Resource is live, read under a
+   * `FOR SHARE` lock that serializes it with `deleteResource`, so a policy is
+   * never written for a Resource that is gone. The caller passes
+   * `requireLiveResource: false` when the Collection's Resources live on
+   * another backend, which this store cannot check.
    * @param options {object}
    * @param options.spaceId {string}
    * @param [options.collectionId] {string}
@@ -4417,7 +4429,8 @@ export class PostgresBackend implements StorageBackend {
     resourceId,
     policy,
     ifMatch,
-    ifNoneMatch
+    ifNoneMatch,
+    requireLiveResource = true
   }: {
     spaceId: string
     collectionId?: string
@@ -4425,11 +4438,25 @@ export class PostgresBackend implements StorageBackend {
     policy: PolicyDocument
     ifMatch?: string
     ifNoneMatch?: HeldValidators
+    requireLiveResource?: boolean
   }): Promise<PolicyWriteResult> {
     return this.#withTransaction(async client => {
       // The containing Space, and the Collection when the policy is below
       // Space level, must have a Metadata object: a policy never creates one.
       await this.#lockLiveContainers({ client, spaceId, collectionId })
+      if (
+        collectionId !== undefined &&
+        resourceId !== undefined &&
+        requireLiveResource
+      ) {
+        await this.#assertResourceLive({
+          client,
+          spaceId,
+          collectionId,
+          resourceId,
+          requestName: 'Update Policy'
+        })
+      }
       const prior = await this.getPolicyRecord({
         spaceId,
         collectionId,
@@ -4494,39 +4521,119 @@ export class PostgresBackend implements StorageBackend {
   }): Promise<EtagValidator | undefined> {
     return this.#withTransaction(async client => {
       await this.#lockSpaceRow({ client, spaceId })
-      const prior = await this.getPolicyRecord({
-        spaceId,
-        collectionId,
-        resourceId,
-        queryable: client
-      })
-      const live = livePolicyUnderPrecondition({
-        prior,
+      return this.#tombstoneLivePolicy({
+        client,
         spaceId,
         collectionId,
         resourceId,
         ifMatch,
         ifNoneMatch
       })
-      if (live === undefined) {
-        return undefined
-      }
-      // The tombstone keeps the generation and takes a stamp above the live
-      // policy's.
-      const validator = await mintValidator({
-        clock: this.#clock,
-        prior: priorPolicyParts(live)
-      })
-      await this.#upsertPolicy({
-        client,
-        spaceId,
-        collectionId,
-        resourceId,
-        body: null,
-        validator
-      })
-      return validator
     })
+  }
+
+  /**
+   * Refuses the caller's write unless the Resource is live
+   * (`ResourceNotFoundError`, 404). The `FOR SHARE` lock on the Resource row
+   * conflicts with the `FOR UPDATE` a concurrent `deleteResource` takes, so
+   * the two serialize on the row and the delete cannot land between this
+   * check and the caller's write. Shared by the chunk write's parent check
+   * and the Resource-level policy write.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param options.collectionId {string}
+   * @param options.resourceId {string}
+   * @param options.requestName {string}
+   * @returns {Promise<void>}
+   */
+  async #assertResourceLive({
+    client,
+    spaceId,
+    collectionId,
+    resourceId,
+    requestName
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId: string
+    resourceId: string
+    requestName: string
+  }): Promise<void> {
+    const { rows } = await client.query<{ deleted: boolean }>(
+      `SELECT deleted FROM resources
+        WHERE space_id = $1 AND collection_id = $2 AND resource_id = $3
+        FOR SHARE`,
+      [spaceId, collectionId, resourceId]
+    )
+    if (!rows[0] || rows[0].deleted) {
+      throw new ResourceNotFoundError({ requestName })
+    }
+  }
+
+  /**
+   * Tombstones the live policy at a level, after evaluating the preconditions
+   * against it, inside the caller's transaction, which holds the Space row.
+   * Writes nothing when no live policy is stored. The tombstone keeps the
+   * live policy's generation and takes a stamp above it, and a Collection- or
+   * Resource-level tombstone takes the Collection's next feed position
+   * (`#upsertPolicy`). Shared by `deletePolicy` and the `deleteResource`
+   * cascade.
+   * @param options {object}
+   * @param options.client {pg.PoolClient}
+   * @param options.spaceId {string}
+   * @param [options.collectionId] {string}
+   * @param [options.resourceId] {string}
+   * @param [options.ifMatch] {string}
+   * @param [options.ifNoneMatch] {HeldValidators}
+   * @returns {Promise<EtagValidator | undefined>}   the tombstone's validator,
+   *   or `undefined` when nothing was written
+   */
+  async #tombstoneLivePolicy({
+    client,
+    spaceId,
+    collectionId,
+    resourceId,
+    ifMatch,
+    ifNoneMatch
+  }: {
+    client: pg.PoolClient
+    spaceId: string
+    collectionId?: string
+    resourceId?: string
+    ifMatch?: string
+    ifNoneMatch?: HeldValidators
+  }): Promise<EtagValidator | undefined> {
+    const prior = await this.getPolicyRecord({
+      spaceId,
+      collectionId,
+      resourceId,
+      queryable: client
+    })
+    const live = livePolicyUnderPrecondition({
+      prior,
+      spaceId,
+      collectionId,
+      resourceId,
+      ifMatch,
+      ifNoneMatch
+    })
+    if (live === undefined) {
+      return undefined
+    }
+    const validator = await mintValidator({
+      clock: this.#clock,
+      prior: priorPolicyParts(live)
+    })
+    await this.#upsertPolicy({
+      client,
+      spaceId,
+      collectionId,
+      resourceId,
+      body: null,
+      validator
+    })
+    return validator
   }
 
   /**
@@ -4580,9 +4687,9 @@ export class PostgresBackend implements StorageBackend {
   }
 
   /**
-   * The one policy upsert statement, shared by `writePolicy`, `deletePolicy`
-   * and the import apply loop; keys through `#policyKey` so the sentinel
-   * convention lives in one place. A `null` body writes a tombstone. A
+   * The one policy upsert statement, shared by `writePolicy`,
+   * `#tombstoneLivePolicy` and the import apply loop; keys through
+   * `#policyKey` so the sentinel convention lives in one place. A `null` body writes a tombstone. A
    * Collection- or Resource-level write takes the Collection's next feed
    * position first, which locks the `collections` row ahead of the
    * `policies` row; a Space policy takes none.

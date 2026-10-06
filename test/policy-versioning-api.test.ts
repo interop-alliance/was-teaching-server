@@ -348,4 +348,104 @@ describe('Access-control policy validators and tombstones (HTTP)', () => {
       )
     )
   })
+
+  describe('a Resource policy dies with its Resource', () => {
+    const lifecycleId = 'lifecycle'
+    const resourceUrl = (id: string) => `/space/${spaceId}/${lifecycleId}/${id}`
+    const policyUrl = (id: string) => `${resourceUrl(id)}/policy`
+
+    beforeAll(async () => {
+      await aliceSpace.createCollection({ id: lifecycleId, name: 'Lifecycle' })
+    })
+
+    it('tombstones the policy on Delete Resource, so a re-create is not public', async () => {
+      const collection = aliceSpace.collection(lifecycleId)
+      await collection.put('r1', { id: 'r1' })
+      const written = await aliceRequest({
+        url: policyUrl('r1'),
+        method: 'PUT',
+        json: { type: 'PublicCanRead' }
+      })
+      assert.equal(written.status, 201)
+      const anonymous = async () => {
+        const response = await fetch(new URL(resourceUrl('r1'), serverUrl))
+        await response.body?.cancel()
+        return response.status
+      }
+      assert.equal(await anonymous(), 200)
+
+      const deleted = await aliceRequest({
+        url: resourceUrl('r1'),
+        method: 'DELETE'
+      })
+      assert.equal(deleted.status, 204)
+      assert.equal(await anonymous(), 404)
+
+      // The policy is a tombstone: a plain read answers 404, and
+      // `?include=deleted` reads it under the same generation.
+      assert.equal((await aliceRequest({ url: policyUrl('r1') })).status, 404)
+      const tombstone = await aliceRequest({
+        url: `${policyUrl('r1')}?include=deleted`
+      })
+      assert.equal(tombstone.status, 200)
+      assert.equal(tombstone.data.deleted, true)
+      assert.equal(
+        parseEtagSegments(tombstone.headers.get('etag')!).generation,
+        parseEtagSegments(written.headers.get('etag')!).generation
+      )
+
+      // The feed carries the policy tombstone after the Resource tombstone.
+      const feed = await aliceRequest({
+        url: `/space/${spaceId}/${lifecycleId}/query`,
+        method: 'POST',
+        json: { profile: 'changes' }
+      })
+      assert.equal(feed.status, 200)
+      const documents = feed.data.documents
+      const resourceIndex = documents.findIndex(
+        (document: any) => document.kind === 'resource' && document.id === 'r1'
+      )
+      const policyIndex = documents.findIndex(
+        (document: any) =>
+          document.kind === 'policy' &&
+          document.id === new URL(policyUrl('r1'), serverUrl).toString()
+      )
+      assert.equal(documents[resourceIndex].deleted, true)
+      assert.equal(documents[policyIndex].deleted, true)
+      assert.equal(documents[policyIndex].etag, tombstone.headers.get('etag'))
+      assert.ok(policyIndex > resourceIndex)
+
+      // A re-create under the same id starts with no policy.
+      await collection.put('r1', { id: 'r1', life: 2 })
+      assert.equal(await anonymous(), 404)
+    })
+
+    it('refuses a Resource policy over an absent or deleted Resource (404)', async () => {
+      const publicRead = { type: 'PublicCanRead' }
+      const never = await aliceRequest({
+        url: policyUrl('never-created'),
+        method: 'PUT',
+        json: publicRead
+      })
+      assert.equal(never.status, 404)
+
+      const collection = aliceSpace.collection(lifecycleId)
+      await collection.put('r2', { id: 'r2' })
+      await aliceRequest({ url: resourceUrl('r2'), method: 'DELETE' })
+      const overTombstone = await aliceRequest({
+        url: policyUrl('r2'),
+        method: 'PUT',
+        json: publicRead
+      })
+      assert.equal(overTombstone.status, 404)
+
+      await collection.put('r2', { id: 'r2', life: 2 })
+      const recreated = await aliceRequest({
+        url: policyUrl('r2'),
+        method: 'PUT',
+        json: publicRead
+      })
+      assert.equal(recreated.status, 201)
+    })
+  })
 })

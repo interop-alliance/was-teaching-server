@@ -725,8 +725,10 @@ export class SpaceRequest {
    * (spec "Pagination"): `?limit`/`cursor` select a page of the Space's
    * Collections, and the response carries a `next` continuation link when a
    * further page may follow. Each listed Collection carries a `public` flag
-   * (true iff a `PublicCanRead` policy is attached), so a client need not
-   * probe each Collection's policy resource separately.
+   * (true iff a `PublicCanRead` policy is attached to the Collection itself),
+   * so a client need not probe each Collection's policy resource separately.
+   * It reports the Collection level only. A `PublicCanRead` policy on the
+   * Space, which every Collection inherits, does not set it.
    *
    * `?include=deleted` also lists tombstoned Collections, as their id, URL,
    * `deleted: true` and the stamp of the delete, counted in `totalItems` and

@@ -6733,6 +6733,13 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       beforeAll(async () => {
         harness = await makeBackend()
         await provisionSpace(harness.backend, spaceId)
+        // A Resource-level policy is written only over a live Resource.
+        await harness.backend.writeResource({
+          spaceId,
+          collectionId: 'col',
+          resourceId: 'r',
+          input: jsonInput({ hello: 'world' })
+        })
       })
       afterAll(async () => {
         await harness.cleanup()
@@ -6781,6 +6788,15 @@ export function describeStorageBackendContract(options: ContractOptions): void {
       beforeAll(async () => {
         harness = await makeBackend()
         await provisionSpace(harness.backend, spaceId)
+        // A Resource-level policy is written only over a live Resource.
+        for (const resourceId of ['r-stamp', 'r-pre', 'r-tomb']) {
+          await harness.backend.writeResource({
+            spaceId,
+            collectionId: 'col',
+            resourceId,
+            input: jsonInput({ resourceId })
+          })
+        }
       })
       afterAll(async () => {
         await harness.cleanup()
@@ -6948,6 +6964,127 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         )
       })
 
+      it('refuses a Resource-level policy over an absent or tombstoned Resource', async () => {
+        const { backend } = harness
+        await expect(
+          backend.writePolicy({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'r-never',
+            policy: publicRead
+          })
+        ).rejects.toBeInstanceOf(ResourceNotFoundError)
+        assert.equal(
+          await backend.getPolicyRecord({
+            spaceId,
+            collectionId: 'col',
+            resourceId: 'r-never'
+          }),
+          undefined
+        )
+
+        const target = { spaceId, collectionId: 'col', resourceId: 'r-gone' }
+        await backend.writeResource({ ...target, input: jsonInput({ n: 1 }) })
+        await backend.deleteResource(target)
+        await expect(
+          backend.writePolicy({ ...target, policy: publicRead })
+        ).rejects.toBeInstanceOf(ResourceNotFoundError)
+        assert.equal(await backend.getPolicyRecord(target), undefined)
+
+        await backend.writeResource({ ...target, input: jsonInput({ n: 2 }) })
+        const written = await backend.writePolicy({
+          ...target,
+          policy: publicRead
+        })
+        assert.equal(written.created, true)
+
+        // The caller waives the check when the Collection's Resources live
+        // on another backend, which this store cannot see.
+        const elsewhere = { ...target, resourceId: 'r-elsewhere' }
+        const waived = await backend.writePolicy({
+          ...elsewhere,
+          policy: publicRead,
+          requireLiveResource: false
+        })
+        assert.equal(waived.created, true)
+      })
+
+      it('tombstones a Resource policy when the Resource is deleted', async () => {
+        const { backend } = harness
+        const cascadeSpace = 'space-pol-cascade'
+        await provisionSpace(backend, cascadeSpace, 'feed')
+        const target = {
+          spaceId: cascadeSpace,
+          collectionId: 'feed',
+          resourceId: 'doc'
+        }
+        await backend.writeResource({ ...target, input: jsonInput({ n: 1 }) })
+        const live = await backend.writePolicy({
+          ...target,
+          policy: publicRead
+        })
+        const start = await backend.changesSince!({
+          spaceId: cascadeSpace,
+          collectionId: 'feed',
+          limit: 100
+        })
+
+        await backend.deleteResource(target)
+        assert.equal(await backend.getPolicy(target), undefined)
+        const record = await backend.getPolicyRecord(target)
+        assert.ok(record?.deleted && record.validator)
+        // The tombstone keeps the generation and takes a stamp above the
+        // live policy's.
+        assert.equal(record.validator.generation, live.validator.generation)
+        assert.ok(
+          compareStamps(record.validator.stamp, live.validator.stamp) > 0
+        )
+
+        // The policy tombstone follows the Resource tombstone in the feed.
+        const page = await backend.changesSince!({
+          spaceId: cascadeSpace,
+          collectionId: 'feed',
+          afterPosition: start.checkpoint ?? 0,
+          limit: 100
+        })
+        assert.deepEqual(
+          page.documents.map(document => [
+            document.kind,
+            'deleted' in document && document.deleted
+          ]),
+          [
+            ['resource', true],
+            ['policy', true]
+          ]
+        )
+        assert.equal(
+          page.documents[1]!.feedPosition,
+          page.documents[0]!.feedPosition + 1
+        )
+        const policyDocument = page.documents[1] as Extract<
+          FeedDocument,
+          { kind: 'policy' }
+        >
+        assert.equal(policyDocument.resourceId, 'doc')
+        assert.deepEqual(policyDocument.validator, record.validator)
+
+        // A second delete writes nothing, and a re-create starts with no
+        // policy.
+        await backend.deleteResource(target)
+        assert.deepEqual(
+          (await backend.getPolicyRecord(target))?.validator,
+          record.validator
+        )
+        await backend.writeResource({ ...target, input: jsonInput({ n: 2 }) })
+        assert.equal(await backend.getPolicy(target), undefined)
+
+        // A delete of a Resource with no policy writes no policy record.
+        const bare = { ...target, resourceId: 'bare' }
+        await backend.writeResource({ ...bare, input: jsonInput({ n: 1 }) })
+        await backend.deleteResource(bare)
+        assert.equal(await backend.getPolicyRecord(bare), undefined)
+      })
+
       it('lists a Collection whose policy was deleted as not public', async () => {
         const { backend } = harness
         await provisionSpace(backend, 'space-pol-public', 'shared')
@@ -6974,6 +7111,12 @@ export function describeStorageBackendContract(options: ContractOptions): void {
         const { backend } = harness
         const feedSpace = 'space-pol-feed'
         await provisionSpace(backend, feedSpace, 'feed')
+        await backend.writeResource({
+          spaceId: feedSpace,
+          collectionId: 'feed',
+          resourceId: 'doc',
+          input: jsonInput({ hello: 'world' })
+        })
         const start = await backend.changesSince!({
           spaceId: feedSpace,
           collectionId: 'feed',

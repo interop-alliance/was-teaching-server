@@ -86,7 +86,7 @@
     "@eslint/js": "^10.0.1",
     "@interop/did-cli": "^0.17.0",
     "@interop/ezcap": "^7.5.0",
-    "@interop/was-client": "^0.92.0",
+    "@interop/was-client": "^0.93.0",
     "@interop/was-conformance-suite": "^0.30.0",
     "@interop/webkms-client": "^15.0.2",
     "@types/mime-types": "3.0.1",

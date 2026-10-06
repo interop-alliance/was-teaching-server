@@ -5825,3 +5825,38 @@ replaced by a minted one. Revocations take the verify branch: each archived
 record's chain is verified under the destination Space and the record is rebuilt
 server-side, and one that does not verify is skipped with a `warn` line rather
 than refusing the import.
+
+### WAS-127: [H] A Resource's access-control policy dies with the Resource
+
+- status: done
+- done: 2026-10-05
+- priority: high
+- labels: policy, security, consistency
+- discovered-from: whole-codebase review (2026-09-17), verified on both backends
+- touches:
+  - `src/backends/filesystem.ts` and `src/backends/postgres.ts`
+    (`deleteResource`), `src/backends/postgresSchema.ts` (no FK from `policies`
+    to `resources`), `src/requests/ResourceRequest.ts` (`delete`),
+    `src/lib/policyCache.ts` -- shipped with this item
+  - ARCHITECTURE.md's soft-delete sentence, which lists what a delete drops --
+    shipped with this item
+- acceptance:
+  - [x] `deleteResource` removes the Resource-level policy on both backends and
+        the handler invalidates its cache entry (decided 2026-10-05: it is
+        tombstoned like a Delete Policy, with a stamp and feed position, so the
+        delete replicates and an import does not undo it)
+  - [x] A test publishes `r1` with `PublicCanRead`, deletes it, re-creates `r1`,
+        and asserts an anonymous GET is refused
+  - [x] `PolicyRequest.put` at the Resource level refuses when the Resource does
+        not exist (no pre-seeding of a future id), or the pre-seeding behavior
+        is documented as intended
+  - [x] The Collection listing's `public` flag reflects the effective policy (a
+        Space-level `PublicCanRead` shows every Collection as public), or its
+        doc states it reports the Collection level only
+
+Delete Resource drops content, chunks, and the `/meta` object but never the
+policy, so a `PublicCanRead` written to publish one record silently publishes
+whatever next occupies that id (client-chosen ids such as `keyring` or `index`
+collide routinely). No listing shows a Resource-level policy. Delete Collection
+and Delete Space do clean policies up; the Resource level is the lone gap. The
+container-rule half of policy control is WAS-61 / WAS-108.
