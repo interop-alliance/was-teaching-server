@@ -160,6 +160,25 @@ export function withoutSidecarMembers({
   if (sidecar === undefined || !members.some(member => member in sidecar)) {
     return bytes
   }
+  return serializeSidecarWithout({ sidecar, members })
+}
+
+/**
+ * Serializes a parsed Resource sidecar without some of its members, as
+ * `withoutSidecarMembers` serializes stored bytes that carry one of them.
+ * Export uses it for a sidecar it already read to judge a file live.
+ * @param options {object}
+ * @param options.sidecar {MetaSidecar}
+ * @param options.members {Array<keyof MetaSidecar>}
+ * @returns {Buffer}
+ */
+export function serializeSidecarWithout({
+  sidecar,
+  members
+}: {
+  sidecar: MetaSidecar
+  members: ReadonlyArray<keyof MetaSidecar>
+}): Buffer {
   const rest: Partial<MetaSidecar> = { ...sidecar }
   for (const member of members) {
     delete rest[member]

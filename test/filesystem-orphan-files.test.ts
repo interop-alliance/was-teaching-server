@@ -5,11 +5,13 @@
  * content-type change torn before it removed the prior file. Reads already
  * ignore such a file, and so must every path that lists a directory: the
  * Collection listing, the Resource count quota, the changes feed, export,
- * the equality query, and the chunk listing.
+ * the equality query, and the chunk listing. Delete Chunk finds a chunk the
+ * same way. A Resource whose sidecar does not parse is left out of every
+ * one of these paths, the unique-claim scan included.
  */
 import { it, describe, beforeEach, afterEach } from 'vitest'
 import assert from 'node:assert'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { Readable } from 'node:stream'
@@ -92,10 +94,12 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
 
   beforeEach(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-orphan-'))
-    // Room for the three Resources the setup writes, plus one more.
+    // The Resource count reads names only, so it counts three ids after the
+    // setup: the two live Resources and the tombstone beside its orphan. Room
+    // for those, plus one more.
     backend = await FileSystemBackend.open({
       dataDir,
-      maxResourcesPerSpace: 3
+      maxResourcesPerSpace: 4
     })
     collectionDir = path.join(dataDir, 'spaces', spaceId, collectionId)
     await backend.writeSpace({
@@ -130,7 +134,7 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
     await backend.close()
     backend = await FileSystemBackend.open({
       dataDir,
-      maxResourcesPerSpace: 3
+      maxResourcesPerSpace: 4
     })
   })
 
@@ -139,7 +143,7 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
     await rm(dataDir, { recursive: true, force: true })
   })
 
-  it('the Collection listing shows live Resources only, and counts each id once from file names', async () => {
+  it('the Collection listing shows live Resources only, and counts them', async () => {
     const listing = await backend.listCollectionItems({
       spaceId,
       collectionId
@@ -151,15 +155,44 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
         ['live', 'application/json']
       ]
     )
-    // The count reads no sidecar: `doc` counts once for its two files, the
-    // sidecarless `torn` not at all, and `gone`, whose delete was cut short
-    // beside its old file, still counts, though no page lists it.
-    assert.equal(listing.totalItems, 3)
+    assert.equal(listing.totalItems, 2)
   })
 
-  it('the Resource count quota counts live Resources only', async () => {
-    // Two live Resources against a quota of three: one more fits. Counting
-    // the orphans (four ids with files) would refuse it.
+  it('a page judged short by orphans is filled from past them, and totalItems stays exact', async () => {
+    // Keyset order is doc, gone, live, torn; `gone` and `torn` are judged out.
+    const first = await backend.listCollectionItems({
+      spaceId,
+      collectionId,
+      limit: 1
+    })
+    assert.deepEqual(
+      first.items.map(item => item.id),
+      ['doc']
+    )
+    assert.ok(first.next !== undefined)
+    assert.equal(first.totalItems, 2)
+    const cursor = new URL(first.next, 'http://localhost').searchParams.get(
+      'cursor'
+    )
+    assert.ok(cursor !== null)
+    const second = await backend.listCollectionItems({
+      spaceId,
+      collectionId,
+      limit: 1,
+      cursor
+    })
+    assert.deepEqual(
+      second.items.map(item => item.id),
+      ['live']
+    )
+    assert.equal(second.next, undefined)
+    assert.equal(second.totalItems, 2)
+  })
+
+  it('the Resource count quota leaves out a file with no sidecar', async () => {
+    // Three ids with a sidecar and a file against a quota of four: one more
+    // fits. Counting every id with a file (four, the torn write included)
+    // would refuse it.
     await writeJson({ resourceId: 'new', data: { tag: 'y' } })
   })
 
@@ -219,9 +252,126 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
       spaceId,
       collectionId
     })
+    assert.equal(listing.totalItems, 1)
     assert.deepEqual(
       listing.items.map(item => item.id.split('/').pop()),
       ['doc']
+    )
+  })
+
+  it('a sidecar that does not parse leaves its Resource out of the changes feed, which pages the rest', async () => {
+    const sidecarPath = path.join(collectionDir, '.meta.live.json')
+    const stored = await readFile(sidecarPath)
+    await writeFile(sidecarPath, '{not json')
+    // Page one document at a time to the end of the feed.
+    const resourceIds: string[] = []
+    let afterPosition = 0
+    for (;;) {
+      const { documents, checkpoint } = await backend.changesSince({
+        spaceId,
+        collectionId,
+        afterPosition,
+        limit: 1
+      })
+      if (documents.length === 0 || checkpoint === null) {
+        break
+      }
+      for (const document of documents) {
+        if (document.kind === 'resource') {
+          resourceIds.push(document.resourceId)
+        }
+      }
+      afterPosition = checkpoint
+    }
+    assert.deepEqual(resourceIds.sort(), ['doc', 'gone'])
+
+    // Restoring the bytes by hand gives the Resource no new position, so a
+    // reader at the end of the feed sees nothing new. The rewrite that
+    // repairs it takes a fresh position, which the reader then gets.
+    await writeFile(sidecarPath, stored)
+    const caughtUp = await backend.changesSince({
+      spaceId,
+      collectionId,
+      afterPosition,
+      limit: 100
+    })
+    assert.deepEqual(caughtUp.documents, [])
+    await writeJson({ resourceId: 'live', data: { tag: 'z' } })
+    const repaired = await backend.changesSince({
+      spaceId,
+      collectionId,
+      afterPosition,
+      limit: 100
+    })
+    assert.deepEqual(
+      repaired.documents.map(document =>
+        document.kind === 'resource' ? document.resourceId : document.kind
+      ),
+      ['live']
+    )
+  })
+
+  it('a sidecar that does not parse leaves its Resource out of a unique claim, and fails its own write', async () => {
+    const sidecarPath = path.join(collectionDir, '.meta.live.json')
+    await writeFile(sidecarPath, '{not json')
+    // `live` holds `tag: x`, but its damaged sidecar leaves it out of the
+    // scan, so the claim is admitted.
+    await backend.writeResource({
+      spaceId,
+      collectionId,
+      resourceId: 'claimant',
+      input: {
+        kind: 'json',
+        contentType: 'application/json',
+        data: { tag: 'x' }
+      },
+      uniqueIndexes: [{ name: 'tag', source: 'content', unique: true }]
+    })
+    // The damaged Resource's own write still fails on it.
+    await assert.rejects(writeJson({ resourceId: 'live', data: { tag: 'y' } }))
+  })
+
+  it('Delete Chunk answers absent for a chunk file with no sidecar, and leaves it', async () => {
+    await backend.writeChunk({
+      spaceId,
+      collectionId,
+      resourceId: 'live',
+      chunkIndex: 0,
+      input: textInput('chunk')
+    })
+    const chunkDir = path.join(collectionDir, chunkDirName('live'))
+    const orphan = await plantOrphan({ dir: chunkDir, resourceId: '1' })
+    assert.equal(
+      await backend.deleteChunk({
+        spaceId,
+        collectionId,
+        resourceId: 'live',
+        chunkIndex: 1
+      }),
+      false
+    )
+    await access(path.join(chunkDir, orphan))
+  })
+
+  it('Delete Chunk cut short after removing the sidecar answers absent when retried', async () => {
+    await backend.writeChunk({
+      spaceId,
+      collectionId,
+      resourceId: 'live',
+      chunkIndex: 0,
+      input: textInput('chunk')
+    })
+    const chunkDir = path.join(collectionDir, chunkDirName('live'))
+    // The first delete got as far as the sidecar.
+    await rm(path.join(chunkDir, '.meta.0.json'))
+    assert.equal(
+      await backend.deleteChunk({
+        spaceId,
+        collectionId,
+        resourceId: 'live',
+        chunkIndex: 0
+      }),
+      false
     )
   })
 

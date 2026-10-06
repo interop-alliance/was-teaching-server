@@ -302,14 +302,15 @@ describe('Collection blinded-index query profile', () => {
     )
   })
 
-  it('ignores a corrupt meta sidecar on an unrelated Resource', async () => {
-    const collection = await seedCollection('vault-sidecar', [
-      envelope('alpha', [{ name: 'n1', value: 'v1' }]),
+  it('skips a corrupt meta sidecar on a query and on a unique claim', async () => {
+    await seedCollection('vault-sidecar', [
+      envelope('alpha', [{ name: 'n1', value: 'v1', unique: true }]),
       envelope('beta', [{ name: 'n2', value: 'v2', unique: true }])
     ])
     // The candidate scan reads each sidecar to decide that its Resource is
-    // live. One that does not parse leaves that Resource out, and the scan
-    // goes on for the rest.
+    // live. A Resource whose sidecar does not parse is left out, and the
+    // scan goes on for the rest: one damaged sidecar does not fail every
+    // read and every unique write of the Collection.
     await writeFile(
       path.join(
         backend.dataDir,
@@ -333,10 +334,17 @@ describe('Collection blinded-index query profile', () => {
     })
     assert.deepEqual(damaged.documents, [])
 
-    // The unique-blinded conflict scan takes the same JSON-only path.
-    await collection.put(
-      'gamma',
-      envelope('gamma', [{ name: 'n3', value: 'v3', unique: true }])
-    )
+    // The unique-blinded conflict scan a write runs skips it too, so a claim
+    // of the value it holds is admitted. The damaged Resource's own repair
+    // is a rewrite, which runs its claim again.
+    const { status } = await alice.was.request({
+      url: new URL(
+        `/space/${alice.space1.id}/vault-sidecar/gamma`,
+        serverUrl
+      ).toString(),
+      method: 'PUT',
+      json: envelope('gamma', [{ name: 'n1', value: 'v1', unique: true }])
+    })
+    assert.equal(status, 201)
   })
 })
