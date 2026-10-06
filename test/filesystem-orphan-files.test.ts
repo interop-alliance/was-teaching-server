@@ -11,7 +11,14 @@
  */
 import { it, describe, beforeEach, afterEach } from 'vitest'
 import assert from 'node:assert'
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  access,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { Readable } from 'node:stream'
@@ -94,12 +101,12 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
 
   beforeEach(async () => {
     dataDir = await mkdtemp(path.join(tmpdir(), 'was-orphan-'))
-    // The Resource count reads names only, so it counts three ids after the
-    // setup: the two live Resources and the tombstone beside its orphan. Room
-    // for those, plus one more.
+    // The Resource count is exact, so it counts two ids after the setup: the
+    // two live Resources, and not the tombstone beside its orphan. Room for
+    // those, plus one more.
     backend = await FileSystemBackend.open({
       dataDir,
-      maxResourcesPerSpace: 4
+      maxResourcesPerSpace: 3
     })
     collectionDir = path.join(dataDir, 'spaces', spaceId, collectionId)
     await backend.writeSpace({
@@ -134,7 +141,7 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
     await backend.close()
     backend = await FileSystemBackend.open({
       dataDir,
-      maxResourcesPerSpace: 4
+      maxResourcesPerSpace: 3
     })
   })
 
@@ -189,11 +196,20 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
     assert.equal(second.totalItems, 2)
   })
 
-  it('the Resource count quota leaves out a file with no sidecar', async () => {
-    // Three ids with a sidecar and a file against a quota of four: one more
-    // fits. Counting every id with a file (four, the torn write included)
-    // would refuse it.
+  it('the Resource count quota counts live Resources only', async () => {
+    // Two live Resources against a quota of three: one more fits. Counting
+    // the tombstone beside its orphan, or the torn write's file, would refuse
+    // it.
     await writeJson({ resourceId: 'new', data: { tag: 'y' } })
+  })
+
+  it('Delete Resource reclaims every file of the id', async () => {
+    // `doc` is live as text, with its prior JSON file beside it.
+    await backend.deleteResource({ spaceId, collectionId, resourceId: 'doc' })
+    const names = (await readdir(collectionDir)).filter(name =>
+      name.startsWith('r.doc.')
+    )
+    assert.deepEqual(names, [])
   })
 
   it('the changes feed reports the torn delete as a tombstone, and the torn type change by its new type', async () => {
@@ -351,6 +367,30 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
       false
     )
     await access(path.join(chunkDir, orphan))
+  })
+
+  it('Delete Chunk reclaims every file of the index, and the emptied chunk dir', async () => {
+    await backend.writeChunk({
+      spaceId,
+      collectionId,
+      resourceId: 'live',
+      chunkIndex: 0,
+      input: textInput('chunk')
+    })
+    const chunkDir = path.join(collectionDir, chunkDirName('live'))
+    // A type change cut short before its prune left the prior file beside
+    // the live one.
+    await plantOrphan({ dir: chunkDir, resourceId: '0' })
+    assert.equal(
+      await backend.deleteChunk({
+        spaceId,
+        collectionId,
+        resourceId: 'live',
+        chunkIndex: 0
+      }),
+      true
+    )
+    await assert.rejects(access(chunkDir))
   })
 
   it('Delete Chunk cut short after removing the sidecar answers absent when retried', async () => {

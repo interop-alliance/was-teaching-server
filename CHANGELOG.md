@@ -23,14 +23,18 @@
   live Resource and did not replicate.
 - A Resource whose filesystem sidecar does not parse is left out of every
   listing, scan and query, the changes feed and export, with a `warn` line. The
-  Resource's own reads and writes still fail on it.
+  Resource's own reads and writes still fail on it. A unique value it holds is
+  not defended while the sidecar stands damaged, so a write of another Resource
+  may take it.
 - Filesystem Delete Chunk finds the chunk from its sidecar. A chunk file with no
   sidecar answers 404 and is left in place. A retry of a delete cut short after
   removing the sidecar answers 404 too.
-- The filesystem Collection listing reads only the sidecars that fill its page.
-  Its `totalItems` and the Resource count quota are counted from file names, so
-  a tombstone beside a file a crash left behind counts until the id is written
-  again. Export reads each sidecar once.
+- The filesystem Collection listing reads only the sidecars that fill its page
+  before it counts `totalItems`. The count and the Resource count quota stay
+  exact, so a tombstone beside a file a crash left behind does not count. Export
+  reads each sidecar once, and the changes feed reads a tombstone's once.
+- Filesystem Delete Resource and Delete Chunk remove every representation file
+  of the id, so a file a crash left beside the live one is reclaimed.
 
 ## 0.42.1 - 2026-10-05
 
