@@ -1130,13 +1130,17 @@ start.ts > server.ts > routes.ts > requests/*Request.ts > storage.ts > backends/
   answers 404. A crash can leave a file no live sidecar names: bytes written
   before their sidecar, the prior file of a write cut short before its prune, or
   the file of a delete cut short after its tombstone. The paths that list a
-  directory -- the Collection listing, the Resource count, the changes feed,
-  export, the equality and unique-claim scans, and the chunk listing -- keep a
-  file only when its id's sidecar is live and names it
-  (`#liveRepresentationEntries`), so they agree with the reads. A tombstone
-  beside such a file is a tombstone in the feed. A sidecar that does not parse
-  leaves its Resource out of those paths, with a `warn` line, rather than
-  failing them. Nothing removes such a file.
+  directory -- the Resource count, the changes feed, export, the equality and
+  unique-claim scans, and the chunk listing -- keep a file only when its id's
+  sidecar is live and names it (`#liveRepresentationEntries`), so they agree
+  with the reads. A tombstone beside such a file is a tombstone in the feed. The
+  Collection listing reads sidecars for its page only, so its cost stays that of
+  the page. It lists an id only when the id's sidecar is live and names one of
+  its files, and its `totalItems` counts, from the names alone, each id with a
+  representation file and a sidecar file beside it. An id whose delete a crash
+  cut short therefore still counts in `totalItems`, though no page lists it. A
+  sidecar that does not parse leaves its Resource out of those paths, with a
+  `warn` line, rather than failing them. Nothing removes such a file.
 
   Delete Collection leaves a tombstone in both backends. The filesystem backend
   keeps it as the Collection's `.collection.<id>.json`, now holding only

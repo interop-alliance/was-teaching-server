@@ -19,8 +19,8 @@ import { chunkDirName, fileNameFor } from '@interop/space-archive'
 import { FileSystemBackend } from '../src/backends/filesystem.js'
 import { extractTarEntries } from '../src/lib/importTar.js'
 
-const controller = 'did:key:z6MkGhostFilesTestController'
-const spaceId = 'ghost-space'
+const controller = 'did:key:z6MkOrphanFilesTestController'
+const spaceId = 'orphan-space'
 const collectionId = 'docs'
 
 /**
@@ -75,7 +75,7 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
    * @param options.resourceId {string}
    * @returns {Promise<string>}   the file's name
    */
-  async function plantGhost({
+  async function plantOrphan({
     dir,
     resourceId
   }: {
@@ -91,7 +91,7 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
   }
 
   beforeEach(async () => {
-    dataDir = await mkdtemp(path.join(tmpdir(), 'was-ghost-'))
+    dataDir = await mkdtemp(path.join(tmpdir(), 'was-orphan-'))
     // Room for the three Resources the setup writes, plus one more.
     backend = await FileSystemBackend.open({
       dataDir,
@@ -113,7 +113,7 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
     // A delete torn after its tombstone: the file is back beside it.
     await writeJson({ resourceId: 'gone', data: { tag: 'x' } })
     await backend.deleteResource({ spaceId, collectionId, resourceId: 'gone' })
-    await plantGhost({ dir: collectionDir, resourceId: 'gone' })
+    await plantOrphan({ dir: collectionDir, resourceId: 'gone' })
     // A content-type change torn before it removed the prior file.
     await writeJson({ resourceId: 'doc', data: { tag: 'x' } })
     await backend.writeResource({
@@ -122,11 +122,11 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
       resourceId: 'doc',
       input: textInput('now text')
     })
-    await plantGhost({ dir: collectionDir, resourceId: 'doc' })
+    await plantOrphan({ dir: collectionDir, resourceId: 'doc' })
     // A write torn before its sidecar.
-    await plantGhost({ dir: collectionDir, resourceId: 'torn' })
+    await plantOrphan({ dir: collectionDir, resourceId: 'torn' })
 
-    // Reopen, so no cached quota figure predates the ghosts.
+    // Reopen, so no cached quota figure predates the orphans.
     await backend.close()
     backend = await FileSystemBackend.open({
       dataDir,
@@ -139,7 +139,7 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
     await rm(dataDir, { recursive: true, force: true })
   })
 
-  it('the Collection listing shows live Resources only, and counts them', async () => {
+  it('the Collection listing shows live Resources only, and counts each id once from file names', async () => {
     const listing = await backend.listCollectionItems({
       spaceId,
       collectionId
@@ -151,12 +151,15 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
         ['live', 'application/json']
       ]
     )
-    assert.equal(listing.totalItems, 2)
+    // The count reads no sidecar: `doc` counts once for its two files, the
+    // sidecarless `torn` not at all, and `gone`, whose delete was cut short
+    // beside its old file, still counts, though no page lists it.
+    assert.equal(listing.totalItems, 3)
   })
 
   it('the Resource count quota counts live Resources only', async () => {
     // Two live Resources against a quota of three: one more fits. Counting
-    // the ghosts (four ids with files) would refuse it.
+    // the orphans (four ids with files) would refuse it.
     await writeJson({ resourceId: 'new', data: { tag: 'y' } })
   })
 
@@ -179,7 +182,7 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
     assert.equal(resources.get('live')?.deleted, false)
   })
 
-  it('export carries no ghost file', async () => {
+  it('export carries no orphan file', async () => {
     const entries = await extractTarEntries(
       await backend.exportSpace({ spaceId })
     )
@@ -216,7 +219,6 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
       spaceId,
       collectionId
     })
-    assert.equal(listing.totalItems, 1)
     assert.deepEqual(
       listing.items.map(item => item.id.split('/').pop()),
       ['doc']
@@ -241,8 +243,8 @@ describe('FileSystemBackend: enumerations ignore files no live sidecar names', (
     const chunkDir = path.join(collectionDir, chunkDirName('live'))
     // The prior representation of chunk 0, and a chunk 1 torn before its
     // sidecar.
-    await plantGhost({ dir: chunkDir, resourceId: '0' })
-    await plantGhost({ dir: chunkDir, resourceId: '1' })
+    await plantOrphan({ dir: chunkDir, resourceId: '0' })
+    await plantOrphan({ dir: chunkDir, resourceId: '1' })
 
     const listing = await backend.listChunks({
       spaceId,

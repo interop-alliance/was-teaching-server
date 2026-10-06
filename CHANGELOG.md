@@ -16,11 +16,12 @@
   absent. Delete Chunk removes the sidecar before the file, so a read racing it
   answers 404. A read racing Delete Space can still answer 500.
 - A filesystem representation file no live sidecar names, which a crash can
-  leave behind, no longer shows up in the Collection listing and its
-  `totalItems`, the Resource count quota, the changes feed, export, the equality
-  query and unique checks, or the chunk listing. A delete cut short after its
-  tombstone now reaches the changes feed as a delete, where it was reported as a
-  live Resource and did not replicate.
+  leave behind, no longer shows up in the Collection listing's items, the
+  Resource count quota, the changes feed, export, the equality query and unique
+  checks, or the chunk listing. The listing still reads sidecars for its page
+  only, so its `totalItems` can count a Resource whose delete a crash cut short.
+  A delete cut short after its tombstone now reaches the changes feed as a
+  delete, where it was reported as a live Resource and did not replicate.
 
 ## 0.42.1 - 2026-10-05
 
